@@ -43,3 +43,9 @@ jobs:
         indicators: true
         output: both
         thresholds: '60 80'
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v3  # upload test results
+      if: success() || failure()        # run this step even if previous step failed
+      with:
+          name: test-results
+          path: coverage/test-results.trx
