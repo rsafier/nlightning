@@ -1,15 +1,14 @@
-# Only runs on internal branches because testing permissions don't work on PR
-name: NLightning .NET Build & Tests (branch)
+#Avoid tooling which cannot run on the read only permission
+
+name: NLightning .NET Build & Tests (PR)
 on:
-  push:
-    branches:
-      - '*'
+  pull_request:
+    branches: [ "main" ]
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   build:
-    if: github.event_name == 'push' && github.event.pull_request == null
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -39,10 +38,3 @@ jobs:
         indicators: true
         output: both
         thresholds: '60 80'
-    - name: Test Report
-      uses: dorny/test-reporter@v1
-      if: success() || failure()    # run this step even if previous step failed
-      with:
-        name: xUnit Tests            # Name of the check run which will be created
-        path: coverage/test-results.trx   # Path to test results
-        reporter: dotnet-trx        # Format of test results
