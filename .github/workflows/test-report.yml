@@ -17,6 +17,12 @@ jobs:
         with:
           run_id: ${{ github.event.workflow_run.id }}
           path: artifacts
+      - name: Process trx reports with default
+        if: always()
+        # You may also reference just the major or major.minor version
+        uses: im-open/process-dotnet-test-results@v3.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Test Report
         uses: dorny/test-reporter@v1
         if: success() || failure()    # run this step even if previous step failed
