@@ -43,6 +43,12 @@ jobs:
         indicators: true
         output: both
         thresholds: '60 80'
+    - name: Process trx reports with default
+      if: always()
+      # You may also reference just the major or major.minor version
+      uses: im-open/process-dotnet-test-results@v3.0.0
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Upload Artifacts
       uses: actions/upload-artifact@v3  # upload test results
       if: success() || failure()        # run this step even if previous step failed
