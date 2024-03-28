@@ -18,6 +18,8 @@ public static class FileOptionParser
             loggerConfig.WriteTo.File(merged.LogFile);
         }
 
+        loggerConfig.WriteTo.Console();
+        
         return (merged, loggerConfig);
     }
 }

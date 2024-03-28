@@ -16,11 +16,13 @@
     <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
     <PackageReference Include="YamlDotNet" Version="15.1.2" />
+    <PackageReference Include="NetEscapades.Configuration.Yaml" Version="3.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\NLightning.Common\NLightning.Common.csproj" />
     <ProjectReference Include="..\NLightning.Bolts\NLightning.Bolts.csproj" />
+    <ProjectReference Include="..\NLightning.NLTG.Plugin\NLightning.NLTG.Plugin.csproj" />
   </ItemGroup>
 
 </Project>

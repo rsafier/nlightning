@@ -1,3 +1,4 @@
+using System.Text;
 using NLightning.Common;
 using YamlDotNet.Core;
 using YamlDotNet.Core.Events;
@@ -23,7 +24,7 @@ public class Options
     /// <summary>
     /// List of peers to connect to
     /// </summary>
-    public List<object> Peers { get; set; }
+    public List<object> Peers { get; set; } = new();
 
     /// <summary>
     /// Log file location to write to
@@ -39,7 +40,7 @@ public class Options
     /// Network to connect to
     /// </summary>
     /// <seealso cref="Network"/>
-    public Network Network { get; set; }
+    public Network Network { get; set; } = Network.RegTest;
 
     /// <summary>
     /// Path to the configuration file
@@ -103,7 +104,7 @@ public class Options
         var deserializer = new DeserializerBuilder()
             .WithTypeConverter(new NetworkConverter())
             .Build();
-        var yamlString = File.ReadAllText(configFile);
+        var yamlString = File.ReadAllText(configFile, Encoding.UTF8);
         return deserializer.Deserialize<Options>(yamlString);
     }
 
@@ -116,7 +117,7 @@ public class Options
             .WithTypeConverter(new NetworkConverter())
             .Build();
         var yaml = serializer.Serialize(this);
-        File.WriteAllText(ConfigFile, yaml);
+        File.WriteAllText(ConfigFile, yaml.TrimEnd(), Encoding.UTF8);
     }
 
     /// <summary>
@@ -182,7 +183,7 @@ public class Options
         {
             if (value is Network network)
             {
-                emitter.Emit(new Scalar(null, null, network.Name, ScalarStyle.Any, true, false));
+                emitter.Emit(new Scalar(null, null, network.Name, ScalarStyle.Plain, true, false));
             }
         }
     }
