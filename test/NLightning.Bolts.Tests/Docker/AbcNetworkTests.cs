@@ -1,8 +1,12 @@
 using System.Collections.Immutable;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using Lnrpc;
 using NBitcoin;
+using NLightning.Bolts.BOLT11.Types;
+using NLightning.Common.Managers;
+using NLightning.Common.Types;
 using ServiceStack;
 using ServiceStack.Text;
 using Xunit.Abstractions;
@@ -137,6 +141,44 @@ public class AbcNetworkTests
         }
 
         $"Bitcoin Node Balance: {(await _lightningRegtestNetworkFixture.Builder!.BitcoinRpcClient!.GetBalanceAsync()).Satoshi / 1e8}".Print();
+    }
+
+    [Fact]
+    public async Task VirtalInvoiceInterceptionSample()
+    {
+        //Build the invoice
+        var virtualNodeKey = new Key(); //Random node key
+        SecureKeyManager.Initialize(virtualNodeKey.ToBytes());
+
+        ConfigManager.Instance.Network = NLightning.Common.Types.Network.REG_TEST;
+        var alice = await _lightningRegtestNetworkFixture.Builder!.WaitUntilAliasIsServerReady("alice");         //Node we will intercept at and use as hint
+        var bob = await _lightningRegtestNetworkFixture.Builder!.WaitUntilAliasIsServerReady("bob");         //Node we will pay from
+
+        var hashHex = RandomNumberGenerator.GetHexString(64);
+        var paymentSecretHex = RandomNumberGenerator.GetHexString(64);
+        var paymentHash = uint256.Parse(hashHex);
+        var paymentSecret = uint256.Parse(paymentSecretHex); ;
+        var invoice =
+            new NLightning.Bolts.BOLT11.Invoice(10_000, "Hello NLightning, here is 10 sats", paymentHash, paymentSecret);
+
+        var ri = new RoutingInfoCollection
+        {
+            new RoutingInfo(
+            new PubKey(alice.LocalNodePubKeyBytes),
+            new ShortChannelId(6102, 1, 1),
+            1000,
+            1000,
+            144)
+        };
+        invoice.RoutingInfos = ri;
+        var e = invoice.Encode();
+        e.Print();
+        //Setup interceptor to get virtual nodes stuff
+
+        //Pay the thing
+
+        //Did it work?
+
     }
 }
 #pragma warning restore xUnit1033 // Test classes decorated with 'Xunit.IClassFixture<TFixture>' or 'Xunit.ICollectionFixture<TFixture>' should add a constructor argument of type TFixture
