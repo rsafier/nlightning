@@ -78,6 +78,7 @@ public class LightningRegtestNetworkFixture : IDisposable
         ], imageName: "custom_lnd", tagName: "latest", pullImage: false);
 
         await Builder.Build();
+        await Builder.WaitGraphReady("alice", 3);
     }
 
     private async Task RemoveContainer(string name)

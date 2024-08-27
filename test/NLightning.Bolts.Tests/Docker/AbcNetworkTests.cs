@@ -3,13 +3,18 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using Lnrpc;
+using LNUnit.LND;
 using NBitcoin;
 using NLightning.Bolts.BOLT11.Types;
+using NLightning.Bolts.BOLT9;
+using NLightning.Common.BitUtils;
 using NLightning.Common.Managers;
 using NLightning.Common.Types;
+using Routerrpc;
 using ServiceStack;
 using ServiceStack.Text;
 using Xunit.Abstractions;
+using Feature = NLightning.Bolts.BOLT9.Feature;
 
 namespace NLightning.Bolts.Tests.Docker;
 
@@ -160,24 +165,71 @@ public class AbcNetworkTests
         var paymentSecret = uint256.Parse(paymentSecretHex); ;
         var invoice =
             new NLightning.Bolts.BOLT11.Invoice(10_000, "Hello NLightning, here is 10 sats", paymentHash, paymentSecret);
-
+        var scid = new ShortChannelId(6102, 1, 1);
+        var lndChanId = EndianBitConverter.ToUInt64BigEndian(scid.ToByteArray());
         var ri = new RoutingInfoCollection
         {
             new RoutingInfo(
             new PubKey(alice.LocalNodePubKeyBytes),
-            new ShortChannelId(6102, 1, 1),
-            1000,
-            1000,
-            144)
+            scid,
+            0,
+            0,
+            42)
         };
+        // "features":  {
+        //     "8":  {
+        //         "name":  "tlv-onion",
+        //         "is_required":  true,
+        //         "is_known":  true
+        //     },
+        //     "14":  {
+        //         "name":  "payment-addr",
+        //         "is_required":  true,
+        //         "is_known":  true
+        //     }
+        // }
+        var f = new Features();
+        f.SetFeature(Feature.VAR_ONION_OPTIN, false, true);
+        f.SetFeature(Feature.PAYMENT_SECRET, false, true);
+        invoice.Features = f;
         invoice.RoutingInfos = ri;
-        var e = invoice.Encode();
-        e.Print();
-        //Setup interceptor to get virtual nodes stuff
+        var paymentRequest = invoice.Encode();
+        paymentRequest.Print();
+        //Setup interceptor to get virtual nodes stuff 
+        var nodeClone = alice.Clone();
+        var i = new LNDSimpleHtlcInterceptorHandler(nodeClone, async x =>
+        {
+            // var onionBlob = x.OnionBlob.ToByteArray();
+            //  var decoder = new OnionBlob(onionBlob);
+            //  var sharedSecret = (await Alice.DeriveSharedKey(decoder.EphemeralPublicKey.ToHex())).SharedKey.ToByteArray();
+            //  var x = decoder.Peel(sharedSecret, null, data.PaymentHash.ToByteArray());
 
+            //Logic for interception
+            $"Intercepted Payment {Convert.ToHexString(x.PaymentHash.ToByteArray())} for channel {x.IncomingCircuitKey.ChanId}"
+                .Print();
+            return new ForwardHtlcInterceptResponse
+            {
+                Action = ResolveHoldForwardAction.Resume,
+                IncomingCircuitKey = x.IncomingCircuitKey
+            };
+        });
+        _lightningRegtestNetworkFixture.Builder.InterceptorHandlers.Add("alias", i);
+
+        await Task.Delay(2000);
         //Pay the thing
-
+        var p = bob.RouterClient.SendPaymentV2(new SendPaymentRequest()
+        {
+            PaymentRequest = paymentRequest,
+            NoInflightUpdates = true,
+            TimeoutSeconds = 10
+        });
+        await p.ResponseStream.MoveNext(CancellationToken.None);
+        var paymentStatus = p.ResponseStream.Current;
+        Assert.Equal(Payment.Types.PaymentStatus.Succeeded, paymentStatus.Status);
         //Did it work?
+
+        //Cleanup
+        _lightningRegtestNetworkFixture.Builder.CancelAllInterceptors();
 
     }
 }
