@@ -42,6 +42,17 @@ public static class HtlcEntityConfiguration
             entity.Property(h => h.KnownPreimage).IsRequired(false);
             entity.Property(h => h.OnionSharedSecret).IsRequired(false);
 
+            // Origin of an HTLC we offered (migration AddInvoicesPaymentsAndCircuits, ONION M4-T7); the indexes serve
+            // the startup replay lookups "which HTLC carries this payment / this forwarded incoming HTLC"
+            entity.Property(h => h.OriginKind).IsRequired(false);
+            entity.Property(h => h.OriginPaymentHash).IsRequired(false);
+            entity.Property(h => h.OriginIncomingChannelId)
+                  .HasConversion<ChannelIdConverter>()
+                  .IsRequired(false);
+            entity.Property(h => h.OriginIncomingHtlcId).IsRequired(false);
+            entity.HasIndex(h => h.OriginPaymentHash);
+            entity.HasIndex(h => new { h.OriginIncomingChannelId, h.OriginIncomingHtlcId });
+
             if (databaseType == DatabaseType.MicrosoftSql)
             {
                 OptimizeConfigurationForSqlServer(entity);
@@ -60,5 +71,8 @@ public static class HtlcEntityConfiguration
         entity.Property(h => h.Sha256OfOnion).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(h => h.KnownPreimage).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(h => h.OnionSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
+        entity.Property(h => h.OriginPaymentHash).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
+        entity.Property(h => h.OriginIncomingChannelId)
+              .HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
     }
 }

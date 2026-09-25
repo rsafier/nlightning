@@ -153,6 +153,13 @@ public class ChannelEntity
     /// </summary>
     public bool DataLossDetected { get; set; }
 
+    /// <summary>
+    /// The <c>max_dust_htlc_exposure_msat</c> policy the commitment snapshot runs under (<c>CommitmentParams</c>), or
+    /// null when the check is off. Written with the snapshot by <c>ChannelStateDbRepository</c> and passed back on
+    /// reload (NL-242).
+    /// </summary>
+    public ulong? MaxDustHtlcExposureMsat { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 

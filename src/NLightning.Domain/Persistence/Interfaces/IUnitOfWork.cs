@@ -6,6 +6,7 @@ using Bitcoin.Wallet.Models;
 using Channels.Interfaces;
 using Node.Interfaces;
 using Node.Models;
+using Payments.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
@@ -24,6 +25,11 @@ public interface IUnitOfWork : IDisposable
 
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }
+
+    // Payment repositories
+    IInvoiceDbRepository InvoiceDbRepository { get; }
+    IPaymentDbRepository PaymentDbRepository { get; }
+    IForwardCircuitDbRepository ForwardCircuitDbRepository { get; }
 
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);

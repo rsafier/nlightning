@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Repositories;
 using Database.Bitcoin;
 using Database.Channel;
 using Database.Node;
+using Database.Payment;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -14,6 +15,7 @@ using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
+using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Persistence.Contexts;
 
@@ -40,6 +42,11 @@ public class UnitOfWork : IUnitOfWork
 
     // Node repositories
     private PeerDbRepository? _peerDbRepository;
+
+    // Payment repositories
+    private InvoiceDbRepository? _invoiceDbRepository;
+    private PaymentDbRepository? _paymentDbRepository;
+    private ForwardCircuitDbRepository? _forwardCircuitDbRepository;
 
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
@@ -69,6 +76,13 @@ public class UnitOfWork : IUnitOfWork
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
+
+    public IInvoiceDbRepository InvoiceDbRepository => _invoiceDbRepository ??= new InvoiceDbRepository(_context);
+
+    public IPaymentDbRepository PaymentDbRepository => _paymentDbRepository ??= new PaymentDbRepository(_context);
+
+    public IForwardCircuitDbRepository ForwardCircuitDbRepository =>
+        _forwardCircuitDbRepository ??= new ForwardCircuitDbRepository(_context);
 
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
                       IUtxoMemoryRepository utxoMemoryRepository)

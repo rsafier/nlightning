@@ -4,6 +4,7 @@ using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -214,8 +215,9 @@ public class ChannelRoundTripTests
             RemoteAlias = new ShortChannelId(16_000_003, 3, 3)
         };
 
-        // The commitment state (N5): HTLCs both ways, one locked in, and an unacked commitment_signed of ours
-        var driver = new CommitmentDanceDriver(channelId, channel.ToCommitmentParams(),
+        // The commitment state (N5): HTLCs both ways, one locked in, and an unacked commitment_signed of ours. The
+        // params carry the inferred-limits flag, as the reload does
+        var driver = new CommitmentDanceDriver(channelId, CommitmentParams.FromChannel(channel),
                                                channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
                                                usCommitmentNumber: channel.LocalCommitmentNumber,
                                                peerCommitmentNumber: channel.RemoteCommitmentNumber);
