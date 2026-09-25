@@ -13,7 +13,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - `Ipc/Handlers/`: one singleton `IIpcCommandHandler` per `ClientCommand` (NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel, OpenChannelSubscription).
 - `Handlers/`: scoped `IClientCommandHandler<TReq,TResp>` classes for multi-step flows (`OpenChannelClientHandler`, `OpenChannelClientSubscriptionHandler`).
 - `Interfaces/`: `IClientCommandHandler<TRequest,TResponse>` and `INodeInfoQueryService` (Daemon-local, not Domain).
-- `Services/NodeInfoQueryService.cs`, `Utilities/DaemonUtils.cs` (fork/nohup/PID/stop), `Helpers/ClassNameEnricher.cs`.
+- `Services/NodeInfoQueryService.cs`, `Utilities/DaemonUtils.cs` (arg normalization, re-exec daemonization, PID, stop), `Utilities/PasswordUtils.cs`, `Helpers/ClassNameEnricher.cs`.
 - Dead or unwired code: `Services/PluginLoaderService.cs` (never registered, and nothing implements `IDaemonContext`) plus its `Models/PluginEntry.cs`, `Helpers/AesGcmHelper.cs` (no callers), `Models/FeeRateCacheData.cs` (only referenced from commented-out code in `Infrastructure.Bitcoin/Services/FeeService.cs` and from a Daemon test).
 
 ## Adding an IPC command
@@ -49,7 +49,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - With `--config`, the network comes from `Node:Network` in the file. Without it, the dir is `~/.nltg/<network>` (default `mainnet`), the template is written with that network, and `Node:Network` is forced to it in memory so an older file cannot contradict the dir.
 - Creating a new key requires reachable bitcoind RPC (for birth height). The key password comes from `PasswordUtils.ResolvePassword`: `--password-file`, `--password-stdin`, `--password` (warns: visible in the process list), then `NLTG_PASSWORD`, else an interactive prompt. `Program.cs` clears `NLTG_PASSWORD` from its own environment after reading it.
 - On Unix the IPC pipe is a Unix socket at `{configPath}/nltg.ipc` (`NodeConstants.NamedPipeFile`). Each connection carries one request and one response, with a native-endian 4-byte length prefix and a 10MB cap. `NamedPipeIpcService` writes a new random cookie to `{configPath}/nltg.cookie` (mode 0600 on Unix) on every start and deletes it on stop.
-- `NamedPipeIpcService.StopAsync` throws if `StartAsync` never ran. Linux daemonization calls `fork()` after the runtime has started.
+- Daemonizing re-executes the program with `--daemon-child` (`DaemonUtils.BuildDaemonChildArgs` drops `--daemon` and the password options): on Unix through `/bin/sh -c UnixDaemonLauncherScript` (`nohup ... &`, stdio to /dev/null, cwd kept), on Windows with `Process.Start`. The parent hands the password to the child in `NLTG_PASSWORD` on the child's environment only, and writes the PID file. There is no `fork()`.
 
 ## Onion routing (BOLT 4) hooks
 There is no onion code here yet. When it lands:

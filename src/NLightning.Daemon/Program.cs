@@ -118,7 +118,7 @@ try
     }
 
     // Start as a daemon if requested
-    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger))
+    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger, password))
     {
         // The parent process exits immediately after starting the daemon
         return 0;
