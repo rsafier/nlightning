@@ -10,7 +10,6 @@ using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Infrastructure.Crypto.Hashes;
 using static NormalOperationTestContext;
 
 /// <summary>
@@ -26,7 +25,7 @@ public class HtlcRemovalAndFeeHandlerTests
         // Arrange
         var htlc = _context.LockIn(HtlcDirection.Outgoing, 50_000_000, SecretOf(1));
         var handler = new UpdateFulfillHtlcMessageHandler(NullLogger<UpdateFulfillHtlcMessageHandler>.Instance,
-                                                          new Sha256(), _context.CreateTransitions());
+                                                          _context.CreateTransitions());
 
         // Act
         var replies = await handler.HandleAsync(
@@ -47,7 +46,7 @@ public class HtlcRemovalAndFeeHandlerTests
         // Arrange - B2-DEL-R02
         var htlc = _context.LockIn(HtlcDirection.Outgoing, 50_000_000, SecretOf(1));
         var handler = new UpdateFulfillHtlcMessageHandler(NullLogger<UpdateFulfillHtlcMessageHandler>.Instance,
-                                                          new Sha256(), _context.CreateTransitions());
+                                                          _context.CreateTransitions());
 
         // Act
         var exception = await Assert.ThrowsAsync<ChannelWarningException>(

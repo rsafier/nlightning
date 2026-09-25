@@ -4,12 +4,12 @@ namespace NLightning.Application.Channels.Handlers;
 
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
-using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Infrastructure.Crypto.Hashes;
 using Interfaces;
 using Services;
 
@@ -18,17 +18,17 @@ using Services;
 /// preimage (B2-DEL-R01, R02, R07), and the preimage is persisted before anything uses it (I10); the
 /// <c>OutgoingHtlcFulfilled</c> event goes to the HTLC switch at once (B2-FWD-05).
 /// </summary>
+/// <remarks>The preimage is hashed with its own <see cref="Sha256"/>: the registered <c>ISha256</c> is a stateful
+/// singleton, and peers' messages are handled concurrently.</remarks>
 public class UpdateFulfillHtlcMessageHandler : IChannelMessageHandler<UpdateFulfillHtlcMessage>
 {
     private readonly ILogger<UpdateFulfillHtlcMessageHandler> _logger;
-    private readonly ISha256 _sha256;
     private readonly ChannelStateTransitionService _transitions;
 
-    public UpdateFulfillHtlcMessageHandler(ILogger<UpdateFulfillHtlcMessageHandler> logger, ISha256 sha256,
+    public UpdateFulfillHtlcMessageHandler(ILogger<UpdateFulfillHtlcMessageHandler> logger,
                                            ChannelStateTransitionService transitions)
     {
         _logger = logger;
-        _sha256 = sha256;
         _transitions = transitions;
     }
 
@@ -44,8 +44,9 @@ public class UpdateFulfillHtlcMessageHandler : IChannelMessageHandler<UpdateFulf
         CommitmentsResult result;
         try
         {
+            using var sha256 = new Sha256();
             result = channel.Commitments!.ReceiveFulfill(payload.Id, new Secret(payload.PaymentPreimage.ToArray()),
-                                                         _sha256);
+                                                         sha256);
         }
         catch (CommitmentViolationException e)
         {
