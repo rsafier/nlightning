@@ -5,16 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "NLTG Debug",
+            "name": "Daemon (nltg) Debug",
             "type": "coreclr",
             "request": "launch",
-            "preLaunchTask": "build",
-            "program": "${workspaceFolder}/src/NLightning.NLTG/bin/Debug/net8.0/NLightning.NLTG.dll",
+            "preLaunchTask": "build all",
+            "program": "${workspaceFolder}/src/NLightning.Daemon/bin/Debug/net10.0/NLightning.Daemon.dll",
             "args": [
-                "-l",
-                "debug"
+                "--network",
+                "regtest"
             ],
             "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
         }
     ]
 }

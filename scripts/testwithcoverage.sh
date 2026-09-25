@@ -1,22 +1,14 @@
 #!/bin/bash
 
+# Runs every test project under test/ (Docker tests excluded) with coverage.
+# Build first with the same configuration: dotnet build -c <config> -p:MSBuildWarningsAsMessages=MSB4121
+# Usage: scripts/testwithcoverage.sh [config]   (default: Debug)
+
 # config
 config=${1:-"Debug"}
 
-# root of the project
-root_dir=$(pwd)
-
-# List of directories with test projects
-directories=(
-  "/test/NLightning.Application.NLTG.Tests"
-  "/test/NLightning.Bolt11.Tests"
-  "/test/NLightning.Common.Tests"
-  "/test/NLightning.Domain.Tests"
-  "/test/NLightning.Infrastructure.Bitcoin.Tests"
-  "/test/NLightning.Infrastructure.Serialization.Tests"
-  "/test/NLightning.Infrastructure.Tests"
-  "/test/NLightning.Integration.Tests"
-)
+# root of the repository (independent of the caller's working directory)
+root_dir=$(cd "$(dirname "$0")/.." && pwd)
 
 # Delete coverage directory
 rm -rf "$root_dir"/coverage
@@ -24,21 +16,28 @@ rm -rf "$root_dir"/coverage
 # Initialize a flag to capture any test failure
 any_fail=0
 
-# Loop over directories and run tests
-for directory in "${directories[@]}"
+# Loop over test projects (test/<Name>.Tests/<Name>.Tests.csproj; BlazorTests live one level deeper and are skipped)
+for project in "$root_dir"/test/*/*.Tests.csproj
 do
-  echo "Running tests in $directory"
-  cd "$root_dir"/"$directory" || exit
+  project_dir=$(dirname "$project")
+  project_name=$(basename "$project" .csproj)
+
+  settings=()
+  if [ -f "$project_dir/coverlet.runsettings" ]; then
+    settings=(--settings "$project_dir/coverlet.runsettings")
+  fi
+
+  echo "Running tests in $project_name"
   # Add this when running Docker tests
   # export HOST_ADDRESS=$(ip route | awk 'NR==1 {print $3}')
-  dotnet test -c "$config" --filter 'FullyQualifiedName!~Docker' --settings coverlet.runsettings --no-build --verbosity normal -l "console;verbosity=detailed" --collect:"XPlat Code Coverage" --logger "trx;LogFileName=test-results.trx" --results-directory $root_dir/coverage
-  
+  dotnet test "$project" -c "$config" --filter 'FullyQualifiedName!~Docker' "${settings[@]}" --no-build --verbosity normal -l "console;verbosity=detailed" --collect:"XPlat Code Coverage" --logger "trx;LogFileName=$project_name.trx" --results-directory "$root_dir"/coverage
+
   # Capture the exit code
   exit_code=$?
-  
+
   # Check if the test run was successful
   if [ $exit_code -ne 0 ]; then
-    echo "Tests failed in $directory"
+    echo "Tests failed in $project_name"
     any_fail=1
   fi
 done
