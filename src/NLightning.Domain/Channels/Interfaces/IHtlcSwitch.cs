@@ -26,6 +26,11 @@ using Commitments.Events;
 /// It is called outside the channel's lock; to change a channel it goes through the channel operations, which take the
 /// lock themselves.
 /// </para>
+/// <para>
+/// <c>DerivePending</c> throws <see cref="ArgumentException"/> on a record in a legacy (pre-engine) state, so the
+/// startup replay (N6-T2) must derive per channel and catch it (log and skip that channel), or filter legacy records
+/// first; one legacy row must not stop the replay of the other channels.
+/// </para>
 /// </remarks>
 public interface IHtlcSwitch
 {
