@@ -3,7 +3,7 @@
 This plan is for agents that will implement BOLT 4 (Sphinx onion routing) in this repo. Work through it one task at a time. Every repo claim cites a repo-relative path. Claims marked **(unverified)** have not been checked against code and should be confirmed before you rely on them.
 
 - Spec source: `lightning/bolts` master, `04-onion-routing.md`, `02-peer-protocol.md` (HTLC messages), `01-messaging.md` (BigSize/TLV). Vector JSON files live at `https://raw.githubusercontent.com/lightning/bolts/master/bolt04/<name>.json`.
-- Status as of this writing: there is **no Sphinx/onion code** in `src/` or `test/`. The onion is carried only as raw bytes (see §3.1).
+- Status: M1 and M2 are done on `wip/fafo` (OnionPacket, TLV types, crypto primitives, Sphinx construct/peel, hop payload serializer/validator, replay cache). Sections below that describe code as missing predate this and are kept for reference. M3 onward is not started.
 
 ---
 
