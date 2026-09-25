@@ -174,9 +174,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
             // Create the funding transaction
             var fundingTransactionModel = _fundingTransactionModelFactory.Create(tempChannel, utxos, walletAddress);
-            _ = _fundingTransactionBuilder.Build(fundingTransactionModel);
-            if (fundingOutput.TransactionId is null || fundingOutput.Index is null)
-                throw new ChannelErrorException("Error building the funding transaction");
+            var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
+            fundingOutput.TransactionId = fundingTransaction.Transaction.TxId;
+            fundingOutput.Index = fundingTransaction.FundingOutputIndex;
 
             // If a change was needed, save the change data to the channel
             if (fundingTransactionModel.ChangeAddress is not null)

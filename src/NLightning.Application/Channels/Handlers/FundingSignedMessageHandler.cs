@@ -87,7 +87,14 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
 
         // Get a change address in case we need one
         var fundingTransactionModel = _fundingTransactionModelFactory.Create(channel, utxos, channel.ChangeAddress);
-        var unsignedFundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
+        var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
+        var unsignedFundingTransaction = fundingTransaction.Transaction;
+
+        // The rebuilt funding transaction must be the one the peer signed a commitment for
+        if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
+         || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
+            throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
+                                            channel.ChannelId, "Sorry, we had an internal error");
 
         // Sign the transaction
         var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
