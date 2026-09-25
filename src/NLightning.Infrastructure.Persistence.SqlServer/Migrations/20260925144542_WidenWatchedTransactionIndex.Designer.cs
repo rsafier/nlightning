@@ -251,7 +251,7 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte[]>("RemoteNodeId")
                         .IsRequired()
-                        .HasColumnType("varbinary(32)");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<decimal>("RemoteRevocationNumber")
                         .HasColumnType("decimal(20,0)");

@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -65,17 +67,83 @@ public class PersistenceConfigurationTests
         Assert.Equal($"varbinary({CryptoConstants.CompactPubkeyLen})", columnType);
     }
 
-    [Fact]
-    public void Given_SqlServerMigrations_When_ComparedToTheModel_Then_ThereAreNoPendingModelChanges()
+    [Theory]
+    [InlineData("postgres", "Host=localhost;Database=nlightning")]
+    [InlineData("sqlite", "Data Source=:memory:")]
+    [InlineData("sqlserver", "Server=localhost;Database=nlightning")]
+    public void Given_ProviderMigrations_When_ComparedToTheModel_Then_ThereAreNoPendingModelChanges(
+        string provider, string connectionString)
     {
         // Arrange
-        using var context = CreateSqlServerContext();
+        using var serviceProvider = BuildServiceProvider(provider, connectionString, null);
+        using var scope = serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
 
         // Act
         var hasPendingChanges = context.Database.HasPendingModelChanges();
 
         // Assert
         Assert.False(hasPendingChanges);
+    }
+
+    [Theory]
+    [InlineData("postgres", "Host=localhost;Database=nlightning")]
+    [InlineData("sqlite", "Data Source=:memory:")]
+    [InlineData("sqlserver", "Server=localhost;Database=nlightning")]
+    public void Given_ProviderMigrations_When_DiffingEachDesignerModelWithThePreviousOne_Then_OnlyTheMigrationChangesAppear(
+        string provider, string connectionString)
+    {
+        // Arrange: a Designer (target model) that disagrees with its migration makes EF diff the wrong schema for
+        // every later migration (F6: WidenWatchedTransactionIndex still had RemoteNodeId as varbinary(32))
+        using var serviceProvider = BuildServiceProvider(provider, connectionString, null);
+        using var scope = serviceProvider.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
+        var migrationsAssembly = context.GetService<IMigrationsAssembly>();
+        var differ = context.GetService<IMigrationsModelDiffer>();
+        var modelInitializer = context.GetService<IModelRuntimeInitializer>();
+        var activeProvider = context.Database.ProviderName!;
+
+        IRelationalModel? previousModel = null;
+        var mismatches = new List<string>();
+
+        // Act
+        foreach (var (id, type) in migrationsAssembly.Migrations)
+        {
+            var migration = migrationsAssembly.CreateMigration(type, activeProvider);
+            var targetModel = FinalizeModel(modelInitializer, migration.TargetModel!).GetRelationalModel();
+
+            // Hand-written SQL is invisible to the model differ
+            var expected = migration.UpOperations.Where(o => o is not SqlOperation).Select(Describe).Order().ToList();
+            var actual = differ.GetDifferences(previousModel, targetModel).Select(Describe).Order().ToList();
+            if (!expected.SequenceEqual(actual))
+                mismatches.Add($"{id}: migration [{string.Join(", ", expected)}] vs designer diff " +
+                               $"[{string.Join(", ", actual)}]");
+
+            previousModel = targetModel;
+        }
+
+        var snapshotModel = FinalizeModel(modelInitializer, migrationsAssembly.ModelSnapshot!.Model)
+           .GetRelationalModel();
+
+        // Assert
+        Assert.True(mismatches.Count == 0, string.Join(Environment.NewLine, mismatches));
+        Assert.False(differ.HasDifferences(previousModel, snapshotModel));
+    }
+
+    private static IModel FinalizeModel(IModelRuntimeInitializer modelInitializer, IModel model)
+    {
+        if (model is IMutableModel mutableModel)
+            model = mutableModel.FinalizeModel();
+
+        return modelInitializer.Initialize(model, designTime: true);
+    }
+
+    private static string Describe(MigrationOperation operation)
+    {
+        var table = operation is ITableMigrationOperation tableOperation ? tableOperation.Table : null;
+        var name = operation.GetType().GetProperty("Name")?.GetValue(operation) as string;
+        var columnType = operation is ColumnOperation columnOperation ? columnOperation.ColumnType : null;
+        return $"{operation.GetType().Name}({table}.{name} {columnType})".Replace(" )", ")");
     }
 
     private static NLightningDbContext CreateSqlServerContext()
