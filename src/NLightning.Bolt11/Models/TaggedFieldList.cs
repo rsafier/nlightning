@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Bolt11.Models;
@@ -142,47 +141,64 @@ internal class TaggedFieldList : List<ITaggedField>
     /// </summary>
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="bitcoinNetwork">The network type</param>
+    /// <param name="availableBits">
+    /// The exact number of tagged-field bits in the invoice data (multiple of 5). When <c>null</c>, fields are read
+    /// until fewer than 15 bits remain in the reader.
+    /// </param>
     /// <returns>A new TaggedFieldList</returns>
-    internal static TaggedFieldList FromBitReader(BitReader bitReader, BitcoinNetwork bitcoinNetwork)
+    /// <exception cref="ArgumentException">
+    /// If a field is truncated, a known field is malformed (BOLT 11: e.g. wrong <c>p</c>/<c>h</c>/<c>s</c>/<c>n</c>
+    /// length), both <c>d</c> and <c>h</c> are present, or there are dangling bits after the last field.
+    /// </exception>
+    /// <remarks>
+    /// Unknown field types and <c>f</c> fields with an unknown version are skipped, as BOLT 11 requires.
+    /// When a non-repeatable field appears more than once, the first one is kept (BOLT 11: use the first).
+    /// </remarks>
+    internal static TaggedFieldList FromBitReader(BitReader bitReader, BitcoinNetwork bitcoinNetwork,
+                                                  int? availableBits = null)
     {
         var taggedFields = new TaggedFieldList();
-        while (bitReader.HasMoreBits(15))
+        var remainingBits = availableBits ?? int.MaxValue;
+        while (remainingBits >= 15 && bitReader.HasMoreBits(15))
         {
             var type = (TaggedFieldTypes)bitReader.ReadByteFromBits(5);
             var length = bitReader.ReadInt16FromBits(10);
-            if (length != 0 && !bitReader.HasMoreBits(length * 5))
+            remainingBits -= 15;
+
+            var fieldBits = length * 5;
+            if (fieldBits > remainingBits || !bitReader.HasMoreBits(fieldBits))
+                throw new ArgumentException(
+                    $"Tagged field {type} declares data_length {length}, which is longer than the remaining data");
+
+            remainingBits -= fieldBits;
+
+            // Copy exactly this field's bits, so a field parser can never desync the outer reader
+            var fieldData = new byte[(fieldBits + 7) / 8];
+            bitReader.ReadBits(fieldData, fieldBits);
+            if (fieldBits % 8 != 0)
+                fieldData[^1] &= (byte)(0xFF << (8 - fieldBits % 8));
+
+            // BOLT 11: skip unknown fields
+            if (!Enum.IsDefined(type))
                 continue;
 
-            if (!Enum.IsDefined(type))
-            {
-                bitReader.SkipBits(length * 5);
-            }
-            else
-            {
-                try
-                {
-                    var taggedField =
-                        TaggedFieldFactory.CreateTaggedFieldFromBitReader(type, bitReader, length, bitcoinNetwork);
-                    if (taggedField is null)
-                        continue;
+            var taggedField = TaggedFieldFactory.CreateTaggedFieldFromBitReader(type, new BitReader(fieldData),
+                                                                               length, bitcoinNetwork);
 
-                    try
-                    {
-                        taggedFields.Add(taggedField);
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.WriteLine(e.Message);
-                        // Skip for now, log latter
-                    }
-                }
-                catch (Exception e)
-                {
-                    Debug.WriteLine(e.Message);
-                    // Skip for now, log latter
-                }
-            }
+            // e.g. an `f` field with an unknown version, which BOLT 11 says to skip
+            if (taggedField is null)
+                continue;
+
+            // Keep the first (most preferred) field of a type that may not repeat
+            if (!IsRepeatable(type) && taggedFields.Any(x => x.Type.Equals(type)))
+                continue;
+
+            // Throws if the field is invalid or if `d` and `h` are both present
+            taggedFields.Add(taggedField);
         }
+
+        if (availableBits.HasValue && remainingBits > 0)
+            throw new ArgumentException($"{remainingBits} dangling bits after the last tagged field");
 
         return taggedFields;
     }

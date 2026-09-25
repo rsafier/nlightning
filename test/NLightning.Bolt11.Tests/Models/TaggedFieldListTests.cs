@@ -359,4 +359,121 @@ public class TaggedFieldListTests
         Assert.NotNull(description);
         Assert.Equal(string.Empty, description.Value);
     }
+
+    private static byte[] BuildFields(out int totalBits, params (TaggedFieldTypes Type, short Length, byte Fill)[] fields)
+    {
+        totalBits = fields.Sum(f => 15 + f.Length * 5);
+        var writer = new BitWriter(totalBits);
+        foreach (var (type, length, fill) in fields)
+        {
+            writer.WriteByteAsBits((byte)type, 5);
+            writer.WriteInt16AsBits(length, 10);
+            for (var i = 0; i < length; i++)
+                writer.WriteByteAsBits(fill, 5);
+        }
+
+        return writer.ToArray();
+    }
+
+    [Fact]
+    public void Given_PaymentHashWithWrongLength_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        // BOLT 11: MUST fail if `p` does not have data_length 52
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PaymentHash, 51, 0));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => TaggedFieldList.FromBitReader(new BitReader(bytes),
+                                                                             BitcoinNetwork.Mainnet, totalBits));
+    }
+
+    [Fact]
+    public void Given_DeclaredLengthLongerThanData_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        // d field claims 10 groups but only 2 follow
+        var writer = new BitWriter(25);
+        writer.WriteByteAsBits((byte)TaggedFieldTypes.Description, 5);
+        writer.WriteInt16AsBits(10, 10);
+        writer.WriteByteAsBits(1, 5);
+        writer.WriteByteAsBits(1, 5);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => TaggedFieldList.FromBitReader(new BitReader(writer.ToArray()),
+                                                                             BitcoinNetwork.Mainnet, 25));
+    }
+
+    [Fact]
+    public void Given_BothDescriptionAndDescriptionHash_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.Description, 2, 1),
+                                (TaggedFieldTypes.DescriptionHash, 52, 1));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => TaggedFieldList.FromBitReader(new BitReader(bytes),
+                                                                             BitcoinNetwork.Mainnet, totalBits));
+    }
+
+    [Fact]
+    public void Given_UnknownFieldBetweenKnownFields_When_FromBitReader_Then_UnknownIsSkippedAndRestIsParsed()
+    {
+        // Arrange
+        // type 2 is not defined by BOLT 11
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.Description, 2, 1),
+                                ((TaggedFieldTypes)2, 3, 31),
+                                (TaggedFieldTypes.PaymentHash, 52, 1));
+
+        // Act
+        var list = TaggedFieldList.FromBitReader(new BitReader(bytes), BitcoinNetwork.Mainnet, totalBits);
+
+        // Assert
+        Assert.Equal(2, list.Count);
+        Assert.True(list.TryGet<PaymentHashTaggedField>(TaggedFieldTypes.PaymentHash, out _));
+    }
+
+    [Fact]
+    public void Given_TwoPaymentHashes_When_FromBitReader_Then_FirstIsKept()
+    {
+        // Arrange
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PaymentHash, 52, 1),
+                                (TaggedFieldTypes.PaymentHash, 52, 2));
+
+        // Act
+        var list = TaggedFieldList.FromBitReader(new BitReader(bytes), BitcoinNetwork.Mainnet, totalBits);
+
+        // Assert
+        Assert.Single(list);
+        Assert.True(list.TryGet<PaymentHashTaggedField>(TaggedFieldTypes.PaymentHash, out var paymentHash));
+        // 52 groups of 00001 -> first byte 0b00001000
+        Assert.Equal(0x08, paymentHash.Value.ToBytes(false)[0]);
+    }
+
+    [Fact]
+    public void Given_PayeePubKeyThatIsNotACurvePoint_When_FromBitReader_Then_FieldIsSkipped()
+    {
+        // Arrange
+        // BOLT 11: only a valid `n` is used, otherwise the reader recovers the key from the signature
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.PayeePubKey, 53, 0));
+
+        // Act
+        var list = TaggedFieldList.FromBitReader(new BitReader(bytes), BitcoinNetwork.Mainnet, totalBits);
+
+        // Assert
+        Assert.Empty(list);
+    }
+
+    [Fact]
+    public void Given_DanglingGroupAfterLastField_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        var bytes = BuildFields(out var totalBits, (TaggedFieldTypes.Description, 2, 1));
+        var padded = new byte[bytes.Length + 1];
+        bytes.CopyTo(padded, 0);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => TaggedFieldList.FromBitReader(new BitReader(padded),
+                                                                             BitcoinNetwork.Mainnet,
+                                                                             totalBits + 5));
+    }
 }

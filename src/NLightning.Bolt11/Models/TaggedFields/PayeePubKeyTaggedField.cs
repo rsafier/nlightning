@@ -47,9 +47,9 @@ internal sealed class PayeePubKeyTaggedField : ITaggedField
     /// </summary>
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
-    /// <returns>The PayeePubKeyTaggedField</returns>
+    /// <returns>The PayeePubKeyTaggedField, or <c>null</c> if the bytes are not a valid public key</returns>
     /// <exception cref="ArgumentException">Thrown when the length is invalid</exception>
-    internal static PayeePubKeyTaggedField FromBitReader(BitReader bitReader, short length)
+    internal static PayeePubKeyTaggedField? FromBitReader(BitReader bitReader, short length)
     {
         if (length != TaggedFieldConstants.PayeePubkeyLength)
             throw new ArgumentException(
@@ -63,6 +63,9 @@ internal sealed class PayeePubKeyTaggedField : ITaggedField
         // Remove the padding byte
         data = data[..^1];
 
-        return new PayeePubKeyTaggedField(new PubKey(data));
+        // BOLT 11: only a *valid* `n` is used; otherwise the reader falls back to public-key recovery
+        return PubKey.TryCreatePubKey(data, out var pubKey)
+                   ? new PayeePubKeyTaggedField(pubKey)
+                   : null;
     }
 }

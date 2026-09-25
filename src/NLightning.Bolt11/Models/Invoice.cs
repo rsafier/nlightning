@@ -569,7 +569,9 @@ public partial class Invoice
 
             var timestamp = bitReader.ReadInt64FromBits(35);
 
-            var taggedFields = TaggedFieldList.FromBitReader(bitReader, network);
+            // The data part is everything between the separator and the signature (104 groups) + checksum (6)
+            var dataGroups = invoiceString.Length - (hrp.Length + 1) - 104 - 6;
+            var taggedFields = TaggedFieldList.FromBitReader(bitReader, network, dataGroups * 5 - 35);
 
             // TODO: Check feature bits
 

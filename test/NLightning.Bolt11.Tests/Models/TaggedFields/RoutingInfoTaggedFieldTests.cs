@@ -113,18 +113,16 @@ public class RoutingInfoTaggedFieldTests
         }
     }
 
-    [Fact]
-    public void FromBitReader_ReturnsNull_When_LengthTooSmall()
+    [Theory]
+    [InlineData(80)] // 400 bits: less than one entry
+    [InlineData(84)] // 420 bits: one entry plus 12 bits, more than byte padding
+    public void Given_LengthNotWholeEntries_When_FromBitReader_Then_ThrowsArgumentException(short length)
     {
-        // Arrange: smaller than one full entry (less than 408 bits)
-        var buffer = new byte[(400 + 7) / 8];
-        var reader = new BitReader(buffer);
+        // Arrange
+        var reader = new BitReader(new byte[(length * 5 + 7) / 8]);
 
-        // Act
-        var parsed = RoutingInfoTaggedField.FromBitReader(reader, 400 / 5);
-
-        // Assert
-        Assert.Null(parsed);
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => RoutingInfoTaggedField.FromBitReader(reader, length));
     }
 
     [Fact]
