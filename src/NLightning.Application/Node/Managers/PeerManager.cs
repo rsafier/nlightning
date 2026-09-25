@@ -33,6 +33,11 @@ using Services;
 /// Each connected peer gets one ordered inbound loop and one ordered <see cref="PeerOutbox"/> (BOLT2 plan D2, §3.7):
 /// its channel messages are handled one at a time, in arrival order, and every reply (and every message raised through
 /// <see cref="IChannelManager.OnResponseMessageReady"/>) is sent through the outbox in the order it was enqueued.
+/// A connection that goes down stops its loop (what is still queued is dropped), and the loop of the next connection
+/// to the same peer only starts once the previous one has finished, so messages of two connections never interleave.
+/// A new connection from a peer we are already connected to replaces the old one (as LND and CLN do), except for a
+/// simultaneous connect, where both ends keep the connection initiated by the node with the lower pubkey (LND's rule).
+/// A peer with active channels that drops is reconnected with backoff unless we disconnected it on purpose.
 /// </remarks>
 /// <seealso cref="IPeerManager" />
 public sealed class PeerManager : IPeerManager
@@ -43,20 +48,43 @@ public sealed class PeerManager : IPeerManager
     /// </summary>
     private const int InboundQueueCapacity = 1024;
 
+    private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
+
     private readonly IChannelManager _channelManager;
+    private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<PeerManager> _logger;
     private readonly IPeerServiceFactory _peerServiceFactory;
+    private readonly ISecureKeyManager _secureKeyManager;
     private readonly ITcpService _tcpService;
     private readonly IServiceProvider _serviceProvider;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
-    private CancellationTokenSource _reconnectCts = new();
-
-    private CancellationTokenSource? _cts;
 
     /// <summary>
-    /// Wait before the first reconnection attempt to a peer we could not reach on startup. Doubles after every
-    /// failed attempt, up to <see cref="ReconnectMaxDelay"/>.
+    /// Guards installing and removing sessions, and <see cref="_inboundLoops"/>.
+    /// </summary>
+    private readonly Lock _sessionLock = new();
+
+    /// <summary>
+    /// The latest inbound loop of each peer (removed when it ends). A new session waits for it before its own loop
+    /// starts.
+    /// </summary>
+    private readonly Dictionary<CompactPubKey, Task> _inboundLoops = new();
+
+    /// <summary>
+    /// The session whose inbound loop is running on this async flow: the replies raised while it handles a message
+    /// belong to that connection, even if a newer connection of the same peer already replaced it.
+    /// </summary>
+    private readonly AsyncLocal<PeerSession?> _currentSession = new();
+
+    private CancellationTokenSource _reconnectCts = new();
+    private CancellationTokenSource? _cts;
+    private CompactPubKey? _localNodeId;
+    private volatile bool _stopping;
+
+    /// <summary>
+    /// Wait before the first reconnection attempt to a peer with active channels that we could not reach on startup
+    /// or that dropped. Doubles after every failed attempt, up to <see cref="ReconnectMaxDelay"/>.
     /// </summary>
     internal TimeSpan ReconnectInitialDelay { get; set; } = TimeSpan.FromSeconds(5);
 
@@ -65,12 +93,21 @@ public sealed class PeerManager : IPeerManager
     /// </summary>
     internal TimeSpan ReconnectMaxDelay { get; set; } = TimeSpan.FromMinutes(10);
 
-    public PeerManager(IChannelManager channelManager, ILogger<PeerManager> logger,
-                       IPeerServiceFactory peerServiceFactory, ITcpService tcpService, IServiceProvider serviceProvider)
+    /// <summary>
+    /// A connection in the other direction that arrives within this time of the current one is a simultaneous
+    /// connect and goes through the pubkey tie-break; a later one replaces the current connection.
+    /// </summary>
+    internal TimeSpan SimultaneousConnectWindow { get; set; } = TimeSpan.FromSeconds(5);
+
+    public PeerManager(IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
+                       ILogger<PeerManager> logger, IPeerServiceFactory peerServiceFactory,
+                       ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider)
     {
         _channelManager = channelManager;
+        _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _peerServiceFactory = peerServiceFactory;
+        _secureKeyManager = secureKeyManager;
         _tcpService = tcpService;
         _serviceProvider = serviceProvider;
 
@@ -80,6 +117,7 @@ public sealed class PeerManager : IPeerManager
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
+        _stopping = false;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _reconnectCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
 
@@ -131,6 +169,9 @@ public sealed class PeerManager : IPeerManager
         if (_cts is null)
             throw new InvalidOperationException($"{nameof(PeerManager)} is not running");
 
+        // No reconnection from here on (the disconnections below are ours)
+        _stopping = true;
+
         // Stop accepting connections and release the listening sockets, so a restart can bind the same port
         try
         {
@@ -165,13 +206,35 @@ public sealed class PeerManager : IPeerManager
         try
         {
             // Give it a 5-second timeout to disconnect all peers
-            var timeoutTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var timeoutTokenSource = new CancellationTokenSource(s_stopTimeout);
             while (!_peers.IsEmpty && !_cts.IsCancellationRequested)
-                await Task.Delay(TimeSpan.FromSeconds(1), timeoutTokenSource.Token);
+                await Task.Delay(TimeSpan.FromMilliseconds(100), timeoutTokenSource.Token);
         }
         catch (TaskCanceledException)
         {
             _logger.LogWarning("Timeout while waiting for peers to disconnect");
+        }
+
+        // Stop the inbound loops that are left and wait for the message being handled, so no handler still persists
+        // while the host disposes the services
+        foreach (var session in _peers.Values)
+            session.Close();
+
+        Task[] inboundLoops;
+        lock (_sessionLock)
+            inboundLoops = [.. _inboundLoops.Values];
+
+        try
+        {
+            await Task.WhenAll(inboundLoops).WaitAsync(s_stopTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Timeout while waiting for the peers' inbound loops to stop");
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Inbound loop ended with an error");
         }
 
         await _cts.CancelAsync();
@@ -194,15 +257,21 @@ public sealed class PeerManager : IPeerManager
 
     /// <inheritdoc />
     /// <remarks>
-    /// Disconnects right away (an operator action), without waiting for the peer's outbox to drain. Failures while
-    /// handling the peer's messages disconnect through the outbox instead, after the replies queued before them.
+    /// Disconnects right away (an operator action), without waiting for the peer's outbox to drain, and does not
+    /// reconnect. Failures while handling the peer's messages disconnect through the outbox instead, after the replies
+    /// queued before them.
     /// </remarks>
     public void DisconnectPeer(CompactPubKey pubKey, Exception? exception = null)
     {
         if (_peers.TryGetValue(pubKey, out var session))
+        {
+            session.SuppressReconnect();
             session.PeerService.Disconnect(exception);
+        }
         else
+        {
             _logger.LogWarning("Peer {Peer} not found", pubKey);
+        }
     }
 
     public List<PeerModel> ListPeers()
@@ -245,8 +314,8 @@ public sealed class PeerManager : IPeerManager
         peer.Channels is { Count: > 0 } && peer.Channels.Any(IsActiveChannel);
 
     /// <summary>
-    /// Keeps trying to connect to a peer we could not reach on startup (it has channels with us), with exponential
-    /// backoff, until it is connected (by us or by itself) or the manager stops.
+    /// Keeps trying to connect to a peer we have channels with, with exponential backoff, until it is connected (by
+    /// us or by itself) or the manager stops.
     /// </summary>
     private void StartReconnectLoop(PeerModel peer)
     {
@@ -295,6 +364,24 @@ public sealed class PeerManager : IPeerManager
         }
     }
 
+    /// <summary>
+    /// Starts reconnecting to a peer that dropped, if it still has active channels with us and neither we nor a newer
+    /// connection closed it on purpose.
+    /// </summary>
+    private void ReconnectIfNeeded(PeerSession session)
+    {
+        if (_stopping || _cts is null || session.ReconnectSuppressed || _reconnectCts.IsCancellationRequested)
+            return;
+
+        var peerId = session.Peer.NodeId;
+        var channels = _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerId && IsActiveChannel(c));
+        if (channels is not { Count: > 0 })
+            return;
+
+        _logger.LogInformation("Peer {PeerId} has active channels, reconnecting", peerId);
+        StartReconnectLoop(session.Peer);
+    }
+
     private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow)
     {
         // Convert and validate the address
@@ -329,9 +416,11 @@ public sealed class PeerManager : IPeerManager
         };
         peer.SetPeerService(peerService);
 
-        if (!TryAddSession(peer, peerService))
+        var session = CreateSession(peer, peerService, isInbound: false);
+        if (!TryInstallSession(session))
         {
-            // Another connection to the same peer won the race
+            // The peer's own connection to us won the tie-break
+            session.SuppressReconnect();
             peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
             throw new InvalidOperationException($"Already connected to peer {peer.NodeId}");
         }
@@ -367,20 +456,24 @@ public sealed class PeerManager : IPeerManager
             };
             peer.SetPeerService(peerService);
 
+            // Subscribe and install before anything slow (the database below): the peer may already be sending
+            var session = CreateSession(peer, peerService, isInbound: true);
+            if (!TryInstallSession(session))
+            {
+                _logger.LogWarning("Keeping our own connection to peer {Peer}, closing the new one", peer.NodeId);
+                session.SuppressReconnect();
+                peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
+                return;
+            }
+
             if (preferredHost != "127.0.0.1")
             {
                 // Get a context to save the peer to the database
                 using var scope = _serviceProvider.CreateScope();
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                uow.PeerDbRepository.AddOrUpdateAsync(peer);
+                uow.PeerDbRepository.AddOrUpdateAsync(peer).GetAwaiter().GetResult();
                 uow.SaveChanges();
-            }
-
-            if (!TryAddSession(peer, peerService))
-            {
-                _logger.LogWarning("Already connected to peer {Peer}, closing the new connection", peer.NodeId);
-                peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
             }
         }
         catch (Exception e)
@@ -390,85 +483,171 @@ public sealed class PeerManager : IPeerManager
     }
 
     /// <summary>
-    /// Registers the peer with its inbound loop and outbox, then subscribes to its events (so every message we get
-    /// from it finds its session). Returns false when the peer is already connected.
+    /// Creates the session of a new connection and subscribes to its peer service right away. A peer service keeps
+    /// the channel messages that arrived before this and replays a disconnection that already happened, so nothing
+    /// the peer sent right after init is lost and a peer that already dropped is not kept.
     /// </summary>
-    private bool TryAddSession(PeerModel peer, IPeerService peerService)
+    private PeerSession CreateSession(PeerModel peer, IPeerService peerService, bool isInbound)
     {
-        var session = new PeerSession(peer, peerService, new PeerOutbox(peerService, _logger));
-        if (!_peers.TryAdd(peer.NodeId, session))
+        var session = new PeerSession(peer, peerService, new PeerOutbox(peerService, _logger), isInbound);
+        session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
+        session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);
+
+        peerService.OnChannelMessageReceived += session.ChannelMessageHandler;
+        peerService.OnDisconnect += session.DisconnectHandler;
+
+        return session;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="session"/> the peer's session and starts its inbound loop (after the previous
+    /// connection's loop has finished). An existing session is replaced and disconnected, unless the tie-break keeps
+    /// it: then this returns false and the caller closes the new connection.
+    /// </summary>
+    private bool TryInstallSession(PeerSession session)
+    {
+        var peerId = session.Peer.NodeId;
+        PeerSession? replaced = null;
+
+        lock (_sessionLock)
         {
-            session.Close();
-            return false;
+            if (_peers.TryGetValue(peerId, out var existing))
+            {
+                if (!ShouldReplace(existing, session))
+                    return false;
+
+                replaced = existing;
+                replaced.SuppressReconnect();
+                replaced.Close();
+            }
+
+            _peers[peerId] = session;
+
+            var previousLoop = _inboundLoops.GetValueOrDefault(peerId) ?? Task.CompletedTask;
+            session.StartInboundLoop(previousLoop, ProcessInboundMessagesAsync);
+            _inboundLoops[peerId] = session.InboundLoop;
+            _ = session.InboundLoop.ContinueWith(_ => ForgetInboundLoop(session), CancellationToken.None,
+                                                 TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
-        session.StartInboundLoop(ProcessInboundMessagesAsync);
+        if (replaced is not null)
+        {
+            _logger.LogInformation("Peer {Peer} connected again, replacing the previous connection", peerId);
+            replaced.PeerService.Disconnect();
+        }
 
-        peerService.OnDisconnect += HandlePeerDisconnection;
-        peerService.OnChannelMessageReceived += HandlePeerChannelMessage;
+        // The connection may have dropped before it was installed (its disconnect handler found nothing to remove)
+        if (session.IsDisconnected && TryRemoveSession(session))
+            ReconnectIfNeeded(session);
 
         return true;
     }
 
-    private void HandlePeerDisconnection(object? sender, PeerDisconnectedEventArgs args)
+    /// <summary>
+    /// Whether a new connection replaces the current one. A reconnect (the peer restarted, or its old connection is
+    /// half dead) replaces it, as LND and CLN do. For a simultaneous connect (one connection each way, close
+    /// together) both ends must keep the same one: the one initiated by the node with the lower pubkey (LND's
+    /// <c>shouldDropLocalConnection</c>).
+    /// </summary>
+    private bool ShouldReplace(PeerSession existing, PeerSession incoming)
+    {
+        if (existing.IsDisconnected)
+            return true;
+
+        // Two inbound: the peer reconnected. Two outbound: two of our own attempts raced, keep the first
+        if (existing.IsInbound == incoming.IsInbound)
+            return incoming.IsInbound;
+
+        if (DateTime.UtcNow - existing.ConnectedAt > SimultaneousConnectWindow)
+            return true;
+
+        _localNodeId ??= _secureKeyManager.GetNodePubKey();
+        byte[] localNodeId = _localNodeId.Value;
+        byte[] remoteNodeId = incoming.Peer.NodeId;
+        var ourKeyIsLower = localNodeId.AsSpan().SequenceCompareTo(remoteNodeId) < 0;
+        var weInitiatedIncoming = !incoming.IsInbound;
+        return weInitiatedIncoming == ourKeyIsLower;
+    }
+
+    private bool TryRemoveSession(PeerSession session)
+    {
+        lock (_sessionLock)
+            return _peers.TryRemove(new KeyValuePair<CompactPubKey, PeerSession>(session.Peer.NodeId, session));
+    }
+
+    private void ForgetInboundLoop(PeerSession session)
+    {
+        lock (_sessionLock)
+            if (_inboundLoops.TryGetValue(session.Peer.NodeId, out var loop) && loop == session.InboundLoop)
+                _inboundLoops.Remove(session.Peer.NodeId);
+    }
+
+    private void HandleSessionDisconnected(PeerSession session, PeerDisconnectedEventArgs args)
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        // Only remove the session of the connection that went down (a newer one may already have replaced it)
-        if (_peers.TryGetValue(args.PeerPubKey, out var session)
-         && (sender is null || ReferenceEquals(session.PeerService, sender))
-         && _peers.TryRemove(new KeyValuePair<CompactPubKey, PeerSession>(args.PeerPubKey, session)))
-            session.Close();
+        if (!session.MarkDisconnected())
+            return;
+
+        // Only the session of the connection that went down (a newer one may already have replaced it)
+        var removed = TryRemoveSession(session);
+
+        // Stop its inbound loop: messages still queued are dropped, the one being handled finishes
+        session.Close();
 
         _logger.LogInformation("Peer {Peer} disconnected", args.PeerPubKey);
 
-        if (sender is IPeerService peerService)
-        {
-            peerService.OnDisconnect -= HandlePeerDisconnection;
-            peerService.OnChannelMessageReceived -= HandlePeerChannelMessage;
-            peerService.Dispose();
-        }
-        else
-        {
-            _logger.LogWarning("Peer {Peer} disconnected, but we were unable to detach event handlers",
-                               args.PeerPubKey);
-        }
+        var peerService = session.PeerService;
+        if (session.ChannelMessageHandler is not null)
+            peerService.OnChannelMessageReceived -= session.ChannelMessageHandler;
+        if (session.DisconnectHandler is not null)
+            peerService.OnDisconnect -= session.DisconnectHandler;
+        peerService.Dispose();
+
+        if (removed)
+            ReconnectIfNeeded(session);
     }
 
     /// <summary>
-    /// Queues a channel message for the peer's inbound loop. Runs on the transport read loop, so it never processes
-    /// the message itself; it only waits when the queue is full.
+    /// Queues a channel message for the session's inbound loop. Runs on the transport read loop, so it never
+    /// processes the message itself; it only waits when the queue is full.
     /// </summary>
-    private void HandlePeerChannelMessage(object? _, ChannelMessageEventArgs args)
+    private void QueueInboundMessage(PeerSession session, ChannelMessageEventArgs args)
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        if (!_peers.TryGetValue(args.PeerPubKey, out var session))
-        {
-            _logger.LogWarning("Dropping channel message ({messageType}) from unknown peer {Peer}",
-                               Enum.GetName(args.Message.Type), args.PeerPubKey);
-            return;
-        }
-
         if (!session.TryQueueInbound(args.Message))
-            _logger.LogDebug("Dropping channel message ({messageType}) from peer {Peer}: the peer is disconnecting",
+            _logger.LogDebug("Dropping channel message ({messageType}) from peer {Peer}: the connection is closing",
                              Enum.GetName(args.Message.Type), args.PeerPubKey);
     }
 
     /// <summary>
     /// The peer's inbound loop: one message at a time, in arrival order. <see cref="IChannelManager"/> enqueues the
     /// replies into the outbox before the call returns, so they are always ahead of the next message's replies.
-    /// Stops after a failure that disconnects the peer.
+    /// Stops after a failure that disconnects the peer, or when the connection closes (dropping what is still queued).
     /// </summary>
-    private async Task ProcessInboundMessagesAsync(PeerSession session, ChannelReader<IChannelMessage> inbound)
+    private async Task ProcessInboundMessagesAsync(PeerSession session, ChannelReader<IChannelMessage> inbound,
+                                                   CancellationToken cancellationToken)
     {
-        await foreach (var message in inbound.ReadAllAsync())
+        _currentSession.Value = session;
+        try
         {
-            if (await ProcessChannelMessageAsync(session, message))
-                continue;
+            await foreach (var message in inbound.ReadAllAsync(cancellationToken))
+            {
+                // ReadAllAsync keeps returning queued items after cancellation; the connection is gone, drop them
+                if (cancellationToken.IsCancellationRequested)
+                    return;
 
-            session.Close();
-            return;
+                if (await ProcessChannelMessageAsync(session, message))
+                    continue;
+
+                session.Close();
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The connection closed
         }
     }
 
@@ -579,7 +758,13 @@ public sealed class PeerManager : IPeerManager
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        if (!_peers.TryGetValue(args.PeerPubKey, out var session))
+        // A reply raised while an inbound loop handles a message goes to that loop's connection (dropped if it is
+        // closed); anything else goes to the peer's current connection
+        var session = _currentSession.Value;
+        if (session is null || session.Peer.NodeId != args.PeerPubKey)
+            _peers.TryGetValue(args.PeerPubKey, out session);
+
+        if (session is null)
         {
             _logger.LogWarning("Peer {Peer} not connected, dropping {messageType}", args.PeerPubKey,
                                Enum.GetName(args.ResponseMessage.Type));
@@ -592,7 +777,7 @@ public sealed class PeerManager : IPeerManager
     }
 
     /// <summary>
-    /// A connected peer: its model, its service, its ordered inbound queue and its outbox.
+    /// One connection to a peer: its model, its service, its ordered inbound queue and loop, and its outbox.
     /// </summary>
     private sealed class PeerSession
     {
@@ -604,20 +789,53 @@ public sealed class PeerManager : IPeerManager
                 FullMode = BoundedChannelFullMode.Wait
             });
 
+        private readonly CancellationTokenSource _closeCts = new();
+        private int _disconnected;
+        private volatile bool _reconnectSuppressed;
+
         public PeerModel Peer { get; }
         public IPeerService PeerService { get; }
         public PeerOutbox Outbox { get; }
 
-        public PeerSession(PeerModel peer, IPeerService peerService, PeerOutbox outbox)
+        /// <summary>Whether the peer opened this connection.</summary>
+        public bool IsInbound { get; }
+
+        public DateTime ConnectedAt { get; } = DateTime.UtcNow;
+        public Task InboundLoop { get; private set; } = Task.CompletedTask;
+        public EventHandler<ChannelMessageEventArgs>? ChannelMessageHandler { get; set; }
+        public EventHandler<PeerDisconnectedEventArgs>? DisconnectHandler { get; set; }
+        public bool IsDisconnected => Volatile.Read(ref _disconnected) != 0;
+        public bool ReconnectSuppressed => _reconnectSuppressed;
+
+        public PeerSession(PeerModel peer, IPeerService peerService, PeerOutbox outbox, bool isInbound)
         {
             Peer = peer;
             PeerService = peerService;
             Outbox = outbox;
+            IsInbound = isInbound;
         }
 
-        public void StartInboundLoop(Func<PeerSession, ChannelReader<IChannelMessage>, Task> loop)
+        /// <summary>
+        /// Starts the inbound loop once <paramref name="previousLoop"/> (the loop of the peer's previous connection)
+        /// has finished, so no message of the old connection is handled after one of this connection (plan D2).
+        /// </summary>
+        public void StartInboundLoop(Task previousLoop,
+                                     Func<PeerSession, ChannelReader<IChannelMessage>, CancellationToken, Task> loop)
         {
-            _ = Task.Run(() => loop(this, _inbound.Reader));
+            var token = _closeCts.Token;
+            InboundLoop = Task.Run(async () =>
+            {
+                try
+                {
+                    await previousLoop.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // That loop's failure is not ours
+                }
+
+                await loop(this, _inbound.Reader, token).ConfigureAwait(false);
+            }, CancellationToken.None);
         }
 
         public bool TryQueueInbound(IChannelMessage message)
@@ -628,21 +846,32 @@ public sealed class PeerManager : IPeerManager
             try
             {
                 // Full: make the transport read loop wait (backpressure) instead of dropping or reordering
-                _inbound.Writer.WriteAsync(message).AsTask().GetAwaiter().GetResult();
+                _inbound.Writer.WriteAsync(message, _closeCts.Token).AsTask().GetAwaiter().GetResult();
                 return true;
             }
             catch (ChannelClosedException)
             {
                 return false;
             }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
         }
 
+        /// <summary>Returns true only for the first call.</summary>
+        public bool MarkDisconnected() => Interlocked.Exchange(ref _disconnected, 1) == 0;
+
+        public void SuppressReconnect() => _reconnectSuppressed = true;
+
         /// <summary>
-        /// Stops accepting inbound messages and closes the outbox (what is already queued there is still sent).
+        /// Stops accepting inbound messages, stops the inbound loop (queued messages are dropped; the one being
+        /// handled finishes) and closes the outbox (what is already queued there is still sent).
         /// </summary>
         public void Close()
         {
             _inbound.Writer.TryComplete();
+            _closeCts.Cancel();
             Outbox.Complete();
         }
     }
