@@ -60,9 +60,6 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
 
     private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel)
     {
-        // The channel model keeps one commitment number for both sides until BOLT2 plan N1-T1 (NL-188) splits it
-        var commitmentNumber = channel.CommitmentNumber?.Value ?? 0;
-
         return new ChannelInfoClientResponse
         {
             ChannelId = channel.ChannelId,
@@ -79,8 +76,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             Capacity = channel.FundingOutput?.Amount ?? LightningMoney.Zero,
             LocalBalance = channel.LocalBalance,
             RemoteBalance = channel.RemoteBalance,
-            LocalCommitmentNumber = commitmentNumber,
-            RemoteCommitmentNumber = commitmentNumber,
+            LocalCommitmentNumber = channel.LocalCommitmentNumber,
+            RemoteCommitmentNumber = channel.RemoteCommitmentNumber,
             OfferedHtlcCount = channel.LocalOfferedHtlcs?.Count ?? 0,
             ReceivedHtlcCount = channel.RemoteOfferedHtlcs?.Count ?? 0,
             DataLossDetected = false

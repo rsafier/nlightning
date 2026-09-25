@@ -296,7 +296,9 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.HtlcCompactBasepoint, actual.HtlcCompactBasepoint);
         Assert.Equal(expected.CurrentPerCommitmentCompactPoint, actual.CurrentPerCommitmentCompactPoint);
         Assert.Equal(expected.CurrentPerCommitmentIndex, actual.CurrentPerCommitmentIndex);
+#pragma warning disable CS0618 // legacy column round-trip only; the peer's secrets live in RemoteShachains
         Assert.Equal(expected.LastRevealedPerCommitmentSecret, actual.LastRevealedPerCommitmentSecret);
+#pragma warning restore CS0618
     }
 
     private static void AssertHtlcsEqual(ICollection<Htlc>? expected, ICollection<Htlc>? actual)

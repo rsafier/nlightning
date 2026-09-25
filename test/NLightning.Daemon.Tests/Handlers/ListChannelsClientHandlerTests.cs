@@ -42,7 +42,7 @@ public class ListChannelsClientHandlerTests
         // Arrange
         var channelId = CreateChannelId(7);
         var fundingTxId = new TxId(Enumerable.Repeat((byte)9, 32).ToArray());
-        var commitmentNumber = new CommitmentNumber(CreatePubKey(3), CreatePubKey(4), new Sha256(), 5);
+        var commitmentNumber = new CommitmentNumber(CreatePubKey(3), CreatePubKey(4), new Sha256());
         var channel = CreateChannel(channelId, s_alice, ChannelState.Open, commitmentNumber,
                                     new FundingOutputInfo(LightningMoney.Satoshis(1_000_000), CreatePubKey(3),
                                                           CreatePubKey(4), fundingTxId, 1),
@@ -52,7 +52,7 @@ public class ListChannelsClientHandlerTests
                                     [
                                         CreateHtlc(channelId, 0, HtlcDirection.Incoming),
                                         CreateHtlc(channelId, 1, HtlcDirection.Incoming)
-                                    ]);
+                                    ], localCommitmentNumber: 5, remoteCommitmentNumber: 6);
         channel.ShortChannelId = new ShortChannelId(120, 3, 1);
         SetupMemory(channel);
         _peerManagerMock.Setup(x => x.GetPeer(s_alice)).Returns(new PeerModel(s_alice, "127.0.0.1", 9735, "tcp"));
@@ -75,7 +75,7 @@ public class ListChannelsClientHandlerTests
         Assert.Equal(699_999_001UL, info.LocalBalance.MilliSatoshi);
         Assert.Equal(300_000_999UL, info.RemoteBalance.MilliSatoshi);
         Assert.Equal(5UL, info.LocalCommitmentNumber);
-        Assert.Equal(5UL, info.RemoteCommitmentNumber);
+        Assert.Equal(6UL, info.RemoteCommitmentNumber);
         Assert.Equal(1, info.OfferedHtlcCount);
         Assert.Equal(2, info.ReceivedHtlcCount);
         Assert.False(info.DataLossDetected);
@@ -166,13 +166,16 @@ public class ListChannelsClientHandlerTests
                                               LightningMoney? localBalance = null,
                                               LightningMoney? remoteBalance = null,
                                               ICollection<Htlc>? localOfferedHtlcs = null,
-                                              ICollection<Htlc>? remoteOfferedHtlcs = null)
+                                              ICollection<Htlc>? remoteOfferedHtlcs = null,
+                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0)
     {
         return new ChannelModel(new ChannelParams(), channelId, commitmentNumber, fundingOutput, true, null, null,
                                 localBalance ?? LightningMoney.Satoshis(100_000),
                                 new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
                                 remoteBalance ?? LightningMoney.Zero, null, 0, peerId, 0, state, ChannelVersion.V1,
-                                localOfferedHtlcs, remoteOfferedHtlcs: remoteOfferedHtlcs);
+                                localOfferedHtlcs, remoteOfferedHtlcs: remoteOfferedHtlcs,
+                                localCommitmentNumber: localCommitmentNumber,
+                                remoteCommitmentNumber: remoteCommitmentNumber);
     }
 
     private static Htlc CreateHtlc(ChannelId channelId, ulong id, HtlcDirection direction)
