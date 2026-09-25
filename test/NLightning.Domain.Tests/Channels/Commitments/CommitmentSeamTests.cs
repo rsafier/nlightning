@@ -91,6 +91,27 @@ public class CommitmentSeamTests
         Assert.Equal(12_000_000UL, p.LocalReserveMsat);
         Assert.Equal(10_000_000UL, p.RemoteReserveMsat);
         Assert.Equal(5_000_000UL, p.MaxDustHtlcExposureMsat);
+        Assert.False(p.HasInferredLimits);
+    }
+
+    [Fact]
+    public void Given_ChannelWithInferredParams_When_BuildingEngineParams_Then_LimitsMarkedInferred()
+    {
+        // Arrange - a channel migrated by SplitChannelParams (NL-194)
+        var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_000),
+                                     LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.MilliSatoshis(900_000_000),
+                                     144);
+        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(253), 3, false, FeatureSupport.No)
+        {
+            HasInferredParams = true
+        };
+        var channel = CreateChannel(channelParams, isInitiator: true);
+
+        // Act
+        var p = CommitmentParams.FromChannel(channel);
+
+        // Assert
+        Assert.True(p.HasInferredLimits);
     }
 
     [Fact]

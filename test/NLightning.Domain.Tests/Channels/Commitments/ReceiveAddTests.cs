@@ -219,4 +219,55 @@ public class ReceiveAddTests
         // Act / Assert
         AssertViolation("B2-ADD-R07", () => Receive(c, 0, 10_000 * Sat));
     }
+    private static ChannelCommitments CreateInferred(ulong localSat, ulong remoteSat, CommitmentParty local) =>
+        ChannelCommitments.Create(ChannelId,
+                                  Params(localSat, remoteSat, local: local) with { HasInferredLimits = true },
+                                  localSat * Sat, remoteSat * Sat, 1_000, Point(BobTag, 0), Point(BobTag, 1));
+
+    [Fact]
+    public void Given_InferredLimits_When_ReceivedBelowGuessedMinimum_Then_Accepted()
+    {
+        // Arrange: a channel migrated by SplitChannelParams (NL-194) - our htlc_minimum is a guess
+        var c = CreateInferred(600_000, 400_000, Party(htlcMinMsat: 1_000));
+
+        // Act
+        var result = Receive(c, 0, 999);
+
+        // Assert
+        Assert.Single(result.Next.Htlcs);
+    }
+
+    [Fact]
+    public void Given_InferredLimits_When_ReceivedZeroAmount_Then_StillViolation()
+    {
+        AssertViolation("B2-ADD-R01", () => Receive(CreateInferred(600_000, 400_000, Party()), 0, 0));
+    }
+
+    [Fact]
+    public void Given_InferredLimits_When_GuessedMaxAcceptedAndInFlightExceeded_Then_Accepted()
+    {
+        // Arrange
+        var c = Receive(CreateInferred(600_000, 400_000, Party(maxAccepted: 1, maxInFlightMsat: 12_000 * Sat)), 0,
+                        10_000 * Sat).Next;
+
+        // Act
+        var result = Receive(c, 1, 10_000 * Sat);
+
+        // Assert
+        Assert.Equal(2, result.Next.Htlcs.Count);
+    }
+
+    [Fact]
+    public void Given_InferredLimits_When_SenderDipsIntoGuessedReserve_Then_Accepted()
+    {
+        // Arrange: the peer holds 15000 sat; the guessed 10000 sat reserve would reject a 6000 sat HTLC
+        var c = CreateInferred(985_000, 15_000, Party());
+
+        // Act
+        var result = Receive(c, 0, 6_000 * Sat);
+
+        // Assert
+        Assert.Single(result.Next.Htlcs);
+        AssertViolation("B2-ADD-R02", () => Receive(c, 0, 15_001 * Sat));
+    }
 }

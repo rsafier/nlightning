@@ -104,12 +104,16 @@ internal static class UpdateValidator
 
     /// <summary>
     /// Receiver rules for an HTLC the peer offers: B2-ADD-R01..R04 (R05: duplicate payment hashes are allowed; R07 is
-    /// checked by the caller).
+    /// checked by the caller). With <see cref="CommitmentParams.HasInferredLimits"/> the checks against our announced
+    /// limits and the peer's reserve are skipped (NL-194).
     /// </summary>
     public static void ValidateReceiveAdd(ChannelCommitments commitments, HtlcRecord htlc)
     {
         var p = commitments.Params;
-        if (htlc.AmountMsat == 0 || htlc.AmountMsat < p.Local.HtlcMinimumMsat)
+        // Guessed limits (a migrated legacy channel) are not enforced as protocol rules: the peer negotiated the real
+        // ones, and failing the channel over a guess would close a healthy channel.
+        var enforceLimits = !p.HasInferredLimits;
+        if (htlc.AmountMsat == 0 || (enforceLimits && htlc.AmountMsat < p.Local.HtlcMinimumMsat))
             throw Violation(commitments, "B2-ADD-R01",
                             $"amount_msat {htlc.AmountMsat} is 0 or below our htlc_minimum_msat {p.Local.HtlcMinimumMsat}");
         if (htlc.CltvExpiry >= ChannelCommitments.MaxCltvExpiry)
@@ -119,10 +123,10 @@ internal static class UpdateValidator
         // offered this HTLC before it received them (crossed adds; found by the two-engine simulator).
         var localView = commitments.BuildProspectiveView(CommitmentSide.Local, htlc, peerView: true);
         var offered = localView.Htlcs.Where(h => h.Direction == HtlcDirection.Incoming).ToList();
-        if (offered.Count > p.Local.MaxAcceptedHtlcs)
+        if (enforceLimits && offered.Count > p.Local.MaxAcceptedHtlcs)
             throw Violation(commitments, "B2-ADD-R03", $"More than our max_accepted_htlcs {p.Local.MaxAcceptedHtlcs}");
         var inFlight = offered.Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
-        if (inFlight > p.Local.MaxHtlcValueInFlightMsat)
+        if (enforceLimits && inFlight > p.Local.MaxHtlcValueInFlightMsat)
             throw Violation(commitments, "B2-ADD-R03",
                             $"{inFlight} msat in flight exceeds our max_htlc_value_in_flight_msat {p.Local.MaxHtlcValueInFlightMsat}");
 
@@ -130,7 +134,8 @@ internal static class UpdateValidator
                        ? 0
                        : (long)CommitmentFeeCalculator.FunderCostMsat(localView.ToSpec(), p.Local.DustLimitSatoshis,
                                                              p.OptionAnchors);
-        if (localView.RemoteMsat - cost < (long)p.RemoteReserveMsat)
+        var remoteReserve = enforceLimits ? (long)p.RemoteReserveMsat : 0;
+        if (localView.RemoteMsat - cost < remoteReserve)
             throw Violation(commitments, "B2-ADD-R02",
                             "The peer cannot afford this HTLC (and the fee it pays) above its channel reserve");
     }

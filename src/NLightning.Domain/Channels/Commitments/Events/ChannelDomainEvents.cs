@@ -32,7 +32,9 @@ public static class ChannelDomainEvents
     /// <param name="htlcs">Open and settled-but-unpruned HTLC records, in any order.</param>
     /// <returns>The pending events ordered by HTLC (direction, id); for one HTLC, fulfilled or failed before settled.
     /// </returns>
-    /// <exception cref="ArgumentException">A record has a legacy or unknown state.</exception>
+    /// <exception cref="ArgumentException">A record has a legacy or unknown state. Startup replay callers must catch it
+    /// per channel (or filter legacy records first) so one legacy row does not stop the replay of other channels.
+    /// </exception>
     public static IReadOnlyList<IChannelDomainEvent> DerivePending(ChannelId channelId, IEnumerable<HtlcRecord> htlcs)
     {
         ArgumentNullException.ThrowIfNull(htlcs);
