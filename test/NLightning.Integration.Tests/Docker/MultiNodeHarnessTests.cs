@@ -19,6 +19,11 @@ public class MultiNodeHarnessTests : IAsyncLifetime
 {
     private static readonly TimeSpan s_connectTimeout = TimeSpan.FromSeconds(20);
 
+    /// <summary>
+    /// Connect rounds per test (the lane proof asks for 5 repeated runs).
+    /// </summary>
+    private const int Rounds = 5;
+
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly List<NLightningTestNode> _nodes = [];
     private readonly List<IDisposable> _containers = [];
@@ -76,11 +81,9 @@ public class MultiNodeHarnessTests : IAsyncLifetime
     }
 
     /// <remarks>
-    /// This is not yet a clean proof that simultaneous connects work: two known bugs still break some rounds (a
-    /// responder loses the initiator's <c>init</c>, NL-239; a responder's init write fails while the other end's
-    /// tie-break keeps that dead connection, NL-240, both proposed IDs). A round broken by one of them is counted and
-    /// redone; a round that breaks without one of their log lines (e.g. the two ends keeping different connections)
-    /// fails the test. Once both are fixed, drop the tolerance and require every round to settle.
+    /// Regression for NL-239 (the responder lost the initiator's <c>init</c>) and NL-240 (on a simultaneous connect
+    /// an init write failed on a live connection, which the other end's tie-break kept): every round must leave
+    /// exactly one live connection with the init exchanged, and neither bug's log line may appear.
     /// </remarks>
     [Fact]
     public async Task Given_BobAndCarol_When_ConnectingToEachOtherAtTheSameTime_Then_BothKeepOneConnection()
@@ -90,50 +93,52 @@ public class MultiNodeHarnessTests : IAsyncLifetime
         var bob = await StartNodeAsync("bob");
         var carol = await StartNodeAsync("carol");
         NLightningTestNode[] ends = [bob, carol];
-        const int roundsWanted = 5;
-        const int maxAttempts = 25;
-        var roundsDone = 0;
-        var knownBugHits = 0;
 
-        for (var attempt = 1; attempt <= maxAttempts && roundsDone < roundsWanted; attempt++)
+        for (var round = 1; round <= Rounds; round++)
         {
-            var knownBugLinesBefore = NLightningTestNode.CountKnownConnectBugLines(ends);
-
             // Act: raw peer-manager connects, so nothing retries behind our back
             var outcomes = await Task.WhenAll(TryConnectAsync(bob, carol), TryConnectAsync(carol, bob));
-            Console.WriteLine($"Attempt {attempt}: bob->carol {outcomes[0].Description}, "
-                            + $"carol->bob {outcomes[1].Description}");
+            Console.WriteLine($"Round {round}: bob->carol {outcomes[0]}, carol->bob {outcomes[1]}");
 
             // Assert: had the two ends kept different connections, each would close the one the other kept, and
             // neither would stay connected
             var failure = await bob.WaitForStableConnectionAsync(carol, ct);
-            if (failure is not null)
-            {
-                // Only a known connect bug may break a round; a tie-break disagreement fails the test
-                var knownBug = outcomes.Any(o => o.KnownBug)
-                            || await NLightningTestNode.LoggedKnownConnectBugAsync(knownBugLinesBefore, ends, ct);
-                Assert.True(knownBug, $"Attempt {attempt}: {failure}, and neither node logged a known connect bug");
-                knownBugHits++;
-                Console.WriteLine($"Attempt {attempt}: {failure} (known connect bug, NL-239/NL-240), redoing it");
-            }
-            else
-            {
-                Assert.Single(bob.PeerManager.ListPeers(), p => p.NodeId == carol.NodeId);
-                Assert.Single(carol.PeerManager.ListPeers(), p => p.NodeId == bob.NodeId);
-                roundsDone++;
-            }
+            Assert.True(failure is null, $"Round {round}: {failure}");
+            Assert.Single(bob.PeerManager.ListPeers(), p => p.NodeId == carol.NodeId);
+            Assert.Single(carol.PeerManager.ListPeers(), p => p.NodeId == bob.NodeId);
 
-            // Clean up for the next attempt
-            if (bob.IsConnectedTo(carol.NodeId))
-                bob.PeerManager.DisconnectPeer(carol.NodeId);
-            if (carol.IsConnectedTo(bob.NodeId))
-                carol.PeerManager.DisconnectPeer(bob.NodeId);
-            await Poll.UntilAsync(() => !bob.IsConnectedTo(carol.NodeId) && !carol.IsConnectedTo(bob.NodeId),
-                                  s_connectTimeout, $"attempt {attempt}: Bob and Carol disconnected", ct);
+            await DisconnectAsync(bob, carol, $"round {round}", ct);
         }
 
-        Console.WriteLine($"{roundsDone} simultaneous connects settled, {knownBugHits} broken by a known connect bug");
-        Assert.Equal(roundsWanted, roundsDone);
+        AssertNoConnectBugLogged(ends);
+    }
+
+    [Fact]
+    public async Task Given_BobAndCarol_When_ConnectingRepeatedlyInBothDirections_Then_EveryConnectIsStable()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var bob = await StartNodeAsync("bob");
+        var carol = await StartNodeAsync("carol");
+        NLightningTestNode[] ends = [bob, carol];
+
+        for (var round = 1; round <= Rounds; round++)
+        {
+            foreach (var (from, to) in new[] { (bob, carol), (carol, bob) })
+            {
+                // Act: one raw connect, no retry
+                await from.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(to.Address)).WaitAsync(ct);
+
+                // Assert: connected on return (init exchanged) and still up on both ends after the window
+                Assert.True(from.IsConnectedTo(to.NodeId), $"Round {round}: {from.Name} lists no {to.Name}");
+                var failure = await from.WaitForStableConnectionAsync(to, ct);
+                Assert.True(failure is null, $"Round {round}, {from.Name} -> {to.Name}: {failure}");
+
+                await DisconnectAsync(from, to, $"round {round}", ct);
+            }
+        }
+
+        AssertNoConnectBugLogged(ends);
     }
 
     [Fact]
@@ -268,31 +273,45 @@ public class MultiNodeHarnessTests : IAsyncLifetime
         return node;
     }
 
-    private static async Task<ConnectOutcome> TryConnectAsync(NLightningTestNode from, NLightningTestNode to)
+    /// <returns>What happened, for the log; throws on anything but the outcomes a simultaneous connect allows.</returns>
+    private static async Task<string> TryConnectAsync(NLightningTestNode from, NLightningTestNode to)
     {
         try
         {
             await from.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(to.Address));
-            return new ConnectOutcome("connected", false);
+            return "connected";
         }
         catch (InvalidOperationException e)
         {
             // The other direction won the tie-break, or was installed first
-            return new ConnectOutcome($"refused ({e.Message})", false);
+            return $"refused ({e.Message})";
         }
         catch (ConnectionException e)
         {
-            // The other end closed this connection during init because it kept the other one
-            return new ConnectOutcome($"closed ({e.Message})", NLightningTestNode.IsKnownConnectBug(e));
-        }
-        catch (ErrorException e) when (NLightningTestNode.IsKnownConnectBug(e))
-        {
-            // Our own init write failed (NL-240)
-            return new ConnectOutcome($"failed ({e.Message})", true);
+            // The other end kept the connection it initiated and closed this one during the init exchange
+            return $"closed ({e.Message})";
         }
     }
 
-    private sealed record ConnectOutcome(string Description, bool KnownBug);
+    private static async Task DisconnectAsync(NLightningTestNode a, NLightningTestNode b, string what,
+                                              CancellationToken cancellationToken)
+    {
+        if (a.IsConnectedTo(b.NodeId))
+            a.PeerManager.DisconnectPeer(b.NodeId);
+        if (b.IsConnectedTo(a.NodeId))
+            b.PeerManager.DisconnectPeer(a.NodeId);
+        await Poll.UntilAsync(() => !a.IsConnectedTo(b.NodeId) && !b.IsConnectedTo(a.NodeId), s_connectTimeout,
+                              $"{what}: {a.Name} and {b.Name} disconnected", cancellationToken);
+    }
+
+    private static void AssertNoConnectBugLogged(IEnumerable<NLightningTestNode> nodes)
+    {
+        foreach (var node in nodes)
+        {
+            Assert.Equal(0, node.CountLogLines(NLightningTestNode.InitLostLogFragment));
+            Assert.Equal(0, node.CountLogLines(NLightningTestNode.InitWriteFailedLogFragment));
+        }
+    }
 
     private static TimeSpan GetReconnectInitialDelay(NLightningTestNode node)
     {

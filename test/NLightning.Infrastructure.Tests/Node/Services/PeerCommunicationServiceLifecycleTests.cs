@@ -122,9 +122,14 @@ public class PeerCommunicationServiceLifecycleTests
 
     private PeerCommunicationService CreateService()
     {
-        return new PeerCommunicationService(new Mock<ILogger<PeerCommunicationService>>().Object,
-                                            _messageServiceMock.Object, _messageFactoryMock.Object, s_peerPubKey,
-                                            _pingPongServiceMock.Object, new Mock<IServiceProvider>().Object);
+        var service = new PeerCommunicationService(new Mock<ILogger<PeerCommunicationService>>().Object,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   s_peerPubKey, _pingPongServiceMock.Object,
+                                                   new Mock<IServiceProvider>().Object);
+
+        // The service only listens to the message service once it has a subscriber itself (NL-239)
+        service.MessageReceived += (_, _) => { };
+        return service;
     }
 
     private void RaiseMessage(IMessage message)

@@ -37,6 +37,8 @@ using Services;
 /// <see cref="IChannelManager.OnResponseMessageReady"/>) is sent through the outbox in the order it was enqueued.
 /// A connection that goes down stops its loop (what is still queued is dropped), and the loop of the next connection
 /// to the same peer only starts once the previous one has finished, so messages of two connections never interleave.
+/// A connection only becomes the peer's session once the init exchange is done (both inits), so neither end ever
+/// keeps a connection the other end cannot use (NL-240).
 /// A new connection from a peer we are already connected to replaces the old one (as LND and CLN do), except for a
 /// simultaneous connect, where both ends keep the connection initiated by the node with the lower pubkey (LND's rule).
 /// A peer with active channels that drops is reconnected with backoff unless we disconnected it on purpose.
@@ -408,6 +410,9 @@ public sealed class PeerManager : IPeerManager
         var peerService = await _peerServiceFactory.CreateConnectedPeerAsync(connectedPeer.CompactPubKey,
                                                                              connectedPeer.TcpClient);
 
+        // The peer's preferred address and features come with its init
+        await WaitForInitAsync(peerService);
+
         var preferredHost = connectedPeer.Host;
         var preferredPort = connectedPeer.Port;
 
@@ -439,14 +444,44 @@ public sealed class PeerManager : IPeerManager
         return peer;
     }
 
+    /// <summary>
+    /// Waits until the peer's init was accepted. On failure the connection is already closed; this releases the
+    /// service and throws.
+    /// </summary>
+    /// <exception cref="ConnectionException">The connection closed before the init exchange was done.</exception>
+    private static async Task WaitForInitAsync(IPeerService peerService)
+    {
+        try
+        {
+            await peerService.WaitForInitAsync();
+        }
+        catch (Exception e)
+        {
+            peerService.Dispose();
+            if (e is ConnectionException)
+                throw;
+
+            throw new ConnectionException($"Init exchange with peer {peerService.PeerPubKey} failed", e);
+        }
+    }
+
     private void HandleNewPeerConnected(object? _, NewPeerConnectedEventArgs args)
+    {
+        // Off the TCP service's thread: the init exchange takes a round trip
+        _ = HandleNewPeerConnectedAsync(args);
+    }
+
+    private async Task HandleNewPeerConnectedAsync(NewPeerConnectedEventArgs args)
     {
         try
         {
             // Create the peer
-            var peerService = _peerServiceFactory.CreateConnectingPeerAsync(args.TcpClient).GetAwaiter().GetResult();
+            var peerService = await _peerServiceFactory.CreateConnectingPeerAsync(args.TcpClient);
 
             _logger.LogTrace("PeerService created for peer {PeerPubKey}", peerService.PeerPubKey);
+
+            // Only a connection whose init exchange is done may become (or replace) the peer's session
+            await WaitForInitAsync(peerService);
 
             var preferredHost = args.Host;
             var preferredPort = NodeConstants.DefaultPort;
@@ -481,9 +516,15 @@ public sealed class PeerManager : IPeerManager
                 using var scope = _serviceProvider.CreateScope();
                 using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-                uow.PeerDbRepository.AddOrUpdateAsync(peer).GetAwaiter().GetResult();
-                uow.SaveChanges();
+                await uow.PeerDbRepository.AddOrUpdateAsync(peer);
+                await uow.SaveChangesAsync();
             }
+        }
+        catch (ConnectionException e)
+        {
+            // E.g. the other end kept the connection it initiated and closed this one during init
+            _logger.LogInformation("Inbound connection from {Host}:{Port} closed before it was set up: {Message}",
+                                   args.Host, args.Port, e.Message);
         }
         catch (Exception e)
         {

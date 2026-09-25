@@ -48,15 +48,83 @@ public class PeerServiceLifecycleTests
     }
 
     [Fact]
-    public void Given_InitializationFails_When_Constructing_Then_ThrowsErrorException()
+    public void Given_InitializationFails_When_Constructing_Then_ThrowsConnectionExceptionAndClosesTheConnection()
     {
-        // Arrange
+        // Arrange - NL-240: the half-set-up connection stayed open, so the other end kept a dead connection
         _communicationMock.Setup(x => x.InitializeAsync(It.IsAny<TimeSpan>()))
                           .ThrowsAsync(new ConnectionException("Failed to connect to peer"));
 
         // Act & Assert
-        var exception = Assert.Throws<ErrorException>(() => CreatePeerService());
+        var exception = Assert.Throws<ConnectionException>(() => CreatePeerService());
         Assert.IsType<ConnectionException>(exception.InnerException);
+        _communicationMock.Verify(x => x.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsCompatibleInit_When_WaitingForInit_Then_Completes()
+    {
+        // Arrange
+        using var peerService = CreatePeerService();
+        var wait = peerService.WaitForInitAsync(TestContext.Current.CancellationToken);
+        Assert.False(wait.IsCompleted);
+
+        // Act
+        RaiseMessage(new InitMessage(new InitPayload(_features.GetNodeFeatures())));
+
+        // Assert
+        await wait.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_ConnectionClosesBeforeInit_When_WaitingForInit_Then_ThrowsConnectionException()
+    {
+        // Arrange
+        using var peerService = CreatePeerService();
+        var wait = peerService.WaitForInitAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        _communicationMock.Raise(x => x.DisconnectEvent += null, _communicationMock.Object,
+                                 new ConnectionException("closed"));
+
+        // Assert
+        await Assert.ThrowsAsync<ConnectionException>(() => wait.WaitAsync(TimeSpan.FromSeconds(5),
+                                                                           TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_FirstMessageIsNotInit_When_WaitingForInit_Then_ThrowsConnectionException()
+    {
+        // Arrange - the peer service disconnects; the communication service then raises its disconnect event
+        _communicationMock.Setup(x => x.Disconnect(It.IsAny<Exception?>()))
+                          .Callback((Exception? e) => _communicationMock.Raise(x => x.DisconnectEvent += null,
+                                                                               _communicationMock.Object, e));
+        using var peerService = CreatePeerService();
+        var wait = peerService.WaitForInitAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        RaiseMessage(CreateChannelMessage());
+
+        // Assert
+        await Assert.ThrowsAsync<ConnectionException>(() => wait.WaitAsync(TimeSpan.FromSeconds(5),
+                                                                           TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void Given_Constructing_When_SubscribingToCommunication_Then_MessagesAreSubscribedLast()
+    {
+        // Arrange - subscribing to MessageReceived starts reading (NL-239); a bad first message disconnects at once,
+        // so the disconnect handler must already be in place
+        var order = new List<string>();
+        _communicationMock.SetupAdd(x => x.DisconnectEvent += It.IsAny<EventHandler<Exception?>>())
+                          .Callback(() => order.Add("disconnect"));
+        _communicationMock.SetupAdd(x => x.MessageReceived += It.IsAny<EventHandler<IMessage?>>())
+                          .Callback(() => order.Add("message"));
+
+        // Act
+        using var peerService = CreatePeerService();
+
+        // Assert
+        Assert.Equal(["disconnect", "message"], order);
     }
 
     [Fact]

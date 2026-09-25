@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Net;
 using LNUnit.LND;
 using Microsoft.EntityFrameworkCore;
@@ -24,7 +23,6 @@ using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
-using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -56,29 +54,18 @@ using Mock;
 public sealed class NLightningTestNode : IAsyncDisposable
 {
     /// <summary>
-    /// How many times <see cref="ConnectToAsync(NLightningTestNode, CancellationToken)"/> tries.
-    /// </summary>
-    public const int MaxConnectAttempts = 3;
-
-    /// <summary>
-    /// What <c>PeerService</c> logs when the first message of a connection is not <c>init</c>: the responder lost the
-    /// initiator's <c>init</c> (NL-239, proposed ID).
+    /// What <c>PeerService</c> logs when the first message of a connection is not <c>init</c>. Between two of our
+    /// nodes this was the responder losing the initiator's <c>init</c> (NL-239, fixed); tests assert it is never
+    /// logged.
     /// </summary>
     public const string InitLostLogFragment = "Failed to receive init message";
 
     /// <summary>
-    /// What a node logs (in the exception text) when writing its own <c>init</c> fails. Seen on a simultaneous
-    /// connect between two NLightning nodes: the responder's init write fails while the other end's tie-break keeps
-    /// that same connection, so neither connection survives (NL-240, proposed ID).
+    /// What a node logs (in the exception text) when writing its own <c>init</c> fails. On a simultaneous connect
+    /// between two of our nodes this was a live connection looking closed to the writer, which the other end then
+    /// kept (NL-240, fixed); tests assert it is never logged.
     /// </summary>
     public const string InitWriteFailedLogFragment = "Error initializing peer communication";
-
-    /// <summary>
-    /// The log fragments of the known connect bugs between two NLightning nodes. A test may tolerate a broken
-    /// connection only when one of them was logged; any other drop is a new bug.
-    /// </summary>
-    public static readonly IReadOnlyList<string> KnownConnectBugLogFragments =
-        [InitLostLogFragment, InitWriteFailedLogFragment];
 
     /// <summary>
     /// The reconnect backoff <see cref="CreateAsync"/> gives its nodes (the daemon starts at 5 s).
@@ -87,14 +74,13 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     /// <summary>
     /// How long a new connection between two NLightning nodes must stay up before
-    /// <see cref="ConnectToAsync(NLightningTestNode, CancellationToken)"/> counts it: the known connect bugs tear a
-    /// connection down about 100 ms after both ends listed it.
+    /// <see cref="ConnectToAsync(NLightningTestNode, CancellationToken)"/> counts it (the connect bugs NL-239/NL-240
+    /// used to tear a connection down about 100 ms after both ends listed it).
     /// </summary>
     public static readonly TimeSpan ConnectionStableWindow = TimeSpan.FromSeconds(1.5);
 
     private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan s_knownBugLogGrace = TimeSpan.FromSeconds(1);
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly Action<NodeOptions>? _configureNodeOptions;
@@ -143,48 +129,6 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </summary>
     public int CountLogLines(string fragment) =>
         _nodeLog.Count(line => line.Contains(fragment, StringComparison.Ordinal));
-
-    /// <summary>
-    /// How many lines of <paramref name="nodes"/> name one of the <see cref="KnownConnectBugLogFragments"/>.
-    /// </summary>
-    public static int CountKnownConnectBugLines(IEnumerable<NLightningTestNode> nodes) =>
-        nodes.Sum(node => KnownConnectBugLogFragments.Sum(node.CountLogLines));
-
-    /// <summary>
-    /// Whether <paramref name="nodes"/> logged a known connect bug since their count was
-    /// <paramref name="linesBefore"/> (<see cref="CountKnownConnectBugLines"/>). Waits a moment for the line, since a
-    /// node logs its failed init only after the other end may already have seen the drop.
-    /// </summary>
-    public static async Task<bool> LoggedKnownConnectBugAsync(int linesBefore, IReadOnlyList<NLightningTestNode> nodes,
-                                                              CancellationToken cancellationToken)
-    {
-        try
-        {
-            await Poll.UntilAsync(() => CountKnownConnectBugLines(nodes) > linesBefore, s_knownBugLogGrace,
-                                  "a known connect bug in the node logs", cancellationToken);
-            return true;
-        }
-        catch (TimeoutException)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Whether <paramref name="exception"/> (or one of its inner exceptions) is a connect failure caused by a known
-    /// connect bug (see <see cref="KnownConnectBugLogFragments"/>). The initiator does not log its own failed init,
-    /// it throws.
-    /// </summary>
-    public static bool IsKnownConnectBug(Exception exception)
-    {
-        for (var e = exception; e is not null; e = e.InnerException)
-        {
-            if (KnownConnectBugLogFragments.Any(f => e.Message.Contains(f, StringComparison.Ordinal)))
-                return true;
-        }
-
-        return false;
-    }
 
     public CompactPubKey NodeId => SecureKeyManager.GetNodePubKey();
     public string NodeIdHex => Convert.ToHexString(NodeId).ToLowerInvariant();
@@ -426,21 +370,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     /// <summary>
     /// Connects to another in-process node over <c>127.0.0.1</c> and returns once both ends list each other and the
-    /// connection stayed up for <see cref="ConnectionStableWindow"/>.
+    /// connection stayed up for <see cref="ConnectionStableWindow"/>. There is no retry: since NL-239/NL-240 were
+    /// fixed a connect between two NLightning nodes must work the first time.
     /// </summary>
-    /// <remarks>
-    /// Between two NLightning nodes a connection can die right after both ends listed it: the responder can lose the
-    /// initiator's <c>init</c> (NL-239), and an init write can fail (NL-240). Until those are fixed this retries,
-    /// up to <see cref="MaxConnectAttempts"/> times and logging every retry, only when an attempt failed with one of
-    /// the <see cref="KnownConnectBugLogFragments"/>; any other failure is thrown at once. Use
-    /// <see cref="IPeerManager.ConnectToPeerAsync"/> directly to observe the raw behaviour.
-    /// </remarks>
     /// <returns>The <c>pubkey@127.0.0.1:port</c> address used.</returns>
     /// <exception cref="InvalidOperationException">Already connected to <paramref name="other"/>.</exception>
-    /// <exception cref="TimeoutException">
-    /// No stable connection: after every attempt failed with a known connect bug, or at once when an attempt failed
-    /// without one.
-    /// </exception>
+    /// <exception cref="TimeoutException">The connection did not come up on both ends, or dropped.</exception>
     public async Task<string> ConnectToAsync(NLightningTestNode other, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(other);
@@ -450,50 +385,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
         if (IsConnectedTo(other.NodeId) && other.IsConnectedTo(NodeId))
             throw new InvalidOperationException($"{Name} is already connected to {other.Name}");
 
-        NLightningTestNode[] ends = [this, other];
-        for (var attempt = 1; attempt <= MaxConnectAttempts; attempt++)
+        try
         {
-            var knownBugLinesBefore = CountKnownConnectBugLines(ends);
-            var knownBug = false;
-            string? failure = null;
-            try
-            {
-                await PeerManager.ConnectToPeerAsync(new PeerAddressInfo(other.Address)).WaitAsync(cancellationToken);
-            }
-            catch (InvalidOperationException)
-            {
-                // The other node connected to us in the meantime; wait below for both ends to agree
-            }
-            catch (ErrorException e) when (IsKnownConnectBug(e))
-            {
-                knownBug = true;
-                failure = $"connect failed: {e.Message}";
-            }
-
-            failure ??= await WaitForStableConnectionAsync(other, cancellationToken);
-            if (failure is null)
-                return other.Address;
-
-            knownBug = knownBug || await LoggedKnownConnectBugAsync(knownBugLinesBefore, ends, cancellationToken);
-            if (!knownBug)
-                throw new TimeoutException($"{Name} -> {other.Name}: {failure}, and no known connect bug was logged");
-            if (attempt == MaxConnectAttempts)
-                throw new TimeoutException($"{Name} -> {other.Name}: {failure} (a known connect bug, NL-239/NL-240, "
-                                         + $"on all {MaxConnectAttempts} attempts)");
-
-            Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss.fff} [{Name}] connection to {other.Name}: {failure} "
-                            + $"(known connect bug, NL-239/NL-240), retrying ({attempt}/{MaxConnectAttempts})");
-            if (IsConnectedTo(other.NodeId))
-                PeerManager.DisconnectPeer(other.NodeId);
-            if (other.IsConnectedTo(NodeId))
-                other.PeerManager.DisconnectPeer(NodeId);
-
-            await Poll.UntilAsync(() => !IsConnectedTo(other.NodeId) && !other.IsConnectedTo(NodeId),
-                                  s_bothEndsConnectedTimeout, $"{Name} and {other.Name} disconnected",
-                                  cancellationToken);
+            await PeerManager.ConnectToPeerAsync(new PeerAddressInfo(other.Address)).WaitAsync(cancellationToken);
+        }
+        catch (InvalidOperationException)
+        {
+            // The other node connected to us in the meantime; wait below for both ends to agree
         }
 
-        throw new UnreachableException();
+        var failure = await WaitForStableConnectionAsync(other, cancellationToken);
+        return failure is null ? other.Address : throw new TimeoutException($"{Name} -> {other.Name}: {failure}");
     }
 
     /// <summary>

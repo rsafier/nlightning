@@ -42,8 +42,17 @@ public class PeerCommunicationServiceTests
                                                    _messageServiceMock.Object, _messageFactoryMock.Object,
                                                    _peerPubKey, _pingPongServiceMock.Object,
                                                    _serviceProviderMock.Object);
+        Listen(service);
         RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
         return service;
+    }
+
+    /// <summary>
+    /// The service only listens to the message service once it has a subscriber itself (NL-239).
+    /// </summary>
+    private static void Listen(PeerCommunicationService service)
+    {
+        service.MessageReceived += (_, _) => { };
     }
 
     private void RaiseMessage(IMessage message)
@@ -127,6 +136,7 @@ public class PeerCommunicationServiceTests
         var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
                                                    _messageServiceMock.Object, _messageFactoryMock.Object,
                                                    _peerPubKey, pingPongService, _serviceProviderMock.Object);
+        Listen(service);
 
         // The peer answers every ping we send with a matching pong
         _messageServiceMock
@@ -165,6 +175,7 @@ public class PeerCommunicationServiceTests
                                                    _messageServiceMock.Object, _messageFactoryMock.Object,
                                                    _peerPubKey, _pingPongServiceMock.Object,
                                                    _serviceProviderMock.Object);
+        Listen(service);
 
         // Act
         await service.InitializeAsync(TimeSpan.FromSeconds(30));
@@ -177,6 +188,47 @@ public class PeerCommunicationServiceTests
 
         // Assert
         _pingPongServiceMock.Verify(x => x.StartPingAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_NoSubscriber_When_Constructed_Then_DoesNotListenToTheMessageService()
+    {
+        // Arrange - NL-239: listening before the peer service above subscribed lost the peer's init
+        var subscriptions = 0;
+        _messageServiceMock.SetupAdd(x => x.OnMessageReceived += It.IsAny<EventHandler<IMessage?>>())
+                           .Callback(() => subscriptions++);
+
+        // Act
+        using var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                         _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                         _peerPubKey, _pingPongServiceMock.Object,
+                                                         _serviceProviderMock.Object);
+        var beforeSubscriber = subscriptions;
+        service.MessageReceived += (_, _) => { };
+        service.MessageReceived += (_, _) => { };
+
+        // Assert
+        Assert.Equal(0, beforeSubscriber);
+        Assert.Equal(1, subscriptions);
+    }
+
+    [Fact]
+    public void Given_Subscriber_When_PeerSendsInit_Then_SubscriberGetsIt()
+    {
+        // Arrange
+        using var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                         _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                         _peerPubKey, _pingPongServiceMock.Object,
+                                                         _serviceProviderMock.Object);
+        IMessage? received = null;
+        service.MessageReceived += (_, m) => received = m;
+        var init = new InitMessage(new InitPayload(new FeatureSet()));
+
+        // Act
+        RaiseMessage(init);
+
+        // Assert
+        Assert.Same(init, received);
     }
 
     [Fact]

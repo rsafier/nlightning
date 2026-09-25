@@ -270,6 +270,103 @@ public class TransportServiceTests
     }
 
     [Fact]
+    public async Task Given_PeerSendsRightAfterHandshake_When_SubscribingLater_Then_MessageIsNotLost()
+    {
+        // Arrange - NL-239: the peer's init arrived before anyone listened, and the read loop dropped it
+        var payload = new byte[] { 0, 16, 0, 0, 0, 0 };
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        await connection.Peer.GetStream().WriteAsync(FramingTransport.BuildFrame(payload, 0),
+                                                     TestContext.Current.CancellationToken);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Act
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
+    [Fact]
+    public async Task Given_NoSubscriber_When_Disposing_Then_DoesNotWaitForAReadLoop()
+    {
+        // Arrange
+        var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                     new Mock<IMessageSerializer>().Object);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Act
+        connection.Dispose();
+
+        // Assert
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Dispose took {stopwatch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsWhileWeWrite_When_ReadLoopDrainsTheSocket_Then_NoWriteFails()
+    {
+        // Arrange - NL-240: a write checked "connected" with Poll + Available, which the read loop could drain in
+        // between, so a write on a live connection (e.g. our init) failed as "not connected"
+        const int count = 3000;
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(new byte[] { 0, 18 }).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object);
+        var receivedCount = 0;
+        var allReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, _) =>
+        {
+            if (Interlocked.Increment(ref receivedCount) == count)
+                allReceived.TrySetResult();
+        };
+        Exception? raised = null;
+        connection.Service.ExceptionRaised += (_, e) => raised = e;
+        var peerStream = connection.Peer.GetStream();
+        var frame = FramingTransport.BuildFrame(new byte[] { 0, 18 }, 0);
+
+        var peerWrites = Task.Run(async () =>
+        {
+            for (var i = 0; i < count; i++)
+            {
+                await peerStream.WriteAsync(frame, TestContext.Current.CancellationToken);
+                if (i % 16 == 0)
+                    await Task.Yield();
+            }
+        }, TestContext.Current.CancellationToken);
+        var peerReads = Task.Run(async () =>
+        {
+            var buffer = new byte[4096];
+            var expected = count * frame.Length;
+            var total = 0;
+            while (total < expected)
+            {
+                var read = await peerStream.ReadAsync(buffer, TestContext.Current.CancellationToken);
+                if (read == 0)
+                    break;
+                total += read;
+            }
+
+            return total;
+        }, TestContext.Current.CancellationToken);
+
+        // Act
+        var message = new Mock<IMessage>().Object;
+        for (var i = 0; i < count; i++)
+            await connection.Service.WriteMessageAsync(message, TestContext.Current.CancellationToken);
+
+        await peerWrites.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        await allReceived.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        var bytesRead = await peerReads.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(raised);
+        Assert.Equal(count * frame.Length, bytesRead);
+    }
+
+    [Fact]
     public async Task Given_PeerSendsMaximumSizeMessage_When_Reading_Then_MessageIsReceived()
     {
         // Arrange

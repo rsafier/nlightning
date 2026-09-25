@@ -26,8 +26,39 @@ internal sealed class MessageService : IMessageService
     private volatile bool _disposed;
     private readonly object _disposeLock = new();
 
+    private EventHandler<IMessage?>? _onMessageReceived;
+    private bool _listening;
+
     /// <inheritdoc />
-    public event EventHandler<IMessage?>? OnMessageReceived;
+    /// <remarks>
+    /// The service only starts listening to the transport (which only then starts reading the socket) when it gets
+    /// its first subscriber, so a message the peer sends before anyone listens is not raised to nobody (NL-239).
+    /// </remarks>
+    public event EventHandler<IMessage?>? OnMessageReceived
+    {
+        add
+        {
+            var startListening = false;
+            lock (_disposeLock)
+            {
+                _onMessageReceived += value;
+                if (!_listening && !_disposed && _transportService is not null && _onMessageReceived is not null)
+                {
+                    _listening = true;
+                    startListening = true;
+                }
+            }
+
+            // Outside the lock: the transport may start its read loop, which raises into ReceiveMessage (takes it)
+            if (startListening)
+                _transportService!.MessageReceived += ReceiveMessage;
+        }
+        remove
+        {
+            lock (_disposeLock)
+                _onMessageReceived -= value;
+        }
+    }
 
     public event EventHandler<Exception>? OnExceptionRaised;
 
@@ -47,7 +78,6 @@ internal sealed class MessageService : IMessageService
         _messageSerializer = messageSerializer;
         _transportService = transportService;
 
-        _transportService.MessageReceived += ReceiveMessage;
         _transportService.ExceptionRaised += RaiseException;
     }
 
@@ -119,7 +149,7 @@ internal sealed class MessageService : IMessageService
 
                 if (message is not null)
                 {
-                    OnMessageReceived?.Invoke(this, message);
+                    _onMessageReceived?.Invoke(this, message);
                 }
             }
         }
@@ -190,7 +220,8 @@ internal sealed class MessageService : IMessageService
 
             if (disposing && _transportService is not null)
             {
-                _transportService.MessageReceived -= ReceiveMessage;
+                if (_listening)
+                    _transportService.MessageReceived -= ReceiveMessage;
                 _transportService.ExceptionRaised -= RaiseException;
                 _transportService.Dispose();
             }

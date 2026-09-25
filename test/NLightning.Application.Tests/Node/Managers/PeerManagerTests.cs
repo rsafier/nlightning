@@ -1204,6 +1204,102 @@ public class PeerManagerTests
         Assert.False(stoppedEarly);
     }
 
+    [Fact]
+    public async Task Given_OutboundPeerWhoseInitFails_When_Connecting_Then_ThrowsAndNoSessionIsInstalled()
+    {
+        // Arrange - NL-240: a connection whose init exchange never completed was kept as the peer's session
+        var peerManager = CreatePeerManager();
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new ConnectionException("closed before init"));
+        _mockPeerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
+                               .ReturnsAsync(peerService.Object);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                       new Mock<TcpClient>().Object));
+
+        // Act
+        await Assert.ThrowsAsync<ConnectionException>(
+            () => peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735")));
+
+        // Assert
+        Assert.Empty(peerManager.ListPeers());
+        peerService.Verify(p => p.Dispose(), Times.Once);
+        _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_OutboundPeer_When_InitIsPending_Then_ConnectWaitsForItBeforeInstallingTheSession()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
+        peerService.SetupGet(p => p.PreferredHost).Returns(RemoteHost);
+        _mockPeerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
+                               .ReturnsAsync(peerService.Object);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                       new Mock<TcpClient>().Object));
+
+        // Act
+        var connect = peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735"));
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        var installedBeforeInit = peerManager.GetPeer(_compactPubKey) is not null;
+        initReceived.SetResult();
+        var peer = await connect.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert: the preferred address from the peer's init is used
+        Assert.False(installedBeforeInit);
+        Assert.False(connect.IsFaulted);
+        Assert.Equal(RemoteHost, peer.Host);
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+    }
+
+    [Fact]
+    public async Task Given_InboundPeerWhoseInitFails_When_Accepted_Then_NoSessionIsInstalled()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new ConnectionException("closed before init"));
+        SetupInboundPeerService(peerService);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await WaitUntilAsync(() => peerService.Invocations.Any(i => i.Method.Name == nameof(IDisposable.Dispose)));
+
+        // Assert
+        Assert.Empty(peerManager.ListPeers());
+        peerService.VerifyAdd(p => p.OnChannelMessageReceived += It.IsAny<EventHandler<ChannelMessageEventArgs>>(),
+                              Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_InboundPeer_When_InitIsPending_Then_SessionIsInstalledOnlyAfterIt()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
+        SetupInboundPeerService(peerService);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+        var installedBeforeInit = peerManager.GetPeer(_compactPubKey) is not null;
+        initReceived.SetResult();
+        await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
+
+        // Assert
+        Assert.False(installedBeforeInit);
+    }
+
     private int _sendsStarted;
     private int _sendsInFlight;
     private int _maxConcurrentSends;

@@ -37,9 +37,31 @@ public class PeerCommunicationService : IPeerCommunicationService
     private bool _pingStarted;
     private int _disconnecting;
     private CancellationTokenSource? _initWaitCancellationTokenSource;
+    private EventHandler<IMessage?>? _messageReceived;
+    private int _listening;
 
     /// <inheritdoc />
-    public event EventHandler<IMessage?>? MessageReceived;
+    /// <remarks>
+    /// The service only starts listening to the peer (and so reading the socket) when it gets its first subscriber:
+    /// the peer's <c>init</c> often arrives right after the handshake, before the peer service above us subscribed,
+    /// and was lost (NL-239).
+    /// </remarks>
+    public event EventHandler<IMessage?>? MessageReceived
+    {
+        add
+        {
+            lock (_pingStartLock)
+                _messageReceived += value;
+
+            if (value is not null && Interlocked.Exchange(ref _listening, 1) == 0)
+                _messageService.OnMessageReceived += HandleMessageReceived;
+        }
+        remove
+        {
+            lock (_pingStartLock)
+                _messageReceived -= value;
+        }
+    }
 
     /// <inheritdoc />
     public event EventHandler<Exception?>? DisconnectEvent;
@@ -73,7 +95,6 @@ public class PeerCommunicationService : IPeerCommunicationService
         _pingPongService = pingPongService;
         _serviceProvider = serviceProvider;
 
-        _messageService.OnMessageReceived += HandleMessageReceived;
         _messageService.OnExceptionRaised += HandleExceptionRaised;
         _pingPongService.DisconnectEvent += HandlePingPongDisconnect;
     }
@@ -263,7 +284,7 @@ public class PeerCommunicationService : IPeerCommunicationService
         }
 
         // Forward the message to subscribers
-        MessageReceived?.Invoke(this, message);
+        _messageReceived?.Invoke(this, message);
 
         // Start pinging once the peer's init was accepted by the subscribers (they disconnect on a bad init)
         if (message.Type == MessageTypes.Init)
@@ -404,7 +425,8 @@ public class PeerCommunicationService : IPeerCommunicationService
     public void Dispose()
     {
         // Unsubscribe from events
-        _messageService.OnMessageReceived -= HandleMessageReceived;
+        if (Volatile.Read(ref _listening) == 1)
+            _messageService.OnMessageReceived -= HandleMessageReceived;
         _messageService.OnExceptionRaised -= HandleExceptionRaised;
         _pingPongService.DisconnectEvent -= HandlePingPongDisconnect;
 

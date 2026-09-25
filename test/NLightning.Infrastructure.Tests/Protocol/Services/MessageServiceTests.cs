@@ -83,6 +83,7 @@ public class MessageServiceTests
                             .Returns(Task.CompletedTask);
         var messageService =
             new MessageService(loggerMock.Object, _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
         Exception? raisedException = null;
         messageService.OnExceptionRaised += (_, e) => raisedException = e;
 
@@ -110,6 +111,7 @@ public class MessageServiceTests
                             .Returns(Task.CompletedTask);
         var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
                                                 _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
         Exception? raisedException = null;
         messageService.OnExceptionRaised += (_, e) => raisedException = e;
 
@@ -143,6 +145,28 @@ public class MessageServiceTests
         transportServiceMock.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()),
                                     Times.Never);
         Assert.IsType<ConnectionException>(raisedException);
+    }
+
+    [Fact]
+    public void Given_NoSubscriber_When_Constructed_Then_DoesNotListenToTheTransport()
+    {
+        // Arrange - NL-239: listening (which starts the transport's read loop) before anyone subscribed here raised
+        // the peer's init to nobody
+        var transportServiceMock = new Mock<ITransportService>();
+        var subscriptions = 0;
+        transportServiceMock.SetupAdd(t => t.MessageReceived += It.IsAny<EventHandler<MemoryStream>>())
+                            .Callback(() => subscriptions++);
+
+        // Act
+        using var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                      _messageSerializerMock.Object, transportServiceMock.Object);
+        var beforeSubscriber = subscriptions;
+        messageService.OnMessageReceived += (_, _) => { };
+        messageService.OnMessageReceived += (_, _) => { };
+
+        // Assert
+        Assert.Equal(0, beforeSubscriber);
+        Assert.Equal(1, subscriptions);
     }
 
     [Fact]
