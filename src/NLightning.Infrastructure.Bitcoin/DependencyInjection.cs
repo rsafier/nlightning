@@ -7,7 +7,9 @@ using Builders.Interfaces;
 using Crypto.Functions;
 using Domain.Crypto.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Interfaces;
 using Infrastructure.Crypto.Interfaces;
+using Onion;
 using Protocol.Factories;
 using Services;
 using Wallet;
@@ -35,6 +37,7 @@ public static class DependencyInjection
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
+        services.AddSingleton<ISphinxService, SphinxService>();
         services.AddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         // Register Scoped Services
