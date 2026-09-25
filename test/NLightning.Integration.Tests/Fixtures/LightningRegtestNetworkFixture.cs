@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Docker.DotNet;
 using LNUnit.LND;
 using LNUnit.Setup;
@@ -25,7 +24,7 @@ public class LightningRegtestNetworkFixture : IDisposable
     public static readonly IReadOnlyList<string> LndAliases = ["alice", "bob", "carol", "david"];
 
     private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
-    private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _shared = new();
+    private readonly SharedObjectCache _shared = new();
 
     public LightningRegtestNetworkFixture()
     {
@@ -57,48 +56,15 @@ public class LightningRegtestNetworkFixture : IDisposable
     /// collection. The object is disposed with the fixture if it is <see cref="IAsyncDisposable"/> or
     /// <see cref="IDisposable"/>. A failed creation is not cached, so the next caller tries again.
     /// </summary>
-    public async Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class
-    {
-        var lazy = _shared.GetOrAdd(key, _ => new Lazy<Task<object>>(async () => await factory()));
-        try
-        {
-            return (T)await lazy.Value;
-        }
-        catch
-        {
-            _shared.TryRemove(new KeyValuePair<string, Lazy<Task<object>>>(key, lazy));
-            throw;
-        }
-    }
+    /// <exception cref="InvalidOperationException">The key is already used for another type.</exception>
+    public Task<T> GetOrCreateAsync<T>(string key, Func<Task<T>> factory) where T : class =>
+        _shared.GetOrCreateAsync(key, factory);
 
     public void Dispose()
     {
         GC.SuppressFinalize(this);
 
-        foreach (var lazy in _shared.Values)
-        {
-            try
-            {
-                if (!lazy.IsValueCreated || !lazy.Value.IsCompletedSuccessfully)
-                    continue;
-
-                switch (lazy.Value.Result)
-                {
-                    case IAsyncDisposable asyncDisposable:
-                        asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
-                        break;
-                    case IDisposable disposable:
-                        disposable.Dispose();
-                        break;
-                }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine($"Failed to dispose a shared test object: {e.Message}");
-            }
-        }
-
-        _shared.Clear();
+        _shared.DisposeAll();
 
         // Remove containers
         foreach (var name in ContainerNames)

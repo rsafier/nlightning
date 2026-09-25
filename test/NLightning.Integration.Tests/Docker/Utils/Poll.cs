@@ -30,6 +30,25 @@ public static class Poll
         UntilAsync(() => Task.FromResult(condition()), timeout, description, cancellationToken, interval);
 
     /// <summary>
+    /// Whether <paramref name="condition"/> stays true for the whole of <paramref name="duration"/>: returns
+    /// <c>false</c> as soon as it is false (a caller that tolerates a known flake decides what to do with that).
+    /// </summary>
+    public static async Task<bool> HoldsAsync(Func<bool> condition, TimeSpan duration,
+                                              CancellationToken cancellationToken, TimeSpan? interval = null)
+    {
+        var start = DateTime.UtcNow;
+        while (DateTime.UtcNow - start < duration)
+        {
+            if (!condition())
+                return false;
+
+            await Task.Delay(interval ?? s_defaultInterval, cancellationToken);
+        }
+
+        return condition();
+    }
+
+    /// <summary>
     /// Checks that <paramref name="condition"/> stays true for <paramref name="duration"/>.
     /// </summary>
     /// <exception cref="Xunit.Sdk.XunitException">It became false; the message names the elapsed time.</exception>

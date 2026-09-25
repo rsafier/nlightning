@@ -25,6 +25,7 @@ using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -61,12 +62,40 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public const int MaxConnectAttempts = 3;
 
     /// <summary>
+    /// What <c>PeerService</c> logs when the first message of a connection is not <c>init</c>: the responder lost the
+    /// initiator's <c>init</c> (NL-239, proposed ID).
+    /// </summary>
+    public const string InitLostLogFragment = "Failed to receive init message";
+
+    /// <summary>
+    /// What a node logs (in the exception text) when writing its own <c>init</c> fails. Seen on a simultaneous
+    /// connect between two NLightning nodes: the responder's init write fails while the other end's tie-break keeps
+    /// that same connection, so neither connection survives (NL-240, proposed ID).
+    /// </summary>
+    public const string InitWriteFailedLogFragment = "Error initializing peer communication";
+
+    /// <summary>
+    /// The log fragments of the known connect bugs between two NLightning nodes. A test may tolerate a broken
+    /// connection only when one of them was logged; any other drop is a new bug.
+    /// </summary>
+    public static readonly IReadOnlyList<string> KnownConnectBugLogFragments =
+        [InitLostLogFragment, InitWriteFailedLogFragment];
+
+    /// <summary>
     /// The reconnect backoff <see cref="CreateAsync"/> gives its nodes (the daemon starts at 5 s).
     /// </summary>
     public static readonly TimeSpan FastReconnectInitialDelay = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// How long a new connection between two NLightning nodes must stay up before
+    /// <see cref="ConnectToAsync(NLightningTestNode, CancellationToken)"/> counts it: the known connect bugs tear a
+    /// connection down about 100 ms after both ends listed it.
+    /// </summary>
+    public static readonly TimeSpan ConnectionStableWindow = TimeSpan.FromSeconds(1.5);
+
     private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan s_knownBugLogGrace = TimeSpan.FromSeconds(1);
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly Action<NodeOptions>? _configureNodeOptions;
@@ -118,6 +147,48 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </summary>
     public int CountLogLines(string fragment) =>
         _nodeLog.Count(line => line.Contains(fragment, StringComparison.Ordinal));
+
+    /// <summary>
+    /// How many lines of <paramref name="nodes"/> name one of the <see cref="KnownConnectBugLogFragments"/>.
+    /// </summary>
+    public static int CountKnownConnectBugLines(IEnumerable<NLightningTestNode> nodes) =>
+        nodes.Sum(node => KnownConnectBugLogFragments.Sum(node.CountLogLines));
+
+    /// <summary>
+    /// Whether <paramref name="nodes"/> logged a known connect bug since their count was
+    /// <paramref name="linesBefore"/> (<see cref="CountKnownConnectBugLines"/>). Waits a moment for the line, since a
+    /// node logs its failed init only after the other end may already have seen the drop.
+    /// </summary>
+    public static async Task<bool> LoggedKnownConnectBugAsync(int linesBefore, IReadOnlyList<NLightningTestNode> nodes,
+                                                              CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Poll.UntilAsync(() => CountKnownConnectBugLines(nodes) > linesBefore, s_knownBugLogGrace,
+                                  "a known connect bug in the node logs", cancellationToken);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="exception"/> (or one of its inner exceptions) is a connect failure caused by a known
+    /// connect bug (see <see cref="KnownConnectBugLogFragments"/>). The initiator does not log its own failed init,
+    /// it throws.
+    /// </summary>
+    public static bool IsKnownConnectBug(Exception exception)
+    {
+        for (var e = exception; e is not null; e = e.InnerException)
+        {
+            if (KnownConnectBugLogFragments.Any(f => e.Message.Contains(f, StringComparison.Ordinal)))
+                return true;
+        }
+
+        return false;
+    }
 
     public CompactPubKey NodeId => SecureKeyManager.GetNodePubKey();
     public string NodeIdHex => Convert.ToHexString(NodeId).ToLowerInvariant();
@@ -209,6 +280,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// Builds the service graph, migrates the database and starts the fee service, the peer manager and the
     /// blockchain monitor, in the daemon's order.
     /// </summary>
+    /// <remarks>
+    /// If a step fails, the services started so far are stopped and the service graph is disposed (releasing the
+    /// listener, ZMQ and database connections) before the exception propagates, so the node can be started again.
+    /// </remarks>
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -216,53 +291,69 @@ public sealed class NLightningTestNode : IAsyncDisposable
             throw new InvalidOperationException($"The node {Name} is already running");
 
         _serviceProvider = BuildServiceProvider();
-
-        using (var scope = _serviceProvider.CreateScope())
+        var feeServiceStarted = false;
+        var peerManagerStarted = false;
+        try
         {
-            var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
-            await context.Database.MigrateAsync(cancellationToken);
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
+                await context.Database.MigrateAsync(cancellationToken);
+            }
+
+            // A fresh database starts scanning at the current tip; a restarted node resumes from its stored state
+            var currentHeight = (uint)await Bitcoin.GetBlockCountAsync(cancellationToken);
+
+            ApplyPeerManagerOverrides();
+
+            // IFeeService is a transient typed HttpClient, so keep the instance we start (the daemon does the same)
+            _feeService = Services.GetRequiredService<IFeeService>();
+            await _feeService.StartAsync(cancellationToken);
+            feeServiceStarted = true;
+            await PeerManager.StartAsync(cancellationToken);
+            peerManagerStarted = true;
+            await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            _started = true;
         }
-
-        // A fresh database starts scanning at the current tip; a restarted node resumes from its stored state
-        var currentHeight = (uint)await Bitcoin.GetBlockCountAsync(cancellationToken);
-
-        ApplyPeerManagerOverrides();
-
-        // IFeeService is a transient typed HttpClient, so keep the instance we start (the daemon does the same)
-        _feeService = Services.GetRequiredService<IFeeService>();
-        await _feeService.StartAsync(cancellationToken);
-        await PeerManager.StartAsync(cancellationToken);
-        await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
-        _started = true;
+        catch
+        {
+            await AbortStartAsync(feeServiceStarted, peerManagerStarted);
+            throw;
+        }
     }
 
     /// <summary>
-    /// Stops the node the way the daemon does and disposes its service graph. The database and key stay.
+    /// Stops the node the way the daemon does and disposes its service graph. The database and key stay. The
+    /// service graph is disposed, and the node counts as stopped, even when a service fails to stop.
     /// </summary>
     public async Task StopAsync()
     {
         if (_serviceProvider is null)
             return;
 
-        if (_started)
+        try
         {
-            await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
-            _started = false;
+            if (_started)
+                await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
         }
-
-        await _serviceProvider.DisposeAsync();
-        _serviceProvider = null;
-        _tcpService = null;
+        finally
+        {
+            _started = false;
+            await DisposeServiceProviderAsync();
+        }
     }
 
     /// <summary>
-    /// Simulates a crash: every connection is reset at once (the peers get no final <c>error</c>/<c>warning</c> and
-    /// no graceful close) and the node stops listening and connecting, then the services are torn down. The key and
-    /// the database stay, so <see cref="StartAsync"/> brings the node back as after a process restart.
+    /// Simulates a crash <b>on the wire</b>: every connection is reset at once (the peers get no final
+    /// <c>error</c>/<c>warning</c> and no graceful close) and the node stops listening and connecting, then the
+    /// services are torn down. The key and the database stay, so <see cref="StartAsync"/> brings the node back as
+    /// after a process restart.
     /// </summary>
     /// <remarks>
-    /// In-process, a database write that is already running when the sockets reset still completes; a crash between
-    /// two persist steps needs a hook in the code under test (e.g. <c>CrashingUnitOfWork</c>).
+    /// This is not a crash for persistence: after the reset the services are stopped with the graceful
+    /// <see cref="StopAsync"/>, and <c>PeerManager.StopAsync</c> waits for the inbound message loops and disconnects
+    /// every peer, so whatever those loops persist is flushed to the database. It covers what the peers see; a crash
+    /// between two persist steps needs a hook in the code under test (e.g. <c>CrashingUnitOfWork</c>).
     /// </remarks>
     public async Task CrashAsync()
     {
@@ -340,17 +431,22 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     /// <summary>
-    /// Connects to another in-process node over <c>127.0.0.1</c> and returns once both ends list each other.
+    /// Connects to another in-process node over <c>127.0.0.1</c> and returns once both ends list each other and the
+    /// connection stayed up for <see cref="ConnectionStableWindow"/>.
     /// </summary>
     /// <remarks>
-    /// Between two NLightning nodes the responder can lose the initiator's <c>init</c> (it arrives before the
-    /// responder's message pipeline subscribes, so the responder drops the connection on the next message: NL-239).
-    /// Until that is fixed this retries such a half-open connection up to <see cref="MaxConnectAttempts"/> times and
-    /// logs every retry; use <see cref="IPeerManager.ConnectToPeerAsync"/> directly to observe the raw behaviour.
+    /// Between two NLightning nodes a connection can die right after both ends listed it: the responder can lose the
+    /// initiator's <c>init</c> (NL-239), and an init write can fail (NL-240). Until those are fixed this retries,
+    /// up to <see cref="MaxConnectAttempts"/> times and logging every retry, only when an attempt failed with one of
+    /// the <see cref="KnownConnectBugLogFragments"/>; any other failure is thrown at once. Use
+    /// <see cref="IPeerManager.ConnectToPeerAsync"/> directly to observe the raw behaviour.
     /// </remarks>
     /// <returns>The <c>pubkey@127.0.0.1:port</c> address used.</returns>
     /// <exception cref="InvalidOperationException">Already connected to <paramref name="other"/>.</exception>
-    /// <exception cref="TimeoutException">No connection both ends agree on after every attempt.</exception>
+    /// <exception cref="TimeoutException">
+    /// No stable connection: after every attempt failed with a known connect bug, or at once when an attempt failed
+    /// without one.
+    /// </exception>
     public async Task<string> ConnectToAsync(NLightningTestNode other, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(other);
@@ -360,8 +456,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
         if (IsConnectedTo(other.NodeId) && other.IsConnectedTo(NodeId))
             throw new InvalidOperationException($"{Name} is already connected to {other.Name}");
 
+        NLightningTestNode[] ends = [this, other];
         for (var attempt = 1; attempt <= MaxConnectAttempts; attempt++)
         {
+            var knownBugLinesBefore = CountKnownConnectBugLines(ends);
+            var knownBug = false;
+            string? failure = null;
             try
             {
                 await PeerManager.ConnectToPeerAsync(new PeerAddressInfo(other.Address)).WaitAsync(cancellationToken);
@@ -370,36 +470,78 @@ public sealed class NLightningTestNode : IAsyncDisposable
             {
                 // The other node connected to us in the meantime; wait below for both ends to agree
             }
-
-            try
+            catch (ErrorException e) when (IsKnownConnectBug(e))
             {
-                await Poll.UntilAsync(() => IsConnectedTo(other.NodeId) && other.IsConnectedTo(NodeId),
-                                      s_bothEndsConnectedTimeout, $"{Name} and {other.Name} connected",
-                                      cancellationToken);
+                knownBug = true;
+                failure = $"connect failed: {e.Message}";
+            }
+
+            failure ??= await WaitForStableConnectionAsync(other, cancellationToken);
+            if (failure is null)
                 return other.Address;
-            }
-            catch (TimeoutException) when (attempt < MaxConnectAttempts)
-            {
-                Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss.fff} [{Name}] connection to {other.Name} is half open "
-                                + $"(NL-239 init race?), retrying ({attempt}/{MaxConnectAttempts})");
-                if (IsConnectedTo(other.NodeId))
-                    PeerManager.DisconnectPeer(other.NodeId);
-                if (other.IsConnectedTo(NodeId))
-                    other.PeerManager.DisconnectPeer(NodeId);
 
-                await Poll.UntilAsync(() => !IsConnectedTo(other.NodeId) && !other.IsConnectedTo(NodeId),
-                                      s_bothEndsConnectedTimeout, $"{Name} and {other.Name} disconnected",
-                                      cancellationToken);
-            }
+            knownBug = knownBug || await LoggedKnownConnectBugAsync(knownBugLinesBefore, ends, cancellationToken);
+            if (!knownBug)
+                throw new TimeoutException($"{Name} -> {other.Name}: {failure}, and no known connect bug was logged");
+            if (attempt == MaxConnectAttempts)
+                throw new TimeoutException($"{Name} -> {other.Name}: {failure} (a known connect bug, NL-239/NL-240, "
+                                         + $"on all {MaxConnectAttempts} attempts)");
+
+            Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss.fff} [{Name}] connection to {other.Name}: {failure} "
+                            + $"(known connect bug, NL-239/NL-240), retrying ({attempt}/{MaxConnectAttempts})");
+            if (IsConnectedTo(other.NodeId))
+                PeerManager.DisconnectPeer(other.NodeId);
+            if (other.IsConnectedTo(NodeId))
+                other.PeerManager.DisconnectPeer(NodeId);
+
+            await Poll.UntilAsync(() => !IsConnectedTo(other.NodeId) && !other.IsConnectedTo(NodeId),
+                                  s_bothEndsConnectedTimeout, $"{Name} and {other.Name} disconnected",
+                                  cancellationToken);
         }
 
         throw new UnreachableException();
     }
 
     /// <summary>
+    /// Waits until both ends list each other, then checks the connection stays up for
+    /// <see cref="ConnectionStableWindow"/>.
+    /// </summary>
+    /// <returns><c>null</c> for a stable connection, otherwise what went wrong.</returns>
+    public async Task<string?> WaitForStableConnectionAsync(NLightningTestNode other,
+                                                            CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        try
+        {
+            await Poll.UntilAsync(() => IsConnectedTo(other.NodeId) && other.IsConnectedTo(NodeId),
+                                  s_bothEndsConnectedTimeout, $"{Name} and {other.Name} connected",
+                                  cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            return $"{Name} and {other.Name} did not both list each other within {s_bothEndsConnectedTimeout}";
+        }
+
+        return await Poll.HoldsAsync(() => IsConnectedTo(other.NodeId) && other.IsConnectedTo(NodeId),
+                                     ConnectionStableWindow, cancellationToken)
+                   ? null
+                   : $"the connection between {Name} and {other.Name} dropped within {ConnectionStableWindow}";
+    }
+
+    /// <summary>
     /// Whether the peer manager has a live connection to <paramref name="peerId"/>.
     /// </summary>
     public bool IsConnectedTo(CompactPubKey peerId) => _started && PeerManager.GetPeer(peerId) is not null;
+
+    /// <summary>
+    /// The EF Core provider the running node's database context actually uses (e.g.
+    /// <c>Npgsql.EntityFrameworkCore.PostgreSQL</c>), read from a fresh <see cref="NLightningDbContext"/>.
+    /// </summary>
+    public string? GetEfProviderName()
+    {
+        using var scope = Services.CreateScope();
+        return scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database.ProviderName;
+    }
 
     /// <summary>
     /// Opens a channel through the daemon's client handlers and follows it: mines 6 blocks once funding_signed
@@ -492,6 +634,39 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     public override string ToString() => $"{Name} ({NodeIdHex[..16]}…, :{Port}, {Database.Provider})";
+
+    /// <summary>
+    /// Undoes a failed <see cref="StartAsync"/>: stops what was started (best effort; the start failure is the error
+    /// that matters) and disposes the service graph.
+    /// </summary>
+    private async Task AbortStartAsync(bool feeServiceStarted, bool peerManagerStarted)
+    {
+        try
+        {
+            if (peerManagerStarted)
+                await PeerManager.StopAsync();
+            if (feeServiceStarted)
+                await _feeService!.StopAsync();
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[{Name}] failed to stop after a failed start: {e.Message}");
+        }
+        finally
+        {
+            await DisposeServiceProviderAsync();
+        }
+    }
+
+    private async Task DisposeServiceProviderAsync()
+    {
+        var serviceProvider = _serviceProvider;
+        _serviceProvider = null;
+        _feeService = null;
+        _tcpService = null;
+        if (serviceProvider is not null)
+            await serviceProvider.DisposeAsync();
+    }
 
     /// <summary>
     /// Test-only knobs the peer manager keeps internal (see <see cref="ReconnectInitialDelay"/>).
