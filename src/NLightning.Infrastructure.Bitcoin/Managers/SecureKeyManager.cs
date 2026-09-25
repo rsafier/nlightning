@@ -7,7 +7,6 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Managers;
 
-using Crypto.Functions;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
@@ -18,6 +17,7 @@ using Infrastructure.Crypto.Ciphers;
 using Infrastructure.Crypto.Factories;
 using Infrastructure.Crypto.Hashes;
 using Node.Models;
+using Onion;
 
 /// <summary>
 /// Manages a securely stored private key using protected memory allocation.
@@ -31,8 +31,6 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         0xFF, 0x1D, 0x3B, 0xF5, 0x24, 0xA2, 0xB7, 0xA9,
         0xC3, 0x1B, 0x1F, 0x58, 0xE9, 0x48, 0xB5, 0x69
     ];
-
-    private static readonly Ecdh s_ecdh = new();
 
     private readonly string _filePath;
     private readonly object _lastUsedIndexLock = new();
@@ -157,11 +155,14 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     /// <inheritdoc/>
     public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
     {
-        // The node key is the master private key; copy it out of locked memory only for the ECDH, then wipe it
+        // The node key is the master private key; copy it out of locked memory only for the ECDH, then wipe it.
+        // Hot path (every peeled HTLC): parse straight into an ECPrivKey and hash with the one-shot BCL SHA-256
+        // instead of allocating a native hash state and NBitcoin Key/PubKey wrappers per call.
         var privateKey = GetPrivateKeyBytes();
         try
         {
-            s_ecdh.SecP256K1Dh(privateKey, publicKey, sharedSecret);
+            using var ecPrivKey = SphinxKeyGenerator.CreatePrivateKey(privateKey, nameof(privateKey));
+            SphinxKeyGenerator.ComputeEcdhSharedSecret(ecPrivKey, publicKey, sharedSecret);
         }
         finally
         {

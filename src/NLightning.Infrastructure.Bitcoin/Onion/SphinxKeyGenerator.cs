@@ -103,14 +103,21 @@ internal sealed class SphinxKeyGenerator : IDisposable
     /// Computes the Sphinx/BOLT 8 ECDH shared secret <c>SHA256(compressed(privateKey * publicKey))</c>.
     /// </summary>
     /// <remarks>
-    /// Same result as <c>IEcdh.SecP256K1Dh</c>, but it reuses this generator's hash state and the parsed private key
-    /// instead of allocating a hash and NBitcoin key wrappers per hop.
+    /// Same result as <c>IEcdh.SecP256K1Dh</c>, but it reuses the parsed private key instead of allocating NBitcoin
+    /// key wrappers per hop, and hashes the 33-byte point with the allocation-free one-shot BCL SHA-256.
     /// </remarks>
     /// <param name="privateKey">The private key.</param>
     /// <param name="publicKey">The 33-byte compressed public key.</param>
     /// <param name="output">The 32-byte destination.</param>
     /// <exception cref="ArgumentException">If the public key is invalid or <paramref name="output"/> is not 32 bytes.</exception>
     public void ComputeSharedSecret(ECPrivKey privateKey, ReadOnlySpan<byte> publicKey, Span<byte> output)
+    {
+        ComputeEcdhSharedSecret(privateKey, publicKey, output);
+    }
+
+    /// <inheritdoc cref="ComputeSharedSecret(ECPrivKey, ReadOnlySpan{byte}, Span{byte})"/>
+    /// <remarks>Stateless (no generator needed), e.g. for the key manager's node-key ECDH.</remarks>
+    public static void ComputeEcdhSharedSecret(ECPrivKey privateKey, ReadOnlySpan<byte> publicKey, Span<byte> output)
     {
         ArgumentNullException.ThrowIfNull(privateKey);
         EnsureLength(output, CryptoConstants.SecretLen, nameof(output));
@@ -124,8 +131,7 @@ internal sealed class SphinxKeyGenerator : IDisposable
         try
         {
             ecPubKey.GetSharedPubkey(privateKey).WriteToSpan(true, sharedPoint, out _);
-            _sha256.AppendData(sharedPoint);
-            _sha256.GetHashAndReset(output);
+            System.Security.Cryptography.SHA256.HashData(sharedPoint, output);
         }
         finally
         {
