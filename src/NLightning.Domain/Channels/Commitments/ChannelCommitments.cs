@@ -218,11 +218,20 @@ public sealed record ChannelCommitments
     /// view is never more generous than any commitment that can actually be signed). <paramref name="extra"/> is a
     /// candidate HTLC. The feerate is the higher of the current and the latest pending one.
     /// </summary>
+    /// <param name="side">The commitment.</param>
+    /// <param name="extra">A candidate HTLC to include.</param>
+    /// <param name="feerateOverride">The feerate to use instead.</param>
+    /// <param name="peerView">Keep only what the peer provably knew when it sent the update being judged: leave out our
+    /// adds it has not signed yet (<see cref="HtlcState.SentAddHtlc"/>, <see cref="HtlcState.SentAddCommit"/>,
+    /// <see cref="HtlcState.RcvdAddRevocation"/>). The two directions cross, so the peer may have offered before it
+    /// received them; its <c>commitment_signed</c> that covers them precedes (in its stream) every update it sends
+    /// afterwards, and this stays true when updates are retransmitted after a reconnection.</param>
     internal CommitmentView BuildProspectiveView(CommitmentSide side, HtlcRecord? extra = null,
-                                                 uint? feerateOverride = null) =>
-        BuildView(side, prospective: true, extra, feerateOverride);
+                                                 uint? feerateOverride = null, bool peerView = false) =>
+        BuildView(side, prospective: true, extra, feerateOverride, peerView);
 
-    private CommitmentView BuildView(CommitmentSide side, bool prospective, HtlcRecord? extra, uint? feerateOverride)
+    private CommitmentView BuildView(CommitmentSide side, bool prospective, HtlcRecord? extra, uint? feerateOverride,
+                                     bool peerView = false)
     {
         var local = (long)LocalBalanceMsat;
         var remote = (long)RemoteBalanceMsat;
@@ -231,6 +240,10 @@ public sealed record ChannelCommitments
 
         foreach (var htlc in records)
         {
+            if (peerView && htlc.State is HtlcState.SentAddHtlc or HtlcState.SentAddCommit
+                                                  or HtlcState.RcvdAddRevocation)
+                continue;
+
             var removed = HtlcStateTable.IsRemovedFrom(htlc.State, side);
             var present = prospective ? !removed : htlc.IsInCommit(side);
             var amount = checked((long)htlc.AmountMsat);
