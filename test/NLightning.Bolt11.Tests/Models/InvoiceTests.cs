@@ -122,7 +122,8 @@ public class InvoiceTests
     {
         // Given
         var key = new Key();
-        var invoice = new Invoice(BitcoinNetwork.Mainnet);
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "cache", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet);
 
         // "Touch" the invoice string once, so it's cached
         var initialStr = invoice.ToString(key);
@@ -167,7 +168,8 @@ public class InvoiceTests
     {
         // Given
         var key = new Key();
-        var invoice = new Invoice(BitcoinNetwork.Mainnet)
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "cache", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet)
         {
             RoutingInfos = new RoutingInfoCollection { s_defaultRoutingInfo }
         };

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using NBitcoin;
@@ -628,8 +629,13 @@ public partial class Invoice
     /// </summary>
     /// <param name="nodeKey">The private key of the node used to sign the invoice.</param>
     /// <returns>The encoded lightning invoice as a string.</returns>
+    /// <remarks>
+    /// Adds var_onion_optin and payment_secret as compulsory when the <c>9</c> field lacks them (basic_mpp is never
+    /// added), then runs <see cref="InvoiceValidationService.ValidateForEncoding"/>; nothing is signed when it fails.
+    /// </remarks>
     /// <exception cref="InvoiceSerializationException">
-    /// Thrown when an error occurs during the encoding process.
+    /// Thrown when an error occurs during the encoding process, including a failed validation (the inner
+    /// <see cref="InvalidOperationException"/> lists the errors).
     /// </exception>
     public string Encode(Key nodeKey)
     {
@@ -641,6 +647,11 @@ public partial class Invoice
             var invalidField = _taggedFields.FirstOrDefault(x => !x.IsValid());
             if (invalidField is not null)
                 throw new InvalidOperationException($"Invalid {invalidField.Type} field: field validation failed");
+
+            // BOLT 11 writer rules (NL-120): never sign an invoice a reader would reject
+            var validationResult = s_invoiceValidationService.ValidateForEncoding(this);
+            if (!validationResult.IsValid)
+                throw new InvalidOperationException(string.Join(", ", validationResult.Errors));
 
             // Calculate the size needed for the buffer
             var sizeInBits = 35 + (_taggedFields.CalculateSizeInBits() * 5) + (_taggedFields.Count * 15);
@@ -686,8 +697,17 @@ public partial class Invoice
             throw new InvalidOperationException(
                 "Secure key manager is not set, please use Encode(Key nodeKey) or ToString(Key nodeKey) instead");
 
-        var nodeKey = _secureKeyManager.GetNodeKeyPair().PrivKey;
-        return Encode(new Key(nodeKey));
+        // The key manager hands out a fresh copy of the node key: zero it once the invoice is signed
+        var nodeKeyBytes = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
+        try
+        {
+            using var nodeKey = new Key(nodeKeyBytes);
+            return Encode(nodeKey);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(nodeKeyBytes);
+        }
     }
 
     /// <summary>
