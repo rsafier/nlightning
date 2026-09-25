@@ -31,7 +31,9 @@ public class NLightningFormatterResolver : IFormatterResolver
         _formatters[typeof(LightningMoney)] = new LightningMoneyFormatter();
         _formatters[typeof(SignedTransaction)] = new SignedTransactionFormatter();
         _formatters[typeof(ChannelId)] = new ChannelIdFormatter();
+        _formatters[typeof(ChannelId?)] = new ChannelIdNullableFormatter();
         _formatters[typeof(TxId)] = new TxIdFormatter();
+        _formatters[typeof(Secret?)] = new SecretNullableFormatter();
     }
 
     public IMessagePackFormatter<T>? GetFormatter<T>()
