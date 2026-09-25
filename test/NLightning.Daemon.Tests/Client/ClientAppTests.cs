@@ -36,6 +36,16 @@ public class ClientAppTests
     [InlineData("openchannel", "--network", "regtest")]
     [InlineData("openchannel", "peer@host", "--cookie=/tmp/nltg.cookie")]
     [InlineData("unknown-command")]
+    [InlineData("createinvoice")]
+    [InlineData("addinvoice", "12abc")]
+    [InlineData("create-invoice", "-5")]
+    [InlineData("createinvoice", "1000", "desc", "0")]
+    [InlineData("payinvoice")]
+    [InlineData("pay", "lnbcrt1", "1.5")]
+    [InlineData("pay-invoice", "lnbcrt1", "1000", "soon")]
+    [InlineData("listinvoices", "0")]
+    [InlineData("listpayments", "ten")]
+    [InlineData("list-payments", "10", "-1")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -66,12 +76,49 @@ public class ClientAppTests
     [InlineData("info")]
     [InlineData("listchannels")]
     [InlineData("list-channels")]
-    public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command)
+    [InlineData("listinvoices")]
+    [InlineData("list-invoices", "10")]
+    [InlineData("listpayments", "10", "20")]
+    [InlineData("createinvoice", "any")]
+    [InlineData("addinvoice", "50000123", "two words", "600")]
+    [InlineData("payinvoice", "lnbcrt1")]
+    [InlineData("pay", "lnbcrt1", "any", "30")]
+    [InlineData("pay-invoice", "lnbcrt1", "1000")]
+    public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
+        params string[] commandArgs)
     {
         // Act
-        var error = ClientApp.ValidateArguments(command, []);
+        var error = ClientApp.ValidateArguments(command, commandArgs);
 
         // Assert
         Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData("any", null)]
+    [InlineData("ANY", null)]
+    [InlineData("0", null)]
+    [InlineData("50000123", 50_000_123UL)]
+    public void GivenAmountArgument_WhenTryParseInvoiceAmount_ThenMsatOrAny(string value, ulong? expectedMsat)
+    {
+        // Act
+        var parsed = ClientApp.TryParseInvoiceAmount(value, out var amount);
+
+        // Assert
+        Assert.True(parsed);
+        Assert.Equal(expectedMsat, amount?.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData(new string[0], 100, 0)]
+    [InlineData(new[] { "25" }, 25, 0)]
+    [InlineData(new[] { "25", "50" }, 25, 50)]
+    public void GivenListArguments_WhenParsePage_ThenTakeAndSkip(string[] commandArgs, int take, int skip)
+    {
+        // Act
+        var page = ClientApp.ParsePage(commandArgs);
+
+        // Assert
+        Assert.Equal((take, skip), page);
     }
 }

@@ -1,7 +1,11 @@
+using System.Globalization;
+
 namespace NLightning.Client;
 
 using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
+using Domain.Money;
+using Domain.Payments.Enums;
 using Handlers;
 using Ipc;
 using Printers;
@@ -84,6 +88,42 @@ internal static class ClientApp
                 case "open-channel":
                     await OpenChannelMessageHandler.HandleAsync(commandArgs, client, cancellationToken);
                     break;
+                case "createinvoice":
+                case "create-invoice":
+                case "addinvoice":
+                    var invoice = await client.CreateInvoiceAsync(ParseInvoiceAmount(commandArgs[0]),
+                                                                  commandArgs.Length > 1 ? commandArgs[1] : string.Empty,
+                                                                  commandArgs.Length > 2
+                                                                      ? ParseUInt(commandArgs[2])
+                                                                      : null,
+                                                                  cancellationToken);
+                    new CreateInvoicePrinter().Print(invoice);
+                    break;
+                case "payinvoice":
+                case "pay-invoice":
+                case "pay":
+                    var payment = await client.PayInvoiceAsync(commandArgs[0],
+                                                               commandArgs.Length > 1
+                                                                   ? ParseInvoiceAmount(commandArgs[1])
+                                                                   : null,
+                                                               commandArgs.Length > 2 ? ParseUInt(commandArgs[2]) : null,
+                                                               cancellationToken);
+                    new PayInvoicePrinter().Print(payment);
+                    if (payment.Payment.Status == PaymentStatus.Failed)
+                        return Failure;
+                    break;
+                case "listinvoices":
+                case "list-invoices":
+                    var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
+                    var invoices = await client.ListInvoicesAsync(invoiceSkip, invoiceTake, cancellationToken);
+                    new ListInvoicesPrinter().Print(invoices);
+                    break;
+                case "listpayments":
+                case "list-payments":
+                    var (paymentTake, paymentSkip) = ParsePage(commandArgs);
+                    var payments = await client.ListPaymentsAsync(paymentSkip, paymentTake, cancellationToken);
+                    new ListPaymentsPrinter().Print(payments);
+                    break;
             }
         }
         catch (Exception ex)
@@ -120,8 +160,82 @@ internal static class ClientApp
             case "openchannel":
             case "open-channel":
                 return commandArgs.Length < 2 ? $"Missing arguments. Usage: {cmd} <node> <amount_sats>" : null;
+            case "createinvoice":
+            case "create-invoice":
+            case "addinvoice":
+                if (commandArgs.Length < 1)
+                    return $"Missing argument. Usage: {cmd} <amount_msat|any> [description] [expiry_seconds]";
+                if (!TryParseInvoiceAmount(commandArgs[0], out _))
+                    return $"Invalid amount '{commandArgs[0]}': expected a positive number of msat or 'any'.";
+                if (commandArgs.Length > 2 && !TryParsePositiveUInt(commandArgs[2], out _))
+                    return $"Invalid expiry '{commandArgs[2]}': expected a positive number of seconds.";
+                return null;
+            case "payinvoice":
+            case "pay-invoice":
+            case "pay":
+                if (commandArgs.Length < 1)
+                    return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds]";
+                if (commandArgs.Length > 1 && !TryParseInvoiceAmount(commandArgs[1], out _))
+                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of msat or 'any'.";
+                if (commandArgs.Length > 2 && !TryParsePositiveUInt(commandArgs[2], out _))
+                    return $"Invalid timeout '{commandArgs[2]}': expected a positive number of seconds.";
+                return null;
+            case "listinvoices":
+            case "list-invoices":
+            case "listpayments":
+            case "list-payments":
+                if (commandArgs.Length > 0 && !TryParsePositiveInt(commandArgs[0], out _))
+                    return $"Invalid count '{commandArgs[0]}': expected a positive number.";
+                if (commandArgs.Length > 1 && !int.TryParse(commandArgs[1], NumberStyles.None,
+                                                            CultureInfo.InvariantCulture, out _))
+                    return $"Invalid skip '{commandArgs[1]}': expected a number.";
+                return null;
             default:
                 return $"Unknown command: {cmd}";
         }
+    }
+
+    /// <summary>
+    /// Parses an amount in msat; <c>any</c> (or <c>0</c>) means no amount.
+    /// </summary>
+    internal static bool TryParseInvoiceAmount(string value, out LightningMoney? amount)
+    {
+        amount = null;
+        if (string.Equals(value, "any", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var msat))
+            return false;
+
+        amount = msat == 0 ? null : LightningMoney.MilliSatoshis(msat);
+        return true;
+    }
+
+    private static LightningMoney? ParseInvoiceAmount(string value) =>
+        TryParseInvoiceAmount(value, out var amount)
+            ? amount
+            : throw new ArgumentException($"Invalid amount '{value}'.", nameof(value));
+
+    private static bool TryParsePositiveUInt(string value, out uint result) =>
+        uint.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out result) && result > 0;
+
+    private static bool TryParsePositiveInt(string value, out int result) =>
+        int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out result) && result > 0;
+
+    private static uint ParseUInt(string value) =>
+        TryParsePositiveUInt(value, out var result)
+            ? result
+            : throw new ArgumentException($"Invalid number '{value}'.", nameof(value));
+
+    /// <summary>
+    /// <c>[take] [skip]</c> of the list commands; take defaults to 100 and skip to 0.
+    /// </summary>
+    internal static (int Take, int Skip) ParsePage(string[] commandArgs)
+    {
+        var take = commandArgs.Length > 0 && TryParsePositiveInt(commandArgs[0], out var t) ? t : 100;
+        var skip = commandArgs.Length > 1
+                && int.TryParse(commandArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var s)
+                       ? s
+                       : 0;
+        return (take, skip);
     }
 }
