@@ -27,7 +27,16 @@ public class SqlServerFixture : IDisposable
     private SqlServerFixture(string containerName)
     {
         ContainerName = containerName;
-        StartSqlServer().GetAwaiter().GetResult();
+        try
+        {
+            StartSqlServer().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Dispose is never called on a fixture whose constructor threw: do not leave the container behind
+            Dispose();
+            throw;
+        }
     }
 
     public string ContainerName { get; }
