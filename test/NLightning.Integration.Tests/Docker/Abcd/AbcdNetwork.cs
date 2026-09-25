@@ -85,12 +85,22 @@ public sealed class AbcdNetwork : IAsyncDisposable
     }
 
     /// <summary>
-    /// The fixture's ABCD network, built by the first caller. A failed build is not cached; the next test tries
-    /// again on a fresh pair of nodes.
+    /// The fixture's ABCD network, built by the first caller. A failed build is cached too: every later ABCD test
+    /// fails fast with the original error instead of opening more channels on the shared LND nodes and mining more
+    /// blocks for another attempt.
     /// </summary>
-    public static Task<AbcdNetwork> GetAsync(LightningRegtestNetworkFixture fixture,
-                                             CancellationToken cancellationToken) =>
-        fixture.GetOrCreateAsync(FixtureKey, () => CreateAsync(fixture, cancellationToken));
+    /// <exception cref="InvalidOperationException">The only build attempt failed (inner exception).</exception>
+    public static async Task<AbcdNetwork> GetAsync(LightningRegtestNetworkFixture fixture,
+                                                   CancellationToken cancellationToken)
+    {
+        var build = await fixture.GetOrCreateAsync(
+                        FixtureKey, () => OnceOnlyBuild<AbcdNetwork>.RunAsync(
+                                        () => CreateAsync(fixture, cancellationToken)));
+        if (build.Failure is not null)
+            Console.WriteLine($"[abcd] the ABCD network was never built: {build.Failure.Message}");
+
+        return build.GetOrThrow("ABCD network");
+    }
 
     /// <summary>
     /// The precondition of every ABCD test: both nodes running, every channel usable on both ends, no HTLC pending
