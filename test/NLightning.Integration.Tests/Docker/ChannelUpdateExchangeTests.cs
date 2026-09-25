@@ -10,6 +10,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Fixtures;
 using TestCollections;
@@ -26,6 +27,8 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
     private const uint FeeBaseMsat = 1_234;
     private const uint FeePpm = 567;
     private const ushort CltvExpiryDelta = 44;
+
+    private const string SendingChannelUpdateLog = "Sending channel_update for channel";
 
     private static readonly TimeSpan s_activeTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan s_policyTimeout = TimeSpan.FromSeconds(30);
@@ -100,6 +103,21 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
         Assert.Equal((uint)alicePolicy.FeeRateMilliMsat, aliceUpdate.FeeProportionalMillionths);
         Assert.Equal((ushort)alicePolicy.TimeLockDelta, aliceUpdate.CltvExpiryDelta);
         AssertNoIgnoredUpdate(node);
+
+        // Act: reconnect. The new connection must carry a fresh update (newer timestamp) of the same policy
+        var sentBefore = node.CountLogLines(SendingChannelUpdateLog);
+        await ReconnectAsync(node, alice, ct);
+
+        // Assert
+        var refreshed = await Poll.ForAsync<RoutingPolicy>(async () =>
+        {
+            var policy = await GetOurPolicyAsync(node, alice, lndChannel.ChanId, ct);
+            return policy is not null && policy.LastUpdate > ourPolicy.LastUpdate ? policy : null;
+        }, s_policyTimeout, "alice has our channel_update sent after the reconnect", ct);
+        Assert.True(node.CountLogLines(SendingChannelUpdateLog) > sentBefore);
+        Assert.Equal(FeeBaseMsat, (uint)refreshed.FeeBaseMsat);
+        Assert.Equal(FeePpm, (uint)refreshed.FeeRateMilliMsat);
+        Assert.Equal(CltvExpiryDelta, (ushort)refreshed.TimeLockDelta);
     }
 
     public async ValueTask DisposeAsync()
@@ -111,6 +129,40 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
             await _node.DisposeAsync();
 
         GC.SuppressFinalize(this);
+    }
+
+    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LNDNodeConnection alice,
+                                                               ulong chanId, CancellationToken ct)
+    {
+        var info = await alice.LightningClient.GetChanInfoAsync(new ChanInfoRequest { ChanId = chanId },
+                                                                cancellationToken: ct);
+        return info.Node1Pub.Equals(node.NodeIdHex, StringComparison.OrdinalIgnoreCase)
+                   ? info.Node1Policy
+                   : info.Node2Policy;
+    }
+
+    /// <summary>
+    /// Drops the connection to alice and connects again. Alice may reconnect first (we are a channel peer); either
+    /// way a new connection is installed.
+    /// </summary>
+    private static async Task ReconnectAsync(NLightningTestNode node, LNDNodeConnection alice, CancellationToken ct)
+    {
+        CompactPubKey aliceId = alice.LocalNodePubKeyBytes;
+        node.PeerManager.DisconnectPeer(aliceId);
+        await Poll.UntilAsync(() => Task.FromResult(!node.IsConnectedTo(aliceId)), s_policyTimeout,
+                              "alice disconnected", ct);
+
+        try
+        {
+            await node.ConnectToAsync(alice, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // Alice's own reconnect won
+        }
+
+        await Poll.UntilAsync(() => Task.FromResult(node.IsConnectedTo(aliceId)), s_policyTimeout,
+                              "alice connected again", ct);
     }
 
     private static void AssertNoIgnoredUpdate(NLightningTestNode node)

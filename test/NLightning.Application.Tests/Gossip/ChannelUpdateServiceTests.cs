@@ -221,6 +221,86 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public async Task Given_OpenAndOpeningChannels_When_SendingToPeer_Then_OnlyOpenChannelsGetAnUpdate()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        var open = AddChannel(ChannelState.Open);
+        _ = AddChannel(ChannelState.ReadyForThem);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Assert
+        var args = Assert.Single(raised);
+        Assert.Equal(PeerNodeId, args.PeerPubKey);
+        Assert.True(service.TryGetLocalChannelUpdate(open.ChannelId, out var local));
+        Assert.Same(local, args.Message);
+    }
+
+    [Fact]
+    public async Task Given_UpdateSentOnOpen_When_PeerReconnects_Then_ANewerUpdateIsSent()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) =>
+        {
+            lock (raised)
+                raised.Add(args);
+        };
+        await service.SendChannelUpdateAsync(channel.ChannelId, TestContext.Current.CancellationToken);
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Assert
+        lock (raised)
+        {
+            Assert.Equal(2, raised.Count);
+            Assert.True(raised[1].Message.Payload.Timestamp > raised[0].Message.Payload.Timestamp);
+        }
+    }
+
+    [Fact]
+    public async Task Given_OtherPeersChannel_When_SendingToPeer_Then_NothingIsRaised()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        _ = AddChannel(ChannelState.Open);
+        var raised = false;
+        service.OnChannelUpdateReady += (_, _) => raised = true;
+        CompactPubKey otherPeer = new Key(Enumerable.Repeat((byte)0x33, 32).ToArray()).PubKey.ToBytes();
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(otherPeer, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(raised);
+    }
+
+    [Fact]
+    public async Task Given_ChannelAlreadyResentOnConnect_When_ItIsUpdatedAsOpen_Then_NoSecondUpdateIsRaised()
+    {
+        // Arrange - e.g. a restart: the reconnect already sent it, the memory repository then reports it Open
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+        var count = 0;
+        service.OnChannelUpdateReady += (_, _) => Interlocked.Increment(ref count);
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Act
+        RaiseChannelUpdated(channel);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, Volatile.Read(ref count));
+    }
+
+    [Fact]
     public void Given_ValidUpdateFromPeer_When_Handled_Then_ItIsStored()
     {
         // Arrange

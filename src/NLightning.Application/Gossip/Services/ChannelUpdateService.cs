@@ -35,8 +35,12 @@ using Interfaces;
 /// <c>max_htlc_value_in_flight_msat</c> and <c>Routing.HtlcMaximumMsat</c> (never below the minimum).
 /// </para>
 /// <para>
-/// Everything is in memory: after a restart we don't resend (the peer keeps our last update) and the peer's update is
-/// forgotten until it sends a new one.
+/// Resending: each new connection to a peer (after init) gets a fresh update for every <c>Open</c> channel with it
+/// (<see cref="SendChannelUpdatesToPeerAsync"/>, called by the peer manager), so the peer learns our policy again
+/// after a reconnect or a restart and after an update it missed while disconnected.
+/// </para>
+/// <para>
+/// Everything is in memory: the peer's update is forgotten on restart until it sends a new one.
 /// </para>
 /// </remarks>
 public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
@@ -132,6 +136,23 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
         // Only enqueues (we hold the channel lock)
         OnChannelUpdateReady?.Invoke(this, new ChannelUpdateReadyEventArgs(channel.RemoteNodeId, message));
+    }
+
+    /// <inheritdoc/>
+    public async Task SendChannelUpdatesToPeerAsync(CompactPubKey peerPubKey,
+                                                    CancellationToken cancellationToken = default)
+    {
+        var channelIds = _channelMemoryRepository
+                        .FindChannels(c => c.RemoteNodeId == peerPubKey && c.State == ChannelState.Open)
+                        .Select(c => c.ChannelId)
+                        .ToList();
+
+        foreach (var channelId in channelIds)
+        {
+            // Opening it now would send it again
+            _sentOnOpen.TryAdd(channelId, 0);
+            await SendChannelUpdateAsync(channelId, cancellationToken);
+        }
     }
 
     /// <inheritdoc/>
