@@ -63,24 +63,16 @@ public sealed class PeerManager : IPeerManager
         var peers = await uow.GetPeersForStartupAsync();
         foreach (var peer in peers)
         {
+            // Register the peer's channels even if we can't reconnect now, so blockchain events (funding
+            // confirmations, stale-channel handling) still apply to them
+            RegisterExistingChannels(peer);
+
             try
             {
                 _ = await ConnectToPeerAsync(peer.PeerAddressInfo, uow);
-                if (!_peers.TryGetValue(peer.NodeId, out _))
-                {
+                if (!_peers.ContainsKey(peer.NodeId))
+                    // TODO: Retry the connection with backoff
                     _logger.LogWarning("Unable to connect to peer {PeerId} on startup", peer.NodeId);
-                    // TODO: Handle this case, maybe retry or log more details
-                    continue;
-                }
-
-                // Register channels with peer
-                if (peer.Channels is not { Count: > 0 })
-                    continue;
-
-                // Only register channels that are not closed or stale
-                foreach (var channel in peer.Channels.Where(c => c.State != ChannelState.Closed))
-                    // We don't care about the result here, as we just want to register the existing channels
-                    _ = _channelManager.RegisterExistingChannelAsync(channel);
             }
             catch (ConnectionException)
             {
@@ -174,6 +166,27 @@ public sealed class PeerManager : IPeerManager
     private static void DisconnectPeer(IPeerService peerService, Exception? exception = null)
     {
         peerService.Disconnect(exception);
+    }
+
+    private void RegisterExistingChannels(PeerModel peer)
+    {
+        if (peer.Channels is not { Count: > 0 })
+            return;
+
+        // Only register channels that are not closed or stale
+        foreach (var channel in peer.Channels.Where(c => c.State is not (ChannelState.Closed or ChannelState.Stale)))
+        {
+            try
+            {
+                // We don't care about the result here, as we just want to register the existing channels
+                _ = _channelManager.RegisterExistingChannelAsync(channel);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Error registering channel {ChannelId} for peer {PeerId} on startup",
+                                 channel.ChannelId, peer.NodeId);
+            }
+        }
     }
 
     private async Task<PeerModel> ConnectToPeerAsync(PeerAddressInfo peerAddressInfo, IUnitOfWork uow)
