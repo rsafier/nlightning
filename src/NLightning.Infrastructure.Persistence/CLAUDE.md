@@ -3,10 +3,10 @@
 EF Core 10 model for the node: one `NLightningDbContext`, entity classes used only for persistence, per-entity configuration, value converters, provider selection (DI) and a design-time factory for `dotnet ef`. There are **no repositories here**. Domain<->entity mapping lives in `src/NLightning.Infrastructure.Repositories` (`UnitOfWork`, `Database/**/**DbRepository.cs`). Migrations live in three sibling assemblies: `NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}/Migrations`.
 
 ## Layout
-- `Contexts/NLightningDbContext.cs`: 9 DbSets (BlockchainStates, WatchedTransactions, WalletAddresses, Utxos, Channels, ChannelConfigs, ChannelKeySets, Htlcs, Peers). `OnModelCreating` calls `modelBuilder.Configure<X>Entity(_databaseType)`.
+- `Contexts/NLightningDbContext.cs`: 10 DbSets (BlockchainStates, WatchedTransactions, WalletAddresses, Utxos, Channels, ChannelConfigs, ChannelKeySets, Htlcs, ChannelLocalAliases, Peers). `OnModelCreating` calls `modelBuilder.Configure<X>Entity(_databaseType)`.
 - `Entities/{Bitcoin,Channel,Node}/`: POCOs, mostly `required` props, each with an `internal` parameterless ctor for EF.
 - `EntityConfiguration/{Bitcoin,Channel,Node}/`: `public static void Configure<X>Entity(this ModelBuilder, DatabaseType)`, plus private `OptimizeConfigurationForSqlServer` helpers (varbinary sizes, online indexes). Only `UtxoEntityConfiguration` also has `OptimizeConfigurationForPostgres` (concurrent indexes).
-- `ValueConverters/`: ChannelId, CompactPubKey, Hash, TxId stored as `byte[]`, using the value objects' implicit conversions.
+- `ValueConverters/`: ChannelId, CompactPubKey, Hash, ShortChannelId, TxId stored as `byte[]`, using the value objects' implicit conversions.
 - `DependencyInjection.cs`: `AddPersistenceInfrastructureServices(services, configuration)`. It reads `Database:Provider` (postgres|postgresql|sqlite|sqlserver|microsoftsql), `Database:ConnectionString` and `Database:EnableSensitiveQueryLogging`, and sets the MigrationsAssembly for each provider.
 - `Factories/NLightningContextFactory.cs`: design-time factory driven by env vars `NLIGHTNING_POSTGRES`, then `NLIGHTNING_SQLITE`, then `NLIGHTNING_SQLSERVER` (first one set wins).
 - `Enums/DatabaseType.cs`, `Providers/DatabaseTypeProvider.cs`: pass the provider into the model.
@@ -42,8 +42,9 @@ EF Core 10 model for the node: one `NLightningDbContext`, entity classes used on
 - `State`/`Direction` on `ChannelEntity`/`HtlcEntity` are raw `byte`. Compare with `== (byte)Enum.X`, not `.Equals(Enum.X)` (boxed enum never equals a byte).
 - The migration name typo `AddBlockchaisStateAndWatchedTransaction` is baked into history. Do not rename it.
 - Provider migration projects set `BaseOutputPath` to this project's `bin/`, so the four projects share one output folder.
+- `ChannelDbRepository.UpdateAsync` detaches the child collections and synchronizes each child table by primary key (NL-192); a new child collection on `ChannelEntity` must be added to that sync too.
 
 ## Onion routing (BOLT 4) hooks
 - Today the onion is persisted only inside `HtlcEntity.AddMessageBytes`, which holds the serialized `UpdateAddHtlcMessage` including the 1366-byte packet (`varbinary(max)` on SqlServer). Changing the update_add_htlc wire format changes stored rows.
-- Expect to add, each as a new entity plus 3 migrations: a per-incoming-HTLC shared secret (a column on `HtlcEntity` or a table keyed by (ChannelId, HtlcId, Direction)) for failure wrapping; a forwarding-circuit table (incoming chan/htlc to outgoing chan/htlc, amounts, CLTVs, fees); failure reasons/messages; an invoice/preimage store (payment_hash, payment_secret, total_msat) for final-hop checks; an SCID/alias to ChannelId map for hop-payload `short_channel_id`; and, later, BOLT 7 graph tables for route building.
+- Expect to add, each as a new entity plus 3 migrations: a per-incoming-HTLC shared secret (a column on `HtlcEntity` or a table keyed by (ChannelId, HtlcId, Direction)) for failure wrapping; a forwarding-circuit table (incoming chan/htlc to outgoing chan/htlc, amounts, CLTVs, fees); failure reasons/messages; an invoice/preimage store (payment_hash, payment_secret, total_msat) for final-hop checks; an SCID to ChannelId map for hop-payload `short_channel_id` (our scid aliases already live in `ChannelLocalAliases`, keyed by the alias, and the peer's alias in `Channels.RemoteAlias`; the real scid is not persisted yet); and, later, BOLT 7 graph tables for route building.
 - `ChannelEntity.ChangeAddressType` is a separate, redundant column; the real FK to `WalletAddresses` is (`ChangeAddressIndex`, shadow `ChangeAddressIsChange`, shadow `ChangeAddressAddressType`). `ChannelDbRepository` writes both.

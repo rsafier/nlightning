@@ -1,15 +1,21 @@
+using Microsoft.EntityFrameworkCore;
+
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Protocol.Models;
 using Infrastructure.Repositories.Database.Bitcoin;
 using Infrastructure.Repositories.Database.Channel;
 
 public class ChannelDbRepositoryTests
 {
+    private static readonly IComparer<ShortChannelId> s_scidComparer =
+        Comparer<ShortChannelId>.Create((x, y) => ((byte[])x).AsSpan().SequenceCompareTo((byte[])y));
+
     private static async Task<ChannelModel> SaveAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)
     {
         await using (var writeContext = db.CreateDbContext())
@@ -318,5 +324,95 @@ public class ChannelDbRepositoryTests
         // Assert
         var updated = await ReloadAsync(db, channel);
         Assert.Equal([1UL, 2UL], updated.LocalOfferedHtlcs!.Select(h => h.Id).Order());
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithScidAliases_When_Reloaded_Then_AliasesAreRestored()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true);
+        channel.LocalAliases = [new ShortChannelId(16_000_000, 1, 0), new ShortChannelId(16_000_000, 2, 0)];
+        channel.RemoteAlias = new ShortChannelId(16_500_000, 7, 1);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.NotNull(reloaded.LocalAliases);
+        Assert.Equal(channel.LocalAliases.Order(s_scidComparer), reloaded.LocalAliases.Order(s_scidComparer));
+        Assert.Equal(channel.RemoteAlias, reloaded.RemoteAlias);
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithoutScidAliases_When_Reloaded_Then_AliasesStayUnset()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, SqliteDbTestContext.CreateChannel(true));
+
+        // Assert
+        Assert.Null(reloaded.LocalAliases);
+        Assert.Null(reloaded.RemoteAlias);
+    }
+
+    [Fact]
+    public async Task Given_PersistedChannel_When_AliasesChangeThroughUpdate_Then_TheNewAliasesAreStored()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true);
+        channel.LocalAliases = [new ShortChannelId(16_000_000, 1, 0), new ShortChannelId(16_000_000, 2, 0)];
+        var reloaded = await SaveAndReloadAsync(db, channel);
+        reloaded.LocalAliases = [new ShortChannelId(16_000_000, 2, 0), new ShortChannelId(16_000_000, 3, 0)];
+        reloaded.RemoteAlias = new ShortChannelId(16_500_000, 7, 1);
+
+        // Act
+        await UpdateInFreshContextAsync(db, reloaded);
+
+        // Assert
+        var updated = await ReloadAsync(db, reloaded);
+        Assert.Equal(reloaded.LocalAliases.Order(s_scidComparer), updated.LocalAliases!.Order(s_scidComparer));
+        Assert.Equal(reloaded.RemoteAlias, updated.RemoteAlias);
+    }
+
+    [Fact]
+    public async Task Given_AliasesOfSeveralChannels_When_GettingLocalAliases_Then_EveryAliasIsReturnedWithItsChannel()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var first = SqliteDbTestContext.CreateChannel(true);
+        first.LocalAliases = [new ShortChannelId(16_000_000, 1, 0)];
+        var second = SqliteDbTestContext.CreateChannel(false);
+        second.LocalAliases = [new ShortChannelId(16_000_000, 2, 0), new ShortChannelId(16_000_000, 3, 0)];
+        await SaveAndReloadAsync(db, first);
+        await SaveAndReloadAsync(db, second);
+
+        // Act
+        await using var context = db.CreateDbContext();
+        var aliases = await new ChannelDbRepository(context, db.MessageSerializer, db.Sha256).GetLocalAliasesAsync();
+
+        // Assert
+        Assert.Equal(3, aliases.Count);
+        Assert.Contains((first.ChannelId, new ShortChannelId(16_000_000, 1, 0)), aliases);
+        Assert.Contains((second.ChannelId, new ShortChannelId(16_000_000, 2, 0)), aliases);
+        Assert.Contains((second.ChannelId, new ShortChannelId(16_000_000, 3, 0)), aliases);
+    }
+
+    [Fact]
+    public async Task Given_AliasUsedByAnotherChannel_When_Saved_Then_TheDatabaseRejectsIt()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var first = SqliteDbTestContext.CreateChannel(true);
+        first.LocalAliases = [new ShortChannelId(16_000_000, 1, 0)];
+        await SaveAndReloadAsync(db, first);
+        var second = SqliteDbTestContext.CreateChannel(false);
+        second.LocalAliases = [new ShortChannelId(16_000_000, 1, 0)];
+
+        // Act / Assert
+        await Assert.ThrowsAnyAsync<DbUpdateException>(() => SaveAndReloadAsync(db, second));
     }
 }

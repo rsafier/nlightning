@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.Constants;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Entities.Channel;
 using Enums;
@@ -44,6 +45,9 @@ public static class ChannelEntityConfiguration
             // Nullable properties
             entity.Property(e => e.LastSentSignature).IsRequired(false);
             entity.Property(e => e.LastReceivedSignature).IsRequired(false);
+            entity.Property(e => e.RemoteAlias)
+                  .HasConversion<ShortChannelIdConverter>()
+                  .IsRequired(false);
 
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
@@ -55,6 +59,12 @@ public static class ChannelEntityConfiguration
             entity.HasMany(e => e.Htlcs)
                   .WithOne()
                   .HasForeignKey(h => h.ChannelId)
+                  .OnDelete(DeleteBehavior.Cascade);
+
+            // Configure the relationship with the local scid aliases (1:many)
+            entity.HasMany(e => e.LocalAliases)
+                  .WithOne()
+                  .HasForeignKey(a => a.ChannelId)
                   .OnDelete(DeleteBehavior.Cascade);
 
             // Configure the relationship with KeySets (1:many)
@@ -83,5 +93,6 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.LastSentSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.RemoteAlias).HasColumnType($"varbinary({ShortChannelId.Length})");
     }
 }

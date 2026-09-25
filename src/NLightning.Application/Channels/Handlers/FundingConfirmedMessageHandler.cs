@@ -67,9 +67,22 @@ public class FundingConfirmedMessageHandler
             // recognize them for incoming HTLCs), so they are reused instead of regenerated on a re-confirmation.
             if (mustUseScidAlias && channel.LocalAliases is not { Count: > 0 })
             {
-                // Decide how many SCID aliases we need
-                var scidAliasesCount = RandomNumberGenerator.GetInt32(2, 6); // Randomly choose between 2 and 5
-                channel.LocalAliases = GenerateUniqueScidAliases(channel, scidAliasesCount);
+                // Aliases survive restarts in the database, including those of channels that are not in memory
+                var persistedAliases = await _uow.ChannelDbRepository.GetLocalAliasesAsync() ?? [];
+                var ownAliases = persistedAliases.Where(a => a.ChannelId == channel.ChannelId)
+                                                 .Select(a => a.Alias)
+                                                 .ToList();
+                if (ownAliases.Count > 0)
+                {
+                    channel.LocalAliases = ownAliases;
+                }
+                else
+                {
+                    // Decide how many SCID aliases we need
+                    var scidAliasesCount = RandomNumberGenerator.GetInt32(2, 6); // Randomly choose between 2 and 5
+                    channel.LocalAliases = GenerateUniqueScidAliases(channel, scidAliasesCount,
+                                                                     persistedAliases.Select(a => a.Alias));
+                }
             }
 
             if (channel.State == ChannelState.ReadyForThem)
@@ -134,12 +147,17 @@ public class FundingConfirmedMessageHandler
 
     /// <summary>
     /// Generates <paramref name="count"/> aliases that collide neither with each other nor with the real scid or the
-    /// local aliases of any known channel (NL-103), so an incoming scid always maps to one channel.
+    /// local aliases of any known channel, in memory or persisted (NL-103), so an incoming scid always maps to one
+    /// channel.
     /// </summary>
-    private List<ShortChannelId> GenerateUniqueScidAliases(ChannelModel channel, int count)
+    private List<ShortChannelId> GenerateUniqueScidAliases(ChannelModel channel, int count,
+                                                           IEnumerable<ShortChannelId> persistedAliases)
     {
         var usedScids = new HashSet<ulong>();
         AddIfSet(usedScids, channel.ShortChannelId);
+        foreach (var alias in persistedAliases)
+            AddIfSet(usedScids, alias);
+
         foreach (var otherChannel in _channelMemoryRepository.FindChannels(c => c.ChannelId != channel.ChannelId))
         {
             AddIfSet(usedScids, otherChannel.ShortChannelId);

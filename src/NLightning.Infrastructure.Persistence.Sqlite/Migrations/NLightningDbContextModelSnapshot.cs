@@ -231,6 +231,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte[]>("PeerEntityNodeId")
                         .HasColumnType("BLOB");
 
+                    b.Property<byte[]>("RemoteAlias")
+                        .HasColumnType("BLOB");
+
                     b.Property<decimal>("RemoteBalanceSatoshis")
                         .HasColumnType("TEXT");
 
@@ -303,6 +306,22 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("ChannelId", "IsLocal");
 
                     b.ToTable("ChannelKeySets");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", b =>
+                {
+                    b.Property<byte[]>("Alias")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Alias");
+
+                    b.HasIndex("ChannelId");
+
+                    b.ToTable("ChannelLocalAliases");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", b =>
@@ -422,6 +441,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany("LocalAliases")
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", b =>
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
@@ -443,6 +471,8 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Navigation("Htlcs");
 
                     b.Navigation("KeySets");
+
+                    b.Navigation("LocalAliases");
 
                     b.Navigation("WatchedTransactions");
                 });
