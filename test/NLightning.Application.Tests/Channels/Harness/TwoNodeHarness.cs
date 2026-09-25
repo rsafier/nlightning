@@ -12,6 +12,7 @@ using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Interfaces;
 using Application.Channels.Managers;
+using Application.Channels.Reestablish;
 using Application.Channels.Services;
 using Application.Channels.Switch;
 using Application.Protocol.Factories;
@@ -41,10 +42,11 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
-using Domain.Serialization.Interfaces;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
+using Infrastructure.Serialization;
+using NLightning.Tests.Utils.Mocks;
 
 /// <summary>
 /// Two in-process nodes (BOLT2 plan N6-T4): each a real <see cref="ChannelManager"/> with the production
@@ -70,53 +72,174 @@ internal sealed class TwoNodeHarness : IDisposable
     public static readonly ChannelId ChannelId = new(Enumerable.Repeat((byte)0x6B, 32).ToArray());
     public static readonly byte[] Onion = new byte[1366];
 
-    public HarnessNode Alice { get; }
-    public HarnessNode Bob { get; }
+    private readonly ChannelParty _aliceParty;
+    private readonly ChannelParty _bobParty;
+    private readonly TxId _fundingTxId = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
+    private readonly CommitmentNumber _obscuring;
+    private readonly bool _hasAnchors;
+    private readonly bool _localOnlySwitch;
+
+    public HarnessNode Alice { get; private set; }
+    public HarnessNode Bob { get; private set; }
+
+    /// <summary>How many messages were delivered so far (both directions).</summary>
+    public int Delivered { get; private set; }
+
+    /// <summary>Stop delivering (without failing) once <see cref="Delivered"/> reaches this; null for no limit.</summary>
+    public int? DeliveryBudget { get; set; }
+
+    /// <summary>How many times a node was restarted after a simulated crash.</summary>
+    public int Restarts { get; private set; }
 
     public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false)
     {
+        _hasAnchors = hasAnchors;
+        _localOnlySwitch = localOnlySwitch;
         Alice = new HarnessNode("Alice", 0xA1, localOnlySwitch);
         Bob = new HarnessNode("Bob", 0xB0, localOnlySwitch);
         Alice.Peer = Bob;
         Bob.Peer = Alice;
 
         // Per-side values differ on purpose (dust limit, to_self_delay) so a direction mix-up changes the txid
-        var aliceParty = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
-                                          LightningMoney.MilliSatoshis(1_000), 30,
-                                          LightningMoney.Satoshis(FundingSatoshis), 144);
-        var bobParty = new ChannelParty(LightningMoney.Satoshis(600), LightningMoney.Satoshis(20_000),
-                                        LightningMoney.MilliSatoshis(1_000), 30,
-                                        LightningMoney.Satoshis(FundingSatoshis), 100);
-        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x77, 32).ToArray());
-        var obscuring = new CommitmentNumber(Alice.Basepoints.PaymentBasepoint, Bob.Basepoints.PaymentBasepoint,
-                                             new Sha256());
+        _aliceParty = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
+                                       LightningMoney.MilliSatoshis(1_000), 30,
+                                       LightningMoney.Satoshis(FundingSatoshis), 144);
+        _bobParty = new ChannelParty(LightningMoney.Satoshis(600), LightningMoney.Satoshis(20_000),
+                                     LightningMoney.MilliSatoshis(1_000), 30,
+                                     LightningMoney.Satoshis(FundingSatoshis), 100);
+        _obscuring = new CommitmentNumber(Alice.Basepoints.PaymentBasepoint, Bob.Basepoints.PaymentBasepoint,
+                                          new Sha256());
 
-        Alice.Open(CreateChannel(Alice, Bob, aliceParty, bobParty, true, fundingTxId, obscuring, hasAnchors));
-        Bob.Open(CreateChannel(Bob, Alice, bobParty, aliceParty, false, fundingTxId, obscuring, hasAnchors));
+        Alice.Open(CreateChannelFor(Alice));
+        Bob.Open(CreateChannelFor(Bob));
     }
 
     /// <summary>
     /// Delivers queued messages, one per side in turn (so messages cross like on a real link), until both outboxes are
-    /// empty and neither commit scheduler has a signature waiting.
+    /// empty and neither commit scheduler has a signature waiting. A node whose store crashed is restarted and the link
+    /// reconnected (<see cref="RecoverAsync"/>). Stops early, without failing, once <see cref="DeliveryBudget"/> is
+    /// reached.
     /// </summary>
     public async Task PumpAsync()
     {
         for (var steps = 0; steps < 10_000; steps++)
         {
+            await RecoverAsync();
             await Alice.Scheduler.WhenIdleAsync();
             await Bob.Scheduler.WhenIdleAsync();
-            var aliceSent = await Alice.DeliverNextAsync();
-            var bobSent = await Bob.DeliverNextAsync();
+            await RecoverAsync();
+            if (DeliveryBudget is { } budget && Delivered >= budget)
+                return;
+
+            var aliceSent = await DeliverAsync(Alice);
+            await RecoverAsync();
+            if (DeliveryBudget is { } budgetAfterAlice && Delivered >= budgetAfterAlice)
+                return;
+
+            var bobSent = await DeliverAsync(Bob);
             if (aliceSent || bobSent)
                 continue;
 
             await Alice.Scheduler.WhenIdleAsync();
             await Bob.Scheduler.WhenIdleAsync();
+            await RecoverAsync();
             if (Alice.OutboxIsEmpty && Bob.OutboxIsEmpty)
                 return;
         }
 
         throw new InvalidOperationException("The message exchange did not converge");
+    }
+
+    /// <summary>
+    /// The link drops: messages in flight are lost both ways, the peer managers tell the channel managers (the
+    /// connection changed, then the last message of the old connection was handled), and nothing the nodes raise
+    /// reaches the peer until <see cref="ReconnectAsync"/>.
+    /// </summary>
+    public async Task DisconnectAsync()
+    {
+        foreach (var node in new[] { Alice, Bob })
+        {
+            node.PeerAlive = false;
+            node.DropOutbox();
+            node.ChannelManager.OnPeerConnectionChanged(node.Peer.NodeId);
+        }
+
+        await Alice.Scheduler.WhenIdleAsync();
+        await Bob.Scheduler.WhenIdleAsync();
+        await Alice.ChannelManager.OnPeerDisconnectedAsync(Bob.NodeId);
+        await Bob.ChannelManager.OnPeerDisconnectedAsync(Alice.NodeId);
+        Alice.DropOutbox();
+        Bob.DropOutbox();
+    }
+
+    /// <summary>A new connection: each side sends its channel_reestablish first (BOLT 2), as the peer manager does.
+    /// </summary>
+    public async Task ReconnectAsync()
+    {
+        Alice.PeerAlive = true;
+        Bob.PeerAlive = true;
+        Assert.Empty(await Alice.ChannelManager.OnPeerConnectedAsync(Bob.NodeId));
+        Assert.Empty(await Bob.ChannelManager.OnPeerConnectedAsync(Alice.NodeId));
+    }
+
+    /// <summary>
+    /// Restarts every node whose store crashed (a new process on the same seed and store: only what was saved
+    /// survives), and reconnects the link. Nothing happens when no store crashed.
+    /// </summary>
+    public async Task RecoverAsync()
+    {
+        if (!Alice.Store.Crashed && !Bob.Store.Crashed)
+            return;
+
+        await DisconnectAsync();
+        if (Alice.Store.Crashed)
+            Alice = await RestartAsync(Alice);
+        if (Bob.Store.Crashed)
+            Bob = await RestartAsync(Bob);
+
+        Alice.Peer = Bob;
+        Bob.Peer = Alice;
+        await ReconnectAsync();
+    }
+
+    private async Task<HarnessNode> RestartAsync(HarnessNode crashed)
+    {
+        Restarts++;
+        await crashed.Scheduler.WhenIdleAsync();
+        crashed.Dispose();
+        crashed.Store.Restart();
+
+        var restarted = new HarnessNode(crashed.Name, (byte)crashed.KeyIndex, _localOnlySwitch, crashed)
+        {
+            Peer = crashed.Peer,
+            PeerAlive = false
+        };
+        await restarted.RestoreAsync(CreateChannelFor(restarted));
+        return restarted;
+    }
+
+    private async Task<bool> DeliverAsync(HarnessNode node)
+    {
+        try
+        {
+            var delivered = await node.DeliverNextAsync();
+            if (delivered)
+                Delivered++;
+            return delivered;
+        }
+        catch (SimulatedCrashException)
+        {
+            // The receiver crashed while handling it: RecoverAsync restarts it
+            Delivered++;
+            return true;
+        }
+    }
+
+    private ChannelModel CreateChannelFor(HarnessNode node)
+    {
+        var isAlice = node.Name == "Alice";
+        return CreateChannel(node, node.Peer, isAlice ? _aliceParty : _bobParty, isAlice ? _bobParty : _aliceParty,
+                             isAlice, _fundingTxId, _obscuring, _hasAnchors);
     }
 
     /// <summary>The <c>reason</c> the fake error onion returns: a marker, the failure code and its data.</summary>
@@ -187,7 +310,8 @@ internal sealed class HarnessNode : IDisposable
     public ChannelManager ChannelManager { get; }
     public IChannelOperations Operations { get; }
     public ICommitScheduler Scheduler { get; }
-    public InMemoryChannelStateStore Store { get; } = new();
+    public InMemoryChannelStateStore Store { get; }
+    public ReestablishTracker Tracker { get; }
 
     /// <summary>
     /// Whether the peer is connected: the liveness probe answers it (with the channel's link pinned at
@@ -202,16 +326,16 @@ internal sealed class HarnessNode : IDisposable
     public bool OutboxIsEmpty => _outbox.IsEmpty;
     public HarnessNode Peer { get; set; } = null!;
 
-    /// <summary>Remote commitments this node signed: (number, txid).</summary>
+    /// <summary>Remote commitments this node signed: (number, txid). Kept across restarts.</summary>
     public List<(ulong Number, TxId TxId)> Signed { get; } = [];
 
-    /// <summary>Local commitments this node verified: (number, txid).</summary>
+    /// <summary>Local commitments this node verified: (number, txid). Kept across restarts.</summary>
     public List<(ulong Number, TxId TxId)> Verified { get; } = [];
 
-    /// <summary>Every domain event handed to this node's HTLC switch, in order.</summary>
+    /// <summary>Every domain event handed to this node's HTLC switch, in order. Kept across restarts.</summary>
     public List<IChannelDomainEvent> Events { get; } = [];
 
-    /// <summary>Every message this node received, in order (type only).</summary>
+    /// <summary>Every message this node received, in order (type only). Kept across restarts.</summary>
     public List<IChannelMessage> Received { get; } = [];
 
     public ChannelModel Channel => _channels.TryGetChannel(TwoNodeHarness.ChannelId, out var channel)
@@ -220,10 +344,24 @@ internal sealed class HarnessNode : IDisposable
 
     public ChannelCommitments State => Channel.Commitments!;
 
-    public HarnessNode(string name, byte seedTag, bool localOnlySwitch = false)
+    /// <param name="name">The node's name.</param>
+    /// <param name="seedTag">The key seed (and key index).</param>
+    /// <param name="localOnlySwitch">Hand events to the production <see cref="LocalOnlyHtlcSwitch"/>.</param>
+    /// <param name="previous">The crashed node this one restarts: its store and records are kept.</param>
+    public HarnessNode(string name, byte seedTag, bool localOnlySwitch = false, HarnessNode? previous = null)
     {
         Name = name;
         KeyIndex = seedTag;
+        Store = previous?.Store ?? new InMemoryChannelStateStore();
+        if (previous is not null)
+        {
+            Signed = previous.Signed;
+            Verified = previous.Verified;
+            Events = previous.Events;
+            Received = previous.Received;
+            Dropped = previous.Dropped;
+            Lost = previous.Lost;
+        }
 
         var rootKey = new ExtKey(new Key(Enumerable.Repeat(seedTag, 32).ToArray()), new byte[32]);
         var secureKeyManager = new Mock<ISecureKeyManager>();
@@ -239,12 +377,6 @@ internal sealed class HarnessNode : IDisposable
             Store.Commit();
             return Task.CompletedTask;
         });
-
-        var serializer = new Mock<IMessageSerializer>();
-        serializer.Setup(s => s.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
-                  .Callback((IMessage message, Stream stream) => stream.Write([(byte)((ushort)message.Type >> 8),
-                                                                                (byte)message.Type]))
-                  .Returns(Task.CompletedTask);
 
         var blockchainMonitor = new Mock<IBlockchainMonitor>();
         blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(TwoNodeHarness.BlockHeight);
@@ -271,13 +403,16 @@ internal sealed class HarnessNode : IDisposable
                                                        sp.GetRequiredService<CommitmentSigningService>(), _channels,
                                                        Verified));
         services.AddSingleton<IMessageFactory, MessageFactory>();
-        services.AddSingleton(serializer.Object);
+        services.AddSerializationInfrastructureServices();
         services.AddSingleton(blockchainMonitor.Object);
         services.AddSingleton<ISphinxService>(new FinalHopSphinx(new Secret(Enumerable.Repeat(seedTag, 32).ToArray())));
         services.AddSingleton(failureOnion.Object);
         services.AddSingleton<IChannelLockProvider>(_lockProvider);
         services.AddSingleton<IChannelMessagePublisher>(new LazyPublisher(this));
-        services.AddSingleton<IPeerLivenessProbe>(new FlagProbe(this));
+        services.AddSingleton<ReestablishTracker>();
+        services.AddScoped<ReestablishService>();
+        services.AddSingleton<IPeerLivenessProbe>(sp => new ReestablishGatedLivenessProbe(
+                                                      new FlagProbe(this), sp.GetRequiredService<ReestablishTracker>()));
         services.AddChannelOperationsServices();
         services.Configure<CommitSchedulerOptions>(o => o.Debounce = TimeSpan.Zero);
         services.AddSingleton<LocalOnlyHtlcSwitch>();
@@ -293,7 +428,10 @@ internal sealed class HarnessNode : IDisposable
         services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
         services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ChannelReestablishMessage>, ChannelReestablishMessageHandler>();
+        services.AddScoped<IChannelMessageHandler<ChannelReadyMessage>, ChannelReadyMessageHandler>();
         _provider = services.BuildServiceProvider();
+        Tracker = _provider.GetRequiredService<ReestablishTracker>();
 
         Signer = _provider.GetRequiredService<ILightningSigner>();
         Basepoints = Signer.GetChannelBasepoints(KeyIndex);
@@ -321,7 +459,33 @@ internal sealed class HarnessNode : IDisposable
                                                                                          Peer.Point(1)));
         _channels.AddChannel(channel);
         Store.Seed(channel.Commitments!);
+        Tracker.MarkOpened(channel.ChannelId, channel.RemoteNodeId);
         _provider.GetRequiredService<IPeerLivenessProbe>().MarkLinkUp(channel.ChannelId, channel.RemoteNodeId);
+    }
+
+    /// <summary>
+    /// Loads the channel as a restarted node does: the saved snapshot, sent diff and last-sent order on a fresh
+    /// channel model, registered through <see cref="ChannelManager.RegisterExistingChannelAsync"/> (signer, revert
+    /// of the peer's unsigned updates, event replay).
+    /// </summary>
+    public async Task RestoreAsync(ChannelModel channel)
+    {
+        channel.UpdateCommitments(Store.Committed!, new ChannelStateExtras
+        {
+            SentCommitDiff = Store.CommittedSentCommitDiff,
+            LastSent = Store.CommittedLastSent
+        });
+        await ChannelManager.RegisterExistingChannelAsync(channel);
+    }
+
+    /// <summary>Messages lost in flight when the link dropped (<see cref="DropOutbox"/>). Kept across restarts.</summary>
+    public List<IChannelMessage> Lost { get; } = [];
+
+    /// <summary>Loses every message this node queued and did not deliver yet.</summary>
+    public void DropOutbox()
+    {
+        while (_outbox.TryDequeue(out var message))
+            Lost.Add(message);
     }
 
     /// <summary>Hands the oldest queued message to the peer's channel manager.</summary>
@@ -442,12 +606,30 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
 {
     private ChannelCommitments? _staged;
     private IReadOnlyList<ShachainEntry>? _stagedShachain;
+    private ChannelStateExtras? _stagedExtras;
+    private readonly List<HtlcRecord> _stagedSettled = [];
+    private readonly List<HtlcRecord> _settled = [];
+    private int _saveAttempts;
 
     private readonly Dictionary<HtlcKey, Secret> _onionSecrets = [];
     private readonly Dictionary<(ChannelId, HtlcKey), HtlcOrigin> _origins = [];
     private readonly List<HtlcKey> _stagedPrunes = [];
 
     public ChannelCommitments? Committed { get; private set; }
+
+    /// <summary>The saved <c>SentCommitDiff</c> (cleared once the peer revoked, as the repository does).</summary>
+    public ReadOnlyMemory<byte>? CommittedSentCommitDiff { get; private set; }
+
+    public LastSentCommitmentMessage CommittedLastSent { get; private set; }
+
+    /// <summary>
+    /// The 1-based save (counted from the last <see cref="Restart"/>) that throws <see cref="SimulatedCrashException"/>
+    /// instead of saving; null never crashes. Every later save throws too, until <see cref="Restart"/>: the process is
+    /// dead.
+    /// </summary>
+    public int? CrashAtSave { get; set; }
+
+    public bool Crashed { get; private set; }
 
     /// <summary>The archived HTLCs whose pruning was saved.</summary>
     public List<HtlcKey> Pruned { get; } = [];
@@ -456,17 +638,52 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
 
     public void Seed(ChannelCommitments commitments) => Committed = commitments;
 
+    /// <summary>A new process on this store: what was staged is gone, saving works again.</summary>
+    public void Restart()
+    {
+        DiscardStaged();
+        Crashed = false;
+        CrashAtSave = null;
+        _saveAttempts = 0;
+    }
+
     public void Commit()
     {
+        _saveAttempts++;
+        if (Crashed || _saveAttempts == CrashAtSave)
+        {
+            Crashed = true;
+            DiscardStaged();
+            throw new SimulatedCrashException(_saveAttempts);
+        }
+
         if (_staged is not null)
+        {
             Committed = _staged;
+            if (_stagedExtras?.SentCommitDiff is { } diff)
+                CommittedSentCommitDiff = diff.ToArray();
+            if (_staged.RemoteNextCommit is null)
+                CommittedSentCommitDiff = null;
+            if (_stagedExtras?.LastSent is { } lastSent)
+                CommittedLastSent = lastSent;
+        }
+
+        _settled.AddRange(_stagedSettled);
+        _settled.RemoveAll(h => _stagedPrunes.Contains(h.Key));
         if (_stagedShachain is not null)
             CommittedShachain = _stagedShachain;
+        Pruned.AddRange(_stagedPrunes);
+        DiscardStaged();
+        Saves++;
+    }
+
+    private void DiscardStaged()
+    {
         _staged = null;
         _stagedShachain = null;
-        Pruned.AddRange(_stagedPrunes);
+        _stagedExtras = null;
+        _stagedSettled.Clear();
         _stagedPrunes.Clear();
-        Saves++;
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)
@@ -478,13 +695,19 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     public Task ApplyAsync(ChannelCommitments next, ChannelTransition transition, ChannelStateExtras? extras = null)
     {
         _staged = next;
+        _stagedExtras = extras;
+        _stagedSettled.AddRange(transition.SettledHtlcs);
         if (extras?.RemoteShachain is { } shachain)
             _stagedShachain = shachain;
         return Task.CompletedTask;
     }
 
     public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params) =>
-        throw new NotSupportedException();
+        Task.FromResult<PersistedChannelState?>(
+            Committed is null
+                ? null
+                : new PersistedChannelState(Committed, _settled.ToList(), CommittedSentCommitDiff, CommittedLastSent,
+                                            CommittedShachain));
 
     public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret)
     {

@@ -300,7 +300,6 @@ public class ChannelManagerTests
     }
 
     [Theory]
-    [InlineData(MessageTypes.ChannelReestablish)]
     [InlineData(MessageTypes.Shutdown)]
     [InlineData(MessageTypes.ClosingSigned)]
     [InlineData(MessageTypes.TxAddInput)]
@@ -358,7 +357,7 @@ public class ChannelManagerTests
         var channel = CreateChannel(ChannelState.Stale, false, 0x48, 100);
         _channels.Add(channel);
         var channelManager = CreateChannelManager();
-        var messageMock = CreateChannelMessageMock(MessageTypes.ChannelReestablish, channel.ChannelId);
+        var messageMock = CreateChannelMessageMock(MessageTypes.Shutdown, channel.ChannelId);
 
         // Act
         var exception = await Assert.ThrowsAsync<ChannelWarningException>(

@@ -476,7 +476,7 @@ public class PeerManagerTests
            .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
                                                      It.IsAny<CompactPubKey>()))
            .Callback(handled.SetResult)
-           .ReturnsAsync([]);
+           .Returns(Task.CompletedTask);
 
         // When
         RaiseChannelMessage(_mockChannelMessage.Object);
@@ -538,12 +538,12 @@ public class PeerManagerTests
                 RaiseResponse(messages[0]);
                 RaiseResponse(messages[1]); // an event raised while the first transition holds the lock
             })
-           .ReturnsAsync([]);
+           .Returns(Task.CompletedTask);
         _mockChannelManager
            .Setup(cm => cm.HandleChannelMessageAsync(secondMessage, It.IsAny<FeatureOptions>(),
                                                      It.IsAny<CompactPubKey>()))
            .Callback(() => RaiseResponse(messages[3]))
-           .ReturnsAsync([]);
+           .Returns(Task.CompletedTask);
         var sent = CaptureSentMessages(4, slowFirstSend: true);
 
         // Act
@@ -618,7 +618,7 @@ public class PeerManagerTests
            .Setup(cm => cm.HandleChannelMessageAsync(firstMessage, It.IsAny<FeatureOptions>(),
                                                      It.IsAny<CompactPubKey>()))
            .Callback(() => RaiseResponse(reply))
-           .ReturnsAsync([reply]);
+           .Returns(Task.CompletedTask);
         _mockChannelManager
            .Setup(cm => cm.HandleChannelMessageAsync(failingMessage, It.IsAny<FeatureOptions>(),
                                                      It.IsAny<CompactPubKey>()))
@@ -1097,7 +1097,7 @@ public class PeerManagerTests
         _mockChannelManager
            .Setup(cm => cm.HandleChannelMessageAsync(message, It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
            .Callback(handled.SetResult)
-           .ReturnsAsync([]);
+           .Returns(Task.CompletedTask);
         _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
                              .Callback(() => RaiseChannelMessage(message))
                              .Returns(Task.CompletedTask);
@@ -1592,6 +1592,111 @@ public class PeerManagerTests
                                    Times.Once);
     }
 
+    [Fact]
+    public async Task Given_NewConnection_When_Installed_Then_ReestablishStartsBeforeAnyMessageAndStoredErrorsGoOut()
+    {
+        // Arrange (BOLT 2: channel_reestablish, or a failed channel's error, before anything else on the connection)
+        var order = new List<string>();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x51, 32).ToArray());
+        var storedError = new ErrorMessage(new ErrorPayload(channelId, "failed earlier"));
+        _mockChannelManager.Setup(cm => cm.OnPeerConnectedAsync(_compactPubKey))
+                           .Callback(() =>
+                            {
+                                lock (order)
+                                    order.Add("connected");
+                            })
+                           .ReturnsAsync([storedError]);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .Callback(() =>
+            {
+                lock (order)
+                    order.Add("message");
+            })
+           .Returns(Task.CompletedTask);
+        var errorSent = new TaskCompletionSource<ErrorMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendErrorAsync(It.IsAny<ErrorMessage>()))
+                        .Callback((ErrorMessage e) => errorSent.TrySetResult(e))
+                        .Returns(Task.CompletedTask);
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback(() => RaiseChannelMessage(_mockChannelMessage.Object))
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        await CreatePeerManagerWithPeerAsync();
+        var sent = await errorSent.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        await Poll(() => order.Count == 2);
+
+        // Assert - the error went out without a disconnect, and the peer's message waited for the reestablish start
+        Assert.Same(storedError, sent);
+        Assert.Equal(["connected", "message"], order);
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+        _mockChannelManager.Verify(cm => cm.OnPeerConnectionChanged(_compactPubKey), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ChannelFailedException_When_ProcessingChannelMessage_Then_ErrorSentAndConnectionKept()
+    {
+        // Arrange (BOLT 1: the sender of an error MAY keep the connection; the peer's other channels go on)
+        await CreatePeerManagerWithPeerAsync();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x52, 32).ToArray());
+        var failing = CreateInboundMessage(channelId);
+        var next = CreateInboundMessage(channelId);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(failing, It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(new ChannelFailedException(channelId, "bad secret", "invalid per_commitment_secret"));
+        var handledNext = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(next, It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+           .Callback(handledNext.SetResult)
+           .Returns(Task.CompletedTask);
+        var errorSent = new TaskCompletionSource<ErrorMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendErrorAsync(It.IsAny<ErrorMessage>()))
+                        .Callback((ErrorMessage e) => errorSent.TrySetResult(e))
+                        .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseChannelMessage(failing);
+        RaiseChannelMessage(next);
+        var error = await errorSent.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        await handledNext.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(channelId, error.Payload.ChannelId);
+        Assert.Equal("invalid per_commitment_secret", System.Text.Encoding.UTF8.GetString(error.Payload.Data!));
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ConnectedPeer_When_ItDisconnects_Then_TheConnectionChangeAndTheRevertReachTheChannelManager()
+    {
+        // Arrange
+        await CreatePeerManagerWithPeerAsync();
+        var reverted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager.Setup(cm => cm.OnPeerDisconnectedAsync(_compactPubKey))
+                           .Callback(reverted.SetResult)
+                           .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseDisconnect(_mockPeerService);
+        await reverted.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert - once at the install, once at the drop
+        _mockChannelManager.Verify(cm => cm.OnPeerConnectionChanged(_compactPubKey), Times.Exactly(2));
+    }
+
+    private static async Task Poll(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + s_timeout;
+        while (!condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("Condition not met");
+            await Task.Delay(10);
+        }
+    }
+
     private PeerManager CreatePeerManager(IChannelUpdateService channelUpdateService)
     {
         return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
@@ -1699,7 +1804,7 @@ public class PeerManagerTests
                 foreach (var reply in replies)
                     RaiseResponse(reply);
             })
-           .ReturnsAsync(replies);
+           .Returns(Task.CompletedTask);
     }
 
     private void RaiseResponse(IChannelMessage message)

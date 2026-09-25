@@ -93,4 +93,13 @@ public interface IPeerService : IDisposable
     /// <param name="we">The warning exception containing the warning message to be sent to the peer.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
     Task SendWarningAsync(WarningException we);
+
+    /// <summary>
+    /// Sends an `error` message and keeps the connection (BOLT 1: the sender of an `error` fails the channel(s) it
+    /// names and MAY close the connection; e.g. a failed channel's stored error re-sent on reconnection, BOLT 2).
+    /// </summary>
+    /// <param name="errorMessage">The error; it should name a channel (an all-zero channel_id fails every channel).
+    /// </param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    Task SendErrorAsync(ErrorMessage errorMessage);
 }

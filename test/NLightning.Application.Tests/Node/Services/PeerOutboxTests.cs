@@ -6,6 +6,8 @@ using Application.Node.Services;
 using Domain.Exceptions;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
 
 public class PeerOutboxTests
 {
@@ -52,6 +54,36 @@ public class PeerOutboxTests
         {
             $"message:{first.GetHashCode()}", "warning:careful", $"message:{second.GetHashCode()}", "disconnect:bye"
         }, _wire);
+    }
+
+    [Fact]
+    public async Task Given_AnError_When_Enqueued_Then_SentInOrderWithoutClosingTheOutbox()
+    {
+        // Arrange - a failed channel's error keeps the connection (BOLT 1 MAY close, we don't)
+        _mockPeerService.Setup(p => p.SendErrorAsync(It.IsAny<ErrorMessage>()))
+                        .Returns((ErrorMessage error) =>
+                         {
+                             Record($"error:{error.GetHashCode()}");
+                             return Task.CompletedTask;
+                         });
+        var outbox = new PeerOutbox(_mockPeerService.Object, new Mock<ILogger>().Object);
+        var before = new Mock<IChannelMessage>().Object;
+        var error = new ErrorMessage(new ErrorPayload("channel failed"));
+        var after = new Mock<IChannelMessage>().Object;
+
+        // Act
+        Assert.True(outbox.TryEnqueue(before));
+        Assert.True(outbox.TryEnqueueError(error));
+        Assert.True(outbox.TryEnqueue(after));
+        outbox.Complete();
+        await outbox.Completion.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new[]
+        {
+            $"message:{before.GetHashCode()}", $"error:{error.GetHashCode()}", $"message:{after.GetHashCode()}"
+        }, _wire);
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
     [Fact]

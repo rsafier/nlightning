@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -19,11 +20,13 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Reestablish;
 using Services;
 
 public class ChannelManager : IChannelManager, IChannelMessagePublisher
@@ -105,13 +108,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                     channel.ChannelId);
                 break;
             case ChannelState.Open:
-                // TODO: Check if the channel has already been reestablished or if we need to reestablish it (N7)
+                // Not usable until channel_reestablish on the peer's next connection (OnPeerConnectedAsync, N7)
                 break;
             case ChannelState.ReadyForThem or ChannelState.ReadyForUs:
                 _logger.LogInformation("Waiting for channel {ChannelId} to be ready", channel.ChannelId);
                 break;
             case ChannelState.Failed:
-                // Kept in memory so its updates are refused; the error is re-sent on reconnection (B2-RE-05, N7)
+                // Kept in memory so its messages are ignored; its error is re-sent on every connection (B2-RE-05)
                 _logger.LogWarning("Channel {ChannelId} was failed; every update on it is refused",
                                    channel.ChannelId);
                 break;
@@ -205,39 +208,48 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// the channel id (or temporary_channel_id) of <paramref name="message"/>, so the peer gets an `error`/`warning`
     /// scoped to that channel. BOLT 1: an `error` with an all-zero channel_id tells the peer to fail every channel with
     /// us, so a channel-scoped failure must never lose its channel id.
+    /// A processed channel_reestablish pins the channel's link to this connection, replays the channel's pending HTLC
+    /// events and schedules a signature for what is pending (after the lock; N7, NL-252).
     /// </remarks>
-    public async Task<IReadOnlyList<IChannelMessage>> HandleChannelMessageAsync(IChannelMessage message,
-                                                                                FeatureOptions negotiatedFeatures,
-                                                                                CompactPubKey peerPubKey)
+    public async Task HandleChannelMessageAsync(IChannelMessage message, FeatureOptions negotiatedFeatures,
+                                                CompactPubKey peerPubKey)
     {
         var channelId = message.Payload.ChannelId;
 
         // One scope per message, created outside the lock so the transitions' domain events can be handed to the HTLC
         // switch after the lock is released
         using var scope = _serviceProvider.CreateScope();
+        var reestablished = false;
         try
         {
-            using var channelLocks = await AcquireMessageLocksAsync(message, channelId);
-            var wasOpen = IsOpen(channelId);
-
-            IReadOnlyList<IChannelMessage> replies;
-            try
+            using (await AcquireMessageLocksAsync(message, channelId))
             {
-                replies = await DispatchChannelMessageAsync(scope, message, channelId, negotiatedFeatures, peerPubKey);
+                var wasOpen = IsOpen(channelId);
+
+                IReadOnlyList<IChannelMessage> replies;
+                try
+                {
+                    replies = await DispatchChannelMessageAsync(scope, message, channelId, negotiatedFeatures,
+                                                                peerPubKey);
+                }
+                catch (ChannelFailedException cfe)
+                {
+                    // Persist Failed and the error before it is sent (N6-T3 contract), still under the lock
+                    await PersistFailedChannelAsync(scope, cfe);
+                    throw;
+                }
+
+                if (!wasOpen)
+                    MarkLinkUpIfOpened(channelId, peerPubKey);
+
+                if (message.Type == MessageTypes.ChannelReestablish)
+                    reestablished = await CompleteReestablishAsync(scope, channelId, peerPubKey);
+
+                RaiseResponseMessages(peerPubKey, replies);
             }
-            catch (ChannelFailedException cfe)
-            {
-                // Persist Failed and the error before it is sent (N6-T3 contract), still under the lock
-                await PersistFailedChannelAsync(scope, cfe);
-                throw;
-            }
 
-            if (!wasOpen)
-                MarkLinkUpIfOpened(channelId, peerPubKey);
-
-            RaiseResponseMessages(peerPubKey, replies);
-
-            return replies;
+            if (reestablished)
+                ScheduleCommit(channelId);
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
         {
@@ -256,6 +268,149 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             // from the persisted states on startup)
             await RaiseDomainEventsAsync(scope);
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Each channel is handled under its own lock (one at a time, never two). Failed channels get no
+    /// channel_reestablish (BOLT 2: "retransmit the error packet and ignore any other packets for that channel").
+    /// Channels still waiting for channel_ready send theirs only in reply to the peer's (a peer that still sees the
+    /// channel as pending may not expect it). A channel whose reestablish can't be built is logged and skipped: it stays
+    /// unusable on this connection, the others go on.
+    /// </remarks>
+    public async Task<IReadOnlyList<ErrorMessage>> OnPeerConnectedAsync(CompactPubKey peerPubKey)
+    {
+        var tracker = GetTracker();
+        tracker?.ResetPeer(peerPubKey);
+
+        var errors = new List<ErrorMessage>();
+        foreach (var channel in GetPeerChannels(peerPubKey))
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
+                switch (channel.State)
+                {
+                    case ChannelState.Failed:
+                        errors.Add(await GetStoredErrorAsync(scope, channel));
+                        _logger.LogInformation("Re-sending the error of failed channel {ChannelId}",
+                                               channel.ChannelId);
+                        break;
+                    case ChannelState.Open:
+                        if (channel.Commitments is not null)
+                            await RevertUncommittedAsync(channel);
+
+                        var reestablishService = scope.ServiceProvider.GetRequiredService<ReestablishService>();
+                        var reestablish = await reestablishService.CreateOwnAsync(channel);
+                        tracker?.MarkSent(channel.ChannelId, peerPubKey);
+                        RaiseResponseMessages(peerPubKey, [reestablish]);
+                        break;
+                }
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not start the reestablish of channel {ChannelId} with peer {Peer}",
+                                 channel.ChannelId, peerPubKey);
+            }
+        }
+
+        return errors;
+    }
+
+    /// <inheritdoc />
+    public async Task OnPeerDisconnectedAsync(CompactPubKey peerPubKey)
+    {
+        foreach (var channel in GetPeerChannels(peerPubKey))
+        {
+            if (channel.Commitments is null)
+                continue;
+
+            try
+            {
+                using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
+                if (channel.State is ChannelState.Open or ChannelState.Failed)
+                    await RevertUncommittedAsync(channel);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not revert the uncommitted updates of channel {ChannelId}",
+                                 channel.ChannelId);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public void OnPeerConnectionChanged(CompactPubKey peerPubKey) => GetTracker()?.ResetPeer(peerPubKey);
+
+    private List<ChannelModel> GetPeerChannels(CompactPubKey peerPubKey) =>
+        _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerPubKey);
+
+    private ReestablishTracker? GetTracker() => _serviceProvider.GetService<ReestablishTracker>();
+
+    /// <summary>
+    /// After the peer's channel_reestablish was handled without failure: the channel is reestablished on this
+    /// connection (unless the connection changed meanwhile), its link is pinned (NL-252) and its pending HTLC events
+    /// are queued for the switch (raised after the lock). Call it under the channel's lock.
+    /// </summary>
+    /// <returns>True when the channel was reestablished now.</returns>
+    private async Task<bool> CompleteReestablishAsync(IServiceScope scope, ChannelId channelId,
+                                                      CompactPubKey peerPubKey)
+    {
+        var tracker = GetTracker();
+        if (tracker is null || !tracker.TryMarkReestablished(channelId))
+            return false;
+
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel) || channel.State != ChannelState.Open)
+            return true;
+
+        _serviceProvider.GetService<IPeerLivenessProbe>()?.MarkLinkUp(channelId, peerPubKey);
+        if (channel.Commitments is not null)
+            await QueuePendingDomainEventsAsync(scope, channel);
+
+        _logger.LogInformation("Channel {ChannelId} reestablished with peer {Peer}", channelId, peerPubKey);
+        return true;
+    }
+
+    /// <summary>Asks the commit scheduler to sign what is pending (it checks the link and D7 itself).</summary>
+    private void ScheduleCommit(ChannelId channelId)
+    {
+        if (_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+         && channel.Commitments is { HasPendingChangesForRemote: true })
+            _serviceProvider.GetService<ICommitScheduler>()?.Schedule(channelId);
+    }
+
+    /// <summary>
+    /// The <c>error</c> we sent when the channel failed, as stored (B2-RE-05), or a new one with the default text for a
+    /// channel failed before the error was stored.
+    /// </summary>
+    private async Task<ErrorMessage> GetStoredErrorAsync(IServiceScope scope, ChannelModel channel)
+    {
+        if (channel.ErrorSent is { } stored)
+        {
+            try
+            {
+                var serializer = scope.ServiceProvider.GetRequiredService<IMessageSerializer>();
+                using var stream = new MemoryStream(stored.ToArray(), false);
+                if (await serializer.DeserializeMessageAsync(stream) is ErrorMessage errorMessage)
+                    return errorMessage;
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "The stored error of channel {ChannelId} can't be read", channel.ChannelId);
+            }
+        }
+
+        return new ErrorMessage(new ErrorPayload(channel.ChannelId, ChannelFailedException.DefaultPeerMessage));
+    }
+
+    /// <summary>The text of the channel's stored <c>error</c> (to send it again in reply to a message).</summary>
+    private async Task<string> GetStoredErrorTextAsync(IServiceScope scope, ChannelModel channel)
+    {
+        var error = await GetStoredErrorAsync(scope, channel);
+        return error.Payload.Data is { Length: > 0 } data
+                   ? Encoding.UTF8.GetString(data)
+                   : ChannelFailedException.DefaultPeerMessage;
     }
 
     /// <summary>
@@ -355,6 +510,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
                 return;
 
+            // Already failed and stored (a message on a failed channel gets the stored error again)
+            if (channel.State == ChannelState.Failed && channel.ErrorSent is not null)
+                return;
+
             var messageFactory = scope.ServiceProvider.GetRequiredService<IMessageFactory>();
             var messageSerializer = scope.ServiceProvider.GetRequiredService<IMessageSerializer>();
             var errorMessage = messageFactory.CreateErrorMessage(failure.PeerMessage!, channelId);
@@ -381,15 +540,18 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     /// <summary>
     /// A channel that just turned Open (both channel_ready exchanged, on this connection) can carry updates on the
-    /// peer's current connection: pin it in the <see cref="IPeerLivenessProbe"/>. A channel loaded at startup is never
-    /// pinned here; N7 pins it after channel_reestablish. Call it while holding the channel's lock.
+    /// peer's current connection: pin it in the <see cref="IPeerLivenessProbe"/> and count it as reestablished there
+    /// (channel_ready starts normal operation). A channel loaded at startup or reconnected is pinned after its
+    /// channel_reestablish instead (<see cref="CompleteReestablishAsync"/>). Call it while holding the channel's lock.
     /// </summary>
     private void MarkLinkUpIfOpened(ChannelId channelId, CompactPubKey peerPubKey)
     {
-        if (!IsOpen(channelId) || _serviceProvider.GetService<IPeerLivenessProbe>() is not { } probe)
+        if (!IsOpen(channelId))
             return;
 
-        probe.MarkLinkUp(channelId, peerPubKey);
+        // Opened on this connection: channel_ready is the start of normal operation, no reestablish needed on it
+        GetTracker()?.MarkOpened(channelId, peerPubKey);
+        _serviceProvider.GetService<IPeerLivenessProbe>()?.MarkLinkUp(channelId, peerPubKey);
     }
 
     /// <summary>
@@ -415,6 +577,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     {
         // Check if the channel exists on the state dictionary
         _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
+
+        // BOLT 2: a failed channel re-sends its error and ignores everything else (B2-RE-05)
+        if (currentState == ChannelState.Failed && _channelMemoryRepository.TryGetChannel(channelId, out var failed))
+            throw new ChannelFailedException(channelId,
+                                             $"Ignoring {Enum.GetName(message.Type)} on failed channel {channelId}",
+                                             await GetStoredErrorTextAsync(scope, failed));
+
+        if (IsNormalOperationMessage(message.Type))
+            ThrowIfNotReestablished(channelId, currentState, message.Type);
 
         // In this case we can only handle messages that are opening a channel
         switch (message.Type)
@@ -506,10 +677,41 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return await GetChannelMessageHandler<UpdateFeeMessage>(scope)
                           .HandleAsync(Cast<UpdateFeeMessage>(message), currentState, negotiatedFeatures, peerPubKey);
 
+            // BOLT 2 message retransmission (plan N7)
+            case MessageTypes.ChannelReestablish:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<ChannelReestablishMessage>(scope)
+                          .HandleAsync(Cast<ChannelReestablishMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
         }
+    }
+
+    private static bool IsNormalOperationMessage(MessageTypes messageType) =>
+        messageType is MessageTypes.UpdateAddHtlc or MessageTypes.UpdateFulfillHtlc or MessageTypes.UpdateFailHtlc
+                    or MessageTypes.UpdateFailMalformedHtlc or MessageTypes.CommitmentSigned
+                    or MessageTypes.RevokeAndAck or MessageTypes.UpdateFee;
+
+    /// <summary>
+    /// BOLT 2: after a reconnection nothing but channel_reestablish is exchanged for a channel until both were
+    /// processed (B2-RE-07). An update, signature or revocation on an Open channel that was not reestablished (or
+    /// opened) on this connection breaks that: warning and close the connection, the next reconnection starts over.
+    /// Without a <see cref="ReestablishTracker"/> (in-process tests) nothing is gated.
+    /// </summary>
+    private void ThrowIfNotReestablished(ChannelId channelId, ChannelState currentState, MessageTypes messageType)
+    {
+        if (currentState != ChannelState.Open || GetTracker() is not { } tracker || tracker.IsReestablished(channelId))
+            return;
+
+        var messageName = Enum.GetName(messageType) ?? ((ushort)messageType).ToString();
+        throw new ChannelWarningException($"[B2-RE-07] {messageName} on channel {channelId} before channel_reestablish",
+                                          channelId, $"{messageName} before channel_reestablish")
+        {
+            CloseConnection = true
+        };
     }
 
     /// <summary>
@@ -537,16 +739,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7),
-    /// shutdown/closing_signed (N10), and the dual-funding messages (the HTLC and fee updates, commitment_signed and
+    /// Interim behavior for channel messages we can't process yet: shutdown/closing_signed (BOLT2 plan N10), and the
+    /// dual-funding messages (the HTLC and fee updates, commitment_signed and
     /// revoke_and_ack have handlers since N6-T1). Only for channels we know: an unknown channel gets an `error` (see
     /// <see cref="ThrowIfUnknownChannelAsync"/>).
     /// </summary>
     /// <remarks>
     /// We never fail a known channel (nor, through an all-zero channel_id, every channel) because we lack a handler: a
     /// failed channel makes the peer (e.g. LND) force-close it. Instead the message is ignored, the peer gets a
-    /// `warning` scoped to the channel, and the connection stays up. The peer keeps waiting for our reply; for
-    /// channel_reestablish the channel simply stays inactive until N7 lands.
+    /// `warning` scoped to the channel, and the connection stays up.
     /// </remarks>
     private static ChannelWarningException CreateNotImplementedWarning(MessageTypes messageType, ChannelId channelId)
     {
