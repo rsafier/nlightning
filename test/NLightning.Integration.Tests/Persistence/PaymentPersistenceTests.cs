@@ -453,7 +453,7 @@ public class PaymentPersistenceTests
             var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
             var channel = SqliteDbTestContext.CreateChannel(true);
             var driver = new CommitmentDanceDriver(channel.ChannelId,
-                                                   channel.ToCommitmentParams(maxDustHtlcExposureMsat),
+                                                   CommitmentParams.FromChannel(channel, maxDustHtlcExposureMsat),
                                                    channel.LocalBalance.MilliSatoshi,
                                                    channel.RemoteBalance.MilliSatoshi, seed: 3);
             await using (var context = db.CreateDbContext())

@@ -290,27 +290,6 @@ public class ChannelModel
         DataLossDetected = true;
     }
 
-    /// <summary>
-    /// The static inputs of the commitment state machine (<see cref="ChannelCommitments"/>) for this channel.
-    /// </summary>
-    /// <param name="maxDustHtlcExposureMsat">Our dust exposure policy (a node setting, not stored with the
-    /// channel).</param>
-    /// <exception cref="InvalidOperationException">The funding output is not known yet.</exception>
-    public CommitmentParams ToCommitmentParams(ulong? maxDustHtlcExposureMsat = null)
-    {
-        var fundingAmount = FundingOutput?.Amount
-                         ?? throw new InvalidOperationException("The funding output is not known yet");
-
-        return new CommitmentParams(IsInitiator, checked((ulong)fundingAmount.Satoshi),
-                                    ChannelParams.OptionAnchorOutputs, ToCommitmentParty(ChannelParams.Local),
-                                    ToCommitmentParty(ChannelParams.Remote), maxDustHtlcExposureMsat);
-
-        static CommitmentParty ToCommitmentParty(ChannelParty party) =>
-            new(checked((ulong)(party.DustLimitAmount?.Satoshi ?? 0)),
-                checked((ulong)(party.ChannelReserveAmount?.Satoshi ?? 0)), party.HtlcMinimumAmount?.MilliSatoshi ?? 0,
-                party.MaxAcceptedHtlcs, party.MaxHtlcValueInFlight?.MilliSatoshi ?? 0);
-    }
-
     public ChannelSigningInfo GetSigningInfo()
     {
         return new ChannelSigningInfo(FundingOutput!.TransactionId!.Value, FundingOutput.Index!.Value,

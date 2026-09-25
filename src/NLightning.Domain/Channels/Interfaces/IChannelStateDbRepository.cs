@@ -45,7 +45,7 @@ public interface IChannelStateDbRepository
     /// Reloads the commitment state of a channel, or null when it has no snapshot yet.
     /// </summary>
     /// <param name="channelId">The channel.</param>
-    /// <param name="params">The static parameters (see <see cref="ChannelModel.ToCommitmentParams"/>); they are not
+    /// <param name="params">The static parameters (build them with <see cref="CommitmentParams.FromChannel"/>); they are not
     /// stored with the state.</param>
     /// <exception cref="InvalidOperationException">An HTLC row holds a legacy state (0-3) written before the state
     /// machine existed (NL-025), or a stored part is inconsistent: such a channel cannot be restored.</exception>
@@ -77,7 +77,11 @@ public interface IChannelStateDbRepository
     /// <summary>
     /// The stored HTLCs, on any channel, that carry <paramref name="origin"/> (startup replay, ONION M4-T7: a
     /// <c>Pending</c> forward circuit or an <c>InFlight</c> payment without a recorded HTLC is failed only when this is
-    /// empty). Archived (final) rows are included until pruned; check their state.
+    /// empty). Archived (final) rows are included until pruned; check their state. A retry replaces a failed payment
+    /// under the same payment hash (<c>IPaymentDbRepository.AddAsync</c>), so a <see cref="HtlcOrigin"/> of kind
+    /// <c>Local</c> can also match the archived HTLCs of earlier failed attempts: a replay must count as "has an HTLC"
+    /// only a row that is not final, or the one matching the payment's recorded outgoing channel and HTLC id, and
+    /// otherwise fail the payment (else a retry that crashed before offering its HTLC stays in flight forever).
     /// </summary>
     /// <exception cref="ArgumentException"><paramref name="origin"/> is not valid.</exception>
     Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin);

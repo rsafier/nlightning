@@ -404,7 +404,7 @@ public class ChannelStateDbRepositoryTests
         // differ from the first snapshot's
         await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
         var channel = SqliteDbTestContext.CreateChannel(true);
-        var @params = channel.ToCommitmentParams();
+        var @params = CommitmentParams.FromChannel(channel);
         var driver = new CommitmentDanceDriver(channel.ChannelId, @params, channel.LocalBalance.MilliSatoshi,
                                                channel.RemoteBalance.MilliSatoshi, seed: 3);
         driver.TryUsAdd(5_000_000);
@@ -460,7 +460,7 @@ public class ChannelStateDbRepositoryTests
             Db = db;
             Driver = driver;
             ChannelId = channel.ChannelId;
-            _params = channel.ToCommitmentParams();
+            _params = CommitmentParams.FromChannel(channel);
             _interceptor = interceptor;
         }
 
@@ -468,7 +468,7 @@ public class ChannelStateDbRepositoryTests
         {
             var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
             var channel = SqliteDbTestContext.CreateChannel(true);
-            var driver = new CommitmentDanceDriver(channel.ChannelId, channel.ToCommitmentParams(),
+            var driver = new CommitmentDanceDriver(channel.ChannelId, CommitmentParams.FromChannel(channel),
                                                    channel.LocalBalance.MilliSatoshi,
                                                    channel.RemoteBalance.MilliSatoshi, seed: seed);
             await using (var context = db.CreateDbContext())

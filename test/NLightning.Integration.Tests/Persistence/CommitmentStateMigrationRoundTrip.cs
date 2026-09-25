@@ -134,7 +134,7 @@ internal static class CommitmentStateMigrationRoundTrip
     {
         var sha256 = new Sha256();
         var channel = SqliteDbTestContext.CreateChannel(true);
-        var @params = channel.ToCommitmentParams();
+        var @params = CommitmentParams.FromChannel(channel);
         var driver = new CommitmentDanceDriver(channel.ChannelId, @params, channel.LocalBalance.MilliSatoshi,
                                                channel.RemoteBalance.MilliSatoshi, seed: 11);
         await using (var context = contextFactory())
