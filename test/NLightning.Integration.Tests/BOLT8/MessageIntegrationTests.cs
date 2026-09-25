@@ -102,6 +102,41 @@ public class MessageIntegrationTests
     }
 
     [Fact]
+    public void Given_MaximumSizeMessage_When_DecryptedInPlace_Then_MessageRoundTrips()
+    {
+        // Arrange - TransportService decrypts the body into the same buffer it was read into, at offset 0
+        var initializedParties = new InitializedPartiesVector();
+
+        try
+        {
+            var message = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)(i * 5))
+                                    .ToArray();
+            var messageBuffer = new byte[ProtocolConstants.MaxEncryptedPacketLength];
+            var messageSize = initializedParties.InitiatorTransport.WriteMessage(message, messageBuffer);
+            var readBuffer = new byte[ProtocolConstants.MaxEncryptedPacketLength];
+            messageBuffer.AsSpan(0, ProtocolConstants.MessageHeaderSize).CopyTo(readBuffer);
+
+            // Act
+            var receivedMessageLength =
+                initializedParties.ResponderTransport.ReadMessageLength(
+                    readBuffer.AsSpan(0, ProtocolConstants.MessageHeaderSize));
+            messageBuffer.AsSpan(ProtocolConstants.MessageHeaderSize, receivedMessageLength).CopyTo(readBuffer);
+            var receivedMessageSize =
+                initializedParties.ResponderTransport.ReadMessagePayload(readBuffer.AsSpan(0, receivedMessageLength),
+                                                                         readBuffer);
+
+            // Assert
+            Assert.Equal(ProtocolConstants.MessageHeaderSize + receivedMessageLength, messageSize);
+            Assert.Equal(message, readBuffer[..receivedMessageSize]);
+        }
+        finally
+        {
+            initializedParties.InitiatorTransport.Dispose();
+            initializedParties.ResponderTransport.Dispose();
+        }
+    }
+
+    [Fact]
     public void Given_OversizedMessage_When_Writing_Then_ThrowsWithoutConsumingANonce()
     {
         // Arrange
