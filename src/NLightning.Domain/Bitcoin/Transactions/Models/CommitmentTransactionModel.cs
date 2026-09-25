@@ -1,6 +1,7 @@
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
+using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
 using NLightning.Domain.Protocol.Models;
 
@@ -64,9 +65,38 @@ public class CommitmentTransactionModel
     public IReadOnlyList<ReceivedHtlcOutputInfo> ReceivedHtlcOutputs { get; }
 
     /// <summary>
-    /// Gets the total fee for this transaction.
+    /// Gets the base fee of this transaction (BOLT 3 "base fee"; trimmed HTLC value is extra fee not included here).
     /// </summary>
     public LightningMoney Fee { get; }
+
+    /// <summary>
+    /// Gets the feerate (sat per 1000 weight) the commitment was built with. HTLC transactions spending its HTLC outputs
+    /// use the same feerate.
+    /// </summary>
+    public ulong FeeRatePerKw { get; init; }
+
+    /// <summary>
+    /// Gets whether option_anchors applies (HTLC scripts with <c>1 OP_CSV</c>, zero-fee HTLC transactions with
+    /// sequence 1 and <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> remote HTLC signatures).
+    /// </summary>
+    public bool HasAnchors { get; init; }
+
+    /// <summary>
+    /// Gets the CSV delay on the holder's delayed outputs (to_local and the HTLC transaction outputs).
+    /// </summary>
+    public ushort ToSelfDelay { get; init; }
+
+    /// <summary>
+    /// Gets the holder's <c>local_delayedpubkey</c> for this commitment. HTLC transaction outputs pay to it after
+    /// <see cref="ToSelfDelay"/>. Null only for models built without the factory.
+    /// </summary>
+    public CompactPubKey? LocalDelayedPubKey { get; init; }
+
+    /// <summary>
+    /// Gets the <c>revocationpubkey</c> for this commitment (the counterparty's penalty key). Null only for models built
+    /// without the factory.
+    /// </summary>
+    public CompactPubKey? RevocationPubKey { get; init; }
 
     /// <summary>
     /// Creates a new instance of CommitmentTransactionModel.
