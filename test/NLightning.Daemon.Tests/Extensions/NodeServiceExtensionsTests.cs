@@ -5,9 +5,11 @@ namespace NLightning.Daemon.Tests.Extensions;
 
 using Daemon.Extensions;
 using Daemon.Interfaces;
+using Daemon.Ipc.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Interfaces;
@@ -44,6 +46,12 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<OpenChannelClientSubscriptionRequest,
                                  OpenChannelClientSubscriptionResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListChannelsClientRequest,
+                                 ListChannelsClientResponse>>());
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+        Assert.Contains(ClientCommand.ListChannels, commands);
+        Assert.Equal(commands.Count, commands.Distinct().Count());
     }
 
     [Fact]

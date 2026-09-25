@@ -64,6 +64,8 @@ public class ClientAppTests
     [Theory]
     [InlineData("getaddress")]
     [InlineData("info")]
+    [InlineData("listchannels")]
+    [InlineData("list-channels")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command)
     {
         // Act

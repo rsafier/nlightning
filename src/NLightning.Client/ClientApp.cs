@@ -61,6 +61,13 @@ internal static class ClientApp
                     var listPeers = await client.ListPeersAsync(cancellationToken);
                     new ListPeersPrinter().Print(listPeers);
                     break;
+                case "listchannels":
+                case "list-channels":
+                    var listChannels =
+                        await client.ListChannelsAsync(commandArgs.Length > 0 ? commandArgs[0] : null,
+                                                       cancellationToken);
+                    new ListChannelsPrinter().Print(listChannels);
+                    break;
                 case "getaddress":
                 case "get-address":
                     var addresses =
@@ -100,6 +107,8 @@ internal static class ClientApp
             case "node-info":
             case "listpeers":
             case "list-peers":
+            case "listchannels":
+            case "list-channels":
             case "getaddress":
             case "get-address":
             case "walletbalance":
