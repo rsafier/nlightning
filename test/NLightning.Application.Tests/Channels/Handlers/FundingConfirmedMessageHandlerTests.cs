@@ -105,4 +105,46 @@ public class FundingConfirmedMessageHandlerTests
         Assert.InRange(aliases.Count, 2, 5);
         Assert.Equal(fresh.Take(aliases.Count), aliases);
     }
+
+    [Fact]
+    public async Task Given_ChannelAlreadyHasAliases_When_FundingConfirmedAgain_Then_AliasesAreReused()
+    {
+        // Arrange
+        var existingAliases = new List<ShortChannelId>
+        {
+            new(16_000_000, 1, 0),
+            new(16_000_000, 2, 0)
+        };
+        var channel = CreateChannel(1, FeatureSupport.Optional);
+        channel.ShortChannelId = new ShortChannelId(800_000, 5, 0);
+        channel.LocalAliases = existingAliases;
+
+        var memoryRepository = new Mock<IChannelMemoryRepository>();
+        memoryRepository.Setup(x => x.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+
+        var signer = new Mock<ILightningSigner>();
+        signer.Setup(x => x.GetPerCommitmentPoint(It.IsAny<ChannelId>(), It.IsAny<ulong>())).Returns(s_pubKey);
+
+        var uow = new Mock<IUnitOfWork>();
+        uow.Setup(x => x.ChannelDbRepository).Returns(new Mock<IChannelDbRepository>().Object);
+
+        var messageFactory = new Mock<IMessageFactory>();
+        var sentAliases = new List<ShortChannelId>();
+        messageFactory.Setup(x => x.CreateChannelReadyMessage(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                                              It.IsAny<ShortChannelId?>()))
+                      .Callback<ChannelId, CompactPubKey, ShortChannelId?>((_, _, alias) =>
+                                                                               sentAliases.Add(alias!.Value));
+
+        // Any fresh candidate would differ from the existing aliases
+        var handler = new ScriptedAliasHandler(Enumerable.Range(1, 10).Select(i => new ShortChannelId(16_200_000,
+                                                   (uint)i, 0)), memoryRepository.Object, signer.Object,
+                                               messageFactory.Object, uow.Object);
+
+        // Act
+        await handler.HandleAsync(channel);
+
+        // Assert
+        Assert.Same(existingAliases, channel.LocalAliases);
+        Assert.Equal(existingAliases, sentAliases);
+    }
 }
