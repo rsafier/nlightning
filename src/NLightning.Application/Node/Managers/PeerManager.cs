@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Threading.Channels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Node.Managers;
 
@@ -17,6 +18,7 @@ using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
+using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -101,8 +103,15 @@ public sealed class PeerManager : IPeerManager
 
     public PeerManager(IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                        ILogger<PeerManager> logger, IPeerServiceFactory peerServiceFactory,
-                       ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider)
+                       ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider,
+                       IOptions<NodeOptions>? nodeOptions = null)
     {
+        if (nodeOptions is not null)
+        {
+            ReconnectInitialDelay = nodeOptions.Value.ReconnectInitialDelay;
+            ReconnectMaxDelay = nodeOptions.Value.ReconnectMaxDelay;
+        }
+
         _channelManager = channelManager;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
@@ -13,6 +14,7 @@ using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Interfaces;
+using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -64,7 +66,7 @@ public class NodeServiceExtensionsTests
         services.AddSingleton(new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IFeeService>().Object);
         services.AddLogging();
-        services.AddOptions<Domain.Node.Options.NodeOptions>().BindConfiguration("Node");
+        services.AddOptions<NodeOptions>().BindConfiguration("Node");
         Application.DependencyInjection.AddApplicationServices(services);
         Infrastructure.Bitcoin.DependencyInjection.AddBitcoinInfrastructure(services);
         Infrastructure.DependencyInjection.AddInfrastructureServices(services);
@@ -96,13 +98,51 @@ public class NodeServiceExtensionsTests
         Assert.Same(secureKeyManager, provider.GetRequiredService<ISecureKeyManager>());
     }
 
-    private static IConfiguration BuildConfiguration()
+    [Fact]
+    public void Given_CltvExpiryDeltaBelow34_When_NodeOptionsResolved_Then_ValidationFails()
+    {
+        // Arrange: BOLT 7 recommends cltv_expiry_delta >= 34
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Routing:CltvExpiryDelta", "33")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var exception = Assert.Throws<OptionsValidationException>(() =>
+                                                                       provider
+                                                                          .GetRequiredService<IOptions<NodeOptions>>()
+                                                                          .Value);
+
+        // Assert
+        Assert.Contains(exception.Failures, f => f.Contains("CltvExpiryDelta"));
+    }
+
+    [Fact]
+    public void Given_ReconnectDelaysConfigured_When_NodeOptionsResolved_Then_TheyAreBound()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:ReconnectInitialDelay", "00:00:01"),
+                                                        ("Node:ReconnectMaxDelay", "00:00:30")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(1), options.ReconnectInitialDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.ReconnectMaxDelay);
+    }
+
+    private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)
     {
         return new ConfigurationBuilder()
               .AddInMemoryCollection([
                    new KeyValuePair<string, string?>("Node:Network", "regtest"),
                    new KeyValuePair<string, string?>("Database:Provider", "Sqlite"),
-                   new KeyValuePair<string, string?>("Database:ConnectionString", "Data Source=:memory:")
+                   new KeyValuePair<string, string?>("Database:ConnectionString", "Data Source=:memory:"),
+                   ..extra.Select(e => new KeyValuePair<string, string?>(e.Key, e.Value))
                ])
               .Build();
     }

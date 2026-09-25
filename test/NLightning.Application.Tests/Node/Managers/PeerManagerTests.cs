@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 using NLightning.Infrastructure.Protocol.Models;
 using NLightning.Tests.Utils.Channels;
@@ -94,6 +95,27 @@ public class PeerManagerTests
         // No active channels unless a test says so; our node key is lower than the peer's by default
         _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
         _mockSecureKeyManager.Setup(k => k.GetNodePubKey()).Returns(s_lowerNodeKey);
+    }
+
+    [Fact]
+    public void Given_NodeOptionsWithReconnectDelays_When_Constructed_Then_BackoffUsesThem()
+    {
+        // Arrange
+        var nodeOptions = Options.Create(new NodeOptions
+        {
+            ReconnectInitialDelay = TimeSpan.FromSeconds(1),
+            ReconnectMaxDelay = TimeSpan.FromSeconds(30)
+        });
+
+        // Act
+        var peerManager = new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
+                                          _mockLogger.Object, _mockPeerServiceFactory.Object,
+                                          _mockSecureKeyManager.Object, _mockTcpService.Object, _fakeServiceProvider,
+                                          nodeOptions);
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(1), peerManager.ReconnectInitialDelay);
+        Assert.Equal(TimeSpan.FromSeconds(30), peerManager.ReconnectMaxDelay);
     }
 
     [Fact]

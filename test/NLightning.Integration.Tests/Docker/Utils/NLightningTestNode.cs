@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
-using System.Reflection;
 using LNUnit.LND;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -128,10 +127,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// The first wait of the peer manager's reconnect backoff, or <c>null</c> for the daemon's default. Applied on
     /// every <see cref="StartAsync"/>, so set it before starting.
     /// </summary>
-    /// <remarks>
-    /// Set through reflection on <c>PeerManager.ReconnectInitialDelay</c> (internal, and the Application assembly
-    /// grants no internals to this project) until <c>NodeOptions</c> has a reconnect-backoff option.
-    /// </remarks>
+    /// <remarks>Applied as <c>NodeOptions.ReconnectInitialDelay</c>, before the caller's own option changes.</remarks>
     public TimeSpan? ReconnectInitialDelay { get; set; }
 
     public bool IsRunning => _started;
@@ -303,8 +299,6 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
             // A fresh database starts scanning at the current tip; a restarted node resumes from its stored state
             var currentHeight = (uint)await Bitcoin.GetBlockCountAsync(cancellationToken);
-
-            ApplyPeerManagerOverrides();
 
             // IFeeService is a transient typed HttpClient, so keep the instance we start (the daemon does the same)
             _feeService = Services.GetRequiredService<IFeeService>();
@@ -668,30 +662,6 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await serviceProvider.DisposeAsync();
     }
 
-    /// <summary>
-    /// Test-only knobs the peer manager keeps internal (see <see cref="ReconnectInitialDelay"/>).
-    /// </summary>
-    private void ApplyPeerManagerOverrides()
-    {
-        if (ReconnectInitialDelay is not { } delay)
-            return;
-
-        var peerManager = PeerManager as Application.Node.Managers.PeerManager
-                       ?? throw new InvalidOperationException($"Unexpected peer manager {PeerManager.GetType()}");
-        SetNonPublicProperty(peerManager, "ReconnectInitialDelay", delay);
-    }
-
-    private static void SetNonPublicProperty(object target, string propertyName, object value)
-    {
-        var property = target.GetType()
-                             .GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public
-                                                                               | BindingFlags.NonPublic)
-                    ?? throw new InvalidOperationException(
-                           $"{target.GetType().Name}.{propertyName} is gone; update the test hook in "
-                         + nameof(NLightningTestNode));
-        property.SetValue(target, value);
-    }
-
     private ServiceProvider BuildServiceProvider()
     {
         Assert.NotNull(_fixture.Builder);
@@ -733,6 +703,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                      options.ListenAddresses = [$"{IPAddress.Loopback}:{Port}"];
                      options.BitcoinNetwork = BitcoinNetwork.Regtest;
                      options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];
+                     if (ReconnectInitialDelay is { } reconnectInitialDelay)
+                         options.ReconnectInitialDelay = reconnectInitialDelay;
                      _configureNodeOptions?.Invoke(options);
                  });
         services.AddSingleton<TcpService>();

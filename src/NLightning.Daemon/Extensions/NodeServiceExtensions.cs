@@ -151,8 +151,9 @@ public static class NodeServiceExtensions
                  })
                 .Validate(options =>
                  {
-                     // BOLT 9: every advertised feature must have its dependencies set
-                     var errors = options.Features.GetValidationErrors();
+                     // BOLT 9: every advertised feature must have its dependencies set; BOLT 7 routing policy and
+                     // reconnect delays must be sane (e.g. cltv_expiry_delta >= 34)
+                     var errors = options.Features.GetValidationErrors().Concat(options.GetValidationErrors()).ToList();
                      if (errors.Count > 0)
                          throw new OptionsValidationException("Node", typeof(NodeOptions), errors);
 
