@@ -62,9 +62,7 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
-            cipherTextLength = 0;
-            return -1;
+            throw new CryptographicException("Encryption failed.", e);
         }
     }
 
@@ -80,12 +78,12 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
                                                            publicNonce.ToArray(), key.ToArray());
             plainTextLength = response.Length;
             response.CopyTo(plainText);
-            
-            return 0; // Assuming decryption always succeeds for simplicity
+
+            return 0;
         }
-        catch (Exception e)
+        catch (Exception)
         {
-            Console.WriteLine(e);
+            // libsodium.js throws when the tag does not verify; callers turn -1 into a CryptographicException.
             plainTextLength = 0;
             return -1;
         }
@@ -133,9 +131,7 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
-            cipherTextLength = 0;
-            return -1;
+            throw new CryptographicException("Encryption failed.", e);
         }
     }
 
@@ -153,9 +149,9 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
 
             return 0;
         }
-        catch (Exception e)
+        catch (Exception)
         {
-            Console.WriteLine(e);
+            // libsodium.js throws when the tag does not verify; callers turn -1 into a CryptographicException.
             plainTextLength = 0;
             return -1;
         }
@@ -183,22 +179,28 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
         try
         {
             response = LibsodiumJsWrapper.crypto_stream_chacha20_ietf_xor(inputBytes, nonce.ToArray(), keyBytes);
-            if (response.Length != output.Length)
-                return -1;
-
-            response.CopyTo(output);
-
-            return 0;
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
-            return -1;
+            throw new CryptographicException("ChaCha20 keystream failed.", e);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(keyBytes);
             CryptographicOperations.ZeroMemory(inputBytes);
+        }
+
+        try
+        {
+            if (response is null || response.Length != output.Length)
+                throw new CryptographicException("ChaCha20 keystream returned an unexpected length.");
+
+            response.CopyTo(output);
+
+            return 0;
+        }
+        finally
+        {
             if (response is not null)
                 CryptographicOperations.ZeroMemory(response);
         }
@@ -211,14 +213,31 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
 
     public void RandomBytes(Span<byte> buffer)
     {
+        if (buffer.IsEmpty)
+            return;
+
+        byte[] response;
         try
         {
-            var response = LibsodiumJsWrapper.randombytes_buf(buffer.Length);
-            response.CopyTo(buffer);
+            response = LibsodiumJsWrapper.randombytes_buf(buffer.Length);
         }
         catch (Exception e)
         {
-            Console.WriteLine(e);
+            // Never return an unfilled (predictable) buffer.
+            throw new CryptographicException("Failed to generate random bytes.", e);
+        }
+
+        try
+        {
+            if (response is null || response.Length != buffer.Length)
+                throw new CryptographicException("Random generator returned an unexpected number of bytes.");
+
+            response.CopyTo(buffer);
+        }
+        finally
+        {
+            if (response is not null)
+                CryptographicOperations.ZeroMemory(response);
         }
     }
 
