@@ -9,20 +9,13 @@ using Domain.Money;
 /// </summary>
 public class ToRemoteOutput : BaseOutput
 {
-    private readonly bool _hasAnchorOutputs;
-
-    public override ScriptType ScriptType => _hasAnchorOutputs
-        ? ScriptType.P2WSH
-        : ScriptType.P2WPKH;
-
     public PubKey RemotePubKey { get; }
 
     public ToRemoteOutput(LightningMoney amount, bool hasAnchorOutputs, PubKey remotePubKey)
-        : base(amount, GenerateToRemoteScript(hasAnchorOutputs, remotePubKey))
+        : base(amount, GenerateToRemoteScript(hasAnchorOutputs, remotePubKey),
+               hasAnchorOutputs ? ScriptType.P2WSH : ScriptType.P2WPKH)
     {
         ArgumentNullException.ThrowIfNull(remotePubKey);
-
-        _hasAnchorOutputs = hasAnchorOutputs;
 
         RemotePubKey = remotePubKey;
     }

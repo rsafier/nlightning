@@ -13,14 +13,15 @@ public abstract class BaseHtlcOutput : BaseOutput
     public ReadOnlyMemory<byte> PaymentHash { get; set; }
     public required ulong CltvExpiry { get; init; }
 
-    protected BaseHtlcOutput(LightningMoney amount, Script redeemScript) : base(amount, redeemScript)
+    protected BaseHtlcOutput(LightningMoney amount, Script redeemScript)
+        : base(amount, redeemScript, ScriptType.P2WSH)
     { }
 
     [SetsRequiredMembers]
     protected BaseHtlcOutput(LightningMoney amount, ulong cltvExpiry, PubKey localHtlcPubKey,
                              ReadOnlyMemory<byte> paymentHash, Script redeemScript, PubKey remoteHtlcPubKey,
                              PubKey revocationPubKey)
-        : base(amount, redeemScript)
+        : base(amount, redeemScript, ScriptType.P2WSH)
     {
         RevocationPubKey = revocationPubKey;
         RemoteHtlcPubKey = remoteHtlcPubKey;
