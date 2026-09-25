@@ -6,8 +6,13 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Payments.Invoices;
 
 using Bolt11.Models;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Models;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
@@ -15,6 +20,7 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Gossip.Interfaces;
 using Routing;
 
 /// <summary>
@@ -30,22 +36,50 @@ using Routing;
 /// <para>Persistence goes through a fresh DI scope per call: <see cref="IInvoiceDbRepository"/> stages, the scope's
 /// <see cref="IUnitOfWork"/> commits. Both must share the scope's database context (see the Payments
 /// <c>CLAUDE.md</c> section for the registration).</para>
+/// <para>Route hints (NL-245): our channels are never announced, so a payer that is not our peer can only reach us
+/// through an <c>r</c> field. Each <c>Open</c> channel whose peer sent us its <c>channel_update</c>
+/// (<see cref="IChannelUpdateService.TryGetRemoteChannelUpdate"/>, not disabled) gets a one-hop hint: the peer's node
+/// id, the channel's short channel id (the peer's alias <c>RemoteAlias</c> for an <c>option_scid_alias</c> channel)
+/// and the <b>peer's</b> fee and <c>cltv_expiry_delta</c>. BOLT 11 describes each entry as the channel from its
+/// <c>pubkey</c> towards the payee, which the peer forwards over and charges for under its own policy; our policy
+/// never applies to that direction. For an invoice with an amount, channels whose peer cannot send it (peer balance, or
+/// the peer's <c>htlc_minimum_msat</c>/<c>htlc_maximum_msat</c>) are skipped. At most <see cref="MaxRouteHints"/>
+/// hints, the peers with the largest balance first (as LND). A channel whose peer's update we do not have gets no hint
+/// (LND does the same).</para>
 /// <para>Singleton; thread-safe.</para>
 /// </remarks>
 public sealed class InvoiceService : IInvoiceService
 {
+    /// <summary>
+    /// The most route hints an invoice carries.
+    /// </summary>
+    public const int MaxRouteHints = 3;
+
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly IOptions<NodeOptions> _nodeOptions;
     private readonly ILogger<InvoiceService> _logger;
+    private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IChannelUpdateService? _channelUpdateService;
 
+    /// <param name="serviceScopeFactory">Scopes for persistence.</param>
+    /// <param name="secureKeyManager">The node key that signs the invoices.</param>
+    /// <param name="nodeOptions">The network and the routing options.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="channelMemoryRepository">Our channels, for route hints; without it invoices carry none.</param>
+    /// <param name="channelUpdateService">The peers' <c>channel_update</c>s, for route hints; without it invoices
+    /// carry none.</param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
-                          IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger)
+                          IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
+                          IChannelMemoryRepository? channelMemoryRepository = null,
+                          IChannelUpdateService? channelUpdateService = null)
     {
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
         _nodeOptions = nodeOptions;
         _logger = logger;
+        _channelMemoryRepository = channelMemoryRepository;
+        _channelUpdateService = channelUpdateService;
     }
 
     /// <inheritdoc />
@@ -79,6 +113,8 @@ public sealed class InvoiceService : IInvoiceService
             MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
         };
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
+        foreach (var routeHint in BuildRouteHints(amount))
+            invoice.AddRouteHint(routeHint);
 
         var bolt11 = invoice.Encode();
 
@@ -102,6 +138,42 @@ public sealed class InvoiceService : IInvoiceService
                                    amount is null ? "any amount" : $"{amount.MilliSatoshi} msat");
 
         return model;
+    }
+
+    /// <summary>
+    /// The route hints for a new invoice (see the class remarks): one single-hop hint per usable private channel.
+    /// </summary>
+    internal IReadOnlyList<RoutingInfoCollection> BuildRouteHints(LightningMoney? amount)
+    {
+        if (_channelMemoryRepository is null || _channelUpdateService is null)
+            return [];
+
+        var candidates = new List<(ChannelModel Channel, RoutingInfo Hint)>();
+        foreach (var channel in _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open))
+        {
+            if (!_channelUpdateService.TryGetRemoteChannelUpdate(channel.ChannelId, out var update)
+             || update is null || update.IsDisabled)
+                continue;
+
+            var shortChannelId = channel.ChannelParams.UseScidAlias > FeatureSupport.No
+                                     ? channel.RemoteAlias ?? default
+                                     : channel.ShortChannelId;
+            if (shortChannelId == default)
+                continue;
+
+            if (amount is not null
+             && (channel.RemoteBalance < amount || amount.MilliSatoshi < update.HtlcMinimumMsat
+              || amount.MilliSatoshi > update.HtlcMaximumMsat))
+                continue;
+
+            candidates.Add((channel, new RoutingInfo(channel.RemoteNodeId, shortChannelId, update.FeeBaseMsat,
+                                                     update.FeeProportionalMillionths, update.CltvExpiryDelta)));
+        }
+
+        return candidates.OrderByDescending(c => c.Channel.RemoteBalance.MilliSatoshi)
+                         .Take(MaxRouteHints)
+                         .Select(c => new RoutingInfoCollection { c.Hint })
+                         .ToList();
     }
 
     /// <inheritdoc />
