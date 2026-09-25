@@ -11,7 +11,15 @@ using Protocol.Tlv;
 
 public class FeatureOptions
 {
-    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Compulsory;
+    /// <summary>
+    /// option_data_loss_protect.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 9 marks it ASSUMED, but LND/CLN still expect the bit, so it is advertised as Optional: advertising it as
+    /// Compulsory would make us reject spec-compliant peers that omit ASSUMED bits.
+    /// channel_reestablish itself is not implemented yet (NL-035).
+    /// </remarks>
+    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable an upfront shutdown script.
@@ -21,6 +29,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable gossip queries.
     /// </summary>
+    /// <remarks>
+    /// Kept Optional even though BOLT 7 gossip is not implemented: without it, peers dump the full gossip map on us
+    /// instead of waiting for a gossip_timestamp_filter. Incoming gossip must be known-and-ignored (NL-100).
+    /// </remarks>
     public FeatureSupport GossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport VarOnionOptIn { get; private set; } = FeatureSupport.Compulsory;
@@ -28,7 +40,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable expanded gossip queries.
     /// </summary>
-    public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: gossip queries are not answered (BOLT 7 not implemented).
+    /// </remarks>
+    public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.No;
 
     public FeatureSupport OptionStaticRemoteKey { get; private set; } = FeatureSupport.Compulsory;
 
@@ -37,7 +52,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable basic MPP.
     /// </summary>
-    public FeatureSupport BasicMpp { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: receiving payments (HTLCs) is not implemented.
+    /// </remarks>
+    public FeatureSupport BasicMpp { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable large channels.
@@ -52,7 +70,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable route blinding.
     /// </summary>
-    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No until blinded payloads are handled (onion M5).
+    /// </remarks>
+    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable beyond segwit shutdown.
@@ -62,25 +83,49 @@ public class FeatureOptions
     /// <summary>
     /// Enable dual fund.
     /// </summary>
-    public FeatureSupport DualFund { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: the interactive-tx / v2 open handlers are not implemented.
+    /// </remarks>
+    public FeatureSupport DualFund { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable quiescence (stfu).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No: stfu is not handled.
+    /// </remarks>
+    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable attribution data.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No until error onions carry attribution data (onion M3b).
+    /// </remarks>
+    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable onion messages.
     /// </summary>
     public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable peer storage.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No: peer_storage messages are not handled.
+    /// </remarks>
+    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.No;
 
     public FeatureSupport OptionChannelType { get; private set; } = FeatureSupport.Compulsory;
 
     /// <summary>
     /// Enable scid alias.
     /// </summary>
-    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: aliases are only partially handled (no alias-based forwarding or real-scid rejection).
+    /// </remarks>
+    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable payment metadata.
@@ -186,6 +231,12 @@ public class FeatureOptions
     private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();
+
+        // FeatureSet sets data_loss_protect as compulsory by default; honour the configured support level
+        if (OptionDataLossProtect == FeatureSupport.No)
+            features.SetFeature(Feature.OptionDataLossProtect, false, false);
+        else
+            features.SetFeature(Feature.OptionDataLossProtect, OptionDataLossProtect == FeatureSupport.Compulsory);
 
         if (UpfrontShutdownScript != FeatureSupport.No)
         {
