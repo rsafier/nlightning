@@ -301,19 +301,13 @@ public class ChannelManagerTests
 
     [Theory]
     [InlineData(MessageTypes.ChannelReestablish)]
-    [InlineData(MessageTypes.UpdateAddHtlc)]
-    [InlineData(MessageTypes.UpdateFulfillHtlc)]
-    [InlineData(MessageTypes.UpdateFailHtlc)]
-    [InlineData(MessageTypes.CommitmentSigned)]
-    [InlineData(MessageTypes.RevokeAndAck)]
-    [InlineData(MessageTypes.UpdateFee)]
     [InlineData(MessageTypes.Shutdown)]
     [InlineData(MessageTypes.ClosingSigned)]
     [InlineData(MessageTypes.TxAddInput)]
     public async Task Given_NotImplementedChannelMessage_When_Handled_Then_ChannelScopedWarningIsRaised(
         MessageTypes messageType)
     {
-        // Arrange (interim until BOLT2 plan N6/N7/N10: never fail a known channel, or all channels, for these)
+        // Arrange (interim until BOLT2 plan N7/N10: never fail a known channel, or all channels, for these)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x44);
         MarkChannelKnownInMemory(channelId);
@@ -331,51 +325,6 @@ public class ChannelManagerTests
         // Assert
         Assert.Equal(channelId, exception.ChannelId);
         Assert.Contains("not supported yet", exception.PeerMessage);
-    }
-
-    [Theory]
-    [InlineData((ushort)0x0001)]
-    [InlineData((ushort)0x4005)]
-    public async Task Given_UpdateFailMalformedHtlcWithoutBadOnion_When_Handled_Then_WarnsAndClosesTheConnection(
-        ushort failureCode)
-    {
-        // Arrange (BOLT 2: fail the channel, or send a `warning` and close the connection. We can't fail a channel
-        // locally yet, and BOLT 1 requires the sender of an `error` to fail it, so we warn and close.)
-        var channelManager = CreateChannelManager();
-        var channelId = CreateChannelId(0x45);
-        MarkChannelKnownInMemory(channelId);
-        var message = new UpdateFailMalformedHtlcMessage(
-            new UpdateFailMalformedHtlcPayload(channelId, failureCode, 0, new byte[32]));
-
-        // Act
-        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
-                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
-                                                                           s_emptyPubKey));
-
-        // Assert
-        Assert.Equal(channelId, exception.ChannelId);
-        Assert.True(exception.CloseConnection);
-        Assert.Contains("BADONION", exception.PeerMessage);
-    }
-
-    [Fact]
-    public async Task Given_UpdateFailMalformedHtlcWithBadOnion_When_Handled_Then_OnlyAWarningIsRaised()
-    {
-        // Arrange (a valid one is not processed yet: interim warning, the channel is not failed)
-        var channelManager = CreateChannelManager();
-        var channelId = CreateChannelId(0x46);
-        MarkChannelKnownInMemory(channelId);
-        var message = new UpdateFailMalformedHtlcMessage(
-            new UpdateFailMalformedHtlcPayload(channelId, 0xC005, 0, new byte[32]));
-
-        // Act
-        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
-                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
-                                                                           s_emptyPubKey));
-
-        // Assert
-        Assert.Equal(channelId, exception.ChannelId);
-        Assert.False(exception.CloseConnection);
     }
 
     [Theory]
@@ -469,6 +418,7 @@ public class ChannelManagerTests
         foreach (var (type, service) in extraServices)
             serviceProvider.AddService(type, service);
         serviceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
+        serviceProvider.AddService(typeof(ChannelDomainEventQueue), new ChannelDomainEventQueue());
         serviceProvider.AddService(typeof(FundingConfirmedMessageHandler),
                                    new FundingConfirmedMessageHandler(_mockChannelMemoryRepository.Object,
                                                                       mockSigner.Object,

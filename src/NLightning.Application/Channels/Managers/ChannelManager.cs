@@ -18,10 +18,11 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
-using Domain.Protocol.Onion.Enums;
+using Domain.Serialization.Interfaces;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Services;
 
 public class ChannelManager : IChannelManager
 {
@@ -57,25 +58,72 @@ public class ChannelManager : IChannelManager
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
 
-        // Register the channel with the signer
+        // Register the channel with the signer (its local commitment number comes from the snapshot, if any)
         _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
 
         _logger.LogInformation("Loaded channel {channelId} from database", channel.ChannelId);
 
-        // If the channel is open and ready
-        if (channel.State == ChannelState.Open)
+        // The repository attaches the commitment snapshot. The peer is not connected yet, so its unsigned updates are
+        // reverted now and that is persisted before any channel_reestablish (BOLT 2 retransmission, plan §3.11)
+        if (channel.Commitments is not null)
+            await RevertUncommittedAsync(channel);
+
+        switch (channel.State)
         {
-            // TODO: Check if the channel has already been reestablished or if we need to reestablish it
+            case ChannelState.Open when channel.Commitments is null:
+                // Opened before the commitment state was wired: channel_ready overwrote the peer's point of its
+                // current commitment (NL-232), so no snapshot can be built and HTLC messages are refused on it
+                _logger.LogWarning(
+                    "Channel {ChannelId} has no commitment state (opened before HTLC support): HTLCs are not possible on it",
+                    channel.ChannelId);
+                break;
+            case ChannelState.Open:
+                // TODO: Check if the channel has already been reestablished or if we need to reestablish it (N7)
+                break;
+            case ChannelState.ReadyForThem or ChannelState.ReadyForUs:
+                _logger.LogInformation("Waiting for channel {ChannelId} to be ready", channel.ChannelId);
+                break;
+            case ChannelState.Failed:
+                // Kept in memory so its updates are refused; the error is re-sent on reconnection (B2-RE-05, N7)
+                _logger.LogWarning("Channel {ChannelId} was failed; every update on it is refused",
+                                   channel.ChannelId);
+                break;
+            default:
+                // TODO: Deal with channels that are Closing, Stale, or any other state
+                _logger.LogWarning("We don't know how to deal with {channelState} for channel {ChannelId}",
+                                   Enum.GetName(channel.State), channel.ChannelId);
+                break;
         }
-        else if (channel.State is ChannelState.ReadyForThem or ChannelState.ReadyForUs)
+    }
+
+    /// <summary>
+    /// Reverts the peer's uncommitted updates of a reloaded channel (<see cref="Domain.Channels.Commitments.ChannelCommitments.RevertUncommitted"/>)
+    /// and persists the transition when it changed anything. A failure is logged: the channel stays with its stored
+    /// snapshot, and its peer's updates will be refused as repeats until the next attempt.
+    /// </summary>
+    private async Task RevertUncommittedAsync(ChannelModel channel)
+    {
+        var result = channel.Commitments!.RevertUncommitted();
+        if (result.Transition.IsEmpty)
+            return;
+
+        try
         {
-            _logger.LogInformation("Waiting for channel {ChannelId} to be ready", channel.ChannelId);
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition);
+            await unitOfWork.SaveChangesAsync();
+            channel.UpdateCommitments(result.Next);
+            _channelMemoryRepository.UpdateChannel(channel);
+
+            _logger.LogInformation("Reverted {Count} uncommitted peer update(s) of channel {ChannelId}",
+                                   result.Transition.DroppedHtlcs.Count + result.Transition.UpsertedHtlcs.Count,
+                                   channel.ChannelId);
         }
-        else
+        catch (Exception e)
         {
-            // TODO: Deal with channels that are Closing, Stale, or any other state
-            _logger.LogWarning("We don't know how to deal with {channelState} for channel {ChannelId}",
-                               Enum.GetName(channel.State), channel.ChannelId);
+            _logger.LogError(e, "Failed to revert the uncommitted peer updates of channel {ChannelId}",
+                             channel.ChannelId);
         }
     }
 
@@ -108,11 +156,25 @@ public class ChannelManager : IChannelManager
     {
         var channelId = message.Payload.ChannelId;
 
+        // One scope per message, created outside the lock so the transitions' domain events can be handed to the HTLC
+        // switch after the lock is released
+        using var scope = _serviceProvider.CreateScope();
         try
         {
-            using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+            using var channelLocks = await AcquireMessageLocksAsync(message, channelId);
 
-            var replies = await DispatchChannelMessageAsync(message, channelId, negotiatedFeatures, peerPubKey);
+            IReadOnlyList<IChannelMessage> replies;
+            try
+            {
+                replies = await DispatchChannelMessageAsync(scope, message, channelId, negotiatedFeatures, peerPubKey);
+            }
+            catch (ChannelFailedException cfe)
+            {
+                // Persist Failed and the error before it is sent (N6-T3 contract), still under the lock
+                await PersistFailedChannelAsync(scope, cfe);
+                throw;
+            }
+
             RaiseResponseMessages(peerPubKey, replies);
 
             return replies;
@@ -127,6 +189,130 @@ public class ChannelManager : IChannelManager
             {
                 CloseConnection = cwe.CloseConnection
             };
+        }
+        finally
+        {
+            // Events of the transitions that were persisted, even when a later step failed (they are also re-derived
+            // from the persisted states on startup)
+            await RaiseDomainEventsAsync(scope);
+        }
+    }
+
+    /// <summary>
+    /// The lock(s) a message runs under: its channel id, and for funding_created also the real channel id the handler
+    /// is about to create (NL-235). The fundee's handler adds the channel to memory and starts watching the funding tx
+    /// under the real id, so a block event for that id (funding confirmation) must wait until the handler is done.
+    /// </summary>
+    /// <remarks>
+    /// This is the only place two channel locks are held, always temporary then real. It cannot deadlock: nothing else
+    /// holds two locks, and nothing can hold the brand-new real id while waiting for this temporary one.
+    /// </remarks>
+    private async Task<IDisposable> AcquireMessageLocksAsync(IChannelMessage message, ChannelId channelId)
+    {
+        var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+        if (message is not FundingCreatedMessage fundingCreated
+         || _serviceProvider.GetService(typeof(IChannelIdFactory)) is not IChannelIdFactory channelIdFactory)
+            return channelLock;
+
+        try
+        {
+            var realChannelId = channelIdFactory.CreateV1(fundingCreated.Payload.FundingTxId,
+                                                          fundingCreated.Payload.FundingOutputIndex);
+            if (realChannelId == channelId)
+                return channelLock;
+
+            var realChannelLock = await _channelLockProvider.AcquireAsync(realChannelId);
+            return new CompositeLock(realChannelLock, channelLock);
+        }
+        catch
+        {
+            channelLock.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Releases the inner locks in the given order.</summary>
+    private sealed class CompositeLock(params IDisposable[] locks) : IDisposable
+    {
+        public void Dispose()
+        {
+            foreach (var channelLock in locks)
+                channelLock.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Hands the domain events of the persisted transitions to the HTLC switch, outside every channel lock (the switch
+    /// may change channels through <c>IChannelOperations</c>, which take the locks). Without a registered switch they
+    /// stay pending in the persisted HTLC states and are replayed on startup. A failing switch is logged: the events
+    /// are re-derivable, and the peer must not be disconnected for our own follow-up work.
+    /// </summary>
+    private async Task RaiseDomainEventsAsync(IServiceScope scope)
+    {
+        var eventQueue = scope.ServiceProvider.GetService<ChannelDomainEventQueue>();
+        if (eventQueue is null)
+            return;
+
+        var events = eventQueue.Drain();
+        if (events.Count == 0)
+            return;
+
+        var htlcSwitch = scope.ServiceProvider.GetService<IHtlcSwitch>();
+        if (htlcSwitch is null)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("No HTLC switch registered, {Count} channel event(s) stay pending", events.Count);
+            return;
+        }
+
+        foreach (var channelEvent in events)
+        {
+            try
+            {
+                await htlcSwitch.HandleAsync(channelEvent, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "HTLC switch failed on {Event} for HTLC {HtlcId} of channel {ChannelId}",
+                                 channelEvent.GetType().Name, channelEvent.HtlcId, channelEvent.ChannelId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fails a channel (BOLT2 plan N6-T3, D10): persists <see cref="ChannelState.Failed"/> and the <c>error</c> it will
+    /// be sent (re-sent on reconnection, B2-RE-05) before the exception reaches the send path. A failure to persist is
+    /// logged; the error is still sent.
+    /// </summary>
+    private async Task PersistFailedChannelAsync(IServiceScope scope, ChannelFailedException failure)
+    {
+        var channelId = failure.FailedChannelId;
+        _logger.LogCritical(failure, "Failing channel {ChannelId} ({RequirementId}); broadcast needed: {MustBroadcast}",
+                            channelId, failure.RequirementId, failure.MustBroadcast);
+
+        try
+        {
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+                return;
+
+            var messageFactory = scope.ServiceProvider.GetRequiredService<IMessageFactory>();
+            var messageSerializer = scope.ServiceProvider.GetRequiredService<IMessageSerializer>();
+            var errorMessage = messageFactory.CreateErrorMessage(failure.PeerMessage!, channelId);
+            using var errorStream = new MemoryStream();
+            await messageSerializer.SerializeAsync(errorMessage, errorStream);
+
+            if (channel.State < ChannelState.Failed)
+                channel.UpdateState(ChannelState.Failed);
+            channel.MarkErrorSent(errorStream.ToArray());
+
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+            await unitOfWork.SaveChangesAsync();
+            _channelMemoryRepository.UpdateChannel(channel);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to persist the failed state of channel {ChannelId}", channelId);
         }
     }
 
@@ -148,10 +334,9 @@ public class ChannelManager : IChannelManager
     }
 
     private async Task<IReadOnlyList<IChannelMessage>> DispatchChannelMessageAsync(
-        IChannelMessage message, ChannelId channelId, FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+        IServiceScope scope, IChannelMessage message, ChannelId channelId, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
-        using var scope = _serviceProvider.CreateScope();
-
         // Check if the channel exists on the state dictionary
         _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
 
@@ -201,23 +386,49 @@ public class ChannelManager : IChannelManager
                 return await GetChannelMessageHandler<FundingSignedMessage>(scope)
                           .HandleAsync(fundingSignedMessage, currentState, negotiatedFeatures, peerPubKey);
 
-            case MessageTypes.UpdateFailMalformedHtlc:
+            // BOLT 2 normal operation (plan N6-T1): the handlers run the commitment engine and persist every transition
+            // before replying (ChannelStateTransitionService)
+            case MessageTypes.UpdateAddHtlc:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<UpdateAddHtlcMessage>(scope)
+                          .HandleAsync(Cast<UpdateAddHtlcMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
 
-                // BOLT 2: a failure_code without the BADONION bit lets us either fail the channel or "send a `warning`
-                // and close the connection". We can't fail a channel yet (no force-close path, and BOLT 1 makes the
-                // sender of an `error` fail the channel), so we warn and close. A valid one is not handled yet
-                // (NL-031), see below.
-                if (message is UpdateFailMalformedHtlcMessage { Payload.FailureCode: var failureCode }
-                 && (failureCode & (ushort)FailureCodeFlags.BadOnion) == 0)
-                    throw new ChannelWarningException(
-                        $"update_fail_malformed_htlc failure_code 0x{failureCode:x4} has no BADONION bit", channelId,
-                        "update_fail_malformed_htlc failure_code must have the BADONION bit set")
-                    {
-                        CloseConnection = true
-                    };
+            case MessageTypes.UpdateFulfillHtlc:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<UpdateFulfillHtlcMessage>(scope)
+                          .HandleAsync(Cast<UpdateFulfillHtlcMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
 
-                throw CreateNotImplementedWarning(message.Type, channelId);
+            case MessageTypes.UpdateFailHtlc:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<UpdateFailHtlcMessage>(scope)
+                          .HandleAsync(Cast<UpdateFailHtlcMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
+            case MessageTypes.UpdateFailMalformedHtlc:
+                // A failure_code without the BADONION bit gets a warning and a disconnect (the handler checks it first)
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<UpdateFailMalformedHtlcMessage>(scope)
+                          .HandleAsync(Cast<UpdateFailMalformedHtlcMessage>(message), currentState,
+                                       negotiatedFeatures, peerPubKey);
+
+            case MessageTypes.CommitmentSigned:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<CommitmentSignedMessage>(scope)
+                          .HandleAsync(Cast<CommitmentSignedMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
+            case MessageTypes.RevokeAndAck:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<RevokeAndAckMessage>(scope)
+                          .HandleAsync(Cast<RevokeAndAckMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
+            case MessageTypes.UpdateFee:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<UpdateFeeMessage>(scope)
+                          .HandleAsync(Cast<UpdateFeeMessage>(message), currentState, negotiatedFeatures, peerPubKey);
 
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
@@ -250,9 +461,9 @@ public class ChannelManager : IChannelManager
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7), the HTLC and
-    /// fee updates, commitment_signed and revoke_and_ack (N6), shutdown/closing_signed (N10), and the dual-funding
-    /// messages. Only for channels we know: an unknown channel gets an `error` (see
+    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7),
+    /// shutdown/closing_signed (N10), and the dual-funding messages (the HTLC and fee updates, commitment_signed and
+    /// revoke_and_ack have handlers since N6-T1). Only for channels we know: an unknown channel gets an `error` (see
     /// <see cref="ThrowIfUnknownChannelAsync"/>).
     /// </summary>
     /// <remarks>
@@ -267,6 +478,10 @@ public class ChannelManager : IChannelManager
         return new ChannelWarningException($"Ignoring {messageName}: not supported yet", channelId,
                                            $"{messageName} is not supported yet, message ignored");
     }
+
+    private static T Cast<T>(IChannelMessage message) where T : class, IChannelMessage =>
+        message as T ?? throw new ChannelErrorException($"Error boxing message to {typeof(T).Name}",
+                                                        "Sorry, we had an internal error");
 
     private IChannelMessageHandler<T> GetChannelMessageHandler<T>(IServiceScope scope)
         where T : IChannelMessage

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -15,6 +16,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Interfaces;
+using Services;
 
 public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMessage>
 {
@@ -61,9 +63,17 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                                               "This channel requires a ShortChannelIdTlv to be provided");
 
         // Store their second per-commitment point, only on the first channel_ready (the remote index counts down
-        // from 2^48-1, so it is still at the first index until we store it)
+        // from 2^48-1, so it is still at the first index until we store it). The first commitment state snapshot is
+        // built now, while the point of the peer's current commitment is still known (NL-232), and saved with it.
+        ChannelCommitments? firstSnapshot = null;
         if (channel.RemoteKeySet!.CurrentPerCommitmentIndex == CryptoConstants.FirstPerCommitmentIndex)
+        {
+            if (channel.Commitments is null)
+                firstSnapshot = TryCreateFirstSnapshot(channel, channel.RemoteKeySet.CurrentPerCommitmentCompactPoint,
+                                                       payload.SecondPerCommitmentPoint);
+
             channel.RemoteKeySet.UpdatePerCommitmentPoint(payload.SecondPerCommitmentPoint);
+        }
 
         switch (currentState)
         {
@@ -101,7 +111,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                 {
                     // Valid transition: ReadyForUs -> Open
                     channel.UpdateState(ChannelState.Open);
-                    await PersistChannelAsync(channel);
+                    await PersistChannelAsync(channel, firstSnapshot);
 
                     if (_logger.IsEnabled(LogLevel.Information))
                         _logger.LogInformation("Channel {ChannelId} is now open", payload.ChannelId);
@@ -115,7 +125,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                 {
                     // Valid transition: V1FundingSigned -> ReadyForThem
                     channel.UpdateState(ChannelState.ReadyForThem);
-                    await PersistChannelAsync(channel);
+                    await PersistChannelAsync(channel, firstSnapshot);
 
                     if (_logger.IsEnabled(LogLevel.Information))
                         _logger.LogInformation(
@@ -130,9 +140,30 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
     }
 
     /// <summary>
-    /// Persists a channel to the database using a scoped Unit of Work
+    /// The channel's first commitment state (plan N6-T1), or null (logged) when the open flow left something
+    /// inconsistent: the channel then works as before, without HTLCs.
     /// </summary>
-    private async Task PersistChannelAsync(ChannelModel channel)
+    private ChannelCommitments? TryCreateFirstSnapshot(ChannelModel channel, CompactPubKey remoteCurrentPoint,
+                                                       CompactPubKey remoteNextPoint)
+    {
+        try
+        {
+            return ChannelStateTransitionService.CreateInitialCommitments(channel, remoteCurrentPoint,
+                                                                          remoteNextPoint);
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or OverflowException)
+        {
+            _logger.LogError(e, "Cannot build the commitment state of channel {ChannelId}: HTLCs are not possible on it",
+                             channel.ChannelId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Persists a channel to the database using a scoped Unit of Work, together with its first commitment state
+    /// snapshot when one is given (one save); the snapshot is attached to the model only after the save.
+    /// </summary>
+    private async Task PersistChannelAsync(ChannelModel channel, ChannelCommitments? firstSnapshot = null)
     {
         try
         {
@@ -140,8 +171,13 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             _ = await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId)
              ?? throw new ChannelWarningException("Channel not found in database", channel.ChannelId,
                                                   "Sorry, we had an internal error");
+            if (firstSnapshot is not null)
+                await _unitOfWork.ChannelStateDbRepository.InitializeAsync(firstSnapshot);
             await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
             await _unitOfWork.SaveChangesAsync();
+
+            if (firstSnapshot is not null)
+                channel.UpdateCommitments(firstSnapshot);
 
             _channelMemoryRepository.UpdateChannel(channel);
 
