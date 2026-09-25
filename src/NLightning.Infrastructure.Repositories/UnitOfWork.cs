@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Repositories;
@@ -24,6 +25,7 @@ public class UnitOfWork : IUnitOfWork
     private readonly IMessageSerializer _messageSerializer;
     private readonly ISha256 _sha256;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly List<(PendingUtxoChange Change, UtxoModel Utxo)> _pendingUtxoChanges = [];
 
     // Bitcoin repositories
     private BlockchainStateDbRepository? _blockchainStateDbRepository;
@@ -93,16 +95,12 @@ public class UnitOfWork : IUnitOfWork
 
     public void AddUtxo(UtxoModel utxoModel)
     {
-        try
-        {
-            _utxoMemoryRepository.Add(utxoModel);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Failed to add Utxo to memory repository");
-            throw;
-        }
+        if (_utxoMemoryRepository.TryGetUtxo(utxoModel.TxId, utxoModel.Index, out _)
+         || TryGetPendingUtxoAdd(utxoModel.TxId, utxoModel.Index, out _))
+            throw new InvalidOperationException("Cannot add Utxo");
 
+        // Stage the database change first. The memory repository is only updated after a successful save, so a
+        // failure here or at SaveChanges time never leaves memory and the database out of sync.
         try
         {
             UtxoDbRepository.Add(utxoModel);
@@ -110,27 +108,21 @@ public class UnitOfWork : IUnitOfWork
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to add Utxo to the database");
-
-            // Rollback memory repository operation
-            _utxoMemoryRepository.Spend(utxoModel);
+            throw;
         }
+
+        _pendingUtxoChanges.Add((PendingUtxoChange.Add, utxoModel));
     }
 
     public void TrySpendUtxo(TxId transactionId, uint index)
     {
-        // Check if utxo exists in memory
-        if (!_utxoMemoryRepository.TryGetUtxo(transactionId, index, out var utxoModel))
+        // Check if utxo exists in memory or was added in this unit of work
+        if (!_utxoMemoryRepository.TryGetUtxo(transactionId, index, out var utxoModel)
+         && !TryGetPendingUtxoAdd(transactionId, index, out utxoModel))
             return;
 
-        try
-        {
-            _utxoMemoryRepository.Spend(utxoModel);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Failed to spend Utxo from memory repository");
-            throw;
-        }
+        if (_pendingUtxoChanges.Contains((PendingUtxoChange.Spend, utxoModel)))
+            return;
 
         try
         {
@@ -139,20 +131,64 @@ public class UnitOfWork : IUnitOfWork
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to spend Utxo from the database");
-
-            // Rollback memory repository operation
-            _utxoMemoryRepository.Add(utxoModel);
+            throw;
         }
+
+        _pendingUtxoChanges.Add((PendingUtxoChange.Spend, utxoModel));
     }
 
     public void SaveChanges()
     {
         _context.SaveChanges();
+        ApplyPendingUtxoChanges();
     }
 
-    public Task SaveChangesAsync()
+    public async Task SaveChangesAsync()
     {
-        return _context.SaveChangesAsync();
+        await _context.SaveChangesAsync();
+        ApplyPendingUtxoChanges();
+    }
+
+    private bool TryGetPendingUtxoAdd(TxId transactionId, uint index, [MaybeNullWhen(false)] out UtxoModel utxoModel)
+    {
+        foreach (var (change, pendingUtxo) in _pendingUtxoChanges)
+        {
+            if (change != PendingUtxoChange.Add || !pendingUtxo.TxId.Equals(transactionId) ||
+                pendingUtxo.Index != index)
+                continue;
+
+            utxoModel = pendingUtxo;
+            return true;
+        }
+
+        utxoModel = null;
+        return false;
+    }
+
+    private void ApplyPendingUtxoChanges()
+    {
+        foreach (var (change, utxoModel) in _pendingUtxoChanges)
+        {
+            try
+            {
+                if (change == PendingUtxoChange.Add)
+                    _utxoMemoryRepository.Add(utxoModel);
+                else
+                    _utxoMemoryRepository.Spend(utxoModel);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Failed to apply saved Utxo change to memory repository");
+            }
+        }
+
+        _pendingUtxoChanges.Clear();
+    }
+
+    private enum PendingUtxoChange
+    {
+        Add,
+        Spend
     }
 
     #region Dispose Pattern

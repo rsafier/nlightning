@@ -21,6 +21,20 @@ public class UtxoDbRepository(NLightningDbContext context)
 
     public void Spend(UtxoModel utxoModel)
     {
+        // If the utxo was added in this same unit of work and not saved yet, just cancel the pending insert
+        var trackedEntity = DbSet.Local.FirstOrDefault(e => e.TransactionId.Equals(utxoModel.TxId)
+                                                         && e.Index == utxoModel.Index);
+        if (trackedEntity is not null)
+        {
+            var entry = DbSet.Entry(trackedEntity);
+            if (entry.State == EntityState.Added)
+                entry.State = EntityState.Detached;
+            else
+                DbSet.Remove(trackedEntity);
+
+            return;
+        }
+
         var utxoEntity = MapDomainToEntity(utxoModel);
         Delete(utxoEntity);
     }
