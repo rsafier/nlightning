@@ -198,19 +198,19 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var remoteOldHtlcs = new List<Htlc>();
         if (channelEntity.Htlcs is { Count: > 0 })
         {
-            foreach (var htlc in channelEntity.Htlcs.Where(h => h.State.Equals(HtlcState.Offered)))
+            foreach (var htlc in channelEntity.Htlcs.Where(h => h.State == (byte)HtlcState.Offered))
             {
                 var domainHtlc = await HtlcDbRepository.MapEntityToDomainAsync(htlc, messageSerializer);
-                if (htlc.Direction.Equals(HtlcDirection.Outgoing))
+                if (htlc.Direction == (byte)HtlcDirection.Outgoing)
                     localOfferedHtlcs.Add(domainHtlc);
                 else
                     remoteOfferedHtlcs.Add(domainHtlc);
             }
 
-            foreach (var htlc in channelEntity.Htlcs.Where(h => h.State.Equals(HtlcState.Fulfilled)))
+            foreach (var htlc in channelEntity.Htlcs.Where(h => h.State == (byte)HtlcState.Fulfilled))
             {
                 var domainHtlc = await HtlcDbRepository.MapEntityToDomainAsync(htlc, messageSerializer);
-                if (htlc.Direction.Equals(HtlcDirection.Outgoing))
+                if (htlc.Direction == (byte)HtlcDirection.Outgoing)
                     localFulfilledHtlcs.Add(domainHtlc);
                 else
                     remoteFulfilledHtlcs.Add(domainHtlc);
@@ -220,7 +220,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             foreach (var htlc in channelEntity.Htlcs.Where(h => oldStates.Contains(h.State)))
             {
                 var domainHtlc = await HtlcDbRepository.MapEntityToDomainAsync(htlc, messageSerializer);
-                if (htlc.Direction.Equals(HtlcDirection.Outgoing))
+                if (htlc.Direction == (byte)HtlcDirection.Outgoing)
                     localOldHtlcs.Add(domainHtlc);
                 else
                     remoteOldHtlcs.Add(domainHtlc);
