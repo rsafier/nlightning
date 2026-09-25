@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Persistence;
 
 using Contexts;
 using Enums;
+using Interceptors;
 using Providers;
 
 /// <summary>
@@ -70,9 +71,10 @@ public static class DependencyInjection
                 case DatabaseType.Sqlite:
                     const string sqliteMigrationsAssembly = "NLightning.Infrastructure.Persistence.Sqlite";
                     optionsBuilder.UseSqlite(connectionString, sqlOptions =>
-                    {
-                        sqlOptions.MigrationsAssembly(sqliteMigrationsAssembly);
-                    });
+                                  {
+                                      sqlOptions.MigrationsAssembly(sqliteMigrationsAssembly);
+                                  })
+                                  .AddInterceptors(new SqliteDurabilityInterceptor());
                     break;
 
                 case DatabaseType.MicrosoftSql:
