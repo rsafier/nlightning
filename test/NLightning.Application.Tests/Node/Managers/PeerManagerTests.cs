@@ -325,6 +325,21 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_Started_When_StopAsync_Then_TcpServiceStopsListening()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(new List<PeerModel>());
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        await peerManager.StopAsync();
+
+        // Assert: the listening sockets are released, so a restarted node can bind its port again
+        _mockTcpService.Verify(t => t.StopListeningAsync(), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_StartAsync_When_Called_Then_TcpServiceStartsListening()
     {
         // Given

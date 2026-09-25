@@ -131,6 +131,16 @@ public sealed class PeerManager : IPeerManager
         if (_cts is null)
             throw new InvalidOperationException($"{nameof(PeerManager)} is not running");
 
+        // Stop accepting connections and release the listening sockets, so a restart can bind the same port
+        try
+        {
+            await _tcpService.StopListeningAsync();
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Error stopping the TCP listeners");
+        }
+
         // Stop reconnecting first, so no loop connects a peer while we disconnect them
         await _reconnectCts.CancelAsync();
         try
