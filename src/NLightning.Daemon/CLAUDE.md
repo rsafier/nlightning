@@ -4,7 +4,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 
 ## Layout
 - `Program.cs`: entrypoint. Sets `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` (line ~132) before building the host.
-- `Extensions/NodeServiceExtensions.cs`: `ConfigureNltgServices(secureKeyManager, configPath)`. This is the single DI root. It also calls `AddApplicationServices`, `AddBitcoinInfrastructure`, `AddInfrastructureServices`, `AddPersistenceInfrastructureServices`, `AddRepositoriesInfrastructureServices` and `AddSerializationInfrastructureServices`.
+- `Extensions/NodeServiceExtensions.cs`: the single DI root. `AddNltgNodeServices(configuration, secureKeyManager)` registers the whole node graph: every layer (`AddApplicationServices`, `AddBitcoinInfrastructure`, `AddInfrastructureServices`, `AddPersistenceInfrastructureServices`, `AddRepositoriesInfrastructureServices`, `AddSerializationInfrastructureServices`), the `FeeService` HttpClient, the options, the scoped client handlers and the IPC router and command handlers. `ConfigureNltgServices(secureKeyManager, configPath)` calls it and adds only the hosted service, `NamedPipeIpcService` and `CookieFileAuthenticator` (they need `configPath`). The Docker tests call `AddNltgNodeServices` through `NLightningTestNode` (NL-156).
 - `Extensions/NodeConfigurationExtensions.cs`: config path and network resolution, the default `appsettings.json` template (`CreateDefaultConfigJson`), and Serilog.
 - `Extensions/DatabaseExtensions.cs`: migrates only when `Database:RunMigrations=true`.
 - `Services/NltgDaemonService.cs`: the only hosted service. Start order is fee, peers, chain monitor, IPC. Stop runs in parallel.
@@ -20,7 +20,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 1. Add an enum value in `src/NLightning.Domain/Client/Enums/ClientCommand.cs`. Append only: the values go over the wire.
 2. Add `[MessagePackObject]` `XIpcRequest`/`XIpcResponse` in `src/NLightning.Transport.Ipc/Requests|Responses`. Use append-only `[Key(n)]`. If a new Domain value object crosses the wire, add a formatter in `MessagePack/Formatters` and register it in `NLightningFormatterResolver`.
 3. Add `internal sealed XIpcHandler : IIpcCommandHandler` in `Ipc/Handlers/`, using `NodeInfoIpcHandler.cs` as the template. Deserialize `envelope.Payload`. Return an envelope that copies Version, Command and CorrelationId with `Kind = IpcEnvelopeKind.Response`. On failure, return `IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.X, msg)` with a code from `Domain/Client/Constants/ErrorCodes.cs`. Use `ce.ErrorCode` for a `ClientException`, not `ce.Message`. Resolve client handlers by their `IClientCommandHandler<TReq, TResp>` interface, never by casting to the concrete type.
-4. Register it with `services.AddSingleton<IIpcCommandHandler, XIpcHandler>()` in `NodeServiceExtensions`. The router does `ToDictionary(h => h.Command)`, so a duplicate command throws at resolve time.
+4. Register it with `services.AddSingleton<IIpcCommandHandler, XIpcHandler>()` in `NodeServiceExtensions.AddNltgNodeServices`. The router does `ToDictionary(h => h.Command)`, so a duplicate command throws at resolve time.
 5. Long-running or awaited flows go in a scoped `IClientCommandHandler` in `Handlers/`, registered with `AddScoped`. The IPC handler calls `CreateScope()` and resolves it per request. Follow the `TaskCompletionSource(RunContinuationsAsynchronously)` + event subscribe/`finally` unsubscribe pattern used in `OpenChannelClientHandler`.
 6. On the client side, add a method to `src/NLightning.Client/Ipc/NamedPipeIpcClient.cs`, a printer, a case in `Program.cs` and help text in `ClientUtils.ShowUsage`.
 
@@ -28,7 +28,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - File-scoped namespace first. `NLightning.*` usings go after it and are written relative (`using Domain.Client.Enums;`). System, Microsoft and third-party usings go above it. (`Program.cs` has no namespace, so it uses fully qualified `using NLightning.*;` at the top.)
 - IPC handlers are singletons, so resolve anything scoped (`IUnitOfWork`, `IBitcoinWalletService`, client handlers) through `CreateScope()` and never inject it directly.
 - Options use `AddOptions<T>().BindConfiguration(section).ValidateOnStart()` for `Node` (`NodeOptions`, with a `PostConfigure` for `ListenAddresses`/`Network`/chain hash), `Bitcoin` (`BitcoinOptions`) and `FeeEstimation` (`FeeEstimationOptions`). `Database` is not an options class: `AddPersistenceInfrastructureServices(configuration)` reads it raw, and `DatabaseExtensions` reads `Database:RunMigrations`. `Serilog` is read via `ReadFrom.Configuration` in `NodeConfigurationExtensions.ConfigureNltg`. Env vars use the prefix `NLTG_` with `__` for nesting.
-- Prefer registering new services in their own layer's `DependencyInjection.cs`. `NodeServiceExtensions` must own anything needing `SecureKeyManager` or `configPath` (e.g. `LocalLightningSigner`, `NamedPipeIpcService`, `CookieFileAuthenticator`). It also currently registers some layer-owned services that need no such input (`ChannelFactory`, `ChannelOpenValidator`, `CommitmentTransactionModelFactory`, `FundingTransactionModelFactory`, the `FeeService` HttpClient); do not treat those as a pattern to copy.
+- Register new services in their own layer's `DependencyInjection.cs`. A layer service that needs the node key takes `ISecureKeyManager` from DI (as `LocalLightningSigner` does in `AddBitcoinInfrastructure`). `NodeServiceExtensions` owns only what needs `configPath` (`NamedPipeIpcService`, `CookieFileAuthenticator`), the Daemon's own handlers, the `FeeService` HttpClient (Microsoft.Extensions.Http is a Daemon package) and the options.
 
 ## Dependency rules
 - This project is the outermost layer and may reference every other project (its csproj even references `NLightning.Client`). **Nothing** in `src/` may reference NLightning.Daemon; only `test/NLightning.Daemon.Tests` and `test/NLightning.Integration.Tests` do.
@@ -40,7 +40,8 @@ The executable Lightning node, and the DI **composition root** for the whole sta
   - `dotnet run --project test/NLightning.Daemon.Tests` (all tests)
   - `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'`, or `-class <FQN>`
 - InternalsVisibleTo (`AssemblyInfo.cs`) lists `NLightning.Daemon.Tests` (plus the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`). Moq cannot proxy `ILogger<InternalType>` (strong-named Logging.Abstractions), so use `NullLogger<T>.Instance` for internal handlers.
-- Docker end-to-end tests (`test/NLightning.Integration.Tests/Docker/{AbcNetworkTests,ChannelOpeningFlowTests}.cs`) rebuild the DI graph **by hand** instead of calling `ConfigureNltgServices`. Mirror any new registration there. CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
+- `Extensions/NodeServiceExtensionsTests` resolves the composed graph (with bitcoind mocked) and the layer-only graph, so a missing registration fails in CI.
+- Docker end-to-end tests build their node with `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`, which calls `AddNltgNodeServices` and then overrides only the fee endpoint (fixed answer), the listen port and the regtest features. CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`. Format gate: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Run the node: `dotnet run --project src/NLightning.Daemon -- --network regtest`. The first run writes `~/.nltg/regtest/appsettings.json`; set the Bitcoin RPC/ZMQ settings and `Database:RunMigrations=true` there.
 
@@ -53,7 +54,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 
 ## Onion routing (BOLT 4) hooks
 There is no onion code here yet. When it lands:
-- Register sphinx, forwarding and payment services in their layer's DI. Wire them here only if they need the node private key (prefer `ISecureKeyManager.ComputeNodeSharedSecret` over `GetNodeKeyPair()` for ECDH), following the `LocalLightningSigner` pattern, and mirror the wiring in the Docker test DI.
+- Register sphinx, forwarding and payment services in their layer's DI. Wire them here only if they need the node private key (prefer `ISecureKeyManager.ComputeNodeSharedSecret` over `GetNodeKeyPair()` for ECDH), following the `LocalLightningSigner` pattern (take `ISecureKeyManager` from DI in the layer's `DependencyInjection.cs`).
 - Start a forwarding or interceptor loop from `NltgDaemonService.ExecuteAsync` and stop it in `StopAsync`, or register it as a separate `AddHostedService`.
 - Add a payment IPC surface (`SendPayment`/`PayInvoice`/`DecodeInvoice` using `NLightning.Bolt11`, which the Daemon does not reference yet). Report payment progress with the existing long-poll subscription pattern, because the IPC transport has no server push. Map BOLT 4 failure codes to new `ErrorCodes`.
 - Add forwarding policy (CLTV delta, fee base/ppm) to `NodeOptions` (`Node` section) and to `CreateDefaultConfigJson`.

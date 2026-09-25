@@ -135,19 +135,20 @@ graph TD
 - **Application references Infrastructure and Infrastructure.Bitcoin directly.** `IBlockchainMonitor`, `IBitcoinWalletService`, the tx builders, `ITcpService` and `PeerAddress` all come from Infrastructure namespaces. New Application code can use those, but prefer declaring new ports in Domain.
 - `Transport.Ipc -> Daemon.Contracts` is declared but no source file uses it.
 - Nothing in `src/` references `NLightning.Bolt11`.
-- DI is spread across projects. `ITlvConverterFactory` (whose class lives in Infrastructure) is `TryAddSingleton`ed by both `AddInfrastructureServices` and `AddSerializationInfrastructureServices`. `IEcdh` is registered in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs:34`. Signer, key manager, fee service and the Domain factories are registered only in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, and they are **mirrored by hand** in the Docker integration tests.
+- DI is spread across projects. `ITlvConverterFactory` (whose class lives in Infrastructure) is `TryAddSingleton`ed by both `AddInfrastructureServices` and `AddSerializationInfrastructureServices`. `IEcdh` is registered in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs:34`. The signer is registered in `AddBitcoinInfrastructure` and the Domain factories/validator in `AddApplicationServices`; the key manager and fee service come from `NodeServiceExtensions.AddNltgNodeServices`, which the Docker tests also call through `NLightningTestNode` (NL-156).
 
 ### 2.4 DI entry points (the composition root is `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`)
 
 | Extension method | File | Registers |
 |---|---|---|
-| `AddApplicationServices` | `src/NLightning.Application/DependencyInjection.cs` | Singletons: `IChannelManager`, `IMessageFactory`, `IPeerManager`. Every `IChannelMessageHandler<>` is registered Scoped via reflection, plus `FundingConfirmedMessageHandler` **(verified)** |
+| `AddApplicationServices` | `src/NLightning.Application/DependencyInjection.cs` | Singletons: `IChannelOpenValidator`, `IChannelFactory`, `ICommitmentTransactionModelFactory`, `IFundingTransactionModelFactory` (Domain), `IChannelLockProvider`, `IChannelManager`, `IMessageFactory`, `IPeerManager`. Every `IChannelMessageHandler<>` is registered Scoped via reflection, plus `FundingConfirmedMessageHandler` **(verified)** |
 | `AddInfrastructureServices` | `src/NLightning.Infrastructure/DependencyInjection.cs` | Singletons: `IChannelIdFactory`, `IMessageServiceFactory`, `IPeerServiceFactory`, `ITcpService`, `ISha256`, `ITransportServiceFactory`. Transient: `IPingPongService` |
-| `AddBitcoinInfrastructure` | `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs` | Singletons: `IBitcoinChainService`, `IBlockchainMonitor`, `ICommitmentKeyDerivationService`, `ICommitmentTransactionBuilder`, `IEcdh`, `IFundingOutputBuilder`, `IFundingTransactionBuilder`, `IKeyDerivationService`. Scoped: `IBitcoinWalletService` |
+| `AddBitcoinInfrastructure` | `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs` | Singletons: `IBitcoinChainService`, `IBlockchainMonitor`, `ICommitmentKeyDerivationService`, `ICommitmentTransactionBuilder`, `IEcdh`, `IFundingOutputBuilder`, `IFundingTransactionBuilder`, `IKeyDerivationService`, `ILightningSigner` (`LocalLightningSigner`, needs the host's `ISecureKeyManager`). Scoped: `IBitcoinWalletService` |
 | `AddSerializationInfrastructureServices` | `src/NLightning.Infrastructure.Serialization/DependencyInjection.cs` | Singletons: `IFeatureSetSerializer`, `IMessageSerializer`, `IMessageTypeSerializerFactory`, `IPayloadSerializerFactory`, `ITlvSerializer`, `ITlvStreamSerializer`, `IValueObjectSerializerFactory` (`DependencyInjection.cs:24-30`) |
 | `AddPersistenceInfrastructureServices` | `src/NLightning.Infrastructure.Persistence/DependencyInjection.cs` | `NLightningDbContext` (provider selected from `Database:Provider`) |
 | `AddRepositoriesInfrastructureServices` | `src/NLightning.Infrastructure.Repositories/DependencyInjection.cs` | `IUnitOfWork` (scoped), `IChannelMemoryRepository` and `IUtxoMemoryRepository` (singletons) |
-| Daemon-only | `NodeServiceExtensions.cs` ~L96-141 | `ISecureKeyManager` instance, `FeeService` (HttpClient), `LocalLightningSigner`, `ChannelOpenValidator`, `ChannelFactory`, `CommitmentTransactionModelFactory`, `FundingTransactionModelFactory`, the IPC stack |
+| `AddNltgNodeServices` (Daemon) | `NodeServiceExtensions.cs` | All of the above, plus `IConfiguration`, the `ISecureKeyManager` instance, `FeeService` (HttpClient), options, client handlers, IPC router and command handlers. Used by `ConfigureNltgServices` and by the Docker tests (`NLightningTestNode`) |
+| Daemon host only | `NodeServiceExtensions.ConfigureNltgServices` | `NltgDaemonService`, `NamedPipeIpcService`, `CookieFileAuthenticator` (need `configPath`) |
 
 Not registered anywhere: `DustService`, `InteractiveTransactionService`, `PluginLoaderService`, `RevocationWatchDbRepository`. Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
 
@@ -531,7 +532,7 @@ Add the method to `ICryptoProvider`, then implement it in the Libsodium (`Libsod
 
 ### 7.7 Register a new service / port
 
-Prefer the layer's `DependencyInjection.cs` (`AddApplicationServices`, `AddSerializationInfrastructureServices`, etc.): the Docker E2E tests call those. If you register it only in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, you must also mirror it by hand in `test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs` (~113-180) and `test/NLightning.Integration.Tests/Docker/AbcNetworkTests.cs` (~106-136), which build their own `ServiceCollection` (manual `ILightningSigner`, `IChannelFactory`, model factories, options); otherwise those tests throw at resolve time.
+Register it in the layer's `DependencyInjection.cs` (`AddApplicationServices`, `AddSerializationInfrastructureServices`, etc.). The daemon and the Docker E2E tests share one composition, `NodeServiceExtensions.AddNltgNodeServices` (the tests reach it through `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`), so nothing is mirrored by hand (NL-156). `test/NLightning.Daemon.Tests/Extensions/NodeServiceExtensionsTests.cs` resolves the composed graph in CI.
 
 ---
 

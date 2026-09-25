@@ -9,7 +9,7 @@ Spec-vector and end-to-end tests that exercise several layers together.
 | `BOLT8/` | [BOLT 8 Appendix A](https://github.com/lightning/bolts/blob/master/08-transport.md#appendix-a-transport-test-vectors) transport vectors: initiator, responder, message encryption and an end-to-end handshake. |
 | `BOLT11/` | BOLT 11 spec invoice vectors (valid ones in `Vectors/ValidInvoices.txt`, invalid ones inline) and tagged-field integration tests. |
 | `Persistence/` | Repository and unit-of-work tests on SQLite `:memory:` with the real migrations, plus model/migration consistency checks for all three providers. Runs in CI. |
-| `Docker/` | Local-only tests that need Docker: bitcoind + three LND nodes (`AbcNetworkTests`, `ChannelOpeningFlowTests`) and Postgres/SQL Server containers (`PostgresTests`, `SqlServerTests`). CI excludes them with `--filter 'FullyQualifiedName!~Docker'`. |
+| `Docker/` | Local-only tests that need Docker: bitcoind + three LND nodes (`AbcNetworkTests`, `ChannelOpeningFlowTests`, `NormalOperationFlowTests`; the node under test is `Docker/Utils/NLightningTestNode`) and Postgres/SQL Server containers (`PostgresTests`, `SqlServerTests`). CI excludes them with `--filter 'FullyQualifiedName!~Docker'`. |
 
 Run everything except Docker:
 
