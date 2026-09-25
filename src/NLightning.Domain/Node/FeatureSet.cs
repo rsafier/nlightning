@@ -17,9 +17,11 @@ public class FeatureSet
     /// Dependencies column of BOLT 9.
     /// </summary>
     /// <remarks>
-    /// Dependencies on features that BOLT 9 now marks ASSUMED (e.g. anchors -> static_remotekey,
-    /// payment_secret -> var_onion_optin) are intentionally not listed: peers may omit ASSUMED bits, so requiring
-    /// them would disconnect spec-compliant peers. gossip_queries_ex no longer depends on gossip_queries.
+    /// Dependencies that BOLT 9 no longer lists because the dependency became ASSUMED (e.g. anchors ->
+    /// static_remotekey, payment_secret -> var_onion_optin) are intentionally not listed: peers may omit ASSUMED bits,
+    /// so requiring them would disconnect spec-compliant peers. The one exception is zero_fee_commitments ->
+    /// option_channel_type, which the current BOLT 9 table still lists even though option_channel_type is ASSUMED.
+    /// gossip_queries_ex no longer depends on gossip_queries.
     /// </remarks>
     private static readonly Dictionary<Feature, Feature[]> s_featureDependencies = new()
     {
@@ -30,6 +32,19 @@ public class FeatureSet
         { Feature.OptionSimpleClose, [Feature.OptionShutdownAnySegwit] },
         { Feature.OptionOnionMessagesOnlyChannels, [Feature.OptionOnionMessages] },
     };
+
+    /// <summary>
+    /// Features BOLT 9 marks ASSUMED: every node is assumed to support them, so a peer that omits them is treated as
+    /// supporting them (optional) during negotiation.
+    /// </summary>
+    private static readonly HashSet<Feature> s_assumedFeatures =
+    [
+        Feature.OptionDataLossProtect,
+        Feature.VarOnionOptin,
+        Feature.OptionStaticRemoteKey,
+        Feature.PaymentSecret,
+        Feature.OptionChannelType
+    ];
 
     private const FeatureContext InitAndNode = FeatureContext.Init | FeatureContext.NodeAnnouncement;
 
@@ -240,20 +255,14 @@ public class FeatureSet
     /// <param name="negotiatedFeatureSet">The resulting negotiated feature set.</param>
     /// <returns>true if the feature sets are compatible, false otherwise.</returns>
     /// <remarks>
-    /// The other feature set must support the var_onion_optin feature.
     /// Both this and the other feature set must have all the dependencies set.
+    /// ASSUMED features (BOLT 9) that the other set omits are treated as set optional by it, so a peer that leaves
+    /// them out is not rejected even when we set them as compulsory.
     /// </remarks>
     public bool IsCompatible(FeatureSet other, out FeatureSet? negotiatedFeatureSet)
     {
         // Our own feature set must be well-formed (BOLT 9: MUST set all transitive feature dependencies)
         if (!AreDependenciesSet())
-        {
-            negotiatedFeatureSet = null;
-            return false;
-        }
-
-        // Check if the other node supports var_onion_optin
-        if (!other.IsFeatureSet(Feature.VarOnionOptin, false) && !other.IsFeatureSet(Feature.VarOnionOptin, true))
         {
             negotiatedFeatureSet = null;
             return false;
@@ -286,6 +295,10 @@ public class FeatureSet
             }
             else
             {
+                // ASSUMED features can be safely ignored by the peer: treat an omitted one as supported (optional)
+                if (!isOtherOptionalSet && !isOtherCompulsorySet && s_assumedFeatures.Contains((Feature)i))
+                    isOtherOptionalSet = true;
+
                 // If the local feature is compulsory, the other feature should also be set (either optional or compulsory)
                 if (isLocalCompulsorySet && !(isOtherOptionalSet || isOtherCompulsorySet))
                 {

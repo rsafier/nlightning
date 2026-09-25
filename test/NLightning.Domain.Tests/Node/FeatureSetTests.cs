@@ -128,15 +128,15 @@ public class FeatureSetTests
     #region IsCompatible
 
     [Theory]
-    [InlineData(Feature.OptionDataLossProtect, false, false, false, false, true)]
-    [InlineData(Feature.OptionDataLossProtect, false, true, false, false, true)]
-    [InlineData(Feature.OptionDataLossProtect, false, true, false, true, true)]
-    [InlineData(Feature.OptionDataLossProtect, false, false, false, true, true)]
-    [InlineData(Feature.OptionDataLossProtect, true, false, false, false, true)]
-    [InlineData(Feature.OptionDataLossProtect, false, false, true, false, true)]
-    [InlineData(Feature.OptionDataLossProtect, true, false, true, false, true)]
-    [InlineData(Feature.OptionDataLossProtect, false, true, true, false, false)]
-    [InlineData(Feature.OptionDataLossProtect, true, false, false, true, false)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, false, false, false, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, true, false, false, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, true, false, true, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, false, false, true, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, true, false, false, false, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, false, true, false, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, true, false, true, false, true)]
+    [InlineData(Feature.OptionSupportLargeChannel, false, true, true, false, false)]
+    [InlineData(Feature.OptionSupportLargeChannel, true, false, false, true, false)]
     public void Given_Features_When_IsCompatible_Then_ReturnIsKnown(Feature feature, bool unsetLocal,
                                                                     bool isLocalCompulsorySet, bool unsetOther,
                                                                     bool isOtherCompulsorySet, bool expected)
@@ -169,21 +169,45 @@ public class FeatureSetTests
         Assert.Equal(expected, result);
     }
 
-    [Fact]
-    public void Given_Features_When_OtherDontSupportVarOnionOptin_Then_ReturnFalse()
+    [Theory]
+    [InlineData(Feature.OptionDataLossProtect)]
+    [InlineData(Feature.VarOnionOptin)]
+    [InlineData(Feature.OptionStaticRemoteKey)]
+    [InlineData(Feature.PaymentSecret)]
+    [InlineData(Feature.OptionChannelType)]
+    public void Given_LocalCompulsoryAssumedFeature_When_OtherOmitsIt_Then_IsCompatibleAndFeatureIsNegotiated(
+        Feature feature)
     {
         // Arrange
         var features = new FeatureSet();
+        features.SetFeature(feature, true);
         var other = new FeatureSet();
-
-        other.SetFeature(Feature.VarOnionOptin, true, false);
-        other.SetFeature(Feature.VarOnionOptin, false, false);
+        other.SetFeature(feature, true, false);
+        other.SetFeature(feature, false, false);
 
         // Act
-        var result = features.IsCompatible(other, out var _);
+        var result = features.IsCompatible(other, out var negotiated);
+
+        // Assert
+        Assert.True(result);
+        Assert.NotNull(negotiated);
+        Assert.True(negotiated.IsFeatureSet(feature, true));
+    }
+
+    [Fact]
+    public void Given_LocalCompulsoryNonAssumedFeature_When_OtherOmitsIt_Then_ReturnFalse()
+    {
+        // Arrange
+        var features = new FeatureSet();
+        features.SetFeature(Feature.OptionSupportLargeChannel, true);
+        var other = new FeatureSet();
+
+        // Act
+        var result = features.IsCompatible(other, out var negotiated);
 
         // Assert
         Assert.False(result);
+        Assert.Null(negotiated);
     }
 
     [Fact]
@@ -259,9 +283,12 @@ public class FeatureSetTests
         Feature dependency)
     {
         // Arrange
+        // Keep the dependency optional locally, so IsCompatible can only fail on the other set's dependency check
         var features = new FeatureSet();
+        features.SetFeature(dependency, false);
         var other = new FeatureSet();
         other.SetFeature(dependency, true, false);
+        other.SetFeature(dependency, false, false);
         other.SetFeature((int)feature, true);
 
         // Act
@@ -270,6 +297,7 @@ public class FeatureSetTests
         // Assert
         Assert.False(result);
         Assert.Null(negotiated);
+        Assert.Contains((feature, dependency), other.GetMissingDependencies());
     }
 
     [Fact]
@@ -310,9 +338,8 @@ public class FeatureSetTests
     {
         // Arrange
         var features = new FeatureSet();
-        features.SetFeature(Feature.OptionDataLossProtect, false);
+        features.SetFeature(Feature.OptionSupportLargeChannel, false);
         var other = new FeatureSet();
-        other.SetFeature(Feature.OptionDataLossProtect, false, false);
 
         // Act
         var result = features.IsCompatible(other, out var negotiated);
@@ -320,7 +347,7 @@ public class FeatureSetTests
         // Assert
         Assert.True(result);
         Assert.NotNull(negotiated);
-        Assert.False(negotiated.HasFeature(Feature.OptionDataLossProtect));
+        Assert.False(negotiated.HasFeature(Feature.OptionSupportLargeChannel));
         Assert.True(negotiated.IsFeatureSet(Feature.VarOnionOptin, true));
     }
 
