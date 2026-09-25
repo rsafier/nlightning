@@ -32,6 +32,7 @@ public class OpenChannelClientHandlerTests
 {
     private readonly Mock<IBlockchainMonitor> _blockchainMonitorMock;
     private readonly Mock<IChannelFactory> _channelFactoryMock;
+    private readonly Mock<IChannelManager> _channelManagerMock;
     private readonly Mock<IChannelMemoryRepository> _channelMemoryRepositoryMock;
     private readonly Mock<IMessageFactory> _messageFactoryMock;
     private readonly Mock<IPeerManager> _peerManagerMock;
@@ -42,6 +43,10 @@ public class OpenChannelClientHandlerTests
     {
         _blockchainMonitorMock = new Mock<IBlockchainMonitor>();
         _channelFactoryMock = new Mock<IChannelFactory>();
+        _channelManagerMock = new Mock<IChannelManager>();
+        _channelManagerMock.Setup(x => x.StartOpeningChannelAsync(It.IsAny<CompactPubKey>(), It.IsAny<ChannelModel>(),
+                                                                  It.IsAny<IChannelMessage>()))
+                           .Returns(Task.CompletedTask);
         _channelMemoryRepositoryMock = new Mock<IChannelMemoryRepository>();
         var loggerMock = new Mock<ILogger<OpenChannelClientHandler>>();
         _messageFactoryMock = new Mock<IMessageFactory>();
@@ -51,6 +56,7 @@ public class OpenChannelClientHandlerTests
         _handler = new OpenChannelClientHandler(
             _blockchainMonitorMock.Object,
             _channelFactoryMock.Object,
+            _channelManagerMock.Object,
             _channelMemoryRepositoryMock.Object,
             loggerMock.Object,
             _messageFactoryMock.Object,
@@ -119,8 +125,11 @@ public class OpenChannelClientHandlerTests
         Assert.Equal(finalChannelId, response.ChannelId);
         _peerManagerMock.Verify(x => x.GetPeer(peerId), Times.Once);
         _utxoMemoryRepositoryMock.Verify(x => x.LockUtxosToSpendOnChannel(fundingAmount, tempChannelId), Times.Once);
-        _channelMemoryRepositoryMock.Verify(x => x.AddTemporaryChannel(peerId, channelModel), Times.Once);
-        peerServiceMock.Verify(x => x.SendMessageAsync(openChannel1Message), Times.Once);
+        // open_channel goes through the channel manager (temporary channel lock + the peer's outbox), never straight
+        // to the peer service
+        _channelManagerMock.Verify(x => x.StartOpeningChannelAsync(peerId, channelModel, openChannel1Message),
+                                   Times.Once);
+        peerServiceMock.Verify(x => x.SendMessageAsync(It.IsAny<IChannelMessage>()), Times.Never);
     }
 
     [Fact]

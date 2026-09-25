@@ -29,4 +29,12 @@ public interface IChannelManager
                                                                    CompactPubKey peerPubKey);
 
     Task RegisterExistingChannelAsync(ChannelModel channel);
+
+    /// <summary>
+    /// Starts opening a channel we fund: under the temporary channel's lock, stores <paramref name="channel"/> as a
+    /// temporary channel of <paramref name="peerPubKey"/> and raises <paramref name="openChannelMessage"/> through
+    /// <see cref="OnResponseMessageReady"/>, so it goes out through the peer's ordered send path like every other
+    /// channel message (BOLT2 plan §3.7).
+    /// </summary>
+    Task StartOpeningChannelAsync(CompactPubKey peerPubKey, ChannelModel channel, IChannelMessage openChannelMessage);
 }

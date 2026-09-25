@@ -27,6 +27,7 @@ public sealed class OpenChannelClientHandler
     : IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IChannelManager _channelManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelFactory _channelFactory;
     private readonly ILogger<OpenChannelClientHandler> _logger;
@@ -41,12 +42,13 @@ public sealed class OpenChannelClientHandler
     public ClientCommand Command => ClientCommand.OpenChannel;
 
     public OpenChannelClientHandler(IBlockchainMonitor blockchainMonitor, IChannelFactory channelFactory,
-                                    IChannelMemoryRepository channelMemoryRepository,
+                                    IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                                     ILogger<OpenChannelClientHandler> logger, IMessageFactory messageFactory,
                                     IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelFactory = channelFactory;
+        _channelManager = channelManager;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _messageFactory = messageFactory;
@@ -97,9 +99,6 @@ public sealed class OpenChannelClientHandler
 
         try
         {
-            // Add the channel to dictionaries
-            _channelMemoryRepository.AddTemporaryChannel(peerId, channel);
-
             // Create the channel type Tlv; accept_channel must echo exactly this type
             var channelTypeTlv = new ChannelTypeTlv(channel.ChannelParams.ToChannelType());
 
@@ -135,7 +134,8 @@ public sealed class OpenChannelClientHandler
                 _logger.LogInformation("Sending OpenChannel message to peer {peerId} for channel {channelId}",
                                        peerId,
                                        channel.ChannelId);
-            await _peerService.SendMessageAsync(openChannel1Message);
+            // Stores the temporary channel and queues open_channel on the peer's outbox, under the channel's lock
+            await _channelManager.StartOpeningChannelAsync(peerId, channel, openChannel1Message);
 
             return await tsc.Task;
         }
