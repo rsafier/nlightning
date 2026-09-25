@@ -32,7 +32,7 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 ## Dependency rules
 - Test projects may reference src projects and `NLightning.Tests.Utils`. Nothing in src/ may reference test projects.
 - Tests.Utils references only Domain, Infrastructure and Infrastructure.Bitcoin. It transitively brings in LNUnit and Docker.DotNet. Serialization.Tests and Daemon.Tests do not reference it.
-- `src/Directory.Build.props` does NOT apply here. Each test csproj declares net10.0 and Nullable itself; all also set `IsTestProject`. New test projects need `xunit.runner.visualstudio` (3.1.5) or `dotnet test` discovers nothing.
+- `src/Directory.Build.props` does NOT apply here. Each test csproj declares net10.0 and Nullable itself; all also set `IsTestProject`. New test projects need `xunit.runner.visualstudio` (3.1.5) or `dotnet test` discovers nothing. `python3 scripts/check-sln-configs.py` (a CI step) fails when a `*.Tests` project lacks `IsTestProject` or the runner, or when a declared solution configuration has no mapping in `NLightning.sln`.
 
 ## Commands (repo root)
 - All tests, as CI runs them (`.github/workflows/dotnet.yml`, minus logger/coverage flags): `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121 && dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'`

@@ -19,6 +19,9 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Check Solution Configurations and Test Projects
+        run: python3 scripts/check-sln-configs.py
+
       - name: Build
         run: dotnet build --configuration Release -p:MSBuildWarningsAsMessages=MSB4121
 
