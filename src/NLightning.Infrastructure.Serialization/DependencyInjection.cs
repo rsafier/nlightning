@@ -25,6 +25,7 @@ public static class DependencyInjection
     public static IServiceCollection AddSerializationInfrastructureServices(this IServiceCollection services)
     {
         // Singleton services (one instance throughout the application)
+        services.AddSingleton<IFailureMessageSerializer, FailureMessageSerializer>();
         services.AddSingleton<IFeatureSetSerializer, FeatureSetSerializer>();
         services.AddSingleton<IHopPayloadSerializer, HopPayloadSerializer>();
         services.AddSingleton<IMessageSerializer, MessageSerializer>();
