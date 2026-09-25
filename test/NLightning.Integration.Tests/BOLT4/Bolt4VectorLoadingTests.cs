@@ -3,9 +3,10 @@ using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Integration.Tests.BOLT4;
 
+using Domain.Protocol.Onion.Constants;
+
 public class Bolt4VectorLoadingTests
 {
-    private const int OnionPacketLength = 1366;
     private const int ErrorPacketLength = 292;
 
     [Fact]
@@ -19,7 +20,7 @@ public class Bolt4VectorLoadingTests
         Assert.Equal(5, vector.DecodePrivateKeys.Count);
         Assert.Equal(Bolt4Vectors.SessionKey, vector.SessionKey);
         Assert.Equal(Bolt4Vectors.AssociatedData, vector.AssociatedData);
-        Assert.Equal(OnionPacketLength, vector.Onion.Length);
+        Assert.Equal(OnionConstants.PacketLength, vector.Onion.Length);
         Assert.All(vector.Hops, hop => Assert.Equal(33, hop.PubKey.Length));
         Assert.All(vector.DecodePrivateKeys, key => Assert.Equal(32, key.Length));
     }

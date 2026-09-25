@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Serialization.Payloads;
 
 using Converters;
 using Domain.Crypto.Constants;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Payloads;
 using Exceptions;
 
@@ -35,9 +36,9 @@ public class UpdateAddHtlcPayloadSerializer : IPayloadSerializer<UpdateAddHtlcPa
         await stream.WriteAsync(EndianBitConverter.GetBytesBigEndian(updateAddHtlcPayload.Amount.MilliSatoshi));
         await stream.WriteAsync(updateAddHtlcPayload.PaymentHash);
         await stream.WriteAsync(EndianBitConverter.GetBytesBigEndian(updateAddHtlcPayload.CltvExpiry));
-        if (updateAddHtlcPayload.OnionRoutingPacket.Length != UpdateAddHtlcPayload.OnionPacketLength)
+        if (updateAddHtlcPayload.OnionRoutingPacket.Length != OnionConstants.PacketLength)
             throw new SerializationException(
-                $"Onion routing packet must be exactly {UpdateAddHtlcPayload.OnionPacketLength} bytes");
+                $"Onion routing packet must be exactly {OnionConstants.PacketLength} bytes");
         await stream.WriteAsync(updateAddHtlcPayload.OnionRoutingPacket);
     }
 
@@ -66,7 +67,7 @@ public class UpdateAddHtlcPayloadSerializer : IPayloadSerializer<UpdateAddHtlcPa
             var cltvExpiry = EndianBitConverter.ToUInt32BigEndian(buffer[..sizeof(uint)]);
 
             // The onion packet is mandatory and fixed-size; a short stream throws EndOfStreamException
-            var onionRoutingPacket = new byte[UpdateAddHtlcPayload.OnionPacketLength];
+            var onionRoutingPacket = new byte[OnionConstants.PacketLength];
             await stream.ReadExactlyAsync(onionRoutingPacket);
 
             return new UpdateAddHtlcPayload(amountMsat, channelId, cltvExpiry, id, paymentHash, onionRoutingPacket);

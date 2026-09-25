@@ -3,6 +3,7 @@ namespace NLightning.Domain.Protocol.Payloads;
 using Channels.ValueObjects;
 using Interfaces;
 using Money;
+using Onion.Constants;
 
 /// <summary>
 /// Represents the payload for the update_add_htlc message.
@@ -22,12 +23,6 @@ public class UpdateAddHtlcPayload(
     ReadOnlyMemory<byte> onionRoutingPacket)
     : IChannelMessagePayload
 {
-    // TODO: replace with OnionConstants.PacketLength once the typed OnionPacket lands.
-    /// <summary>
-    /// The fixed length of the onion_routing_packet field (BOLT 2/4): 1 + 33 + 1300 + 32.
-    /// </summary>
-    public const int OnionPacketLength = 1366;
-
     /// <summary>
     /// Gets the channel ID.
     /// </summary>
@@ -57,11 +52,11 @@ public class UpdateAddHtlcPayload(
     public uint CltvExpiry { get; } = cltvExpiry;
 
     /// <summary>
-    /// The raw onion routing packet (always exactly <see cref="OnionPacketLength"/> bytes).
+    /// The raw onion routing packet (always exactly <see cref="OnionConstants.PacketLength"/> bytes).
     /// </summary>
-    public ReadOnlyMemory<byte> OnionRoutingPacket { get; } = onionRoutingPacket.Length == OnionPacketLength
+    public ReadOnlyMemory<byte> OnionRoutingPacket { get; } = onionRoutingPacket.Length == OnionConstants.PacketLength
                                                                 ? onionRoutingPacket
                                                                 : throw new ArgumentException(
-                                                                      $"Onion routing packet must be exactly {OnionPacketLength} bytes, got {onionRoutingPacket.Length}",
+                                                                      $"Onion routing packet must be exactly {OnionConstants.PacketLength} bytes, got {onionRoutingPacket.Length}",
                                                                       nameof(onionRoutingPacket));
 }
