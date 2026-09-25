@@ -190,6 +190,15 @@ public class ChannelFactory : IChannelFactory
         if (request.FundingAmount < expectedFee + channelReserveAmount)
             throw new ChannelErrorException($"Funding amount is too small to cover fees: {request.FundingAmount}");
 
+        // Check the push amount: it can't exceed the funding, and our remaining amount must pay the full fee
+        var pushAmount = request.PushAmount ?? LightningMoney.Zero;
+        if (pushAmount > request.FundingAmount)
+            throw new ChannelErrorException($"Push amount is too large: {pushAmount} > {request.FundingAmount}");
+
+        if (request.FundingAmount - pushAmount < expectedFee)
+            throw new ChannelErrorException(
+                $"Funder amount is too small to cover fees: {request.FundingAmount - pushAmount} < {expectedFee}");
+
         // Check if this is a large channel and if we support it
         if (request.FundingAmount >= ChannelConstants.LargeChannelAmount &&
             negotiatedFeatures.LargeChannels == FeatureSupport.No)

@@ -104,17 +104,25 @@ public class ChannelOpenValidator : IChannelOpenValidator
              && parameters.PushAmount > parameters.FundingAmount)
                 throw new ChannelErrorException($"Push amount is too large: {parameters.PushAmount}");
 
-            // Check if there are enough funds to pay for fees (and both anchors when option_anchors applies)
+            // Check if there are enough funds to pay for fees (and both anchors when option_anchors applies).
+            // The initial commitment is built with the peer's feerate_per_kw, so use it when present.
+            var feeRatePerKw = parameters.FeeRatePerKw ?? parameters.CurrentFeeRatePerKw;
             var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
             var expectedWeight = hasAnchors
                                      ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
                                      : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
-            var expectedFee = LightningMoney.Satoshis(expectedWeight * parameters.CurrentFeeRatePerKw.Satoshi / 1000);
+            var expectedFee = LightningMoney.Satoshis(expectedWeight * feeRatePerKw.Satoshi / 1000);
             if (hasAnchors)
                 expectedFee += 2 * TransactionConstants.AnchorOutputAmount;
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");
+
+            // BOLT 2: the funder's amount for the initial commitment (funding - push) must pay the full fee
+            var funderAmount = parameters.FundingAmount - (parameters.PushAmount ?? LightningMoney.Zero);
+            if (funderAmount < expectedFee)
+                throw new ChannelErrorException(
+                    $"Funder amount is too small to cover fees: {funderAmount} < {expectedFee}");
 
             // Check if this is a large channel and if we support it
             if (parameters.FundingAmount >= ChannelConstants.LargeChannelAmount &&

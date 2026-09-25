@@ -16,17 +16,78 @@ public class ChannelOpenValidatorTests
     private readonly ChannelOpenValidator _validator = new(new NodeOptions());
 
     [Fact]
-    public void Given_PushAmountEqualToFundingAmount_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    public void Given_PushAmountEqualToFundingAmount_When_PerformingMandatoryChecks_Then_ThrowsFunderCannotPayFee()
     {
         // Arrange
         var fundingAmount = LightningMoney.Satoshis(100_000);
         var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(100_000), FeatureSupport.No);
 
         // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_FunderAmountEqualToFee_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        // 724 * 10000 / 1000 = 7240 sat fee left to the funder
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(92_760), FeatureSupport.No);
+
+        // Act
         var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
 
         // Assert
         Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndFunderAmountBelowFeePlusAnchors_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        // 1124 * 10000 / 1000 = 11240 sat fee + 2 * 330 sat anchors = 11900 sat
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(88_101), FeatureSupport.Optional);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeeRateHigherThanOurs_When_PerformingMandatoryChecks_Then_UsesPeerFeeRateForFeeCheck()
+    {
+        // Arrange
+        // At our 10000 sat/kw the funder's 7240 sat would cover 724 weight, but the peer's 20000 sat/kw needs 14480
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var parameters = CreateParameters(fundingAmount, LightningMoney.Satoshis(92_760), FeatureSupport.No);
+        parameters = new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = parameters.ChannelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            FeeRatePerKw = LightningMoney.Satoshis(20_000),
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
     }
 
     [Fact]

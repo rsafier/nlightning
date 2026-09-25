@@ -57,12 +57,65 @@ public class ChannelFactoryTests
                      exception?.Message);
     }
 
-    private static OpenChannelClientRequest CreateRequest(LightningMoney fundingAmount)
+    [Fact]
+    public async Task Given_PushAmountAboveFundingAmount_When_CreatingChannelAsInitiator_Then_ThrowsChannelError()
+    {
+        // Arrange
+        var request = CreateRequest(LightningMoney.Satoshis(100_000), LightningMoney.MilliSatoshis(100_000_001UL));
+        var negotiatedFeatures = new FeatureOptions { OptionAnchors = FeatureSupport.No };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _channelFactory.CreateChannelV1AsInitiatorAsync(request, negotiatedFeatures,
+                                                                                  s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("Push amount is too large", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_PushLeavingLessThanFee_When_CreatingChannelAsInitiator_Then_Throws()
+    {
+        // Arrange
+        // 1124 * 10000 / 1000 = 11240 sat fee + 2 * 330 sat anchors = 11900 sat must stay with us
+        var request = CreateRequest(LightningMoney.Satoshis(100_000), LightningMoney.Satoshis(88_101));
+        var negotiatedFeatures = new FeatureOptions { OptionAnchors = FeatureSupport.Optional };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _channelFactory.CreateChannelV1AsInitiatorAsync(request, negotiatedFeatures,
+                                                                                  s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("Funder amount is too small to cover fees", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_PushLeavingExactlyFee_When_CreatingChannelAsInitiator_Then_FeeCheckPasses()
+    {
+        // Arrange
+        var request = CreateRequest(LightningMoney.Satoshis(100_000), LightningMoney.Satoshis(88_100));
+        var negotiatedFeatures = new FeatureOptions { OptionAnchors = FeatureSupport.Optional };
+
+        // Act
+        var exception = await Record.ExceptionAsync(
+                            () => _channelFactory.CreateChannelV1AsInitiatorAsync(request, negotiatedFeatures,
+                                                                                  s_remoteNodeId));
+
+        // Assert (later steps may fail on the bare mocks; only the push and fee checks matter here)
+        Assert.False(exception is ChannelErrorException && (exception.Message.Contains("to cover fees")
+                                                         || exception.Message.Contains("Push amount")),
+                     exception?.Message);
+    }
+
+    private static OpenChannelClientRequest CreateRequest(LightningMoney fundingAmount,
+                                                          LightningMoney? pushAmount = null)
     {
         return new OpenChannelClientRequest("node", fundingAmount)
         {
             FeeRatePerKw = LightningMoney.Satoshis(10_000),
-            ChannelReserveAmount = LightningMoney.Satoshis(1_000)
+            ChannelReserveAmount = LightningMoney.Satoshis(1_000),
+            PushAmount = pushAmount
         };
     }
 }
