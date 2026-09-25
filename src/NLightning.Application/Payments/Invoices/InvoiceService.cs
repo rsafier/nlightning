@@ -6,6 +6,9 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Payments.Invoices;
 
 using Bolt11.Models;
+using Channels.Interfaces;
+using Domain.Bitcoin.Transactions.Factories;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -37,14 +40,16 @@ using Routing;
 /// <see cref="IUnitOfWork"/> commits. Both must share the scope's database context (see the Payments
 /// <c>CLAUDE.md</c> section for the registration).</para>
 /// <para>Route hints (NL-245): our channels are never announced, so a payer that is not our peer can only reach us
-/// through an <c>r</c> field. Each <c>Open</c> channel whose peer sent us its <c>channel_update</c>
+/// through an <c>r</c> field. Each <c>Open</c> channel whose link is up (<see cref="IPeerLivenessProbe"/>, as LND skips
+/// inactive channels) and whose peer sent us its <c>channel_update</c>
 /// (<see cref="IChannelUpdateService.TryGetRemoteChannelUpdate"/>, not disabled) gets a one-hop hint: the peer's node
 /// id, the channel's short channel id (the peer's alias <c>RemoteAlias</c> for an <c>option_scid_alias</c> channel)
 /// and the <b>peer's</b> fee and <c>cltv_expiry_delta</c>. BOLT 11 describes each entry as the channel from its
 /// <c>pubkey</c> towards the payee, which the peer forwards over and charges for under its own policy; our policy
-/// never applies to that direction. For an invoice with an amount, channels whose peer cannot send it (peer balance, or
-/// the peer's <c>htlc_minimum_msat</c>/<c>htlc_maximum_msat</c>) are skipped. At most <see cref="MaxRouteHints"/>
-/// hints, the peers with the largest balance first (as LND). A channel whose peer's update we do not have gets no hint
+/// never applies to that direction. For an invoice with an amount, channels whose peer cannot send it (the peer's
+/// spendable balance, <see cref="GetPeerSpendable"/>, or the peer's <c>htlc_minimum_msat</c>/<c>htlc_maximum_msat</c>)
+/// are skipped. At most <see cref="MaxRouteHints"/> hints, the peers with the largest spendable balance first (as
+/// LND). A channel whose peer's update we do not have gets no hint
 /// (LND does the same).</para>
 /// <para>Singleton; thread-safe.</para>
 /// </remarks>
@@ -61,6 +66,7 @@ public sealed class InvoiceService : IInvoiceService
     private readonly ILogger<InvoiceService> _logger;
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IChannelUpdateService? _channelUpdateService;
+    private readonly IPeerLivenessProbe? _peerLivenessProbe;
 
     /// <param name="serviceScopeFactory">Scopes for persistence.</param>
     /// <param name="secureKeyManager">The node key that signs the invoices.</param>
@@ -69,10 +75,13 @@ public sealed class InvoiceService : IInvoiceService
     /// <param name="channelMemoryRepository">Our channels, for route hints; without it invoices carry none.</param>
     /// <param name="channelUpdateService">The peers' <c>channel_update</c>s, for route hints; without it invoices
     /// carry none.</param>
+    /// <param name="peerLivenessProbe">Which channels have their link up; without it every <c>Open</c> channel counts
+    /// as up.</param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                           IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
                           IChannelMemoryRepository? channelMemoryRepository = null,
-                          IChannelUpdateService? channelUpdateService = null)
+                          IChannelUpdateService? channelUpdateService = null,
+                          IPeerLivenessProbe? peerLivenessProbe = null)
     {
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
@@ -80,6 +89,7 @@ public sealed class InvoiceService : IInvoiceService
         _logger = logger;
         _channelMemoryRepository = channelMemoryRepository;
         _channelUpdateService = channelUpdateService;
+        _peerLivenessProbe = peerLivenessProbe;
     }
 
     /// <inheritdoc />
@@ -113,7 +123,7 @@ public sealed class InvoiceService : IInvoiceService
             MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
         };
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
-        foreach (var routeHint in BuildRouteHints(amount))
+        foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
             invoice.AddRouteHint(routeHint);
 
         var bolt11 = invoice.Encode();
@@ -143,12 +153,13 @@ public sealed class InvoiceService : IInvoiceService
     /// <summary>
     /// The route hints for a new invoice (see the class remarks): one single-hop hint per usable private channel.
     /// </summary>
-    internal IReadOnlyList<RoutingInfoCollection> BuildRouteHints(LightningMoney? amount)
+    internal async Task<IReadOnlyList<RoutingInfoCollection>> BuildRouteHintsAsync(LightningMoney? amount,
+                                                                                 CancellationToken cancellationToken)
     {
         if (_channelMemoryRepository is null || _channelUpdateService is null)
             return [];
 
-        var candidates = new List<(ChannelModel Channel, RoutingInfo Hint)>();
+        var candidates = new List<(ulong Spendable, RoutingInfo Hint)>();
         foreach (var channel in _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open))
         {
             if (!_channelUpdateService.TryGetRemoteChannelUpdate(channel.ChannelId, out var update)
@@ -161,19 +172,59 @@ public sealed class InvoiceService : IInvoiceService
             if (shortChannelId == default)
                 continue;
 
+            var spendable = GetPeerSpendable(channel);
             if (amount is not null
-             && (channel.RemoteBalance < amount || amount.MilliSatoshi < update.HtlcMinimumMsat
+             && (spendable < amount.MilliSatoshi || amount.MilliSatoshi < update.HtlcMinimumMsat
               || amount.MilliSatoshi > update.HtlcMaximumMsat))
                 continue;
 
-            candidates.Add((channel, new RoutingInfo(channel.RemoteNodeId, shortChannelId, update.FeeBaseMsat,
-                                                     update.FeeProportionalMillionths, update.CltvExpiryDelta)));
+            if (_peerLivenessProbe is not null
+             && !await _peerLivenessProbe.IsAliveAsync(channel.ChannelId, channel.RemoteNodeId, cancellationToken))
+                continue;
+
+            candidates.Add((spendable, new RoutingInfo(channel.RemoteNodeId, shortChannelId, update.FeeBaseMsat,
+                                                       update.FeeProportionalMillionths, update.CltvExpiryDelta)));
         }
 
-        return candidates.OrderByDescending(c => c.Channel.RemoteBalance.MilliSatoshi)
+        return candidates.OrderByDescending(c => c.Spendable)
                          .Take(MaxRouteHints)
                          .Select(c => new RoutingInfoCollection { c.Hint })
                          .ToList();
+    }
+
+    /// <summary>
+    /// About what the peer can still send us on <paramref name="channel"/>, in msat: its balance (gross, NL-062) minus
+    /// the HTLCs it offered that are not settled yet, minus the reserve we require of it, minus, when it funded the
+    /// channel, the commitment fee with one more HTLC (every pending HTLC counted as untrimmed). Never below zero.
+    /// </summary>
+    internal static ulong GetPeerSpendable(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+
+        var balance = (UInt128)channel.RemoteBalance.MilliSatoshi;
+        UInt128 cost = channel.ChannelParams.Local.ChannelReserveAmount.MilliSatoshi;
+        var pendingHtlcs = 0;
+        var feeratePerKw = (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi;
+        if (channel.Commitments is { } commitments)
+        {
+            feeratePerKw = commitments.LatestFeeratePerKw;
+            foreach (var htlc in commitments.Htlcs.Values)
+            {
+                if (HtlcStateTable.IsFinal(htlc.State))
+                    continue;
+
+                pendingHtlcs++;
+                if (htlc.Direction == HtlcDirection.Incoming)
+                    cost += htlc.AmountMsat;
+            }
+        }
+
+        if (!channel.IsInitiator)
+            cost += (UInt128)CommitmentFeeCalculator.FunderCostSatoshis(feeratePerKw,
+                                                                        channel.ChannelParams.OptionAnchorOutputs,
+                                                                        pendingHtlcs + 1) * 1_000;
+
+        return balance > cost ? (ulong)(balance - cost) : 0;
     }
 
     /// <inheritdoc />

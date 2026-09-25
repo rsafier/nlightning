@@ -212,7 +212,7 @@ public class PaymentServiceTests : IDisposable
     {
         // Arrange
         var (bolt11, hash) = CreateInvoice(_payee, s_amount);
-        await _payments.AddAsync(StoredPayment(hash, status));
+        await _payments.AddAsync(StoredPayment(hash, status, htlcId: 3));
 
         // Act
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -225,7 +225,7 @@ public class PaymentServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_FulfillOfAnotherHtlc_When_Handled_Then_PaymentUnchanged()
+    public async Task Given_InFlightPaymentWithAnotherHtlc_When_AFulfillWithTheRightPreimageArrives_Then_ItIsRecorded()
     {
         // Arrange
         var preimage = Preimage();
@@ -237,9 +237,177 @@ public class PaymentServiceTests : IDisposable
                           new OutgoingHtlcFulfilled(s_channelId, 4, hash, preimage),
                           TestContext.Current.CancellationToken);
 
+        // Assert: the preimage proves the payment; the recorded HTLC is kept
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(preimage, stored.Preimage);
+        Assert.Equal(3UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_FailedPayment_When_AFulfillWithTheRightPreimageArrives_Then_ItSucceedsWithThePreimage()
+    {
+        // Arrange: e.g. a failure was applied to the wrong attempt, then the real HTLC was fulfilled
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.Failed, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 3, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(preimage, stored.Preimage);
+        Assert.Null(stored.FailureReason);
+    }
+
+    [Fact]
+    public async Task Given_FulfillOfAForwardedHtlcWithTheSameHash_When_Handled_Then_PaymentUnchanged()
+    {
+        // Arrange
+        var preimage = Preimage();
+        var hash = HashOf(preimage);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.Failed, htlcId: 3));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 9)))
+                     .ReturnsAsync(HtlcOrigin.Forwarded(s_channelId, 1));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFulfilledAsync(
+                          new OutgoingHtlcFulfilled(s_channelId, 9, hash, preimage),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_FailOfAnotherHtlc_When_Handled_Then_PaymentUnchanged()
+    {
+        // Arrange
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 4, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
         // Assert
         Assert.False(handled);
         Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_HtlcIdNotRecordedAndNoStoredOrigin_When_Failed_Then_ThePaymentFails()
+    {
+        // Arrange: production before NL-250 stores no origin, and a failed HTLC has left channel memory
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 9, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Equal(9UL, stored.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentThatWasNeverOffered_When_PayingTheHashAgain_Then_TheNewAttemptProceeds()
+    {
+        // Arrange: a crash after the InFlight save, before the offer (no HTLC anywhere)
+        var (bolt11, hash) = CreateInvoice(_payee, s_amount);
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight));
+
+        // Act
+        var payment = await Service.PayInvoiceAsync(bolt11, null, s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert: the stale attempt was failed, then replaced by the new one (no route here)
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Contains("No route", payment.FailureReason);
+        Assert.Equal(2, _payments.AddCalls);
+        Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_InFlightPaymentsWithoutHtlc_When_ReconcilingAtStartup_Then_OnlyTheNeverOfferedOneFails()
+    {
+        // Arrange: one attempt has no HTLC at all, the other has one on a channel that is not in memory
+        var neverOffered = HashOf(Preimage());
+        var unknownChannel = HashOf(Preimage());
+        var recorded = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(neverOffered, PaymentStatus.InFlight));
+        await _payments.AddAsync(StoredPayment(unknownChannel, PaymentStatus.InFlight));
+        await _payments.AddAsync(StoredPayment(recorded, PaymentStatus.InFlight, htlcId: 3));
+        _channelState.Setup(s => s.FindHtlcsByOriginAsync(HtlcOrigin.Local(unknownChannel)))
+                     .ReturnsAsync([(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 5))]);
+
+        // Act
+        var reconciled = await Service.ReconcileInFlightPaymentsAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, reconciled);
+        var failed = await _payments.GetByPaymentHashAsync(neverOffered);
+        Assert.Equal(PaymentStatus.Failed, failed!.Status);
+        Assert.Null(failed.FailureCode);
+        Assert.Contains("never offered", failed.FailureReason);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(unknownChannel))!.Status);
+        Assert.Equal(PaymentStatus.InFlight, (await _payments.GetByPaymentHashAsync(recorded))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_OneHashLocked_When_LockingAnotherHashWithTheSameFirstByte_Then_ItDoesNotWait()
+    {
+        // Arrange: the old 64 striped locks put these two hashes in the same stripe
+        var ct = TestContext.Current.CancellationToken;
+        var service = Service;
+        var first = HashOf(Preimage());
+        var bytes = ((byte[])first).ToArray();
+        bytes[31] ^= 0xFF;
+        var second = new Hash(bytes);
+        var held = await service.AcquireHashLockAsync(first, ct);
+
+        // Act
+        var other = service.AcquireHashLockAsync(second, ct);
+        var same = service.AcquireHashLockAsync(first, ct);
+
+        // Assert
+        Assert.True(other.IsCompletedSuccessfully);
+        Assert.False(same.IsCompleted);
+        held.Dispose();
+        (await same.WaitAsync(TimeSpan.FromSeconds(5), ct)).Dispose();
+        (await other).Dispose();
+    }
+
+    [Fact]
+    public async Task Given_ACanceledWaitForAHashLock_When_TheHolderReleases_Then_TheLockIsFreeAgain()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var service = Service;
+        var hash = HashOf(Preimage());
+        var held = await service.AcquireHashLockAsync(hash, ct);
+        using var canceled = new CancellationTokenSource();
+        var waiting = service.AcquireHashLockAsync(hash, canceled.Token);
+
+        // Act
+        await canceled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        held.Dispose();
+        held.Dispose();
+
+        // Assert: released once despite the double dispose, and reusable
+        using var again = await service.AcquireHashLockAsync(hash, ct).WaitAsync(TimeSpan.FromSeconds(5), ct);
     }
 
     [Fact]

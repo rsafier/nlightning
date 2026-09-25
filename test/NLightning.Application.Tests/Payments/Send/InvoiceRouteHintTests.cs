@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Payments.Send;
 
+using Application.Channels.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Payments.Invoices;
 using Bolt11.Models;
@@ -29,6 +30,7 @@ public class InvoiceRouteHintTests : IDisposable
     private readonly TestNodeKeyManager _us = new(0x0d);
     private readonly Mock<IChannelMemoryRepository> _channels = new();
     private readonly Mock<IChannelUpdateService> _updates = new();
+    private readonly Mock<IPeerLivenessProbe> _links = new();
     private readonly List<ChannelModel> _open = [];
     private readonly ServiceProvider _provider;
 
@@ -36,6 +38,9 @@ public class InvoiceRouteHintTests : IDisposable
     {
         _channels.Setup(c => c.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                  .Returns((Func<ChannelModel, bool> predicate) => _open.Where(predicate).ToList());
+        _links.Setup(l => l.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                         It.IsAny<CancellationToken>()))
+              .ReturnsAsync(true);
 
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
@@ -161,13 +166,69 @@ public class InvoiceRouteHintTests : IDisposable
         Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
     }
 
+    [Theory]
+    [InlineData(true, 580_000_000UL)]
+    [InlineData(false, 577_760_000UL)]
+    public void Given_PeerBalance_When_ComputingWhatThePeerCanSend_Then_ReserveAndItsCommitFeeAreSubtracted(
+        bool weFunded, ulong expectedMsat)
+    {
+        // Arrange: 600,000 sat on the peer's side, 20,000 sat reserve, 2,500 sat/kw; when the peer funded the channel
+        // it also pays the commitment fee with one more HTLC: 2,500 * (724 + 172) / 1,000 = 2,240 sat
+        var channel = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                 remoteSat: 600_000, weFunded: weFunded);
+
+        // Act
+        var spendable = InvoiceService.GetPeerSpendable(channel);
+
+        // Assert
+        Assert.Equal(expectedMsat, spendable);
+    }
+
+    [Fact]
+    public async Task Given_AmountAboveThePeersSpendableButBelowItsBalance_When_CreatingAnInvoice_Then_NoHint()
+    {
+        // Arrange: the peer holds 60,000 sat but must keep a 20,000 sat reserve
+        var channel = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                 remoteSat: 60_000);
+        SetPeerUpdate(channel, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "reserve", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
+    }
+
+    [Fact]
+    public async Task Given_PeerLinkDown_When_CreatingAnInvoice_Then_ThatChannelIsSkipped()
+    {
+        // Arrange
+        var away = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                              remoteSat: 900_000);
+        var connected = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                   remoteSat: 600_000);
+        SetPeerUpdate(away, 1_000, 1, 40);
+        SetPeerUpdate(connected, 1_000, 1, 40);
+        _links.Setup(l => l.IsAliveAsync(away.ChannelId, away.RemoteNodeId, It.IsAny<CancellationToken>()))
+              .ReturnsAsync(false);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(null, "links", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(connected.RemoteNodeId, hint.CompactPubKey);
+    }
+
     private InvoiceService CreateService() =>
         new(_provider.GetRequiredService<IServiceScopeFactory>(), _us,
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
-            NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object);
+            NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object, _links.Object);
 
     private ChannelModel AddChannel(CompactPubKey peer, byte tag, ShortChannelId shortChannelId, ulong remoteSat,
-                                    FeatureSupport scidAlias = FeatureSupport.No)
+                                    FeatureSupport scidAlias = FeatureSupport.No, bool weFunded = true)
     {
         var key = new CompactPubKey(new NBitcoin.Key().PubKey.ToBytes());
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
@@ -175,7 +236,8 @@ public class InvoiceRouteHintTests : IDisposable
         var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false, scidAlias);
         var keySet = new ChannelKeySetModel(tag, key, key, key, key, key, key);
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null, null,
-                                       true, null, null, LightningMoney.Satoshis(2_000_000 - remoteSat), keySet, 0, 0,
+                                       weFunded, null, null, LightningMoney.Satoshis(2_000_000 - remoteSat), keySet,
+                                       0, 0,
                                        LightningMoney.Satoshis(remoteSat), keySet, 0, peer, 0, ChannelState.Open,
                                        ChannelVersion.V1)
         {

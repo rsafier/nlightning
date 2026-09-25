@@ -14,6 +14,7 @@ using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
@@ -42,7 +43,9 @@ using Routing;
 ///   refuse it when expired, when it is ours, or when the amount is missing or differs from the invoice's
 ///   (<see cref="ArgumentException"/>, nothing persisted).</item>
 ///   <item>Under a per-payment-hash lock: refuse a hash whose stored payment is <c>InFlight</c> or <c>Succeeded</c>
-///   (<see cref="InvalidOperationException"/>); a <c>Failed</c> one is replaced by the new attempt.</item>
+///   (<see cref="InvalidOperationException"/>); a <c>Failed</c> one is replaced by the new attempt. An <c>InFlight</c>
+///   payment without a recorded HTLC id (a crash or a failed save around the offer) is reconciled first against the
+///   channel state (see below), so a hash whose HTLC was never offered can be paid again.</item>
 ///   <item>Route (<see cref="HintRouteBuilder"/>, fee limit from <see cref="PaymentSendOptions"/>): the payee directly,
 ///   else our channel to the first node of a route hint and the hint's hops. The first-hop peer must have an
 ///   <c>Open</c> channel with a commitment snapshot whose link is up (<see cref="IPeerLivenessProbe"/>); the channel
@@ -50,8 +53,10 @@ using Routing;
 ///   <item>Onion (<see cref="PaymentOnionFactory"/>, CSPRNG session key); the payment is persisted <c>InFlight</c> with
 ///   every hop's Sphinx shared secret (<see cref="PaymentModel.Route"/>) before the HTLC is offered.</item>
 ///   <item><c>IChannelOperations.OfferHtlcAsync</c> with <c>HtlcOrigin.Local(hash)</c>; the HTLC id is recorded in the
-///   next save. A refused offer (<see cref="CommitmentRefusedException"/>, nothing sent) fails the payment without a
-///   failure code.</item>
+///   next save (a failure of that save is logged: the outcome still finds the payment, see below). A refused offer
+///   (<see cref="CommitmentRefusedException"/>, nothing sent) fails the payment without a failure code. Any other
+///   exception leaves it unknown whether the add was persisted, so the payment is reconciled against the channel
+///   state: attached to its HTLC if one exists, else failed without a code.</item>
 ///   <item>Wait for the outcome until the timeout or the cancellation; return the stored payment.</item>
 /// </list>
 /// <para>Outcome (<see cref="IPaymentOutcomeHandler"/>, called by the HTLC switch): a fulfill whose preimage hashes to
@@ -60,13 +65,24 @@ using Routing;
 /// (code, erring hop index, reason). An <c>update_fail_malformed_htlc</c> comes from our peer (hop 0), which could not
 /// parse our onion. There are no automatic retries (<c>IPaymentService</c> retry policy: the caller may pay a failed
 /// hash again).</para>
-/// <para>Singleton; thread-safe. Persistence goes through a fresh DI scope per step (scoped
+/// <para>Matching an outcome to the payment: by the recorded (channel, HTLC id); when no id is recorded, the HTLC must
+/// not carry another origin (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>; <c>OfferHtlcAsync</c> does not store
+/// origins before NL-250, so a missing origin is accepted), its record in channel memory (when still there) must match
+/// the stored first hop (peer, amount, CLTV expiry), and a failure is applied only when no other non-final outgoing HTLC
+/// carries the hash (else it may be an earlier failed attempt's, replayed on startup, while the retry's HTLC is live).
+/// A fulfill whose preimage is right but that matches no in-flight attempt (the payment is <c>Failed</c>, or recorded
+/// another HTLC) is logged at Error and still recorded: the preimage proves the payment.</para>
+/// <para>Reconciliation (<see cref="ReconcileInFlightPaymentsAsync"/> at startup, after the channels are registered in
+/// memory, and lazily when a hash is paid again): an <c>InFlight</c> payment without an HTLC id is attached to its HTLC
+/// when exactly one non-final outgoing HTLC in channel memory matches its first hop (or carries its stored
+/// <c>HtlcOrigin.Local</c>), failed without a code when none does and no HTLC with its origin sits on a channel that
+/// is not in memory, and left alone otherwise.</para>
+/// <para>Singleton; thread-safe. The lock is per payment hash (refcounted), so a slow payment attempt never delays the
+/// outcome of another hash. Persistence goes through a fresh DI scope per step (scoped
 /// <see cref="IPaymentDbRepository"/> sharing the scope's <see cref="IUnitOfWork"/>).</para>
 /// </remarks>
 public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 {
-    private const int LockStripes = 64;
-
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelOperations _channelOperations;
@@ -81,8 +97,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
 
-    private readonly SemaphoreSlim[] _hashLocks =
-        Enumerable.Range(0, LockStripes).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+    private readonly Dictionary<Hash, HashLock> _hashLocks = [];
+    private readonly Lock _hashLocksSync = new();
 
     private readonly ConcurrentDictionary<Hash, TaskCompletionSource> _waiters = new();
 
@@ -109,6 +125,18 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         _timeProvider = timeProvider;
     }
 
+    private enum OutcomeMatch
+    {
+        /// <summary>The event belongs to the payment's in-flight attempt.</summary>
+        Match,
+
+        /// <summary>The HTLC is not one of our payments (no payment for the hash, or another origin).</summary>
+        NotOurs,
+
+        /// <summary>A payment exists for the hash, but the event does not complete its in-flight attempt.</summary>
+        Unmatched
+    }
+
     /// <inheritdoc />
     /// <exception cref="InvalidOperationException">Also when no block was processed yet (the final CLTV would be
     /// wrong). Nothing is persisted.</exception>
@@ -131,7 +159,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
         var paymentHash = target.PaymentHash;
         PaymentModel payment;
-        TaskCompletionSource? waiter = null;
+        TaskCompletionSource waiter;
         using (await AcquireHashLockAsync(paymentHash, cancellationToken))
         {
             await ThrowIfPaymentExistsAsync(paymentHash);
@@ -156,35 +184,74 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
             // Persisted before the offer: after a crash the outcome still finds its payment
             await SaveAsync(payment, isNew: true);
-            waiter = _waiters.AddOrUpdate(paymentHash, _ => NewWaiter(), (_, _) => NewWaiter());
+            waiter = NewWaiter();
+            _waiters[paymentHash] = waiter;
 
-            ulong htlcId;
             try
             {
-                htlcId = await _channelOperations.OfferHtlcAsync(channel.ChannelId, route.FirstHopAmount,
-                                                                 paymentHash, route.FirstHopCltvExpiry, onion.Packet,
-                                                                 null, HtlcOrigin.Local(paymentHash),
-                                                                 CancellationToken.None);
+                ulong htlcId;
+                try
+                {
+                    htlcId = await _channelOperations.OfferHtlcAsync(channel.ChannelId, route.FirstHopAmount,
+                                                                     paymentHash, route.FirstHopCltvExpiry,
+                                                                     onion.Packet, null, HtlcOrigin.Local(paymentHash),
+                                                                     CancellationToken.None);
+                }
+                catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+                {
+                    // Nothing was persisted or sent for the HTLC
+                    payment.Fail(null, null,
+                                 $"The HTLC could not be offered on channel {channel.ChannelId}: {e.Message}",
+                                 _timeProvider.GetUtcNow());
+                    await SaveAsync(payment, isNew: false);
+                    CompleteWaiter(paymentHash);
+                    LogFailed(payment);
+                    return payment;
+                }
+                catch (Exception e)
+                {
+                    // Unknown whether the add was persisted: settle the payment from the channel state
+                    _logger.LogError(e, "Offering the HTLC of payment {PaymentHash} on channel {ChannelId} failed; "
+                                      + "reconciling the payment with the channel state", paymentHash,
+                                     channel.ChannelId);
+                    payment = await ReconcileUnrecordedAsync(
+                                  payment, $"The HTLC could not be offered on channel {channel.ChannelId}: "
+                                         + e.Message);
+                    if (payment.Status != PaymentStatus.InFlight)
+                        return payment;
+                    if (payment.OutgoingHtlcId is null)
+                        throw;
+
+                    htlcId = payment.OutgoingHtlcId.Value;
+                }
+
+                if (payment.OutgoingHtlcId is null)
+                {
+                    payment.AddOutgoingHtlc(channel.ChannelId, htlcId);
+                    try
+                    {
+                        await SaveAsync(payment, isNew: false);
+                    }
+                    catch (Exception e)
+                    {
+                        // The HTLC is live: its outcome still matches the payment through the channel state
+                        _logger.LogError(e, "Could not record HTLC {HtlcId} on channel {ChannelId} for payment "
+                                          + "{PaymentHash}; its outcome will be matched through the channel state",
+                                         htlcId, channel.ChannelId, paymentHash);
+                    }
+                }
+
+                if (_logger.IsEnabled(LogLevel.Information))
+                    _logger.LogInformation(
+                        "Paying {PaymentHash}: {Amount} msat to {Payee} over {Hops} hop(s), fee {Fee} msat, HTLC "
+                      + "{HtlcId} on channel {ChannelId}", paymentHash, payment.Amount.MilliSatoshi,
+                        payment.PayeeNodeId, route.Hops.Count, payment.Fee.MilliSatoshi, htlcId, channel.ChannelId);
             }
-            catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+            catch
             {
-                // Nothing was persisted or sent for the HTLC
-                payment.Fail(null, null, $"The HTLC could not be offered on channel {channel.ChannelId}: {e.Message}",
-                             _timeProvider.GetUtcNow());
-                await SaveAsync(payment, isNew: false);
-                CompleteWaiter(paymentHash);
-                LogFailed(payment);
-                return payment;
+                _waiters.TryRemove(KeyValuePair.Create(paymentHash, waiter));
+                throw;
             }
-
-            payment.AddOutgoingHtlc(channel.ChannelId, htlcId);
-            await SaveAsync(payment, isNew: false);
-
-            if (_logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation(
-                    "Paying {PaymentHash}: {Amount} msat to {Payee} over {Hops} hop(s), fee {Fee} msat, HTLC {HtlcId} "
-                  + "on channel {ChannelId}", paymentHash, payment.Amount.MilliSatoshi, payment.PayeeNodeId,
-                    route.Hops.Count, payment.Fee.MilliSatoshi, htlcId, channel.ChannelId);
         }
 
         await WaitAsync(waiter.Task, timeout, cancellationToken);
@@ -231,11 +298,35 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         using (await AcquireHashLockAsync(fulfilled.PaymentHash, cancellationToken))
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var payment = await FindPaymentAsync(scope, fulfilled);
-            if (payment is null)
+            var (payment, match) = await MatchOutcomeAsync(scope, fulfilled.ChannelId, fulfilled.HtlcId,
+                                                           fulfilled.PaymentHash, isFailure: false);
+            if (payment is null || match == OutcomeMatch.NotOurs)
+            {
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("The fulfill of HTLC {HtlcId} on channel {ChannelId} ({PaymentHash}) is not one "
+                                   + "of our payments", fulfilled.HtlcId, fulfilled.ChannelId, fulfilled.PaymentHash);
+                return false;
+            }
+
+            if (payment.Status == PaymentStatus.Succeeded)
                 return false;
 
-            payment.Succeed(fulfilled.PaymentPreimage, _timeProvider.GetUtcNow());
+            var now = _timeProvider.GetUtcNow();
+            if (match == OutcomeMatch.Match)
+            {
+                payment.Succeed(fulfilled.PaymentPreimage, now);
+            }
+            else
+            {
+                // The preimage proves the payment: record it rather than lose it (as LND does)
+                _logger.LogError("HTLC {HtlcId} on channel {ChannelId} was fulfilled for payment {PaymentHash}, which is "
+                               + "{Status} with HTLC {RecordedHtlcId} on channel {RecordedChannelId}; recording the "
+                               + "preimage and marking the payment succeeded", fulfilled.HtlcId, fulfilled.ChannelId,
+                                 payment.PaymentHash, payment.Status, payment.OutgoingHtlcId,
+                                 payment.OutgoingChannelId);
+                payment = WithPreimage(payment, fulfilled, now);
+            }
+
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
 
@@ -257,9 +348,19 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         using (await AcquireHashLockAsync(failed.PaymentHash, cancellationToken))
         {
             using var scope = _serviceScopeFactory.CreateScope();
-            var payment = await FindPaymentAsync(scope, failed);
-            if (payment is null)
+            var (payment, match) = await MatchOutcomeAsync(scope, failed.ChannelId, failed.HtlcId,
+                                                           failed.PaymentHash, isFailure: true);
+            if (payment is null || match != OutcomeMatch.Match)
+            {
+                if (payment is { Status: PaymentStatus.InFlight } && match == OutcomeMatch.Unmatched)
+                    _logger.LogWarning("Ignoring the failure of HTLC {HtlcId} on channel {ChannelId}: it does not "
+                                     + "match the in-flight attempt of payment {PaymentHash}", failed.HtlcId,
+                                       failed.ChannelId, failed.PaymentHash);
+                else if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("The failure of HTLC {HtlcId} on channel {ChannelId} ({PaymentHash}) completes "
+                                   + "none of our payments", failed.HtlcId, failed.ChannelId, failed.PaymentHash);
                 return false;
+            }
 
             var (code, sourceIndex, reason) = InterpretFailure(payment, failed.Removal);
             payment.Fail(code, sourceIndex, reason, _timeProvider.GetUtcNow());
@@ -270,6 +371,33 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
         CompleteWaiter(failed.PaymentHash);
         return true;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ReconcileInFlightPaymentsAsync(CancellationToken cancellationToken = default)
+    {
+        IReadOnlyList<PaymentModel> inFlight;
+        using (var scope = _serviceScopeFactory.CreateScope())
+            inFlight = await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().GetInFlightAsync();
+
+        var reconciled = 0;
+        foreach (var candidate in inFlight.Where(p => p.OutgoingHtlcId is null))
+        {
+            using (await AcquireHashLockAsync(candidate.PaymentHash, cancellationToken))
+            {
+                // Re-read under the lock: an outcome may have completed it meanwhile
+                var payment = await GetPaymentAsync(candidate.PaymentHash, CancellationToken.None);
+                if (payment is not { Status: PaymentStatus.InFlight, OutgoingHtlcId: null })
+                    continue;
+
+                payment = await ReconcileUnrecordedAsync(
+                              payment, "The HTLC was never offered (no HTLC found for the payment at startup).");
+                if (payment.Status != PaymentStatus.InFlight || payment.OutgoingHtlcId is not null)
+                    reconciled++;
+            }
+        }
+
+        return reconciled;
     }
 
     /// <summary>
@@ -305,6 +433,45 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                          : interpretation.IsNodeFailure ? "node failure" : "channel failure";
         return (interpretation.Code, index,
                 $"{codeText} from {role} {index} ({DescribeHop(payment, index)}), {detail}; not retried.");
+    }
+
+    /// <summary>
+    /// Takes the lock of one payment hash. Locks are per hash (created on demand, dropped when unused), so unrelated
+    /// payments never wait for each other.
+    /// </summary>
+    internal async Task<IDisposable> AcquireHashLockAsync(Hash paymentHash, CancellationToken cancellationToken)
+    {
+        HashLock? entry;
+        lock (_hashLocksSync)
+        {
+            if (!_hashLocks.TryGetValue(paymentHash, out entry))
+                _hashLocks[paymentHash] = entry = new HashLock();
+            entry.References++;
+        }
+
+        try
+        {
+            await entry.Semaphore.WaitAsync(cancellationToken);
+        }
+        catch
+        {
+            ReleaseHashLock(paymentHash, entry, held: false);
+            throw;
+        }
+
+        return new HashLockReleaser(this, paymentHash, entry);
+    }
+
+    private void ReleaseHashLock(Hash paymentHash, HashLock entry, bool held)
+    {
+        if (held)
+            entry.Semaphore.Release();
+
+        lock (_hashLocksSync)
+        {
+            if (--entry.References == 0)
+                _hashLocks.Remove(paymentHash);
+        }
     }
 
     private static string DescribeHop(PaymentModel payment, int index) =>
@@ -344,13 +511,113 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         return invoiceAmount;
     }
 
+    /// <summary>
+    /// Refuses a hash whose payment is in flight or succeeded. Call it under the hash's lock: an in-flight payment
+    /// without an HTLC id is reconciled first (no offer of this node is running for the hash then).
+    /// </summary>
     private async Task ThrowIfPaymentExistsAsync(Hash paymentHash)
     {
         var existing = await GetPaymentAsync(paymentHash, CancellationToken.None);
+        if (existing is { Status: PaymentStatus.InFlight, OutgoingHtlcId: null })
+            existing = await ReconcileUnrecordedAsync(
+                           existing, "The HTLC was never offered (no HTLC found for the payment when paying the hash "
+                                   + "again).");
+
         if (existing is { Status: PaymentStatus.InFlight or PaymentStatus.Succeeded })
             throw new InvalidOperationException(
                 $"A payment for payment hash {paymentHash} is already {existing.Status}.");
     }
+
+    /// <summary>
+    /// Settles an <c>InFlight</c> payment that has no recorded HTLC id, under its hash's lock (see the class remarks):
+    /// attaches its HTLC, fails it with <paramref name="neverOfferedReason"/>, or leaves it when that is ambiguous.
+    /// </summary>
+    /// <returns>The payment as stored.</returns>
+    private async Task<PaymentModel> ReconcileUnrecordedAsync(PaymentModel payment, string neverOfferedReason)
+    {
+        var candidates = FindAttemptHtlcs(payment, matchFirstHop: true);
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var unknownChannels = false;
+        var byOrigin = await unitOfWork.ChannelStateDbRepository
+                                       .FindHtlcsByOriginAsync(HtlcOrigin.Local(payment.PaymentHash))
+                    ?? [];
+        foreach (var (channelId, key) in byOrigin)
+        {
+            if (key.Direction != HtlcDirection.Outgoing)
+                continue;
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel) || channel.Commitments is null)
+            {
+                unknownChannels = true;
+                continue;
+            }
+
+            // An archived row (already final, e.g. an earlier attempt's) is not in the snapshot
+            if (channel.Commitments.GetHtlc(HtlcDirection.Outgoing, key.Id) is { } htlc
+             && !HtlcStateTable.IsFinal(htlc.State) && !candidates.Contains((channelId, key.Id)))
+                candidates.Add((channelId, key.Id));
+        }
+
+        if (candidates.Count == 1)
+        {
+            var (channelId, htlcId) = candidates[0];
+            payment.AddOutgoingHtlc(channelId, htlcId);
+            _logger.LogWarning("Payment {PaymentHash} had no recorded HTLC; attached HTLC {HtlcId} on channel "
+                             + "{ChannelId}", payment.PaymentHash, htlcId, channelId);
+        }
+        else if (candidates.Count == 0 && !unknownChannels)
+        {
+            payment.Fail(null, null, neverOfferedReason, _timeProvider.GetUtcNow());
+        }
+        else
+        {
+            _logger.LogWarning("Payment {PaymentHash} has no recorded HTLC and {Count} candidate HTLC(s) (HTLCs on "
+                             + "channels not in memory: {UnknownChannels}); leaving it in flight",
+                               payment.PaymentHash, candidates.Count, unknownChannels);
+            return payment;
+        }
+
+        await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
+        await unitOfWork.SaveChangesAsync();
+        if (payment.Status != PaymentStatus.InFlight)
+        {
+            LogFailed(payment);
+            CompleteWaiter(payment.PaymentHash);
+        }
+
+        return payment;
+    }
+
+    /// <summary>
+    /// The non-final outgoing HTLCs in channel memory that carry the payment's hash; with
+    /// <paramref name="matchFirstHop"/>, only those that also match its stored first hop (peer, amount, CLTV expiry).
+    /// </summary>
+    private List<(ChannelId ChannelId, ulong HtlcId)> FindAttemptHtlcs(PaymentModel payment, bool matchFirstHop)
+    {
+        var firstHop = matchFirstHop && payment.Route.Count > 0 ? payment.Route[0] : null;
+        var found = new List<(ChannelId ChannelId, ulong HtlcId)>();
+        foreach (var channel in _channelMemoryRepository.FindChannels(c => c.Commitments is not null))
+        {
+            if (channel.Commitments is not { } commitments)
+                continue;
+
+            foreach (var htlc in commitments.Htlcs.Values)
+            {
+                if (htlc.Direction != HtlcDirection.Outgoing || htlc.PaymentHash != payment.PaymentHash
+                 || HtlcStateTable.IsFinal(htlc.State))
+                    continue;
+                if (firstHop is null || MatchesFirstHop(firstHop, channel, htlc))
+                    found.Add((channel.ChannelId, htlc.Id));
+            }
+        }
+
+        return found;
+    }
+
+    private static bool MatchesFirstHop(PaymentHop firstHop, ChannelModel channel, HtlcRecord htlc) =>
+        channel.RemoteNodeId == firstHop.NodeId && htlc.AmountMsat == firstHop.Amount.MilliSatoshi
+                                                && htlc.CltvExpiry == firstHop.CltvExpiry;
 
     /// <summary>
     /// Our usable channel to each peer: <c>Open</c>, with a commitment snapshot and the link up; the one with the
@@ -393,36 +660,59 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     }
 
     /// <summary>
-    /// The in-flight payment an outcome event belongs to (see <see cref="IPaymentOutcomeHandler"/>), or null.
+    /// The payment for an outcome event's hash and whether the event completes its in-flight attempt (see the class
+    /// remarks). On a match without a recorded HTLC id, the event's HTLC is attached to the returned payment.
     /// </summary>
-    private async Task<PaymentModel?> FindPaymentAsync(IServiceScope scope, IChannelDomainEvent channelEvent)
+    private async Task<(PaymentModel? Payment, OutcomeMatch Match)> MatchOutcomeAsync(
+        IServiceScope scope, ChannelId channelId, ulong htlcId, Hash paymentHash, bool isFailure)
     {
-        var paymentHash = channelEvent switch
-        {
-            OutgoingHtlcFulfilled f => f.PaymentHash,
-            OutgoingHtlcFailed f => f.PaymentHash,
-            _ => throw new ArgumentOutOfRangeException(nameof(channelEvent))
-        };
-
         var payment = await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>()
                                  .GetByPaymentHashAsync(paymentHash);
-        if (payment is not { Status: PaymentStatus.InFlight })
-            return null;
+        if (payment is null)
+            return (null, OutcomeMatch.NotOurs);
 
-        if (payment.OutgoingHtlcId is { } htlcId)
-            return payment.OutgoingChannelId == channelEvent.ChannelId && htlcId == channelEvent.HtlcId
-                       ? payment
-                       : null;
-
-        // The id was not recorded (crash between the offer's save and ours): trust the HTLC's stored origin
         var origin = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ChannelStateDbRepository
-                                .GetHtlcOriginAsync(channelEvent.ChannelId,
-                                                    new HtlcKey(HtlcDirection.Outgoing, channelEvent.HtlcId));
-        if (origin != HtlcOrigin.Local(paymentHash))
-            return null;
+                                .GetHtlcOriginAsync(channelId, new HtlcKey(HtlcDirection.Outgoing, htlcId));
+        if (origin is { } stored && stored != HtlcOrigin.Local(paymentHash))
+            return (payment, OutcomeMatch.NotOurs);
 
-        payment.AddOutgoingHtlc(channelEvent.ChannelId, channelEvent.HtlcId);
-        return payment;
+        if (payment.Status != PaymentStatus.InFlight)
+            return (payment, OutcomeMatch.Unmatched);
+
+        if (payment.OutgoingHtlcId is { } recordedId)
+            return (payment, payment.OutgoingChannelId == channelId && recordedId == htlcId
+                                 ? OutcomeMatch.Match
+                                 : OutcomeMatch.Unmatched);
+
+        // No id recorded (a crash or a failed save around the offer). Origins are not stored before NL-250, so the
+        // HTLC's record, while channel memory still has it, must match the attempt's first hop
+        if (payment.Route.Count > 0 && _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+                                    && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
+                                    && !MatchesFirstHop(payment.Route[0], channel, htlc))
+            return (payment, OutcomeMatch.Unmatched);
+
+        // Every attempt of a hash has the same origin: a failure replayed from an earlier attempt must not fail a retry
+        // whose HTLC is still live
+        if (isFailure && FindAttemptHtlcs(payment, matchFirstHop: false)
+               .Any(h => h.ChannelId != channelId || h.HtlcId != htlcId))
+            return (payment, OutcomeMatch.Unmatched);
+
+        payment.AddOutgoingHtlc(channelId, htlcId);
+        return (payment, OutcomeMatch.Match);
+    }
+
+    /// <summary>
+    /// The payment marked succeeded with a proven preimage, whatever its status (see the class remarks).
+    /// </summary>
+    private static PaymentModel WithPreimage(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
+                                             DateTimeOffset completedAt)
+    {
+        var (channelId, htlcId) = payment.OutgoingHtlcId is { } recordedId
+                                      ? (payment.OutgoingChannelId!.Value, recordedId)
+                                      : (fulfilled.ChannelId, fulfilled.HtlcId);
+        return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
+                                    payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
+                                    fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route);
     }
 
     private async Task SaveAsync(PaymentModel payment, bool isNew)
@@ -435,13 +725,6 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
             await repository.UpdateAsync(payment);
 
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
-    }
-
-    private async Task<IDisposable> AcquireHashLockAsync(Hash paymentHash, CancellationToken cancellationToken)
-    {
-        var stripe = _hashLocks[((byte[])paymentHash)[0] % LockStripes];
-        await stripe.WaitAsync(cancellationToken);
-        return new Releaser(stripe);
     }
 
     private static TaskCompletionSource NewWaiter() => new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -474,8 +757,20 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
             _logger.LogWarning("Payment {PaymentHash} failed: {Reason}", payment.PaymentHash, payment.FailureReason);
     }
 
-    private sealed class Releaser(SemaphoreSlim semaphore) : IDisposable
+    private sealed class HashLock
     {
-        public void Dispose() => semaphore.Release();
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public int References { get; set; }
+    }
+
+    private sealed class HashLockReleaser(PaymentService owner, Hash paymentHash, HashLock entry) : IDisposable
+    {
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                owner.ReleaseHashLock(paymentHash, entry, held: true);
+        }
     }
 }

@@ -436,6 +436,9 @@ internal sealed class HarnessStateStore
     public Dictionary<(ChannelId, HtlcKey), HtlcOrigin> Origins { get; } = [];
     public List<(ChannelId, HtlcKey)> Pruned { get; } = [];
 
+    /// <summary>When set, the next <c>ApplyAsync</c> throws (a transition whose save fails); then it clears.</summary>
+    public bool FailNextApply { get; set; }
+
     public void Seed(ChannelCommitments commitments)
     {
         lock (Sync)
@@ -486,6 +489,15 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
 
     public Task ApplyAsync(ChannelCommitments next, ChannelTransition transition, ChannelStateExtras? extras = null)
     {
+        lock (store.Sync)
+        {
+            if (store.FailNextApply)
+            {
+                store.FailNextApply = false;
+                throw new InvalidOperationException("Injected channel state save failure");
+            }
+        }
+
         _commitments[next.ChannelId] = next;
         if (extras?.RemoteShachain is { } shachain)
             _shachains[next.ChannelId] = shachain;
