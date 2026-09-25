@@ -635,7 +635,8 @@ public partial class Invoice
             var sizeInBits = 35 + (_taggedFields.CalculateSizeInBits() * 5) + (_taggedFields.Count * 15);
 
             // Initialize the BitWriter buffer
-            var bitWriter = new BitWriter(sizeInBits);
+            // Dispose returns the pooled buffer
+            using var bitWriter = new BitWriter(sizeInBits);
 
             // Write the timestamp
             bitWriter.WriteInt64AsBits(Timestamp, 35);
