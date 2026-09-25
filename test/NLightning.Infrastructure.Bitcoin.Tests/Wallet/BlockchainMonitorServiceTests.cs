@@ -400,4 +400,42 @@ public class BlockchainMonitorServiceTests
         // Should fetch blocks from genesis (0) onwards
         _mockBitcoinChainService.Verify(x => x.GetBlockAsync(0), Times.Once);
     }
+
+    [Fact]
+    public void Given_UnwatchedTransactionsBeforeWatchedOne_When_CheckingBlock_Then_IndexIsPositionInBlock()
+    {
+        // Arrange
+        var blockTransactions = new List<Transaction>();
+        for (var i = 0; i < 3; i++)
+        {
+            var tx = Network.RegTest.CreateTransaction();
+            tx.LockTime = new LockTime(i + 1);
+            blockTransactions.Add(tx);
+        }
+
+        var watchedNBitcoinTx = blockTransactions[2];
+        var watchedTx = new WatchedTransactionModel(new ChannelId(new byte[32]),
+                                                    new TxId(watchedNBitcoinTx.GetHash().ToBytes()), 6);
+
+        var watchedTransactionsField = typeof(BlockchainMonitorService).GetField("_watchedTransactions",
+                                           System.Reflection.BindingFlags.NonPublic |
+                                           System.Reflection.BindingFlags.Instance) ??
+                                       throw new NullReferenceException("Can't find watchedTransactions field");
+        var watchedTransactions =
+            watchedTransactionsField.GetValue(_service) as ConcurrentDictionary<uint256, WatchedTransactionModel> ??
+            throw new InvalidCastException("Can't get watchedTransactions field");
+        watchedTransactions[watchedNBitcoinTx.GetHash()] = watchedTx;
+
+        var checkBlockMethod = typeof(BlockchainMonitorService).GetMethod("CheckBlockForWatchedTransactions",
+                                                                          System.Reflection.BindingFlags.NonPublic |
+                                                                          System.Reflection.BindingFlags.Instance) ??
+                               throw new NullReferenceException("Can't find CheckBlockForWatchedTransactions method");
+
+        // Act
+        checkBlockMethod.Invoke(_service, [blockTransactions, 500u, _mockUnitOfWork.Object]);
+
+        // Assert
+        Assert.Equal(500u, watchedTx.FirstSeenAtHeight);
+        Assert.Equal(2u, watchedTx.TransactionIndex);
+    }
 }

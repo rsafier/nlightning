@@ -121,7 +121,7 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<uint>("RequiredDepth")
                         .HasColumnType("INTEGER");
 
-                    b.Property<ushort?>("TransactionIndex")
+                    b.Property<uint?>("TransactionIndex")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("TransactionId");
