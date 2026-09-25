@@ -4,6 +4,7 @@ using NLightning.Infrastructure.Serialization.Factories;
 using NLightning.Infrastructure.Serialization.Interfaces;
 using NLightning.Infrastructure.Serialization.Messages;
 using NLightning.Infrastructure.Serialization.Node;
+using NLightning.Infrastructure.Serialization.Onion;
 using NLightning.Infrastructure.Serialization.Tlv;
 
 namespace NLightning.Infrastructure.Serialization;
@@ -22,6 +23,7 @@ public static class DependencyInjection
     {
         // Singleton services (one instance throughout the application)
         services.AddSingleton<IFeatureSetSerializer, FeatureSetSerializer>();
+        services.AddSingleton<IHopPayloadSerializer, HopPayloadSerializer>();
         services.AddSingleton<IMessageSerializer, MessageSerializer>();
         services.AddSingleton<IMessageTypeSerializerFactory, MessageTypeSerializerFactory>();
         services.AddSingleton<IPayloadSerializerFactory, PayloadSerializerFactory>();

@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Domain.Protocol.Onion.Constants;
@@ -52,4 +53,15 @@ public static class OnionPayloadTlvTypes
     /// total_amount_msat (tu64).
     /// </summary>
     public static readonly BigSize TotalAmountMsat = 18;
+
+    /// <summary>
+    /// Every type of the <c>payload</c> namespace this node understands. Any other even type fails the payload
+    /// (BOLT 1 "it's ok to be odd").
+    /// </summary>
+    /// <remarks>Declared last so the fields above are initialized first.</remarks>
+    public static readonly IReadOnlySet<BigSize> KnownTypes = new[]
+    {
+        AmtToForward, OutgoingCltvValue, ShortChannelId, PaymentData, EncryptedRecipientData, CurrentPathKey,
+        PaymentMetadata, TotalAmountMsat
+    }.ToFrozenSet();
 }
