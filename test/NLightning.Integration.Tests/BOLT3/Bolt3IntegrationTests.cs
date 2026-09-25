@@ -719,8 +719,8 @@ public class Bolt3IntegrationTests
             receivedHtlcsAmount += htlc.Amount;
 
         return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
-                                Bolt3AppendixCVectors.Tx0ToLocalMsat - receivedHtlcsAmount, localKeySet, 1, 0,
-                                Bolt3AppendixCVectors.ToRemoteMsat + receivedHtlcsAmount, remoteKeySet, 1,
+                                Bolt3AppendixCVectors.Tx0ToLocalMsat - receivedHtlcsAmount, localKeySet, 0, 0,
+                                Bolt3AppendixCVectors.ToRemoteMsat + receivedHtlcsAmount, remoteKeySet, 0,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
                                 ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
     }
@@ -833,7 +833,7 @@ public class Bolt3IntegrationTests
             remoteBalance += htlc.Amount;
 
         return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
-                                localBalance, localKeySet, 1, 0, remoteBalance, remoteKeySet, 1,
+                                localBalance, localKeySet, 0, 0, remoteBalance, remoteKeySet, 0,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
                                 ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
     }
