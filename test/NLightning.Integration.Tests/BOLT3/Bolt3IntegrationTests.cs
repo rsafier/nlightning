@@ -10,60 +10,19 @@ namespace NLightning.Integration.Tests.BOLT3;
 
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Enums;
-using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.Wallet.Models;
-using Domain.Channels.Enums;
-using Domain.Channels.Models;
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.ValueObjects;
-using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
-using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Services;
-using Infrastructure.Bitcoin.Signers;
-using Infrastructure.Crypto.Hashes;
 using Infrastructure.Protocol.Services;
-using Mocks;
 using Vectors;
 
 public class Bolt3IntegrationTests
 {
-    private static readonly Sha256 s_sha256 = new();
-
-    private readonly CompactPubKey _emptyCompactPubKey =
-        new([
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00
-        ]);
-
-    private readonly CommitmentNumber _commitmentNumber = new(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
-                                                              Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                              s_sha256);
-
-    private readonly FundingOutputInfo _fundingOutputInfo = new(Bolt3AppendixBVectors.FundingSatoshis,
-                                                                Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                                Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes())
-    {
-        TransactionId = Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
-        Index = 0
-    };
-
-    private Htlc? _offeredHtlc2;
-    private Htlc? _offeredHtlc3;
-    private Htlc? _offeredHtlc5;
-    private Htlc? _offeredHtlc6;
-    private Htlc? _receivedHtlc0;
-    private Htlc? _receivedHtlc1;
-    private Htlc? _receivedHtlc4;
-
     #region Appendix B Vectors
 
     [Fact]
@@ -115,138 +74,10 @@ public class Bolt3IntegrationTests
 
     #endregion
 
-    #region Appendix C Vectors
+    #region Appendix C and F Vectors
 
-    // The Appendix C commitment vectors are in Bolt3CommitmentVectorTests (spec-driven, full signed tx).
-
-    private static Bolt3TestLightningSigner GetTestLightningSigner(NodeOptions nodeOptions)
-    {
-        var logger = new Mock<ILogger<LocalLightningSigner>>();
-        var bolt3LightningSigner = new Bolt3TestLightningSigner(nodeOptions, logger.Object);
-        bolt3LightningSigner.RegisterChannel(ChannelId.Zero,
-                                             new ChannelSigningInfo(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
-                                                                    Bolt3AppendixBVectors.InputIndex,
-                                                                    Bolt3AppendixBVectors.FundingSatoshis,
-                                                                    Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                                    Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
-                                                                    0));
-        return bolt3LightningSigner;
-    }
-
-    #endregion
-
-    #region Appendix F Vectors
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    [InlineData(5)]
-    [InlineData(6)]
-    [InlineData(7)]
-    [InlineData(8)]
-    public void Given_Bolt3AnchorSpecifications_When_CreatingCommitmentTransaction_Then_ShouldBeEqualToTestVector(
-        int vectorIndex)
-    {
-        // Arrange
-        GenerateHtlcs();
-        List<Htlc> testOfferedHtlcs = [_offeredHtlc2!.Value, _offeredHtlc3!.Value];
-        List<Htlc> testReceivedHtlcs = [_receivedHtlc0!.Value, _receivedHtlc1!.Value, _receivedHtlc4!.Value];
-        var toLocalAfterTestHtlcs = LightningMoney.Satoshis(6_988_000);
-        var vectorToRemote = LightningMoney.Satoshis(3_000_000);
-        var (localBalance, remoteBalance, dustLimit, feeRatePerKw, offeredHtlcs, receivedHtlcs, expectedTx,
-                remoteSignature) = vectorIndex switch
-                {
-                    0 => (LightningMoney.Satoshis(7_000_000), vectorToRemote, 546UL, 15_000UL, new List<Htlc>(),
-                          new List<Htlc>(), Bolt3AppendixFVectors.ExpectedCommitTx0, Bolt3AppendixFVectors.NodeBSignature0),
-                    1 => (LightningMoney.Satoshis(10_000_000), LightningMoney.Zero, 546UL, 15_000UL, [], [],
-                          Bolt3AppendixFVectors.ExpectedCommitTx1, Bolt3AppendixFVectors.NodeBSignature1),
-                    2 => (toLocalAfterTestHtlcs, vectorToRemote, 546UL, 644UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx2, Bolt3AppendixFVectors.NodeBSignature2),
-                    3 => (toLocalAfterTestHtlcs, vectorToRemote, 1_001UL, 645UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx3, Bolt3AppendixFVectors.NodeBSignature3),
-                    4 => (toLocalAfterTestHtlcs, vectorToRemote, 2_001UL, 2_185UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx4, Bolt3AppendixFVectors.NodeBSignature4),
-                    5 => (toLocalAfterTestHtlcs, vectorToRemote, 3_001UL, 3_687UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx5, Bolt3AppendixFVectors.NodeBSignature5),
-                    6 => (toLocalAfterTestHtlcs, vectorToRemote, 4_001UL, 4_894UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx6, Bolt3AppendixFVectors.NodeBSignature6),
-                    7 => (toLocalAfterTestHtlcs, vectorToRemote, 4_001UL, 6_216_010UL, testOfferedHtlcs, testReceivedHtlcs,
-                          Bolt3AppendixFVectors.ExpectedCommitTx7, Bolt3AppendixFVectors.NodeBSignature7),
-                    8 => (LightningMoney.MilliSatoshis(6_987_999_999UL), vectorToRemote, 546UL, 253UL,
-                          [_offeredHtlc5!.Value, _offeredHtlc6!.Value], [_receivedHtlc1!.Value],
-                          Bolt3AppendixFVectors.ExpectedCommitTx8, Bolt3AppendixFVectors.NodeBSignature8),
-                    _ => throw new ArgumentOutOfRangeException(nameof(vectorIndex))
-                };
-
-        var nodeOptions = new NodeOptions
-        {
-            DustLimitAmount = LightningMoney.Satoshis(dustLimit)
-        };
-        var testLightningSigner = GetTestLightningSigner(nodeOptions);
-        var commitmentTransactionModelFactory =
-            new CommitmentTransactionModelFactory(new Bolt3TestCommitmentKeyDerivationService(),
-                                                  testLightningSigner);
-        var channel = GetAnchorTestChannelModel(nodeOptions, LightningMoney.Satoshis(feeRatePerKw), localBalance,
-                                                remoteBalance, offeredHtlcs, receivedHtlcs);
-        var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
-
-        // Act
-        var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
-                                                                              channel.LocalCommitmentNumber);
-        var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
-        var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
-                                             ChannelId.Zero, remoteSignature.ToCompact(), unsignedTransaction));
-        var signature = testLightningSigner.SignChannelTransaction(ChannelId.Zero, unsignedTransaction);
-
-        // Assert
-        var builtTx = Transaction.Load(unsignedTransaction.RawTxBytes, Network.Main);
-        Assert.Equal(expectedTx.GetHash(), builtTx.GetHash());
-        Assert.Null(exception);
-        var expectedLocalSignature = expectedTx.Inputs[0].WitScript[1];
-        var expectedLocalSignatureDer = expectedLocalSignature[..^1]; // drop the sighash flag
-        Assert.Equal(new ECDSASignature(expectedLocalSignatureDer).ToCompact(), signature);
-    }
-
-    /// <summary>
-    /// Builds an option_anchors channel for the Appendix F vectors. Like Appendix C, the vectors' to_local is a net
-    /// balance with every HTLC already taken out of it. ChannelModel balances are gross, so the offered HTLCs are added
-    /// back to the local balance and the received ones to the remote balance: the factory then takes each HTLC out of
-    /// the balance of the side that offered it.
-    /// </summary>
-    private ChannelModel GetAnchorTestChannelModel(NodeOptions nodeOptions, LightningMoney feeRatePerKw,
-                                                   LightningMoney toLocalAfterHtlcs, LightningMoney toRemote,
-                                                   List<Htlc> offeredHtlcs, List<Htlc> receivedHtlcs)
-    {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
-                                              nodeOptions.DustLimitAmount, 0, LightningMoney.Zero, 0, true,
-                                              nodeOptions.DustLimitAmount, nodeOptions.ToSelfDelay, FeatureSupport.No);
-        var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                 _emptyCompactPubKey,
-                                                 Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
-                                                 _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
-        var remoteKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
-                                                  _emptyCompactPubKey,
-                                                  Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                  _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
-
-        var localBalance = toLocalAfterHtlcs;
-        foreach (var htlc in offeredHtlcs)
-            localBalance += htlc.Amount;
-
-        var remoteBalance = toRemote;
-        foreach (var htlc in receivedHtlcs)
-            remoteBalance += htlc.Amount;
-
-        return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
-                                localBalance, localKeySet, 1, 0, remoteBalance, remoteKeySet, 1,
-                                Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs,
-                                localCommitmentNumber: Bolt3AppendixCVectors.CommitmentNumber);
-    }
+    // The Appendix C commitment and HTLC vectors are in Bolt3CommitmentVectorTests and Bolt3HtlcTxVectorTests, and the
+    // Appendix F (anchors) vectors in Bolt3AnchorVectorTests. All are built from the spec's balances and HTLC set.
 
     #endregion
 
@@ -819,23 +650,4 @@ public class Bolt3IntegrationTests
     }
 
     #endregion
-
-    private void GenerateHtlcs()
-    {
-        _offeredHtlc2 = new Htlc(LightningMoney.Satoshis(2_000), null, HtlcDirection.Outgoing, 502, 2, 0,
-                                 Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
-        _offeredHtlc3 = new Htlc(LightningMoney.Satoshis(3_000), null, HtlcDirection.Outgoing, 503, 3, 0,
-                                 Bolt3AppendixCVectors.Htlc3PaymentHash, HtlcState.Offered);
-        _offeredHtlc5 = new Htlc(LightningMoney.Satoshis(5_000), null, HtlcDirection.Outgoing, 506, 5, 0,
-                                 Bolt3AppendixCVectors.Htlc5PaymentHash, HtlcState.Offered);
-        _offeredHtlc6 = new Htlc(LightningMoney.MilliSatoshis(5_000_001), null!, HtlcDirection.Outgoing, 505, 6, 0,
-                                 Bolt3AppendixCVectors.Htlc6PaymentHash, HtlcState.Offered);
-
-        _receivedHtlc0 = new Htlc(LightningMoney.Satoshis(1_000), null, HtlcDirection.Incoming, 500, 0, 0,
-                                  Bolt3AppendixCVectors.Htlc0PaymentHash, HtlcState.Offered);
-        _receivedHtlc1 = new Htlc(LightningMoney.Satoshis(2_000), null, HtlcDirection.Incoming, 501, 1, 0,
-                                  Bolt3AppendixCVectors.Htlc1PaymentHash, HtlcState.Offered);
-        _receivedHtlc4 = new Htlc(LightningMoney.Satoshis(4_000), null, HtlcDirection.Incoming, 504, 4, 0,
-                                  Bolt3AppendixCVectors.Htlc4PaymentHash, HtlcState.Offered);
-    }
 }
