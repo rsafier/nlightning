@@ -113,6 +113,46 @@ public class UpdateAddHtlcMessageTests
                                                                    .DeserializeAsync(invalidStream));
     }
 
+    [Fact]
+    public async Task Given_UnknownEvenExtensionTlv_When_DeserializeAsync_Then_ThrowsMessageSerializationException()
+    {
+        // Arrange: BOLT 1 - an unknown even type MUST fail to parse the tlv_stream.
+        var stream = new MemoryStream(Convert.FromHexString(PayloadHeaderHex + OnionHex + "0200"));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() => _updateAddHtlcMessageTypeSerializer
+                                                                   .DeserializeAsync(stream));
+    }
+
+    [Fact]
+    public async Task Given_UnknownOddExtensionTlv_When_DeserializeAsync_Then_IgnoresIt()
+    {
+        // Arrange: BOLT 1 - an unknown odd type MUST be ignored.
+        var stream = new MemoryStream(Convert.FromHexString(PayloadHeaderHex + OnionHex + "0300"));
+
+        // Act
+        var message = await _updateAddHtlcMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(message.BlindedPathTlv);
+        Assert.Equal(stream.Length, stream.Position);
+    }
+
+    [Theory]
+    [InlineData("000102")]
+    [InlineData("002002C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A")]
+    [InlineData("002104C93CA7DCA44D2E45E3CC5419D92750F7FB3A0F180852B73A621F4051C0193A75")]
+    public async Task Given_MalformedBlindedPathTlv_When_DeserializeAsync_Then_ThrowsMessageSerializationException(
+        string tlvHex)
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString(PayloadHeaderHex + OnionHex + tlvHex));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() => _updateAddHtlcMessageTypeSerializer
+                                                                   .DeserializeAsync(stream));
+    }
+
     #endregion
 
     #region Serialize
