@@ -66,6 +66,45 @@ public class PeerServiceTests
     }
 
     [Fact]
+    public void Given_InitWithOurChainAmongOthers_When_InitReceived_Then_PeerIsNotDisconnected()
+    {
+        // Arrange
+        _ = CreatePeerService();
+
+        // Act
+        RaiseMessage(CreateInitMessage(ChainConstants.Main, ChainConstants.Regtest, ChainConstants.Testnet));
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitWithNoCommonChain_When_InitReceived_Then_WarningIsSentAndPeerIsDisconnected()
+    {
+        // Arrange
+        _ = CreatePeerService();
+
+        // Act
+        RaiseMessage(CreateInitMessage(ChainConstants.Main, ChainConstants.Testnet));
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.Is<WarningException>(e => e != null)), Times.Once);
+    }
+
+    [Fact]
+    public void Given_FirstMessageIsNotInit_When_MessageReceived_Then_WarningIsSentAndPeerIsDisconnected()
+    {
+        // Arrange
+        _ = CreatePeerService();
+
+        // Act
+        RaiseMessage(new PingMessage());
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.Is<WarningException>(e => e != null)), Times.Once);
+    }
+
+    [Fact]
     public void Given_InitializedPeer_When_StfuReceived_Then_ChannelWarningIsSentAndPeerStaysConnected()
     {
         // Arrange

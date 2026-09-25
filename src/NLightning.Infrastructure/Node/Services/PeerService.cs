@@ -208,7 +208,7 @@ public sealed class PeerService : IPeerService
         if (message.Type != MessageTypes.Init || message is not InitMessage initMessage)
         {
             _logger.LogError("Failed to receive init message from peer {peer}", PeerPubKey);
-            Disconnect();
+            Disconnect(new WarningException("Expected init as the first message"));
             return;
         }
 
@@ -217,17 +217,16 @@ public sealed class PeerService : IPeerService
          || negotiatedFeatures is null)
         {
             _logger.LogError("Peer {peer} is not compatible", PeerPubKey);
-            Disconnect();
+            Disconnect(new WarningException("Incompatible features"));
             return;
         }
 
-        // Check if ChainHash contained in networksTlv.ChainHashes exists in our ChainHashes
+        // BOLT 1: only close the connection if `networks` has no chain in common with ours
         var networkChainHashes = initMessage.NetworksTlv?.ChainHashes;
-        if (networkChainHashes != null
-         && networkChainHashes.Any(chainHash => !Features.ChainHashes.Contains(chainHash)))
+        if (networkChainHashes != null && !networkChainHashes.Any(chainHash => Features.ChainHashes.Contains(chainHash)))
         {
             _logger.LogError("Peer {peer} chain is not compatible", PeerPubKey);
-            Disconnect();
+            Disconnect(new WarningException("No common chain in networks"));
             return;
         }
 
