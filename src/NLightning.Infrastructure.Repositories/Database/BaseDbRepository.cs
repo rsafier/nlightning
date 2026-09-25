@@ -32,10 +32,14 @@ public class BaseDbRepository<TEntity> where TEntity : class
         if (include is not null)
             query = query.Include(include);
 
+        // Order before paging, otherwise each page is an arbitrary slice that is only sorted afterwards
+        if (orderBy is not null)
+            query = orderBy(query);
+
         if (perPage > 0)
             query = query.Skip((pageNumber - 1) * perPage).Take(perPage);
 
-        return orderBy is not null ? orderBy(query) : query;
+        return query;
     }
 
     protected async Task<TEntity?> GetByIdAsync(object id, bool asNoTracking = true,

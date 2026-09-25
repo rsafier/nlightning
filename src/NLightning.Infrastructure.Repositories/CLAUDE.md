@@ -32,7 +32,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions.
 
 ## Tests
-- There are no unit tests for this project (`Docker/SqliteTests.cs`, `PostgresTests.cs`, `SqlServerTests.cs` in the integration project are commented out). Coverage comes only from Docker e2e tests: `test/NLightning.Integration.Tests/Docker/{ChannelOpeningFlowTests,AbcNetworkTests}.cs`, run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"` (needs Docker).
+- There is no dedicated test project. Sqlite `:memory:` round-trip tests (real Sqlite migrations, `SqliteTestDatabase` helper) live in `test/NLightning.Integration.Tests/Persistence/` (BaseDbRepository paging, Utxo repository, UnitOfWork utxo sync). `Docker/SqliteTests.cs`, `PostgresTests.cs`, `SqlServerTests.cs` are commented out. Other coverage comes only from Docker e2e tests: `test/NLightning.Integration.Tests/Docker/{ChannelOpeningFlowTests,AbcNetworkTests}.cs`, run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"` (needs Docker).
 - Build and verify: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121 && dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Suggested addition: SQLite in-memory round-trip tests (MigrationsAssembly `NLightning.Infrastructure.Persistence.Sqlite`) for Channel and Htlc repos. They would catch the bugs below.
 
@@ -41,7 +41,6 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - `ChannelDbRepository` L230-231 builds `FundingOutputInfo` with the local funding pubkey twice, so the remote key is lost on reload. `CommitmentNumber` is always built as (local, remote) payment basepoints, which is wrong for non-initiator channels: `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs` L123 passes the remote (opener) basepoint first.
 - `UtxoDbRepository.GetByIdAsync` (L50) passes an anonymous object `new { txId, index }`. `PrimaryKeyHelper` needs `(txId, index)` and will throw.
 - `HtlcDbRepository` never writes `Signature`. The Utxo mapper ignores `LockedToChannelId`/`UsedInTransactionId`. `ChannelModel.ChangeAddress` is never mapped.
-- `BaseDbRepository.Get` applies Skip/Take before orderBy (L35-38), so paging is unordered.
 - `UnitOfWork.AddUtxo`/`TrySpendUtxo` roll back memory only on immediate exceptions and swallow them. A failure at SaveChanges time leaves memory and the DB out of sync.
 - `ChannelMemoryRepository.TryGetChannel` returns the shared mutable model. Call `UpdateChannel` afterwards so that `OnChannelUpdated` fires.
 - Do not inject `IUnitOfWork` into singletons. `UnitOfWork.Dispose` disposes the DbContext.
