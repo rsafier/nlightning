@@ -18,6 +18,11 @@ using Domain.Protocol.Payloads;
 /// </summary>
 public class PeerCommunicationService : IPeerCommunicationService
 {
+    /// <summary>
+    /// Pings asking for this many pong bytes or more must not be answered (BOLT 1).
+    /// </summary>
+    private const ushort IgnorePingNumPongBytes = 65532;
+
     private readonly CancellationTokenSource _cts = new();
     private readonly ILogger<PeerCommunicationService> _logger;
     private readonly IMessageService _messageService;
@@ -220,6 +225,14 @@ public class PeerCommunicationService : IPeerCommunicationService
         // Handle ping messages internally
         if (_isInitialized && message.Type == MessageTypes.Ping)
         {
+            // BOLT 1: a ping with num_pong_bytes >= 65532 MUST be ignored (no pong)
+            if (message is PingMessage { Payload.NumPongBytes: >= IgnorePingNumPongBytes })
+            {
+                _logger.LogTrace("Ignoring ping with num_pong_bytes >= {threshold} from peer {peer}",
+                                 IgnorePingNumPongBytes, PeerCompactPubKey);
+                return;
+            }
+
             _ = HandlePingAsync(message);
         }
         else if (_isInitialized && message.Type == MessageTypes.Pong)
