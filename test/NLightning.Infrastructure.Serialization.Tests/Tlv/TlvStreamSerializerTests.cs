@@ -7,6 +7,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Models;
+using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
 using Helpers;
@@ -197,7 +198,16 @@ public class TlvStreamSerializerTests
             new RemoteAddressTlv(1, "192.168.0.1", 9735),
             new RequireConfirmedInputsTlv(),
             new ShortChannelIdTlv(new ShortChannelId(1234, 0, 1)),
-            new UpfrontShutdownScriptTlv(new BitcoinScript([0x00, 0x14, .. new byte[20]]))
+            new UpfrontShutdownScriptTlv(new BitcoinScript([0x00, 0x14, .. new byte[20]])),
+            new AmtToForwardTlv(LightningMoney.MilliSatoshis(1_000_000)),
+            new OutgoingCltvValueTlv(800_000),
+            new OnionShortChannelIdTlv(new ShortChannelId(800_000, 1, 2)),
+            new PaymentDataTlv(new Secret(Enumerable.Repeat((byte)0x11, 32).ToArray()),
+                               LightningMoney.MilliSatoshis(5_000_000)),
+            new EncryptedRecipientDataTlv([0xde, 0xad, 0xbe, 0xef]),
+            new CurrentPathKeyTlv(new CompactPubKey(pubKey)),
+            new PaymentMetadataTlv([0x01, 0x02, 0x03]),
+            new TotalAmountMsatTlv(LightningMoney.MilliSatoshis(10_000_000))
         ];
 
         return samples.ToDictionary(t => t.GetType());

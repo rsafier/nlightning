@@ -51,7 +51,7 @@ public class TlvStreamBolt1VectorTests
         await Assert.ThrowsAsync<SerializationException>(() => DecodeN2Async(bytes));
     }
 
-    [Theory(Skip = "Needs canonical BigSize decoding (M1-T5, BigSizeTypeSerializer)")]
+    [Theory]
     [InlineData("fd0001 00")] // not minimally encoded type
     [InlineData("0f fd0001 00")] // not minimally encoded length
     public async Task Given_NonMinimalBigSizeInStream_When_DeserializedStrict_Then_ThrowsSerializationException(
