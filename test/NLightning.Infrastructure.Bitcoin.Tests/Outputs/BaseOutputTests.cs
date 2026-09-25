@@ -9,22 +9,8 @@ public class BaseOutputTests
 {
     private const string TxIdHex = "8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be";
 
-    // Concrete implementation for testing the abstract class
-    private class FakeOutput : BaseOutput
-    {
-        public FakeOutput(Script redeemScript, Script scriptPubKey, LightningMoney amount)
-            : base(amount, redeemScript, scriptPubKey)
-        {
-        }
-
-        public FakeOutput(Script redeemScript, LightningMoney amount)
-            : base(amount, redeemScript)
-        {
-        }
-
-        public override ScriptType ScriptType => ScriptType.P2WPKH;
-    }
-
+    // BaseOutput is exercised through ChangeOutput (P2WPKH), whose public ctors map 1:1 onto the two base ctors.
+    // A private subclass would bind to the protected BaseOutput ctors and ScriptType member, which NL-060 changes.
     private readonly Script _redeemScript =
         Script.FromHex("21034F355BDCB7CC0AF728EF3CCEB9615D90684BB5B2CA5F859AB0F0B704075871AAAD51B2");
 
@@ -37,7 +23,7 @@ public class BaseOutputTests
     public void Given_ValidParameters_When_ConstructingBaseOutputWithScriptPubKey_Then_PropertiesAreSetCorrectly()
     {
         // Arrange & Act
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, _amount);
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, _amount);
 
         // Assert
         Assert.Equal(_redeemScript, output.RedeemScript);
@@ -52,7 +38,7 @@ public class BaseOutputTests
     public void Given_ValidParameters_When_ConstructingBaseOutputWithoutScriptPubKey_Then_ScriptPubKeyIsDerived()
     {
         // Arrange & Act
-        var output = new FakeOutput(_redeemScript, _amount);
+        var output = new ChangeOutput(_redeemScript, _amount);
 
         // Assert
         Assert.Equal(_redeemScript, output.RedeemScript);
@@ -64,16 +50,16 @@ public class BaseOutputTests
     public void Given_NullScripts_When_ConstructingBaseOutput_Then_ThrowsArgumentNullException()
     {
         // Arrange, Act & Assert
-        Assert.Throws<ArgumentNullException>(() => new FakeOutput(null!, _scriptPubKey, _amount));
-        Assert.Throws<ArgumentNullException>(() => new FakeOutput(_redeemScript, null!, _amount));
-        Assert.Throws<ArgumentNullException>(() => new FakeOutput(null!, _amount));
+        Assert.Throws<ArgumentNullException>(() => new ChangeOutput(null!, _scriptPubKey, _amount));
+        Assert.Throws<ArgumentNullException>(() => new ChangeOutput(_redeemScript, null!, _amount));
+        Assert.Throws<ArgumentNullException>(() => new ChangeOutput(null!, _amount));
     }
 
     [Fact]
     public void Given_BaseOutput_When_ToTxOutCalled_Then_ReturnsCorrectTxOut()
     {
         // Arrange
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, _amount);
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, _amount);
 
         // Act
         var txOut = output.ToTxOut();
@@ -87,7 +73,7 @@ public class BaseOutputTests
     public void Given_BaseOutputWithValidTxId_When_ToCoinCalled_Then_ReturnsCorrectCoin()
     {
         // Arrange
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, _amount)
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, _amount)
         {
             TransactionId = Convert.FromHexString(TxIdHex),
             Index = 1
@@ -108,7 +94,7 @@ public class BaseOutputTests
     public void Given_BaseOutputWithoutTxId_When_ToCoinCalled_Then_ThrowsInvalidOperationException()
     {
         // Arrange
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, _amount);
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, _amount);
 
         // Act & Assert
         Assert.Throws<InvalidOperationException>(() => output.ToCoin());
@@ -121,7 +107,7 @@ public class BaseOutputTests
     public void Given_BaseOutputWithZeroAmount_When_ToCoinCalled_Then_ThrowsInvalidOperationException()
     {
         // Arrange
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, LightningMoney.Zero)
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, LightningMoney.Zero)
         {
             TransactionId = Convert.FromHexString(TxIdHex)
         };
@@ -134,8 +120,8 @@ public class BaseOutputTests
     public void Given_TwoOutputs_When_CompareToIsCalled_Then_UsesTransactionOutputComparer()
     {
         // Arrange
-        var output1 = new FakeOutput(_redeemScript, _scriptPubKey, LightningMoney.Satoshis(1_000_000));
-        var output2 = new FakeOutput(_redeemScript, _scriptPubKey, LightningMoney.Satoshis(2_000_000));
+        var output1 = new ChangeOutput(_redeemScript, _scriptPubKey, LightningMoney.Satoshis(1_000_000));
+        var output2 = new ChangeOutput(_redeemScript, _scriptPubKey, LightningMoney.Satoshis(2_000_000));
 
         // Act
         var comparison = output1.CompareTo(output2);
@@ -149,7 +135,7 @@ public class BaseOutputTests
     public void Given_BaseOutput_When_AmountIsSet_Then_AmountIsUpdated()
     {
         // Arrange & Act
-        var output = new FakeOutput(_redeemScript, _scriptPubKey, _amount)
+        var output = new ChangeOutput(_redeemScript, _scriptPubKey, _amount)
         {
             Amount = LightningMoney.Satoshis(42)
         };
