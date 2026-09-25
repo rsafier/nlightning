@@ -663,8 +663,9 @@ public class Bolt3IntegrationTests
                                 ]
                                 : null;
 
-        // Appendix C takes every HTLC out of to_local. The factory takes received HTLCs out of the offerer's
-        // (remote) balance, so move their amount from the local to the remote balance to get the same outputs.
+        // Appendix C's to_local_msat is a net balance with every HTLC (offered and received) already taken out of it.
+        // ChannelModel balances are gross (each side still holds its own offered HTLCs) and the factory takes every
+        // HTLC out of its offerer's balance, so move the received amounts to the remote balance to get the same outputs.
         var receivedHtlcsAmount = LightningMoney.Zero;
         foreach (var htlc in receivedHtlcs ?? [])
             receivedHtlcsAmount += htlc.Amount;
@@ -754,9 +755,10 @@ public class Bolt3IntegrationTests
     }
 
     /// <summary>
-    /// Builds an option_anchors channel for the Appendix F vectors. Like Appendix C, the vectors take every HTLC out
-    /// of to_local, so the offered HTLCs are added back to the local balance and the received ones to the remote
-    /// balance: the factory then takes each HTLC out of the balance of the side that offered it.
+    /// Builds an option_anchors channel for the Appendix F vectors. Like Appendix C, the vectors' to_local is a net
+    /// balance with every HTLC already taken out of it. ChannelModel balances are gross, so the offered HTLCs are added
+    /// back to the local balance and the received ones to the remote balance: the factory then takes each HTLC out of
+    /// the balance of the side that offered it.
     /// </summary>
     private ChannelModel GetAnchorTestChannelModel(NodeOptions nodeOptions, LightningMoney feeRatePerKw,
                                                    LightningMoney toLocalAfterHtlcs, LightningMoney toRemote,
