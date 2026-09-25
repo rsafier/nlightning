@@ -8,9 +8,13 @@ using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Integration.Tests.BOLT3;
 
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -66,32 +70,48 @@ public class Bolt3IntegrationTests
     [Fact]
     public void Given_Bolt3Specifications_When_CreatingFundingTransaction_Then_ShouldBeEqualToTestVector()
     {
-        // // Given
-        // var nodeOptions = Options.Create(new NodeOptions
-        // {
-        //     HasAnchorOutputs = false
-        // });
-        //
-        // var feeServiceMock = new Mock<IFeeService>();
-        // feeServiceMock
-        //    .Setup(x => x.GetCachedFeeRatePerKw())
-        //    .Returns(new LightningMoney(15000, LightningMoneyUnit.Satoshi));
-        // var fundingTransactionFactory =
-        //     new FundingTransactionFactory(feeServiceMock.Object, nodeOptions, _lightningSigner);
-        //
-        // var fundingInputCoin = new Coin(AppendixBVectors.InputTx, AppendixBVectors.InputIndex);
-        //
-        // // When
-        // var fundingTransaction = fundingTransactionFactory
-        //    .CreateFundingTransaction(Bolt3AppendixBVectors.LocalPubKey, Bolt3AppendixBVectors.RemotePubKey,
-        //                              Bolt3AppendixBVectors.FundingSatoshis, Bolt3AppendixBVectors.ChangeScript.PaymentScript,
-        //                              Bolt3AppendixBVectors.ChangeScript, [fundingInputCoin],
-        //                              new BitcoinSecret(Bolt3AppendixBVectors.InputSigningPrivKey, Network.Main));
-        // var finalFundingTx = fundingTransaction.GetSignedTransaction();
-        //
-        // // Then
-        // Assert.Equal(Bolt3AppendixBVectors.ExpectedTx.ToBytes(), finalFundingTx.ToBytes());
-        // Assert.True(fundingTransaction.IsValid);
+        // Given - BOLT 3 Appendix B: 50 BTC P2PKH coinbase input, 10M sat funding, feerate 15000 sat/kw.
+        // The builder is handed the spec fee; the Then block re-derives it from the signed tx weight.
+        // AddressType has no P2PKH member and the builder does not use it, so the UTXO is tagged P2Wpkh. The input is
+        // signed by hand below (legacy sighash, no low-R grinding): the wallet signing path is not covered here.
+        var feeRatePerKw = LightningMoney.Satoshis(15_000);
+        var nodeOptions = Options.Create(new NodeOptions());
+        var builder = new FundingTransactionBuilder(nodeOptions, new Mock<IServiceProvider>().Object,
+                                                    new Mock<ILogger<FundingTransactionBuilder>>().Object);
+        var inputTxOut = Bolt3AppendixBVectors.InputTx.Outputs[Bolt3AppendixBVectors.InputIndex];
+        var utxo = new UtxoModel(Bolt3AppendixBVectors.InputTxId.ToBytes(), Bolt3AppendixBVectors.InputIndex,
+                                 LightningMoney.Satoshis(inputTxOut.Value.Satoshi), 0, 0, false, AddressType.P2Wpkh);
+        var changeAddress = Bolt3AppendixBVectors.ChangeScript.GetDestinationAddress(Network.Main)!.ToString();
+        var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
+                                                      Bolt3AppendixBVectors.LocalPubKey.ToBytes(),
+                                                      Bolt3AppendixBVectors.RemotePubKey.ToBytes());
+        var fundingTransactionModel =
+            new FundingTransactionModel([utxo], fundingOutputInfo, LightningMoney.Satoshis(13_920))
+            {
+                ChangeAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, true, changeAddress)
+            };
+
+        // When
+        var unsignedTransaction = builder.Build(fundingTransactionModel);
+        var fundingTx = Transaction.Load(unsignedTransaction.Transaction.RawTxBytes, Network.Main);
+        // Sign the P2PKH input without low-R grinding, as the spec vector was generated
+        var inputKey = Bolt3AppendixBVectors.InputSigningPrivKey;
+        var sigHash = fundingTx.GetSignatureHash(inputTxOut.ScriptPubKey, 0, SigHash.All, inputTxOut,
+                                                 HashVersion.Original);
+        var inputSignature = inputKey.Sign(sigHash, new SigningOptions(SigHash.All, false));
+        fundingTx.Inputs[0].ScriptSig =
+            PayToPubkeyHashTemplate.Instance.GenerateScriptSig(inputSignature, inputKey.PubKey);
+
+        // Then
+        // fee = feerate_per_kw * weight / 1000, computed as in FundingTransactionModelFactory (msat = weight * sat/kw)
+        var weight = (ulong)(fundingTx.GetSerializedSize(TransactionOptions.None) * 3 + fundingTx.GetSerializedSize());
+        Assert.Equal(928UL, weight);
+        Assert.Equal(LightningMoney.Satoshis(13_920), LightningMoney.MilliSatoshis(weight * (ulong)feeRatePerKw.Satoshi));
+        Assert.Equal(LightningMoney.Satoshis(fundingTx.Outputs[1].Value.Satoshi),
+                     Bolt3AppendixBVectors.ExpectedChangeSatoshis);
+        Assert.Equal(Bolt3AppendixBVectors.ExpectedTx.ToHex(), fundingTx.ToHex());
+        Assert.Equal(Bolt3AppendixBVectors.ExpectedTxId, fundingTx.GetHash());
+        Assert.Equal((ushort)0, unsignedTransaction.FundingOutputIndex);
     }
 
     #endregion
@@ -126,6 +146,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature0.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx0, unsignedTransaction);
     }
 
     [Fact]
@@ -158,6 +179,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature1.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx1, unsignedTransaction);
     }
 
     [Fact]
@@ -190,6 +212,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature2.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx2, unsignedTransaction);
     }
 
     [Fact]
@@ -223,6 +246,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature3.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx3, unsignedTransaction);
     }
 
     [Fact]
@@ -256,6 +280,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature4.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx4, unsignedTransaction);
     }
 
     [Fact]
@@ -289,6 +314,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature5.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx5, unsignedTransaction);
     }
 
     [Fact]
@@ -322,6 +348,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature6.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx6, unsignedTransaction);
     }
 
     [Fact]
@@ -355,6 +382,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature7.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx7, unsignedTransaction);
     }
 
     [Fact]
@@ -388,6 +416,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature8.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx8, unsignedTransaction);
     }
 
     [Fact]
@@ -421,6 +450,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature9.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx9, unsignedTransaction);
     }
 
     [Fact]
@@ -454,6 +484,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature10.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx10, unsignedTransaction);
     }
 
     [Fact]
@@ -487,6 +518,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature11.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx11, unsignedTransaction);
     }
 
     [Fact]
@@ -520,6 +552,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature12.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx12, unsignedTransaction);
     }
 
     [Fact]
@@ -553,6 +586,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature13.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx13, unsignedTransaction);
     }
 
     [Fact]
@@ -586,6 +620,7 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature14.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx14, unsignedTransaction);
     }
 
     [Fact]
@@ -622,6 +657,18 @@ public class Bolt3IntegrationTests
         // Then
         Assert.Null(exception);
         Assert.Equal(Bolt3AppendixCVectors.NodeASignature15.ToCompact(), signature);
+        AssertUnsignedTxEquals(Bolt3AppendixCVectors.ExpectedCommitTx15, unsignedTransaction);
+    }
+
+    private static void AssertUnsignedTxEquals(Transaction expectedSignedTx, SignedTransaction actualUnsignedTx)
+    {
+        // The spec vectors carry the 2-of-2 witness; the builder output is unsigned, so compare without witnesses.
+        var expected = expectedSignedTx.Clone();
+        foreach (var input in expected.Inputs)
+            input.WitScript = WitScript.Empty;
+
+        Assert.Equal(Convert.ToHexString(expected.ToBytes()), Convert.ToHexString(actualUnsignedTx.RawTxBytes));
+        Assert.Equal(expected.GetHash().ToBytes(), (byte[])actualUnsignedTx.TxId);
     }
 
     private static Bolt3TestLightningSigner GetTestLightningSigner(NodeOptions nodeOptions)
@@ -649,7 +696,8 @@ public class Bolt3IntegrationTests
                                                  _emptyCompactPubKey,
                                                  Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
                                                  _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
-        var remoteKeySet = new ChannelKeySetModel(0, _emptyCompactPubKey, _emptyCompactPubKey,
+        var remoteKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
+                                                  _emptyCompactPubKey,
                                                   Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
                                                   _emptyCompactPubKey, _emptyCompactPubKey, _emptyCompactPubKey);
 
@@ -788,6 +836,46 @@ public class Bolt3IntegrationTests
                                 localBalance, localKeySet, 1, 0, remoteBalance, remoteKeySet, 1,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
                                 ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+    }
+
+    #endregion
+
+    #region Appendix C HTLC Transaction Vectors
+
+    [Fact(Skip = "NL-056: HTLC-success / HTLC-timeout second-stage transactions are not implemented")]
+    public void Given_Bolt3Specifications_When_CreatingHtlcTransactionsFor5HtlcsUntrimmed_Then_ShouldBeEqualToTestVector()
+    {
+        // When NL-056 lands: build the HTLC-success/HTLC-timeout transactions for ExpectedCommitTx1 (feerate 0,
+        // to_self_delay 144, local delayed/revocation keys from Bolt3AppendixCVectors) and assert they equal the
+        // vectors below with witnesses stripped, then validate the remote HTLC signatures.
+        Assert.Fail("No HTLC second-stage transaction builder exists yet (NL-056)");
+    }
+
+    [Fact]
+    public void Given_Bolt3HtlcTransactionVectors_When_Inspected_Then_TheySpendTheMatchingCommitmentOutputs()
+    {
+        // Given - guards the vector data that the NL-056 test will consume
+        Transaction[] htlcTxs =
+        [
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc0SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc2TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc1SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc3TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc4SuccessTx
+        ];
+        var commitTx = Bolt3AppendixCVectors.ExpectedCommitTx1;
+
+        // When / Then - feerate 0: each HTLC tx spends output i in full, with the BOLT 3 version and sequence
+        for (var i = 0; i < htlcTxs.Length; i++)
+        {
+            var htlcTx = htlcTxs[i];
+            Assert.Equal(2U, htlcTx.Version);
+            Assert.Single(htlcTx.Inputs);
+            Assert.Equal(commitTx.GetHash(), htlcTx.Inputs[0].PrevOut.Hash);
+            Assert.Equal((uint)i, htlcTx.Inputs[0].PrevOut.N);
+            Assert.Equal(0U, (uint)htlcTx.Inputs[0].Sequence);
+            Assert.Equal(commitTx.Outputs[i].Value, htlcTx.Outputs[0].Value);
+        }
     }
 
     #endregion
