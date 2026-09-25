@@ -58,7 +58,9 @@ public class ChannelKeySetDbRepository : BaseDbRepository<ChannelKeySetEntity>, 
             // Current commitment state
             CurrentPerCommitmentPoint = keySet.CurrentPerCommitmentCompactPoint,
             CurrentPerCommitmentIndex = keySet.CurrentPerCommitmentIndex,
+#pragma warning disable CS0618 // legacy column round-trip only; the peer's secrets live in RemoteShachains
             LastRevealedPerCommitmentSecret = keySet.LastRevealedPerCommitmentSecret
+#pragma warning restore CS0618
         };
     }
 
