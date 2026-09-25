@@ -22,6 +22,9 @@ public partial class DaemonUtils
         Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest) [default: mainnet]");
         Console.WriteLine("  --config, -c <path>        Path to custom configuration file");
         Console.WriteLine("  --daemon <true|false>      Run as a daemon [default: false]");
+        Console.WriteLine("  --password-file <path>     Read the key encryption password from a file");
+        Console.WriteLine("  --password-stdin           Read the key encryption password from stdin");
+        Console.WriteLine("  --password <password>      Key encryption password (insecure: visible in the process list)");
         Console.WriteLine("  --stop                     Stop a running daemon");
         Console.WriteLine("  --status                   Show daemon status information");
         Console.WriteLine("  --help, -h, -?             Show this help message");
@@ -30,6 +33,7 @@ public partial class DaemonUtils
         Console.WriteLine("  NLTG_NETWORK               Network to use");
         Console.WriteLine("  NLTG_CONFIG                Path to custom configuration file");
         Console.WriteLine("  NLTG_DAEMON                Run as a daemon");
+        Console.WriteLine("  NLTG_PASSWORD              Key encryption password");
         Console.WriteLine();
         Console.WriteLine("Configuration File:");
         Console.WriteLine("  Default path: ~/.nltg/{network}/appsettings.json");

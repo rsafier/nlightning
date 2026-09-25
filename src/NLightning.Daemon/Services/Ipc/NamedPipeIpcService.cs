@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Services.Ipc;
@@ -41,7 +42,7 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        EnsureCookieExists();
+        WriteNewCookie();
 
         _listenerTask = ListenToIpcClientAsync(_cts.Token);
 
@@ -67,6 +68,8 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
                 // Expected during cancellation
             }
         }
+
+        DeleteCookie();
     }
 
     private async Task ListenToIpcClientAsync(CancellationToken cancellationToken)
@@ -143,7 +146,10 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
         }
     }
 
-    private void EnsureCookieExists()
+    /// <summary>
+    /// Writes a fresh random cookie on every start, so a leaked cookie stops working after a restart.
+    /// </summary>
+    private void WriteNewCookie()
     {
         try
         {
@@ -151,16 +157,33 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            if (File.Exists(_cookiePath))
-                return;
+            // Delete first, so the file is recreated with owner-only permissions
+            File.Delete(_cookiePath);
 
-            var token = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
-            File.WriteAllText(_cookiePath, token);
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows())
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            using var writer = new StreamWriter(_cookiePath, options);
+            writer.Write(token);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to ensure IPC cookie exists at {Path}", _cookiePath);
+            _logger.LogError(ex, "Failed to write the IPC cookie at {Path}", _cookiePath);
             throw;
+        }
+    }
+
+    private void DeleteCookie()
+    {
+        try
+        {
+            File.Delete(_cookiePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete the IPC cookie at {Path}", _cookiePath);
         }
     }
 }
