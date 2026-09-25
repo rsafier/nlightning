@@ -1,8 +1,17 @@
 # NLightning — agent guide (CLAUDE.md / AGENTS.md)
 
+## Project goal
+
+NLightning works as a fully functioning, spec-compliant BOLT Lightning node: interoperates with LND/CLN/Eclair/LDK, and can open, operate, route through and close channels safely with real funds. The BOLT specs are authoritative; every protocol piece is validated with official test vectors.
+
 NLightning is a C# (.NET 10) Lightning Network node and library set. It is split into Domain, Application and several Infrastructure projects, plus a Daemon (`NLightning.Daemon`) and a CLI client (`NLightning.Client`) that talks to the daemon over IPC. Both usage texts call the binary `nltg` (`src/NLightning.Daemon/Utilities/DaemonUtils.cs`, `src/NLightning.Client/Utils/ClientUtils.cs`); the assemblies keep their `NLightning.*` names. What works today: BOLT 8 transport, BOLT 1 init/ping/error, BOLT 2 v1 channel **opening** (open → accept → funding_created/signed → channel_ready), BOLT 3 funding/commitment transactions and key derivation, BOLT 9 feature bits, and BOLT 11 invoices (a standalone library). BOLT 4 onion core (M1+M2: packet, Sphinx construct/peel, hop payloads, validator, replay cache; no forwarding or error onions yet). **Not implemented:** HTLC handling (update/commit/revoke), channel close and reestablish, BOLT 4 forwarding/failure onions, BOLT 7 gossip, and BOLT 5 on-chain handling.
 
 Deeper docs: `docs/agents/REPO_MAP.md` (per-area map), `docs/agents/BOLT_COVERAGE.md` (status matrix), `docs/agents/ONION_ROUTING_PLAN.md` (BOLT 4 plan), `docs/agents/LNBOLT_REVIEW.md` (legacy onion code review). Some `src/*/` and `test/` folders also have their own `CLAUDE.md`; read those when you work there.
+
+## Issue tracking
+
+- GitHub issues are disabled on this fork. The single issue ledger is **`docs/agents/ISSUES.md`** (IDs `NL-###`). Check it before starting work and cite the ID in commit messages.
+- When you fix something, update its entry (`Status: fixed (<SHA>)`) and the summary counts **in the same commit**. When you find something new, add it with the next free `NL-###`. Never renumber and never delete entries; mark them `wontfix` or `duplicate of NL-###` instead.
 
 ## Layers & dependency rules
 

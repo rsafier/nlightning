@@ -1,5 +1,7 @@
 # BOLT Coverage Matrix
 
+> Individual bugs, gaps and their status are tracked in [`ISSUES.md`](ISSUES.md) (`NL-###`); that ledger is the status source for each item, this file is the per-BOLT overview.
+
 What this file is: a BOLT-by-BOLT compliance map of NLightning (C# / .NET 10), written for agents working in this repo.
 Snapshot date: 2026-09-25. It was compiled from per-area research maps. Every claim flagged "verified" was checked against the code while writing this file.
 Paths are relative to the repo root.
