@@ -18,6 +18,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Onion.Enums;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -75,14 +76,49 @@ public class ChannelManager : IChannelManager
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// Every <see cref="ChannelErrorException"/> or <see cref="ChannelWarningException"/> leaving this method carries
+    /// the channel id (or temporary_channel_id) of <paramref name="message"/>, so the peer gets an `error`/`warning`
+    /// scoped to that channel. BOLT 1: an `error` with an all-zero channel_id tells the peer to fail every channel with
+    /// us, so a channel-scoped failure must never lose its channel id.
+    /// </remarks>
     public async Task<IChannelMessage?> HandleChannelMessageAsync(IChannelMessage message,
                                                                   FeatureOptions negotiatedFeatures,
                                                                   CompactPubKey peerPubKey)
     {
+        var channelId = message.Payload.ChannelId;
+
+        try
+        {
+            return await DispatchChannelMessageAsync(message, channelId, negotiatedFeatures, peerPubKey);
+        }
+        catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
+        {
+            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+        }
+        catch (ChannelWarningException cwe) when (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
+        {
+            throw new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="channelId"/> names a single channel (it is set and not all-zero).
+    /// </summary>
+    private static bool IsChannelScoped(ChannelId? channelId)
+    {
+        return channelId is not null && channelId.Value != ChannelId.Zero;
+    }
+
+    private async Task<IChannelMessage?> DispatchChannelMessageAsync(IChannelMessage message, ChannelId channelId,
+                                                                     FeatureOptions negotiatedFeatures,
+                                                                     CompactPubKey peerPubKey)
+    {
         using var scope = _serviceProvider.CreateScope();
 
         // Check if the channel exists on the state dictionary
-        _channelMemoryRepository.TryGetChannelState(message.Payload.ChannelId, out var currentState);
+        _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
 
         // In this case we can only handle messages that are opening a channel
         switch (message.Type)
@@ -130,9 +166,38 @@ public class ChannelManager : IChannelManager
                 return await GetChannelMessageHandler<FundingSignedMessage>(scope)
                           .HandleAsync(fundingSignedMessage, currentState, negotiatedFeatures, peerPubKey);
 
+            case MessageTypes.UpdateFailMalformedHtlc:
+                // BOLT 2: a failure_code without the BADONION bit fails the channel (we chose `error` over "warn and
+                // close the connection"). A valid one is not handled yet (NL-031), see below.
+                if (message is UpdateFailMalformedHtlcMessage { Payload.FailureCode: var failureCode }
+                 && (failureCode & (ushort)FailureCodeFlags.BadOnion) == 0)
+                    throw new ChannelErrorException(
+                        $"update_fail_malformed_htlc failure_code 0x{failureCode:x4} has no BADONION bit", channelId,
+                        "update_fail_malformed_htlc failure_code must have the BADONION bit set");
+
+                throw CreateNotImplementedWarning(message.Type, channelId);
+
             default:
-                throw new ChannelErrorException("Unknown message type", "Sorry, we had an internal error");
+                throw CreateNotImplementedWarning(message.Type, channelId);
         }
+    }
+
+    /// <summary>
+    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7), the HTLC and
+    /// fee updates, commitment_signed and revoke_and_ack (N6), shutdown/closing_signed (N10), and the dual-funding
+    /// messages.
+    /// </summary>
+    /// <remarks>
+    /// We never fail the channel (nor, through an all-zero channel_id, every channel) because we lack a handler: a
+    /// failed channel makes the peer (e.g. LND) force-close it. Instead the message is ignored, the peer gets a
+    /// `warning` scoped to the channel, and the connection stays up. The peer keeps waiting for our reply; for
+    /// channel_reestablish the channel simply stays inactive until N7 lands.
+    /// </remarks>
+    private static ChannelWarningException CreateNotImplementedWarning(MessageTypes messageType, ChannelId channelId)
+    {
+        var messageName = Enum.GetName(messageType) ?? ((ushort)messageType).ToString();
+        return new ChannelWarningException($"Ignoring {messageName}: not supported yet", channelId,
+                                           $"{messageName} is not supported yet, message ignored");
     }
 
     private IChannelMessageHandler<T> GetChannelMessageHandler<T>(IServiceScope scope)

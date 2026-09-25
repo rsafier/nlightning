@@ -97,7 +97,7 @@ All verified in code unless marked. "Gate" = the milestone task that must fix it
 
 | # | Bug | Evidence | NL | Gate |
 |---|---|---|---|---|
-| G1 | Every non-open channel message disconnects the peer | `ChannelManager.cs:88-133` switch, `default` throws `ChannelErrorException` | NL-031 | N6 |
+| G1 | Every non-open channel message is ignored (interim: `default` throws a channel-scoped `ChannelWarningException`, so the peer gets a `warning` for that channel and stays connected; it used to fail every channel with an all-zero `error`) | `ChannelManager.HandleChannelMessageAsync` switch, `CreateNotImplementedWarning` | NL-031 | N6 (reestablish: N7, close: N10) |
 | G2 | Second local per-commitment point built from **index 1** instead of 2^48−2 | `FundingConfirmedMessageHandler.cs:52-54` passes `CommitmentNumber.Value` to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is used as the raw index (`LocalLightningSigner.cs:127-139`) | NL-187 | N1-T1 |
 | G3 | Commitment number mutated at confirmation, every block | `CommitmentNumber.Increment()` in the handler above; `ConfirmUnconfirmedChannels` re-runs it for `ReadyForUs`; the handler only logs a wrong state (`:43-47`) | NL-050, NL-069 | N0-T7, N1-T1 |
 | G4 | One `CommitmentNumber` shared by both commitments; reload rebuilds it from `LocalRevocationNumber + 1` | `ChannelModel.CommitmentNumber`; factory `:225`; `ChannelDbRepository.cs:237-239` | NL-188, NL-127 | N1-T1, N1-T5 |

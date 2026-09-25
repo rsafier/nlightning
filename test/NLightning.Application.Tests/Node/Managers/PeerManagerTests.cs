@@ -428,6 +428,107 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_ChannelErrorWithoutChannelId_When_ProcessingChannelMessage_Then_ErrorIsScopedToTheChannel()
+    {
+        // Arrange (BOLT 1: an all-zero channel_id error would make the peer fail every channel with us)
+        var peerManager = CreatePeerManagerWithPeer();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x42, 32).ToArray());
+        SetupChannelMessage(MessageTypes.OpenChannel, channelId);
+        var channelError = new ChannelErrorException("ChannelTypeTlv is not present", "Peer error message");
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(channelError);
+        var disconnectTcs = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                        .Callback((Exception? e) => disconnectTcs.TrySetResult(e));
+
+        // Act
+        InvokeHandlePeerChannelMessage(peerManager);
+        var exception = await disconnectTcs.Task.WaitAsync(TimeSpan.FromSeconds(5),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        var sentError = Assert.IsType<ChannelErrorException>(exception);
+        Assert.Equal(channelId, sentError.ChannelId);
+        Assert.Equal("Peer error message", sentError.PeerMessage);
+    }
+
+    [Fact]
+    public async Task Given_NotImplementedChannelMessage_When_Processing_Then_ChannelScopedWarningAndStaysConnected()
+    {
+        // Arrange (interim behavior for e.g. channel_reestablish until BOLT2 plan N7)
+        var peerManager = CreatePeerManagerWithPeer();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x43, 32).ToArray());
+        SetupChannelMessage(MessageTypes.ChannelReestablish, channelId);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(new ChannelWarningException("Ignoring ChannelReestablish", channelId, "not supported yet"));
+        var warningTcs = new TaskCompletionSource<WarningException>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>()))
+                        .Callback((WarningException w) => warningTcs.TrySetResult(w))
+                        .Returns(Task.CompletedTask);
+
+        // Act
+        InvokeHandlePeerChannelMessage(peerManager);
+        var warning = await warningTcs.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(channelId, Assert.IsType<ChannelWarningException>(warning).ChannelId);
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_UnexpectedException_When_ProcessingChannelMessage_Then_ChannelScopedWarningAndDisconnect()
+    {
+        // Arrange (our own bug must not fail the channel: warn for the channel, never an error, then disconnect)
+        var peerManager = CreatePeerManagerWithPeer();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x44, 32).ToArray());
+        SetupChannelMessage(MessageTypes.FundingCreated, channelId);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(new InvalidOperationException("database is down"));
+        var disconnectTcs = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                        .Callback((Exception? e) => disconnectTcs.TrySetResult(e));
+
+        // Act
+        InvokeHandlePeerChannelMessage(peerManager);
+        var exception = await disconnectTcs.Task.WaitAsync(TimeSpan.FromSeconds(5),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        var warning = Assert.IsType<ChannelWarningException>(exception);
+        Assert.Equal(channelId, warning.ChannelId);
+        Assert.IsType<InvalidOperationException>(warning.InnerException);
+    }
+
+    private PeerManager CreatePeerManagerWithPeer()
+    {
+        var peerManager = new PeerManager(_mockChannelManager.Object, _mockLogger.Object,
+                                          _mockPeerServiceFactory.Object, _mockTcpService.Object, _fakeServiceProvider);
+        GetPeersFromManager(peerManager).Add(_compactPubKey, _mockPeerModel);
+        return peerManager;
+    }
+
+    private void SetupChannelMessage(MessageTypes messageType, ChannelId channelId)
+    {
+        var payloadMock = new Mock<IChannelMessagePayload>();
+        payloadMock.SetupGet(p => p.ChannelId).Returns(channelId);
+        _mockChannelMessage.SetupGet(m => m.Type).Returns(messageType);
+        _mockChannelMessage.SetupGet(m => m.Payload).Returns(payloadMock.Object);
+    }
+
+    private void InvokeHandlePeerChannelMessage(PeerManager peerManager)
+    {
+        var method = peerManager.GetType().GetMethod("HandlePeerChannelMessage",
+                                                     BindingFlags.NonPublic | BindingFlags.Instance);
+        method!.Invoke(peerManager, [null!, new ChannelMessageEventArgs(_mockChannelMessage.Object, _compactPubKey)]);
+    }
+
+    [Fact]
     public void Given_PeerDisconnection_When_EventRaised_Then_PeerIsRemovedFromManager()
     {
         // Given

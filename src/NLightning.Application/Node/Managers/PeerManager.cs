@@ -7,6 +7,7 @@ namespace NLightning.Application.Node.Managers;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Constants;
@@ -309,13 +310,28 @@ public sealed class PeerManager : IPeerManager
             throw new ConnectionException(
                 $"PeerService not found for peer {args.PeerPubKey} while handling channel message");
 
+        // The id (or temporary id) of the channel this message belongs to, so failures stay scoped to that channel
+        var channelId = args.Message.Payload?.ChannelId;
+
         _channelManager.HandleChannelMessageAsync(args.Message, peerService.Features, peerService.PeerPubKey)
                        .ContinueWith(task => HandleChannelMessageResponseAsync(task, peerService.PeerPubKey,
-                                                                               args.Message.Type));
+                                                                               args.Message.Type, channelId));
     }
 
+    /// <summary>
+    /// Sends the handler's reply, or turns its failure into a message for the peer.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 1: an `error` with an all-zero channel_id makes the peer fail every channel with us, so a channel failure
+    /// always carries <paramref name="channelId"/>:
+    /// - <see cref="ChannelErrorException"/>: `error` for the channel, then disconnect.
+    /// - <see cref="ChannelWarningException"/> (includes the messages we don't implement yet): `warning` for the
+    ///   channel, and the connection stays up.
+    /// - Any other exception (an internal failure): `warning` for the channel, then disconnect, so the channel is not
+    ///   failed because of our own bug.
+    /// </remarks>
     private async Task HandleChannelMessageResponseAsync(Task<IChannelMessage?> task, CompactPubKey peerPubKey,
-                                                         MessageTypes messageType)
+                                                         MessageTypes messageType, ChannelId? channelId)
     {
         if (!_peers.TryGetValue(peerPubKey, out var peer))
             throw new ConnectionException($"Peer {peerPubKey} not found while handling channel response message");
@@ -335,6 +351,9 @@ public sealed class PeerManager : IPeerManager
                         ? cee.PeerMessage
                         : cee.Message);
 
+                if (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
+                    cee = new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+
                 DisconnectPeer(peerService, cee);
                 return;
             }
@@ -347,6 +366,9 @@ public sealed class PeerManager : IPeerManager
                     !string.IsNullOrEmpty(cwe.PeerMessage)
                         ? cwe.PeerMessage
                         : cwe.Message);
+
+                if (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
+                    cwe = new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage);
 
                 _ = peerService.SendWarningAsync(cwe)
                                .ContinueWith(warningTask =>
@@ -366,13 +388,28 @@ public sealed class PeerManager : IPeerManager
                 task.Exception, "Error handling channel message ({messageType}) from peer {peer}",
                 Enum.GetName(messageType), peerService.PeerPubKey);
 
-            DisconnectPeer(peerService);
+            // Our own failure: tell the peer (never with an `error`, which would fail the channel) and disconnect
+            var internalError = task.Exception?.InnerException ?? task.Exception!;
+            var warning = IsChannelScoped(channelId)
+                              ? new ChannelWarningException($"Internal error handling {Enum.GetName(messageType)}",
+                                                            channelId, internalError,
+                                                            "Sorry, we had an internal error")
+                              : new WarningException("Sorry, we had an internal error");
+            DisconnectPeer(peerService, warning);
             return;
         }
 
         var replyMessage = task.Result;
         if (replyMessage is not null)
             await peerService.SendMessageAsync(replyMessage);
+    }
+
+    /// <summary>
+    /// True when <paramref name="channelId"/> names a single channel (it is set and not all-zero).
+    /// </summary>
+    private static bool IsChannelScoped(ChannelId? channelId)
+    {
+        return channelId is not null && channelId.Value != ChannelId.Zero;
     }
 
     private void HandleResponseMessageReady(object? sender, ChannelResponseMessageEventArgs args)

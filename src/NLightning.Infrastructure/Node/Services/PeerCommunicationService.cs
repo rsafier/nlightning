@@ -177,6 +177,10 @@ public class PeerCommunicationService : IPeerCommunicationService
             _logger.LogTrace("Waiting for ping service to stop for peer {peer}", PeerCompactPubKey);
             _pingPongTcs.Task.Wait(TimeSpan.FromSeconds(5));
             _logger.LogTrace("Ping service stopped for peer {peer}", PeerCompactPubKey);
+
+            // Actually close the connection now that the error/warning is out, even if nobody disposes us (e.g. the
+            // peer is still being set up and has no disconnect subscriber yet). Disposing twice is harmless.
+            _messageService.Dispose();
         }
         finally
         {
@@ -306,6 +310,15 @@ public class PeerCommunicationService : IPeerCommunicationService
         _ = Task.Run(() => Disconnect(e));
     }
 
+    /// <summary>
+    /// Tells the peer why we are failing: nothing for a <see cref="ConnectionException"/>, an `error` for a
+    /// <see cref="ChannelErrorException"/> that names its channel, and a `warning` otherwise.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 1: an `error` with an all-zero channel_id makes the peer fail every channel it has with us. Nothing we do
+    /// today is meant to do that, so an <see cref="ErrorException"/> without a channel id (including a
+    /// <see cref="ChannelErrorException"/> that lost its id) is sent as a connection-level `warning` instead.
+    /// </remarks>
     private Task SendExceptionMessage(Exception? exception)
     {
         switch (exception)
@@ -313,23 +326,33 @@ public class PeerCommunicationService : IPeerCommunicationService
             case ConnectionException:
             case null:
                 return Task.CompletedTask;
-            case ErrorException errorException:
+            case ChannelErrorException { ChannelId: { } channelId } channelErrorException
+                when channelId != ChannelId.Zero:
                 {
-                    ChannelId? channelId = null;
-                    var message = errorException.Message;
-
-                    if (errorException is ChannelErrorException channelErrorException)
-                    {
-                        channelId = channelErrorException.ChannelId;
-                        if (!string.IsNullOrWhiteSpace(channelErrorException.PeerMessage))
-                            message = channelErrorException.PeerMessage;
-                    }
+                    var message = !string.IsNullOrWhiteSpace(channelErrorException.PeerMessage)
+                                      ? channelErrorException.PeerMessage
+                                      : channelErrorException.Message;
 
                     _logger.LogTrace("Sending error message to peer {peer}. ChannelId: {channelId}, Message: {message}",
                                      PeerCompactPubKey, channelId, message);
 
                     return _messageService.SendMessageAsync(
                         new ErrorMessage(new ErrorPayload(channelId, message)));
+                }
+            case ErrorException errorException:
+                {
+                    var message = errorException is ChannelErrorException
+                    {
+                        PeerMessage: { } peerMessage
+                    } && !string.IsNullOrWhiteSpace(peerMessage)
+                                      ? peerMessage
+                                      : errorException.Message;
+
+                    _logger.LogWarning(
+                        "Not sending an all-zero channel_id error to peer {peer}, sending a warning instead: {message}",
+                        PeerCompactPubKey, message);
+
+                    return _messageService.SendMessageAsync(new WarningMessage(new ErrorPayload(message)));
                 }
             case WarningException warningException:
                 {
@@ -338,7 +361,8 @@ public class PeerCommunicationService : IPeerCommunicationService
 
                     if (warningException is ChannelWarningException channelWarningException)
                     {
-                        channelId = channelWarningException.ChannelId;
+                        if (channelWarningException.ChannelId != ChannelId.Zero)
+                            channelId = channelWarningException.ChannelId;
                         if (!string.IsNullOrWhiteSpace(channelWarningException.PeerMessage))
                             message = channelWarningException.PeerMessage;
                     }
@@ -356,21 +380,21 @@ public class PeerCommunicationService : IPeerCommunicationService
 
     private void RaiseException(Exception exception)
     {
-        var mustDisconnect = false;
-        if (exception is ErrorException)
-            mustDisconnect = true;
-
-        _ = Task.Run(() => SendExceptionMessage(exception));
-
         // Forward the exception to subscribers
         ExceptionRaised?.Invoke(this, exception);
 
-        // Disconnect if not already disconnecting
-        if (mustDisconnect && Volatile.Read(ref _disconnecting) == 0)
+        if (exception is not ErrorException)
+        {
+            _ = Task.Run(() => SendExceptionMessage(exception));
+            return;
+        }
+
+        // Disconnect if not already disconnecting (Disconnect sends the error/warning before closing the connection)
+        if (Volatile.Read(ref _disconnecting) == 0)
         {
             _logger.LogWarning(exception, "We're disconnecting peer {peer} because of an exception",
                                PeerCompactPubKey);
-            Disconnect();
+            Disconnect(exception);
         }
     }
 

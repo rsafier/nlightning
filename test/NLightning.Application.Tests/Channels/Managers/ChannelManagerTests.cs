@@ -4,6 +4,7 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Application.Tests.Channels.Managers;
 
 using Application.Channels.Handlers;
+using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Managers;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
@@ -12,13 +13,18 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Constants;
 using Domain.Channels.Enums;
+using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Validators;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
@@ -233,10 +239,149 @@ public class ChannelManagerTests
         Assert.Equal(ChannelState.ReadyForThem, channel.State);
     }
 
-    private ChannelManager CreateChannelManager()
+    [Fact]
+    public async Task Given_OpenChannelWithoutChannelType_When_Handled_Then_ChannelErrorCarriesTemporaryChannelId()
+    {
+        // Arrange (NL-027: open_channel without channel_type now reaches the handler; BOLT 2 fails that channel,
+        // and the error must name the temporary_channel_id, not all-zero, which would fail every channel)
+        var nodeOptions = new NodeOptions();
+        var feeServiceMock = new Mock<IFeeService>();
+        feeServiceMock.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(LightningMoney.Satoshis(2_500));
+        var channelFactory = new ChannelFactory(new Mock<IChannelIdFactory>().Object,
+                                                new ChannelOpenValidator(nodeOptions), feeServiceMock.Object,
+                                                new Mock<ILightningSigner>().Object, nodeOptions, new FakeSha256());
+        var handler = new OpenChannel1MessageHandler(channelFactory, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object);
+        var channelManager = CreateChannelManager((typeof(IChannelMessageHandler<OpenChannel1Message>), handler));
+        var temporaryChannelId = CreateChannelId(0x42);
+        var payload = new OpenChannel1Payload(nodeOptions.BitcoinNetwork.ChainHash, new ChannelFlags((byte)0),
+                                              temporaryChannelId, LightningMoney.Satoshis(1_000), s_emptyPubKey,
+                                              LightningMoney.Satoshis(354), LightningMoney.Satoshis(2_500),
+                                              s_emptyPubKey, LightningMoney.Satoshis(100_000), s_emptyPubKey,
+                                              s_emptyPubKey, LightningMoney.Satoshis(1), 30,
+                                              LightningMoney.Satoshis(100_000), s_emptyPubKey, LightningMoney.Zero,
+                                              s_emptyPubKey, 144);
+        var message = new OpenChannel1Message(payload, null);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Contains("ChannelTypeTlv", exception.Message);
+        Assert.Equal(temporaryChannelId, exception.ChannelId);
+    }
+
+    [Fact]
+    public async Task Given_HandlerFailsWithoutChannelId_When_Handled_Then_ChannelIdOfTheMessageIsAttached()
+    {
+        // Arrange
+        var handlerMock = new Mock<IChannelMessageHandler<ChannelReadyMessage>>();
+        handlerMock.Setup(h => h.HandleAsync(It.IsAny<ChannelReadyMessage>(), It.IsAny<ChannelState>(),
+                                             It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+                   .ThrowsAsync(new ChannelErrorException("internal", "peer text"));
+        var channelManager =
+            CreateChannelManager((typeof(IChannelMessageHandler<ChannelReadyMessage>), handlerMock.Object));
+        var channelId = CreateChannelId(0x43);
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channelId, s_emptyPubKey));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.Equal("peer text", exception.PeerMessage);
+    }
+
+    [Theory]
+    [InlineData(MessageTypes.ChannelReestablish)]
+    [InlineData(MessageTypes.UpdateAddHtlc)]
+    [InlineData(MessageTypes.UpdateFulfillHtlc)]
+    [InlineData(MessageTypes.UpdateFailHtlc)]
+    [InlineData(MessageTypes.CommitmentSigned)]
+    [InlineData(MessageTypes.RevokeAndAck)]
+    [InlineData(MessageTypes.UpdateFee)]
+    [InlineData(MessageTypes.Shutdown)]
+    [InlineData(MessageTypes.ClosingSigned)]
+    [InlineData(MessageTypes.TxAddInput)]
+    public async Task Given_NotImplementedChannelMessage_When_Handled_Then_ChannelScopedWarningIsRaised(
+        MessageTypes messageType)
+    {
+        // Arrange (interim until BOLT2 plan N6/N7/N10: never fail the channel, or all channels, for these)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x44);
+        var payloadMock = new Mock<IChannelMessagePayload>();
+        payloadMock.SetupGet(p => p.ChannelId).Returns(channelId);
+        var messageMock = new Mock<IChannelMessage>();
+        messageMock.SetupGet(m => m.Type).Returns(messageType);
+        messageMock.SetupGet(m => m.Payload).Returns(payloadMock.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
+                            () => channelManager.HandleChannelMessageAsync(messageMock.Object, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.Contains("not supported yet", exception.PeerMessage);
+    }
+
+    [Theory]
+    [InlineData((ushort)0x0001)]
+    [InlineData((ushort)0x4005)]
+    public async Task Given_UpdateFailMalformedHtlcWithoutBadOnion_When_Handled_Then_ChannelIsFailedWithItsId(
+        ushort failureCode)
+    {
+        // Arrange (BOLT 2: the receiver MUST fail the channel if the BADONION bit is not set)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x45);
+        var message = new UpdateFailMalformedHtlcMessage(
+            new UpdateFailMalformedHtlcPayload(channelId, failureCode, 0, new byte[32]));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.Contains("BADONION", exception.PeerMessage);
+    }
+
+    [Fact]
+    public async Task Given_UpdateFailMalformedHtlcWithBadOnion_When_Handled_Then_OnlyAWarningIsRaised()
+    {
+        // Arrange (a valid one is not processed yet: interim warning, the channel is not failed)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x46);
+        var message = new UpdateFailMalformedHtlcMessage(
+            new UpdateFailMalformedHtlcPayload(channelId, 0xC005, 0, new byte[32]));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+    }
+
+    private static ChannelId CreateChannelId(byte fill)
+    {
+        return new ChannelId(Enumerable.Repeat(fill, 32).ToArray());
+    }
+
+    private ChannelManager CreateChannelManager(params (Type Type, object Service)[] extraServices)
     {
         var mockSigner = new Mock<ILightningSigner>();
         var serviceProvider = new FakeServiceProvider();
+        foreach (var (type, service) in extraServices)
+            serviceProvider.AddService(type, service);
         serviceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
         serviceProvider.AddService(typeof(FundingConfirmedMessageHandler),
                                    new FundingConfirmedMessageHandler(_mockChannelMemoryRepository.Object,
