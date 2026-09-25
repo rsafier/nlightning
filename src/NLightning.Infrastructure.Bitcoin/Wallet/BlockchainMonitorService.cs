@@ -470,9 +470,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 "Checking {watchedTransactionCount} watched transactions for block {height} with {TxCount} transactions",
                 _watchedTransactions.Count, blockHeight, blockTransactions.Count);
 
-        ushort index = 0;
-        foreach (var transaction in blockTransactions)
+        // The index must be the position within the block (all txs, coinbase included), as BOLT 7 requires for
+        // short_channel_id, not the position among the watched transactions.
+        for (var index = 0; index < blockTransactions.Count; index++)
         {
+            var transaction = blockTransactions[index];
             var txId = transaction.GetHash();
 
             if (!_watchedTransactions.TryGetValue(txId, out var watchedTransaction))
@@ -483,7 +485,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
             try
             {
                 // Update first seen height
-                watchedTransaction.SetHeightAndIndex(blockHeight, index);
+                watchedTransaction.SetHeightAndIndex(blockHeight, (uint)index);
                 uow.WatchedTransactionDbRepository.Update(watchedTransaction);
 
                 if (watchedTransaction.RequiredDepth == 0)
@@ -492,10 +494,6 @@ public class BlockchainMonitorService : IBlockchainMonitor
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error checking confirmations for transaction {TxId}", txId);
-            }
-            finally
-            {
-                index++;
             }
         }
     }
