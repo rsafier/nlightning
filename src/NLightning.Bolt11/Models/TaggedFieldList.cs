@@ -28,8 +28,8 @@ internal class TaggedFieldList : List<ITaggedField>
         if (!taggedField.IsValid())
             throw new ArgumentException($"Invalid {taggedField.Type} field: field validation failed");
 
-        // Check for uniqueness
-        if (this.Any(x => x.Type.Equals(taggedField.Type)) && taggedField.Type != TaggedFieldTypes.FallbackAddress)
+        // Check for uniqueness (BOLT 11 allows repeated `f` and `r` fields)
+        if (!IsRepeatable(taggedField.Type) && this.Any(x => x.Type.Equals(taggedField.Type)))
             throw new ArgumentException(
                 $"TaggedFieldDictionary already contains a tagged field of type {taggedField.Type}");
 
@@ -237,6 +237,14 @@ internal class TaggedFieldList : List<ITaggedField>
         return taggedFields.Count == 0
                    ? null
                    : taggedFields.Cast<T>().ToList();
+    }
+
+    /// <summary>
+    /// Whether BOLT 11 allows more than one field of this type in an invoice
+    /// </summary>
+    internal static bool IsRepeatable(TaggedFieldTypes taggedFieldType)
+    {
+        return taggedFieldType is TaggedFieldTypes.FallbackAddress or TaggedFieldTypes.RoutingInfo;
     }
 
     private void OnChanged()

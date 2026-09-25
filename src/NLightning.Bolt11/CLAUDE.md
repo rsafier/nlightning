@@ -5,7 +5,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 
 ## Layout
 - `Models/Invoice.cs`: the public aggregate (ctors, `InSatoshis`, `Decode`, `Encode(Key)`/`Encode()`, HRP and amount parsing, sign/verify/recover).
-- `Models/TaggedFieldList.cs`: internal ordered list of `ITaggedField`. Enforces `IsValid`, uniqueness (only `f` may repeat) and d/h mutual exclusion. Contains the decode loop.
+- `Models/TaggedFieldList.cs`: internal ordered list of `ITaggedField`. Enforces `IsValid`, uniqueness (only `f` and `r` may repeat, see `IsRepeatable`) and d/h mutual exclusion. Contains the decode loop.
 - `Models/TaggedFields/*TaggedField.cs`: one class per tag: p, r, 9, x, f, d, s, n, h, c, m.
 - `Enums/TaggedFieldTypes.cs`: 5-bit tag values (p=1, r=3, 9=5, x=6, f=9, d=13, s=16, n=19, h=23, c=24, m=27).
 - `Factories/TaggedFieldFactory.cs`: switch from tag type to `XTaggedField.FromBitReader`.
@@ -50,7 +50,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 ## Gotchas
 - `ITaggedField.Length` counts 5-bit groups. `TaggedFieldList.CalculateSizeInBits()` actually returns groups, and `Encode` multiplies by 5.
 - Property setters call `Add`, so setting Features, RoutingInfos, ExpiryDate, PayeePubKey or MinFinalCltvExpiry twice throws. There is no replace.
-- Only ONE `r` field is kept. BOLT 11 allows several; later ones are silently dropped (`TaggedFieldList.Add` uniqueness).
+- Several `r` fields are allowed. `RoutingInfos` is only the first (most preferred) one; read all of them with `RouteHints` and append with `AddRouteHint`.
 - Decode errors inside fields are swallowed (Debug.WriteLine in `TaggedFieldList.FromBitReader`). If a declared length is bigger than the remaining bits, the loop `continue`s without skipping those bits.
 - Feature-bit validation is a TODO (`Invoice.cs:553`). Unknown even features are NOT rejected, and the writer does not force the payment_secret or var_onion_optin bits.
 - `MinFinalCltvExpiry` is a non-nullable `ushort` that returns the spec default 18 (`InvoiceConstants.DefaultMinFinalCltvExpiryDelta`) when `c` is absent, so it cannot tell you whether `c` was present.

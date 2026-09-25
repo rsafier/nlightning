@@ -30,7 +30,7 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
     internal RoutingInfoTaggedField(RoutingInfoCollection value)
     {
         Value = value;
-        Length = (short)((value.Count * TaggedFieldConstants.RoutingInfoLength + value.Count * 2) / 5);
+        Length = CalculateLength(value.Count);
 
         Value.Changed += OnRoutingInfoCollectionChanged;
     }
@@ -48,7 +48,8 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
             bitWriter.WriteUInt16AsBits(routingInfo.CltvExpiryDelta, 16);
         }
 
-        for (var i = 0; i < Value.Count * 2; i++)
+        // Pad to the 5-bit boundary with zeros
+        for (var i = Value.Count * TaggedFieldConstants.RoutingInfoLength; i < Length * 5; i++)
             bitWriter.WriteBit(false);
     }
 
@@ -117,6 +118,14 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
 
     private void OnRoutingInfoCollectionChanged(object? sender, EventArgs e)
     {
-        Length = (short)((Value.Count * TaggedFieldConstants.RoutingInfoLength + Value.Count * 2) / 5);
+        Length = CalculateLength(Value.Count);
+    }
+
+    /// <summary>
+    /// Minimal number of 5-bit groups that hold <paramref name="count"/> 408-bit entries
+    /// </summary>
+    private static short CalculateLength(int count)
+    {
+        return (short)((count * TaggedFieldConstants.RoutingInfoLength + 4) / 5);
     }
 }

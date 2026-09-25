@@ -153,4 +153,27 @@ public class RoutingInfoTaggedFieldTests
         Assert.Equal(0x8000_0000u, parsed.Value[0].FeeProportionalMillionths);
         Assert.Equal(ushort.MaxValue, parsed.Value[0].CltvExpiryDelta);
     }
+
+    [Theory]
+    [InlineData(1, 82)]
+    [InlineData(2, 164)]
+    [InlineData(3, 245)]
+    [InlineData(12, 980)]
+    public void Given_Entries_When_Constructed_Then_LengthIsMinimal(int entries, short expectedLength)
+    {
+        // Arrange
+        var collection = BuildKnownCollection(entries);
+
+        // Act
+        var field = new RoutingInfoTaggedField(collection);
+        var writer = new BitWriter(field.Length * 5);
+        field.WriteToBitWriter(writer);
+        var parsed = RoutingInfoTaggedField.FromBitReader(new BitReader(writer.ToArray()), field.Length);
+
+        // Assert
+        Assert.Equal(expectedLength, field.Length);
+        Assert.False(writer.HasMoreBits(1));
+        Assert.NotNull(parsed);
+        Assert.Equal(entries, parsed.Value.Count);
+    }
 }

@@ -207,6 +207,47 @@ public class InvoiceTests
         Assert.Equal(customExpiry.ToUnixTimeSeconds(), newComputedExpiry.ToUnixTimeSeconds());
     }
 
+    [Fact]
+    public void Given_InvoiceWithTwoRouteHints_When_EncodedAndDecoded_Then_BothRHintsAreKeptInOrder()
+    {
+        // Arrange
+        var key = new Key();
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "two routes", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet)
+        {
+            RoutingInfos = [s_defaultRoutingInfo]
+        };
+        var secondHop = new RoutingInfo(InitiatorValidKeysVector.RemoteStaticPublicKey,
+                                        new ShortChannelId(870128, 7, 0), 2, 3, 4);
+        invoice.AddRouteHint([secondHop, s_defaultRoutingInfo]);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(key), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(2, decoded.RouteHints.Count);
+        Assert.Single(decoded.RouteHints[0]);
+        Assert.Equal(s_defaultRoutingInfo.ShortChannelId, decoded.RouteHints[0][0].ShortChannelId);
+        Assert.Equal(2, decoded.RouteHints[1].Count);
+        Assert.Equal(secondHop.ShortChannelId, decoded.RouteHints[1][0].ShortChannelId);
+        Assert.Equal(secondHop.CltvExpiryDelta, decoded.RouteHints[1][0].CltvExpiryDelta);
+        Assert.NotNull(decoded.RoutingInfos);
+        Assert.Equal(s_defaultRoutingInfo.ShortChannelId, decoded.RoutingInfos[0].ShortChannelId);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutRouteHints_When_RouteHintsRead_Then_IsEmpty()
+    {
+        // Arrange
+        var invoice = new Invoice(BitcoinNetwork.Mainnet);
+
+        // Act
+        var hints = invoice.RouteHints;
+
+        // Assert
+        Assert.Empty(hints);
+    }
+
     #endregion
 
     #region Encoding/Decoding

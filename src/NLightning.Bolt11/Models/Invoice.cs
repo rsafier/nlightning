@@ -114,10 +114,12 @@ public partial class Invoice
     }
 
     /// <summary>
-    /// The Routing Information of the invoice
+    /// The Routing Information of the invoice (the first, most preferred, <c>r</c> field)
     /// </summary>
     /// <remarks>
-    /// The routing information is used to hint about the route the payment could take
+    /// The routing information is used to hint about the route the payment could take.
+    /// An invoice may carry several <c>r</c> fields; use <see cref="RouteHints"/> to read all of them and
+    /// <see cref="AddRouteHint"/> to add more.
     /// </remarks>
     /// <seealso cref="RoutingInfoCollection"/>
     /// <seealso cref="RoutingInfo"/>
@@ -134,6 +136,24 @@ public partial class Invoice
         {
             _taggedFields.Add(new RoutingInfoTaggedField(value));
             value.Changed += OnTaggedFieldsChanged;
+        }
+    }
+
+    /// <summary>
+    /// All routing hints (<c>r</c> fields) of the invoice, most preferred first
+    /// </summary>
+    /// <remarks>
+    /// Each entry is one private route from a public node to the payee (BOLT 11 allows several <c>r</c> fields).
+    /// Empty when the invoice has no <c>r</c> field.
+    /// </remarks>
+    public IReadOnlyList<RoutingInfoCollection> RouteHints
+    {
+        get
+        {
+            return _taggedFields.TryGetAll(TaggedFieldTypes.RoutingInfo,
+                                           out List<RoutingInfoTaggedField>? routingInfoFields)
+                       ? routingInfoFields.Select(x => x.Value).ToList()
+                       : [];
         }
     }
 
@@ -626,6 +646,16 @@ public partial class Invoice
 
         var nodeKey = _secureKeyManager.GetNodeKeyPair().PrivKey;
         return Encode(new Key(nodeKey));
+    }
+
+    /// <summary>
+    /// Adds another routing hint (<c>r</c> field) after the existing ones
+    /// </summary>
+    /// <param name="routingInfos">The route, as ordered entries from a public node to the payee</param>
+    public void AddRouteHint(RoutingInfoCollection routingInfos)
+    {
+        _taggedFields.Add(new RoutingInfoTaggedField(routingInfos));
+        routingInfos.Changed += OnTaggedFieldsChanged;
     }
 
     #region Overrides

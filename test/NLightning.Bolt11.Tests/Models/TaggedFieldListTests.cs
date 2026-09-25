@@ -78,6 +78,20 @@ public class TaggedFieldListTests
     }
 
     [Fact]
+    public void Given_TaggedFieldList_When_AddRoutingInfoMultipleTimes_Then_AllAreKept()
+    {
+        // Arrange
+        var list = new TaggedFieldList();
+
+        // Act
+        list.Add(new MockTaggedField { Type = TaggedFieldTypes.RoutingInfo });
+        list.Add(new MockTaggedField { Type = TaggedFieldTypes.RoutingInfo });
+
+        // Assert
+        Assert.Equal(2, list.Count);
+    }
+
+    [Fact]
     public void Given_TaggedFieldList_When_AddFallbackAddressMultipleTimes_Then_NoExceptionIsThrown()
     {
         // Given
