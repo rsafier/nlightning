@@ -10,7 +10,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Infrastructure.Crypto.Interfaces;
 using Onion;
-using Protocol.Factories;
 using Services;
 using Wallet;
 using Wallet.Interfaces;
@@ -38,7 +37,6 @@ public static class DependencyInjection
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ISphinxService, SphinxService>();
-        services.AddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();

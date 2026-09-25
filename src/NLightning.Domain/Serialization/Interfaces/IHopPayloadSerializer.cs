@@ -1,7 +1,7 @@
-namespace NLightning.Infrastructure.Serialization.Interfaces;
+namespace NLightning.Domain.Serialization.Interfaces;
 
-using Domain.Exceptions;
-using Domain.Protocol.Onion.Models;
+using Exceptions;
+using Protocol.Onion.Models;
 
 /// <summary>
 /// Reads and writes BOLT 4 per-hop <c>payload</c> TLV streams.

@@ -60,7 +60,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 ## Onion-routing (BOLT 4) hooks here
 The onion library (M1+M2) exists but nothing in Application uses it yet. All of these are DI singletons:
 - `ISphinxService` (`src/NLightning.Domain/Protocol/Onion/Interfaces/`, registered by `AddBitcoinInfrastructure`).
-- `IHopPayloadSerializer` (`src/NLightning.Infrastructure.Serialization/Interfaces/`, registered by `AddSerializationInfrastructureServices`).
+- `IHopPayloadSerializer` (`src/NLightning.Domain/Serialization/Interfaces/`, registered by `AddSerializationInfrastructureServices`).
 - `IOnionReplayCache` (registered by `AddInfrastructureServices`).
 - `HopPayloadValidator` is a static Domain class.
 
