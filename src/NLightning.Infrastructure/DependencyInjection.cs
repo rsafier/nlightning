@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace NLightning.Infrastructure;
 
@@ -27,6 +28,9 @@ public static class DependencyInjection
         services.AddSingleton<ITcpService, TcpService>();
         services.AddSingleton<ISha256, Sha256>();
         services.AddSingleton<ITransportServiceFactory, TransportServiceFactory>();
+
+        // TryAdd: AddSerializationInfrastructureServices also registers it so that it can be composed on its own
+        services.TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

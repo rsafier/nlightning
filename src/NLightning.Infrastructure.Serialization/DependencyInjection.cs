@@ -1,5 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Serialization.Interfaces;
+using NLightning.Infrastructure.Protocol.Factories;
 using NLightning.Infrastructure.Serialization.Factories;
 using NLightning.Infrastructure.Serialization.Interfaces;
 using NLightning.Infrastructure.Serialization.Messages;
@@ -30,6 +33,10 @@ public static class DependencyInjection
         services.AddSingleton<ITlvSerializer, TlvSerializer>();
         services.AddSingleton<ITlvStreamSerializer, TlvStreamSerializer>();
         services.AddSingleton<IValueObjectSerializerFactory, ValueObjectSerializerFactory>();
+
+        // The TLV serializers depend on the converter factory, which lives in NLightning.Infrastructure. TryAdd keeps
+        // this layer self-sufficient without clashing with AddInfrastructureServices.
+        services.TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         return services;
     }

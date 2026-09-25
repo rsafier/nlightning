@@ -1,15 +1,15 @@
 # NLightning.Infrastructure.Serialization
 
-BOLT wire (de)serialization: `IMessage` <-> bytes. Three layers: `MessageSerializer` (u16 BE type prefix) -> per-type `*MessageTypeSerializer` -> per-payload `*PayloadSerializer`, with TLV, value-object and FeatureSet serializers underneath. Interfaces live in `src/NLightning.Domain/Serialization/Interfaces` (plus local `Interfaces/IFeatureSetSerializer`, `ITlvStreamSerializer`). No protocol logic here — bytes only.
+BOLT wire (de)serialization: `IMessage` <-> bytes. Three layers: `MessageSerializer` (u16 BE type prefix) -> per-type `*MessageTypeSerializer` -> per-payload `*PayloadSerializer`, with TLV, value-object and FeatureSet serializers underneath. Interfaces live in `src/NLightning.Domain/Serialization/Interfaces` (including `IHopPayloadSerializer`; plus local `Interfaces/IFeatureSetSerializer`, `ITlvStreamSerializer`). No protocol logic here — bytes only.
 
 ## Layout
-- `DependencyInjection.cs` — `AddSerializationInfrastructureServices()` registers 8 singletons (including `IHopPayloadSerializer`). Does NOT register `ITlvConverterFactory` (comes from `AddBitcoinInfrastructure`, `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs:41`).
+- `DependencyInjection.cs` — `AddSerializationInfrastructureServices()` registers 8 singletons (including `IHopPayloadSerializer`), plus `TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>` (also TryAdded by `AddInfrastructureServices`), so this layer resolves on its own.
 - `Messages/MessageSerializer.cs` — entry point; BOLT 1 unknown-odd -> `null`, unknown-even -> `InvalidMessageException`.
 - `Messages/Types/` — 32 `IMessageTypeSerializer<TMessage>`; payload + TLV extension, TLVs converted via `ITlvConverterFactory`.
 - `Payloads/` — 31 `IPayloadSerializer<TPayload>`; hand-coded field layout, big-endian via `NLightning.Infrastructure.Converters.EndianBitConverter`, `ArrayPool` buffers.
 - `Factories/` — `MessageTypeSerializerFactory`, `PayloadSerializerFactory`, `ValueObjectSerializerFactory`: hand-written dictionaries, serializers built with `new` (not DI).
 - `Tlv/` — `TlvSerializer` (BigSize type + BigSize len + value), `TlvStreamSerializer` (serialize: converter by runtime type via `ITlvConverterFactory.GetConverter(Type)`, raw `BaseTlv` verbatim; deserialize reads to end of stream, strictly increasing types, length <= remaining; `DeserializeStrictAsync(stream, knownTypes)` also rejects unknown even types).
-- `Onion/HopPayloadSerializer.cs` — `IHopPayloadSerializer` (declared in local `Interfaces/`): BOLT 4 hop payload TLV stream <-> `HopPayload` (see Onion section).
+- `Onion/HopPayloadSerializer.cs` — `IHopPayloadSerializer` (declared in Domain `Serialization/Interfaces/`): BOLT 4 hop payload TLV stream <-> `HopPayload` (see Onion section).
 - `ValueObjects/` — BigSize, ChainHash, ChannelFlags, ChannelId, ShortChannelId, Witness.
 - `Node/FeatureSetSerializer.cs` — BOLT 9 feature bits (init writes it twice: global + local).
 
