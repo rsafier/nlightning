@@ -371,6 +371,37 @@ public class InvoiceTests
         Assert.Equal(otherKey.PubKey, invoice.PayeePubKey);
     }
 
+    [Fact]
+    public void Given_ExpiryNeedingSevenGroups_When_EncodedAndDecoded_Then_ExpiryDateIsPreserved()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "long expiry", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        var expiry = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + (1L << 30) + 5);
+        invoice.ExpiryDate = expiry;
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(expiry, decoded.ExpiryDate);
+    }
+
+    [Fact]
+    public void Given_ZeroExpiry_When_EncodedAndDecoded_Then_ExpiryDateIsTheTimestamp()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "expired", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(invoice.Timestamp, decoded.ExpiryDate.ToUnixTimeSeconds());
+    }
+
     #endregion
 
     #region Encoding/Decoding

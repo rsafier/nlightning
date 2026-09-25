@@ -90,6 +90,7 @@ public class MinFinalCltvExpiryTaggedFieldTests
 
         // Assert
         Assert.Equal(expectedLength, taggedField.Length);
+        Assert.NotNull(parsed);
         Assert.Equal(expiry, parsed.Value);
     }
 
@@ -102,5 +103,21 @@ public class MinFinalCltvExpiryTaggedFieldTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 4));
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 0x00 }, 0)]
+    [InlineData(new byte[] { 0x00 }, 1)]
+    [InlineData(new byte[] { 0x00, 0x00 }, 2)]
+    public void Given_ZeroValue_When_FromBitReader_Then_FieldIsDropped(byte[] bytes, short length)
+    {
+        // Arrange
+        var bitReader = new BitReader(bytes);
+
+        // Act
+        var taggedField = MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, length);
+
+        // Assert
+        Assert.Null(taggedField);
     }
 }

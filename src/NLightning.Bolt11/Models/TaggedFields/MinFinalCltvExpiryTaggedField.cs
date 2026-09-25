@@ -51,13 +51,16 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
     /// </summary>
     /// <param name="bitReader">The BitReader to read from</param>
     /// <param name="length">The length of the field</param>
-    /// <returns>The MinFinalCltvExpiryTaggedField</returns>
-    /// <exception cref="ArgumentException">Thrown when the length is invalid</exception>
-    internal static MinFinalCltvExpiryTaggedField FromBitReader(BitReader bitReader, short length)
+    /// <returns>
+    /// The MinFinalCltvExpiryTaggedField, or <c>null</c> for a zero value (empty field included), which is dropped so
+    /// the spec default of 18 applies
+    /// </returns>
+    /// <exception cref="ArgumentException">Thrown when the length is negative or the value does not fit in 16 bits</exception>
+    internal static MinFinalCltvExpiryTaggedField? FromBitReader(BitReader bitReader, short length)
     {
-        if (length <= 0)
+        if (length < 0)
             throw new ArgumentException(
-                $"Invalid length for {nameof(MinFinalCltvExpiryTaggedField)}. Length must be greater than 0",
+                $"Invalid length for {nameof(MinFinalCltvExpiryTaggedField)}. Length must not be negative",
                 nameof(length));
 
         // Read the data from the BitReader as big-endian 5-bit groups
@@ -71,6 +74,6 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
                     nameof(length));
         }
 
-        return new MinFinalCltvExpiryTaggedField((ushort)value);
+        return value == 0 ? null : new MinFinalCltvExpiryTaggedField((ushort)value);
     }
 }

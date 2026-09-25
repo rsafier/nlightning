@@ -34,6 +34,8 @@ public partial class Invoice
 
     private static readonly InvoiceValidationService s_invoiceValidationService = new();
 
+    private static readonly long s_maxUnixTimeSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
     private static readonly Dictionary<string, BitcoinNetwork> s_supportedNetworks = new()
     {
         { InvoiceConstants.PrefixMainet, BitcoinNetwork.Mainnet },
@@ -206,14 +208,18 @@ public partial class Invoice
     {
         get
         {
-            return _taggedFields.TryGet<ExpiryTimeTaggedField>(TaggedFieldTypes.ExpiryTime, out var expireIn)
-                       ? DateTimeOffset.FromUnixTimeSeconds(Timestamp + expireIn.Value)
-                       : DateTimeOffset.FromUnixTimeSeconds(Timestamp + InvoiceConstants.DefaultExpirationSeconds);
+            if (!_taggedFields.TryGet<ExpiryTimeTaggedField>(TaggedFieldTypes.ExpiryTime, out var expireIn))
+                return DateTimeOffset.FromUnixTimeSeconds(Timestamp + InvoiceConstants.DefaultExpirationSeconds);
+
+            // `x` has no upper bound; an expiry past what DateTimeOffset can hold never expires
+            return expireIn.Value > s_maxUnixTimeSeconds - Timestamp
+                       ? DateTimeOffset.MaxValue
+                       : DateTimeOffset.FromUnixTimeSeconds(Timestamp + expireIn.Value);
         }
         set
         {
             var expireIn = value.ToUnixTimeSeconds() - Timestamp;
-            _taggedFields.Replace(TaggedFieldTypes.ExpiryTime, new ExpiryTimeTaggedField((int)expireIn));
+            _taggedFields.Replace(TaggedFieldTypes.ExpiryTime, new ExpiryTimeTaggedField(expireIn));
         }
     }
 
