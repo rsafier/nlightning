@@ -38,6 +38,21 @@ public sealed class ChannelInfoIpcResponse
     [Key(14)] public int ReceivedHtlcCount { get; init; }
     [Key(15)] public bool DataLossDetected { get; init; }
 
+    /// <summary>
+    /// True when <c>channel_reestablish</c> was exchanged on the current connection (always false until BOLT2 plan N7).
+    /// </summary>
+    [Key(16)] public bool IsReestablished { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_base_msat</c> on this channel (what a route hint through us must use).
+    /// </summary>
+    [Key(17)] public uint FeeBaseMsat { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_proportional_millionths</c> on this channel.
+    /// </summary>
+    [Key(18)] public uint FeePpm { get; init; }
+
     public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
     {
         return new ChannelInfoIpcResponse
@@ -60,7 +75,10 @@ public sealed class ChannelInfoIpcResponse
             RemoteCommitmentNumber = channel.RemoteCommitmentNumber,
             OfferedHtlcCount = channel.OfferedHtlcCount,
             ReceivedHtlcCount = channel.ReceivedHtlcCount,
-            DataLossDetected = channel.DataLossDetected
+            DataLossDetected = channel.DataLossDetected,
+            IsReestablished = channel.IsReestablished,
+            FeeBaseMsat = channel.FeeBaseMsat,
+            FeePpm = channel.FeePpm
         };
     }
 }

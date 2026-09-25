@@ -1,5 +1,9 @@
+using Microsoft.Extensions.Options;
+
 namespace NLightning.Daemon.Handlers;
 
+using Domain.Channels.Commitments;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -8,6 +12,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
 using Domain.Node.Interfaces;
+using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Interfaces;
 
@@ -15,18 +20,26 @@ using Interfaces;
 /// Lists the node's channels: every channel loaded in memory (the live state), then every persisted channel that is
 /// not loaded (closed or stale ones).
 /// </summary>
+/// <remarks>
+/// Pending HTLC counts come from the commitment snapshot (<see cref="ChannelModel.Commitments"/>): every HTLC whose
+/// state is not final, per direction (NL-241). The legacy <c>LocalOfferedHtlcs</c>/<c>RemoteOfferedHtlcs</c>
+/// collections are only used for a channel without a snapshot. The fee policy is the node's
+/// <see cref="RoutingOptions"/> (one policy for every channel).
+/// </remarks>
 public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>
 {
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IPeerManager _peerManager;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly RoutingOptions _routingOptions;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.ListChannels;
 
     public ListChannelsClientHandler(IChannelMemoryRepository channelMemoryRepository, IPeerManager peerManager,
-                                     IUnitOfWork unitOfWork)
+                                     IUnitOfWork unitOfWork, IOptions<NodeOptions> nodeOptions)
     {
+        _routingOptions = nodeOptions.Value.Routing;
         _channelMemoryRepository = channelMemoryRepository;
         _peerManager = peerManager;
         _unitOfWork = unitOfWork;
@@ -78,9 +91,27 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             RemoteBalance = channel.RemoteBalance,
             LocalCommitmentNumber = channel.LocalCommitmentNumber,
             RemoteCommitmentNumber = channel.RemoteCommitmentNumber,
-            OfferedHtlcCount = channel.LocalOfferedHtlcs?.Count ?? 0,
-            ReceivedHtlcCount = channel.RemoteOfferedHtlcs?.Count ?? 0,
-            DataLossDetected = false
+            OfferedHtlcCount = CountPendingHtlcs(channel, HtlcDirection.Outgoing),
+            ReceivedHtlcCount = CountPendingHtlcs(channel, HtlcDirection.Incoming),
+            DataLossDetected = channel.DataLossDetected,
+            // channel_reestablish is not implemented yet (BOLT2 plan N7)
+            IsReestablished = false,
+            FeeBaseMsat = _routingOptions.FeeBaseMsat,
+            FeePpm = _routingOptions.FeeProportionalMillionths
         };
+    }
+
+    /// <summary>
+    /// HTLCs of <paramref name="direction"/> that are not fully resolved: offered (or received) and not yet removed
+    /// from both commitments with the removal irrevocably committed.
+    /// </summary>
+    private static int CountPendingHtlcs(ChannelModel channel, HtlcDirection direction)
+    {
+        if (channel.Commitments is { } commitments)
+            return commitments.Htlcs.Values.Count(h => h.Direction == direction && !HtlcStateTable.IsFinal(h.State));
+
+        // No snapshot yet (legacy or still opening): only the in-memory legacy collections can hold HTLCs
+        var legacy = direction == HtlcDirection.Outgoing ? channel.LocalOfferedHtlcs : channel.RemoteOfferedHtlcs;
+        return legacy?.Count ?? 0;
     }
 }
