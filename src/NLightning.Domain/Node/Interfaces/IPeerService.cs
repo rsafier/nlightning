@@ -45,6 +45,18 @@ public interface IPeerService : IDisposable
     public ushort? PreferredPort { get; }
 
     /// <summary>
+    /// Completes once the peer's <c>init</c> was received and accepted (ours is sent before the service is handed
+    /// out), so both ends consider the connection established (BOLT 1).
+    /// </summary>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>A task that completes when the init exchange is done.</returns>
+    /// <exception cref="ConnectionException">
+    /// The connection closed before the peer's init was accepted (no init within the network timeout, an invalid or
+    /// incompatible init, or the peer hung up).
+    /// </exception>
+    Task WaitForInitAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Disconnects from the peer.
     /// </summary>
     /// <param name="exception">The exception that caused the disconnection, if any.</param>

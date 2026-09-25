@@ -38,7 +38,12 @@ public sealed class PeerService : IPeerService
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
     private readonly Lock _disconnectLock = new();
 
-    private bool _isInitialized;
+    /// <summary>
+    /// Completes when the peer's init is accepted; fails when the connection closes before that.
+    /// </summary>
+    private readonly TaskCompletionSource _initReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private volatile bool _isInitialized;
     private EventHandler<ChannelMessageEventArgs>? _onChannelMessageReceived;
     private EventHandler<PeerDisconnectedEventArgs>? _onDisconnect;
     private PeerDisconnectedEventArgs? _disconnectedArgs;
@@ -121,10 +126,15 @@ public sealed class PeerService : IPeerService
         Features = features;
         _logger = logger;
 
-        // Set up event handlers
-        _peerCommunicationService.MessageReceived += HandleMessage;
+        // Nobody has to observe a failed init wait (e.g. a connection that closes before anyone asked)
+        _ = _initReceived.Task.ContinueWith(t => _ = t.Exception, CancellationToken.None,
+                                            TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+
+        // Set up event handlers. MessageReceived last: subscribing to it starts reading from the peer (NL-239), and a
+        // bad first message disconnects, which must already reach HandleDisconnection.
         _peerCommunicationService.ExceptionRaised += HandleException;
         _peerCommunicationService.DisconnectEvent += HandleDisconnection;
+        _peerCommunicationService.MessageReceived += HandleMessage;
 
         // Initialize communication
         try
@@ -133,8 +143,19 @@ public sealed class PeerService : IPeerService
         }
         catch (Exception e)
         {
-            throw new ErrorException("Error initializing peer communication", e);
+            // Close the connection: nobody will own this service, and a half-set-up connection that stays open looks
+            // alive to the other end (NL-240)
+            var connectionException = new ConnectionException("Error initializing peer communication", e);
+            _initReceived.TrySetException(connectionException);
+            Dispose();
+            throw connectionException;
         }
+    }
+
+    /// <inheritdoc/>
+    public Task WaitForInitAsync(CancellationToken cancellationToken = default)
+    {
+        return _initReceived.Task.WaitAsync(cancellationToken);
     }
 
     /// <summary>
@@ -322,7 +343,7 @@ public sealed class PeerService : IPeerService
         OnExceptionRaised?.Invoke(this, e);
     }
 
-    private void HandleDisconnection(object? sender, Exception e)
+    private void HandleDisconnection(object? sender, Exception? e)
     {
         _logger.LogTrace(e, "Handling disconnection for peer {Peer}", PeerPubKey);
         EventHandler<PeerDisconnectedEventArgs>? handlers;
@@ -335,6 +356,12 @@ public sealed class PeerService : IPeerService
             args = _disconnectedArgs = new PeerDisconnectedEventArgs(PeerPubKey, e);
             handlers = _onDisconnect;
         }
+
+        // DisconnectEvent passes null for a disconnection without a reason
+        var notInitialized = $"Peer {PeerPubKey} disconnected before its init was accepted";
+        _initReceived.TrySetException(e is null
+                                          ? new ConnectionException(notInitialized)
+                                          : new ConnectionException(notInitialized, e));
 
         handlers?.Invoke(this, args);
     }
@@ -404,6 +431,7 @@ public sealed class PeerService : IPeerService
         Features = FeatureOptions.GetNodeOptions(negotiatedFeatures, initMessage.Extension);
         _logger.LogTrace("Initialization from peer {peer} completed successfully", PeerPubKey);
         _isInitialized = true;
+        _initReceived.TrySetResult();
     }
 
     public void Dispose()
