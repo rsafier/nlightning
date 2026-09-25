@@ -21,7 +21,11 @@ public abstract class BaseOutput : IOutput
     public LightningMoney Amount
     {
         get => LightningMoney.Satoshis(NBitcoinAmount.Satoshi);
-        set => Money.Satoshis(value.Satoshi);
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            NBitcoinAmount = Money.Satoshis(value.Satoshi);
+        }
     }
 
     /// <inheritdoc />
