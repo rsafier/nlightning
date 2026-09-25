@@ -40,7 +40,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 ## Dependency rules
 - The intended direction is Domain only. In practice the csproj also references `NLightning.Infrastructure` and `NLightning.Infrastructure.Bitcoin`, because of IBlockchainMonitor and IBitcoinWalletService (`Infrastructure.Bitcoin/Wallet/Interfaces`), the funding/commitment tx builders (`Infrastructure.Bitcoin/Builders/Interfaces`), and ITcpService, NewPeerConnectedEventArgs and PeerAddress (`Infrastructure/Transport`, `Infrastructure/Protocol/Models`). Don't add more.
 - MUST NOT reference: Infrastructure.Serialization, Infrastructure.Persistence(.*), Infrastructure.Repositories, Daemon, Client, Transport.Ipc, Bolt11. Depend on Domain interfaces instead, such as `IUnitOfWork` and `IMessageSerializer`.
-- New abstractions (e.g. an onion or sphinx service) belong in Domain as interfaces. Their implementations go in Infrastructure(.Bitcoin).
+- New abstractions belong in Domain as interfaces (as `ISphinxService`/`IOnionReplayCache` already do). Their implementations go in Infrastructure(.Bitcoin).
 
 ## Tests
 - `dotnet test` finds **0 tests** here ("No test is available") because the csproj lacks xunit.runner.visualstudio, which the other test projects reference; CI's `dotnet test` therefore silently skips them. Run the tests with:
@@ -58,11 +58,33 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - Handler discovery uses reflection (`Assembly.GetTypes()`), which trimming or AOT may break.
 
 ## Onion-routing (BOLT 4) hooks here
+The onion library (M1+M2) exists but nothing in Application uses it yet. All of these are DI singletons:
+- `ISphinxService` (`src/NLightning.Domain/Protocol/Onion/Interfaces/`, registered by `AddBitcoinInfrastructure`).
+- `IHopPayloadSerializer` (`src/NLightning.Infrastructure.Serialization/Interfaces/`, registered by `AddSerializationInfrastructureServices`).
+- `IOnionReplayCache` (registered by `AddInfrastructureServices`).
+- `HopPayloadValidator` is a static Domain class.
+
+Application must not reference Infrastructure.Serialization, but `IHopPayloadSerializer` is declared there. Before M4 uses it, move the interface to `src/NLightning.Domain/Serialization/Interfaces/`, where `IMessageSerializer` already lives.
+
+Receive path (M4-T2, after the HTLC is irrevocably committed):
+1. `var packet = new OnionPacket(add.Payload.OnionRoutingPacket.Span);`
+2. `var peeled = sphinx.PeelAsLocalNode(packet, paymentHash, blindedPathTlv?.PathKey);`. Pass the update_add_htlc path_key only, never the payload's current_path_key. It throws `OnionException`:
+   - A BADONION code (`ex.FailureCode.IsBadOnion()`) → `update_fail_malformed_htlc` with `ex.FailureData` (sha256_of_onion).
+   - `InvalidOnionPayload` → `update_fail_htlc` encrypted with `ex.SharedSecret` (M3).
+   - With a path_key, every failure comes back as `InvalidOnionBlinding`.
+3. `if (!replayCache.TryAdd(packet.Hmac.Span))`: this is a replay, so fail it. Record the HMAC only after the peel succeeded.
+4. `var payload = await hopPayloadSerializer.DeserializeAsync(peeled.Payload);`. Its offsets already count the stripped length prefix.
+5. `HopPayloadValidator.Validate(payload, peeled.IsFinal, hasUpdateAddPathKey)`. When update_add_htlc carried a path_key, remap any `OnionException` from here on to `invalid_onion_blinding`.
+6. If `peeled.IsFinal`, go to final-hop processing. Otherwise forward `peeled.NextPacket` (`.ToBytes()`) on the channel for `payload.ShortChannelId`.
+
+Keep `peeled.SharedSecret` with the HTLC: failures need it later.
+
+Send path (M4-T6):
+- Serialize each `HopPayload` with `IHopPayloadSerializer.SerializeAsync`. That writes no length prefix, and `OnionHop` expects none.
+- Call `sphinx.ConstructWithSharedSecrets(hops, sessionKey, paymentHash)` with a fresh CSPRNG session key.
+- Keep the per-hop secrets for error decryption (M3).
+
+Other hooks:
 - Add ChannelManager cases for UpdateAddHtlc, UpdateFulfillHtlc, UpdateFailHtlc, UpdateFailMalformedHtlc, CommitmentSigned and RevokeAndAck. Each needs a handler. The HTLC commit/revoke state machine (BOLT 2) is a prerequisite.
-- update_add_htlc handler, in order:
-  1. Validate against ChannelConfig.
-  2. Store the `Htlc` (Domain/Channels/ValueObjects/Htlc.cs).
-  3. Pass `UpdateAddHtlcPayload.OnionRoutingPacket` (a raw 1366-byte `ReadOnlyMemory<byte>?`) and `payment_hash` (as associated data) to a new Domain sphinx-peel interface.
-  4. Read the optional `BlindedPathTlv`.
-- Forwarding: resolve the next hop by ShortChannelId or its aliases through `IChannelMemoryRepository.FindChannels`. Then call `MessageFactory.CreateUpdateAddHtlcMessage` (MessageFactory.cs:673). It can't attach a BlindedPathTlv yet. Send the result through the `OnResponseMessageReady` event path.
-- Failures: `CreateUpdateFailHtlcMessage` (line 710) expects an already obfuscated `reason`. `CreateUpdateFailMalformedHtlcMessage` (line 782) takes sha256_of_onion plus a raw ushort failure code. No failure-code enum exists yet.
+- Forwarding: resolve the next hop by ShortChannelId or its aliases through `IChannelMemoryRepository.FindChannels`. Then call `MessageFactory.CreateUpdateAddHtlcMessage`, which can't attach a BlindedPathTlv yet. Send the result through the `OnResponseMessageReady` event path.
+- Failures: `CreateUpdateFailHtlcMessage` expects an already obfuscated `reason`, and no error-onion code exists yet (M3). `CreateUpdateFailMalformedHtlcMessage` takes sha256_of_onion plus a raw ushort failure code; cast from `FailureCode`.

@@ -3,7 +3,7 @@
 > Status: generated 2026-09-25 against `main` @ `e330fcf` (release v2.0.0 merge).
 > Every path is repo-relative. Claims marked **(verified)** were spot-checked directly against the source when this map was written. Everything else comes from per-area research passes that cite file/line. If a claim matters for a change you are about to make, re-check the cited line first, because line numbers drift.
 
-NLightning is a C# / .NET 10 Lightning Network node and library set. It uses a clean-architecture layering (Domain -> Application / Infrastructure.* -> Daemon / Client), though not strictly (see [Layering reality](#23-layering-reality)). Today the node can: speak BOLT 8, exchange BOLT 1 init/ping/error/warning, open single-funded (v1) channels end to end against LND (open_channel -> funding -> channel_ready), manage an on-chain wallet via bitcoind RPC+ZMQ, and encode/decode BOLT 11 invoices. It **cannot** yet move HTLCs, close channels, reestablish, gossip, or route onions (BOLT 4).
+NLightning is a C# / .NET 10 Lightning Network node and library set. It uses a clean-architecture layering (Domain -> Application / Infrastructure.* -> Daemon / Client), though not strictly (see [Layering reality](#23-layering-reality)). Today the node can: speak BOLT 8, exchange BOLT 1 init/ping/error/warning, open single-funded (v1) channels end to end against LND (open_channel -> funding -> channel_ready), manage an on-chain wallet via bitcoind RPC+ZMQ, and encode/decode BOLT 11 invoices. It has a standalone BOLT 4 onion library (Sphinx construct/peel, hop payloads, replay cache; M1+M2) that nothing calls yet. It **cannot** yet move HTLCs, close channels, reestablish, gossip, or forward/fail onions.
 
 ---
 
@@ -136,7 +136,7 @@ graph TD
 - **Application references Infrastructure and Infrastructure.Bitcoin directly.** `IBlockchainMonitor`, `IBitcoinWalletService`, the tx builders, `ITcpService` and `PeerAddress` all come from Infrastructure namespaces. New Application code can use those, but prefer declaring new ports in Domain.
 - `Transport.Ipc -> Daemon.Contracts` is declared but no source file uses it.
 - Nothing in `src/` references `NLightning.Bolt11`.
-- DI is spread across projects. `ITlvConverterFactory` (whose class lives in Infrastructure) is registered in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs:36`. `IEcdh` is registered at `:32` in the same file. Signer, key manager, fee service and the Domain factories are registered only in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, and they are **mirrored by hand** in the Docker integration tests.
+- DI is spread across projects. `ITlvConverterFactory` (whose class lives in Infrastructure) is registered in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs:41`. `IEcdh` is registered at `:35` in the same file. Signer, key manager, fee service and the Domain factories are registered only in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, and they are **mirrored by hand** in the Docker integration tests.
 
 ### 2.4 DI entry points (the composition root is `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`)
 
@@ -407,7 +407,7 @@ An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`,
 | 1 messaging | Mostly done | init/error/warning/ping/pong (`Domain/Protocol/Messages`, `Infrastructure/Node/Services/*`). Gaps: BigSize canonical check, TLV ordering and unknown-even checks, pong >= 65532 rule, remote_addr TLV not sent (`FeatureOptions.cs:241`), no peer_storage |
 | 2 peer protocol | Partial | v1 open -> channel_ready works E2E against LND (`test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs`). Wire model and serializers exist for v2/interactive-tx, shutdown/closing_signed, HTLC updates, commitment_signed, revoke_and_ack, update_fee, reestablish and stfu, but **there are no handlers**. option_simple_close and splicing are missing |
 | 3 transactions | Mostly done | Funding and commitment builders, scripts, key derivation and shachain are vector-tested (non-anchor only). Missing: HTLC-success/timeout second-stage txs, closing tx, HTLC signatures. The anchor fee path is suspect (1116 vs 1124 weight; only one anchor deducted) |
-| 4 onion | **Missing** | Only raw bytes on `UpdateAddHtlcPayload.OnionRoutingPacket`, `UpdateFailHtlcPayload.Reason`, `UpdateFailMalformedHtlcPayload`, and `BlindedPathTlv`. See §6 |
+| 4 onion | **Partial (M1+M2)** | Sphinx construct/peel (`src/NLightning.Infrastructure.Bitcoin/Onion/`), hop payload model/serializer/validator, failure codes, in-memory replay cache. No error onions, forwarding or HTLC wiring. See §6 and `ONION_ROUTING_PLAN.md` |
 | 5 on-chain | Missing / stub | `PenaltyTransactionModel` empty. `IRevocationWatchDbRepository` empty. Revocation watch commented out in `BlockchainMonitorService.cs` |
 | 7 gossip | Missing | Only enum values 256-259. Incoming 256/258 (even) **throw** `InvalidMessageException`. Gossip feature bits are advertised anyway |
 | 8 transport | Done | Vector-tested. Read-loop partial-read bug and send-ordering race (§10) |
@@ -422,7 +422,9 @@ An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`,
 
 > Implementation plan: [`docs/agents/ONION_ROUTING_PLAN.md`](ONION_ROUTING_PLAN.md) (authoritative for task order). Full matrix: [`docs/agents/BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 
-The user's stated plan is to implement BOLT 4 next, reusing old code that is **not in this checkout** (no onion or sphinx code in any branch or history). This section lists what already exists and what must be added.
+> **Status (wip/fafo):** M1 and M2 of the plan are done: every primitive in §6.2 exists, and the Domain types and Sphinx construct/peel of §6.3 exist (except failure message models and error-packet wrap/unwrap, which are M3). The tables below describe the pre-M1 state and are kept for reference; see `ONION_ROUTING_PLAN.md` §3 and §5 for what was built and where.
+
+The onion code was re-implemented from the spec; the legacy LNBolt code was only used as a reference (see `LNBOLT_REVIEW.md`). This section lists the hooks that existed before M1 and what had to be added.
 
 ### 6.1 Existing hooks
 
@@ -614,8 +616,7 @@ Severity: **H** = blocks correctness or planned onion work; **M** = real bug or 
 |---|---|---|
 | H | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (switch, `default` ~L133) | No handlers for HTLC add/fulfill/fail/malformed, commitment_signed, revoke_and_ack, update_fee, shutdown, closing_signed, reestablish, v2/interactive-tx, stfu |
 | H | `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (~40-61) | No HTLC or balance mutators; `HtlcState` has only 4 states |
-| H | BOLT 4 (everywhere) | No Sphinx, hop payloads, failure codes, forwarding, invoice store (see §6) |
-| H | `src/NLightning.Infrastructure/Crypto/Interfaces/ICryptoProvider.cs` | No raw ChaCha20 stream, no HMAC |
+| H | BOLT 4 (everywhere) | Sphinx, hop payloads and failure codes exist (M1+M2); no error onions, forwarding, HTLC wiring or invoice store (see §6) |
 | H | `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (52, 189, 391) | Channel info is memory-only; `SignWalletTransaction` NotImplemented; no HTLC signatures |
 | M | `src/NLightning.Application/Channels/Managers/ChannelManager.cs:62,70` | TODO: reestablish on startup; Closing/Stale handling |
 | M | `src/NLightning.Application/Node/Managers/PeerManager.cs:72` | TODO: failed startup reconnect skips channel registration |

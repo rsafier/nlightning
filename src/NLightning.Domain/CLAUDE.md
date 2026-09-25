@@ -7,7 +7,8 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 - `Protocol/`: the wire model. It contains `Constants/MessageTypes.cs` (the ushort enum), `TlvConstants.cs`, `Messages/` (one sealed class per message), `Payloads/`, `Tlv/` (BaseTlv plus typed TLVs), `Models/TLVStream.cs` (the `TlvStream` class), `Models/CommitmentNumber.cs`, `ValueObjects/` (BigSize, ChainHash, BitcoinNetwork) and `Interfaces/`. `Interfaces/` mixes the message contracts with key, secret, dust and transport services.
 - `Channels/`: `Models/ChannelModel.cs` (aggregate), `Enums/ChannelState.cs`, `ValueObjects/` (ChannelId, ShortChannelId, Htlc, ChannelConfig, CommitmentKeys), `Factories/ChannelFactory.cs`, `Validators/ChannelOpenValidator.cs`, and the repository/manager interfaces.
 - `Bitcoin/`: value objects (TxId, BitcoinScript, Witness), the `Transactions/` models, the `*ModelFactory` classes and the `*OutputInfo` types, plus ports (ILightningSigner, IFeeService, the Db/Memory repositories).
-- `Crypto/`: CompactPubKey, PrivKey, Hash, Secret, CompactSignature, `CryptoConstants` and `ISha256`.
+- `Crypto/`: CompactPubKey, PrivKey, Hash, Secret, CompactSignature, `CryptoConstants`, `ISha256` and `Interfaces/ISecp256K1Math` (EC tweak-mul/add port, implemented in Infrastructure.Bitcoin).
+- `Protocol/Onion/`: BOLT 4 onion types (see the Onion routing section below).
 - `Node/`: `FeatureSet.cs` (BOLT 9), `Options/FeatureOptions.cs` and `NodeOptions.cs`, and the peer interfaces.
 - `Money/LightningMoney.cs`: holds the amount in **msat**. `Enums/Feature.cs`: feature bits, each stored as its ODD bit number.
 - `Serialization/Interfaces`, `Transport/` (`ITransport` is internal), `Persistence/Interfaces/IUnitOfWork.cs`, `Exceptions/`, `Utils/` (BitReader/BitWriter), `Client/` (IPC DTOs and the `ClientCommand` enum), `Models/RoutingInfo*` (BOLT 11 hints).
@@ -37,7 +38,7 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 7. Route the message: add a `case` to the `switch` in `src/NLightning.Application/Channels/Managers/ChannelManager.cs` `HandleChannelMessageAsync` (~line 88) plus an `IChannelMessageHandler<T>` (`src/NLightning.Application/Channels/Handlers/Interfaces/IChannelMessageHandler.cs`). Without these, the `default` branch throws `ChannelErrorException("Unknown message type")`. Add a round-trip test in `test/NLightning.Infrastructure.Serialization.Tests/Messages`.
 
 ## Tests
-- Unit tests: `dotnet test test/NLightning.Domain.Tests/NLightning.Domain.Tests.csproj` (227 pass). Filter with `--filter "FullyQualifiedName~NLightning.Domain.Tests.ValueObjects.BigSizeTests"`.
+- Unit tests: `dotnet test test/NLightning.Domain.Tests/NLightning.Domain.Tests.csproj` (363 pass). Filter with `--filter "FullyQualifiedName~NLightning.Domain.Tests.ValueObjects.BigSizeTests"`.
 - Wire-level coverage lives in `test/NLightning.Infrastructure.Serialization.Tests`. BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3` (run with `--filter 'FullyQualifiedName!~Docker'`).
 - To match CI, build first: `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121`.
 
@@ -53,13 +54,18 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 - `default(Secret/Hash/TxId)` throws NullReferenceException in GetHashCode. `Hash`/`Secret`/`TxId` accept arrays longer than 32 bytes. `PrivKey`/`CompactSignature` compare by reference.
 - The `protected internal BaseMessage(MessageTypes)` constructor installs `PlaceholderPayload`, whose `ChannelId` throws. `Stfu`, `Error` and `Warning` messages are not `IChannelMessage`.
 
-## Onion routing (BOLT 4) hooks — nothing implemented yet
-- Raw hooks: `Payloads/UpdateAddHtlcPayload.OnionRoutingPacket` (a nullable `ReadOnlyMemory<byte>?`; BOLT 2 requires a 1366-byte packet, but no length is enforced in Domain), `UpdateFailHtlcPayload.Reason` (opaque), `UpdateFailMalformedHtlcPayload` (`Sha256OfOnion` and a bare ushort `FailureCode`), `Tlv/BlindedPathTlv` (path_key), and `Channels/ValueObjects/Htlc` (stores the full add message).
-- Suggested additions:
-  - An `OnionPacket` value object: version(1) + pubkey(33) + hop_payloads(1300) + hmac(32).
-  - Hop-payload TLVs (types 2/4/6/8/10/12/16/18) in a **separate** constants class, not `TlvConstants`.
-  - A `FailureCode` enum with the flags BADONION 0x8000, PERM 0x4000, NODE 0x2000 and UPDATE 0x1000.
-  - An `ISphinx`/`IOnionProcessor` interface declared here and implemented in Infrastructure(.Bitcoin), since ECDH and TweakMul are there.
-  - An `OnionFailureException`.
-  - HtlcState values and `ChannelModel` HTLC mutators for forwarding.
-- Feature bits already exist: VarOnionOptin(9, always compulsory), PaymentSecret(15), BasicMpp(17), OptionRouteBlinding(25), OptionOnionMessages(39), OptionPaymentMetadata(49). `onion_message` (513) is absent from `MessageTypes`, and `IPeerService.SendMessageAsync` only accepts `IChannelMessage`.
+## Onion routing (BOLT 4): M1+M2 done
+Everything is under `Protocol/Onion/` (namespace `NLightning.Domain.Protocol.Onion.*`) plus `Exceptions/OnionException.cs`; tests in `test/NLightning.Domain.Tests/Protocol/Onion/`.
+- `Constants/OnionConstants` (1366/1300/32 sizes, version 0, key labels `Rho`/`Mu`/`Um`/`Pad`/`Ammag`/`AmmagExt`/`BlindedNodeId`/`Fulfillment`, error-packet limits, `MaxHtlcCltv`), `OnionPayloadTlvTypes` (2..18, a separate namespace from `TlvConstants`), `EncryptedDataTlvTypes` (route-blinding namespace, M5; constants only).
+- `ValueObjects/OnionPacket`: raw version(1) + pubkey(33) + hop_payloads(variable) + hmac(32). It validates only lengths, never the version byte or the pubkey, so `update_add_htlc` still parses and the peeler can return `invalid_onion_version`/`invalid_onion_key`. `default(OnionPacket)` members throw.
+- `Models/OnionHop` (node id + raw payload TLV bytes **without** the bigsize length prefix), `ConstructedOnion` (packet + per-hop shared secrets), `PeeledOnion` (raw `Payload`, `SharedSecret`, `NextPacket` or null when final, `PathKeySharedSecret`), `HopPayload` (TLV stream with nullable typed accessors; unknown odd records kept).
+- `Tlv/*Tlv` (AmtToForward, OutgoingCltvValue, OnionShortChannelId, PaymentData, EncryptedRecipientData, CurrentPathKey, PaymentMetadata, TotalAmountMsat) and `TruncatedIntEncoder`. Converters live in Infrastructure (`Protocol/Tlv/Converters/Onion/`).
+- `Enums/FailureCode` (all BOLT 4 codes), `FailureCodeFlags`, `Extensions/FailureCodeExtensions` (`IsBadOnion()` etc.), `Enums/OnionPacketKind` (Payment: payload length >= 2; OnionMessage: >= 0).
+- `Interfaces/ISphinxService` (construct/peel; implemented by `SphinxService` in Infrastructure.Bitcoin), `Interfaces/IOnionReplayCache` (implemented in Infrastructure).
+- `Validators/HopPayloadValidator` (static, pure): BOLT 4 reader rules for a parsed payload given `isFinalHop` and `hasUpdateAddPathKey`. Always reports `invalid_onion_payload`; the `invalid_onion_blinding` remap for blinded routes is the caller's (M4/M5) job.
+- `Factories/InvalidOnionPayloadFailureFactory`: encodes/decodes the `bigsize type || u16 offset` failure data and creates the `OnionException`.
+- `Exceptions/OnionException : ErrorException`: `FailureCode`, `FailureData` (sha256_of_onion for BADONION codes, type/offset for `invalid_onion_payload`) and `SharedSecret` (set when the failure must go back encrypted in `update_fail_htlc`).
+- Not yet: failure message model / error packets (M3), `FailureTlvTypes`, HtlcState values and `ChannelModel` HTLC mutators (M4), `onion_message` (513) in `MessageTypes` (M6).
+- Raw wire hooks: `Payloads/UpdateAddHtlcPayload.OnionRoutingPacket` is a mandatory `ReadOnlyMemory<byte>` of exactly `OnionConstants.PacketLength` (the constructor enforces it); parse it with `OnionPacket`. `UpdateFailHtlcPayload.Reason` is opaque; `UpdateFailMalformedHtlcPayload.FailureCode` is a bare ushort. `Tlv/BlindedPathTlv` carries the update_add_htlc path_key.
+- Feature bits: VarOnionOptin(9, always compulsory), PaymentSecret(15), BasicMpp(17), OptionRouteBlinding(25), OptionAttributionData(37), OptionOnionMessages(39), OptionPaymentMetadata(49). `IPeerService.SendMessageAsync` only accepts `IChannelMessage`.
+- `FeatureOptions` still advertises `OptionRouteBlinding` and `OptionAttributionData` as Optional although neither is implemented (plan: default them to No until M5/M3b).
