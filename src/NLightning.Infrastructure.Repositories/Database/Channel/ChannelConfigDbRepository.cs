@@ -11,13 +11,13 @@ namespace NLightning.Infrastructure.Repositories.Database.Channel;
 public class ChannelConfigDbRepository(NLightningDbContext context)
     : BaseDbRepository<ChannelConfigEntity>(context), IChannelConfigDbRepository
 {
-    public void Add(ChannelId channelId, ChannelConfig config)
+    public void Add(ChannelId channelId, ChannelParams config)
     {
         var configEntity = MapDomainToEntity(channelId, config);
         Insert(configEntity);
     }
 
-    public void Update(ChannelId channelId, ChannelConfig config)
+    public void Update(ChannelId channelId, ChannelParams config)
     {
         var configEntity = MapDomainToEntity(channelId, config);
         base.Update(configEntity);
@@ -28,56 +28,64 @@ public class ChannelConfigDbRepository(NLightningDbContext context)
         return DeleteByIdAsync(channelId);
     }
 
-    public async Task<ChannelConfig?> GetByChannelIdAsync(ChannelId channelId)
+    public async Task<ChannelParams?> GetByChannelIdAsync(ChannelId channelId)
     {
         var configEntity = await GetByIdAsync(channelId);
 
         return configEntity == null ? null : MapEntityToDomain(configEntity);
     }
 
-    internal static ChannelConfigEntity MapDomainToEntity(ChannelId channelId, ChannelConfig config)
+    internal static ChannelConfigEntity MapDomainToEntity(ChannelId channelId, ChannelParams config)
     {
         return new ChannelConfigEntity
         {
             ChannelId = channelId,
-            ChannelReserveAmountSats = config.ChannelReserveAmount?.Satoshi,
             FeeRatePerKwSatoshis = config.FeeRateAmountPerKw.Satoshi,
-            HtlcMinimumMsat = config.HtlcMinimumAmount.MilliSatoshi,
-            LocalDustLimitAmountSats = config.LocalDustLimitAmount.Satoshi,
-            LocalUpfrontShutdownScript = config.LocalUpfrontShutdownScript,
-            MaxAcceptedHtlcs = config.MaxAcceptedHtlcs,
-            MaxHtlcAmountInFlight = config.MaxHtlcAmountInFlight.MilliSatoshi,
             MinimumDepth = config.MinimumDepth,
             OptionAnchorOutputs = config.OptionAnchorOutputs,
-            RemoteDustLimitAmountSats = config.RemoteDustLimitAmount.Satoshi,
-            RemoteUpfrontShutdownScript = config.RemoteShutdownScriptPubKey,
-            ToSelfDelay = config.ToSelfDelay,
-            UseScidAlias = (byte)config.UseScidAlias
+            UseScidAlias = (byte)config.UseScidAlias,
+
+            LocalChannelReserveAmountSats = SatoshisOrZero(config.Local.ChannelReserveAmount),
+            LocalDustLimitAmountSats = SatoshisOrZero(config.Local.DustLimitAmount),
+            LocalHtlcMinimumMsat = MilliSatoshisOrZero(config.Local.HtlcMinimumAmount),
+            LocalMaxAcceptedHtlcs = config.Local.MaxAcceptedHtlcs,
+            LocalMaxHtlcValueInFlightMsat = MilliSatoshisOrZero(config.Local.MaxHtlcValueInFlight),
+            LocalToSelfDelay = config.Local.ToSelfDelay,
+            LocalUpfrontShutdownScript = config.Local.UpfrontShutdownScript,
+
+            RemoteChannelReserveAmountSats = SatoshisOrZero(config.Remote.ChannelReserveAmount),
+            RemoteDustLimitAmountSats = SatoshisOrZero(config.Remote.DustLimitAmount),
+            RemoteHtlcMinimumMsat = MilliSatoshisOrZero(config.Remote.HtlcMinimumAmount),
+            RemoteMaxAcceptedHtlcs = config.Remote.MaxAcceptedHtlcs,
+            RemoteMaxHtlcValueInFlightMsat = MilliSatoshisOrZero(config.Remote.MaxHtlcValueInFlight),
+            RemoteToSelfDelay = config.Remote.ToSelfDelay,
+            RemoteUpfrontShutdownScript = config.Remote.UpfrontShutdownScript
         };
     }
 
-    internal static ChannelConfig MapEntityToDomain(ChannelConfigEntity entity)
+    internal static ChannelParams MapEntityToDomain(ChannelConfigEntity entity)
     {
-        LightningMoney? channelReserveAmount = null;
-        if (entity.ChannelReserveAmountSats.HasValue)
-            channelReserveAmount = LightningMoney.Satoshis(entity.ChannelReserveAmountSats.Value);
+        var local = new ChannelParty(LightningMoney.Satoshis(entity.LocalDustLimitAmountSats),
+                                     LightningMoney.Satoshis(entity.LocalChannelReserveAmountSats),
+                                     LightningMoney.MilliSatoshis(entity.LocalHtlcMinimumMsat),
+                                     entity.LocalMaxAcceptedHtlcs,
+                                     LightningMoney.MilliSatoshis(entity.LocalMaxHtlcValueInFlightMsat),
+                                     entity.LocalToSelfDelay, ToScript(entity.LocalUpfrontShutdownScript));
+        var remote = new ChannelParty(LightningMoney.Satoshis(entity.RemoteDustLimitAmountSats),
+                                      LightningMoney.Satoshis(entity.RemoteChannelReserveAmountSats),
+                                      LightningMoney.MilliSatoshis(entity.RemoteHtlcMinimumMsat),
+                                      entity.RemoteMaxAcceptedHtlcs,
+                                      LightningMoney.MilliSatoshis(entity.RemoteMaxHtlcValueInFlightMsat),
+                                      entity.RemoteToSelfDelay, ToScript(entity.RemoteUpfrontShutdownScript));
 
-        BitcoinScript? localUpfrontShutdownScript = null;
-        if (entity.LocalUpfrontShutdownScript is not null)
-            localUpfrontShutdownScript = entity.LocalUpfrontShutdownScript;
-
-        BitcoinScript? remoteUpfrontShutdownScript = null;
-        if (entity.RemoteUpfrontShutdownScript is not null)
-            remoteUpfrontShutdownScript = entity.RemoteUpfrontShutdownScript;
-
-        return new ChannelConfig(channelReserveAmount ?? LightningMoney.Zero,
-                                 LightningMoney.Satoshis(entity.FeeRatePerKwSatoshis),
-                                 LightningMoney.MilliSatoshis(entity.HtlcMinimumMsat),
-                                 LightningMoney.Satoshis(entity.LocalDustLimitAmountSats), entity.MaxAcceptedHtlcs,
-                                 LightningMoney.MilliSatoshis(entity.MaxHtlcAmountInFlight), entity.MinimumDepth,
-                                 entity.OptionAnchorOutputs, LightningMoney.Satoshis(entity.RemoteDustLimitAmountSats),
-                                 entity.ToSelfDelay, (FeatureSupport)entity.UseScidAlias, localUpfrontShutdownScript,
-                                 remoteUpfrontShutdownScript
-        );
+        return new ChannelParams(local, remote, LightningMoney.Satoshis(entity.FeeRatePerKwSatoshis),
+                                 entity.MinimumDepth, entity.OptionAnchorOutputs,
+                                 (FeatureSupport)entity.UseScidAlias);
     }
+
+    // A default ChannelParty (e.g. the peer's side before accept_channel) has null amounts
+    private static long SatoshisOrZero(LightningMoney? amount) => amount?.Satoshi ?? 0;
+    private static ulong MilliSatoshisOrZero(LightningMoney? amount) => amount?.MilliSatoshi ?? 0;
+
+    private static BitcoinScript? ToScript(byte[]? script) => script is null ? (BitcoinScript?)null : new BitcoinScript(script);
 }

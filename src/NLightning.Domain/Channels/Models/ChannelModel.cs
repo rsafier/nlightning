@@ -13,7 +13,11 @@ public class ChannelModel
 {
     #region Base Properties
 
-    public ChannelConfig ChannelConfig { get; private set; }
+    /// <summary>
+    /// The parameters each side announced (<see cref="ChannelParams.Local"/> ours, <see cref="ChannelParams.Remote"/>
+    /// the peer's) and the shared ones. See <see cref="ChannelParams"/> for which side each value binds.
+    /// </summary>
+    public ChannelParams ChannelParams { get; private set; }
     public ChannelId ChannelId { get; private set; }
     public ShortChannelId ShortChannelId { get; set; }
     /// <summary>
@@ -62,7 +66,7 @@ public class ChannelModel
     public ICollection<Htlc>? LocalFulfilledHtlcs { get; }
     public ICollection<Htlc>? LocalOldHtlcs { get; }
     public ulong LocalRevocationNumber { get; }
-    public BitcoinScript? LocalUpfrontShutdownScript { get; }
+    public BitcoinScript? LocalUpfrontShutdownScript => ChannelParams.Local.UpfrontShutdownScript;
 
     #endregion
 
@@ -86,11 +90,11 @@ public class ChannelModel
     public ICollection<Htlc>? RemoteFulfilledHtlcs { get; }
     public ICollection<Htlc>? RemoteOfferedHtlcs { get; }
     public ICollection<Htlc>? RemoteOldHtlcs { get; }
-    public BitcoinScript? RemoteUpfrontShutdownScript { get; }
+    public BitcoinScript? RemoteUpfrontShutdownScript => ChannelParams.Remote.UpfrontShutdownScript;
 
     #endregion
 
-    public ChannelModel(ChannelConfig channelConfig, ChannelId channelId, CommitmentNumber? commitmentNumber,
+    public ChannelModel(ChannelParams channelParams, ChannelId channelId, CommitmentNumber? commitmentNumber,
                         FundingOutputInfo? fundingOutput, bool isInitiator, CompactSignature? lastSentSignature,
                         CompactSignature? lastReceivedSignature, LightningMoney localBalance,
                         ChannelKeySetModel localKeySet, ulong localNextHtlcId, ulong localRevocationNumber,
@@ -98,15 +102,14 @@ public class ChannelModel
                         CompactPubKey remoteNodeId, ulong remoteRevocationNumber, ChannelState state,
                         ChannelVersion version, ICollection<Htlc>? localOfferedHtlcs = null,
                         ICollection<Htlc>? localFulfilledHtlcs = null, ICollection<Htlc>? localOldHtlcs = null,
-                        BitcoinScript? localUpfrontShutdownScript = null, ICollection<Htlc>? remoteOfferedHtlcs = null,
-                        ICollection<Htlc>? remoteFulfilledHtlcs = null, ICollection<Htlc>? remoteOldHtlcs = null,
-                        BitcoinScript? remoteUpfrontShutdownScript = null, ulong localCommitmentNumber = 0,
+                        ICollection<Htlc>? remoteOfferedHtlcs = null, ICollection<Htlc>? remoteFulfilledHtlcs = null,
+                        ICollection<Htlc>? remoteOldHtlcs = null, ulong localCommitmentNumber = 0,
                         ulong remoteCommitmentNumber = 0)
     {
         ArgumentOutOfRangeException.ThrowIfGreaterThan(localCommitmentNumber, CommitmentNumber.MaxValue);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(remoteCommitmentNumber, CommitmentNumber.MaxValue);
 
-        ChannelConfig = channelConfig;
+        ChannelParams = channelParams;
         ChannelId = channelId;
         CommitmentNumber = commitmentNumber;
         FundingOutput = fundingOutput;
@@ -130,8 +133,6 @@ public class ChannelModel
         RemoteOfferedHtlcs = remoteOfferedHtlcs ?? new List<Htlc>();
         RemoteFulfilledHtlcs = remoteFulfilledHtlcs ?? new List<Htlc>();
         RemoteOldHtlcs = remoteOldHtlcs ?? new List<Htlc>();
-        LocalUpfrontShutdownScript = localUpfrontShutdownScript;
-        RemoteUpfrontShutdownScript = remoteUpfrontShutdownScript;
         LocalCommitmentNumber = localCommitmentNumber;
         RemoteCommitmentNumber = remoteCommitmentNumber;
     }
@@ -156,9 +157,13 @@ public class ChannelModel
         ChannelId = newChannelId;
     }
 
-    public void UpdateChannelConfig(ChannelConfig channelConfig)
+    /// <summary>
+    /// Stores the parameters the peer announced (the initiator learns them from <c>accept_channel</c>).
+    /// Our own parameters never change.
+    /// </summary>
+    public void UpdateRemoteParams(ChannelParty remoteParams)
     {
-        ChannelConfig = channelConfig;
+        ChannelParams = ChannelParams.WithRemote(remoteParams);
     }
 
     public void AddRemoteKeySet(ChannelKeySetModel remoteKeySet)

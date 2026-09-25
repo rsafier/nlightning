@@ -54,7 +54,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
             throw new ChannelErrorException("Channel not found", payload.ChannelId,
                                             "This channel is not ready to be opened");
 
-        var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
+        var mustUseScidAlias = channel.ChannelParams.UseScidAlias > FeatureSupport.No;
         if (mustUseScidAlias && message.ShortChannelIdTlv is null)
             throw new ChannelWarningException("No ShortChannelIdTlv provided",
                                               payload.ChannelId,

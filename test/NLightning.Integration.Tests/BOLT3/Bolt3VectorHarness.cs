@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.Crypto;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Integration.Tests.BOLT3;
@@ -208,7 +209,7 @@ internal sealed class Bolt3VectorHarness
     /// </summary>
     private static ChannelModel CreateNodeBChannel(LightningMoney dustLimit, bool hasAnchors)
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero, dustLimit,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero, dustLimit,
                                               0, LightningMoney.Zero, 0, hasAnchors, dustLimit,
                                               Bolt3AppendixCVectors.LocalDelay, FeatureSupport.No);
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
@@ -243,7 +244,7 @@ internal sealed class Bolt3VectorHarness
     private ChannelModel CreateChannel(LightningMoney dustLimit, bool hasAnchors)
     {
         // Balances, feerate and HTLCs come from the CommitmentTxSpec; the channel only carries static data
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero, dustLimit,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero, dustLimit,
                                               0, LightningMoney.Zero, 0, hasAnchors, dustLimit,
                                               Bolt3AppendixCVectors.LocalDelay, FeatureSupport.No);
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),

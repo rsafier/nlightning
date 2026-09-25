@@ -171,7 +171,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 | `Protocol/ValueObjects` | `BigSize`, `ChainHash`, `BitcoinNetwork` |
 | `Protocol/Interfaces` | `IMessage`, `IChannelMessage`, `IMessageFactory`, `IMessageService(+Factory)`, `IPingPongService`, `ITlvConverter(+Factory)`, `ITransportServiceFactory`. The same folder also holds non-wire services: `IKeyDerivationService`, `ICommitmentKeyDerivationService`, `ISecureKeyManager`, `ISecretStorageService(+Factory)`, `IChannelKeySetFactory`, `IChannelIdFactory`, `IDustService` |
 | `Protocol/Enums` | `BasepointType`, `HtlcType` (unused) |
-| `Channels` | `ChannelModel` (aggregate). `ChannelState` (the numeric order **is** the state machine: None 0, V1Opening 1, V1FundingCreated 2, V1FundingSigned 3, V2Opening 10, ReadyForThem 20, ReadyForUs 21, Open 22, Closing 30, Closed 40, Stale 50). `ChannelKeySetModel`, `ChannelFactory`, `ChannelOpenValidator`, `ChannelConfig`, `ChannelId`, `ShortChannelId`, `Htlc`, `HtlcState`, `HtlcDirection`, `CommitmentKeys`. Repository ports: `IChannelMemoryRepository`, `IChannelDbRepository`, `IHtlcDbRepository`, and others |
+| `Channels` | `ChannelModel` (aggregate). `ChannelState` (the numeric order **is** the state machine: None 0, V1Opening 1, V1FundingCreated 2, V1FundingSigned 3, V2Opening 10, ReadyForThem 20, ReadyForUs 21, Open 22, Closing 30, Closed 40, Stale 50). `ChannelKeySetModel`, `ChannelFactory`, `ChannelOpenValidator`, `ChannelParams` (`Local`/`Remote` `ChannelParty`, NL-194), `ChannelId`, `ShortChannelId`, `Htlc`, `HtlcState`, `HtlcDirection`, `CommitmentKeys`. Repository ports: `IChannelMemoryRepository`, `IChannelDbRepository`, `IHtlcDbRepository`, and others |
 | `Bitcoin` | Value objects (`TxId`, `BitcoinScript`, `Witness`, `SignedTransaction`, `BlockchainState`, ...). Ports: `ILightningSigner`, `IFeeService`, `IUtxoMemoryRepository`, DB repositories, `ISignatureValidator` (unused). `Transactions/`: `CommitmentTransactionModelFactory`, `FundingTransactionModelFactory`, the `*Model` classes, `*OutputInfo`, and `WeightConstants`/`TransactionConstants`. `PenaltyTransactionModel` is empty |
 | `Money` | `LightningMoney` (msat, **mutable reference class**; implicit `long/ulong` means **msat**) |
 | `Enums` | `Feature` (value = **odd** bit), `FeatureSupport`, `ChannelFlag`, `LightningMoneyUnit` |
@@ -358,10 +358,10 @@ Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.Handle
 **Non-initiator (peer opens to us):**
 1. `PeerService` -> `PeerManager.HandlePeerChannelMessage` -> `ChannelManager.HandleChannelMessageAsync` -> `OpenChannel1MessageHandler` (`src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs`).
 2. `ChannelFactory.CreateChannelV1AsNonInitiatorAsync` runs `ChannelOpenValidator` (`src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs`) optional and mandatory checks, the key sets, and `CommitmentNumber(remote, local)`.
-3. `AddTemporaryChannel`, then it returns `accept_channel` (`MessageFactory.CreateAcceptChannel1Message`), and `PeerManager` sends it.
+3. `AddTemporaryChannel`, then it returns `accept_channel` (`MessageFactory.CreateAcceptChannel1Message` with `ChannelParams.Local` and the opener's channel_type echoed), and `PeerManager` sends it.
 
 **Initiator receives accept_channel:** `AcceptChannel1MessageHandler` (`src/NLightning.Application/Channels/Handlers/AcceptChannel1MessageHandler.cs`):
-1. Validates, then `AddRemoteKeySet`, `UpdateChannelConfig`, and `CommitmentNumber(local, remote)`.
+1. Validates (channel_type must equal the one we sent, reserves vs. dust limits), then `AddRemoteKeySet`, `UpdateRemoteParams`, and `CommitmentNumber(local, remote)`.
 2. Builds the funding transaction (see §4.5).
 3. Derives the channel id with `ChannelIdFactory.CreateV1(txid, vout)`.
 4. Calls `signer.RegisterChannel`, signs the remote commitment, and moves state to `V1FundingCreated`.

@@ -66,7 +66,7 @@ public sealed class CommitmentTxSpec
                 toRemoteMsat = toRemoteMsat > amountMsat ? toRemoteMsat - amountMsat : 0;
         }
 
-        return new CommitmentTxSpec(toLocalMsat, toRemoteMsat, (ulong)channel.ChannelConfig.FeeRateAmountPerKw.Satoshi,
+        return new CommitmentTxSpec(toLocalMsat, toRemoteMsat, (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi,
                                   htlcs);
     }
 }

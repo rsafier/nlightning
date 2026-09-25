@@ -14,7 +14,6 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
-using Domain.Node;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.ValueObjects;
@@ -101,38 +100,23 @@ public sealed class OpenChannelClientHandler
             // Add the channel to dictionaries
             _channelMemoryRepository.AddTemporaryChannel(peerId, channel);
 
-            // Create the channel type Tlv 
-            var channelTypeFeatureSet = FeatureSet.NewBasicChannelType();
-            if (peer.NegotiatedFeatures.OptionAnchors >= FeatureSupport.Optional)
-                channelTypeFeatureSet.SetFeature(Feature.OptionAnchors, true);
-
-            if (channel.ChannelConfig.UseScidAlias >= FeatureSupport.Optional)
-                channelTypeFeatureSet.SetFeature(Feature.OptionScidAlias, true);
-
-            if (channel.ChannelConfig.MinimumDepth == 0)
-                channelTypeFeatureSet.SetFeature(Feature.OptionZeroconf, true);
-
-            var featureSetBytes = channelTypeFeatureSet.GetWireBytes() ?? throw new ClientException(
-                                      ErrorCodes.InvalidOperation,
-                                      $"Error creating {nameof(ChannelTypeTlv)}. This should never happen.");
-            var channelTypeTlv = new ChannelTypeTlv(featureSetBytes);
+            // Create the channel type Tlv; accept_channel must echo exactly this type
+            var channelTypeTlv = new ChannelTypeTlv(channel.ChannelParams.ToChannelType());
 
             // Create UpfrontShutdownScriptTlv if needed
             var upfrontShutdownScriptTlv = channel.LocalUpfrontShutdownScript is not null
                                                ? new UpfrontShutdownScriptTlv(channel.LocalUpfrontShutdownScript.Value)
                                                : new UpfrontShutdownScriptTlv(Array.Empty<byte>());
 
-            // Create the ChannelFlags
+            // Create the ChannelFlags. BOLT 2: announce_channel MUST NOT be set with option_scid_alias in the channel
+            // type, and we don't announce channels yet
             var channelFlags = new ChannelFlags(ChannelFlag.None);
-            if (peer.NegotiatedFeatures.ScidAlias == FeatureSupport.Compulsory)
-                channelFlags = new ChannelFlags(ChannelFlag.AnnounceChannel);
 
             // Create the openChannel message
             var openChannel1Message = _messageFactory.CreateOpenChannel1Message(
                 channel.ChannelId, channel.LocalBalance, channel.LocalKeySet.FundingCompactPubKey,
-                channel.RemoteBalance, channel.ChannelConfig.ChannelReserveAmount,
-                channel.ChannelConfig.FeeRateAmountPerKw,
-                channel.ChannelConfig.MaxAcceptedHtlcs, channel.LocalKeySet.RevocationCompactBasepoint,
+                channel.RemoteBalance, channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
+                channel.LocalKeySet.RevocationCompactBasepoint,
                 channel.LocalKeySet.PaymentCompactBasepoint, channel.LocalKeySet.DelayedPaymentCompactBasepoint,
                 channel.LocalKeySet.HtlcCompactBasepoint, channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
                 channelFlags, channelTypeTlv, upfrontShutdownScriptTlv);

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Handlers;
@@ -20,6 +21,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -238,18 +240,98 @@ public class AcceptChannel1MessageHandlerTests
         Assert.Equal(s_newChannelId, _tempChannel.ChannelId);
     }
 
-    private static AcceptChannel1Message CreateMessage(UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv)
+    [Fact]
+    public async Task Given_AcceptChannel_When_HandleAsync_Then_RemoteParamsStoredAndOurParamsKept()
     {
-        var payload = new AcceptChannel1Payload(s_tempChannelId, LightningMoney.Satoshis(1_000), s_pubKey,
-                                                LightningMoney.Satoshis(546), s_pubKey, s_pubKey, s_pubKey,
-                                                LightningMoney.Zero, 30, LightningMoney.Satoshis(100_000), 3,
-                                                s_pubKey, s_pubKey, 144);
-        return new AcceptChannel1Message(payload, new ChannelTypeTlv([0x10, 0x00]), upfrontShutdownScriptTlv);
+        // Arrange: the peer announces different values on every field (NL-194)
+        var payload = new AcceptChannel1Payload(s_tempChannelId, LightningMoney.Satoshis(2_000), s_pubKey,
+                                                LightningMoney.Satoshis(600), s_pubKey, s_pubKey, s_pubKey,
+                                                LightningMoney.Satoshis(5), 40, LightningMoney.Satoshis(90_000), 3,
+                                                s_pubKey, s_pubKey, 720);
+        var message = new AcceptChannel1Message(payload, new ChannelTypeTlv([0x10, 0x00]),
+                                                new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        var ourParams = _tempChannel.ChannelParams.Local;
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert: the initiator keeps its own to_self_delay and limits
+        Assert.Equal(ourParams, _tempChannel.ChannelParams.Local);
+        Assert.Equal((ushort)144, _tempChannel.ChannelParams.Local.ToSelfDelay);
+        var remote = _tempChannel.ChannelParams.Remote;
+        Assert.Equal(LightningMoney.Satoshis(600), remote.DustLimitAmount);
+        Assert.Equal(LightningMoney.Satoshis(2_000), remote.ChannelReserveAmount);
+        Assert.Equal(LightningMoney.Satoshis(5), remote.HtlcMinimumAmount);
+        Assert.Equal((ushort)40, remote.MaxAcceptedHtlcs);
+        Assert.Equal(LightningMoney.Satoshis(90_000), remote.MaxHtlcValueInFlight);
+        Assert.Equal((ushort)720, remote.ToSelfDelay);
+    }
+
+    [Fact]
+    public async Task Given_ChannelTypeDifferentFromOpenChannel_When_HandleAsync_Then_ChannelIsRejected()
+    {
+        // Arrange: BOLT 2: the receiver MUST fail the channel if channel_type does not match open_channel (NL-218)
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
+                                    new ChannelTypeTlv(channelType));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey));
+
+        // Assert
+        Assert.Contains("Channel type", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_ChannelReserveBelowOurDustLimit_When_HandleAsync_Then_ChannelIsRejected()
+    {
+        // Arrange: BOLT 2: fail if channel_reserve_satoshis < the dust_limit_satoshis we sent in open_channel
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
+                                    channelReserve: LightningMoney.Satoshis(545),
+                                    dustLimit: LightningMoney.Satoshis(354));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey));
+
+        // Assert
+        Assert.Contains("below our dust limit", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_DustLimitAboveOurChannelReserve_When_HandleAsync_Then_ChannelIsRejected()
+    {
+        // Arrange: BOLT 2: fail if the channel_reserve_satoshis we sent in open_channel < dust_limit_satoshis
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()),
+                                    channelReserve: LightningMoney.Satoshis(2_000),
+                                    dustLimit: LightningMoney.Satoshis(1_001));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey));
+
+        // Assert
+        Assert.Contains("Our channel reserve", exception.Message);
+    }
+
+    private static AcceptChannel1Message CreateMessage(UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv,
+                                                       ChannelTypeTlv? channelTypeTlv = null,
+                                                       LightningMoney? channelReserve = null,
+                                                       LightningMoney? dustLimit = null)
+    {
+        var payload = new AcceptChannel1Payload(s_tempChannelId, channelReserve ?? LightningMoney.Satoshis(1_000),
+                                                s_pubKey, dustLimit ?? LightningMoney.Satoshis(546), s_pubKey,
+                                                s_pubKey, s_pubKey, LightningMoney.Zero, 30,
+                                                LightningMoney.Satoshis(100_000), 3, s_pubKey, s_pubKey, 144);
+        return new AcceptChannel1Message(payload, channelTypeTlv ?? new ChannelTypeTlv([0x10, 0x00]),
+                                         upfrontShutdownScriptTlv);
     }
 
     private static ChannelModel CreateTempChannel()
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
+        var channelConfig = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
                                               LightningMoney.Zero, LightningMoney.Satoshis(546), 30,
                                               LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Zero, 144,
                                               FeatureSupport.No);

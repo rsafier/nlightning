@@ -55,7 +55,7 @@ public class FundingConfirmedMessageHandler
                 return;
             }
 
-            var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
+            var mustUseScidAlias = channel.ChannelParams.UseScidAlias > FeatureSupport.No;
 
             // channel_ready carries the per-commitment point of our NEXT commitment (number 1 after the open). Our
             // current commitment and its number do not change at confirmation (NL-187, NL-188).

@@ -18,6 +18,7 @@ using NLightning.Domain.Protocol.Models;
 using NLightning.Domain.Protocol.Payloads;
 using NLightning.Domain.Protocol.Tlv;
 using NLightning.Domain.Protocol.ValueObjects;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Handlers;
@@ -76,7 +77,7 @@ public class OpenChannel1MessageHandlerTests
             new OpenChannel1Message(payload, new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
 
         // Setup ChannelConfig
-        var channelConfig = new ChannelConfig(channelReserveAmount, feeRateAmountPerKw, htlcMinimumAmount,
+        var channelConfig = TestChannelParams.Create(channelReserveAmount, feeRateAmountPerKw, htlcMinimumAmount,
                                               dustLimitAmount, maxAcceptedHtlcs, maxHtlcAmountInFlight, 3, false,
                                               dustLimitAmount, toSelfDelay, FeatureSupport.No);
 
@@ -99,12 +100,11 @@ public class OpenChannel1MessageHandlerTests
 
         // Setup message factory
         _mockMessageFactory
-           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<LightningMoney>(), It.IsAny<ChannelTypeTlv>(),
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
                                                      It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
                                                      It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                                     It.IsAny<ushort>(), It.IsAny<LightningMoney>(), It.IsAny<uint>(),
-                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                                     It.IsAny<ChannelId>(), It.IsAny<ushort>(),
+                                                     It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
                                                      It.IsAny<UpfrontShutdownScriptTlv>()))
            .Returns(new AcceptChannel1Message(
                         new AcceptChannel1Payload(channelId, channelReserveAmount, emptyPubKey, dustLimitAmount,
@@ -138,15 +138,14 @@ public class OpenChannel1MessageHandlerTests
 
         _mockMessageFactory.Verify(
             x => x.CreateAcceptChannel1Message(
-                _channel.ChannelConfig.ChannelReserveAmount,
+                _channel.ChannelParams.Local,
                 It.IsAny<ChannelTypeTlv>(),
                 _channel.LocalKeySet.DelayedPaymentCompactBasepoint,
                 _channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
                 _channel.LocalKeySet.FundingCompactPubKey, _channel.LocalKeySet.HtlcCompactBasepoint,
-                _channel.ChannelConfig.MaxAcceptedHtlcs, _channel.ChannelConfig.MaxHtlcAmountInFlight,
-                _channel.ChannelConfig.MinimumDepth, _channel.LocalKeySet.PaymentCompactBasepoint,
+                _channel.ChannelParams.MinimumDepth, _channel.LocalKeySet.PaymentCompactBasepoint,
                 _channel.LocalKeySet.RevocationCompactBasepoint, _channel.ChannelId,
-                _channel.ChannelConfig.ToSelfDelay, It.IsAny<UpfrontShutdownScriptTlv>()),
+                It.IsAny<UpfrontShutdownScriptTlv>()),
             Times.Once);
     }
 
@@ -161,12 +160,11 @@ public class OpenChannel1MessageHandlerTests
 
         ChannelTypeTlv? capturedChannelType = null;
         _mockMessageFactory
-           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<LightningMoney>(), It.IsAny<ChannelTypeTlv>(),
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
                                                      It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
                                                      It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                                     It.IsAny<ushort>(), It.IsAny<LightningMoney>(), It.IsAny<uint>(),
-                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                                     It.IsAny<ChannelId>(), It.IsAny<ushort>(),
+                                                     It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
                                                      It.IsAny<UpfrontShutdownScriptTlv>()))
            .Callback(new InvocationAction(invocation => capturedChannelType = (ChannelTypeTlv)invocation.Arguments[1]))
            .Returns((AcceptChannel1Message)null!);
@@ -191,14 +189,23 @@ public class OpenChannel1MessageHandlerTests
            .Returns(false);
 
         // Setup channel with upfront shutdown script
-        var channel = new ChannelModel(_channel.ChannelConfig, _channel.ChannelId,
+        var channelParams = _channel.ChannelParams;
+        var local = channelParams.Local;
+        var localWithScript = new ChannelParty(local.DustLimitAmount, local.ChannelReserveAmount,
+                                               local.HtlcMinimumAmount, local.MaxAcceptedHtlcs,
+                                               local.MaxHtlcValueInFlight, local.ToSelfDelay,
+                                               new BitcoinScript([1, 2, 3]));
+        var channel = new ChannelModel(new ChannelParams(localWithScript, channelParams.Remote,
+                                                         channelParams.FeeRateAmountPerKw, channelParams.MinimumDepth,
+                                                         channelParams.OptionAnchorOutputs, channelParams.UseScidAlias),
+                                       _channel.ChannelId,
                                        _channel.CommitmentNumber, _channel.FundingOutput, _channel.IsInitiator,
                                        _channel.LastSentSignature, _channel.LastReceivedSignature,
                                        _channel.LocalBalance, _channel.LocalKeySet, _channel.LocalNextHtlcId,
                                        _channel.LocalRevocationNumber, _channel.RemoteBalance,
                                        _channel.RemoteKeySet, _channel.RemoteNextHtlcId, _peerPubKey,
                                        _channel.RemoteRevocationNumber, ChannelState.V1Opening,
-                                       ChannelVersion.V1, localUpfrontShutdownScript: new BitcoinScript([1, 2, 3]));
+                                       ChannelVersion.V1);
 
         _mockChannelFactory
            .Setup(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(), It.IsAny<FeatureOptions>(),
@@ -212,14 +219,77 @@ public class OpenChannel1MessageHandlerTests
         Assert.Single(result);
 
         _mockMessageFactory.Verify(
-            x => x.CreateAcceptChannel1Message(It.IsAny<LightningMoney>(), It.IsAny<ChannelTypeTlv>(),
+            x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
                                                It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
                                                It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                               It.IsAny<ushort>(), It.IsAny<LightningMoney>(), It.IsAny<uint>(),
-                                               It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
-                                               It.IsAny<ChannelId>(), It.IsAny<ushort>(),
-                                               It.IsNotNull<UpfrontShutdownScriptTlv>()),
+                                               It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                               It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                               It.Is<UpfrontShutdownScriptTlv>(t => t.Value.Length == 3)),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_RemoteParams_When_HandleAsync_Then_AcceptCarriesOurValues()
+    {
+        // Arrange: the opener's values differ from ours on every field (NL-194)
+        var ourParams = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(2_000),
+                                         LightningMoney.MilliSatoshis(1), 30, LightningMoney.Satoshis(8_000), 720);
+        var theirParams = new ChannelParty(LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
+                                           LightningMoney.Satoshis(1), 10, LightningMoney.Satoshis(10_000), 144);
+        var channel = new ChannelModel(new ChannelParams(ourParams, theirParams, LightningMoney.Zero, 3, false,
+                                                         FeatureSupport.No), _channel.ChannelId,
+                                       _channel.CommitmentNumber, _channel.FundingOutput, false, null, null,
+                                       LightningMoney.Zero, _channel.LocalKeySet, 0, 0, _channel.RemoteBalance,
+                                       _channel.RemoteKeySet, 0, _peerPubKey, 0, ChannelState.V1Opening,
+                                       ChannelVersion.V1);
+        _mockChannelFactory
+           .Setup(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(), It.IsAny<FeatureOptions>(),
+                                                            It.IsAny<CompactPubKey>()))
+           .ReturnsAsync(channel);
+
+        ChannelParty? sentParams = null;
+        _mockMessageFactory
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     It.IsAny<UpfrontShutdownScriptTlv>()))
+           .Callback(new InvocationAction(invocation => sentParams = (ChannelParty)invocation.Arguments[0]))
+           .Returns((AcceptChannel1Message)null!);
+
+        // Act
+        await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.Equal(ourParams, sentParams);
+    }
+
+    [Fact]
+    public async Task Given_OpenerChannelTypeWithScidAlias_When_HandleAsync_Then_AcceptEchoesTheOpenerChannelType()
+    {
+        // Arrange: BOLT 2 accept_channel MUST set channel_type to the one from open_channel (NL-218)
+        var openerChannelType = FeatureSet.NewBasicChannelType();
+        openerChannelType.SetFeature(Feature.OptionScidAlias, true);
+        var message = new OpenChannel1Message(_validMessage.Payload, new ChannelTypeTlv(openerChannelType));
+
+        ChannelTypeTlv? capturedChannelType = null;
+        _mockMessageFactory
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     It.IsAny<UpfrontShutdownScriptTlv>()))
+           .Callback(new InvocationAction(invocation => capturedChannelType = (ChannelTypeTlv)invocation.Arguments[1]))
+           .Returns((AcceptChannel1Message)null!);
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.NotNull(capturedChannelType);
+        Assert.Equal(message.ChannelTypeTlv!.ChannelType, capturedChannelType.ChannelType);
     }
 
     [Fact]

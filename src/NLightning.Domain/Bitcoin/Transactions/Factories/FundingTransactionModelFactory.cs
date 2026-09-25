@@ -49,7 +49,7 @@ public class FundingTransactionModelFactory : IFundingTransactionModelFactory
         // Add weight for the funding output (P2WSH)
         weight += WeightConstants.P2WshOutputWeight;
 
-        var feeRatePerKw = channel.ChannelConfig.FeeRateAmountPerKw;
+        var feeRatePerKw = channel.ChannelParams.FeeRateAmountPerKw;
         var fundingAmount = fundingOutput.Amount;
 
         // Without a change output we need at least the funding amount plus the fee

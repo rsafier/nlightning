@@ -113,8 +113,15 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                        "You should use either Local or Remote commitment side.")
         };
 
-        var hasAnchors = channel.ChannelConfig.OptionAnchorOutputs;
+        var hasAnchors = channel.ChannelParams.OptionAnchorOutputs;
         var feeRatePerKw = spec.FeeRatePerKw;
+
+        // The holder's own dust limit applies to its commitment, and its to_local waits for the delay the OTHER side
+        // announced (BOLT 2 to_self_delay: "the number of blocks that the other node's to-self outputs must be
+        // delayed") (NL-194).
+        var holderParams = side == CommitmentSide.Local ? channel.ChannelParams.Local : channel.ChannelParams.Remote;
+        var counterpartyParams =
+            side == CommitmentSide.Local ? channel.ChannelParams.Remote : channel.ChannelParams.Local;
 
         // "local"/"remote" in the spec are the local node; on a commitment they are the holder and the other side
         var toLocalAmount = LightningMoney.MilliSatoshis(side == CommitmentSide.Local
@@ -125,9 +132,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                               : spec.ToLocalMsat);
 
         // Every output of a commitment transaction is trimmed against the dust limit of its holder
-        var dustLimitAmount = side == CommitmentSide.Local
-                                  ? channel.ChannelConfig.LocalDustLimitAmount
-                                  : channel.ChannelConfig.RemoteDustLimitAmount;
+        var dustLimitAmount = holderParams.DustLimitAmount;
 
         var offeredHtlcOutputs = new List<OfferedHtlcOutputInfo>();
         var receivedHtlcOutputs = new List<ReceivedHtlcOutputInfo>();
@@ -169,7 +174,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         // are both below the reserve (e.g. Appendix C "fee greater than funder amount") must still build (NL-196).
 
         // Outputs are whole satoshis (rounded down) and omitted below the holder's dust limit
-        var toSelfDelay = channel.ChannelConfig.ToSelfDelay;
+        var toSelfDelay = counterpartyParams.ToSelfDelay;
         ToLocalOutputInfo? toLocalOutput = null;
         if (toLocalAmount.Satoshi >= dustLimitAmount.Satoshi)
             toLocalOutput = new ToLocalOutputInfo(LightningMoney.Satoshis(toLocalAmount.Satoshi),

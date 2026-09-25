@@ -194,7 +194,125 @@ public class ChannelFactoryTests
         Assert.Equal(0UL, channel.RemoteNextHtlcId);
     }
 
-    private static ChannelFactory CreateNonInitiatorChannelFactory()
+    [Fact]
+    public async Task Given_Open_When_CreatingChannelAsNonInitiator_Then_LocalAndRemoteParamsMapped()
+    {
+        // Arrange: every value we announce differs from the opener's (NL-194)
+        var nodeOptions = CreateDistinctNodeOptions();
+        var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+
+        // Assert: the peer's values are what it sent
+        var remote = channel.ChannelParams.Remote;
+        Assert.Equal(LightningMoney.Satoshis(354), remote.DustLimitAmount);
+        Assert.Equal(LightningMoney.Satoshis(1_000), remote.ChannelReserveAmount);
+        Assert.Equal(LightningMoney.Satoshis(1), remote.HtlcMinimumAmount);
+        Assert.Equal((ushort)30, remote.MaxAcceptedHtlcs);
+        Assert.Equal(LightningMoney.Satoshis(100_000), remote.MaxHtlcValueInFlight);
+        Assert.Equal((ushort)144, remote.ToSelfDelay);
+
+        // Assert: ours come from our options, and our reserve is 1% of the funding
+        var local = channel.ChannelParams.Local;
+        Assert.Equal(nodeOptions.DustLimitAmount, local.DustLimitAmount);
+        Assert.Equal(LightningMoney.Satoshis(1_000), local.ChannelReserveAmount);
+        Assert.Equal(nodeOptions.HtlcMinimumAmount, local.HtlcMinimumAmount);
+        Assert.Equal(nodeOptions.MaxAcceptedHtlcs, local.MaxAcceptedHtlcs);
+        Assert.Equal(LightningMoney.Satoshis(50_000), local.MaxHtlcValueInFlight);
+        Assert.Equal(nodeOptions.ToSelfDelay, local.ToSelfDelay);
+    }
+
+    [Fact]
+    public async Task Given_OpenerDustAboveOnePercent_When_CreatingChannelAsNonInitiator_Then_OurReserveCoversTheirDust()
+    {
+        // Arrange: BOLT 2: the accepter MUST set channel_reserve_satoshis >= the opener's dust_limit_satoshis
+        var channelFactory = CreateNonInitiatorChannelFactory(CreateDistinctNodeOptions());
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                openerDustLimit: LightningMoney.Satoshis(1_500),
+                                                openerReserve: LightningMoney.Satoshis(2_000));
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(LightningMoney.Satoshis(1_500), channel.ChannelParams.Local.ChannelReserveAmount);
+    }
+
+    [Fact]
+    public async Task Given_OpenerReserveBelowOurDust_When_CreatingChannelAsNonInitiator_Then_ChannelErrorIsThrown()
+    {
+        // Arrange: BOLT 2: the accepter MUST set dust_limit_satoshis <= the opener's channel_reserve_satoshis
+        var channelFactory = CreateNonInitiatorChannelFactory(CreateDistinctNodeOptions());
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                openerReserve: LightningMoney.Satoshis(399));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                                    s_remoteNodeId));
+
+        // Assert
+        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+    }
+
+    [Fact]
+    public async Task Given_ChannelTypeWithoutAnchors_When_AnchorsNegotiated_Then_ChannelHasNoAnchors()
+    {
+        // Arrange: the channel type decides anchors, not the init features
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var negotiatedFeatures = new FeatureOptions { OptionAnchors = FeatureSupport.Optional };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                              s_remoteNodeId);
+
+        // Assert
+        Assert.False(channel.ChannelParams.OptionAnchorOutputs);
+    }
+
+    [Fact]
+    public async Task Given_Request_When_CreatingChannelAsInitiator_Then_LocalParamsMappedAndRemoteUnknown()
+    {
+        // Arrange
+        var nodeOptions = CreateDistinctNodeOptions();
+        var channelFactory = CreateNonInitiatorChannelFactory(nodeOptions);
+        var request = CreateRequest(LightningMoney.Satoshis(200_000));
+        request.ToSelfDelay = 300;
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, new FeatureOptions(),
+                                                                           s_remoteNodeId);
+
+        // Assert
+        var local = channel.ChannelParams.Local;
+        Assert.Equal(nodeOptions.DustLimitAmount, local.DustLimitAmount);
+        Assert.Equal(LightningMoney.Satoshis(2_000), local.ChannelReserveAmount);
+        Assert.Equal(nodeOptions.HtlcMinimumAmount, local.HtlcMinimumAmount);
+        Assert.Equal(nodeOptions.MaxAcceptedHtlcs, local.MaxAcceptedHtlcs);
+        Assert.Equal(LightningMoney.Satoshis(100_000), local.MaxHtlcValueInFlight);
+        Assert.Equal((ushort)300, local.ToSelfDelay);
+        Assert.Equal(ChannelParty.Unknown, channel.ChannelParams.Remote);
+    }
+
+    private static NodeOptions CreateDistinctNodeOptions()
+    {
+        return new NodeOptions
+        {
+            MinimumChannelSize = LightningMoney.Satoshis(1_000),
+            DustLimitAmount = LightningMoney.Satoshis(400),
+            HtlcMinimumAmount = LightningMoney.Satoshis(2),
+            MaxAcceptedHtlcs = 20,
+            ToSelfDelay = 200,
+            AllowUpToPercentageOfChannelFundsInFlight = 50
+        };
+    }
+
+    private static ChannelFactory CreateNonInitiatorChannelFactory(NodeOptions? nodeOptions = null)
     {
         var signerMock = new Mock<ILightningSigner>();
         var basepoints = new ChannelBasepoints(s_remoteNodeId, s_remoteNodeId, s_remoteNodeId, s_remoteNodeId,
@@ -208,15 +326,18 @@ public class ChannelFactoryTests
 
         return new ChannelFactory(new Mock<IChannelIdFactory>().Object, new Mock<IChannelOpenValidator>().Object,
                                   feeServiceMock.Object, signerMock.Object,
-                                  new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) },
+                                  nodeOptions ?? new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) },
                                   new FakeSha256());
     }
 
-    private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv)
+    private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv,
+                                                                 LightningMoney? openerDustLimit = null,
+                                                                 LightningMoney? openerReserve = null)
     {
         var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags((byte)0),
-                                              s_temporaryChannelId, LightningMoney.Satoshis(1_000), s_remoteNodeId,
-                                              LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
+                                              s_temporaryChannelId, openerReserve ?? LightningMoney.Satoshis(1_000),
+                                              s_remoteNodeId, openerDustLimit ?? LightningMoney.Satoshis(354),
+                                              LightningMoney.Satoshis(1_000),
                                               s_remoteNodeId, LightningMoney.Satoshis(100_000), s_remoteNodeId,
                                               s_remoteNodeId, LightningMoney.Satoshis(1), 30,
                                               LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
