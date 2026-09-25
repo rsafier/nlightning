@@ -120,6 +120,48 @@ public class ReceiveAddTests
         Assert.Equal("B2-ADD-R02", exception.RequirementId);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_OurFailOfPeerHtlc_When_PeerReusesFreedFunds_Then_AcceptedOnceAcked(bool peerRevoked)
+    {
+        // Arrange: Bob (non-funder, 15000 sat, 10000 sat reserve) offers 5000 sat; Alice fails it and signs.
+        var pair = new CommitmentPair(985_000, 15_000);
+        var first = pair.BobAdd(5_000 * Sat);
+        pair.Converge();
+        pair.AliceFail(first);
+        var raa = pair.AliceCommits();
+        if (peerRevoked)
+            pair.DeliverBobRevoke(raa); // Alice's HTLC is at RcvdRemoveRevocation: Bob's next CS carries the fail
+        Assert.Equal(peerRevoked ? HtlcState.RcvdRemoveRevocation : HtlcState.SentRemoveCommit,
+                     pair.Alice.GetHtlc(HtlcDirection.Incoming, first)!.State);
+
+        // Act / Assert: with the fail credited Bob keeps exactly 15000 - 5000 = 10000 sat (his reserve). LND counts our
+        // removal as gone once its commitment holds it; before its revoke_and_ack we cannot know that it does.
+        if (peerRevoked)
+            Assert.Equal(HtlcState.RcvdAddHtlc,
+                         Receive(pair.Alice, 1, 5_000 * Sat, 3).Next.GetHtlc(HtlcDirection.Incoming, 1)!.State);
+        else
+            AssertViolation("B2-ADD-R02", () => Receive(pair.Alice, 1, 5_000 * Sat, 3));
+    }
+
+    [Fact]
+    public void Given_OurAckedFailFreesSlot_When_PeerAddsIntoIt_Then_Accepted()
+    {
+        // Arrange: Alice accepts one HTLC at a time; Bob's HTLC 0 is failed and Bob has revoked for it (state 37).
+        var pair = new CommitmentPair(500_000, 500_000, aliceParty: Party(maxAccepted: 1));
+        var first = pair.BobAdd(5_000 * Sat);
+        pair.Converge();
+        pair.AliceFail(first);
+        pair.DeliverBobRevoke(pair.AliceCommits());
+
+        // Act
+        var result = Receive(pair.Alice, 1, 5_000 * Sat, 3);
+
+        // Assert (B2-ADD-R03 counts the slot as free)
+        Assert.Equal(2, result.Next.Htlcs.Count);
+    }
+
     [Fact]
     public void Given_OwnMaxAcceptedExceeded_When_Received_Then_Violation()
     {

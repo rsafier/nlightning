@@ -60,7 +60,13 @@ internal sealed record SimulatorConfig(
                 rng.Next(3) == 0 ? fundingSat * 1_000 / (ulong)rng.Next(2, 10) : ulong.MaxValue);
 
         StepWeights[] mixes = [StepWeights.Balanced, StepWeights.AddBurst, StepWeights.LazyCommit, StepWeights.FeeStorm];
-        return new SimulatorConfig(fundingSat * 1_000 - bobMsat, bobMsat, (uint)rng.Next(253, 15_000), anchors,
+        var feeratePerKw = (uint)rng.Next(253, 15_000);
+
+        // BOLT 2 open_channel: the funder must afford the full fee (and anchors) of the initial commitment.
+        var openingCostMsat = checked((CommitmentFees.BaseCommitmentFee(feeratePerKw, 0, anchors)
+                                     + (anchors ? 2 * CommitmentFees.AnchorOutputSatoshis : 0)) * 1_000);
+        bobMsat = Math.Min(bobMsat, fundingSat * 1_000 - openingCostMsat);
+        return new SimulatorConfig(fundingSat * 1_000 - bobMsat, bobMsat, feeratePerKw, anchors,
                                    PartyFor(), PartyFor(),
                                    rng.Next(4) == 0 ? (ulong)rng.NextInt64(1_000_000, 50_000_000) : null,
                                    rng.Next(4) == 0 ? (ulong)rng.NextInt64(1_000_000, 50_000_000) : null,
@@ -92,6 +98,10 @@ internal sealed class SimulatorStats
     public int MaxOpenHtlcs;
     public int FeeOnlyCommitments;
 
+    /// <summary>Runs that ended with the non-funder failing the channel because the funder's update crossed its adds
+    /// (see <see cref="CommitmentPairSimulator"/>).</summary>
+    public int CrossedFeeFailures;
+
     /// <summary>Local refusals by requirement id.</summary>
     public SortedDictionary<string, int> Refusals { get; } = new(StringComparer.Ordinal);
 
@@ -115,6 +125,7 @@ internal sealed class SimulatorStats
         GateRefusals += other.GateRefusals;
         MaxOpenHtlcs = Math.Max(MaxOpenHtlcs, other.MaxOpenHtlcs);
         FeeOnlyCommitments += other.FeeOnlyCommitments;
+        CrossedFeeFailures += other.CrossedFeeFailures;
         foreach (var (id, n) in other.Refusals)
             Refusals[id] = Refusals.GetValueOrDefault(id) + n;
     }
@@ -124,9 +135,14 @@ internal sealed class SimulatorStats
       + $"fees {FeeUpdates} (refused {FeesRefused}), CS {CommitmentsSigned} (crossed {CrossedCommitments}, "
       + $"fee-only {FeeOnlyCommitments}), RAA {Revocations}, disconnects {Disconnects} (dropped {DroppedOnDisconnect}, "
       + $"re-sent CS {RetransmittedCommitments}, RAA {RetransmittedRevocations}, updates {RetransmittedUpdates}), "
-      + $"gate refusals {GateRefusals}, max open HTLCs {MaxOpenHtlcs}; refusals: "
+      + $"gate refusals {GateRefusals}, max open HTLCs {MaxOpenHtlcs}, crossed-fee channel failures "
+      + $"{CrossedFeeFailures}; refusals: "
       + string.Join(", ", Refusals.Select(r => $"{r.Key} {r.Value}"));
 }
+
+/// <summary>The run ended in the expected channel failure of <see cref="SimulatorStats.CrossedFeeFailures"/>.
+/// </summary>
+internal sealed class CrossedFeeChannelFailure : Exception;
 
 /// <summary>A harness failure: carries the seed and the tail of the step trace so the run can be replayed.</summary>
 internal sealed class SimulatorFailureException(int seed, string message, IEnumerable<string> trace, Exception? inner)
@@ -162,6 +178,10 @@ internal sealed class CommitmentPairSimulator
     private readonly Queue<string> _trace = new();
     private readonly Dictionary<Hash, Secret> _preimages = new();
     private int _step;
+
+    /// <summary>The funder sent an add or <c>update_fee</c> while adds of the non-funder were still in flight to it.
+    /// </summary>
+    private bool _funderUpdateCrossedAdds;
     private (SimNode To, SimMessage Message)? _delivering;
 
     public SimNode Alice { get; }
@@ -256,6 +276,12 @@ internal sealed class CommitmentPairSimulator
         {
             throw;
         }
+        catch (CrossedFeeChannelFailure)
+        {
+            // A protocol race, not an engine bug: the funder's update crossed non-funder adds and the commitment it
+            // then signed cannot pay its fee. The non-funder fails the channel (as LND does); nothing is left to settle.
+            Stats.CrossedFeeFailures++;
+        }
         catch (Exception e)
         {
             throw Fail($"{e.GetType().Name}: {e.Message}", e);
@@ -310,6 +336,7 @@ internal sealed class CommitmentPairSimulator
             var add = Assert.IsType<OutboundAddHtlc>(Assert.Single(result.Outbound)).Htlc;
             Check(add.Id == expectedId, $"{node.Name} add id {add.Id}, expected {expectedId} (B2-ADD-S10)");
             _preimages[hash] = preimage;
+            NoteFunderUpdate(node);
             Apply(node, result, $"{node.Name} add #{add.Id} {amount} msat");
             node.Journal.Add(new JournalEntry(JournalKind.Add, add.Id));
             Stats.Adds++;
@@ -448,6 +475,7 @@ internal sealed class CommitmentPairSimulator
         {
             var result = node.State.SendFee(feerate);
             Check(node == Alice, "The non-funder was allowed to send update_fee (B2-FEE-S02)");
+            NoteFunderUpdate(node);
             Apply(node, result, $"{node.Name} update_fee {feerate}");
             node.Journal.Add(new JournalEntry(JournalKind.Fee, result.Next.FeeUpdates[^1].Sequence));
             Stats.FeeUpdates++;
@@ -458,6 +486,12 @@ internal sealed class CommitmentPairSimulator
             Trace($"{node.Name} update_fee {feerate} refused: {e.RequirementId}");
             Stats.FeesRefused++;
         }
+    }
+
+    private void NoteFunderUpdate(SimNode node)
+    {
+        if (node == Alice && Bob.State.LocalNextHtlcId > Alice.State.RemoteNextHtlcId)
+            _funderUpdateCrossedAdds = true;
     }
 
     private void TryCommit(SimNode node)
@@ -548,7 +582,18 @@ internal sealed class CommitmentPairSimulator
         if (to.State.RemoteNextCommit is not null)
             Stats.CrossedCommitments++;
 
-        var result = to.State.ReceiveCommit(commit.Signatures, to.Verifier);
+        CommitmentsResult result;
+        try
+        {
+            result = to.State.ReceiveCommit(commit.Signatures, to.Verifier);
+        }
+        catch (CommitmentViolationException e) when (to == Bob && _funderUpdateCrossedAdds
+                                                  && e.RequirementId is "B2-ADD-R02" or "B2-FEE-R03")
+        {
+            Trace($"{to.Name} fails the channel: {e.RequirementId} {e.Message}");
+            throw new CrossedFeeChannelFailure();
+        }
+
         var raa = Assert.IsType<OutboundRevokeAndAck>(Assert.Single(result.Outbound));
 
         // I7 (spec level, and through the fake signature digest at "tx" level): what the sender signed is what the
@@ -847,6 +892,20 @@ internal sealed class CommitmentPairSimulator
             {
                 if (spec is not null)
                     Check(spec.TotalMsat == funding, $"{node.Name} {spec} does not conserve funding (I6)");
+            }
+
+            // A commitment the funder signed for the non-funder pays its fee: the funder's balance covers the fee and
+            // anchors (the commit-time check behind the lenient update-time ones, B2-FEE-R03/B2-ADD-R02). The funder's
+            // own commitment is not checked: an update_fee that crosses non-funder adds can leave it short, which
+            // BOLT 2 tolerates (the non-funder judged the fee it knew, B2-ADD-S04; the funder's receiver rule R02 does
+            // not charge it the fee).
+            if (!state.Params.LocalIsFunder)
+            {
+                var localSpec = state.LocalCommit.Spec;
+                var funderCost = CommitmentFees.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
+                                                               state.Params.OptionAnchors);
+                Check(localSpec.RemoteMsat >= funderCost,
+                      $"{node.Name} holds local commitment {state.LocalCommit.Number} whose funder has {localSpec.RemoteMsat} msat for a {funderCost} msat fee");
             }
 
             // Structure: every HTLC is in a defined state of its own half of the machine.

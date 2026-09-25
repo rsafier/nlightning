@@ -57,17 +57,24 @@ internal static class UpdateValidator
                     throw Refused("B2-ADD-S02", "We could not pay both anchors above our reserve after this HTLC");
             }
 
-            // Fee spike buffer: twice the feerate and one more non-dust HTLC on the peer's commitment.
-            var spiked = remoteView.ToSpec(checked(remoteView.FeeratePerKw * 2));
-            var spikeCost = (long)CommitmentFees.FunderCostMsat(spiked, p.Remote.DustLimitSatoshis, p.OptionAnchors)
-                          + (long)(spiked.FeeratePerKw * CommitmentFees.HtlcOutputWeight / 1000) * 1_000;
-            if (remoteView.LocalMsat - spikeCost < reserve)
-                throw Refused("B2-ADD-S03", "The HTLC would leave no fee spike buffer (2x feerate, one more HTLC)");
+            // Fee spike buffer: twice the feerate and one more non-dust HTLC, on both commitments (BOLT 2: "after adding
+            // that HTLC to its commitment transaction"; LND applies it to both), each with its holder's dust limit.
+            foreach (var view in (CommitmentView[])[remoteView, localView])
+            {
+                var spiked = view.ToSpec(checked(view.FeeratePerKw * 2));
+                var spikeCost = (long)CommitmentFees.FunderCostMsat(spiked, p.Holder(view.Holder).DustLimitSatoshis,
+                                                                    p.OptionAnchors)
+                              + (long)(spiked.FeeratePerKw * CommitmentFees.HtlcOutputWeight / 1000) * 1_000;
+                if (view.LocalMsat - spikeCost < reserve)
+                    throw Refused("B2-ADD-S03",
+                                  $"The HTLC would leave no fee spike buffer on the {view.Holder} commitment (2x feerate, one more HTLC)");
+            }
         }
         else
         {
+            // BOLT 2 sender: "MUST NOT offer amount_msat it cannot pay for ... while maintaining its channel reserve".
             if (remoteView.LocalMsat < reserve || localView.LocalMsat < reserve)
-                throw Refused("B2-ADD-R02", "The HTLC would take our balance below our channel reserve");
+                throw Refused("B2-ADD-S01", "The HTLC would take our balance below our channel reserve");
 
             // BOLT 2: "the updated local or remote transaction". Both are needed: with different dust limits an HTLC
             // can be trimmed on one commitment and cost fee on the other.
@@ -154,6 +161,31 @@ internal static class UpdateValidator
         if ((long)spec.RemoteMsat - cost < 0)
             throw Violation(next, "B2-FEE-R03",
                             $"The funder cannot afford feerate {next.LatestFeeratePerKw} on our commitment");
+    }
+
+    /// <summary>
+    /// The delayed affordability check at commit time: when the peer is the funder, the commitment its
+    /// <c>commitment_signed</c> would give us must leave the funder enough to pay the fee (and anchors). The update-time
+    /// checks are lenient on purpose (each one judges only what the peer knew when it sent it), so an add followed by an
+    /// <c>update_fee</c> can pass both and still yield an unpayable commitment. BOLT 2 allows the fee check to wait
+    /// "until the update_fee is committed"; this is that check, made before the signatures are verified or anything is
+    /// revoked.
+    /// </summary>
+    /// <param name="current">The snapshot before the <c>commitment_signed</c>.</param>
+    /// <param name="spec">The local commitment the <c>commitment_signed</c> covers.</param>
+    public static void ValidateReceivedCommitFee(ChannelCommitments current, CommitmentSpec spec)
+    {
+        var p = current.Params;
+        if (p.LocalIsFunder)
+            return;
+
+        var cost = CommitmentFees.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+        if (spec.RemoteMsat >= cost)
+            return;
+
+        var requirementId = spec.FeeratePerKw != current.LocalCommit.Spec.FeeratePerKw ? "B2-FEE-R03" : "B2-ADD-R02";
+        throw Violation(current, requirementId,
+                        $"The funder cannot pay the {cost} msat fee of the commitment it signed (it holds {spec.RemoteMsat} msat)");
     }
 
     private static void CheckSendDustExposure(ChannelCommitments commitments, CommitmentView view, HtlcRecord htlc,

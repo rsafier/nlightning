@@ -65,6 +65,7 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
     [InlineData(152)] // B2-FEE-R03 was checked on the prospective commitment, rejecting an honest update_fee
     [InlineData(1795)] // B2-ADD-R02 counted our crossed (unsigned) adds in the funder's fee, rejecting an honest add
     [InlineData(76293)] // same, for our adds the funder acked but had not signed when it re-sent its add on reconnect
+    [InlineData(1116)] // funder update_fee crossed non-funder adds: the commit-time fee check fails the channel
     public void Given_Seed_When_Replayed_Then_InvariantsHold(int seed)
     {
         // Arrange
