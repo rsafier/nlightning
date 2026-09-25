@@ -45,7 +45,7 @@ This project is the NBitcoin-backed implementation of the Domain's Bitcoin and c
 - `HtlcResolutionOutput` passes (revocation, delayed) into parameters declared (delayed, revocation), so the keys are swapped in the script.
 - `BlockchainMonitorService.CheckBlockForWatchedTransactions` (`Wallet/BlockchainMonitorService.cs`) only increments the index for watched txs, so the stored `TransactionIndex` is wrong whenever unwatched txs precede it in the block, and so is the ShortChannelId built from it in `src/NLightning.Application/Channels/Managers/ChannelManager.cs`.
 - `BaseOutput(amount, redeemScript)` calls the virtual `ScriptType` before the subclass ctor runs, so `ToRemoteOutput._hasAnchorOutputs` is still false at that point. It is currently harmless only because P2WPKH and P2WSH take the same `WitHash` branch (`OfferedHtlcOutput` also reports P2WPKH for a P2WSH script).
-- `InteractiveTransactionService.IsSerialIdUnique`/`IsSerialIdPresent` only check `_inputs`, so output serial-id validation is wrong.
+- `InteractiveTransactionService` validates messages **received from the peer**: its `isInitiator` ctor flag means the local node, and it passes `!isInitiator` to the `Tx*Validator`s as the sender role. Serial ids are unique across inputs and outputs together; removals are checked against the matching collection.
 - `SecureKeyManager` uses a fixed Argon2 salt (`s_salt`) and a never-filled (all-zero) stackalloc nonce. The node key (`GetNodeKeyPair`) is the master key itself.
 - `FundingTransactionBuilder.Build` mutates the model (sets `FundingOutput.TransactionId` and `Index = 0`; the funding output is always at index 0).
 - `LocalLightningSigner.SignChannelTransaction` hardcodes input 0 + SIGHASH_ALL. There's no HTLC-signature API yet.

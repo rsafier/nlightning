@@ -38,13 +38,13 @@ public class InteractiveTransactionService : IInteractiveTransactionService
 
     public void RemoveInput(TxRemoveInputPayload input)
     {
-        TxRemoveInputValidator.Validate(IsPeerInitiator, input, IsSerialIdPresent);
+        TxRemoveInputValidator.Validate(IsPeerInitiator, input, IsInputSerialIdPresent);
         _inputs.Remove(input.SerialId);
     }
 
     public void RemoveOutput(TxRemoveOutputPayload output)
     {
-        TxRemoveOutputValidator.Validate(IsPeerInitiator, output, IsSerialIdPresent);
+        TxRemoveOutputValidator.Validate(IsPeerInitiator, output, IsOutputSerialIdPresent);
         _outputs.Remove(output.SerialId);
     }
 
@@ -59,14 +59,20 @@ public class InteractiveTransactionService : IInteractiveTransactionService
         return !_inputs.Values.Any(i => i.PrevTx.SequenceEqual(prevTx) && i.PrevTxVout == prevTxVout);
     }
 
+    // serial_ids share one namespace across the inputs and outputs of the transaction
     private bool IsSerialIdUnique(ulong serialId)
     {
-        return !_inputs.ContainsKey(serialId);
+        return !_inputs.ContainsKey(serialId) && !_outputs.ContainsKey(serialId);
     }
 
-    private bool IsSerialIdPresent(ulong serialId)
+    private bool IsInputSerialIdPresent(ulong serialId)
     {
         return _inputs.ContainsKey(serialId);
+    }
+
+    private bool IsOutputSerialIdPresent(ulong serialId)
+    {
+        return _outputs.ContainsKey(serialId);
     }
 
     private bool IsStandardScript(byte[] script)
