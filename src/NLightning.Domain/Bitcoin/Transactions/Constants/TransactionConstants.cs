@@ -12,6 +12,16 @@ public static class TransactionConstants
 
     public static readonly LightningMoney AnchorOutputAmount = LightningMoney.Satoshis(330);
 
+    /// <summary>
+    /// Bitcoin Core's standardness dust limit for a P2WPKH output (at the default 3 sat/vB dust relay fee).
+    /// </summary>
+    public static readonly LightningMoney P2WpkhDustLimit = LightningMoney.Satoshis(294);
+
+    /// <summary>
+    /// Bitcoin Core's standardness dust limit for a P2TR (or P2WSH) output (at the default 3 sat/vB dust relay fee).
+    /// </summary>
+    public static readonly LightningMoney P2TrDustLimit = LightningMoney.Satoshis(330);
+
     public const int TxIdLength = 32;
 
     /// <summary>

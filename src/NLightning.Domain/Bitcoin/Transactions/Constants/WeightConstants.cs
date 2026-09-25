@@ -10,6 +10,7 @@ public static class WeightConstants
     public const int P2ShOutputWeight = 33 * 4; // | 8  | 1             | 23        |
     public const int P2WpkhOutputWeight = 31 * 4; // | 8  | 1             | 22        |
     public const int P2WshOutputWeight = 43 * 4; // | 8  | 1             | 34        |
+    public const int P2TrOutputWeight = 43 * 4; // | 8  | 1             | 34        |
     public const int P2UnknownSOutputWeight = 51 * 4; // | 8  | 1             | 42        |
 
     public const int P2PkhInputWeight = 148; // At Least
