@@ -74,6 +74,7 @@ public static class DependencyInjection
         });
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddCommitmentEngineServices();
+        services.AddChannelStateTransitionServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers

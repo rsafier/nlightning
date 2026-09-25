@@ -303,6 +303,7 @@ public class ChannelManagerConcurrencyTests
         serviceProvider.AddService(typeof(IChannelMessageHandler<ChannelReadyMessage>),
                                    _mockChannelReadyHandler.Object);
         serviceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
+        serviceProvider.AddService(typeof(ChannelDomainEventQueue), new ChannelDomainEventQueue());
         serviceProvider.AddService(typeof(FundingConfirmedMessageHandler),
                                    new FundingConfirmedMessageHandler(_mockChannelMemoryRepository.Object,
                                                                       mockSigner.Object,

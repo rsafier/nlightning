@@ -7,6 +7,7 @@ namespace NLightning.Application.Tests.Channels.Handlers;
 using Application.Channels.Handlers;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -28,15 +29,23 @@ public class ChannelReadyMessageHandlerTests
 
     private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
+    private readonly Mock<IChannelStateDbRepository> _mockChannelStateDbRepository = new();
+    private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
+    private readonly List<string> _calls = [];
     private readonly ChannelReadyMessageHandler _handler;
 
     public ChannelReadyMessageHandlerTests()
     {
-        var mockUnitOfWork = new Mock<IUnitOfWork>();
-        mockUnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_mockChannelDbRepository.Object);
+        _mockUnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_mockChannelDbRepository.Object);
+        _mockUnitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_mockChannelStateDbRepository.Object);
+        _mockUnitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _calls.Add("save")).Returns(Task.CompletedTask);
+        _mockChannelStateDbRepository
+           .Setup(r => r.InitializeAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelStateExtras?>()))
+           .Callback(() => _calls.Add("initialize"))
+           .Returns(Task.CompletedTask);
         _handler = new ChannelReadyMessageHandler(_mockChannelMemoryRepository.Object,
                                                   new Mock<ILogger<ChannelReadyMessageHandler>>().Object,
-                                                  mockUnitOfWork.Object);
+                                                  _mockUnitOfWork.Object);
     }
 
     [Theory]
@@ -75,6 +84,80 @@ public class ChannelReadyMessageHandlerTests
         // Assert
         Assert.Equal(s_secondPoint, channel.RemoteKeySet!.CurrentPerCommitmentCompactPoint);
         Assert.Equal(CryptoConstants.FirstPerCommitmentIndex - 1, channel.RemoteKeySet.CurrentPerCommitmentIndex);
+    }
+
+    [Theory]
+    [InlineData(ChannelState.V1FundingSigned)]
+    [InlineData(ChannelState.ReadyForUs)]
+    public async Task Given_FirstChannelReady_When_HandleAsync_Then_FirstSnapshotIsSavedWithBothRemotePoints(
+        ChannelState state)
+    {
+        // Arrange - NL-232: the point of the peer's current commitment must be kept before channel_ready replaces it
+        var channel = CreateChannel(state);
+        SetupChannel(channel);
+        ChannelCommitments? staged = null;
+        _mockChannelStateDbRepository
+           .Setup(r => r.InitializeAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelStateExtras?>()))
+           .Callback((ChannelCommitments snapshot, ChannelStateExtras? _) =>
+            {
+                staged = snapshot;
+                _calls.Add("initialize");
+            })
+           .Returns(Task.CompletedTask);
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channel.ChannelId, s_secondPoint));
+
+        // Act
+        await _handler.HandleAsync(message, state, new FeatureOptions(), channel.RemoteNodeId);
+
+        // Assert
+        Assert.NotNull(staged);
+        Assert.Equal(["initialize", "save"], _calls);
+        Assert.Same(staged, channel.Commitments);
+        Assert.Equal(s_firstPoint, staged.RemoteCommit.PerCommitmentPoint);
+        Assert.Equal(s_secondPoint, staged.RemoteNextPerCommitmentPoint);
+        Assert.Equal(0UL, staged.LocalCommit.Number);
+        Assert.Equal(0UL, staged.RemoteCommit.Number);
+        Assert.Equal(channel.LocalBalance.MilliSatoshi, staged.LocalBalanceMsat);
+        Assert.Equal(channel.RemoteBalance.MilliSatoshi, staged.RemoteBalanceMsat);
+        Assert.Empty(staged.Htlcs);
+    }
+
+    [Fact]
+    public async Task Given_SaveFails_When_FirstChannelReady_Then_NoSnapshotInMemory()
+    {
+        // Arrange - I2: the snapshot is swapped in only after the save
+        var channel = CreateChannel(ChannelState.V1FundingSigned);
+        SetupChannel(channel);
+        _mockUnitOfWork.Setup(u => u.SaveChangesAsync()).ThrowsAsync(new InvalidOperationException("disk full"));
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channel.ChannelId, s_secondPoint));
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _handler.HandleAsync(message, ChannelState.V1FundingSigned, new FeatureOptions(),
+                                       channel.RemoteNodeId));
+
+        // Assert
+        Assert.Null(channel.Commitments);
+    }
+
+    [Fact]
+    public async Task Given_RepeatedChannelReady_When_HandleAsync_Then_NoSecondSnapshotIsCreated()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.V1FundingSigned);
+        SetupChannel(channel);
+        var message = new ChannelReadyMessage(new ChannelReadyPayload(channel.ChannelId, s_secondPoint));
+        await _handler.HandleAsync(message, ChannelState.V1FundingSigned, new FeatureOptions(),
+                                   channel.RemoteNodeId);
+        var first = channel.Commitments;
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.ReadyForThem, new FeatureOptions(), channel.RemoteNodeId);
+
+        // Assert
+        Assert.Same(first, channel.Commitments);
+        _mockChannelStateDbRepository.Verify(
+            r => r.InitializeAsync(It.IsAny<ChannelCommitments>(), It.IsAny<ChannelStateExtras?>()), Times.Once);
     }
 
     private void SetupChannel(ChannelModel channel)
