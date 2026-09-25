@@ -119,7 +119,7 @@ public class ChannelFactory : IChannelFactory
                                               payload.DustLimitAmount, payload.ToSelfDelay, useScidAlias,
                                               localUpfrontShutdownScript, remoteUpfrontShutdownScript);
 
-        // Generate the commitment number
+        // Generate the commitment number (the remote is the opener: opener basepoint first)
         var commitmentNumber = new CommitmentNumber(remoteKeySet.PaymentCompactBasepoint,
                                                     localKeySet.PaymentCompactBasepoint, _sha256);
 
