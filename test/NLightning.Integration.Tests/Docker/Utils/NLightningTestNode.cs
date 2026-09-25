@@ -43,6 +43,8 @@ using Infrastructure.Persistence.Contexts;
 /// </remarks>
 public sealed class NLightningTestNode : IAsyncDisposable
 {
+    private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
+
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly Action<NodeOptions>? _configureNodeOptions;
 
@@ -206,7 +208,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             var handler = scope.ServiceProvider
                                .GetRequiredService<IClientCommandHandler<OpenChannelClientRequest,
                                     OpenChannelClientResponse>>();
-            openResponse = await handler.HandleAsync(request, cancellationToken);
+            openResponse = await handler.HandleAsync(request, cancellationToken)
+                                        .WaitAsync(s_openStepTimeout, cancellationToken);
         }
 
         while (true)
@@ -217,8 +220,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 var handler = scope.ServiceProvider
                                    .GetRequiredService<IClientCommandHandler<OpenChannelClientSubscriptionRequest,
                                         OpenChannelClientSubscriptionResponse>>();
+                // The subscription misses a peer error sent for the temporary channel id, so never wait forever
                 state = await handler.HandleAsync(new OpenChannelClientSubscriptionRequest(openResponse.ChannelId),
-                                                  cancellationToken);
+                                                  cancellationToken)
+                                     .WaitAsync(s_openStepTimeout, cancellationToken);
             }
 
             if (state.ChannelState == ChannelState.V1FundingSigned)
