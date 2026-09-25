@@ -198,10 +198,13 @@ internal sealed class OnionPeeler
         if (!SphinxKeyGenerator.IsValidPublicKey(pathKey))
             throw BadOnion(keyGenerator, packet, FailureCode.InvalidOnionBlinding, "Invalid path key.");
 
+        // Outside the try: a key manager fault (e.g. InvalidOperationException after dispose) is a local error, not
+        // an invalid_onion_blinding to report upstream. The path key is valid, so the ECDH itself cannot fail on it.
+        nodeEcdh(pathKey, blindingSharedSecret);
+
         Span<byte> tweak = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
         {
-            nodeEcdh(pathKey, blindingSharedSecret);
             keyGenerator.DeriveKey(OnionConstants.BlindedNodeId, blindingSharedSecret, tweak);
             return _secp256K1Math.MultiplyPubKey(new CompactPubKey(ephemeralPubKey.ToArray()), tweak);
         }

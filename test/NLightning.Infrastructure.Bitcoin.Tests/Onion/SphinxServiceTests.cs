@@ -8,7 +8,9 @@ using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Crypto.Functions;
+using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Crypto.Ciphers;
 
@@ -573,6 +575,31 @@ public class SphinxServiceTests
         Assert.Equal(expected.PathKeySharedSecret, peeled.PathKeySharedSecret);
         Assert.Equal(expected.Payload, peeled.Payload);
         Assert.Equal(2, keyManager.EcdhCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_DisposedSecureKeyManager_When_PeelingWithoutExplicitKey_Then_ThrowsInvalidOperationException(
+        bool withPathKey)
+    {
+        // Arrange: a key manager fault is a local error, not a BADONION failure to report upstream
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var pathKey = _ecdh.GenerateKeyPair();
+        var hops = new List<OnionHop>
+        {
+            new(BlindNodeId(nodeKey.CompactPubKey, pathKey.PrivKey), Enumerable.Repeat((byte)0x01, 20).ToArray())
+        };
+        var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, s_associatedData);
+        var keyManager = new SecureKeyManager((byte[])nodeKey.PrivKey.Value.Clone(), BitcoinNetwork.Regtest,
+                                              Path.Combine(Path.GetTempPath(), "unused.key.json"), 0);
+        keyManager.Dispose();
+        var service = new SphinxService(new Secp256K1Math(), keyManager);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => service.PeelAsLocalNode(
+                                                     packet, s_associatedData,
+                                                     withPathKey ? pathKey.CompactPubKey : (CompactPubKey?)null));
     }
 
     [Fact]
