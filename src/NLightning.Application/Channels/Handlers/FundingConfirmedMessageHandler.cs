@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
@@ -14,6 +15,11 @@ using Domain.Protocol.Interfaces;
 
 public class FundingConfirmedMessageHandler
 {
+    /// <summary>
+    /// How many random candidates may collide with a used scid before alias generation gives up.
+    /// </summary>
+    private const int MaxAliasGenerationAttempts = 100;
+
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<FundingConfirmedMessageHandler> _logger;
@@ -59,13 +65,7 @@ public class FundingConfirmedMessageHandler
             {
                 // Decide how many SCID aliases we need
                 var scidAliasesCount = RandomNumberGenerator.GetInt32(2, 6); // Randomly choose between 2 and 5
-                channel.LocalAliases = new List<ShortChannelId>();
-                for (var i = 0; i < scidAliasesCount; i++)
-                {
-                    // Generate a random SCID alias
-                    var scidAlias = new ShortChannelId(RandomNumberGenerator.GetBytes(ShortChannelId.Length));
-                    channel.LocalAliases.Add(scidAlias);
-                }
+                channel.LocalAliases = GenerateUniqueScidAliases(channel, scidAliasesCount);
             }
 
             if (channel.State == ChannelState.ReadyForThem)
@@ -118,6 +118,74 @@ public class FundingConfirmedMessageHandler
             _logger.LogError(ex, "Error handling funding confirmation for channel {ChannelId}", channel.ChannelId);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Creates a random scid alias candidate. Uniqueness is enforced by the caller.
+    /// </summary>
+    protected virtual ShortChannelId GenerateRandomScidAlias()
+    {
+        return new ShortChannelId(RandomNumberGenerator.GetBytes(ShortChannelId.Length));
+    }
+
+    /// <summary>
+    /// Generates <paramref name="count"/> aliases that collide neither with each other nor with the real scid or the
+    /// local aliases of any known channel (NL-103), so an incoming scid always maps to one channel.
+    /// </summary>
+    private List<ShortChannelId> GenerateUniqueScidAliases(ChannelModel channel, int count)
+    {
+        var usedScids = new HashSet<ulong>();
+        AddIfSet(usedScids, channel.ShortChannelId);
+        foreach (var otherChannel in _channelMemoryRepository.FindChannels(c => c.ChannelId != channel.ChannelId))
+        {
+            AddIfSet(usedScids, otherChannel.ShortChannelId);
+            if (otherChannel.LocalAliases is null)
+                continue;
+
+            foreach (var alias in otherChannel.LocalAliases)
+                AddIfSet(usedScids, alias);
+        }
+
+        var aliases = new List<ShortChannelId>(count);
+        var attempts = 0;
+        while (aliases.Count < count)
+        {
+            if (++attempts > count + MaxAliasGenerationAttempts)
+                throw new InvalidOperationException(
+                    $"Unable to generate {count} unique scid aliases for channel {channel.ChannelId}");
+
+            var candidate = GenerateRandomScidAlias();
+            if (!TryGetKey(candidate, out var key) || key == 0 || !usedScids.Add(key))
+            {
+                _logger.LogWarning("Discarding colliding scid alias {Alias} for channel {ChannelId}", candidate,
+                                   channel.ChannelId);
+                continue;
+            }
+
+            aliases.Add(candidate);
+        }
+
+        return aliases;
+    }
+
+    private static void AddIfSet(HashSet<ulong> usedScids, ShortChannelId scid)
+    {
+        if (TryGetKey(scid, out var key))
+            usedScids.Add(key);
+    }
+
+    private static bool TryGetKey(ShortChannelId scid, out ulong key)
+    {
+        // default(ShortChannelId) has no backing bytes (e.g. an unconfirmed channel)
+        byte[]? bytes = scid;
+        if (bytes is not { Length: ShortChannelId.Length })
+        {
+            key = 0;
+            return false;
+        }
+
+        key = BinaryPrimitives.ReadUInt64BigEndian(bytes);
+        return true;
     }
 
     private async Task PersistChannelAsync(ChannelModel channel)
