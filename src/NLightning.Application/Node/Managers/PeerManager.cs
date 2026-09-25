@@ -87,7 +87,19 @@ public sealed class PeerManager : IPeerManager
     /// </summary>
     private readonly AsyncLocal<PeerSession?> _currentSession = new();
 
+    /// <summary>
+    /// Inbound connections that are still being set up (init exchange, install, database save); StopAsync waits for
+    /// them so none installs a session or writes to the database behind it.
+    /// </summary>
+    private readonly ConcurrentDictionary<Task, byte> _inboundSetups = new();
+
     private CancellationTokenSource _reconnectCts = new();
+
+    /// <summary>
+    /// Cancelled as soon as <see cref="StopAsync"/> begins: ends the init waits of connections still being set up.
+    /// </summary>
+    private CancellationTokenSource _stoppingCts = new();
+
     private CancellationTokenSource? _cts;
     private CompactPubKey? _localNodeId;
     private volatile bool _stopping;
@@ -140,6 +152,7 @@ public sealed class PeerManager : IPeerManager
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _stopping = false;
+        _stoppingCts = new CancellationTokenSource();
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _reconnectCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
 
@@ -191,8 +204,12 @@ public sealed class PeerManager : IPeerManager
         if (_cts is null)
             throw new InvalidOperationException($"{nameof(PeerManager)} is not running");
 
-        // No reconnection from here on (the disconnections below are ours)
-        _stopping = true;
+        // No reconnection from here on (the disconnections below are ours). Set under the session lock: a session is
+        // either installed before this (and disconnected below) or refused by TryInstallSession.
+        lock (_sessionLock)
+            _stopping = true;
+
+        await _stoppingCts.CancelAsync();
 
         // Stop accepting connections and release the listening sockets, so a restart can bind the same port
         try
@@ -224,6 +241,21 @@ public sealed class PeerManager : IPeerManager
             {
                 _logger.LogWarning(e, "Error disconnecting peer {Peer}", peerKey);
             }
+
+        // Inbound connections still being set up: their init wait is cancelled and they can no longer install a
+        // session, but one installed just before the stop may still be saving its peer
+        try
+        {
+            await Task.WhenAll(_inboundSetups.Keys).WaitAsync(s_stopTimeout);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning("Timeout while waiting for inbound connections being set up");
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Inbound connection setup ended with an error");
+        }
 
         try
         {
@@ -442,12 +474,17 @@ public sealed class PeerManager : IPeerManager
         peer.SetPeerService(peerService);
 
         var session = CreateSession(peer, peerService, isInbound: false);
-        if (!TryInstallSession(session))
+        switch (TryInstallSession(session))
         {
-            // The peer's own connection to us won the tie-break
-            session.SuppressReconnect();
-            peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
-            throw new InvalidOperationException($"Already connected to peer {peer.NodeId}");
+            case InstallResult.Stopping:
+                session.SuppressReconnect();
+                peerService.Disconnect(new ConnectionException("Shutting down"));
+                throw new ConnectionException($"Not keeping the connection to peer {peer.NodeId}: stopping");
+            case InstallResult.KeptExisting:
+                // The peer's own connection to us won the tie-break
+                session.SuppressReconnect();
+                peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
+                throw new InvalidOperationException($"Already connected to peer {peer.NodeId}");
         }
 
         await uow.PeerDbRepository.AddOrUpdateAsync(peer);
@@ -465,9 +502,16 @@ public sealed class PeerManager : IPeerManager
     /// </exception>
     private async Task WaitForInitAsync(IPeerService peerService)
     {
+        var stoppingToken = _stoppingCts.Token;
         try
         {
-            await peerService.WaitForInitAsync();
+            await peerService.WaitForInitAsync(stoppingToken).WaitAsync(stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            peerService.Disconnect(new ConnectionException("Shutting down"));
+            peerService.Dispose();
+            throw new ConnectionException($"Not keeping the connection to peer {peerService.PeerPubKey}: stopping");
         }
         catch (Exception e)
         {
@@ -488,8 +532,27 @@ public sealed class PeerManager : IPeerManager
 
     private void HandleNewPeerConnected(object? _, NewPeerConnectedEventArgs args)
     {
-        // Off the TCP service's thread: the init exchange takes a round trip
-        _ = HandleNewPeerConnectedAsync(args);
+        // Not awaited on the TCP service's thread: the init exchange takes a round trip
+        _ = TrackInboundSetupAsync(args);
+    }
+
+    /// <summary>
+    /// Runs the setup of an inbound connection, registered in <see cref="_inboundSetups"/> before any of it runs, so a
+    /// setup that can still install a session is always one <see cref="StopAsync"/> waits for.
+    /// </summary>
+    private async Task TrackInboundSetupAsync(NewPeerConnectedEventArgs args)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _inboundSetups.TryAdd(done.Task, 0);
+        try
+        {
+            await HandleNewPeerConnectedAsync(args);
+        }
+        finally
+        {
+            _inboundSetups.TryRemove(done.Task, out _);
+            done.SetResult();
+        }
     }
 
     private async Task HandleNewPeerConnectedAsync(NewPeerConnectedEventArgs args)
@@ -523,12 +586,18 @@ public sealed class PeerManager : IPeerManager
 
             // Subscribe and install before anything slow (the database below): the peer may already be sending
             var session = CreateSession(peer, peerService, isInbound: true);
-            if (!TryInstallSession(session))
+            switch (TryInstallSession(session))
             {
-                _logger.LogWarning("Keeping our own connection to peer {Peer}, closing the new one", peer.NodeId);
-                session.SuppressReconnect();
-                peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
-                return;
+                case InstallResult.Stopping:
+                    _logger.LogInformation("Closing the new connection of peer {Peer}: stopping", peer.NodeId);
+                    session.SuppressReconnect();
+                    peerService.Disconnect(new ConnectionException("Shutting down"));
+                    return;
+                case InstallResult.KeptExisting:
+                    _logger.LogWarning("Keeping our own connection to peer {Peer}, closing the new one", peer.NodeId);
+                    session.SuppressReconnect();
+                    peerService.Disconnect(new ConnectionException($"Already connected to peer {peer.NodeId}"));
+                    return;
             }
 
             if (preferredHost != "127.0.0.1")
@@ -579,19 +648,24 @@ public sealed class PeerManager : IPeerManager
     /// <summary>
     /// Makes <paramref name="session"/> the peer's session and starts its inbound loop (after the previous
     /// connection's loop has finished). An existing session is replaced and disconnected, unless the tie-break keeps
-    /// it: then this returns false and the caller closes the new connection.
+    /// it (<see cref="InstallResult.KeptExisting"/>). Once <see cref="StopAsync"/> began nothing is installed
+    /// (<see cref="InstallResult.Stopping"/>). In both cases the caller closes the new connection.
     /// </summary>
-    private bool TryInstallSession(PeerSession session)
+    private InstallResult TryInstallSession(PeerSession session)
     {
         var peerId = session.Peer.NodeId;
         PeerSession? replaced = null;
 
         lock (_sessionLock)
         {
+            // Checked under the lock StopAsync sets it under: its disconnect pass then sees every installed session
+            if (_stopping)
+                return InstallResult.Stopping;
+
             if (_peers.TryGetValue(peerId, out var existing))
             {
                 if (!ShouldReplace(existing, session))
-                    return false;
+                    return InstallResult.KeptExisting;
 
                 replaced = existing;
                 replaced.SuppressReconnect();
@@ -617,11 +691,11 @@ public sealed class PeerManager : IPeerManager
         if (session.IsDisconnected && TryRemoveSession(session))
         {
             ReconnectIfNeeded(session);
-            return true;
+            return InstallResult.Installed;
         }
 
         SendChannelUpdates(session);
-        return true;
+        return InstallResult.Installed;
     }
 
     /// <summary>
@@ -918,6 +992,16 @@ public sealed class PeerManager : IPeerManager
             // Gossip is never worth a connection
             _logger.LogWarning(e, "Error handling channel_update from peer {Peer}", session.Peer.NodeId);
         }
+    }
+
+    /// <summary>
+    /// Outcome of <see cref="TryInstallSession"/>.
+    /// </summary>
+    private enum InstallResult
+    {
+        Installed,
+        KeptExisting,
+        Stopping
     }
 
     /// <summary>
