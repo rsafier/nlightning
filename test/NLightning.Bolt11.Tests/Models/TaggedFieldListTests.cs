@@ -476,4 +476,55 @@ public class TaggedFieldListTests
                                                                              BitcoinNetwork.Mainnet,
                                                                              totalBits + 5));
     }
+
+    [Fact]
+    public void Given_ExistingField_When_Replace_Then_OldFieldIsGoneAndChangedRaisedOnce()
+    {
+        // Arrange
+        var first = new MockTaggedField { Type = TaggedFieldTypes.PayeePubKey };
+        var second = new MockTaggedField { Type = TaggedFieldTypes.PayeePubKey };
+        var list = new TaggedFieldList { first };
+        var changedCount = 0;
+        list.Changed += (_, _) => changedCount++;
+
+        // Act
+        list.Replace(TaggedFieldTypes.PayeePubKey, second);
+
+        // Assert
+        Assert.Single(list);
+        Assert.Same(second, list[0]);
+        Assert.Equal(1, changedCount);
+    }
+
+    [Fact]
+    public void Given_DescriptionHash_When_ReplaceDescription_Then_ArgumentExceptionIsThrown()
+    {
+        // Arrange
+        var list = new TaggedFieldList { new MockTaggedField { Type = TaggedFieldTypes.DescriptionHash } };
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => list.Replace(TaggedFieldTypes.Description,
+                                                            new MockTaggedField
+                                                            {
+                                                                Type = TaggedFieldTypes.Description
+                                                            }));
+    }
+
+    [Fact]
+    public void Given_TwoFieldsOfNonRepeatableType_When_Replace_Then_ArgumentExceptionIsThrown()
+    {
+        // Arrange
+        var list = new TaggedFieldList();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => list.Replace(TaggedFieldTypes.PaymentHash,
+                                                            new MockTaggedField
+                                                            {
+                                                                Type = TaggedFieldTypes.PaymentHash
+                                                            },
+                                                            new MockTaggedField
+                                                            {
+                                                                Type = TaggedFieldTypes.PaymentHash
+                                                            }));
+    }
 }

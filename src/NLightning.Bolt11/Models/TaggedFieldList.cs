@@ -64,6 +64,44 @@ internal class TaggedFieldList : List<ITaggedField>
         OnChanged();
     }
 
+    /// <summary>
+    /// Replace every tagged field of a type with the given fields, raising <see cref="Changed"/> once
+    /// </summary>
+    /// <param name="taggedFieldType">The type of the tagged fields to replace</param>
+    /// <param name="taggedFields">The new fields; all must be of <paramref name="taggedFieldType"/></param>
+    /// <exception cref="ArgumentException">
+    /// If a field has another type or is invalid, if several fields are given for a type that may not repeat, or
+    /// if the result would hold both a description and a description hash
+    /// </exception>
+    internal void Replace(TaggedFieldTypes taggedFieldType, params IEnumerable<ITaggedField> taggedFields)
+    {
+        var newFields = taggedFields.ToList();
+        foreach (var taggedField in newFields)
+        {
+            if (taggedField.Type != taggedFieldType)
+                throw new ArgumentException(
+                    $"Cannot replace {taggedFieldType} fields with a field of type {taggedField.Type}");
+
+            if (!taggedField.IsValid())
+                throw new ArgumentException($"Invalid {taggedField.Type} field: field validation failed");
+        }
+
+        if (newFields.Count > 1 && !IsRepeatable(taggedFieldType))
+            throw new ArgumentException($"Only one tagged field of type {taggedFieldType} is allowed");
+
+        if (newFields.Count > 0
+         && ((taggedFieldType == TaggedFieldTypes.Description
+           && this.Any(x => x.Type.Equals(TaggedFieldTypes.DescriptionHash)))
+          || (taggedFieldType == TaggedFieldTypes.DescriptionHash
+           && this.Any(x => x.Type.Equals(TaggedFieldTypes.Description)))))
+            throw new ArgumentException(
+                $"TaggedFieldDictionary already contains a tagged field that excludes {taggedFieldType}");
+
+        base.RemoveAll(x => x.Type.Equals(taggedFieldType));
+        base.AddRange(newFields);
+        OnChanged();
+    }
+
     internal new bool Remove(ITaggedField item)
     {
         if (!base.Remove(item))

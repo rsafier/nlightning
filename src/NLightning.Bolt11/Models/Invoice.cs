@@ -55,6 +55,11 @@ public partial class Invoice
 
     private string? _invoiceString;
 
+    /// <summary>
+    /// The payee key recovered from the signature of a decoded invoice that has no <c>n</c> field
+    /// </summary>
+    private PubKey? _recoveredPayeePubKey;
+
     #endregion
 
     #region Public Properties
@@ -109,7 +114,7 @@ public partial class Invoice
         }
         internal set
         {
-            _taggedFields.Add(new PaymentHashTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PaymentHash, new PaymentHashTaggedField(value));
         }
     }
 
@@ -134,7 +139,12 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.Add(new RoutingInfoTaggedField(value));
+            // Replaces every `r` field with this single route
+            var oldRouteHints = RouteHints;
+            _taggedFields.Replace(TaggedFieldTypes.RoutingInfo, new RoutingInfoTaggedField(value));
+            foreach (var oldRouteHint in oldRouteHints)
+                oldRouteHint.Changed -= OnTaggedFieldsChanged;
+
             value.Changed += OnTaggedFieldsChanged;
         }
     }
@@ -161,7 +171,8 @@ public partial class Invoice
     /// The features of the invoice
     /// </summary>
     /// <remarks>
-    /// The features are used to specify the features the payer should support
+    /// The features are used to specify the features the payer should support.
+    /// Like every tagged-field property, setting it again replaces the previous value.
     /// </remarks>
     /// <seealso cref="FeatureSet"/>
     [DisallowNull]
@@ -175,7 +186,11 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.Add(new FeaturesTaggedField(value));
+            var oldFeatures = Features;
+            _taggedFields.Replace(TaggedFieldTypes.Features, new FeaturesTaggedField(value));
+            if (oldFeatures is not null)
+                oldFeatures.Changed -= OnTaggedFieldsChanged;
+
             value.Changed += OnTaggedFieldsChanged;
         }
     }
@@ -198,7 +213,7 @@ public partial class Invoice
         set
         {
             var expireIn = value.ToUnixTimeSeconds() - Timestamp;
-            _taggedFields.Add(new ExpiryTimeTaggedField((int)expireIn));
+            _taggedFields.Replace(TaggedFieldTypes.ExpiryTime, new ExpiryTimeTaggedField((int)expireIn));
         }
     }
 
@@ -222,7 +237,7 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.AddRange(value.Select(x => new FallbackAddressTaggedField(x)));
+            _taggedFields.Replace(TaggedFieldTypes.FallbackAddress, value.Select(x => new FallbackAddressTaggedField(x)));
         }
     }
 
@@ -244,7 +259,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new DescriptionTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.Description, new DescriptionTaggedField(value));
             }
             else
             {
@@ -271,7 +286,7 @@ public partial class Invoice
         }
         internal set
         {
-            _taggedFields.Add(new PaymentSecretTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PaymentSecret, new PaymentSecretTaggedField(value));
         }
     }
 
@@ -279,7 +294,8 @@ public partial class Invoice
     /// The payee pubkey of the invoice
     /// </summary>
     /// <remarks>
-    /// The payee pubkey is the pubkey of the payee
+    /// The payee pubkey is the pubkey of the payee: the <c>n</c> field when present, otherwise (for a decoded invoice)
+    /// the key recovered from the signature. A recovered key is not written back as an <c>n</c> field.
     /// </remarks>
     /// <seealso cref="PubKey"/>
     [DisallowNull]
@@ -289,11 +305,11 @@ public partial class Invoice
         {
             return _taggedFields.TryGet<PayeePubKeyTaggedField>(TaggedFieldTypes.PayeePubKey, out var payeePubKey)
                        ? payeePubKey.Value
-                       : null;
+                       : _recoveredPayeePubKey;
         }
         set
         {
-            _taggedFields.Add(new PayeePubKeyTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PayeePubKey, new PayeePubKeyTaggedField(value));
         }
     }
 
@@ -317,7 +333,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new DescriptionHashTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.DescriptionHash, new DescriptionHashTaggedField(value));
             }
             else
             {
@@ -346,7 +362,7 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.Add(new MinFinalCltvExpiryTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.MinFinalCltvExpiry, new MinFinalCltvExpiryTaggedField(value));
         }
     }
 
@@ -368,7 +384,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new MetadataTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.Metadata, new MetadataTaggedField(value));
             }
             else
             {
@@ -497,6 +513,13 @@ public partial class Invoice
         Signature = signature;
 
         _taggedFields.Changed += OnTaggedFieldsChanged;
+
+        // Editing a decoded invoice's features or route hints must drop the cached string too
+        if (Features is not null)
+            Features.Changed += OnTaggedFieldsChanged;
+
+        foreach (var routeHint in RouteHints)
+            routeHint.Changed += OnTaggedFieldsChanged;
     }
 
     #endregion
@@ -641,11 +664,12 @@ public partial class Invoice
     /// Encodes the invoice into its string representation using the secure key manager.
     /// </summary>
     /// <returns>The encoded invoice string.</returns>
-    /// <exception cref="NullReferenceException">Thrown when the secure key manager is not set.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the secure key manager is not set.</exception>
     public string Encode()
     {
         if (_secureKeyManager is null)
-            throw new NullReferenceException("Secure key manager is not set, please use Encode(Key nodeKey) instead");
+            throw new InvalidOperationException(
+                "Secure key manager is not set, please use Encode(Key nodeKey) or ToString(Key nodeKey) instead");
 
         var nodeKey = _secureKeyManager.GetNodeKeyPair().PrivKey;
         return Encode(new Key(nodeKey));
@@ -663,6 +687,13 @@ public partial class Invoice
 
     #region Overrides
 
+    /// <summary>
+    /// Returns the encoded invoice, encoding and signing it with the secure key manager if needed.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the invoice has not been encoded yet and no secure key manager is set; use
+    /// <see cref="ToString(Key)"/> instead.
+    /// </exception>
     public override string ToString()
     {
         return string.IsNullOrWhiteSpace(_invoiceString) ? Encode() : _invoiceString;
@@ -812,7 +843,7 @@ public partial class Invoice
         // Check if recovery is necessary
         if (PayeePubKey is null)
         {
-            PayeePubKey = PubKey.RecoverCompact(nBitcoinHash, Signature);
+            _recoveredPayeePubKey = PubKey.RecoverCompact(nBitcoinHash, Signature);
             return;
         }
 

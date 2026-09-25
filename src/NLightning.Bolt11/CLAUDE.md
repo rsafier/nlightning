@@ -49,13 +49,14 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 
 ## Gotchas
 - `ITaggedField.Length` counts 5-bit groups. `TaggedFieldList.CalculateSizeInBits()` actually returns groups, and `Encode` multiplies by 5.
-- Property setters call `Add`, so setting Features, RoutingInfos, ExpiryDate, PayeePubKey or MinFinalCltvExpiry twice throws. There is no replace.
+- Property setters go through `TaggedFieldList.Replace`, so setting a property again replaces the old value (`RoutingInfos` and `FallbackAddresses` replace every `r`/`f` field). Setting `Description` while `DescriptionHash` is set (or the reverse) still throws.
+- A decoded invoice without `n` exposes the recovered key through `PayeePubKey` but does not add an `n` field, so re-encoding it does not add one.
 - Several `r` fields are allowed. `RoutingInfos` is only the first (most preferred) one; read all of them with `RouteHints` and append with `AddRouteHint`.
 - `TaggedFieldList.FromBitReader` gives each field parser its own `BitReader` over exactly `data_length*5` bits, skips unknown types, `f` fields with an unknown version and invalid-point `n` fields (parser returns null), keeps the first of a duplicated non-repeatable field, and throws on everything else: truncated fields, malformed known fields (wrong `p`/`h`/`s`/`n` length, bad `r` length), `d`+`h`, and dangling groups. `Invoice.Decode` passes the exact field-bit count, computed from the string length. The spec example "fields which must be ignored" is therefore rejected (bolts#1243 made wrong fixed lengths a MUST-fail).
 - `9` field: decode rejects unknown even bits (unknown = no `Domain.Enums.Feature` pair) and ignores unknown odd bits; `Encode` adds var_onion_optin (8) and payment_secret (14) as compulsory when neither bit of the pair is set (it mutates the caller's `FeatureSet`). Transitive dependencies (e.g. basic_mpp -> payment_secret) are not checked, because `FeatureSet`'s dependency table lacks them. `FeaturesTaggedField` reads/writes without the old `shouldPad` shift, which read 15-bit fields (`9qrsgq`) one bit too high (8/14 as 9/15).
 - `MinFinalCltvExpiry` is a non-nullable `ushort` that returns the spec default 18 (`InvoiceConstants.DefaultMinFinalCltvExpiryDelta`) when `c` is absent, so it cannot tell you whether `c` was present.
 - `FallbackAddressTaggedField` has no taproot (witness v1) support. Unknown versions are skipped.
-- `Encode()` never runs `InvoiceValidationService`. `ToString()` with no cached string and no `ISecureKeyManager` throws NullReferenceException (explicitly, from `Encode()`); use `ToString(Key)` or `Encode(Key)`.
+- `Encode()` never runs `InvoiceValidationService`. `Encode()`, and `ToString()` with no cached string, throw `InvalidOperationException` when no `ISecureKeyManager` was given; use `ToString(Key)` or `Encode(Key)`.
 - If assembly names change, update the InternalsVisibleTo lists in `src/NLightning.Infrastructure.Bitcoin/AssemblyInfo.cs` (Bech32Encoder) and `./AssemblyInfo.cs`.
 
 ## Onion-routing (BOLT 4) hooks
