@@ -97,7 +97,7 @@ public class PeerServiceLifecycleTests
         // Arrange - the peer service disconnects; the communication service then raises its disconnect event
         _communicationMock.Setup(x => x.Disconnect(It.IsAny<Exception?>()))
                           .Callback((Exception? e) => _communicationMock.Raise(x => x.DisconnectEvent += null,
-                                                                               _communicationMock.Object, e));
+                                                                               _communicationMock.Object, e!));
         using var peerService = CreatePeerService();
         var wait = peerService.WaitForInitAsync(TestContext.Current.CancellationToken);
 

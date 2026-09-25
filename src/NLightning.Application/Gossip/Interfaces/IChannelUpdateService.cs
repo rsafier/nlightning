@@ -42,6 +42,12 @@ public interface IChannelUpdateService
     Task SendChannelUpdateAsync(ChannelId channelId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Sends our update for every <c>Open</c> channel with the peer (one <see cref="SendChannelUpdateAsync"/> each),
+    /// e.g. once a new connection to it finished the init exchange. Call it without holding any channel lock.
+    /// </summary>
+    Task SendChannelUpdatesToPeerAsync(CompactPubKey peerPubKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Checks a <c>channel_update</c> the peer sent (our chain, a channel we have with that peer, the peer as
     /// origin, its node signature, a newer timestamp) and keeps it. Anything else is ignored.
     /// </summary>

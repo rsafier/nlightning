@@ -1352,6 +1352,54 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_ChannelUpdateService_When_PeerConnects_Then_OurUpdatesForItsChannelsAreSentAgain()
+    {
+        // Arrange - a reconnect (or a restart) must give the peer our current policy again
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        var requested = new TaskCompletionSource<CompactPubKey>(TaskCreationOptions.RunContinuationsAsynchronously);
+        channelUpdateService.Setup(s => s.SendChannelUpdatesToPeerAsync(It.IsAny<CompactPubKey>(),
+                                                                         It.IsAny<CancellationToken>()))
+                            .Returns((CompactPubKey peer, CancellationToken _) =>
+                             {
+                                 requested.TrySetResult(peer);
+                                 return Task.CompletedTask;
+                             });
+        var peerManager = CreatePeerManager(channelUpdateService.Object);
+
+        // Act
+        await ConnectMockPeerAsync(peerManager);
+
+        // Assert
+        Assert.Equal(_compactPubKey,
+                     await requested.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_ResendFails_When_PeerConnects_Then_PeerStaysConnected()
+    {
+        // Arrange
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        var called = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        channelUpdateService.Setup(s => s.SendChannelUpdatesToPeerAsync(It.IsAny<CompactPubKey>(),
+                                                                         It.IsAny<CancellationToken>()))
+                            .Returns(() =>
+                             {
+                                 called.TrySetResult();
+                                 return Task.FromException(new InvalidOperationException("boom"));
+                             });
+        var peerManager = CreatePeerManager(channelUpdateService.Object);
+
+        // Act
+        await ConnectMockPeerAsync(peerManager);
+        await called.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
     public void Given_PeerNotConnected_When_OurChannelUpdateIsReady_Then_NothingThrows()
     {
         // Arrange

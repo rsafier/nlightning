@@ -615,9 +615,37 @@ public sealed class PeerManager : IPeerManager
 
         // The connection may have dropped before it was installed (its disconnect handler found nothing to remove)
         if (session.IsDisconnected && TryRemoveSession(session))
+        {
             ReconnectIfNeeded(session);
+            return true;
+        }
 
+        SendChannelUpdates(session);
         return true;
+    }
+
+    /// <summary>
+    /// Gives a new connection our <c>channel_update</c> for every open channel with the peer (after a reconnect or a
+    /// restart the peer may not have our current policy). Runs on another task: each update waits for its channel's
+    /// lock.
+    /// </summary>
+    private void SendChannelUpdates(PeerSession session)
+    {
+        if (_channelUpdateService is null)
+            return;
+
+        var peerId = session.Peer.NodeId;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _channelUpdateService.SendChannelUpdatesToPeerAsync(peerId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogWarning(e, "Failed to send our channel_updates to peer {Peer}", peerId);
+            }
+        });
     }
 
     /// <summary>
@@ -857,8 +885,8 @@ public sealed class PeerManager : IPeerManager
 
     /// <summary>
     /// Enqueues our <c>channel_update</c> for the peer's current connection. Runs while the channel's lock is held, so
-    /// it must never block or throw. A peer that is not connected does not get it (nothing resends it yet; the
-    /// reestablish flow should call <see cref="IChannelUpdateService.SendChannelUpdateAsync"/>).
+    /// it must never block or throw. A peer that is not connected does not get it now; its next connection does
+    /// (<see cref="SendChannelUpdates"/>).
     /// </summary>
     private void HandleChannelUpdateReady(object? sender, ChannelUpdateReadyEventArgs args)
     {
