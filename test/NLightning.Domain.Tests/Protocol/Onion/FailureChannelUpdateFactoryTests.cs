@@ -2,8 +2,11 @@ namespace NLightning.Domain.Tests.Protocol.Onion;
 
 using Domain.Channels.ValueObjects;
 using Domain.Money;
+using Domain.Protocol.Constants;
+using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Payloads;
 
 public class FailureChannelUpdateFactoryTests
 {
@@ -149,4 +152,54 @@ public class FailureChannelUpdateFactoryTests
         Assert.Equal("00000000000003e8008a", Convert.ToHexStringLower(message.Data.Span[..10]));
         Assert.Equal(field, message.ChannelUpdate!.Value.ToArray());
     }
+
+    [Fact]
+    public void Given_TypedChannelUpdate_When_Encoding_Then_FieldIsType258AndWireBytes()
+    {
+        // Arrange
+        var channelUpdate = CreateTypedUpdate();
+
+        // Act
+        var field = FailureChannelUpdateFactory.Encode(channelUpdate);
+
+        // Assert
+        Assert.Equal("0102", Convert.ToHexStringLower(field.AsSpan(0, 2)));
+        Assert.Equal(channelUpdate.Payload.GetBytes(), field[2..]);
+        Assert.Equal(FailureChannelUpdateFactory.Encode(channelUpdate.Payload.GetBytes()), field);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_EncodedTypedUpdate_When_TryGetChannelUpdate_Then_ReturnsEqualUpdate(bool withTypePrefix)
+    {
+        // Arrange
+        var expected = CreateTypedUpdate();
+        var field = withTypePrefix ? FailureChannelUpdateFactory.Encode(expected) : expected.Payload.GetBytes();
+
+        // Act
+        var found = FailureChannelUpdateFactory.TryGetChannelUpdate(field, out var actual);
+
+        // Assert
+        Assert.True(found);
+        Assert.NotNull(actual);
+        Assert.Equal(expected.Payload.GetBytes(), actual.Payload.GetBytes());
+        Assert.Equal(expected.Payload.ShortChannelId, actual.Payload.ShortChannelId);
+    }
+
+    [Fact]
+    public void Given_EmptyOrShortField_When_TryGetChannelUpdate_Then_ReturnsFalse()
+    {
+        // Act & Assert
+        Assert.False(FailureChannelUpdateFactory.TryGetChannelUpdate(ReadOnlyMemory<byte>.Empty, out var empty));
+        Assert.Null(empty);
+        Assert.False(FailureChannelUpdateFactory.TryGetChannelUpdate(new byte[100], out var shortUpdate));
+        Assert.Null(shortUpdate);
+    }
+
+    private static ChannelUpdateMessage CreateTypedUpdate() =>
+        new(new ChannelUpdatePayload(Enumerable.Repeat((byte)0x33, 64).ToArray(), ChainConstants.Regtest,
+                                     new ShortChannelId(700_000, 42, 1), 0x5f5e1000,
+                                     ChannelUpdatePayload.MessageFlagMustBeOne, 0, 40, 1_000, 1_000, 1,
+                                     500_000_000));
 }

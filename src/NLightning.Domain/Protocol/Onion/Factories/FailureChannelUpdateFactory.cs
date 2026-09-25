@@ -1,9 +1,12 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Domain.Protocol.Onion.Factories;
 
 using Channels.ValueObjects;
 using Protocol.Constants;
+using Protocol.Messages;
+using Protocol.Payloads;
 
 /// <summary>
 /// Encodes and reads the <c>channel_update</c> carried in the <c>u16 len || channel_update</c> field of BOLT 4 UPDATE
@@ -34,7 +37,7 @@ public static class FailureChannelUpdateFactory
     /// short_channel_id(8), timestamp(4), message_flags(1), channel_flags(1), cltv_expiry_delta(2),
     /// htlc_minimum_msat(8), fee_base_msat(4), fee_proportional_millionths(4), htlc_maximum_msat(8).
     /// </summary>
-    public const int MinPayloadLength = 136;
+    public const int MinPayloadLength = ChannelUpdatePayload.MinLength;
 
     private const int ShortChannelIdOffset = 64 + 32;
     private const int TimestampOffset = ShortChannelIdOffset + ShortChannelId.Length;
@@ -67,6 +70,39 @@ public static class FailureChannelUpdateFactory
         BinaryPrimitives.WriteUInt16BigEndian(field, (ushort)MessageTypes.ChannelUpdate);
         channelUpdatePayload.CopyTo(field.AsSpan(TypePrefixLength));
         return field;
+    }
+
+    /// <summary>
+    /// Builds the bytes of the <c>channel_update</c> field from a typed (normally signed) <c>channel_update</c>:
+    /// <c>u16 258 || payload</c>, byte for byte what the wire serializer writes for the message.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 4: the update's <c>short_channel_id</c> MUST be the one used by the incoming onion (so an alias when the
+    /// sender used one). The signature is not checked here; sign the update with
+    /// <c>ILightningSigner.SignNodeMessage(</c><see cref="ChannelUpdatePayload.GetSignatureHash"/><c>)</c> first.
+    /// </remarks>
+    /// <exception cref="ArgumentException">If the update would not fit a u16 length.</exception>
+    public static byte[] Encode(ChannelUpdateMessage channelUpdate)
+    {
+        ArgumentNullException.ThrowIfNull(channelUpdate);
+        return Encode(channelUpdate.Payload.GetBytes());
+    }
+
+    /// <summary>
+    /// Parses the <c>channel_update</c> field of an UPDATE failure into a typed message (with or without the type
+    /// prefix). The signature is not checked; verify it with the origin's node id before using the update.
+    /// </summary>
+    /// <returns><c>false</c> when the field is empty (<c>len = 0</c>) or too short to be a <c>channel_update</c>.</returns>
+    public static bool TryGetChannelUpdate(ReadOnlyMemory<byte> field,
+                                           [NotNullWhen(true)] out ChannelUpdateMessage? channelUpdate)
+    {
+        channelUpdate = null;
+        if (!TryGetPayload(field, out var payload)
+         || !ChannelUpdatePayload.TryParse(payload.Span, out var channelUpdatePayload))
+            return false;
+
+        channelUpdate = new ChannelUpdateMessage(channelUpdatePayload);
+        return true;
     }
 
     /// <summary>

@@ -1,11 +1,14 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.Crypto;
+using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Signers;
 
 using Builders;
+using Crypto.Contexts;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -13,6 +16,7 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
@@ -126,6 +130,54 @@ public class LocalLightningSigner : ILightningSigner
 
     /// <inheritdoc />
     public CompactPubKey GetNodePublicKey() => _secureKeyManager.GetNodeKeyPair().CompactPubKey;
+
+    /// <inheritdoc />
+    public CompactSignature SignNodeMessage(Hash messageHash)
+    {
+        // The key manager hands out a copy of the node key; wipe it once the key is parsed
+        var privateKey = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
+        try
+        {
+            if (!NLightningCryptoContext.Instance.TryCreateECPrivKey(privateKey, out var ecPrivKey)
+             || ecPrivKey is null)
+                throw new SignerException("The node key is not a valid secp256k1 private key",
+                                          "Internal error");
+
+            using (ecPrivKey)
+            {
+                // libsecp256k1 signs with RFC 6979 nonces and always returns a low-S signature
+                if (!ecPrivKey.TrySignECDSA((byte[])messageHash, out var signature) || signature is null)
+                    throw new SignerException("Failed to sign the node message", "Internal error");
+
+                var compact = new byte[CryptoConstants.MaxSignatureSize];
+                signature.WriteCompactToSpan(compact);
+                return compact;
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+        }
+    }
+
+    /// <inheritdoc />
+    public bool VerifyNodeMessage(Hash messageHash, CompactSignature signature, CompactPubKey nodeId)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        if (signature.Value.Length != CryptoConstants.MaxSignatureSize
+         || !SecpECDSASignature.TryCreateFromCompact(signature.Value, out var ecdsaSignature)
+         || ecdsaSignature is null
+         || !ECPubKey.TryCreate((byte[])nodeId, NLightningCryptoContext.Instance, out _, out var ecPubKey)
+         || ecPubKey is null)
+            return false;
+
+        // libsecp256k1 verification rejects high-S signatures, but a relayed (malleated) one is still valid
+        var (r, s) = ecdsaSignature;
+        if (s.IsHigh)
+            ecdsaSignature = new SecpECDSASignature(r, s.Negate(), true);
+
+        return ecPubKey.SigVerify(ecdsaSignature, (byte[])messageHash);
+    }
 
     /// <inheritdoc />
     public CompactPubKey GetPerCommitmentPoint(uint channelKeyIndex, ulong commitmentNumber)

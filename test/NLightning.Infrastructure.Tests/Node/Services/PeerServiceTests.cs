@@ -57,7 +57,32 @@ public class PeerServiceTests
         peerService.OnAttentionMessageReceived += (_, _) => attentionMessageRaised = true;
 
         // Act
-        RaiseMessage(new ChannelUpdateMessage(new GossipPayload(new byte[] { 1, 2, 3 })));
+        RaiseMessage(new ChannelAnnouncementMessage(new GossipPayload(new byte[] { 1, 2, 3 })));
+
+        // Assert
+        Assert.False(channelMessageRaised);
+        Assert.False(attentionMessageRaised);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitializedPeer_When_ChannelUpdateReceived_Then_PeerStaysConnected()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        var channelMessageRaised = false;
+        var attentionMessageRaised = false;
+        peerService.OnChannelMessageReceived += (_, _) => channelMessageRaised = true;
+        peerService.OnAttentionMessageReceived += (_, _) => attentionMessageRaised = true;
+        var channelUpdate = new ChannelUpdateMessage(
+            new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest,
+                                     new ShortChannelId(103, 1, 0), 1_700_000_000,
+                                     ChannelUpdatePayload.MessageFlagMustBeOne, 0, 40, 1_000, 1_000, 1,
+                                     990_000_000));
+
+        // Act
+        RaiseMessage(channelUpdate);
 
         // Assert
         Assert.False(channelMessageRaised);

@@ -32,6 +32,30 @@ public interface ILightningSigner
     CompactPubKey GetNodePublicKey();
 
     /// <summary>
+    /// Sign a 32-byte message hash with the node key (the key behind <see cref="GetNodePublicKey"/>), as BOLT 7
+    /// gossip requires: <c>channel_update</c>, <c>node_announcement</c> and the node signatures of
+    /// <c>channel_announcement</c>/<c>announcement_signatures</c>.
+    /// </summary>
+    /// <remarks>
+    /// The caller computes the hash (BOLT 7: the double-SHA256 of the message after the signature, e.g.
+    /// <see cref="Protocol.Payloads.ChannelUpdatePayload.GetSignatureHash"/>); the signer signs those 32 bytes as they
+    /// are (no further hashing). The signature is deterministic (RFC 6979), low-S, as a 64-byte compact
+    /// <c>r || s</c>.
+    /// </remarks>
+    CompactSignature SignNodeMessage(Hash messageHash);
+
+    /// <summary>
+    /// Verify a BOLT 7 node signature: <paramref name="signature"/> (64-byte compact) over the 32-byte
+    /// <paramref name="messageHash"/> by <paramref name="nodeId"/>.
+    /// </summary>
+    /// <remarks>
+    /// A high-S signature is accepted (normalized first), because ECDSA signatures are malleable and BOLT 7 expects
+    /// relayed messages with <c>-s</c>. Returns <c>false</c> (never throws) for a signature or node id that does not
+    /// parse.
+    /// </remarks>
+    bool VerifyNodeMessage(Hash messageHash, CompactSignature signature, CompactPubKey nodeId);
+
+    /// <summary>
     /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
     /// <param name="channelKeyIndex">The channel key index.</param>

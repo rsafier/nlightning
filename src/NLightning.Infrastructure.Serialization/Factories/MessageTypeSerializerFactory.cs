@@ -125,10 +125,13 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(GossipTimestampFilterMessage),
                          new GossipTimestampFilterMessageTypeSerializer(_payloadSerializerFactory));
 
+        // channel_update is parsed: it is exchanged directly with channel peers and embedded in BOLT 4 UPDATE failures
+        _serializers.Add(typeof(ChannelUpdateMessage),
+                         new ChannelUpdateMessageTypeSerializer(_payloadSerializerFactory));
+
         // The other BOLT 7 gossip messages are kept as raw bytes until gossip is implemented
         RegisterGossipSerializer(p => new ChannelAnnouncementMessage(p));
         RegisterGossipSerializer(p => new NodeAnnouncementMessage(p));
-        RegisterGossipSerializer(p => new ChannelUpdateMessage(p));
         RegisterGossipSerializer(p => new AnnouncementSignaturesMessage(p));
     }
 
