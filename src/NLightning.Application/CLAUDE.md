@@ -46,7 +46,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `dotnet test` finds **0 tests** here ("No test is available") because the csproj lacks xunit.runner.visualstudio, which the other test projects reference; CI's `dotnet test` therefore silently skips them. Run the tests with:
   `dotnet run --project test/NLightning.Application.Tests` (24 tests), or
   `test/NLightning.Application.Tests/bin/Debug/net10.0/NLightning.Application.Tests -class NLightning.Application.Tests.Node.Managers.PeerManagerTests`
-- Existing coverage: OpenChannel1, FundingCreated, FundingConfirmed, ChannelManager (block events) and PeerManager. Nothing covers AcceptChannel1, FundingSigned, ChannelReady or MessageFactory.
+- Existing coverage: OpenChannel1, FundingCreated, FundingConfirmed, ChannelReady, ChannelManager (block events) and PeerManager. Nothing covers AcceptChannel1, FundingSigned or MessageFactory.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`.
 
 ## Gotchas
