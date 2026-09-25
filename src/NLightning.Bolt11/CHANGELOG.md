@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- `Invoice.Encode` now validates the invoice before signing (NL-120): p, s and d/h are required, the `9` field must
+  carry var_onion_optin and payment_secret (added as compulsory when missing), every BOLT 9 dependency must be set
+  and no known feature outside the invoice context may be set;
+- `Invoice.Encode()` zeroes the node private key copy it gets from `ISecureKeyManager`;
+
+### Breaking Changes
+
+- `IInvoiceValidationService` gained `ValidateForEncoding` and `ValidateFeatures`;
+- Encoding an incomplete invoice (no payment hash, secret or description) now throws `InvoiceSerializationException`;
+
 ## v5.0.0
 
 BOLT 11 compliance fix for unknown fallback address versions and updated package URL.
