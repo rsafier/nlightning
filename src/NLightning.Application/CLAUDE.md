@@ -13,8 +13,8 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `Channels/Handlers/Interfaces/IChannelMessageHandler.cs`: `Task<IReadOnlyList<IChannelMessage>> HandleAsync(msg, ChannelState currentState, FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)`. The returned messages are sent back to the same peer in list order (e.g. revoke_and_ack before commitment_signed); return `[]` for none.
 - `Channels/Services/ChannelLockProvider.cs`: `IChannelLockProvider` (Domain) singleton, one non-reentrant `SemaphoreSlim` per channel id, dropped when unused. `AcquireAsync` / blocking `Acquire` return an `IDisposable`.
 - `Channels/Handlers/`:
-  - `OpenChannel1MessageHandler`: we are the non-initiator. Receives open_channel, replies accept_channel.
-  - `AcceptChannel1MessageHandler`: we are the initiator. Receives accept_channel, builds the funding tx, replies funding_created. The channel is not persisted until funding_signed (BOLT 2: a funder that has not broadcast SHOULD NOT remember the channel).
+  - `OpenChannel1MessageHandler`: we are the non-initiator. Receives open_channel, replies accept_channel with **our** values (`ChannelParams.Local`, never the opener's; NL-194) and the opener's `channel_type` echoed byte for byte (BOLT 2, NL-218).
+  - `AcceptChannel1MessageHandler`: we are the initiator. Receives accept_channel, fails it if `channel_type` differs from the one we sent (`ChannelParams.ToChannelType()`) or a reserve is below the other side's dust limit, stores the peer's values with `ChannelModel.UpdateRemoteParams` (our own, incl. `to_self_delay`, never change), builds the funding tx, replies funding_created. The channel is not persisted until funding_signed (BOLT 2: a funder that has not broadcast SHOULD NOT remember the channel).
   - `FundingCreatedMessageHandler`: non-initiator. Replies funding_signed, persists the channel and watches the funding tx.
   - `FundingSignedMessageHandler`: initiator. Signs, publishes and watches the funding tx. Sends no reply.
   - `ChannelReadyMessageHandler`

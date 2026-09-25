@@ -18,6 +18,7 @@ using Node.Options;
 using Protocol.Interfaces;
 using Protocol.Messages;
 using Protocol.Models;
+using Protocol.Payloads;
 using Validators.Parameters;
 using ValueObjects;
 
@@ -112,12 +113,17 @@ public class ChannelFactory : IChannelFactory
                 useScidAlias = FeatureSupport.Optional;
         }
 
-        var channelConfig = new ChannelConfig(payload.ChannelReserveAmount, payload.FeeRatePerKw,
-                                              payload.HtlcMinimumAmount, _nodeOptions.DustLimitAmount,
-                                              payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlight, minimumDepth,
-                                              negotiatedFeatures.OptionAnchors != FeatureSupport.No,
-                                              payload.DustLimitAmount, payload.ToSelfDelay, useScidAlias,
-                                              localUpfrontShutdownScript, remoteUpfrontShutdownScript);
+        // The opener's values bind us (NL-194); ours are announced in accept_channel and bind the opener
+        var remoteParams = new ChannelParty(payload.DustLimitAmount, payload.ChannelReserveAmount,
+                                            payload.HtlcMinimumAmount, payload.MaxAcceptedHtlcs,
+                                            payload.MaxHtlcValueInFlight, payload.ToSelfDelay,
+                                            remoteUpfrontShutdownScript);
+        var localParams = CreateLocalParamsAsNonInitiator(payload, localUpfrontShutdownScript);
+
+        // The channel type decides anchors, not the init features (the opener may pick a type without them)
+        var optionAnchorOutputs = message.ChannelTypeTlv?.Features.IsFeatureSet(Feature.OptionAnchors, true) ?? false;
+        var channelParams = new ChannelParams(localParams, remoteParams, payload.FeeRatePerKw, minimumDepth,
+                                              optionAnchorOutputs, useScidAlias);
 
         // Generate the commitment number (the remote is the opener: opener basepoint first)
         var commitmentNumber = new CommitmentNumber(remoteKeySet.PaymentCompactBasepoint,
@@ -129,7 +135,7 @@ public class ChannelFactory : IChannelFactory
                                                       remoteKeySet.FundingCompactPubKey);
 
             // Create the channel
-            return new ChannelModel(channelConfig, payload.ChannelId, commitmentNumber, fundingOutput, false, null,
+            return new ChannelModel(channelParams, payload.ChannelId, commitmentNumber, fundingOutput, false, null,
                                     null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount, remoteKeySet, 0,
                                     remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
@@ -165,7 +171,8 @@ public class ChannelFactory : IChannelFactory
         if (request.ChannelReserveAmount is not null && request.ChannelReserveAmount > channelReserveAmount)
             channelReserveAmount = request.ChannelReserveAmount;
 
-        var dustLimitAmount = ChannelConstants.MinDustLimitAmount;
+        // Announce our configured dust limit unless the request overrides it (open_channel carries this value)
+        var dustLimitAmount = _nodeOptions.DustLimitAmount;
         if (request.DustLimitAmount is not null)
         {
             // Check if dust_limit_satoshis is too small
@@ -248,20 +255,25 @@ public class ChannelFactory : IChannelFactory
             // localUpfrontShutdownScript = ;
         }
 
-        // Generate the channel configuration
-        var channelConfig = new ChannelConfig(channelReserveAmount, request.FeeRatePerKw ?? currentFeeRatePerKw,
-                                              request.HtlcMinimumAmount ?? _nodeOptions.HtlcMinimumAmount,
-                                              dustLimitAmount,
-                                              request.MaxAcceptedHtlcs ?? _nodeOptions.MaxAcceptedHtlcs,
-                                              maxHtlcValueInFlight, minimumDepth,
-                                              negotiatedFeatures.OptionAnchors != FeatureSupport.No,
-                                              LightningMoney.Zero, request.ToSelfDelay ?? _nodeOptions.ToSelfDelay,
-                                              negotiatedFeatures.ScidAlias, localUpfrontShutdownScript);
+        // Generate the channel configuration: only our values are known until accept_channel arrives
+        var localParams = new ChannelParty(dustLimitAmount, channelReserveAmount,
+                                           request.HtlcMinimumAmount ?? _nodeOptions.HtlcMinimumAmount,
+                                           request.MaxAcceptedHtlcs ?? _nodeOptions.MaxAcceptedHtlcs,
+                                           maxHtlcValueInFlight, request.ToSelfDelay ?? _nodeOptions.ToSelfDelay,
+                                           localUpfrontShutdownScript);
+
+        // We put option_scid_alias in the channel type whenever the peer negotiated it
+        var useScidAlias = negotiatedFeatures.ScidAlias > FeatureSupport.No
+                               ? FeatureSupport.Compulsory
+                               : FeatureSupport.No;
+        var channelParams = new ChannelParams(localParams, ChannelParty.Unknown,
+                                              request.FeeRatePerKw ?? currentFeeRatePerKw, minimumDepth,
+                                              negotiatedFeatures.OptionAnchors != FeatureSupport.No, useScidAlias);
 
         try
         {
             // Create the channel using only our data
-            return new ChannelModel(channelConfig, _channelIdFactory.CreateTemporaryChannelId(), null,
+            return new ChannelModel(channelParams, _channelIdFactory.CreateTemporaryChannelId(), null,
                                     null, true, null, null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount,
                                     null, 0, remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
@@ -269,6 +281,34 @@ public class ChannelFactory : IChannelFactory
         {
             throw new ChannelErrorException("Error creating commitment transaction", e);
         }
+    }
+
+    /// <summary>
+    /// The values we announce in accept_channel. BOLT 2: our channel_reserve_satoshis must be at least the opener's
+    /// dust_limit_satoshis, and our dust_limit_satoshis at most the opener's channel_reserve_satoshis.
+    /// </summary>
+    private ChannelParty CreateLocalParamsAsNonInitiator(OpenChannel1Payload payload,
+                                                         BitcoinScript? localUpfrontShutdownScript)
+    {
+        var dustLimitAmount = _nodeOptions.DustLimitAmount;
+        if (dustLimitAmount > payload.ChannelReserveAmount)
+            throw new ChannelErrorException(
+                $"Our dust limit ({dustLimitAmount}) is above the opener's channel reserve ({payload.ChannelReserveAmount})",
+                payload.ChannelId, "Channel reserve is below our dust limit");
+
+        var channelReserveAmount = GetOurChannelReserveFromFundingAmount(payload.FundingAmount);
+        if (channelReserveAmount < payload.DustLimitAmount)
+            channelReserveAmount = payload.DustLimitAmount;
+        if (channelReserveAmount < dustLimitAmount)
+            channelReserveAmount = dustLimitAmount;
+
+        var maxHtlcValueInFlight =
+            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight *
+                                    payload.FundingAmount.Satoshi / 100M);
+
+        return new ChannelParty(dustLimitAmount, channelReserveAmount, _nodeOptions.HtlcMinimumAmount,
+                                _nodeOptions.MaxAcceptedHtlcs, maxHtlcValueInFlight, _nodeOptions.ToSelfDelay,
+                                localUpfrontShutdownScript);
     }
 
     private LightningMoney GetOurChannelReserveFromFundingAmount(LightningMoney fundingAmount)

@@ -2,6 +2,7 @@ using NLightning.Domain.Bitcoin.Transactions.Enums;
 using NLightning.Domain.Bitcoin.Transactions.Factories;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Protocol.Models;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 using NLightning.Tests.Utils.Vectors;
 
@@ -44,7 +45,7 @@ public class CommitmentTransactionModelFactoryTests
         var commitmentKeyDerivationService = new Mock<ICommitmentKeyDerivationService>();
         var lightningSigner = new Mock<ILightningSigner>();
 
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Satoshis(15_000), LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Satoshis(15_000), LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 0, false,
                                               LightningMoney.Zero, Bolt3AppendixCVectors.LocalDelay, FeatureSupport.No);
         var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
@@ -207,6 +208,40 @@ public class CommitmentTransactionModelFactoryTests
         Assert.Equal(LightningMoney.Satoshis(7_000_000 - 660), transactionModel.ToRemoteOutput.Amount);
     }
 
+    [Fact]
+    public void Given_RemoteSide_When_CreatingCommitment_Then_UsesLocalToSelfDelay()
+    {
+        // Arrange: the to_self_delay we announced delays the peer's to_local (NL-194)
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(3_000_000), LightningMoney.Satoshis(7_000_000),
+                                    localToSelfDelay: 720, remoteToSelfDelay: 144);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote);
+
+        // Assert
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal((ushort)720, transactionModel.ToLocalOutput.ToSelfDelay);
+    }
+
+    [Fact]
+    public void Given_LocalSide_When_CreatingCommitment_Then_UsesRemoteToSelfDelay()
+    {
+        // Arrange: the to_self_delay the peer announced delays our to_local
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000),
+                                    localToSelfDelay: 720, remoteToSelfDelay: 144);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+
+        // Assert
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal((ushort)144, transactionModel.ToLocalOutput.ToSelfDelay);
+    }
+
     private static CommitmentTransactionModelFactory CreateFactory()
     {
         return new CommitmentTransactionModelFactory(new Mock<ICommitmentKeyDerivationService>().Object,
@@ -217,11 +252,15 @@ public class CommitmentTransactionModelFactoryTests
                                               LightningMoney remoteDustLimit, LightningMoney localBalance,
                                               LightningMoney remoteBalance, LightningMoney? feeRatePerKw = null,
                                               List<Htlc>? localOfferedHtlcs = null,
-                                              List<Htlc>? remoteOfferedHtlcs = null)
+                                              List<Htlc>? remoteOfferedHtlcs = null,
+                                              ushort localToSelfDelay = Bolt3AppendixCVectors.LocalDelay,
+                                              ushort remoteToSelfDelay = Bolt3AppendixCVectors.LocalDelay)
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw ?? LightningMoney.Zero,
-                                              LightningMoney.Zero, localDustLimit, 0, LightningMoney.Zero, 0,
-                                              optionAnchors, remoteDustLimit, Bolt3AppendixCVectors.LocalDelay,
+        var local = new ChannelParty(localDustLimit, LightningMoney.Zero, LightningMoney.Zero, 0, LightningMoney.Zero,
+                                     localToSelfDelay);
+        var remote = new ChannelParty(remoteDustLimit, LightningMoney.Zero, LightningMoney.Zero, 0,
+                                      LightningMoney.Zero, remoteToSelfDelay);
+        var channelConfig = new ChannelParams(local, remote, feeRatePerKw ?? LightningMoney.Zero, 0, optionAnchors,
                                               FeatureSupport.No);
         var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
                                                       Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),

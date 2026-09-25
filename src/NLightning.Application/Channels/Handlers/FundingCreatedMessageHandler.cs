@@ -122,7 +122,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         _channelMemoryRepository.TryRemoveTemporaryChannel(peerPubKey, oldChannelId);
 
         await _blockchainMonitor.WatchTransactionAsync(channel.ChannelId, payload.FundingTxId,
-                                                       channel.ChannelConfig.MinimumDepth);
+                                                       channel.ChannelParams.MinimumDepth);
 
         return [fundingSignedMessage];
     }

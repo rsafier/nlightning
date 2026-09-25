@@ -46,10 +46,14 @@ public interface IMessageFactory
     ClosingSignedMessage CreateClosingSignedMessage(ChannelId channelId, ulong feeSatoshis, CompactSignature signature,
                                                     ulong minFeeSatoshis, ulong maxFeeSatoshis);
 
+    /// <summary>
+    /// Creates an open_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
+    /// to_self_delay are taken from <paramref name="localParams"/> (the values we announce).
+    /// </summary>
     OpenChannel1Message CreateOpenChannel1Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
                                                   CompactPubKey fundingPubKey, LightningMoney pushAmount,
-                                                  LightningMoney channelReserveAmount, LightningMoney feeRatePerKw,
-                                                  ushort maxAcceptedHtlcs, CompactPubKey revocationBasepoint,
+                                                  ChannelParty localParams, LightningMoney feeRatePerKw,
+                                                  CompactPubKey revocationBasepoint,
                                                   CompactPubKey paymentBasepoint, CompactPubKey delayedPaymentBasepoint,
                                                   CompactPubKey htlcBasepoint, CompactPubKey firstPerCommitmentPoint,
                                                   ChannelFlags channelFlags,
@@ -66,15 +70,16 @@ public interface IMessageFactory
                                                   ChannelFlags channelFlags, BitcoinScript? shutdownScriptPubkey = null,
                                                   byte[]? channelType = null, bool requireConfirmedInputs = false);
 
-    AcceptChannel1Message CreateAcceptChannel1Message(LightningMoney channelReserveAmount,
-                                                      ChannelTypeTlv channelTypeTlv,
+    /// <summary>
+    /// Creates an accept_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
+    /// to_self_delay are taken from <paramref name="localParams"/> (the values we announce, never the opener's).
+    /// </summary>
+    AcceptChannel1Message CreateAcceptChannel1Message(ChannelParty localParams, ChannelTypeTlv channelTypeTlv,
                                                       CompactPubKey delayedPaymentBasepoint,
                                                       CompactPubKey firstPerCommitmentPoint,
                                                       CompactPubKey fundingPubKey, CompactPubKey htlcBasepoint,
-                                                      ushort maxAcceptedHtlcs, LightningMoney maxHtlcValueInFlight,
                                                       uint minimumDepth, CompactPubKey paymentBasepoint,
                                                       CompactPubKey revocationBasepoint, ChannelId temporaryChannelId,
-                                                      ushort toSelfDelay,
                                                       UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv);
 
     AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId, LightningMoney fundingSatoshis,

@@ -5,9 +5,7 @@ namespace NLightning.Application.Channels.Handlers;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
-using Domain.Enums;
 using Domain.Exceptions;
-using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -68,34 +66,21 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         else
             upfrontShutdownScriptTlv = new UpfrontShutdownScriptTlv(Array.Empty<byte>());
 
-        var channelTypeFeatureSet = FeatureSet.NewBasicChannelType();
-        if (negotiatedFeatures.OptionAnchors >= FeatureSupport.Optional)
-            channelTypeFeatureSet.SetFeature(Feature.OptionAnchors,
-                                             negotiatedFeatures.OptionAnchors == FeatureSupport.Compulsory);
+        // BOLT 2: accept_channel MUST carry the channel_type from open_channel (NL-218). The factory's validator has
+        // already refused a missing or unsupported type, so echo the opener's bytes as they are.
+        var channelTypeTlv = message.ChannelTypeTlv
+                          ?? throw new ChannelErrorException("Channel type was not provided", payload.ChannelId);
 
-        if (channel.ChannelConfig.UseScidAlias >= FeatureSupport.Optional)
-            channelTypeFeatureSet.SetFeature(Feature.OptionScidAlias,
-                                             channel.ChannelConfig.UseScidAlias == FeatureSupport.Compulsory);
-
-        if (channel.ChannelConfig.MinimumDepth == 0)
-            channelTypeFeatureSet.SetFeature(Feature.OptionZeroconf, true);
-
-        var featureSetBytes = channelTypeFeatureSet.GetWireBytes() ?? throw new ChannelErrorException("The channel type is not supported", payload.ChannelId,
-                                            "Sorry, we had an internal error");
-        var channelTypeTlv = new ChannelTypeTlv(featureSetBytes);
-
-        // Create the reply message
+        // Create the reply message with the values we announce, never the opener's (NL-194)
         var acceptChannel1ReplyMessage = _messageFactory
-           .CreateAcceptChannel1Message(channel.ChannelConfig.ChannelReserveAmount, channelTypeTlv,
+           .CreateAcceptChannel1Message(channel.ChannelParams.Local, channelTypeTlv,
                                         channel.LocalKeySet.DelayedPaymentCompactBasepoint,
                                         channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
                                         channel.LocalKeySet.FundingCompactPubKey,
-                                        channel.LocalKeySet.HtlcCompactBasepoint,
-                                        channel.ChannelConfig.MaxAcceptedHtlcs,
-                                        channel.ChannelConfig.MaxHtlcAmountInFlight, channel.ChannelConfig.MinimumDepth,
+                                        channel.LocalKeySet.HtlcCompactBasepoint, channel.ChannelParams.MinimumDepth,
                                         channel.LocalKeySet.PaymentCompactBasepoint,
                                         channel.LocalKeySet.RevocationCompactBasepoint, channel.ChannelId,
-                                        channel.ChannelConfig.ToSelfDelay, upfrontShutdownScriptTlv);
+                                        upfrontShutdownScriptTlv);
 
         return [acceptChannel1ReplyMessage];
     }

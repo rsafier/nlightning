@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Channels;
+
 namespace NLightning.Domain.Tests.Transactions.Factories;
 
 using Domain.Bitcoin.Enums;
@@ -35,7 +37,7 @@ public class FundingTransactionModelFactoryTests
 
     private static ChannelModel CreateChannel()
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Satoshis(2_500), LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Satoshis(2_500), LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 0, false,
                                               LightningMoney.Zero, 144, FeatureSupport.No);
         var fundingOutputInfo = new FundingOutputInfo(s_fundingAmount, s_pubKey, s_pubKey);

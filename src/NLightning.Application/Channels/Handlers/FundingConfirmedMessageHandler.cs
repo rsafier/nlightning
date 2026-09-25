@@ -55,7 +55,7 @@ public class FundingConfirmedMessageHandler
                 return;
             }
 
-            var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
+            var mustUseScidAlias = channel.ChannelParams.UseScidAlias > FeatureSupport.No;
 
             // Create our new per-commitment point
             channel.UpdateCommitmentNumber(channel.CommitmentNumber.Increment());

@@ -77,8 +77,15 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                                        "You should use either Local or Remote commitment side.")
         };
 
-        var hasAnchors = channel.ChannelConfig.OptionAnchorOutputs;
-        var feeRatePerKw = channel.ChannelConfig.FeeRateAmountPerKw.Satoshi;
+        var hasAnchors = channel.ChannelParams.OptionAnchorOutputs;
+        var feeRatePerKw = channel.ChannelParams.FeeRateAmountPerKw.Satoshi;
+
+        // The holder's own dust limit applies to its commitment, and its to_local waits for the delay the OTHER side
+        // announced (BOLT 2 to_self_delay: "the number of blocks that the other node's to-self outputs must be
+        // delayed"). Reserves: the holder keeps what the other side asked for, and vice versa (NL-194).
+        var holderParams = side == CommitmentSide.Local ? channel.ChannelParams.Local : channel.ChannelParams.Remote;
+        var counterpartyParams =
+            side == CommitmentSide.Local ? channel.ChannelParams.Remote : channel.ChannelParams.Local;
 
         // BOLT 3 base weight (no HTLC outputs): 724, or 1124 if option_anchors applies
         var weight = hasAnchors
@@ -95,9 +102,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                  : channel.LocalBalance;
 
         // Every output of a commitment transaction is trimmed against the dust limit of its holder
-        var dustLimitAmount = side == CommitmentSide.Local
-                                  ? channel.ChannelConfig.LocalDustLimitAmount
-                                  : channel.ChannelConfig.RemoteDustLimitAmount;
+        var dustLimitAmount = holderParams.DustLimitAmount;
 
         if (htlcs is { Count: > 0 })
         {
@@ -177,10 +182,11 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
             remoteAnchorOutput = new AnchorOutputInfo(counterpartyFundingPubKey, false);
         }
 
-        // Fail if both amounts are below ChannelReserve
-        if (channel.ChannelConfig.ChannelReserveAmount is not null
-         && toLocalAmount.Satoshi < channel.ChannelConfig.ChannelReserveAmount.Satoshi
-         && toRemoteAmount.Satoshi < channel.ChannelConfig.ChannelReserveAmount.Satoshi)
+        // Fail if both amounts are below the reserve each side has to keep: the holder keeps the reserve the other
+        // side asked for, and the other side keeps the reserve the holder asked for
+        var holderReserve = counterpartyParams.ChannelReserveAmount ?? LightningMoney.Zero;
+        var counterpartyReserve = holderParams.ChannelReserveAmount ?? LightningMoney.Zero;
+        if (toLocalAmount.Satoshi < holderReserve.Satoshi && toRemoteAmount.Satoshi < counterpartyReserve.Satoshi)
             throw new ChannelErrorException("Both to_local and to_remote amounts are below the reserve limits.");
 
         // Only create output if the amount is above the dust limit
@@ -188,7 +194,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         {
             toLocalOutput = new ToLocalOutputInfo(toLocalAmount, commitmentKeys.LocalDelayedPubKey,
                                                   commitmentKeys.RevocationPubKey,
-                                                  channel.ChannelConfig.ToSelfDelay);
+                                                  counterpartyParams.ToSelfDelay);
         }
 
         if (toRemoteAmount.Satoshi >= dustLimitAmount.Satoshi)
@@ -198,7 +204,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                    : channel.LocalKeySet.PaymentCompactBasepoint;
 
             toRemoteOutput =
-                new ToRemoteOutputInfo(toRemoteAmount, remotePubKey, channel.ChannelConfig.OptionAnchorOutputs);
+                new ToRemoteOutputInfo(toRemoteAmount, remotePubKey, channel.ChannelParams.OptionAnchorOutputs);
         }
 
         if (offeredHtlcOutputs.Count == 0 && receivedHtlcOutputs.Count == 0)

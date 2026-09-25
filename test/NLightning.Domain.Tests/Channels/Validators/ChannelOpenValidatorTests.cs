@@ -6,6 +6,7 @@ using Domain.Channels.Validators.Parameters;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.Tlv;
 
@@ -233,6 +234,87 @@ public class ChannelOpenValidatorTests
 
         // Assert
         Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(40)] // zero_fee_commitments
+    [InlineData(20)] // the retired option_anchor_outputs
+    [InlineData(13)] // an odd bit is never part of a defined channel type
+    public void Given_ChannelTypeWithUnsupportedBit_When_PerformingMandatoryChecks_Then_Throws(int bit)
+    {
+        // Arrange: BOLT 2: fail the channel if the channel_type is not suitable
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(bit, true);
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.Optional);
+        parameters = CopyWithChannelType(parameters, new ChannelTypeTlv(channelType));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Unsupported channel type bit", exception.Message);
+    }
+
+    [Fact]
+    public void Given_ChannelTypeWithScidAliasNotNegotiated_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        var parameters = CopyWithChannelType(CreateParameters(LightningMoney.Satoshis(100_000), null,
+                                                              FeatureSupport.No),
+                                             new ChannelTypeTlv(channelType));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Scid alias", exception.Message);
+    }
+
+    [Fact]
+    public void Given_ChannelTypeWithScidAliasNegotiated_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionScidAlias, true);
+        var parameters = CreateParameters(LightningMoney.Satoshis(100_000), null, FeatureSupport.No);
+        parameters = new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = new ChannelTypeTlv(channelType),
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = new FeatureOptions { ScidAlias = FeatureSupport.Optional },
+            FundingAmount = parameters.FundingAmount,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    private static ChannelOpenMandatoryValidationParameters CopyWithChannelType(
+        ChannelOpenMandatoryValidationParameters parameters, ChannelTypeTlv channelTypeTlv)
+    {
+        return new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = channelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
     }
 
     private static ChannelOpenMandatoryValidationParameters CreateParameters(

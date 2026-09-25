@@ -178,7 +178,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     internal static async Task<ChannelEntity> MapDomainToEntity(ChannelModel channelModel,
                                                                 IMessageSerializer messageSerializer)
     {
-        var config = ChannelConfigDbRepository.MapDomainToEntity(channelModel.ChannelId, channelModel.ChannelConfig);
+        var config = ChannelConfigDbRepository.MapDomainToEntity(channelModel.ChannelId, channelModel.ChannelParams);
         ImmutableArray<ChannelKeySetEntity> keySets =
         [
             ChannelKeySetDbRepository.MapDomainToEntity(channelModel.ChannelId, true, channelModel.LocalKeySet),
@@ -338,7 +338,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 LightningMoney.Satoshis(channelEntity.RemoteBalanceSatoshis), remoteKeySet,
                                 channelEntity.RemoteNextHtlcId, remoteNodeId, channelEntity.RemoteRevocationNumber,
                                 (ChannelState)channelEntity.State, (ChannelVersion)channelEntity.Version,
-                                localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, null, remoteOfferedHtlcs,
+                                localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, remoteOfferedHtlcs,
                                 remoteFulfilledHtlcs, remoteOldHtlcs)
         {
             FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight,

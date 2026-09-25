@@ -11,6 +11,17 @@ using Parameters;
 
 public class ChannelOpenValidator : IChannelOpenValidator
 {
+    /// <summary>
+    /// The (even) channel type bits we can operate a channel with.
+    /// </summary>
+    private static readonly HashSet<int> s_supportedChannelTypeBits =
+    [
+        (int)Feature.OptionStaticRemoteKey - 1,
+        (int)Feature.OptionAnchors - 1,
+        (int)Feature.OptionScidAlias - 1,
+        (int)Feature.OptionZeroconf - 1
+    ];
+
     private readonly NodeOptions _nodeOptions;
 
     public ChannelOpenValidator(NodeOptions nodeOptions)
@@ -135,6 +146,13 @@ public class ChannelOpenValidator : IChannelOpenValidator
         if (parameters.ChannelTypeTlv is null)
             throw new ChannelErrorException("ChannelTypeTlv is not present");
 
+        // BOLT 2: fail the channel if the channel_type is not suitable. We know option_static_remotekey, optionally
+        // with option_anchors, and the option_scid_alias/option_zeroconf variations; channel types only use even bits
+        foreach (var bit in parameters.ChannelTypeTlv.Features.GetSetBits())
+            if (!s_supportedChannelTypeBits.Contains(bit))
+                throw new ChannelErrorException($"Unsupported channel type bit {bit}",
+                                                "ChannelTypeTlv: This channel type is not supported");
+
         // Check if OptionStaticRemoteKey is Compulsory
         if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
             throw new ChannelErrorException("Static remote key feature is compulsory but not set by peer",
@@ -147,6 +165,10 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionScidAlias, true))
         {
+            if (parameters.NegotiatedFeatures.ScidAlias == FeatureSupport.No)
+                throw new ChannelErrorException("Scid alias feature is not negotiated but requested by peer",
+                                                "ChannelTypeTlv: We don't support option_scid_alias");
+
             if (parameters.ChannelFlags is not null && parameters.ChannelFlags.Value.AnnounceChannel)
                 throw new ChannelErrorException("Invalid channel flags for OPTION_SCID_ALIAS",
                                                 "ChannelTypeTlv: We want to announce this channel");

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Managers;
@@ -302,7 +303,7 @@ public class ChannelManagerConcurrencyTests
             TransactionId = new TxId(txIdBytes),
             Index = 0
         };
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
                                               LightningMoney.Zero, 144, FeatureSupport.No);
         var keySet = new ChannelKeySetModel(0, s_pubKey, s_pubKey, s_pubKey, s_pubKey, s_pubKey, s_pubKey);

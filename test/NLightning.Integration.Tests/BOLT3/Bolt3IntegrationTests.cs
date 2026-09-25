@@ -5,6 +5,7 @@ using NBitcoin.Crypto;
 using NLightning.Tests.Utils.Vectors;
 
 #pragma warning disable CS8625 // Cannot convert null literal to non-nullable reference type.
+using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Integration.Tests.BOLT3;
 
@@ -689,7 +690,7 @@ public class Bolt3IntegrationTests
                                              List<Htlc>? overrideOfferedHtlcs = null,
                                              List<Htlc>? overrideReceivedHtlcs = null)
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
                                               nodeOptions.DustLimitAmount, 0, LightningMoney.Zero, 0, false,
                                               nodeOptions.DustLimitAmount, nodeOptions.ToSelfDelay, FeatureSupport.No);
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
@@ -722,7 +723,7 @@ public class Bolt3IntegrationTests
                                 Bolt3AppendixCVectors.Tx0ToLocalMsat - receivedHtlcsAmount, localKeySet, 0, 0,
                                 Bolt3AppendixCVectors.ToRemoteMsat + receivedHtlcsAmount, remoteKeySet, 0,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+                                ChannelVersion.V1, offeredHtlcs, remoteOfferedHtlcs: receivedHtlcs);
     }
 
     #endregion
@@ -812,7 +813,7 @@ public class Bolt3IntegrationTests
                                                    LightningMoney toLocalAfterHtlcs, LightningMoney toRemote,
                                                    List<Htlc> offeredHtlcs, List<Htlc> receivedHtlcs)
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, feeRatePerKw, LightningMoney.Zero,
                                               nodeOptions.DustLimitAmount, 0, LightningMoney.Zero, 0, true,
                                               nodeOptions.DustLimitAmount, nodeOptions.ToSelfDelay, FeatureSupport.No);
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
@@ -835,7 +836,7 @@ public class Bolt3IntegrationTests
         return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
                                 localBalance, localKeySet, 0, 0, remoteBalance, remoteKeySet, 0,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+                                ChannelVersion.V1, offeredHtlcs, remoteOfferedHtlcs: receivedHtlcs);
     }
 
     #endregion

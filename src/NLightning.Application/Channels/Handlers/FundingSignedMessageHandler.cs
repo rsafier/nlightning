@@ -107,7 +107,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         await PersistChannelAsync(channel);
 
         await _blockchainMonitor.PublishAndWatchTransactionAsync(channel.ChannelId, unsignedFundingTransaction,
-                                                                 channel.ChannelConfig.MinimumDepth);
+                                                                 channel.ChannelParams.MinimumDepth);
 
         // Now that we should remember the channel, we update its state
         channel.UpdateState(ChannelState.V1FundingSigned);

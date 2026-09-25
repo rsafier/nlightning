@@ -97,22 +97,38 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         if (!_channelMemoryRepository.TryGetTemporaryChannel(peerPubKey, payload.ChannelId, out var tempChannel))
             throw new ChannelErrorException("Temporary channel not found", payload.ChannelId);
 
-        // Check if the channel type was negotiated and the channel type is present
+        // BOLT 2: the channel type must be present and equal to the one we sent in open_channel
         if (message.ChannelTypeTlv is null)
-            throw new ChannelErrorException("Channel type was not provided");
+            throw new ChannelErrorException("Channel type was not provided", payload.ChannelId);
+
+        var localParams = tempChannel.ChannelParams.Local;
+        if (!message.ChannelTypeTlv.Features.HasSameBits(tempChannel.ChannelParams.ToChannelType()))
+            throw new ChannelErrorException("Channel type does not match the one we sent", payload.ChannelId,
+                                            "channel_type does not match open_channel");
+
+        // BOLT 2: each side's reserve must be at least the other side's dust limit
+        if (payload.ChannelReserveAmount < localParams.DustLimitAmount)
+            throw new ChannelErrorException(
+                $"Channel reserve ({payload.ChannelReserveAmount}) is below our dust limit ({localParams.DustLimitAmount})",
+                payload.ChannelId, "channel_reserve_satoshis is below our dust_limit_satoshis");
+
+        if (localParams.ChannelReserveAmount < payload.DustLimitAmount)
+            throw new ChannelErrorException(
+                $"Our channel reserve ({localParams.ChannelReserveAmount}) is below the dust limit ({payload.DustLimitAmount})",
+                payload.ChannelId, "dust_limit_satoshis is above our channel_reserve_satoshis");
 
         // Perform optional checks for the channel
         _channelOpenValidator.PerformOptionalChecks(
             ChannelOpenOptionalValidationParameters.FromAcceptChannel1Payload(
-                payload, tempChannel.ChannelConfig.ChannelReserveAmount));
+                payload, localParams.ChannelReserveAmount));
 
         // Perform mandatory checks for the channel
         _channelOpenValidator.PerformMandatoryChecks(ChannelOpenMandatoryValidationParameters.FromAcceptChannel1Payload(
                                                          message.ChannelTypeTlv,
-                                                         tempChannel.ChannelConfig.FeeRateAmountPerKw,
+                                                         tempChannel.ChannelParams.FeeRateAmountPerKw,
                                                          negotiatedFeatures, payload), out var minimumDepth);
 
-        if (minimumDepth != tempChannel.ChannelConfig.MinimumDepth)
+        if (minimumDepth != tempChannel.ChannelParams.MinimumDepth)
             throw new ChannelErrorException("Minimum depth is not acceptable", payload.ChannelId);
 
         // Check for the upfront shutdown script: it's only required when option_upfront_shutdown_script was negotiated
@@ -133,21 +149,11 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
         tempChannel.AddRemoteKeySet(remoteKeySet);
 
-        // Create a new ChannelConfig with the remote-provided values
-        var channelConfig = new ChannelConfig(tempChannel.ChannelConfig.ChannelReserveAmount,
-                                              tempChannel.ChannelConfig.FeeRateAmountPerKw,
-                                              tempChannel.ChannelConfig.HtlcMinimumAmount,
-                                              tempChannel.ChannelConfig.LocalDustLimitAmount,
-                                              tempChannel.ChannelConfig.MaxAcceptedHtlcs,
-                                              tempChannel.ChannelConfig.MaxHtlcAmountInFlight,
-                                              tempChannel.ChannelConfig.MinimumDepth,
-                                              tempChannel.ChannelConfig.OptionAnchorOutputs,
-                                              payload.DustLimitAmount, payload.ToSelfDelay,
-                                              tempChannel.ChannelConfig.UseScidAlias,
-                                              tempChannel.ChannelConfig.LocalUpfrontShutdownScript,
-                                              remoteUpfrontShutdownScript);
-
-        tempChannel.UpdateChannelConfig(channelConfig);
+        // Keep the values the peer announced: they bind our HTLCs and our commitment's to_local delay (NL-194)
+        tempChannel.UpdateRemoteParams(new ChannelParty(payload.DustLimitAmount, payload.ChannelReserveAmount,
+                                                        payload.HtlcMinimumAmount, payload.MaxAcceptedHtlcs,
+                                                        payload.MaxHtlcValueInFlightAmount, payload.ToSelfDelay,
+                                                        remoteUpfrontShutdownScript));
 
         // Generate the correct commitment number (we are the opener: opener basepoint first)
         var commitmentNumber = new CommitmentNumber(tempChannel.LocalKeySet.PaymentCompactBasepoint,

@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NLightning.Infrastructure.Protocol.Models;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Node.Managers;
@@ -974,7 +975,7 @@ public class PeerManagerTests
     {
         var channelIdBytes = new byte[32];
         channelIdBytes[0] = id;
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
                                               LightningMoney.Zero, 144, FeatureSupport.No);
         var keySet = new ChannelKeySetModel(0, _compactPubKey, _compactPubKey, _compactPubKey, _compactPubKey,

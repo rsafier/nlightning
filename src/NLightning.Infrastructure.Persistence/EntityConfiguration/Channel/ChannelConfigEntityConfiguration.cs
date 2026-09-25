@@ -22,12 +22,18 @@ public static class ChannelConfigEntityConfiguration
                   .HasConversion<ChannelIdConverter>()
                   .IsRequired();
             entity.Property(e => e.MinimumDepth).IsRequired();
-            entity.Property(e => e.ToSelfDelay).IsRequired();
-            entity.Property(e => e.MaxAcceptedHtlcs).IsRequired();
+            entity.Property(e => e.LocalToSelfDelay).IsRequired();
+            entity.Property(e => e.RemoteToSelfDelay).IsRequired();
+            entity.Property(e => e.LocalMaxAcceptedHtlcs).IsRequired();
+            entity.Property(e => e.RemoteMaxAcceptedHtlcs).IsRequired();
             entity.Property(e => e.LocalDustLimitAmountSats).IsRequired();
             entity.Property(e => e.RemoteDustLimitAmountSats).IsRequired();
-            entity.Property(e => e.HtlcMinimumMsat).IsRequired();
-            entity.Property(e => e.MaxHtlcAmountInFlight).IsRequired();
+            entity.Property(e => e.LocalHtlcMinimumMsat).IsRequired();
+            entity.Property(e => e.RemoteHtlcMinimumMsat).IsRequired();
+            entity.Property(e => e.LocalChannelReserveAmountSats).IsRequired();
+            entity.Property(e => e.RemoteChannelReserveAmountSats).IsRequired();
+            entity.Property(e => e.LocalMaxHtlcValueInFlightMsat).IsRequired();
+            entity.Property(e => e.RemoteMaxHtlcValueInFlightMsat).IsRequired();
             entity.Property(e => e.FeeRatePerKwSatoshis).IsRequired();
             entity.Property(e => e.OptionAnchorOutputs).IsRequired();
 

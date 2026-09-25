@@ -7,7 +7,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - `Database/BaseDbRepository.cs`: generic `Get` / `GetByIdAsync(object id)` / `Insert` / `Update` / `Delete*`. Reads use AsNoTracking by default. `Update` is tracking-aware.
 - `Database/Helpers/PrimaryKeyHelper.cs`: builds the PK predicate. Pass composite keys as a **ValueTuple, in key order**.
 - `Database/Bitcoin/`: BlockchainState, Utxo, WalletAddresses, WatchedTransaction, RevocationWatch (an empty stub; its entity is not in the DbContext).
-- `Database/Channel/`: Channel (full aggregate), ChannelConfig, ChannelKeySet, Htlc. Htlc stores the serialized `UpdateAddHtlcMessage`, which includes the 1366-byte onion.
+- `Database/Channel/`: Channel (full aggregate), ChannelConfig (maps `ChannelParams`: `Local*`/`Remote*` columns per `ChannelParty` field; a default party's null amounts are written as 0), ChannelKeySet, Htlc. Htlc stores the serialized `UpdateAddHtlcMessage`, which includes the 1366-byte onion.
 - `Database/Node/PeerDbRepository.cs`
 - `Memory/ChannelMemoryRepository.cs`: live channels and temp channels (keyed by `(peerPubKey, tempChannelId)`). Raises `OnChannelUpgraded` / `OnChannelUpdated`.
 - `Memory/UtxoMemoryRepository.cs`: the UTXO set, balances (confirmed means `BlockHeight + 3 <= currentBlockHeight`, hard-coded), and Branch-and-Bound coin selection with a greedy fallback.

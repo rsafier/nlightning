@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -99,7 +100,7 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              FeatureSupport useScidAlias = FeatureSupport.No)
     {
         var sha256 = new Sha256();
-        var config = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
+        var config = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
                                        LightningMoney.MilliSatoshis(1_000), LightningMoney.Satoshis(546), 483,
                                        LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Satoshis(546), 144,
                                        useScidAlias);
@@ -127,7 +128,7 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         return new ChannelModel(config, channelId, commitmentNumber, fundingOutput, isInitiator, null, null,
                                 LightningMoney.Satoshis(600_000), localKeySet, 5, 0,
                                 LightningMoney.Satoshis(400_000), remoteKeySet, 7, RemoteNodeId, 0,
-                                state, ChannelVersion.V1, localOffered, localFulfilled, localOld, null,
+                                state, ChannelVersion.V1, localOffered, localFulfilled, localOld,
                                 remoteOffered, remoteFulfilled, remoteOld)
         {
             ChangeAddress = changeAddress

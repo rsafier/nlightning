@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Handlers;
@@ -103,7 +104,7 @@ public class FundingCreatedMessageHandlerTests
         _validMessage = new FundingCreatedMessage(payload);
 
         // Setup mock channel
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
                                               LightningMoney.Zero, 144, FeatureSupport.No);
         var keySet = new ChannelKeySetModel(0, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey,
