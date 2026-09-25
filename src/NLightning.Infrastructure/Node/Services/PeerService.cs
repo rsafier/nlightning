@@ -167,14 +167,15 @@ public sealed class PeerService : IPeerService
         }
         else if (message is StfuMessage stfuMessage)
         {
-            // Quiescence (BOLT 2, option_quiesce) is not implemented, so we can never reply with our own stfu.
-            // Tell the peer with a channel-scoped warning instead of silently ignoring it; the connection stays up.
+            // Quiescence (BOLT 2, option_quiesce) is not implemented, so we can never reply with our own stfu. The
+            // sender now considers the channel quiescing and stops sending updates; the only spec-defined way out is
+            // a disconnection. So send a channel-scoped warning and disconnect (the channel is NOT failed).
             _logger.LogWarning("Received stfu for channel {channelId} from peer {peer}, but quiescence is not supported",
                                stfuMessage.Payload.ChannelId, PeerPubKey);
 
-            _ = SendWarningAsync(new ChannelWarningException("Received stfu, but quiescence is not supported",
-                                                             stfuMessage.Payload.ChannelId,
-                                                             "Quiescence (stfu) is not supported"));
+            Disconnect(new ChannelWarningException("Received stfu, but quiescence is not supported",
+                                                   stfuMessage.Payload.ChannelId,
+                                                   "Quiescence (stfu) is not supported"));
         }
         else if (message is GossipMessage)
         {
@@ -208,7 +209,8 @@ public sealed class PeerService : IPeerService
         if (message.Type != MessageTypes.Init || message is not InitMessage initMessage)
         {
             _logger.LogError("Failed to receive init message from peer {peer}", PeerPubKey);
-            Disconnect(new WarningException("Expected init as the first message"));
+            // BOLT 1: we must not send anything before receiving init, so just close the connection
+            Disconnect(new ConnectionException("Expected init as the first message"));
             return;
         }
 
