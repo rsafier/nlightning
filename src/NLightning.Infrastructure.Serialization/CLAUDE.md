@@ -34,15 +34,15 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`
 - `dotnet test test/NLightning.Infrastructure.Serialization.Tests/NLightning.Infrastructure.Serialization.Tests.csproj --no-build` (145 pass)
 - One test: add `--filter "FullyQualifiedName~PingMessageTests"`
-- BOLT 1 BigSize vectors: `test/.../Vectors/BigSize.txt` (non-canonical cases commented out with `#`).
+- BOLT 1 BigSize vectors: `test/.../Vectors/BigSize.txt` (all 18 vectors active, including the 3 non-canonical-encoding failures).
 - No serializer tests for OpenChannel1/AcceptChannel1/FundingCreated/FundingSigned yet.
 
 ## Gotchas
 - Deserializers use `stream.Position/Length` for optional TLVs and the onion: they need a seekable, one-message `MemoryStream`, never a `NetworkStream`.
 - `DeserializeMessageAsync<TMessage>` reads the wire type but ignores it (uses TMessage's serializer).
-- `TlvConstants` numbers collide across messages (0 and 1 reused). `UpdateAddHtlcMessageSerializer.cs:68` looks up the blinded path with `TlvConstants.UpfrontShutdownScript` (works only because both are 0) — use the semantically correct constant.
+- `TlvConstants` numbers collide across messages (0 and 1 reused), so always use the semantically correct constant (e.g. `UpdateAddHtlcMessageSerializer.cs` uses `TlvConstants.BlindedPath`).
 - `RemoteAddressTlv` type 5 (DNS hostname) conversion is broken: Domain length is `3 + len` (spec: `4 + len`) and the converter overwrites a hostname byte. IPv4/IPv6/Tor v3 are fine.
-- Message TLV extensions (`DeserializeAsync`) do not reject unknown even types; `BigSizeTypeSerializer` accepts non-canonical encodings (M1-T5). `TlvSerializer` rejects length > remaining bytes before allocating.
+- Most message TLV extensions still use the open `DeserializeAsync`, which does NOT reject unknown even types (BOLT 1 violation). Only `UpdateAddHtlcMessageTypeSerializer` uses `DeserializeStrictAsync` with its known set (`{0}`); migrate the others as they are touched. `BigSizeTypeSerializer` is canonical (throws `ArgumentException(NonCanonicalErrorMessage)`). `TlvSerializer` rejects length > remaining bytes before allocating.
 - `PingPayloadSerializer`/`PongPayloadSerializer` check but don't consume the ignored bytes.
 - `OpenChannel1MessageTypeSerializer` requires a `channel_type` TLV.
 - Warning reuses `ErrorPayload` (`PayloadSerializerFactory` maps `MessageTypes.Warning`).
@@ -50,7 +50,7 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage` bytes in the DB — changing that wire format affects persisted rows.
 
 ## Onion routing (BOLT 4) hooks
-- `Payloads/UpdateAddHtlcPayloadSerializer.cs`: onion is an opaque, OPTIONAL 1366-byte blob (read only if `Position + 1366 <= Length`, literal 1366). Spec says mandatory. Plan: Domain `OnionPacket` value object (version 1 + pubkey 33 + hop_payloads 1300 + hmac 32) with an `IValueObjectTypeSerializer`, then make it mandatory (check DB compat first).
+- `Payloads/UpdateAddHtlcPayloadSerializer.cs`: the onion is MANDATORY and exactly `OnionConstants.PacketLength` (1366) bytes, read with `ReadExactlyAsync`; a short read throws `PayloadSerializationException`, and the `UpdateAddHtlcPayload` constructor rejects any other length. The payload keeps raw bytes; `Domain/Protocol/Onion/ValueObjects/OnionPacket` parses them (version/pubkey not validated there; that is the peeler's job).
 - `UpdateFailHtlcPayloadSerializer` passes `reason` (encrypted failure onion) as opaque u16-length bytes; `UpdateFailMalformedHtlcPayloadSerializer` carries sha256_of_onion + raw u16 failure_code.
-- Hop payloads = BigSize length + TLV stream (types 2,4,6,8,10,12,16,18) + HMAC. Put onion TLV constants in a separate class (don't extend flat `TlvConstants`), and use `DeserializeStrictAsync` (ordering + unknown-even rejection); canonical BigSize is M1-T5. Both TLV stream reads go to end-of-stream, so length-prefixed hop streams need a bounded sub-stream.
+- Hop payloads = BigSize length + TLV stream (types 2,4,6,8,10,12,16,18) + HMAC. Put onion TLV constants in a separate class (don't extend flat `TlvConstants`), and use `DeserializeStrictAsync` (ordering + unknown-even rejection); BigSize decoding is already canonical. Both TLV stream reads go to end-of-stream, so length-prefixed hop streams need a bounded sub-stream.
 - onion_message (513) would be a new message following the 4-place registration above. No sphinx/onion code exists anywhere yet.
