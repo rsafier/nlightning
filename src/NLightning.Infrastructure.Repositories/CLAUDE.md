@@ -32,15 +32,16 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions.
 
 ## Tests
-- There are no unit tests for this project (`Docker/SqliteTests.cs`, `PostgresTests.cs`, `SqlServerTests.cs` in the integration project are commented out). Coverage comes only from Docker e2e tests: `test/NLightning.Integration.Tests/Docker/{ChannelOpeningFlowTests,AbcNetworkTests}.cs`, run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"` (needs Docker).
+- SQLite in-memory round-trip tests (real Sqlite migrations, real message serializer) live in `test/NLightning.Integration.Tests/Persistence/` (`ChannelDbRepositoryTests`, `HtlcDbRepositoryTests`, helper `SqliteDbTestContext`). They run in the normal `!~Docker` test pass. Other repos are covered only by the Docker e2e tests: `test/NLightning.Integration.Tests/Docker/{ChannelOpeningFlowTests,AbcNetworkTests}.cs`, run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"` (needs Docker).
 - Build and verify: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121 && dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
-- Suggested addition: SQLite in-memory round-trip tests (MigrationsAssembly `NLightning.Infrastructure.Persistence.Sqlite`) for Channel and Htlc repos. They would catch the bugs below.
+- Add new repository round-trip tests next to those, reusing `SqliteDbTestContext`.
 
 ## Known bugs / gotchas (verify before relying on these paths)
-- `ChannelDbRepository.MapEntityToDomain` (L201, L204, L210, L213, L223) compares `byte` `State`/`Direction` against enums with `.Equals(...)`. In memory that is `byte.Equals(object)` with a boxed enum, which is always false: Offered/Fulfilled HTLCs are not reloaded, and Expired/Failed ones all land in the remote list. `HtlcDbRepository.GetByChannelIdAndStateAsync` (L63) and `GetByChannelIdAndDirectionAsync` (L70) use the same pattern inside EF queries; how EF translates it is unverified. Compare `== (byte)HtlcState.X` instead.
-- `ChannelDbRepository` L230-231 builds `FundingOutputInfo` with the local funding pubkey twice, so the remote key is lost on reload. `CommitmentNumber` is always built as (local, remote) payment basepoints, which is wrong for non-initiator channels: `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs` L123 passes the remote (opener) basepoint first.
+- `State`/`Direction` are raw `byte` on entities: compare with `== (byte)HtlcState.X`, never `.Equals(HtlcState.X)` (a boxed enum never equals a byte). This was the NL-125 HTLC-reload bug, now fixed.
+- On reload, `CommitmentNumber` must be built as (opener, accepter) payment basepoints, ordered by `IsInitiator` (BOLT 3 obscuring factor; NL-127 fixed).
+- `ChannelModel.ChangeAddress` is persisted through the convention FK (`ChangeAddressIndex` + shadow `ChangeAddressIsChange`/`ChangeAddressAddressType`), which `ChannelDbRepository.SetChangeAddressForeignKey` sets via the change tracker; reads `Include(c => c.ChangeAddress)`. The referenced `WalletAddresses` row must already exist (FK). If NL-134 makes the FK explicit, that helper keeps working because it reads the FK metadata.
 - `UtxoDbRepository.GetByIdAsync` (L50) passes an anonymous object `new { txId, index }`. `PrimaryKeyHelper` needs `(txId, index)` and will throw.
-- `HtlcDbRepository` never writes `Signature`. The Utxo mapper ignores `LockedToChannelId`/`UsedInTransactionId`. `ChannelModel.ChangeAddress` is never mapped.
+- The Utxo mapper ignores `LockedToChannelId`/`UsedInTransactionId`.
 - `BaseDbRepository.Get` applies Skip/Take before orderBy (L35-38), so paging is unordered.
 - `UnitOfWork.AddUtxo`/`TrySpendUtxo` roll back memory only on immediate exceptions and swallow them. A failure at SaveChanges time leaves memory and the DB out of sync.
 - `ChannelMemoryRepository.TryGetChannel` returns the shared mutable model. Call `UpdateChannel` afterwards so that `OnChannelUpdated` fires.
@@ -49,4 +50,4 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 ## Onion routing (BOLT 4) hooks
 - Today the onion packet persists only inside `HtlcEntity.AddMessageBytes` (a serialized `UpdateAddHtlcMessage`).
 - Forwarding will need new repos and tables here. Candidates: a per-incoming-HTLC shared secret (for wrapping failures), a forwarding circuit (in channel/htlc to out channel/htlc), failure reasons, an invoice/preimage store, and a lookup from scid/alias to ChannelId, likely via `IChannelMemoryRepository`.
-- Fix the HTLC enum-Equals reload bug first. Otherwise in-flight HTLCs are not restored after a restart.
+- In-flight HTLCs (and their `Signature`) now round-trip through `ChannelDbRepository`/`HtlcDbRepository` (NL-125/NL-128).

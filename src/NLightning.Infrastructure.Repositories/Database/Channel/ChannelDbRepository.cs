@@ -1,10 +1,13 @@
 using System.Collections.Immutable;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using NLightning.Domain.Protocol.Models;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
+using Bitcoin;
 using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -15,16 +18,19 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Serialization.Interfaces;
 using Persistence.Contexts;
+using Persistence.Entities.Bitcoin;
 using Persistence.Entities.Channel;
 
 public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRepository
 {
+    private readonly NLightningDbContext _context;
     private readonly IMessageSerializer _messageSerializer;
     private readonly ISha256 _sha256;
 
     public ChannelDbRepository(NLightningDbContext context, IMessageSerializer messageSerializer, ISha256 sha256)
         : base(context)
     {
+        _context = context;
         _messageSerializer = messageSerializer ?? throw new ArgumentNullException(nameof(messageSerializer));
         _sha256 = sha256 ?? throw new ArgumentNullException(nameof(sha256));
     }
@@ -34,12 +40,17 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var channelEntity = await MapDomainToEntity(channelModel, _messageSerializer);
 
         Insert(channelEntity);
+        SetChangeAddressForeignKey(channelEntity, channelModel.ChangeAddress);
     }
 
     public async Task UpdateAsync(ChannelModel channelModel)
     {
         var channelEntity = await MapDomainToEntity(channelModel, _messageSerializer);
         Update(channelEntity);
+
+        // Update() may have copied the values onto an already tracked instance
+        var trackedEntity = DbSet.Local.FirstOrDefault(c => c.ChannelId == channelEntity.ChannelId) ?? channelEntity;
+        SetChangeAddressForeignKey(trackedEntity, channelModel.ChangeAddress);
     }
 
     public async Task<ChannelModel?> GetByIdAsync(ChannelId channelId)
@@ -49,6 +60,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                  .Include(c => c.Config)
                                  .Include(c => c.KeySets)
                                  .Include(c => c.Htlcs)
+                                 .Include(c => c.ChangeAddress)
                                  .FirstOrDefaultAsync(c => c.ChannelId == channelId);
 
         if (channelEntity is null)
@@ -64,6 +76,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.Config)
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
+                                   .Include(c => c.ChangeAddress)
                                    .ToListAsync();
 
         return await Task.WhenAll(
@@ -88,6 +101,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.Config)
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
+                                   .Include(c => c.ChangeAddress)
                                    .Where(c => readyStateList.Contains(c.State))
                                    .ToListAsync();
 
@@ -103,6 +117,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.Config)
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
+                                   .Include(c => c.ChangeAddress)
                                    .Where(c => c.RemoteNodeId.Equals(peerNodeId))
                                    .ToListAsync();
 
@@ -155,6 +170,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
             LocalBalanceSatoshis = channelModel.LocalBalance.Satoshi,
             RemoteBalanceSatoshis = channelModel.RemoteBalance.Satoshi,
+
+            ChangeAddressType = channelModel.ChangeAddress?.AddressType,
+            ChangeAddressIndex = channelModel.ChangeAddress?.Index,
 
             LocalNextHtlcId = channelModel.LocalNextHtlcId,
             RemoteNextHtlcId = channelModel.RemoteNextHtlcId,
@@ -261,8 +279,37 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, null, remoteOfferedHtlcs,
                                 remoteFulfilledHtlcs, remoteOldHtlcs)
         {
-            FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight
+            FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight,
+            ChangeAddress = channelEntity.ChangeAddress is null
+                                ? null
+                                : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress)
         };
+    }
+
+    /// <summary>
+    /// The change address relationship is keyed by (Index, IsChange, AddressType), and part of that foreign key only
+    /// exists as EF shadow properties on <see cref="ChannelEntity"/>, so it has to be set through the change tracker.
+    /// </summary>
+    private void SetChangeAddressForeignKey(ChannelEntity channelEntity, WalletAddressModel? changeAddress)
+    {
+        var entry = _context.Entry(channelEntity);
+        var foreignKey = ((INavigation)entry.Navigation(nameof(ChannelEntity.ChangeAddress)).Metadata).ForeignKey;
+
+        for (var i = 0; i < foreignKey.Properties.Count; i++)
+        {
+            object? value = changeAddress is null
+                                ? null
+                                : foreignKey.PrincipalKey.Properties[i].Name switch
+                                {
+                                    nameof(WalletAddressEntity.Index) => changeAddress.Index,
+                                    nameof(WalletAddressEntity.IsChange) => changeAddress.IsChange,
+                                    nameof(WalletAddressEntity.AddressType) => changeAddress.AddressType,
+                                    var name => throw new InvalidOperationException(
+                                                    $"Unexpected change address key property {name}.")
+                                };
+
+            entry.Property(foreignKey.Properties[i].Name).CurrentValue = value;
+        }
     }
 
     private static ICollection<Htlc> GetHtlcsOrNull(ICollection<Htlc>? htlcs)
