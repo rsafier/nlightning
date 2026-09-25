@@ -180,10 +180,13 @@ public class ChannelFactory : IChannelFactory
 
         // Check if there are enough funds to pay for fees
         var currentFeeRatePerKw = request.FeeRatePerKw ?? await _feeService.GetFeeRatePerKwAsync();
-        var expectedWeight = negotiatedFeatures.OptionAnchors > FeatureSupport.No
-                                 ? TransactionConstants.InitialCommitmentTransactionWeightNoAnchor
-                                 : TransactionConstants.InitialCommitmentTransactionWeightWithAnchor;
+        var hasAnchors = negotiatedFeatures.OptionAnchors > FeatureSupport.No;
+        var expectedWeight = hasAnchors
+                                 ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
+                                 : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
         var expectedFee = LightningMoney.Satoshis(expectedWeight * currentFeeRatePerKw.Satoshi / 1000);
+        if (hasAnchors)
+            expectedFee += 2 * TransactionConstants.AnchorOutputAmount;
         if (request.FundingAmount < expectedFee + channelReserveAmount)
             throw new ChannelErrorException($"Funding amount is too small to cover fees: {request.FundingAmount}");
 
