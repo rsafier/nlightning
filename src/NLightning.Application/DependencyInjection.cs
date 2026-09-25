@@ -20,8 +20,10 @@ using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
+using Payments;
 using Protocol.Factories;
 
 /// <summary>
@@ -79,6 +81,8 @@ public static class DependencyInjection
         services.AddCommitmentEngineServices();
         services.AddChannelStateTransitionServices();
         services.AddChannelOperationsServices();
+        services.AddGossipServices();
+        services.AddPaymentsServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers

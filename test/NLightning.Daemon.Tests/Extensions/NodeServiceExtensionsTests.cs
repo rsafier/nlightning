@@ -5,6 +5,9 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
+using Application.Gossip.Interfaces;
+using Application.Gossip.Services;
+using Application.Payments.Invoices;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
@@ -17,6 +20,7 @@ using Domain.Client.Responses;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -59,9 +63,55 @@ public class NodeServiceExtensionsTests
     }
 
     [Fact]
+    public void Given_NodeServices_When_Composed_Then_PeerManagerGetsTheChannelUpdateService()
+    {
+        // Arrange: AddApplicationServices registers the W1-E gossip services, so the daemon needs nothing else
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var peerManager = provider.GetRequiredService<IPeerManager>();
+        var channelUpdateService = provider.GetRequiredService<IChannelUpdateService>();
+
+        // Assert
+        Assert.NotNull(peerManager);
+        Assert.IsType<ChannelUpdateService>(channelUpdateService);
+        Assert.Single(services, d => d.ServiceType == typeof(IChannelUpdateService));
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_InvoiceServiceAndScopedPaymentRepositoriesResolve()
+    {
+        // Arrange: AddApplicationServices registers the W1-B payment core; the repositories come from the unit of work
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        // Act
+        var invoiceService = provider.GetRequiredService<IInvoiceService>();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        // Assert
+        Assert.IsType<InvoiceService>(invoiceService);
+        Assert.Same(unitOfWork.InvoiceDbRepository, scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>());
+        Assert.Same(unitOfWork.PaymentDbRepository, scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>());
+        Assert.Same(unitOfWork.ForwardCircuitDbRepository,
+                    scope.ServiceProvider.GetRequiredService<IForwardCircuitDbRepository>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<CreateInvoiceClientRequest,
+                                 CreateInvoiceClientResponse>>());
+    }
+
+    [Fact]
     public void Given_NodeServicesWithPaymentServices_When_Composed_Then_InvoiceAndPaymentCommandsResolve()
     {
-        // Arrange: IInvoiceService/IPaymentService come from the Application payment services (not wired yet)
+        // Arrange: IPaymentService comes from the Application payment services (W2-C, not wired yet)
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
@@ -97,7 +147,7 @@ public class NodeServiceExtensionsTests
     [Fact]
     public void Given_NodeServicesWithoutPaymentServices_When_BuiltWithValidateOnBuild_Then_TheGraphStillBuilds()
     {
-        // Arrange: a Development host validates every registration at build; the payment services are not wired yet
+        // Arrange: a Development host validates every registration at build; IPaymentService is not wired yet
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);

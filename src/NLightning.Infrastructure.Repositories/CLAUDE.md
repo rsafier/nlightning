@@ -16,7 +16,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - `Database/Node/PeerDbRepository.cs`
 - `Memory/ChannelMemoryRepository.cs`: live channels and temp channels (keyed by `(peerPubKey, tempChannelId)`). Raises `OnChannelUpgraded` / `OnChannelUpdated`.
 - `Memory/UtxoMemoryRepository.cs`: the UTXO set, balances (confirmed means `BlockHeight + 3 <= currentBlockHeight`, hard-coded), and Branch-and-Bound coin selection with a greedy fallback.
-- `DependencyInjection.cs`: `AddRepositoriesInfrastructureServices()` registers `IUnitOfWork` (scoped) and the memory repos (singleton). Individual Db repos are **not** registered in DI (resolve them through `IUnitOfWork`).
+- `DependencyInjection.cs`: `AddRepositoriesInfrastructureServices()` registers `IUnitOfWork` (scoped) and the memory repos (singleton). Individual Db repos are **not** registered in DI (resolve them through `IUnitOfWork`), except the three payment repositories (`IInvoiceDbRepository`, `IPaymentDbRepository`, `IForwardCircuitDbRepository`), registered Scoped as the scope's `IUnitOfWork` properties so they share its DbContext and its save (the payment core resolves `IInvoiceDbRepository` from a scope).
 
 ## Dependency rules
 - It references only `NLightning.Domain` and `NLightning.Infrastructure.Persistence` (see the csproj). Do NOT add references to Application, Infrastructure, Infrastructure.Bitcoin, Serialization or Daemon. Get hashing (and, if ever needed, serialization) through Domain abstractions (`ISha256`, `IMessageSerializer`); UnitOfWork receives `ISha256` by injection.

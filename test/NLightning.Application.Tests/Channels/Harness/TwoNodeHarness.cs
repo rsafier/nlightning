@@ -32,6 +32,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -443,6 +444,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private IReadOnlyList<ShachainEntry>? _stagedShachain;
 
     private readonly Dictionary<HtlcKey, Secret> _onionSecrets = [];
+    private readonly Dictionary<(ChannelId, HtlcKey), HtlcOrigin> _origins = [];
     private readonly List<HtlcKey> _stagedPrunes = [];
 
     public ChannelCommitments? Committed { get; private set; }
@@ -492,6 +494,19 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
 
     public Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc) =>
         Task.FromResult(_onionSecrets.TryGetValue(htlc, out var secret) ? secret : (Secret?)null);
+
+    public Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin)
+    {
+        _origins[(channelId, htlc)] = origin;
+        return Task.CompletedTask;
+    }
+
+    public Task<HtlcOrigin?> GetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc) =>
+        Task.FromResult(_origins.TryGetValue((channelId, htlc), out var origin) ? origin : (HtlcOrigin?)null);
+
+    public Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin) =>
+        Task.FromResult<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>>(
+            _origins.Where(pair => pair.Value.Equals(origin)).Select(pair => pair.Key).ToList());
 
     public Task PruneSettledHtlcsAsync(ChannelId channelId, IEnumerable<HtlcKey> htlcs)
     {

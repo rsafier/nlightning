@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Repositories;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Memory;
 
@@ -21,6 +22,13 @@ public static class DependencyInjection
     {
         // Register UnitOfWork
         services.AddScoped<IUnitOfWork, UnitOfWork>();
+
+        // Payment repositories: the scope's unit of work instances, so they share its database context and one
+        // IUnitOfWork.SaveChangesAsync commits what they staged
+        services.AddScoped<IInvoiceDbRepository>(sp => sp.GetRequiredService<IUnitOfWork>().InvoiceDbRepository);
+        services.AddScoped<IPaymentDbRepository>(sp => sp.GetRequiredService<IUnitOfWork>().PaymentDbRepository);
+        services.AddScoped<IForwardCircuitDbRepository>(sp =>
+            sp.GetRequiredService<IUnitOfWork>().ForwardCircuitDbRepository);
 
         // Register memory repositories
         services.AddSingleton<IChannelMemoryRepository, ChannelMemoryRepository>();
