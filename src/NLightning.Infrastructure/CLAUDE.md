@@ -23,7 +23,7 @@ Message handlers live in `NLightning.Application` (e.g. `src/NLightning.Applicat
 2. Add a `BaseTlv` subclass in `src/NLightning.Domain/Protocol/Tlv/`.
 3. Add `Protocol/Tlv/Converters/XTlvConverter.cs : ITlvConverter<XTlv>`. `ConvertFromBase` validates Type and Length and throws `InvalidCastException`. Implement the non-generic interface explicitly, marked `[ExcludeFromCodeCoverage]`.
 4. Register the converter in `Protocol/Factories/TlvConverterFactory.RegisterConverters()`.
-5. Add a case to the switch in `src/NLightning.Infrastructure.Serialization/Tlv/TlvStreamSerializer.cs` (`SerializeAsync`). Without it, serialization throws `SerializationException`.
+5. Add a sample instance to `CreateSampleTlvs` in `test/NLightning.Infrastructure.Serialization.Tests/Tlv/TlvStreamSerializerTests.cs` (`TlvStreamSerializer` finds the converter by runtime type; the test fails for registered types without a sample).
 6. Add tests in `test/NLightning.Infrastructure.Tests/Protocol/Tlv/Converters/XTlvConverterTests.cs`.
 
 ## Adding a crypto primitive

@@ -18,6 +18,17 @@ public class TlvConverterFactory : ITlvConverterFactory
         return _converters.GetValueOrDefault(typeof(TTlv)) as ITlvConverter<TTlv>;
     }
 
+    public ITlvConverter? GetConverter(Type tlvType)
+    {
+        ArgumentNullException.ThrowIfNull(tlvType);
+        return _converters.GetValueOrDefault(tlvType);
+    }
+
+    /// <summary>
+    /// The TLV types that have a registered converter.
+    /// </summary>
+    public IReadOnlyCollection<Type> RegisteredTlvTypes => _converters.Keys;
+
     private void RegisterConverters()
     {
         _converters.Add(typeof(BlindedPathTlv), new BlindedPathTlvConverter());

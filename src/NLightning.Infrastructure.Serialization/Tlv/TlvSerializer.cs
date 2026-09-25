@@ -1,4 +1,4 @@
-using System.Buffers;
+using System.Runtime.Serialization;
 using NLightning.Domain.Protocol.ValueObjects;
 using NLightning.Domain.Serialization.Interfaces;
 
@@ -36,30 +36,33 @@ public class TlvSerializer : ITlvSerializer
     /// Deserializes a BaseTlv value from a stream.
     /// </summary>
     /// <param name="stream">The stream from which the BaseTlv value will be deserialized.</param>
-    /// <returns>A task that represents the asynchronous deserialization operation, containing the deserialized BaseTlv value.</returns>
-    /// <exception cref="ArgumentException">Thrown when the stream is empty or contains insufficient data for deserialization.</exception>
+    /// <returns>
+    /// A task that represents the asynchronous deserialization operation, containing the deserialized BaseTlv value,
+    /// or <c>null</c> when zero bytes remain before the type.
+    /// </returns>
+    /// <exception cref="ArgumentException">Thrown when the type or length is truncated.</exception>
+    /// <exception cref="SerializationException">
+    /// Thrown when the length exceeds the number of bytes remaining in the stream.
+    /// </exception>
     /// <exception cref="IOException">Thrown when an I/O error occurs during the read operation.</exception>
     public async Task<BaseTlv?> DeserializeAsync(Stream stream)
     {
         if (stream.Position == stream.Length)
             return null;
 
-        byte[]? value = null;
+        var type = await _bigSizeSerializer.DeserializeAsync(stream);
+        var length = await _bigSizeSerializer.DeserializeAsync(stream);
 
-        try
-        {
-            var type = await _bigSizeSerializer.DeserializeAsync(stream);
-            var length = await _bigSizeSerializer.DeserializeAsync(stream);
+        // BOLT 1: if length exceeds the number of bytes remaining in the message, MUST fail to parse.
+        // Checked before allocating so a peer-supplied length cannot force a large allocation.
+        var remaining = (ulong)(stream.Length - stream.Position);
+        if (length.Value > remaining)
+            throw new SerializationException(
+                $"TLV length {length.Value} exceeds the {remaining} bytes remaining in the stream.");
 
-            value = ArrayPool<byte>.Shared.Rent(length);
-            await stream.ReadExactlyAsync(value.AsMemory()[..(int)length]);
+        var value = new byte[(int)length.Value];
+        await stream.ReadExactlyAsync(value);
 
-            return new BaseTlv(type, length, value[..(int)length]);
-        }
-        finally
-        {
-            if (value is not null)
-                ArrayPool<byte>.Shared.Return(value);
-        }
+        return new BaseTlv(type, length, value);
     }
 }

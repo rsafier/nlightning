@@ -8,13 +8,13 @@ BOLT wire (de)serialization: `IMessage` <-> bytes. Three layers: `MessageSeriali
 - `Messages/Types/` — 32 `IMessageTypeSerializer<TMessage>`; payload + TLV extension, TLVs converted via `ITlvConverterFactory`.
 - `Payloads/` — 31 `IPayloadSerializer<TPayload>`; hand-coded field layout, big-endian via `NLightning.Infrastructure.Converters.EndianBitConverter`, `ArrayPool` buffers.
 - `Factories/` — `MessageTypeSerializerFactory`, `PayloadSerializerFactory`, `ValueObjectSerializerFactory`: hand-written dictionaries, serializers built with `new` (not DI).
-- `Tlv/` — `TlvSerializer` (BigSize type + BigSize len + value), `TlvStreamSerializer` (hard-coded type switch on serialize; reads to end of stream on deserialize).
+- `Tlv/` — `TlvSerializer` (BigSize type + BigSize len + value), `TlvStreamSerializer` (serialize: converter by runtime type via `ITlvConverterFactory.GetConverter(Type)`, raw `BaseTlv` verbatim; deserialize reads to end of stream, strictly increasing types, length <= remaining; `DeserializeStrictAsync(stream, knownTypes)` also rejects unknown even types).
 - `ValueObjects/` — BigSize, ChainHash, ChannelFlags, ChannelId, ShortChannelId, Witness.
 - `Node/FeatureSetSerializer.cs` — BOLT 9 feature bits (init writes it twice: global + local).
 
 ## Adding a wire message (all steps required)
 1. Domain: `MessageTypes` enum, `Payloads/XPayload.cs`, `Messages/XMessage.cs` (in `src/NLightning.Domain/Protocol`).
-2. New TLVs: `TlvConstants`, Domain `Tlv/XTlv.cs`, converter in `src/NLightning.Infrastructure/Protocol/Tlv/Converters`, register in `TlvConverterFactory.RegisterConverters`, AND add a case to the switch in `Tlv/TlvStreamSerializer.SerializeAsync` (else serialize throws `SerializationException`).
+2. New TLVs: `TlvConstants`, Domain `Tlv/XTlv.cs`, converter in `src/NLightning.Infrastructure/Protocol/Tlv/Converters`, register in `TlvConverterFactory.RegisterConverters`, and add a sample to `CreateSampleTlvs` in `Tlv/TlvStreamSerializerTests.cs`.
 3. `Payloads/XPayloadSerializer.cs` -> register in `PayloadSerializerFactory` in BOTH `RegisterSerializers` and `RegisterTypeDictionary`.
 4. `Messages/Types/XMessageTypeSerializer.cs` -> register in `MessageTypeSerializerFactory` in BOTH `RegisterSerializers` (`_serializers`) and `RegisterTypeDictionary` (`_messageTypeDictionary`). Missing the type map => `MessageSerializer.SerializeAsync` throws `InvalidOperationException` and non-generic `DeserializeMessageAsync` treats the type as unknown.
 5. Round-trip test in `test/NLightning.Infrastructure.Serialization.Tests/Messages/XMessageTests.cs` (use `Helpers/SerializerHelper.cs`).
@@ -41,8 +41,8 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - Deserializers use `stream.Position/Length` for optional TLVs and the onion: they need a seekable, one-message `MemoryStream`, never a `NetworkStream`.
 - `DeserializeMessageAsync<TMessage>` reads the wire type but ignores it (uses TMessage's serializer).
 - `TlvConstants` numbers collide across messages (0 and 1 reused). `UpdateAddHtlcMessageSerializer.cs:68` looks up the blinded path with `TlvConstants.UpfrontShutdownScript` (works only because both are 0) — use the semantically correct constant.
-- `RemoteAddressTlv` has no case in the `TlvStreamSerializer` switch -> serializing it throws.
-- TLV deserialize does not enforce strictly increasing types or reject unknown even types; `BigSizeTypeSerializer` accepts non-canonical encodings; `TlvSerializer` rents buffers by peer-supplied length without a cap.
+- `RemoteAddressTlv` type 5 (DNS hostname) conversion is broken: Domain length is `3 + len` (spec: `4 + len`) and the converter overwrites a hostname byte. IPv4/IPv6/Tor v3 are fine.
+- Message TLV extensions (`DeserializeAsync`) do not reject unknown even types; `BigSizeTypeSerializer` accepts non-canonical encodings (M1-T5). `TlvSerializer` rejects length > remaining bytes before allocating.
 - `PingPayloadSerializer`/`PongPayloadSerializer` check but don't consume the ignored bytes.
 - `OpenChannel1MessageTypeSerializer` requires a `channel_type` TLV.
 - Warning reuses `ErrorPayload` (`PayloadSerializerFactory` maps `MessageTypes.Warning`).
@@ -52,5 +52,5 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 ## Onion routing (BOLT 4) hooks
 - `Payloads/UpdateAddHtlcPayloadSerializer.cs`: onion is an opaque, OPTIONAL 1366-byte blob (read only if `Position + 1366 <= Length`, literal 1366). Spec says mandatory. Plan: Domain `OnionPacket` value object (version 1 + pubkey 33 + hop_payloads 1300 + hmac 32) with an `IValueObjectTypeSerializer`, then make it mandatory (check DB compat first).
 - `UpdateFailHtlcPayloadSerializer` passes `reason` (encrypted failure onion) as opaque u16-length bytes; `UpdateFailMalformedHtlcPayloadSerializer` carries sha256_of_onion + raw u16 failure_code.
-- Hop payloads = BigSize length + TLV stream (types 2,4,6,8,10,12,16,18) + HMAC. Put onion TLV constants in a separate class (don't extend flat `TlvConstants`), and fix TLV ordering / unknown-even rejection / canonical BigSize first — BOLT 4 requires them. `TlvStreamSerializer.DeserializeAsync` reads to end-of-stream, so length-prefixed hop streams need a bounded sub-stream.
+- Hop payloads = BigSize length + TLV stream (types 2,4,6,8,10,12,16,18) + HMAC. Put onion TLV constants in a separate class (don't extend flat `TlvConstants`), and use `DeserializeStrictAsync` (ordering + unknown-even rejection); canonical BigSize is M1-T5. Both TLV stream reads go to end-of-stream, so length-prefixed hop streams need a bounded sub-stream.
 - onion_message (513) would be a new message following the 4-place registration above. No sphinx/onion code exists anywhere yet.
