@@ -252,11 +252,13 @@ public class PeerCommunicationServiceTests
     }
 
     [Fact]
-    public void Given_MessageServiceRaisesConnectionException_When_Raised_Then_ConnectionIsClosed()
+    public async Task Given_MessageServiceRaisesConnectionException_When_Raised_Then_ConnectionIsClosed()
     {
         // Arrange (a malformed message: MessageService already sent the warning, we must close the connection)
         var service = CreateInitializedService();
         var sentMessages = CaptureSentMessages();
+        var disposedTcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _messageServiceMock.Setup(x => x.Dispose()).Callback(() => disposedTcs.TrySetResult());
         Exception? disconnectException = null;
         var disconnected = false;
         service.DisconnectEvent += (_, e) =>
@@ -273,7 +275,44 @@ public class PeerCommunicationServiceTests
         Assert.True(disconnected);
         Assert.Same(connectionException, disconnectException);
         Assert.Empty(sentMessages);
+        await disposedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         _messageServiceMock.Verify(x => x.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_MessageServiceDisposeBlocks_When_Disconnecting_Then_DisconnectDoesNotWaitForIt()
+    {
+        // Arrange (Disconnect often runs on the transport read loop, e.g. an init rejection, and disposing the
+        // transport waits up to 5 s for that same loop to end, so it must not dispose inline)
+        var service = CreateInitializedService();
+        _ = CaptureSentMessages();
+        using var releaseDispose = new ManualResetEventSlim(false);
+        var disposeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _messageServiceMock.Setup(x => x.Dispose()).Callback(() =>
+        {
+            disposeStarted.TrySetResult();
+            releaseDispose.Wait(TimeSpan.FromSeconds(10));
+        });
+        var disconnected = false;
+        service.DisconnectEvent += (_, _) => disconnected = true;
+
+        try
+        {
+            // Act
+            var disconnectTask = Task.Run(() => service.Disconnect(new WarningException("Incompatible features")),
+                                          TestContext.Current.CancellationToken);
+            var finished = await Task.WhenAny(disconnectTask, Task.Delay(TimeSpan.FromSeconds(3),
+                                                                          TestContext.Current.CancellationToken));
+
+            // Assert
+            Assert.Same(disconnectTask, finished);
+            Assert.True(disconnected);
+            await disposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            releaseDispose.Set();
+        }
     }
 
     private List<IMessage> CaptureSentMessages()
