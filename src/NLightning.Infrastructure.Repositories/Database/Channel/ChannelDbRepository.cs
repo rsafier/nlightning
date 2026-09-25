@@ -228,15 +228,18 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         }
 
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(channelEntity.FundingAmountSatoshis),
-                                                  localKeySet.FundingCompactPubKey, localKeySet.FundingCompactPubKey)
+                                                  localKeySet.FundingCompactPubKey, remoteKeySet.FundingCompactPubKey)
         {
             Index = channelEntity.FundingOutputIndex,
             TransactionId = channelEntity.FundingTxId
         };
 
-        var commitmentNumber =
-            new CommitmentNumber(localKeySet.PaymentCompactBasepoint, remoteKeySet.PaymentCompactBasepoint, sha256,
-                                 channelEntity.LocalRevocationNumber + 1);
+        // BOLT 3: the obscuring factor is SHA256(opener payment_basepoint || accepter payment_basepoint)
+        var (openerPaymentBasepoint, accepterPaymentBasepoint) = channelEntity.IsInitiator
+            ? (localKeySet.PaymentCompactBasepoint, remoteKeySet.PaymentCompactBasepoint)
+            : (remoteKeySet.PaymentCompactBasepoint, localKeySet.PaymentCompactBasepoint);
+        var commitmentNumber = new CommitmentNumber(openerPaymentBasepoint, accepterPaymentBasepoint, sha256,
+                                                    channelEntity.LocalRevocationNumber + 1);
 
         var remoteNodeId = channelEntity.RemoteNodeId;
 
