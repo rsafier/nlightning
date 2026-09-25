@@ -64,7 +64,6 @@ public static class DependencyInjection
                                    {
                                        sqlOptions.MigrationsAssembly(pgMigrationsAssembly);
                                    })
-                                  .EnableSensitiveDataLogging()
                                   .UseSnakeCaseNamingConvention();
                     break;
 
