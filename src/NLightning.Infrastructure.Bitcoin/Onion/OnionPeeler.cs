@@ -8,8 +8,10 @@ using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Crypto.Ciphers;
 using Infrastructure.Crypto.Interfaces;
 
@@ -22,11 +24,6 @@ using Infrastructure.Crypto.Interfaces;
 /// </remarks>
 internal sealed class OnionPeeler
 {
-    /// <summary>
-    /// <c>invalid_onion_payload</c> data when the failure cannot be narrowed down to a TLV: bigsize type 0 || u16 offset 0.
-    /// </summary>
-    private static readonly byte[] s_framingFailureData = [0x00, 0x00, 0x00];
-
     private readonly IEcdh _ecdh;
     private readonly ISecp256K1Math _secp256K1Math;
 
@@ -190,6 +187,7 @@ internal sealed class OnionPeeler
 
     private static OnionException InvalidPayload(string message)
     {
-        return new OnionException(FailureCode.InvalidOnionPayload, message, s_framingFailureData.ToArray());
+        // The framing failure cannot be narrowed down to a TLV: report bigsize type 0 || u16 offset 0.
+        return InvalidOnionPayloadFailureFactory.Create(new BigSize(0), 0, message);
     }
 }
