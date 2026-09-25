@@ -76,6 +76,21 @@ public class CommandLineHelperTests : IDisposable
     }
 
     [Theory]
+    [InlineData(new[] { "getaddress", "--network", "regtest" }, new string[0])]
+    [InlineData(new[] { "getaddress", "-n", "regtest", "p2tr" }, new[] { "p2tr" })]
+    [InlineData(new[] { "getaddress", "p2tr", "-c", "/tmp/nltg.cookie" }, new[] { "p2tr" })]
+    [InlineData(new[] { "getaddress", "--network=regtest", "--cookie=/tmp/nltg.cookie" }, new string[0])]
+    public void GivenOptionsAfterCommand_WhenGetCommandArguments_ThenOptionsAreNotCommandArguments(
+        string[] args, string[] expected)
+    {
+        // Act
+        var result = CommandLineHelper.GetCommandArguments("getaddress", args);
+
+        // Assert
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
     [InlineData("-?")]
     [InlineData("-h")]
     [InlineData("--help")]

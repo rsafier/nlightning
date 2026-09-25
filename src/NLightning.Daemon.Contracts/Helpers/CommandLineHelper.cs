@@ -56,15 +56,19 @@ public static class CommandLineHelper
 
         for (var i = 0; i < args.Length; i++)
         {
+            // GetCookiePath reads these options anywhere, so they are never command arguments
+            if (IsOptionWithSeparateValue(args[i]))
+            {
+                // Skip the option's value, so it is never mistaken for the command or one of its arguments
+                i++;
+                continue;
+            }
+
+            if (IsOptionWithInlineValue(args[i]))
+                continue;
+
             if (!cmdFound)
             {
-                if (IsOptionWithSeparateValue(args[i]))
-                {
-                    // Skip the option's value, so it is never mistaken for the command
-                    i++;
-                    continue;
-                }
-
                 if (args[i].Equals(command, StringComparison.OrdinalIgnoreCase))
                     cmdFound = true;
 
@@ -157,6 +161,10 @@ public static class CommandLineHelper
      || arg.Equals(DashDashNetwork, StringComparison.OrdinalIgnoreCase)
      || arg.Equals(DashC)
      || arg.Equals(DashDashCookie, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOptionWithInlineValue(string arg) =>
+        arg.StartsWith(DashDashNetworkEquals, StringComparison.OrdinalIgnoreCase)
+     || arg.StartsWith(DashDashCookieEquals, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsOption(string arg) => arg.StartsWith('-');
 }
