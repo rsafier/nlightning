@@ -1,0 +1,13 @@
+<Project>
+
+  <ItemGroup>
+    <!--
+      NL-170: SharpCompress 0.41.0 (GHSA-6c8g-7p36-r338) comes in only through LNUnit (test tooling, Tests.Utils).
+      LNUnit 3.0.5 still pins 0.41.0 and calls ReaderFactory.Open/WriterFactory.Open, which SharpCompress removed
+      in the first patched release (0.48.0), so pinning a patched version breaks the Docker fixtures at runtime.
+      Drop this suppression once LNUnit ships with a patched SharpCompress.
+    -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-6c8g-7p36-r338"/>
+  </ItemGroup>
+
+</Project>

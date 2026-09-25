@@ -21,6 +21,8 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5"/>
+    <!-- Pin: EF Core Sqlite 10.0.5 pulls SQLitePCLRaw.lib.e_sqlite3 2.1.11 (NU1903, NL-170). -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12"/>
   </ItemGroup>
 
   <ItemGroup>
