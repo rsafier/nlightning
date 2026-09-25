@@ -14,7 +14,7 @@ public class HtlcResolutionOutput : BaseOutput
 
     public HtlcResolutionOutput(LightningMoney amount, PubKey localDelayedPubKey, PubKey revocationPubKey,
                                 ulong toSelfDelay)
-        : base(amount, GenerateHtlcOutputScript(revocationPubKey, localDelayedPubKey, toSelfDelay))
+        : base(amount, GenerateHtlcOutputScript(localDelayedPubKey, revocationPubKey, toSelfDelay))
     {
         RevocationPubKey = revocationPubKey;
         LocalDelayedPubKey = localDelayedPubKey;

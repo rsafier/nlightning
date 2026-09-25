@@ -42,7 +42,6 @@ This project is the NBitcoin-backed implementation of the Domain's Bitcoin and c
 
 ## Gotchas (verified bugs)
 - `BaseOutput.Amount` setter (`Outputs/BaseOutput.cs:24`) doesn't assign anything, so setting it has no effect.
-- `HtlcResolutionOutput` passes (revocation, delayed) into parameters declared (delayed, revocation), so the keys are swapped in the script.
 - `BlockchainMonitorService.CheckBlockForWatchedTransactions` (`Wallet/BlockchainMonitorService.cs`) only increments the index for watched txs, so the stored `TransactionIndex` is wrong whenever unwatched txs precede it in the block, and so is the ShortChannelId built from it in `src/NLightning.Application/Channels/Managers/ChannelManager.cs`.
 - `BaseOutput(amount, redeemScript)` calls the virtual `ScriptType` before the subclass ctor runs, so `ToRemoteOutput._hasAnchorOutputs` is still false at that point. It is currently harmless only because P2WPKH and P2WSH take the same `WitHash` branch (`OfferedHtlcOutput` also reports P2WPKH for a P2WSH script).
 - `InteractiveTransactionService.IsSerialIdUnique`/`IsSerialIdPresent` only check `_inputs`, so output serial-id validation is wrong.
