@@ -243,6 +243,54 @@ public class ChannelOperationsServiceTests
         await Assert.ThrowsAsync<KeyNotFoundException>(() => fail);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AnOrigin_When_Offering_Then_TheOriginIsStagedWithTheAddBeforeTheOneSave(bool forwarded)
+    {
+        // Arrange - NL-250: the origin commits with the add, so a restart can route the resolution back
+        var hash = HashOf(SecretOf(1));
+        var origin = forwarded ? HtlcOrigin.Forwarded(new ChannelId(Enumerable.Repeat((byte)0x44, 32).ToArray()), 7)
+                               : HtlcOrigin.Local(hash);
+        _context.ChannelStateDbRepository
+                .Setup(r => r.SetHtlcOriginAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>(), It.IsAny<HtlcOrigin>()))
+                .Callback(() => _context.Calls.Add("origin"))
+                .Returns(Task.CompletedTask);
+        var service = CreateService();
+
+        // Act
+        var id = await service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600,
+                                              s_onion, null, origin, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["apply", "origin", "save", "publish", "schedule"], _context.Calls);
+        _context.ChannelStateDbRepository.Verify(
+            r => r.SetHtlcOriginAsync(TestChannelId, new HtlcKey(HtlcDirection.Outgoing, id), origin), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_OriginCannotBeStaged_When_Offering_Then_NothingIsSavedOrSent()
+    {
+        // Arrange
+        _context.ChannelStateDbRepository
+                .Setup(r => r.SetHtlcOriginAsync(It.IsAny<ChannelId>(), It.IsAny<HtlcKey>(), It.IsAny<HtlcOrigin>()))
+                .ThrowsAsync(new InvalidOperationException("no row"));
+        var service = CreateService();
+        var before = _context.State;
+        var hash = HashOf(SecretOf(1));
+
+        // Act
+        var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600,
+                                           s_onion, null, HtlcOrigin.Local(hash),
+                                           TestContext.Current.CancellationToken);
+
+        // Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => offer);
+        Assert.DoesNotContain("save", _context.Calls);
+        Assert.Same(before, _context.State);
+        Assert.Empty(_published);
+    }
+
     [Fact]
     public async Task Given_DefaultOrigin_When_Offering_Then_ArgumentException()
     {
