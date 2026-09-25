@@ -3,7 +3,7 @@
 This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRepository` interfaces backed by EF Core, and the two `I*MemoryRepository` singletons. It maps EF entities to Domain models and back by hand. The EF model, entities and migrations are in `../NLightning.Infrastructure.Persistence` (see persistence notes there).
 
 ## Layout
-- `UnitOfWork.cs`: the scoped `IUnitOfWork` (interface: `src/NLightning.Domain/Persistence/Interfaces/IUnitOfWork.cs`). It creates each Db repo lazily over one `NLightningDbContext`, and has `GetPeersForStartupAsync`, `AddUtxo`/`TrySpendUtxo` (memory + DB) and `SaveChanges(Async)`.
+- `UnitOfWork.cs`: the scoped `IUnitOfWork` (interface: `src/NLightning.Domain/Persistence/Interfaces/IUnitOfWork.cs`). It creates each Db repo lazily over one `NLightningDbContext`, and has `GetPeersForStartupAsync`, `AddUtxo`/`TrySpendUtxo` (DB now, memory after a successful save) and `SaveChanges(Async)`.
 - `Database/BaseDbRepository.cs`: generic `Get` / `GetByIdAsync(object id)` / `Insert` / `Update` / `Delete*`. Reads use AsNoTracking by default. `Update` is tracking-aware.
 - `Database/Helpers/PrimaryKeyHelper.cs`: builds the PK predicate. Pass composite keys as a **ValueTuple, in key order**.
 - `Database/Bitcoin/`: BlockchainState, Utxo, WalletAddresses, WatchedTransaction, RevocationWatch (an empty stub; its entity is not in the DbContext).
@@ -40,7 +40,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - `ChannelDbRepository.MapEntityToDomain` (L201, L204, L210, L213, L223) compares `byte` `State`/`Direction` against enums with `.Equals(...)`. In memory that is `byte.Equals(object)` with a boxed enum, which is always false: Offered/Fulfilled HTLCs are not reloaded, and Expired/Failed ones all land in the remote list. `HtlcDbRepository.GetByChannelIdAndStateAsync` (L63) and `GetByChannelIdAndDirectionAsync` (L70) use the same pattern inside EF queries; how EF translates it is unverified. Compare `== (byte)HtlcState.X` instead.
 - `ChannelDbRepository` L230-231 builds `FundingOutputInfo` with the local funding pubkey twice, so the remote key is lost on reload. `CommitmentNumber` is always built as (local, remote) payment basepoints, which is wrong for non-initiator channels: `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs` L123 passes the remote (opener) basepoint first.
 - `HtlcDbRepository` never writes `Signature`. `ChannelModel.ChangeAddress` is never mapped.
-- `UnitOfWork.AddUtxo`/`TrySpendUtxo` roll back memory only on immediate exceptions and swallow them. A failure at SaveChanges time leaves memory and the DB out of sync.
+- `UnitOfWork.AddUtxo`/`TrySpendUtxo` only stage the DB change; `IUtxoMemoryRepository` is updated after `SaveChanges(Async)` succeeds (NL-133). Until then the utxo is not visible in memory (balances, coin selection). `TrySpendUtxo` also finds utxos added earlier in the same unit of work, and `UtxoDbRepository.Spend` cancels a still-pending insert instead of deleting.
 - `ChannelMemoryRepository.TryGetChannel` returns the shared mutable model. Call `UpdateChannel` afterwards so that `OnChannelUpdated` fires.
 - Do not inject `IUnitOfWork` into singletons. `UnitOfWork.Dispose` disposes the DbContext.
 
