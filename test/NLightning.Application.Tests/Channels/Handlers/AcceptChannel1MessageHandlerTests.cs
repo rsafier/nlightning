@@ -136,7 +136,7 @@ public class AcceptChannel1MessageHandlerTests
         var result = await _handler.HandleAsync(message, ChannelState.None, negotiatedFeatures, s_pubKey);
 
         // Assert
-        Assert.IsType<FundingCreatedMessage>(result);
+        Assert.IsType<FundingCreatedMessage>(Assert.Single(result));
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public class AcceptChannel1MessageHandlerTests
 
         // Assert
         // BOLT 2: a funder that has not broadcast the funding tx SHOULD NOT remember the channel on disconnection
-        Assert.IsType<FundingCreatedMessage>(result);
+        Assert.IsType<FundingCreatedMessage>(Assert.Single(result));
         _mockChannelDbRepository.Verify(r => r.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
         _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
         _mockChannelMemoryRepository.Verify(r => r.UpgradeChannel(s_tempChannelId, _tempChannel), Times.Once);
@@ -228,7 +228,7 @@ public class AcceptChannel1MessageHandlerTests
         var result = await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
 
         // Assert
-        var fundingCreated = Assert.IsType<FundingCreatedMessage>(result);
+        var fundingCreated = Assert.IsType<FundingCreatedMessage>(Assert.Single(result));
         Assert.Equal(builtTxId, _tempChannel.FundingOutput?.TransactionId);
         Assert.Equal(builtFundingOutputIndex, _tempChannel.FundingOutput?.Index);
         Assert.Equal(builtTxId, fundingCreated.Payload.FundingTxId);

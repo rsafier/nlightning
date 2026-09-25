@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Managers;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Managers;
+using Application.Channels.Services;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -475,8 +476,9 @@ public class ChannelManagerTests
                                                                       _mockMessageFactory.Object,
                                                                       _mockUnitOfWork.Object));
 
-        return new ChannelManager(_mockBlockchainMonitor.Object, _mockChannelMemoryRepository.Object,
-                                  new Mock<ILogger<ChannelManager>>().Object, mockSigner.Object, serviceProvider);
+        return new ChannelManager(_mockBlockchainMonitor.Object, new ChannelLockProvider(),
+                                  _mockChannelMemoryRepository.Object, new Mock<ILogger<ChannelManager>>().Object,
+                                  mockSigner.Object, serviceProvider);
     }
 
     private void RaiseNewBlock(int height)

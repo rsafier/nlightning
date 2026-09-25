@@ -262,9 +262,10 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 
 | File | Role |
 |---|---|
-| `Node/Managers/PeerManager.cs` | Peer table (a plain `Dictionary`, not thread-safe, NL-033). Startup registers each peer's channels, then reconnects (registration is not awaited, NL-201). Inbound/outbound connections. Routes `OnChannelMessageReceived` to `ChannelManager`. Sends replies. `ChannelErrorException` means send `error` for that channel and disconnect; `ChannelWarningException` means send a warning (and disconnect if `CloseConnection`) |
+| `Node/Managers/PeerManager.cs` | Peer table (`ConcurrentDictionary` of sessions). Startup registers each peer's channels, then reconnects (registration is not awaited, NL-201). Inbound/outbound connections. Queues `OnChannelMessageReceived` into one ordered inbound loop per peer that awaits `ChannelManager`; replies and `OnResponseMessageReady` messages go through the peer's `PeerOutbox` (`Node/Services/PeerOutbox.cs`, FIFO, one send at a time; NL-033, NL-193). `ChannelErrorException` means send `error` for that channel and disconnect; `ChannelWarningException` means send a warning (and disconnect if `CloseConnection`) |
 | `Channels/Managers/ChannelManager.cs` | Singleton dispatcher. Its switch handles OpenChannel, AcceptChannel, FundingCreated, ChannelReady, FundingSigned; update_fail_malformed_htlc without BADONION gets warning + close; `default` throws a channel-scoped `ChannelWarningException` (the peer stays connected), and a message for an unknown channel gets an `error` for that id (`ThrowIfUnknownChannelAsync`). Also handles blockchain events: `HandleFundingConfirmationAsync`, `ForgetStaleChannels` (unconfirmed opening states only), `ConfirmUnconfirmedChannels` |
-| `Channels/Handlers/Interfaces/IChannelMessageHandler.cs` | `Task<IChannelMessage?> HandleAsync(msg, currentState, negotiatedFeatures, peerPubKey)` |
+| `Channels/Handlers/Interfaces/IChannelMessageHandler.cs` | `Task<IReadOnlyList<IChannelMessage>> HandleAsync(msg, currentState, negotiatedFeatures, peerPubKey)` (replies in wire order) |
+| `Channels/Services/ChannelLockProvider.cs` | `IChannelLockProvider`: one non-reentrant lock per channel id, held by `ChannelManager` around every channel mutation |
 | `Channels/Handlers/OpenChannel1MessageHandler.cs` | Non-initiator: open_channel -> accept_channel |
 | `Channels/Handlers/AcceptChannel1MessageHandler.cs` | Initiator: accept_channel -> funding_created |
 | `Channels/Handlers/FundingCreatedMessageHandler.cs` | Non-initiator: funding_created -> funding_signed |
@@ -387,7 +388,7 @@ Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.Handle
 1. `BlockchainMonitorService` (ZMQ `rawblock`) -> `ProcessBlock` -> `CheckBlockForWatchedTransactions` -> `CheckWatchedTransactionsDepth` -> `OnTransactionConfirmed`.
 2. `ChannelManager.HandleFundingConfirmationAsync` sets `FundingCreatedAtBlockHeight` and `ShortChannelId(height, txIndex, vout)`. The tx index is the block position (NL-101, NL-102). The SCID itself is not persisted yet (NL-225).
 3. It runs the scoped `FundingConfirmedMessageHandler` (`src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs`). That increments `CommitmentNumber`, derives the next per-commitment point, and creates optional SCID aliases (2-5), reusing persisted ones and avoiding collisions (NL-103). It moves `V1FundingSigned` to `ReadyForUs`, or `ReadyForThem` to `Open`, then persists.
-4. Its `OnMessageReady(channel_ready)` goes to `ChannelManager.OnResponseMessageReady` -> `PeerManager.HandleResponseMessageReady` -> `peerService.SendMessageAsync`. One message is sent per alias.
+4. Its `OnMessageReady(channel_ready)` goes to `ChannelManager.OnResponseMessageReady` -> `PeerManager.HandleResponseMessageReady` -> the peer's `PeerOutbox` -> `peerService.SendMessageAsync`. One message is sent per alias.
 5. The peer's `channel_ready` goes to `ChannelReadyMessageHandler` (`src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs`), which stores their second per-commitment point and moves `V1FundingSigned` to `ReadyForThem`, or `ReadyForUs` to `Open`.
 6. The daemon's `OpenChannelClientSubscriptionHandler` completes when it sees `ReadyForUs`/`ReadyForThem`. The CLI stops polling.
 
@@ -506,7 +507,7 @@ Suggested phases: (1) Sphinx construct/peel plus legacy errors; (2) failure code
 
 ### 7.2 Add a channel message handler
 
-Implement `IChannelMessageHandler<TMessage>` in `src/NLightning.Application/Channels/Handlers`; reflection registers it Scoped automatically. Then add a `case MessageTypes.X:` in `ChannelManager` (without it, the peer is disconnected). Throw `ChannelErrorException` to fail the channel or `ChannelWarningException` to warn. Return a message to reply to the sending peer. For messages to *other* peers, raise an event -> `ChannelManager.OnResponseMessageReady`. Tests go in `test/NLightning.Application.Tests` (run them via `dotnet run`).
+Implement `IChannelMessageHandler<TMessage>` in `src/NLightning.Application/Channels/Handlers`; reflection registers it Scoped automatically. Then add a `case MessageTypes.X:` in `ChannelManager` (without it, the peer is disconnected). Throw `ChannelErrorException` to fail the channel or `ChannelWarningException` to warn. Return the replies to the sending peer as a list, in wire order. For messages to *other* peers, raise an event -> `ChannelManager.OnResponseMessageReady`. Tests go in `test/NLightning.Application.Tests` (run them via `dotnet run`).
 
 ### 7.3 Add an IPC / CLI command
 
@@ -581,7 +582,7 @@ Retired. The per-file bug and gap tables that used to live here duplicated the i
 - **`ChannelModel.UpdateState`** only allows strictly increasing numeric states. Number any new state accordingly.
 - **Two commitment counters:** `CommitmentNumber.Value` counts **up** from 0, while `ChannelKeySetModel.CurrentPerCommitmentIndex` counts **down** from 2^48-1. `CommitmentNumber`'s constructor takes the *funder's* basepoint first.
 - **Temp vs real channel ids:** funding_created carries the temp id. `ChannelManager`'s `currentState` lookup only searches real channels. Only the initiator gets `OnChannelUpgraded`. The initiator is not persisted until funding_signed, on purpose (BOLT 2: a funder SHOULD NOT remember an unbroadcast channel; NL-048).
-- **Threading:** there is no per-channel lock, `PeerManager._peers` is a plain `Dictionary` (NL-033), `MessageService` deserializes and runs handlers synchronously under a lock on the read loop (NL-108), and several sync-over-async calls block. `PeerCommunicationService.Disconnect` is idempotent and disposes `MessageService` off the read loop.
+- **Threading:** channel mutations hold a per-channel lock (`IChannelLockProvider`), each peer's channel messages run on one ordered inbound loop and its sends go through one `PeerOutbox` (NL-033, NL-193). `MessageService` still deserializes on the read loop under a lock (NL-108; channel messages are only queued there now, but ping/gossip handling is still inline), and several sync-over-async calls block. `PeerCommunicationService.Disconnect` is idempotent and disposes `MessageService` off the read loop.
 - **Lifetimes:** managers are singletons that open a scope per message. Handlers and `IUnitOfWork` are scoped. Never inject `IUnitOfWork` into a singleton, and call `SaveChanges(Async)` explicitly.
 - **Serialization streams** use `Position`/`Length` to find optional trailing TLVs and the onion. Give them a seekable, single-message `MemoryStream`.
 - **Stored wire bytes:** `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage`s, so changing the update_add_htlc wire format changes the meaning of stored rows.

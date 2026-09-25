@@ -29,13 +29,15 @@ public static class DependencyInjection
     public static IServiceCollection AddApplicationServices(this IServiceCollection services)
     {
         // Singleton services (one instance throughout the application)
+        services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
         services.AddSingleton<IChannelManager>(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();
+            var channelLockProvider = sp.GetRequiredService<IChannelLockProvider>();
             var channelMemoryRepository = sp.GetRequiredService<IChannelMemoryRepository>();
             var lightningSigner = sp.GetRequiredService<ILightningSigner>();
             var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-            return new ChannelManager(blockchainMonitor, channelMemoryRepository,
+            return new ChannelManager(blockchainMonitor, channelLockProvider, channelMemoryRepository,
                                       loggerFactory.CreateLogger<ChannelManager>(), lightningSigner, sp);
         });
         services.AddSingleton<IMessageFactory, MessageFactory>();

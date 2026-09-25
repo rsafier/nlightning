@@ -48,8 +48,9 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(FundingCreatedMessage message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        FundingCreatedMessage message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         _logger.LogTrace("Processing FundingCreatedMessage with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
                          message.Payload.ChannelId, peerPubKey);
@@ -125,7 +126,7 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         await _blockchainMonitor.WatchTransactionAsync(channel.ChannelId, payload.FundingTxId,
                                                        channel.ChannelConfig.MinimumDepth);
 
-        return fundingSignedMessage;
+        return [fundingSignedMessage];
     }
 
     /// <summary>

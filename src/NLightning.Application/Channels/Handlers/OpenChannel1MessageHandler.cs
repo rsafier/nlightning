@@ -30,8 +30,9 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         _messageFactory = messageFactory;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(OpenChannel1Message message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        OpenChannel1Message message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         _logger.LogTrace("Processing OpenChannel1Message with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
                          message.Payload.ChannelId, peerPubKey);
@@ -96,6 +97,6 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                         channel.LocalKeySet.RevocationCompactBasepoint, channel.ChannelId,
                                         channel.ChannelConfig.ToSelfDelay, upfrontShutdownScriptTlv);
 
-        return acceptChannel1ReplyMessage;
+        return [acceptChannel1ReplyMessage];
     }
 }

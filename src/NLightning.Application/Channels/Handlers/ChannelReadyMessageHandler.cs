@@ -30,8 +30,9 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(ChannelReadyMessage message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        ChannelReadyMessage message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         if (_logger.IsEnabled(LogLevel.Trace))
             _logger.LogTrace("Processing ChannelReadyMessage with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
@@ -125,7 +126,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                 }
         }
 
-        return null; // No further action needed
+        return []; // No further action needed
     }
 
     /// <summary>

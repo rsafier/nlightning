@@ -145,7 +145,7 @@ public class FundingSignedMessageHandlerTests
                                                 _peerPubKey);
 
         // Assert
-        Assert.Null(result);
+        Assert.Empty(result);
         _mockLightningSigner.Verify(x => x.SignFundingTransaction(_channel.ChannelId, fundingTransaction),
                                     Times.Once);
         _mockBlockchainMonitor.Verify(
