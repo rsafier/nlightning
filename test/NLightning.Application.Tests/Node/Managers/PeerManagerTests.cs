@@ -1306,6 +1306,28 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_InboundInitPending_When_ManagerStops_Then_TheConnectionIsClosedNotInstalled()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
+        SetupInboundPeerService(peerService);
+        RaiseInboundConnection(RemoteHost);
+
+        // Act
+        await peerManager.StopAsync();
+        initReceived.SetResult();
+        await WaitUntilAsync(() => peerService.Invocations.Any(i => i.Method.Name == nameof(IDisposable.Dispose)));
+
+        // Assert
+        Assert.Empty(peerManager.ListPeers());
+        peerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_ConnectedPeer_When_OurChannelUpdateIsReady_Then_ItIsSentThroughTheOutboxAsGossip()
     {
         // Arrange

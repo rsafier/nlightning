@@ -457,10 +457,13 @@ public sealed class PeerManager : IPeerManager
 
     /// <summary>
     /// Waits until the peer's init was accepted. On failure the connection is already closed; this releases the
-    /// service and throws.
+    /// service and throws. A connection whose init arrives after <see cref="StopAsync"/> began is closed too, so no
+    /// session is installed behind the stop.
     /// </summary>
-    /// <exception cref="ConnectionException">The connection closed before the init exchange was done.</exception>
-    private static async Task WaitForInitAsync(IPeerService peerService)
+    /// <exception cref="ConnectionException">
+    /// The connection closed before the init exchange was done, or the manager is stopping.
+    /// </exception>
+    private async Task WaitForInitAsync(IPeerService peerService)
     {
         try
         {
@@ -474,6 +477,13 @@ public sealed class PeerManager : IPeerManager
 
             throw new ConnectionException($"Init exchange with peer {peerService.PeerPubKey} failed", e);
         }
+
+        if (!_stopping)
+            return;
+
+        peerService.Disconnect(new ConnectionException("Shutting down"));
+        peerService.Dispose();
+        throw new ConnectionException($"Not keeping the connection to peer {peerService.PeerPubKey}: stopping");
     }
 
     private void HandleNewPeerConnected(object? _, NewPeerConnectedEventArgs args)
