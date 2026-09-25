@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.Hosting;
@@ -5,6 +6,8 @@ using Serilog;
 
 namespace NLightning.Daemon.Extensions;
 
+using Domain.Node.Options;
+using Domain.Protocol.Constants;
 using Helpers;
 using Utilities;
 
@@ -161,8 +164,16 @@ public static class NodeConfigurationExtensions
     /// <summary>
     /// Creates default configuration JSON
     /// </summary>
+    /// <remarks>
+    /// <c>Node:EnableHtlcs</c> is written explicitly: true on regtest, false elsewhere (the same as leaving it unset,
+    /// see <see cref="NodeOptions.HtlcsEnabled"/>), so the switch is visible. <c>Node:Routing</c> carries every
+    /// <see cref="RoutingOptions"/> default except <see cref="RoutingOptions.HtlcMaximumMsat"/> (unset: the channel's
+    /// own limits only).
+    /// </remarks>
     internal static string CreateDefaultConfigJson(string network)
     {
+        var routing = new RoutingOptions();
+        var enableHtlcs = string.Equals(network, NetworkConstants.Regtest, StringComparison.OrdinalIgnoreCase);
         return """
                {
                  "Serilog": {
@@ -206,6 +217,17 @@ public static class NodeConfigurationExtensions
                    ],
                    "Features": {
                      "AllowExperimentalFeatures": false
+                   },
+                   "EnableHtlcs": {{ENABLE_HTLCS}},
+                   "Routing": {
+                     "FeeBaseMsat": {{FEE_BASE_MSAT}},
+                     "FeeProportionalMillionths": {{FEE_PPM}},
+                     "CltvExpiryDelta": {{CLTV_EXPIRY_DELTA}},
+                     "MaxCltvExpiryDistance": {{MAX_CLTV_EXPIRY_DISTANCE}},
+                     "ExpiryTooSoonBlocks": {{EXPIRY_TOO_SOON_BLOCKS}},
+                     "InvoiceMinFinalCltvExpiry": {{INVOICE_MIN_FINAL_CLTV_EXPIRY}},
+                     "InvoiceExpirySeconds": {{INVOICE_EXPIRY_SECONDS}},
+                     "HtlcMinimumMsat": {{HTLC_MINIMUM_MSAT}}
                    }
                  },
                  "FeeEstimation": {
@@ -232,6 +254,17 @@ public static class NodeConfigurationExtensions
                    "ZmqTxPort": 8335
                  }
                }
-               """.Replace("{{NETWORK}}", network);
+               """.Replace("{{NETWORK}}", network)
+                  .Replace("{{ENABLE_HTLCS}}", enableHtlcs ? "true" : "false")
+                  .Replace("{{FEE_BASE_MSAT}}", Invariant(routing.FeeBaseMsat))
+                  .Replace("{{FEE_PPM}}", Invariant(routing.FeeProportionalMillionths))
+                  .Replace("{{CLTV_EXPIRY_DELTA}}", Invariant(routing.CltvExpiryDelta))
+                  .Replace("{{MAX_CLTV_EXPIRY_DISTANCE}}", Invariant(routing.MaxCltvExpiryDistance))
+                  .Replace("{{EXPIRY_TOO_SOON_BLOCKS}}", Invariant(routing.ExpiryTooSoonBlocks))
+                  .Replace("{{INVOICE_MIN_FINAL_CLTV_EXPIRY}}", Invariant(routing.InvoiceMinFinalCltvExpiry))
+                  .Replace("{{INVOICE_EXPIRY_SECONDS}}", Invariant(routing.InvoiceExpirySeconds))
+                  .Replace("{{HTLC_MINIMUM_MSAT}}", Invariant(routing.HtlcMinimumMsat));
+
+        static string Invariant(IFormattable value) => value.ToString(null, CultureInfo.InvariantCulture);
     }
 }

@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -15,6 +16,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Payments.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -54,6 +56,180 @@ public class NodeServiceExtensionsTests
         var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
         Assert.Contains(ClientCommand.ListChannels, commands);
         Assert.Equal(commands.Count, commands.Distinct().Count());
+    }
+
+    [Fact]
+    public void Given_NodeServicesWithPaymentServices_When_Composed_Then_InvoiceAndPaymentCommandsResolve()
+    {
+        // Arrange: IInvoiceService/IPaymentService come from the Application payment services (not wired yet)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        services.AddSingleton(new Mock<IInvoiceService>().Object);
+        services.AddSingleton(new Mock<IPaymentService>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        // Act
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+
+        // Assert
+        Assert.Contains(ClientCommand.CreateInvoice, commands);
+        Assert.Contains(ClientCommand.PayInvoice, commands);
+        Assert.Contains(ClientCommand.ListInvoices, commands);
+        Assert.Contains(ClientCommand.ListPayments, commands);
+        Assert.Equal(commands.Count, commands.Distinct().Count());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<CreateInvoiceClientRequest,
+                                 CreateInvoiceClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<PayInvoiceClientRequest,
+                                 PayInvoiceClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListInvoicesClientRequest,
+                                 ListInvoicesClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListPaymentsClientRequest,
+                                 ListPaymentsClientResponse>>());
+    }
+
+    [Fact]
+    public void Given_NodeServicesWithoutPaymentServices_When_BuiltWithValidateOnBuild_Then_TheGraphStillBuilds()
+    {
+        // Arrange: a Development host validates every registration at build; the payment services are not wired yet
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+
+        // Act
+        var exception = Record.Exception(() =>
+        {
+            using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+            {
+                ValidateScopes = true,
+                ValidateOnBuild = true
+            });
+        });
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_RoutingConfigured_When_OptionsResolved_Then_EveryValueIsBoundAndShared()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Routing:FeeBaseMsat", "2000"),
+                                                        ("Node:Routing:FeeProportionalMillionths", "500"),
+                                                        ("Node:Routing:CltvExpiryDelta", "80"),
+                                                        ("Node:Routing:MaxCltvExpiryDistance", "1008"),
+                                                        ("Node:Routing:ExpiryTooSoonBlocks", "20"),
+                                                        ("Node:Routing:InvoiceMinFinalCltvExpiry", "36"),
+                                                        ("Node:Routing:InvoiceExpirySeconds", "600"),
+                                                        ("Node:Routing:HtlcMinimumMsat", "1"),
+                                                        ("Node:Routing:HtlcMaximumMsat", "990000000")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var routing = provider.GetRequiredService<IOptions<RoutingOptions>>().Value;
+
+        // Assert
+        Assert.Same(provider.GetRequiredService<IOptions<NodeOptions>>().Value.Routing, routing);
+        Assert.Equal(2_000U, routing.FeeBaseMsat);
+        Assert.Equal(500U, routing.FeeProportionalMillionths);
+        Assert.Equal((ushort)80, routing.CltvExpiryDelta);
+        Assert.Equal(1_008U, routing.MaxCltvExpiryDistance);
+        Assert.Equal((ushort)20, routing.ExpiryTooSoonBlocks);
+        Assert.Equal((ushort)36, routing.InvoiceMinFinalCltvExpiry);
+        Assert.Equal(600U, routing.InvoiceExpirySeconds);
+        Assert.Equal(1UL, routing.HtlcMinimumMsat);
+        Assert.Equal(990_000_000UL, routing.HtlcMaximumMsat);
+    }
+
+    [Fact]
+    public void Given_InvalidRouting_When_RoutingOptionsResolved_Then_ValidationFails()
+    {
+        // Arrange: IOptions<RoutingOptions> is the validated NodeOptions.Routing, never an unchecked copy
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Routing:InvoiceExpirySeconds", "0")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act / Assert
+        var exception = Assert.Throws<OptionsValidationException>(() =>
+                                                                       provider
+                                                                          .GetRequiredService<
+                                                                               IOptions<RoutingOptions>>()
+                                                                          .Value);
+        Assert.Contains(exception.Failures, f => f.Contains("InvoiceExpirySeconds"));
+    }
+
+    [Theory]
+    [InlineData("regtest", null, true)]
+    [InlineData("regtest", "false", false)]
+    [InlineData("mainnet", null, false)]
+    [InlineData("mainnet", "true", true)]
+    [InlineData("testnet", null, false)]
+    public void Given_EnableHtlcsConfig_When_NodeOptionsResolved_Then_HtlcsEnabledFollowsIt(
+        string network, string? enableHtlcs, bool expected)
+    {
+        // Arrange
+        (string, string)[] extra = enableHtlcs is null
+                                       ? [("Node:Network", network)]
+                                       : [("Node:Network", network), ("Node:EnableHtlcs", enableHtlcs)];
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(extra), new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(enableHtlcs is null ? null : bool.Parse(enableHtlcs), options.EnableHtlcs);
+        Assert.Equal(expected, options.HtlcsEnabled);
+    }
+
+    [Theory]
+    [InlineData("regtest", true)]
+    [InlineData("mainnet", false)]
+    [InlineData("testnet", false)]
+    public void Given_DefaultConfigJson_When_Bound_Then_RoutingDefaultsAndEnableHtlcsAreExplicitAndValid(
+        string network, bool expectedHtlcs)
+    {
+        // Arrange
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+        var defaults = new RoutingOptions();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(expectedHtlcs, configuration.GetValue<bool?>("Node:EnableHtlcs"));
+        Assert.Equal(expectedHtlcs, options.EnableHtlcs);
+        Assert.Equal(expectedHtlcs, options.HtlcsEnabled);
+        Assert.Equal(defaults.FeeBaseMsat, options.Routing.FeeBaseMsat);
+        Assert.Equal(defaults.FeeProportionalMillionths, options.Routing.FeeProportionalMillionths);
+        Assert.Equal(defaults.CltvExpiryDelta, options.Routing.CltvExpiryDelta);
+        Assert.Equal(defaults.MaxCltvExpiryDistance, options.Routing.MaxCltvExpiryDistance);
+        Assert.Equal(defaults.ExpiryTooSoonBlocks, options.Routing.ExpiryTooSoonBlocks);
+        Assert.Equal(defaults.InvoiceMinFinalCltvExpiry, options.Routing.InvoiceMinFinalCltvExpiry);
+        Assert.Equal(defaults.InvoiceExpirySeconds, options.Routing.InvoiceExpirySeconds);
+        Assert.Equal(defaults.HtlcMinimumMsat, options.Routing.HtlcMinimumMsat);
+        Assert.Null(options.Routing.HtlcMaximumMsat);
+        // Every routing key in the template is a real RoutingOptions property (a typo would bind nothing)
+        var routingKeys = configuration.GetSection("Node:Routing").GetChildren().Select(c => c.Key).ToList();
+        Assert.Equal(8, routingKeys.Count);
+        Assert.All(routingKeys, key => Assert.NotNull(typeof(RoutingOptions).GetProperty(key)));
     }
 
     [Fact]
@@ -137,13 +313,17 @@ public class NodeServiceExtensionsTests
 
     private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)
     {
-        return new ConfigurationBuilder()
-              .AddInMemoryCollection([
-                   new KeyValuePair<string, string?>("Node:Network", "regtest"),
-                   new KeyValuePair<string, string?>("Database:Provider", "Sqlite"),
-                   new KeyValuePair<string, string?>("Database:ConnectionString", "Data Source=:memory:"),
-                   ..extra.Select(e => new KeyValuePair<string, string?>(e.Key, e.Value))
-               ])
-              .Build();
+        var values = new Dictionary<string, string?>
+        {
+            ["Node:Network"] = "regtest",
+            ["Database:Provider"] = "Sqlite",
+            ["Database:ConnectionString"] = "Data Source=:memory:"
+        };
+
+        // An extra value overrides a default one
+        foreach (var (key, value) in extra)
+            values[key] = value;
+
+        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
     }
 }

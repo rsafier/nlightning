@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -15,6 +16,7 @@ using Domain.Client.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Node.Options;
+using Domain.Payments.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Handlers;
@@ -98,6 +100,22 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>,
             ListChannelsClientHandler>();
 
+        // Invoice and payment handlers (ClientCommand 9-12). They need IInvoiceService/IPaymentService from the
+        // Application payment services; until those are registered, resolving a handler throws and the IPC command
+        // answers "not available". Factories (not type registrations) keep ValidateOnBuild (Development hosts) from
+        // failing the whole node while the services are missing.
+        services.AddScoped<IClientCommandHandler<CreateInvoiceClientRequest, CreateInvoiceClientResponse>>(sp =>
+            new CreateInvoiceClientHandler(sp.GetRequiredService<IInvoiceService>(),
+                                           sp.GetRequiredService<TimeProvider>()));
+        services.AddScoped<IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>>(sp =>
+            new PayInvoiceClientHandler(sp.GetRequiredService<IPaymentService>()));
+        services.AddScoped<IClientCommandHandler<ListInvoicesClientRequest, ListInvoicesClientResponse>>(sp =>
+            new ListInvoicesClientHandler(sp.GetRequiredService<IInvoiceService>(),
+                                          sp.GetRequiredService<TimeProvider>()));
+        services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
+            new ListPaymentsClientHandler(sp.GetRequiredService<IPaymentService>()));
+        services.TryAddSingleton(TimeProvider.System);
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -110,6 +128,10 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, OpenChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, OpenChannelSubscriptionIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListChannelsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, CreateInvoiceIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
 
         // Add HttpClient for FeeService with configuration
         services.AddHttpClient<IFeeService, FeeService>(client =>
@@ -160,6 +182,10 @@ public static class NodeServiceExtensions
                      return true;
                  })
                 .ValidateOnStart();
+
+        // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
+        services.AddSingleton<IOptions<RoutingOptions>>(sp =>
+            Options.Create(sp.GetRequiredService<IOptions<NodeOptions>>().Value.Routing));
 
         return services;
     }
