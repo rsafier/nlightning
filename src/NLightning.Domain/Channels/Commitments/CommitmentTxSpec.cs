@@ -81,13 +81,14 @@ public sealed class CommitmentTxSpec
     /// node's point of view (<see cref="HtlcDirection.Outgoing"/> = offered by us), so the balances and HTLCs map one to
     /// one; the holder is not part of <see cref="CommitmentTxSpec"/> and is passed to the factory as the
     /// <see cref="CommitmentSide"/>. Only the amount, payment hash, CLTV expiry, direction and id of each
-    /// <see cref="Htlc"/> are set: the transaction factory and builders read nothing else.
+    /// <see cref="Htlc"/> are set (<see cref="Htlc.AddMessage"/> is null, NL-244): the transaction factory and builders
+    /// read nothing else.
     /// </remarks>
     public static CommitmentTxSpec FromCommitmentSpec(CommitmentSpec spec)
     {
         ArgumentNullException.ThrowIfNull(spec);
 
-        var htlcs = spec.Htlcs.Select(h => new Htlc(LightningMoney.MilliSatoshis(h.AmountMsat), null!, h.Direction,
+        var htlcs = spec.Htlcs.Select(h => new Htlc(LightningMoney.MilliSatoshis(h.AmountMsat), null, h.Direction,
                                                     h.CltvExpiry, h.Id, 0, h.PaymentHash,
                                                     h.Direction == HtlcDirection.Outgoing
                                                         ? HtlcState.SentAddAckRevocation

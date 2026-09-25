@@ -103,6 +103,23 @@ public class EnginePortTests
     }
 
     [Fact]
+    public void Given_EngineSpecWithHtlcs_When_AdaptedForTheFactory_Then_HtlcsCarryNoAddMessage()
+    {
+        // Arrange - NL-244: the adapter used to pass null! for a non-nullable AddMessage
+        var spec = new CommitmentSpec(CommitmentSide.Remote, 1_234, 6_000_000, 3_000_000,
+                                      [new SpecHtlc(HtlcDirection.Incoming, 5, 600_000, s_hash, 601)]);
+
+        // Act
+        var htlc = Assert.Single(CommitmentTxSpec.FromCommitmentSpec(spec).Htlcs);
+
+        // Assert
+        Assert.Null(htlc.AddMessage);
+        Assert.Equal(5UL, htlc.Id);
+        Assert.Equal(601U, htlc.CltvExpiry);
+        Assert.Equal(HtlcDirection.Incoming, htlc.Direction);
+    }
+
+    [Fact]
     public void Given_LocalSpec_When_Signing_Then_Throws()
     {
         // Arrange
