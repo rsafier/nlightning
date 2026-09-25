@@ -99,7 +99,10 @@ public class ChannelManager : IChannelManager
         }
         catch (ChannelWarningException cwe) when (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
         {
-            throw new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage);
+            throw new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage)
+            {
+                CloseConnection = cwe.CloseConnection
+            };
         }
     }
 
@@ -167,28 +170,61 @@ public class ChannelManager : IChannelManager
                           .HandleAsync(fundingSignedMessage, currentState, negotiatedFeatures, peerPubKey);
 
             case MessageTypes.UpdateFailMalformedHtlc:
-                // BOLT 2: a failure_code without the BADONION bit fails the channel (we chose `error` over "warn and
-                // close the connection"). A valid one is not handled yet (NL-031), see below.
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+
+                // BOLT 2: a failure_code without the BADONION bit lets us either fail the channel or "send a `warning`
+                // and close the connection". We can't fail a channel yet (no force-close path, and BOLT 1 makes the
+                // sender of an `error` fail the channel), so we warn and close. A valid one is not handled yet
+                // (NL-031), see below.
                 if (message is UpdateFailMalformedHtlcMessage { Payload.FailureCode: var failureCode }
                  && (failureCode & (ushort)FailureCodeFlags.BadOnion) == 0)
-                    throw new ChannelErrorException(
+                    throw new ChannelWarningException(
                         $"update_fail_malformed_htlc failure_code 0x{failureCode:x4} has no BADONION bit", channelId,
-                        "update_fail_malformed_htlc failure_code must have the BADONION bit set");
+                        "update_fail_malformed_htlc failure_code must have the BADONION bit set")
+                    {
+                        CloseConnection = true
+                    };
 
                 throw CreateNotImplementedWarning(message.Type, channelId);
 
             default:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
         }
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7), the HTLC and
-    /// fee updates, commitment_signed and revoke_and_ack (N6), shutdown/closing_signed (N10), and the dual-funding
-    /// messages.
+    /// BOLT 1: we SHOULD reply with an `error` for the unknown channel_id to channel messages about channels we don't
+    /// know. That tells a peer that still has a channel we lost (e.g. it sends channel_reestablish) to fail it, instead
+    /// of keeping its funds locked until an operator force-closes.
     /// </summary>
     /// <remarks>
-    /// We never fail the channel (nor, through an all-zero channel_id, every channel) because we lack a handler: a
+    /// "Unknown" means: not in the memory repository, not a temporary channel being opened with this peer, and not in
+    /// the database (the memory repository does not hold every channel, e.g. stale ones, and a peer's channels are
+    /// only registered when it connects). Failing an unknown channel fails nothing on our side.
+    /// </remarks>
+    private async Task ThrowIfUnknownChannelAsync(IServiceScope scope, ChannelId channelId, CompactPubKey peerPubKey)
+    {
+        if (!IsChannelScoped(channelId)
+         || _channelMemoryRepository.TryGetChannelState(channelId, out _)
+         || _channelMemoryRepository.TryGetTemporaryChannelState(peerPubKey, channelId, out _))
+            return;
+
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        if (await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId) is not null)
+            return;
+
+        throw new ChannelErrorException($"Channel {channelId} is unknown", channelId, "unknown channel");
+    }
+
+    /// <summary>
+    /// Interim behavior for channel messages we can't process yet: channel_reestablish (BOLT2 plan N7), the HTLC and
+    /// fee updates, commitment_signed and revoke_and_ack (N6), shutdown/closing_signed (N10), and the dual-funding
+    /// messages. Only for channels we know: an unknown channel gets an `error` (see
+    /// <see cref="ThrowIfUnknownChannelAsync"/>).
+    /// </summary>
+    /// <remarks>
+    /// We never fail a known channel (nor, through an all-zero channel_id, every channel) because we lack a handler: a
     /// failed channel makes the peer (e.g. LND) force-close it. Instead the message is ignored, the peer gets a
     /// `warning` scoped to the channel, and the connection stays up. The peer keeps waiting for our reply; for
     /// channel_reestablish the channel simply stays inactive until N7 lands.
