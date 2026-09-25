@@ -158,6 +158,21 @@ public class SendAddTests
     }
 
     [Fact]
+    public void Given_NonFunderAdd_When_FunderCantPayFeeOnOurCommitmentOnly_Then_Refused()
+    {
+        // Arrange: our dust limit is 354 sat, the funder's 1500 sat. At feerate 5000 a
+        // 4000-sat HTLC we offer is untrimmed on our commitment (timeout fee 3315 + 354) but trimmed on the funder's
+        // (success fee 3515 + 1500). The funder holds 4000 sat: 724 * 5 = 3620 sat fits on its commitment, but
+        // (724 + 172) * 5 = 4480 sat does not fit on ours, where the peer would reject the HTLC (B2-ADD-R02).
+        var c = Create(900_000, 4_000, feeratePerKw: 5_000, localIsFunder: false,
+                       local: Party(dustSat: 354, reserveSat: 0), remote: Party(dustSat: 1_500, reserveSat: 0));
+
+        // Act / Assert (B2-ADD-S04: "the updated local or remote transaction")
+        AssertRefused("B2-ADD-S04", () => c.Add(4_000 * Sat));
+        Assert.Single(c.Add(3_000 * Sat).Next.Htlcs); // trimmed on both: no extra fee
+    }
+
+    [Fact]
     public void Given_NonFunderBelowReserveAfterAdd_When_SendAdd_Then_Refused()
     {
         // Arrange
