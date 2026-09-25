@@ -36,7 +36,7 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 - Tests: there is no Client test project. If you add IPC/client tests, `test/NLightning.Daemon.Tests` (xunit.v3, references Daemon) is the closest home. `dotnet test` discovers its tests; `dotnet run --project test/NLightning.Daemon.Tests -- -method '*X*'` also works.
 
 ## Gotchas
-- `CommandLineHelper` (in Daemon.Contracts, shared with the daemon) has bugs. `--cookie <path>`/`-c <path>` assigns the flag itself instead of the path, so only `--cookie=<path>` works. `GetCommand` always skips the next argument after an option, even for the `--network=regtest` form, so `--network=regtest listpeers` silently runs `node-info`. `-?` is advertised but not recognized. `NLTG_COOKIE` is only consulted when `NLTG_NETWORK` is unset.
+- `CommandLineHelper` (in Daemon.Contracts) accepts `--network x`, `--network=x`, `-n x`, `--cookie x`, `--cookie=x` and `-c x`; only the separate-value forms consume the next argument when finding the command. Cookie dir precedence: `--cookie` arg, `--network` arg, `NLTG_COOKIE`, `NLTG_NETWORK`, then `~/.nltg/mainnet`.
 - `connect` with no args prints an error and then indexes `commandArgs[0]` anyway (IndexOutOfRange). `getaddress` (`commandArgs[0]`) and `openchannel` (`commandArgs[0]`, `[1]` in `OpenChannelMessageHandler`) index without any length check.
 - `CommandLineHelper.GetCookiePath` runs before the help check and outside the `try` in `Program.cs`; if `~/.nltg/<network>` does not exist it throws unhandled, so even `--help` fails.
 - `open-channel` uses `.GetAwaiter().GetResult()` inside async top-level code. It should be awaited.

@@ -51,7 +51,6 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - On Unix the IPC pipe is a Unix socket at `{configPath}/nltg.ipc` (`NodeConstants.NamedPipeFile`). Each connection carries one request and one response, with a native-endian 4-byte length prefix and a 10MB cap. The cookie at `{configPath}/nltg.cookie` is never rotated.
 - `NamedPipeIpcService.StopAsync` throws if `StartAsync` never ran. Linux daemonization calls `fork()` after the runtime has started.
 - `OpenChannel*IpcHandler` resolves its handler with `as ConcreteType`, so registering a decorator or substitute makes the cast return null.
-- `src/NLightning.Daemon.Contracts/Helpers/CommandLineHelper.GetCookiePath`: `--cookie <path>` / `-c <path>` assigns `args[i]` instead of `args[i + 1]` (bug; `--cookie=<path>` works).
 
 ## Onion routing (BOLT 4) hooks
 There is no onion code here yet. When it lands:
