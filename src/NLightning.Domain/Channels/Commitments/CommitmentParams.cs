@@ -1,6 +1,8 @@
 namespace NLightning.Domain.Channels.Commitments;
 
 using Bitcoin.Transactions.Enums;
+using Models;
+using ValueObjects;
 
 /// <summary>
 /// The static inputs of the commitment state machine.
@@ -30,4 +32,26 @@ public sealed record CommitmentParams(
 
     /// <summary>The reserve (msat) the peer must keep: announced by us.</summary>
     public ulong RemoteReserveMsat => checked(Local.ChannelReserveSatoshis * 1_000);
+
+    /// <summary>
+    /// The engine parameters of an opened channel: funder, funding amount, anchors and both parties' announced limits,
+    /// kept with the same direction rules as <see cref="ChannelParams"/> (<c>Local</c> is what we announced).
+    /// </summary>
+    /// <param name="channel">A channel whose funding output is known.</param>
+    /// <param name="maxDustHtlcExposureMsat">Our dust exposure policy; null disables the check.</param>
+    /// <exception cref="InvalidOperationException">The channel has no funding output yet.</exception>
+    public static CommitmentParams FromChannel(ChannelModel channel, ulong? maxDustHtlcExposureMsat = null)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        var fundingOutput = channel.FundingOutput
+                         ?? throw new InvalidOperationException("The channel has no funding output yet");
+
+        return new CommitmentParams(channel.IsInitiator, (ulong)fundingOutput.Amount.Satoshi,
+                                    channel.ChannelParams.OptionAnchorOutputs, ToParty(channel.ChannelParams.Local),
+                                    ToParty(channel.ChannelParams.Remote), maxDustHtlcExposureMsat);
+    }
+
+    private static CommitmentParty ToParty(ChannelParty party) =>
+        new((ulong)party.DustLimitAmount.Satoshi, (ulong)party.ChannelReserveAmount.Satoshi,
+            party.HtlcMinimumAmount.MilliSatoshi, party.MaxAcceptedHtlcs, party.MaxHtlcValueInFlight.MilliSatoshi);
 }

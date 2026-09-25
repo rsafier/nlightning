@@ -1,7 +1,9 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
 using Enums;
 using Models;
+using Money;
 using ValueObjects;
 
 /// <summary>
@@ -68,5 +70,28 @@ public sealed class CommitmentTxSpec
 
         return new CommitmentTxSpec(toLocalMsat, toRemoteMsat, (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi,
                                   htlcs);
+    }
+
+    /// <summary>
+    /// Adapts a commitment state machine spec (<see cref="ChannelCommitments.BuildSpec"/>) to the commitment
+    /// transaction factory's input (NL-230).
+    /// </summary>
+    /// <remarks>
+    /// Both types are net of the HTLCs (each HTLC is already out of its offerer's balance) and both are from the local
+    /// node's point of view (<see cref="HtlcDirection.Outgoing"/> = offered by us), so the balances and HTLCs map one to
+    /// one; the holder is not part of <see cref="CommitmentTxSpec"/> and is passed to the factory as the
+    /// <see cref="CommitmentSide"/>. Only the amount, payment hash, CLTV expiry, direction and id of each
+    /// <see cref="Htlc"/> are set: the transaction factory and builders read nothing else.
+    /// </remarks>
+    public static CommitmentTxSpec FromCommitmentSpec(CommitmentSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+
+        var htlcs = spec.Htlcs.Select(h => new Htlc(LightningMoney.MilliSatoshis(h.AmountMsat), null!, h.Direction,
+                                                    h.CltvExpiry, h.Id, 0, h.PaymentHash,
+                                                    h.Direction == HtlcDirection.Outgoing
+                                                        ? HtlcState.SentAddAckRevocation
+                                                        : HtlcState.RcvdAddAckRevocation));
+        return new CommitmentTxSpec(spec.LocalMsat, spec.RemoteMsat, spec.FeeratePerKw, htlcs);
     }
 }

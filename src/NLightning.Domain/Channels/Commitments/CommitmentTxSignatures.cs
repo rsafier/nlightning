@@ -13,4 +13,8 @@ using Crypto.ValueObjects;
 public sealed record CommitmentTxSignatures(
     TxId CommitmentTxId,
     CompactSignature Signature,
-    IReadOnlyList<CompactSignature> HtlcSignatures);
+    IReadOnlyList<CompactSignature> HtlcSignatures)
+{
+    /// <summary>The engine's view of these signatures (without the txid).</summary>
+    public CommitmentSignatures ToCommitmentSignatures() => new(Signature, HtlcSignatures);
+}

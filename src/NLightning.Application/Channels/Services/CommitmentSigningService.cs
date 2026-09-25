@@ -6,7 +6,6 @@ using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Channels.Commitments;
-using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Infrastructure.Bitcoin.Builders.Interfaces;
@@ -16,7 +15,12 @@ using Infrastructure.Bitcoin.Builders.Interfaces;
 /// <c>commitment_signed</c>: model factory → commitment builder (with the HTLC output map) → HTLC transaction
 /// models and builder → <see cref="ILightningSigner"/>. HTLC signatures are always in commitment output order.
 /// </summary>
-public sealed class CommitmentSigningService : ICommitmentSigner, ICommitmentVerifier
+/// <remarks>
+/// Works on a <see cref="ChannelModel"/> (static data) and a <see cref="CommitmentTxSpec"/> (content) and returns the
+/// commitment txid with the signatures. The commitment state machine reaches it through the engine ports
+/// <see cref="EngineCommitmentSignerPort"/> and <see cref="EngineCommitmentVerifierPort"/> (NL-230).
+/// </remarks>
+public sealed class CommitmentSigningService
 {
     private readonly ICommitmentTransactionModelFactory _commitmentTransactionModelFactory;
     private readonly ICommitmentTransactionBuilder _commitmentTransactionBuilder;
@@ -33,7 +37,15 @@ public sealed class CommitmentSigningService : ICommitmentSigner, ICommitmentVer
         _lightningSigner = lightningSigner;
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Builds the remote commitment <paramref name="remoteCommitmentNumber"/> from <paramref name="spec"/> (the local
+    /// node's view) and returns our commitment signature and our signatures for its HTLC transactions, in commitment
+    /// output order.
+    /// </summary>
+    /// <param name="channel">The channel (static data: keys, funding output, dust limits, anchors, funder).</param>
+    /// <param name="spec">The balances, feerate and HTLCs of the commitment, from our point of view.</param>
+    /// <param name="remoteCommitmentNumber">The number of the remote commitment being signed.</param>
+    /// <param name="remotePerCommitmentPoint">The peer's per-commitment point for that commitment.</param>
     public CommitmentTxSignatures SignRemoteCommitment(ChannelModel channel, CommitmentTxSpec spec,
                                                      ulong remoteCommitmentNumber,
                                                      CompactPubKey remotePerCommitmentPoint)
@@ -52,7 +64,13 @@ public sealed class CommitmentSigningService : ICommitmentSigner, ICommitmentVer
         return new CommitmentTxSignatures(built.Transaction.TxId, signature, htlcSignatures);
     }
 
-    /// <inheritdoc />
+    /// <summary>
+    /// Builds our local commitment <paramref name="localCommitmentNumber"/> from <paramref name="spec"/> and checks the
+    /// peer's commitment signature and its HTLC signatures (count, order, low-S, validity).
+    /// </summary>
+    /// <returns>The verified signatures with the commitment txid, ready to persist.</returns>
+    /// <exception cref="Domain.Exceptions.SignerException">A signature is missing, malformed, high-S or
+    /// invalid.</exception>
     public CommitmentTxSignatures VerifyLocalCommitment(ChannelModel channel, CommitmentTxSpec spec,
                                                       ulong localCommitmentNumber, CompactSignature signature,
                                                       IReadOnlyList<CompactSignature> htlcSignatures)
