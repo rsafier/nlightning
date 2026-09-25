@@ -1,7 +1,7 @@
 # NLightning.Bolt11 — agent guide
 
 ## Purpose
-Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lightning invoices. It ships as the NuGet package `NLightning.Bolt11` (v5.0.0), or as `NLightning.Bolt11.Blazor` in `*.Wasm` configs, which define `CRYPTO_JS` and rename the assembly. No `src/` project references it yet; only `test/NLightning.Bolt11.Tests`, `test/NLightning.Integration.Tests` and `test/BlazorTests/NLightning.BlazorTestApp` do. It is not wired into any payment/HTLC/onion flow.
+Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lightning invoices. It ships as the NuGet package `NLightning.Bolt11` (v5.0.0), or as `NLightning.Bolt11.Blazor` in `*.Wasm` configs, which define `CRYPTO_JS` and rename the assembly. `src/NLightning.Application` references it (ABCD W1-B: `Payments/Invoices/InvoiceService` encodes our invoices through the node path, `Payments/Routing/PaymentTarget.FromInvoice` reads decoded ones); besides that only `test/NLightning.Bolt11.Tests`, `test/NLightning.Integration.Tests` and `test/BlazorTests/NLightning.BlazorTestApp` do. Nothing calls those Application services on the wire yet.
 
 ## Layout
 - `Models/Invoice.cs`: the public aggregate (ctors, `InSatoshis`, `Decode`, `Encode(Key)`/`Encode()`, HRP and amount parsing, sign/verify/recover).
