@@ -27,7 +27,6 @@ public class GossipMessageTests
     {
         { 256, typeof(ChannelAnnouncementMessage) },
         { 257, typeof(NodeAnnouncementMessage) },
-        { 258, typeof(ChannelUpdateMessage) },
         { 259, typeof(AnnouncementSignaturesMessage) }
     };
 
@@ -57,17 +56,17 @@ public class GossipMessageTests
     }
 
     [Fact]
-    public async Task Given_ChannelUpdateMessage_When_SerializeAsync_Then_WritesTypeAndRawPayload()
+    public async Task Given_NodeAnnouncementMessage_When_SerializeAsync_Then_WritesTypeAndRawPayload()
     {
         // Arrange
         var payloadBytes = Convert.FromHexString("aabbccdd");
-        var message = new ChannelUpdateMessage(new GossipPayload(payloadBytes));
+        var message = new NodeAnnouncementMessage(new GossipPayload(payloadBytes));
         using var stream = new MemoryStream();
 
         // Act
         await _messageSerializer.SerializeAsync(message, stream);
 
         // Assert
-        Assert.Equal(Convert.FromHexString("0102aabbccdd"), stream.ToArray());
+        Assert.Equal(Convert.FromHexString("0101aabbccdd"), stream.ToArray());
     }
 }
