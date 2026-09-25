@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using Konscious.Security.Cryptography;
+using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Parameters;
 
 namespace NLightning.Infrastructure.Crypto.Providers.Native;
@@ -205,6 +206,47 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
         catch (Exception e)
         {
             throw new CryptographicException("Decryption failed.", e);
+        }
+    }
+
+    public int StreamChaCha20IetfXor(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input,
+                                     Span<byte> output)
+    {
+        if (key.Length != CryptoConstants.PrivkeyLen)
+            throw new ArgumentException($"Key must be {CryptoConstants.PrivkeyLen} bytes.", nameof(key));
+
+        if (nonce.Length != CryptoConstants.Chacha20Poly1305NonceLen)
+            throw new ArgumentException($"Nonce must be {CryptoConstants.Chacha20Poly1305NonceLen} bytes.",
+                                        nameof(nonce));
+
+        if (output.Length != input.Length)
+            throw new ArgumentException("Output must be the same length as input.", nameof(output));
+
+        if (input.IsEmpty)
+            return 0;
+
+        var keyBytes = key.ToArray();
+        var inputBytes = input.ToArray();
+        var outputBytes = new byte[input.Length];
+        try
+        {
+            // ChaCha7539Engine is the RFC 7539/8439 IETF variant (96-bit nonce) and starts at block counter 0
+            var engine = new ChaCha7539Engine();
+            engine.Init(true, new ParametersWithIV(new KeyParameter(keyBytes), nonce.ToArray()));
+            engine.ProcessBytes(inputBytes, 0, inputBytes.Length, outputBytes, 0);
+            outputBytes.CopyTo(output);
+
+            return 0;
+        }
+        catch (Exception e)
+        {
+            throw new CryptographicException("ChaCha20 stream failed.", e);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keyBytes);
+            CryptographicOperations.ZeroMemory(inputBytes);
+            CryptographicOperations.ZeroMemory(outputBytes);
         }
     }
 

@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 
 namespace NLightning.Infrastructure.Crypto.Providers.JS;
 
+using Domain.Crypto.Constants;
 using Interfaces;
 
 [SupportedOSPlatform("browser")]
@@ -157,6 +158,46 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
             Console.WriteLine(e);
             plainTextLength = 0;
             return -1;
+        }
+    }
+
+    public int StreamChaCha20IetfXor(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input,
+                                     Span<byte> output)
+    {
+        if (key.Length != CryptoConstants.PrivkeyLen)
+            throw new ArgumentException($"Key must be {CryptoConstants.PrivkeyLen} bytes.", nameof(key));
+
+        if (nonce.Length != CryptoConstants.Chacha20Poly1305NonceLen)
+            throw new ArgumentException($"Nonce must be {CryptoConstants.Chacha20Poly1305NonceLen} bytes.",
+                                        nameof(nonce));
+
+        if (output.Length != input.Length)
+            throw new ArgumentException("Output must be the same length as input.", nameof(output));
+
+        if (input.IsEmpty)
+            return 0;
+
+        var keyBytes = key.ToArray();
+        try
+        {
+            var response = LibsodiumJsWrapper.crypto_stream_chacha20_ietf_xor(input.ToArray(), nonce.ToArray(),
+                                                                              keyBytes);
+            if (response.Length != output.Length)
+                return -1;
+
+            response.CopyTo(output);
+            CryptographicOperations.ZeroMemory(response);
+
+            return 0;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+            return -1;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keyBytes);
         }
     }
 

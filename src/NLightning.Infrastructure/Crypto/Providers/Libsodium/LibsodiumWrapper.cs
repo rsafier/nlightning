@@ -48,6 +48,13 @@ internal static partial class LibsodiumWrapper
                                                                         ref byte nPub, ref byte k);
     #endregion
 
+    #region Stream ChaCha20 IETF
+    [LibraryImport(Name)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int crypto_stream_chacha20_ietf_xor(ref byte c, ref byte m, ulong mLen, ref byte n,
+                                                                ref byte k);
+    #endregion
+
     #region Secure Memory
     [LibraryImport(Name)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace NLightning.Infrastructure.Crypto.Providers.Libsodium;
 
+using Domain.Crypto.Constants;
 using Interfaces;
 
 internal sealed class SodiumCryptoProvider : ICryptoProvider
@@ -84,6 +85,30 @@ internal sealed class SodiumCryptoProvider : ICryptoProvider
                                                         additionalData.Length,
                                                         ref MemoryMarshal.GetReference(nonce),
                                                         ref MemoryMarshal.GetReference(key));
+    }
+
+    public int StreamChaCha20IetfXor(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input,
+                                     Span<byte> output)
+    {
+        // Validate before crossing into native code: libsodium reads fixed-size key and nonce buffers
+        if (key.Length != CryptoConstants.PrivkeyLen)
+            throw new ArgumentException($"Key must be {CryptoConstants.PrivkeyLen} bytes.", nameof(key));
+
+        if (nonce.Length != CryptoConstants.Chacha20Poly1305NonceLen)
+            throw new ArgumentException($"Nonce must be {CryptoConstants.Chacha20Poly1305NonceLen} bytes.",
+                                        nameof(nonce));
+
+        if (output.Length != input.Length)
+            throw new ArgumentException("Output must be the same length as input.", nameof(output));
+
+        if (input.IsEmpty)
+            return 0;
+
+        return LibsodiumWrapper.crypto_stream_chacha20_ietf_xor(ref MemoryMarshal.GetReference(output),
+                                                                ref MemoryMarshal.GetReference(input),
+                                                                (ulong)input.Length,
+                                                                ref MemoryMarshal.GetReference(nonce),
+                                                                ref MemoryMarshal.GetReference(key));
     }
 
     public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, string password, ReadOnlySpan<byte> salt, ulong opsLimit, ulong memLimit)
