@@ -7,12 +7,19 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Exceptions;
 using Interfaces;
 
 public class AcceptChannel1MessageTypeSerializer : IMessageTypeSerializer<AcceptChannel1Message>
 {
+    /// <summary>
+    /// The <c>accept_channel_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,7 +67,7 @@ public class AcceptChannel1MessageTypeSerializer : IMessageTypeSerializer<Accept
             if (stream.Position >= stream.Length)
                 throw new SerializationException("Required extension is missing");
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream) ?? throw new SerializationException("Required extension is missing");
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null;
             if (extension.TryGetTlv(TlvConstants.UpfrontShutdownScript, out var baseUpfrontShutdownTlv))
             {

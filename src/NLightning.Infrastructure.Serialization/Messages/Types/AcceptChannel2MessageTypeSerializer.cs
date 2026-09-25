@@ -8,11 +8,18 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class AcceptChannel2MessageTypeSerializer : IMessageTypeSerializer<AcceptChannel2Message>
 {
+    /// <summary>
+    /// The <c>accept_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.UpfrontShutdownScript, TlvConstants.ChannelType, TlvConstants.RequireConfirmedInputs };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,8 +67,8 @@ public class AcceptChannel2MessageTypeSerializer : IMessageTypeSerializer<Accept
             if (stream.Position >= stream.Length)
                 return new AcceptChannel2Message(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new AcceptChannel2Message(payload);
 
             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null;

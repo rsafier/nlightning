@@ -8,11 +8,18 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class ClosingSignedMessageTypeSerializer : IMessageTypeSerializer<ClosingSignedMessage>
 {
+    /// <summary>
+    /// The <c>closing_signed_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.FeeRange };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -60,8 +67,8 @@ public class ClosingSignedMessageTypeSerializer : IMessageTypeSerializer<Closing
             if (stream.Position >= stream.Length)
                 throw new SerializationException("Required extension is missing");
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null || !extension.TryGetTlv(TlvConstants.FeeRange, out var baseFeeRangeTlv))
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.TryGetTlv(TlvConstants.FeeRange, out var baseFeeRangeTlv))
                 throw new SerializationException("Required extension is missing");
 
             var tlvConverter = _tlvConverterFactory.GetConverter<FeeRangeTlv>()
