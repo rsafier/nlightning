@@ -1,6 +1,39 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land.
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 1 @ `342d22e`).
 
 ## Status
+
+### Wave 1: integrated into `wip/fafo` @ `342d22e` (2026-09-25)
+
+All five lanes are done (W1-A and W1-B with review-fix steps). 28 lane commits were cherry-picked with `-x` in the order w1c, w1a, w1b, w1d, w1e; the only conflicts were doc text in `src/NLightning.Application/CLAUDE.md` and `test/CLAUDE.md` (both lanes' text merged). Two `integrate:` commits: 4ae2eb3 (`AddApplicationServices` calls `AddGossipServices()` and `AddPaymentsServices()`; scoped `IInvoiceDbRepository`/`IPaymentDbRepository`/`IForwardCircuitDbRepository` resolve to the scope's `IUnitOfWork` properties; the harness store implements the new origin methods; two Daemon DI tests) and 342d22e (`ChannelUpdateExchangeTests` counts only its own channel's ignored updates, because the shared alice relays other tests' channels; test only).
+
+Gates at `342d22e`: Release and Release.Native build with 0 errors and **5** CS86xx warning sites (each printed twice; the two `PeerService` ones went away with df4ca92, NL-171); `dotnet format --verify-no-changes` clean; **3747** non-Docker tests pass in both configs, 0 skips (Domain 1235, Integration 512, Serialization 466, Application 382, Infrastructure 342, Infrastructure.Bitcoin 305, Bolt11 275, Daemon 230); 10k-seed Long simulator passes; Docker **29/29** on OrbStack after 342d22e (integrator run; `HasPendingModelChanges` false on all three providers).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W1-A Channel wiring | done: N6-T1, T2, T4, T5; N6-T3 partial | 1de15f9, a604dff, 1392489, f5315c0, a02afa7, a388fc4, 3f7b8bf, aac5f60, e5f7312 | NL-232, NL-235, NL-244 fixed; NL-136 call sites (a604dff); NL-031, NL-200, NL-243 partial; NL-199 receiver needs no code; NL-234 open (moves to W2-A); new NL-246, NL-247, NL-248, NL-249, NL-250, NL-251, NL-252, NL-254 |
+| W1-B Payment core | done: M4-T2 processor, M4-T3, M4-T4 policy, M4-T6 build, `InvoiceService` | 6156173, d27adb4, 234607e | NL-073, NL-114 partial; new NL-245, NL-253 |
+| W1-C Payment schema (migration owner) | done: `AddInvoicesPaymentsAndCircuits` (3 providers), repositories, HTLC origins, stored dust policy | 899e36b, 2f25527, 98d19e6 | NL-242 fixed, NL-248 fixed; NL-137, NL-243 partial |
+| W1-D IPC / CLI | done: CreateInvoice/PayInvoice/ListInvoices/ListPayments IPC + CLI, `RoutingOptions` bound, `EnableHtlcs` in the default config | e30a845, 6cfbcd1, c10a78e, c50fc7b | NL-241 fixed; NL-152 partial |
+| W1-E Direct `channel_update` exchange | done; also fixed the NLightning-to-NLightning connect bugs and dropped the harness tolerance | df4ca92, b93dd05, 38d2f5e, f9c54cc, 7c1ed4c, b681f8a, 9ce68e0, 5d1a9ed, 5f2a3ee | NL-239, NL-240 fixed; NL-099 partial; new NL-255 |
+
+Ledger note: the integrator's summary listed NL-137, NL-243 and NL-114 as fixed; the ledger keeps them **open (partial)** because the lanes reported remaining work (replay set and SCID map; the W2-B switch must keep pruning; pay/receive are W2-B/W2-C). NL-242's remaining piece (no node option sets a policy) is tracked as NL-254.
+
+Deviations accepted in wave 1 (details in the BOLT2 plan "ABCD wave 1 record" and the ONION plan status):
+- A normal-operation message on a channel that is not Open gets warning + close, not a channel error (no fail-the-channel broadcast yet).
+- `LocalOnlyHtlcSwitch` fails a final-hop HTLC with `incorrect_or_unknown_payment_details` (height from the monitor; `temporary_node_failure` while unknown) and non-final onions with `temporary_node_failure`; the N6-T5 proof uses `SendToRouteV2` with a route that has no `payment_addr` (LND refuses to attach one for a node it knows no features for).
+- Ping-before-commit is a connection check only (NL-251). Each channel's link is pinned to the connection it turned Open on, so channels loaded at startup never send updates until N7 marks the link (NL-252).
+- `FinalHopProcessor` reports 0x0013/0x0012 before the 0x400F invoice checks (as LND/CLN); a replayed onion is failed with `temporary_node_failure`. `HintRouteBuilder.Build` takes a mandatory `maxFee`.
+- W1-E: LND never hints through us in `addinvoice --private` (needs node_announcement, NL-255); decision B (explicit `route_hints`) is unaffected. The roadmap's W1-E proof item "addinvoice --private contains the C→D hint" is therefore not met.
+- Shared-file touch accepted: `test/NLightning.Application.Tests/NLightning.Application.Tests.csproj` references `NLightning.Infrastructure.Serialization` (W1-B, for the real hop-payload and failure serializers in tests).
+
+### Carried into wave 2
+
+- **W2-A (reestablish; owns `ChannelManager.cs`, `IChannelManager.cs`, `PeerManager.cs`, `Application/DependencyInjection.cs`):** N7-T1..T6; after reestablish call `IPeerLivenessProbe.MarkLinkUp(channelId, peer)` and replay pending events (`QueuePendingDomainEventsAsync` + `RaiseDomainEventsAsync`) (NL-252); retransmit persisted unsigned updates and the stored `SentCommitDiff`, forget the ones BOLT 2 says to; reuse `ChannelStateTransitionService.LoadRemoteShachainAsync`, `SentCommitDiffCodec`, `CreateRevokeAndAck`; re-send `ChannelModel.ErrorSent` on reconnect and send an error without disconnecting (N6-T3 rest, B2-RE-05, NL-200); `IChannelManager.HandleChannelMessageAsync` returns `Task` (NL-234); add a Domain flag so `listchannels` `IsReestablished` becomes true; optionally a real ping (NL-251, needs `IPeerService.LastMessageReceivedAt`).
+- **W2-B (HTLC switch):** `services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch, HtlcSwitch>())`; wire `IncomingOnionProcessor` → `HtlcForwardingPolicy`/`FinalHopProcessor` → `IChannelOperations`; final-hop accept as an atomic check-and-mark under a per-payment-hash lock in the fulfill's unit of work (NL-253); on restart act on persisted HTLC state (`ProcessAsync(checkReplay: false)`); persist `HtlcOrigin` with the add via `SetHtlcOriginAsync` (NL-250); `FindHtlcsByOriginAsync` returns archived rows of failed attempts too (retry-aware replay); keep pruning settled rows after their settle event (NL-243); never hold two channel locks.
+- **W2-C (send):** `PaymentService` (`PaymentTarget.FromInvoice` → `HintRouteBuilder` with the caller's fee limit → `PaymentOnionFactory` → `OfferHtlcAsync` with `HtlcOrigin.Local`), stores hops' shared secrets, decrypts failures with `FailureInterpreter`; registering `IPaymentService` turns on `payinvoice`/`listpayments`. Optional: a node-level default fee limit in `RoutingOptions`.
+- **W2-D (Docker proofs):** N8 proofs; B–C hop can rely on NLightning-to-NLightning connects (NL-239/NL-240 fixed, no retry tolerance).
+- Open tech debt to schedule: NL-247 (stateful `ISha256` singleton), NL-246 (pre-wave-1 channels without a snapshot), NL-254 (dust-exposure option), NL-245 (invoice route hints), NL-249 (test `FakeServiceProvider`), NL-138.
+- Wasm risk (unverified on macOS): Application now references Bolt11, whose Wasm build uses the renamed `Bolt11.Blazor` assembly; CI's Wasm job builds only BlazorTests, which does not reference Application.
 
 ### Wave 0: integrated into `wip/fafo` @ `0b7e617` (2026-09-25)
 

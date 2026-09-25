@@ -5,7 +5,8 @@ This is the authoritative plan for BOLT 2 "Normal Operation" (`update_add_htlc`,
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-25: `02-peer-protocol.md` (§Channel Close, §Normal Operation, §Message Retransmission) and `03-transactions.md` (HTLC txs, fee calculation, closing txs, Appendices C, D, E, F). Re-read the requirement block before you implement a handler.
 - **Sources merged:** three independent drafts (safety-first, MVP-to-interop, requirements traceability). Where they disagreed about the code, the code was checked (§2.3). Design choices are recorded in §4.
 - **Issue ledger:** every bug and gap here has an `NL-###` ID in [`ISSUES.md`](ISSUES.md). Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-25, `wip/fafo` @ `0b7e617`, after ABCD wave 0):** N0-N5 are **done**. N4 is complete: the engine signs and verifies through the real signer (NL-230), uses one fee calculator (NL-231) and raises lock-in/fulfill/irrevocable-fail/settle events (N4-T4). N5 persists the engine with one save per transition on all three providers, with crash injection (NL-025, NL-232, NL-237, NL-238). The N6-T2/N6-T3 **contracts** (`IChannelOperations`, `IHtlcSwitch`, `ChannelState.Failed`, `ChannelFailedException`, `NodeOptions.EnableHtlcs`) are in Domain. Still no HTLC behaviour on the wire: nothing wires the engine to handlers (N6). **Next milestone: N6** (ABCD roadmap wave 1, lane W1-A). §5 opens with the wave-0 record; §2.2 marks each gate.
+- **Status (2026-09-25, `wip/fafo` @ `342d22e`, after ABCD wave 1):** N0-N6 are **done**. N6 (ABCD W1-A): the seven normal-operation receive handlers and their `ChannelManager` cases persist every transition before sending (a604dff); `ChannelOperationsService`, the debounced `CommitScheduler` and `LocalOnlyHtlcSwitch` form the send side, with startup replay of pending events (a02afa7), and each channel's link is pinned to the connection it opened on (e5f7312). Proof N6: the in-process `TwoNodeHarness` (f5315c0) and Docker N6-T5 against LND (a388fc4). N6-T3 is partial (Failed + ErrorSent persisted and updates refused; re-send on reconnect is N7). **Next milestones: N7** (ABCD W2-A) and the N8 slice (W2-B switch, W2-C send, W2-D Docker proofs). §5 opens with the wave-1 record.
+- Status after ABCD wave 0 (`0b7e617`, superseded by the line above): N0-N5 are **done**. N4 is complete: the engine signs and verifies through the real signer (NL-230), uses one fee calculator (NL-231) and raises lock-in/fulfill/irrevocable-fail/settle events (N4-T4). N5 persists the engine with one save per transition on all three providers, with crash injection (NL-025, NL-232, NL-237, NL-238). The N6-T2/N6-T3 **contracts** (`IChannelOperations`, `IHtlcSwitch`, `ChannelState.Failed`, `ChannelFailedException`, `NodeOptions.EnableHtlcs`) are in Domain. Still no HTLC behaviour on the wire: nothing wires the engine to handlers (N6). **Next milestone: N6** (ABCD roadmap wave 1, lane W1-A). §5 opens with the wave-0 record; §2.2 marks each gate.
 
 ---
 
@@ -99,7 +100,7 @@ All verified in code unless marked. "Gate" = the milestone task that must fix it
 
 | # | Bug | Evidence | NL | Gate | Status (swarm) |
 |---|---|---|---|---|---|
-| G1 | Every non-open channel message is ignored (interim: `default` throws a channel-scoped `ChannelWarningException`, so the peer gets a `warning` for that channel and stays connected; it used to fail every channel with an all-zero `error`). A message for a channel we don't know (not in memory, not a temporary channel of that peer, not in the DB) gets an `error` for that unknown channel_id (BOLT 1 SHOULD). update_fail_malformed_htlc without BADONION gets a channel `warning` and the connection is closed (BOLT 2's other option; we can't fail a channel yet, see G21) | `ChannelManager.HandleChannelMessageAsync` switch, `ThrowIfUnknownChannelAsync`, `CreateNotImplementedWarning` | NL-031 | N6 (reestablish: N7, close: N10) | open; interim behaviour in place (699c67b, 00095cb) |
+| G1 | Every non-open channel message is ignored (interim: `default` throws a channel-scoped `ChannelWarningException`, so the peer gets a `warning` for that channel and stays connected; it used to fail every channel with an all-zero `error`). A message for a channel we don't know (not in memory, not a temporary channel of that peer, not in the DB) gets an `error` for that unknown channel_id (BOLT 1 SHOULD). update_fail_malformed_htlc without BADONION gets a channel `warning` and the connection is closed (BOLT 2's other option; we can't fail a channel yet, see G21) | `ChannelManager.HandleChannelMessageAsync` switch, `ThrowIfUnknownChannelAsync`, `CreateNotImplementedWarning` | NL-031 | N6 (reestablish: N7, close: N10) | **done** for N6 (a604dff): 128-135 have handlers; reestablish and close still get the interim warning |
 | G2 | Second local per-commitment point built from **index 1** instead of 2^48−2 | `FundingConfirmedMessageHandler.cs:52-54` passes `CommitmentNumber.Value` to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is used as the raw index (`LocalLightningSigner.cs:127-139`) | NL-187 | N1-T1 | **done** (NL-187, b74e526) |
 | G3 | Commitment number mutated at confirmation, every block | `CommitmentNumber.Increment()` in the handler above; `ConfirmUnconfirmedChannels` re-runs it for `ReadyForUs`; the handler only logs a wrong state (`:43-47`) | NL-050, NL-069 | N0-T7, N1-T1 | **done**: fires once per confirmation (NL-050, afbb108); numbers are never changed at confirmation (b74e526) |
 | G4 | One `CommitmentNumber` shared by both commitments; reload rebuilds it from `LocalRevocationNumber + 1` | `ChannelModel.CommitmentNumber`; factory `:225`; `ChannelDbRepository.cs:237-239` | NL-188, NL-127 | N1-T1, N1-T5 | **done** (NL-188: b74e526, 0b8dd33, 72a4ac6) |
@@ -117,9 +118,9 @@ All verified in code unless marked. "Gate" = the milestone task that must fix it
 | G16 | No HTLC tx builder; `HtlcResolutionOutput` swaps revocation/delayed keys; `BaseOutput.Amount` setter no-op | `Transactions/Htlc*Transaction.cs` commented out; `Outputs/HtlcResolutionOutput.cs:14-23`; `BaseOutput.cs:24` | NL-056, NL-058, NL-059 | N2-T4 | **done** (NL-056: dfe8866; NL-058, NL-059) |
 | G17 | Signer has no HTLC API; builder returns no HTLC→vout map | `ILightningSigner.cs`; `CommitmentTransactionBuilder` returns only `SignedTransaction` | NL-057 | N2-T3, N3-T1 | **done** (N2-T3 b010c16; NL-057 615395c) |
 | G18 | Local key derivation computes the **current** per-commitment secret; nothing prevents releasing an unrevoked secret | `CommitmentKeyDerivationService.cs:27` calls `ReleasePerCommitmentSecret` and returns it in `CommitmentKeys` | NL-189 | N3-T2 | **done** (NL-189, 615395c) |
-| G19 | Remote shachain memory-only; `LoadFromIndex` throws | `SecretStorageService.cs:160,166`; `ChannelKeySetModel.LastRevealedPerCommitmentSecret` keeps one secret | NL-136, NL-066 | N3-T4 | **done** (NL-136, NL-066: e3145a5, e7ca51e, 9dfafda); runtime load/save is N5/N6 |
+| G19 | Remote shachain memory-only; `LoadFromIndex` throws | `SecretStorageService.cs:160,166`; `ChannelKeySetModel.LastRevealedPerCommitmentSecret` keeps one secret | NL-136, NL-066 | N3-T4 | **done** (NL-136, NL-066: e3145a5, e7ca51e, 9dfafda); runtime save on every revoke_and_ack and load per use (a604dff) |
 | G20 | Channels registered only after a successful connect, fire-and-forget; a failed connect skips them | `PeerManager.StartAsync:63-84` | NL-201, NL-052 | N1-T6 | **done** (NL-052 753cbd9; NL-201: 424ae84, 9c057f2) |
-| G21 | No failed-channel state; `ChannelErrorException` always just disconnects. BOLT 1 requires the sender of an `error` to fail the channel(s) it names, so any `ChannelErrorException` on an Open channel (e.g. from `ChannelReadyMessageHandler`) makes the peer force-close while we keep the channel Open and re-register it on reconnect. Until N6-T3, prefer "`warning` + close the connection" (`ChannelWarningException { CloseConnection = true }`) where BOLT allows it | `PeerManager.HandleChannelMessageResponseAsync` | NL-200 | N6-T3 | open; channel-scoped errors and warning+close in place (NL-200 partial: 699c67b, 00095cb, 4961ba5; `ChannelState.Failed`/`ChannelFailedException` contracts 2ede2ee) |
+| G21 | No failed-channel state; `ChannelErrorException` always just disconnects. BOLT 1 requires the sender of an `error` to fail the channel(s) it names, so any `ChannelErrorException` on an Open channel (e.g. from `ChannelReadyMessageHandler`) makes the peer force-close while we keep the channel Open and re-register it on reconnect. Until N6-T3, prefer "`warning` + close the connection" (`ChannelWarningException { CloseConnection = true }`) where BOLT allows it | `PeerManager.HandleChannelMessageResponseAsync` | NL-200 | N6-T3 | partial: Failed + `ErrorSent` persisted before the error is sent and updates refused afterwards (a604dff, a02afa7); re-send on reconnect is N7 (B2-RE-05); channel-scoped errors and warning+close in place (NL-200 partial: 699c67b, 00095cb, 4961ba5; `ChannelState.Failed`/`ChannelFailedException` contracts 2ede2ee) |
 | G22 | Wire bugs: `TlvConstants.NextFunding = 0` (spec: type 1, 33 bytes with `retransmit_flags`), TLV 5 missing; `closing_signed` requires `fee_range`; CS has no `funding_txid` TLV | `TlvConstants.cs:93`, `NextFundingTlv.cs`; `ClosingSignedMessageTypeSerializer.cs:61-65`; `CommitmentSignedMessage.cs` | NL-197, NL-198, NL-199 | N0-T6 | **done** (NL-197 1d9bec5; NL-198, NL-199: 1b68d6c) |
 | G23 | Even gossip types (256/258) throw and kill the peer; LND sends a direct `channel_update` after a private channel opens **(unverified)** | `MessageSerializer.cs:51,74` | NL-100 | N0-T5 | **done** (NL-100, 156c375); queries are also answered (NL-205, 9e17af2) |
 | G24 | Advertised but unimplemented: `option_quiesce` (stfu dropped), `option_route_blinding`, `option_attribution_data`, `option_dual_fund`, `basic_mpp`; `option_data_loss_protect` Compulsory with no reestablish | `FeatureOptions.cs:14,40,55,65,67,69` | NL-109, NL-074, NL-019, NL-042, NL-081, NL-035 | N0-T4, N7 | **done** for N0-T4: unimplemented features default to No and are experimental-gated (NL-074, NL-109, NL-019: 0dd030e, 3c2b673, e93eb41); data_loss_protect is Optional (ASSUMED) until N7 |
@@ -303,6 +304,25 @@ Each needs Domain request/response, `[MessagePackObject]` DTOs in `src/NLightnin
 
 ## 5. Milestones
 
+### ABCD wave 1 record (status 2026-09-25, `wip/fafo` @ `342d22e`)
+
+N6 is done (lane W1-A; lane SHAs mapped to `wip/fafo` by the `-x` footers):
+- N6-T1 (a604dff; NL-244 1de15f9, per-call SHA-256 for preimages 1392489): seven handlers in `Application/Channels/Handlers/` through the scoped `ChannelStateTransitionService`: `ApplyAsync` + one save, then `UpdateCommitments`, then send; the RAA secret is revealed only after the save (I3); after CS or RAA we sign at once when changes are pending, persisting `SentCommitDiff` (`SentCommitDiffCodec`) and `LastSent`. The first snapshot is built at the first channel_ready (NL-232); the peer shachain is loaded per use and exported in the same save (NL-136); funding_created holds the temporary and real id locks (NL-235); startup keeps Failed channels and persists `RevertUncommitted`.
+- N6-T2 (a02afa7, aac5f60, e5f7312): `ChannelOperationsService : IChannelOperations` (singleton; lock, preconditions incl. `NodeOptions.EnableHtlcs`, engine, one save, publish under the lock through `IChannelMessagePublisher`, schedule after release), `CommitScheduler` (10 ms debounce, never signs while `RemoteNextCommit` exists, D7), `LocalOnlyHtlcSwitch` (peel; BADONION → malformed; final hop → `incorrect_or_unknown_payment_details`, or `temporary_node_failure` while no height is known; non-final → `temporary_node_failure`), startup replay of `DerivePending` outside the lock, and per-connection link pinning (`IPeerLivenessProbe.IsAliveAsync/MarkLinkUp`).
+- N6-T3 partial (a604dff, a02afa7): `ChannelFailedException` → Failed + `ErrorSent` persisted under the lock, error sent, later updates refused on both sides. Missing: re-send on reconnect (B2-RE-05) and error without disconnect (W2-A, owner of `PeerManager`).
+- N6-T4 (f5315c0, a02afa7, e5f7312): `TwoNodeHarness` with the production handlers, operations and scheduler; I7 after every phase; crossing adds; local-only fail-back to 2/2; a peer that is away.
+- N6-T5 (a388fc4): Docker `NormalOperationFlowTests.Given_LndPaysUs_When_LockedIn_Then_FailedBackAndChannelActive` (alice `BuildRoute` + `SendToRouteV2` with a random hash; LND reads `INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS` at source index 1 with a height above 0; commitment numbers 2/2; channel Active; peer connected).
+
+Deviations recorded in wave 1:
+- A normal-operation message on a channel that is not Open gets warning + close rather than a channel error (B2-NO-02), because there is no fail-the-channel broadcast yet.
+- The final hop fails with `incorrect_or_unknown_payment_details` (the plan said `temporary_node_failure` for every HTLC); non-final onions and an unknown height still get `temporary_node_failure`.
+- Ping-before-commit is only a connection check (`ConnectedPeerLivenessProbe`, NL-251); `IPeerService.LastMessageReceivedAt` does not exist.
+- The shachain is loaded from the DB on each revoke_and_ack instead of once at startup.
+- `OfferHtlcAsync` validates `HtlcOrigin` but does not persist it yet (NL-250).
+- NL-234 (return-and-raise) is unchanged; it moves to W2-A with `IChannelManager`.
+
+Carried into N7 (W2-A): `IPeerLivenessProbe.MarkLinkUp` after reestablish and pending-event replay (NL-252); retransmit persisted unsigned updates and the stored `SentCommitDiff`; re-send `ErrorSent` (B2-RE-05); reuse `LoadRemoteShachainAsync`, `SentCommitDiffCodec`, `CreateRevokeAndAck`; `IsReestablished` flag for `listchannels`. Carried into N8 (W2-B/W2-C/W2-D): `HtlcSwitch` replaces `LocalOnlyHtlcSwitch` via `services.Replace`, atomic final-hop accept (NL-253), origin persistence (NL-250), pruning order (NL-243). Also open: NL-138, NL-246 (pre-wave-1 channels without a snapshot), NL-254 (dust policy option).
+
 ### ABCD wave 0 record (status 2026-09-25, `wip/fafo` @ `0b7e617`)
 
 All five items of "Remaining before N5" below are done:
@@ -414,13 +434,13 @@ Prerequisite: ONION M3-T1 + create half of M3-T2: **met** (ONION M3 done, NL-070
 
 | Task | Files | Acceptance |
 |---|---|---|
-| **N6-T1** Handlers + cases for 128–135. Resolves NL-031 (core); covers ONION M4-T1 | `UpdateAddHtlc`, `UpdateFulfillHtlc`, `UpdateFailHtlc`, `UpdateFailMalformedHtlc`, `CommitmentSigned`, `RevokeAndAck`, `UpdateFee` handlers; `ChannelManager.cs` cases | `AT/Channels/Handlers/*Tests`: state guard (`Open` + reestablished), violation → exception type, `Given_PersistFails_Then_NoRevokeSent` |
-| **N6-T2** Operations, scheduler, events, switch. **Contracts done** (ABCD W0-A b166ea0, W0-C 2ede2ee, 1390027: `IChannelOperations`, `IHtlcSwitch`, `IChannelDomainEvent`, `NodeOptions.EnableHtlcs`); implementations are ABCD W1-A | Domain `IChannelOperations`, `IHtlcSwitch`, `IChannelDomainEvent`; `ChannelOperationsService`, `CommitScheduler` (debounce, ping-before-commit via `IPeerService.LastMessageReceivedAt`), `LocalOnlyHtlcSwitch`, `NodeOptions.EnableHtlcs` | `AT/Channels/Services/*Tests`; event replay on startup (crash after RAA persist → event once on restart) |
-| **N6-T3** Failed-channel path. Resolves NL-200. **Contracts done** (2ede2ee, 1390027: `ChannelState.Failed = 35`, `ChannelFailedException`; `ErrorSent` column 4472a8b); behaviour is ABCD W1-A | `ChannelFailedException`, `ChannelState.Failed = 35`, `PeerManager` (send `error`, persist `ErrorSent`) | error persisted and sent; updates refused afterwards |
-| **N6-T4** In-process two-node harness | `AT/Channels/Harness/TwoNodeHarness.cs` (two `ChannelManager`s joined by in-memory outboxes, real builders/signer, fixed keys) | add → CS → RAA → CS → RAA; fulfill; fail; fee round; 30 HTLCs each way; txids identical at every step (I7) |
-| **N6-T5** Docker `Given_LndPaysUs_When_LockedIn_Then_FailedBackAndChannelActive` | `NormalOperationFlowTests.cs` | alice pays a test invoice to us over the N1 channel; we lock in and fail back with `temporary_node_failure`; LND reports the failure; the channel stays `Active`; `ListChannels` shows local/remote commitment numbers = 2 |
+| **N6-T1** Handlers + cases for 128–135. Resolves NL-031 (core); covers ONION M4-T1. **Done** (a604dff) | `UpdateAddHtlc`, `UpdateFulfillHtlc`, `UpdateFailHtlc`, `UpdateFailMalformedHtlc`, `CommitmentSigned`, `RevokeAndAck`, `UpdateFee` handlers; `ChannelManager.cs` cases | `AT/Channels/Handlers/*Tests`: state guard (`Open` + reestablished), violation → exception type, `Given_PersistFails_Then_NoRevokeSent` |
+| **N6-T2** Operations, scheduler, events, switch. **Contracts done** (ABCD W0-A b166ea0, W0-C 2ede2ee, 1390027: `IChannelOperations`, `IHtlcSwitch`, `IChannelDomainEvent`, `NodeOptions.EnableHtlcs`); implementations **done** (a02afa7, aac5f60, e5f7312; ping is a connection check, NL-251) | Domain `IChannelOperations`, `IHtlcSwitch`, `IChannelDomainEvent`; `ChannelOperationsService`, `CommitScheduler` (debounce, ping-before-commit via `IPeerService.LastMessageReceivedAt`), `LocalOnlyHtlcSwitch`, `NodeOptions.EnableHtlcs` | `AT/Channels/Services/*Tests`; event replay on startup (crash after RAA persist → event once on restart) |
+| **N6-T3** Failed-channel path. Resolves NL-200. **Contracts done** (2ede2ee, 1390027: `ChannelState.Failed = 35`, `ChannelFailedException`; `ErrorSent` column 4472a8b); behaviour **partial** (a604dff, a02afa7: persisted and refused; re-send on reconnect is N7) | `ChannelFailedException`, `ChannelState.Failed = 35`, `PeerManager` (send `error`, persist `ErrorSent`) | error persisted and sent; updates refused afterwards |
+| **N6-T4** In-process two-node harness. **Done** (f5315c0) | `AT/Channels/Harness/TwoNodeHarness.cs` (two `ChannelManager`s joined by in-memory outboxes, real builders/signer, fixed keys) | add → CS → RAA → CS → RAA; fulfill; fail; fee round; 30 HTLCs each way; txids identical at every step (I7) |
+| **N6-T5** Docker `Given_LndPaysUs_When_LockedIn_Then_FailedBackAndChannelActive`. **Done** (a388fc4; final hop fails with `incorrect_or_unknown_payment_details`) | `NormalOperationFlowTests.cs` | alice pays a test invoice to us over the N1 channel; we lock in and fail back with `temporary_node_failure`; LND reports the failure; the channel stays `Active`; `ListChannels` shows local/remote commitment numbers = 2 |
 
-**Proof N6:** harness + Docker fail-back test.
+**Proof N6:** harness + Docker fail-back test. **Met** at `342d22e` (Docker 29/29 on OrbStack).
 
 ### N7: Reestablish and disconnect
 | Task | Files | Acceptance |
@@ -438,8 +458,8 @@ Prerequisite: ONION M3-T1 + create half of M3-T2: **met** (ONION M3 done, NL-070
 | Task | Files | Acceptance |
 |---|---|---|
 | **N8-T1** Move `IHopPayloadSerializer`. Resolves NL-075 | to `src/NLightning.Domain/Serialization/Interfaces/` | build + existing hop payload tests |
-| **N8-T2** Final-hop receive + invoices + `CreateInvoice`. Partial NL-114, NL-137; covers ONION M4-T2, M4-T3 (single part) | `FinalHopHtlcSwitch` (peel with `PeelAsLocalNode(packet, hash, null)`, record replay after peel, deserialize, `HopPayloadValidator`, amount/cltv/secret/`total_msat` checks, non-final → `unknown_next_peer`, BADONION → malformed, `invalid_onion_payload` → `update_fail_htlc` with `OnionException.SharedSecret`); `InvoiceEntity` + repo (migration `AddInvoicesAndPayments`); Bolt11 reference from Application/Daemon; invoices set var_onion_optin + payment_secret, no basic_mpp (NL-119 encode side); `ClientCommand.CreateInvoice` | unit: unknown hash / wrong secret → 0x400F with (htlc_msat, height); amount/cltv → 0x0013/0x0012; valid → fulfill; invoice settled when the removal is irrevocable |
-| **N8-T3** Single-hop send + `PayInvoice`. Resolves NL-115; covers ONION M4-T6 (direct), M3-T2 decrypt | `PaymentService` (bolt11 decode, payee must be a direct peer, `ConstructWithSharedSecrets` one hop, `outgoing_cltv = height + min_final(default 18) + 3`, CSPRNG session key), `PaymentEntity` + repo, `FailureOnionService` decrypt, `ClientCommand.PayInvoice` | `AT/Payments/PaymentServiceTests`; create→decrypt round trip |
+| **N8-T2** Final-hop receive + invoices + `CreateInvoice`. Partial NL-114, NL-137; covers ONION M4-T2, M4-T3 (single part). **Components done** in ABCD wave 1: `IncomingOnionProcessor`, `FinalHopProcessor`, `InvoiceService` (6156173, 234607e), tables `AddInvoicesPaymentsAndCircuits` (899e36b), `CreateInvoice` IPC/CLI (6cfbcd1, c10a78e); the switch that calls them is W2-B | `FinalHopHtlcSwitch` (peel with `PeelAsLocalNode(packet, hash, null)`, record replay after peel, deserialize, `HopPayloadValidator`, amount/cltv/secret/`total_msat` checks, non-final → `unknown_next_peer`, BADONION → malformed, `invalid_onion_payload` → `update_fail_htlc` with `OnionException.SharedSecret`); `InvoiceEntity` + repo (migration `AddInvoicesAndPayments`); Bolt11 reference from Application/Daemon; invoices set var_onion_optin + payment_secret, no basic_mpp (NL-119 encode side); `ClientCommand.CreateInvoice` | unit: unknown hash / wrong secret → 0x400F with (htlc_msat, height); amount/cltv → 0x0013/0x0012; valid → fulfill; invoice settled when the removal is irrevocable |
+| **N8-T3** Single-hop send + `PayInvoice`. Resolves NL-115; covers ONION M4-T6 (direct), M3-T2 decrypt. **Components done** in ABCD wave 1: `HintRouteBuilder` + `PaymentOnionFactory` (6156173, 234607e), payment table (899e36b), `PayInvoice` IPC/CLI (6cfbcd1, c10a78e); `PaymentService` is W2-C | `PaymentService` (bolt11 decode, payee must be a direct peer, `ConstructWithSharedSecrets` one hop, `outgoing_cltv = height + min_final(default 18) + 3`, CSPRNG session key), `PaymentEntity` + repo, `FailureOnionService` decrypt, `ClientCommand.PayInvoice` | `AT/Payments/PaymentServiceTests`; create→decrypt round trip |
 
 **Proof N8:** Docker `Given_LndPaysOurInvoice_Then_Settled` (50,000 sat: preimage matches, balances agree to the msat, no pending HTLCs; a 5,000 sat HTLC at 10,000 sat/kw is trimmed and still settles; unknown hash → `INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS`, channel stays Active), `Given_LndInvoice_When_WePay_Then_PreimageReturned` (20,000 sat; LND `SETTLED`), `Given_ConcurrentPaymentsBothWays_Then_AllSucceed` (10 each way, crossed CS), `Given_InFlightRestart_Then_FulfillArrivesAfterReestablish` (alice hold invoice, restart us, settle).
 
@@ -479,20 +499,20 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 ### 6.1 General and forwarding
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
-| B2-NO-01 | Five-stage update lifecycle | DONE (engine, N4; not wired until N6) | N4-T3 | `DT/…/CommitmentsScenarioTests.Given_SpecDiagram_When_Steps1To9_Then_EachUpdateTraversesFiveStates` |
-| B2-NO-02 | HTLCs only after both `channel_ready` | MISSING | N6-T1 | `AT/…/UpdateAddHtlcMessageHandlerTests.Given_ChannelNotOpen_When_Add_Then_ChannelError` |
+| B2-NO-01 | Five-stage update lifecycle | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `DT/…/CommitmentsScenarioTests.Given_SpecDiagram_When_Steps1To9_Then_EachUpdateTraversesFiveStates` |
+| B2-NO-02 | HTLCs only after both `channel_ready` | DONE (a604dff; not Open → warning + close, deviation) | N6-T1 | `AT/…/UpdateAddHtlcMessageHandlerTests.Given_ChannelNotOpen_When_Add_Then_ChannelError` |
 | B2-NO-03 | Irrevocably-committed definition | DONE (engine; lock-in and irrevocable-removal events, N4-T4 b166ea0) | N4-T4 | `DT/…/CommitmentsIrrevocabilityTests` [M4] |
-| B2-FWD-01 | No outgoing offer before incoming lock-in | PARTIAL (engine gate event done, N4-T4 b166ea0; switch N6-T2/M4) | N4-T4 / N6-T2 | `AT/Payments/HtlcSwitchTests.Given_IncomingNotLockedIn_Then_NoOutgoingAdd` [M4] |
-| B2-FWD-02 | No incoming fail before outgoing removal irrevocable | PARTIAL (engine gate event done, N4-T4 b166ea0; switch N6-T2/M4) | N4-T4 | `…Given_DownstreamFailNotLockedIn_Then_UpstreamNotFailed` [M4][B5] |
+| B2-FWD-01 | No outgoing offer before incoming lock-in | PARTIAL (engine gate event done, N4-T4 b166ea0; local-only switch a02afa7; forwarding switch W2-B/M4) | N4-T4 / N6-T2 | `AT/Payments/HtlcSwitchTests.Given_IncomingNotLockedIn_Then_NoOutgoingAdd` [M4] |
+| B2-FWD-02 | No incoming fail before outgoing removal irrevocable | PARTIAL (engine gate event done, N4-T4 b166ea0; local-only switch a02afa7; forwarding switch W2-B/M4) | N4-T4 | `…Given_DownstreamFailNotLockedIn_Then_UpstreamNotFailed` [M4][B5] |
 | B2-FWD-03 | Fail incoming at expiry / delta | MISSING | N9-T2 | `AT/…/HtlcExpiryMonitorTests.Given_IncomingAtExpiry_When_NewBlock_Then_FailQueued` [M4] |
 | B2-FWD-04 | `expiry_too_far` | MISSING | ONION M4-T4 | M4 tests [M4] |
-| B2-FWD-05 | Fulfill incoming on outgoing fulfill / on-chain preimage | PARTIAL (engine gate event done, N4-T4 b166ea0; switch N6-T2/M4) | N4-T4 | `…Given_DownstreamFulfill_Then_UpstreamFulfillImmediately` [M4][B5] |
+| B2-FWD-05 | Fulfill incoming on outgoing fulfill / on-chain preimage | PARTIAL (engine gate event done, N4-T4 b166ea0; local-only switch a02afa7; forwarding switch W2-B/M4) | N4-T4 | `…Given_DownstreamFulfill_Then_UpstreamFulfillImmediately` [M4][B5] |
 
 ### 6.2 `cltv_expiry_delta` and dust exposure
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-CLTV-01 | Offerer deadline `cltv_expiry + G` | MISSING | N9-T2 | `DT/Channels/Policies/HtlcDeadlinePolicyTests` |
-| B2-CLTV-02 | Don't offer already-expired HTLCs | DONE (engine, N4; not wired until N6) | N4-T2 | `DT/…/SendAddTests.Given_ExpiryInPast_Then_Rejected` |
+| B2-CLTV-02 | Don't offer already-expired HTLCs | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/SendAddTests.Given_ExpiryInPast_Then_Rejected` |
 | B2-CLTV-03 | Offered past deadline → fail channel | MISSING | N9-T2/T4 | `AT/…/HtlcExpiryMonitorTests.Given_OfferedPastDeadline_Then_ChannelFailed` [B5] |
 | B2-CLTV-04 | Fulfiller deadline (18 blocks) | MISSING | N9-T2 | `HtlcDeadlinePolicyTests` |
 | B2-CLTV-05 | Fail (not forward) past fulfillment deadline | MISSING | N9-T2 | `AT/Payments/…` [M4] |
@@ -507,49 +527,49 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 |---|---|---|---|---|
 | B2-ADD-W01 | Onion exactly 1366 B | DONE | — | `ST/Messages/UpdateAddHtlcMessageTests` |
 | B2-ADD-W02 | TLV 0 `blinded_path`; unknown even rejected | DONE | — | same [M5] |
-| B2-ADD-S01 | Payer affords fee on both commitments above reserve | DONE (engine, N4; not wired until N6) | N4-T2 | `DT/Channels/Validators/UpdateValidatorTests.Given_FunderAtReserve_When_SendAdd_Then_Rejected` |
-| B2-ADD-S02 | Anchors: both anchors affordable | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_AnchorsFunder_When_OnlyOneAnchorAffordable_Then_Rejected` |
-| B2-ADD-S03 | Fee-spike buffer | DONE (engine, N4; not wired until N6); both commitments | N4-T2 | `…Given_SpikeBufferViolated_Then_Refused` |
-| B2-ADD-S04 | Non-payer doesn't starve payer | DONE (engine, N4; not wired until N6); both commitments | N4-T2 | `…Given_NonFunderAdd_When_FunderCantPayFee_Then_Refused` |
-| B2-ADD-S05 | `amount_msat > 0` | DONE (engine, N4; not wired until N6) | N4-T2 | `DT/…/SendAddTests.Given_ZeroAmount_Then_Rejected` |
-| B2-ADD-S06 | ≥ remote minimum | DONE (engine, N4; not wired until N6); per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_BelowRemoteMinimum_Then_Rejected` |
-| B2-ADD-S07 | `cltv_expiry < 500000000` | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_TimestampCltv_Then_Rejected` |
-| B2-ADD-S08 | ≤ remote `max_accepted_htlcs` | DONE (engine, N4; not wired until N6); 483 fill tested; per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_RemoteMaxAcceptedReached_Then_Rejected` |
-| B2-ADD-S09 | ≤ remote in-flight | DONE (engine, N4; not wired until N6); per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_InFlightExceeded_Then_Rejected` |
-| B2-ADD-S10 | ids from 0, +1, never reset | DONE (engine, N4; not wired until N6); ids start at 0 (NL-190 fixed) | N1-T3, N4-T2 | `…Given_ThreeAddsAcrossTwoCommits_Then_Ids012` |
+| B2-ADD-S01 | Payer affords fee on both commitments above reserve | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/Channels/Validators/UpdateValidatorTests.Given_FunderAtReserve_When_SendAdd_Then_Rejected` |
+| B2-ADD-S02 | Anchors: both anchors affordable | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_AnchorsFunder_When_OnlyOneAnchorAffordable_Then_Rejected` |
+| B2-ADD-S03 | Fee-spike buffer | DONE (engine N4; wired N6, a604dff/a02afa7); both commitments | N4-T2 | `…Given_SpikeBufferViolated_Then_Refused` |
+| B2-ADD-S04 | Non-payer doesn't starve payer | DONE (engine N4; wired N6, a604dff/a02afa7); both commitments | N4-T2 | `…Given_NonFunderAdd_When_FunderCantPayFee_Then_Refused` |
+| B2-ADD-S05 | `amount_msat > 0` | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/SendAddTests.Given_ZeroAmount_Then_Rejected` |
+| B2-ADD-S06 | ≥ remote minimum | DONE (engine N4; wired N6, a604dff/a02afa7); per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_BelowRemoteMinimum_Then_Rejected` |
+| B2-ADD-S07 | `cltv_expiry < 500000000` | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_TimestampCltv_Then_Rejected` |
+| B2-ADD-S08 | ≤ remote `max_accepted_htlcs` | DONE (engine N4; wired N6, a604dff/a02afa7); 483 fill tested; per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_RemoteMaxAcceptedReached_Then_Rejected` |
+| B2-ADD-S09 | ≤ remote in-flight | DONE (engine N4; wired N6, a604dff/a02afa7); per-side params NL-194 fixed | N1-T4, N4-T2 | `…Given_InFlightExceeded_Then_Rejected` |
+| B2-ADD-S10 | ids from 0, +1, never reset | DONE (engine N4; wired N6, a604dff/a02afa7); ids start at 0 (NL-190 fixed) | N1-T3, N4-T2 | `…Given_ThreeAddsAcrossTwoCommits_Then_Ids012` |
 | B2-ADD-S11 | Blinded relay sets `path_key` | MISSING (NL-026) | ONION M5 | M5 [M5] |
 | B2-ADD-S12 | Splice rules | N/A | — | — |
 | B2-ADD-S13 | No add after `shutdown` | MISSING | N10-T3 | `DT/…/ShutdownTests.Given_ShutdownSent_When_SendAdd_Then_Rejected` |
-| B2-ADD-R01 | 0 / below own minimum → fail | DONE (engine, N4; not wired until N6) | N4-T2, N6-T1 | `DT/…/ReceiveAddTests.Given_BelowOwnMinimum_Then_Violation`; `AT/…/UpdateAddHtlcMessageHandlerTests` |
-| B2-ADD-R02 | Sender can't afford → fail | DONE (engine, N4; not wired until N6); judged on what the peer signed | N4-T2 | `…Given_SenderBelowReserveAfterAdd_Then_Violation` |
-| B2-ADD-R03 | Own max accepted / in-flight | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_OwnMaxAcceptedExceeded_Then_Violation` |
-| B2-ADD-R04 | `cltv_expiry ≥ 5e8` → fail | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_TimestampCltv_Then_Violation` |
-| B2-ADD-R05 | Duplicate `payment_hash` allowed | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_DuplicateHash_Then_Accepted` |
+| B2-ADD-R01 | 0 / below own minimum → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2, N6-T1 | `DT/…/ReceiveAddTests.Given_BelowOwnMinimum_Then_Violation`; `AT/…/UpdateAddHtlcMessageHandlerTests` |
+| B2-ADD-R02 | Sender can't afford → fail | DONE (engine N4; wired N6, a604dff/a02afa7); judged on what the peer signed | N4-T2 | `…Given_SenderBelowReserveAfterAdd_Then_Violation` |
+| B2-ADD-R03 | Own max accepted / in-flight | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_OwnMaxAcceptedExceeded_Then_Violation` |
+| B2-ADD-R04 | `cltv_expiry ≥ 5e8` → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_TimestampCltv_Then_Violation` |
+| B2-ADD-R05 | Duplicate `payment_hash` allowed | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_DuplicateHash_Then_Accepted` |
 | B2-ADD-R06 | Repeated id after reconnect ignored | MISSING | N7-T2 | `DT/…/ReestablishTests.Given_UnackedAdd_When_Reconnect_Then_SameIdAcceptedOnce` |
-| B2-ADD-R07 | Other id violations → MAY fail | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_IdGap_Then_Violation` |
+| B2-ADD-R07 | Other id violations → MAY fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_IdGap_Then_Violation` |
 | B2-ADD-R08 | Decrypt onion (path_key, hash as AD) | PARTIAL (Sphinx done, not called) | N8-T2 | ONION M4-T2 tests [M4] |
-| B2-ADD-R09 | Onion failure → failure message | PARTIAL (M3 error onion + malformed conversion done; switch N6/N8) | N6-T2, N8-T2 | `AT/Payments/HtlcSwitchTests.Given_BadOnion_Then_FailMalformedAfterLockIn` [M3][M4] |
+| B2-ADD-R09 | Onion failure → failure message | PARTIAL (`LocalOnlyHtlcSwitch` peels and fails back, malformed for BADONION, a02afa7; forwarding switch W2-B) | N6-T2, N8-T2 | `AT/Payments/HtlcSwitchTests.Given_BadOnion_Then_FailMalformedAfterLockIn` [M3][M4] |
 | B2-ADD-R10 | BOLT 4 payload reader rules | PARTIAL (validator not wired) | N8-T2 | `AT/Payments/FinalHopHtlcSwitchTests` [M4] |
 
 ### 6.4 Removing HTLCs
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-DEL-W01 | fulfill TLVs 1/3, fail TLV 1 | MISSING (NL-022) | ONION M3b | `ST/Messages/UpdateFulfillHtlcMessageTests` [M3b] |
-| B2-DEL-00 | Only remove the other node's HTLCs | DONE (engine, N4; not wired until N6) | N4-T2 | `DT/…/RemoveTests.Given_RemoveOwnOfferedHtlc_Then_Rejected` |
-| B2-DEL-01 | Remove as soon as possible | MISSING | N6-T2 | `AT/Channels/Services/CommitSchedulerTests` [M4] |
+| B2-DEL-00 | Only remove the other node's HTLCs | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/RemoveTests.Given_RemoveOwnOfferedHtlc_Then_Rejected` |
+| B2-DEL-01 | Remove as soon as possible | DONE (`CommitScheduler`, a02afa7) | N6-T2 | `AT/Channels/Services/CommitSchedulerTests` [M4] |
 | B2-DEL-02 | Fail timed-out HTLCs | MISSING | N9-T2 | see B2-CLTV-03 |
-| B2-DEL-03 | No remove before lock-in | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_AddNotLockedIn_When_SendFulfill_Then_Rejected` |
+| B2-DEL-03 | No remove before lock-in | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_AddNotLockedIn_When_SendFulfill_Then_Rejected` |
 | B2-DEL-04 | Blinded non-final → `invalid_onion_blinding` | MISSING | ONION M5 | M5 [M5] |
 | B2-DEL-05 | `path_key` in add → malformed `invalid_onion_blinding` | MISSING | ONION M5 | M5 [M5] |
 | B2-DEL-06 | `attribution_data` when negotiated | MISSING (no longer advertised: NL-074 fixed) | N0-T4 (default No), M3b | `DT/Node/FeatureOptionsTests.Given_Defaults_Then_UnimplementedNotAdvertised` [M3b] |
 | B2-DEL-07 | Relay `fulfillment_payload` | MISSING | ONION M3b | M3b [M3b] |
-| B2-DEL-R01 | Unknown id → fail | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_UnknownId_Then_Violation` |
-| B2-DEL-R02 | Wrong preimage → fail | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_WrongPreimage_Then_Violation` |
+| B2-DEL-R01 | Unknown id → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_UnknownId_Then_Violation` |
+| B2-DEL-R02 | Wrong preimage → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_WrongPreimage_Then_Violation` |
 | B2-DEL-R03 | `fulfillment_payload` > 32768 → error | MISSING | ONION M3b | `AT/…/UpdateFulfillHtlcMessageHandlerTests.Given_OversizeFulfillmentPayload_Then_Error` [M3b] |
-| B2-DEL-R04 | Malformed without BADONION → fail (NL-023) | DONE (engine, N4; not wired until N6) (NL-023) | N4-T2 | `…Given_MalformedWithoutBadOnion_Then_Violation` [M3] |
+| B2-DEL-R04 | Malformed without BADONION → fail (NL-023) | DONE (engine N4; wired N6, a604dff/a02afa7) (NL-023) | N4-T2 | `…Given_MalformedWithoutBadOnion_Then_Violation` [M3] |
 | B2-DEL-R05 | `sha256_of_onion` mismatch → MAY retry | PARTIAL (`MalformedHtlcValidator` reports a mismatch; retry policy M4-T5) | ONION M4-T5 | M4 [M4] |
 | B2-DEL-R06 | Convert malformed upstream (NL-071) | PARTIAL (conversion done, NL-071; upstream propagation M4-T5) | ONION M3-T3/M4-T5 | M3-T3 tests [M3][M4] |
-| B2-DEL-R07 | Double removal is a violation | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_DoubleFulfill_Then_Violation` |
+| B2-DEL-R07 | Double removal is a violation | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_DoubleFulfill_Then_Violation` |
 
 ### 6.5 `start_batch`
 | ID | Requirement | Status | Task | Test |
@@ -560,19 +580,19 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-CS-W01 | TLV 1 `funding_txid`, MUST set | DONE (NL-199) | N0-T6 | `ST/Messages/CommitmentSignedMessageTests.Given_FundingTxidTlv_When_RoundTrip_Then_Equal` |
-| B2-CS-S01 | No CS without changes | DONE (engine, N4; not wired until N6) | N4-T3 | `DT/…/SendCommitTests.Given_NoChanges_Then_CannotSign` |
-| B2-CS-S02 | Fee-only CS allowed | DONE (engine, N4; not wired until N6) | N4-T3 | `…Given_OnlyFeeUpdate_Then_CanSign` |
-| B2-CS-S03 | Revocation-number-only CS allowed | DONE (engine, N4; not wired until N6) | N4-T3 | `…Given_DustOnlyAdd_Then_CanSign_And_NumHtlcs0` |
+| B2-CS-S01 | No CS without changes | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `DT/…/SendCommitTests.Given_NoChanges_Then_CannotSign` |
+| B2-CS-S02 | Fee-only CS allowed | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_OnlyFeeUpdate_Then_CanSign` |
+| B2-CS-S03 | Revocation-number-only CS allowed | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_DustOnlyAdd_Then_CanSign_And_NumHtlcs0` |
 | B2-CS-S04 | HTLC sigs in output order | DONE (N2-T3, N3-T1) | N2-T3, N3-T1 | `IT/BOLT3/Bolt3HtlcTxVectorTests.Given_AppendixC_When_SigningRemoteHtlcTxs_Then_SignaturesInVectorOrder` |
-| B2-CS-S05 | Ping before CS if idle | MISSING | N6-T2 | `AT/…/CommitSchedulerTests.Given_IdlePeer_When_Commit_Then_PingFirst` |
-| B2-CS-S06 | One un-revoked CS; needs remote next point | DONE (engine, N4; not wired until N6) | N1-T2, N4-T3 | `…Given_WaitingForRevocation_Then_CannotSign` |
+| B2-CS-S05 | Ping before CS if idle | PARTIAL (connection check only, NL-251) | N6-T2 | `AT/…/CommitSchedulerTests.Given_IdlePeer_When_Commit_Then_PingFirst` |
+| B2-CS-S06 | One un-revoked CS; needs remote next point | DONE (engine N4; wired N6, a604dff/a02afa7) | N1-T2, N4-T3 | `…Given_WaitingForRevocation_Then_CannotSign` |
 | B2-CS-S07 | Splice batch | N/A | — | — |
-| B2-CS-R01 | Invalid / high-S sig → fail | PARTIAL (engine verifies before any state change; `CommitmentSigningService` verifies; handler N6) | N3-T5, N6-T1 | `AT/…/CommitmentSignedMessageHandlerTests.Given_BadSig_Then_ChannelError` |
-| B2-CS-R02 | `num_htlcs` mismatch → fail | DONE (engine, N4; not wired until N6) | N4-T3 | `DT/…/ReceiveCommitTests.Given_WrongNumHtlcs_Then_Violation` |
+| B2-CS-R01 | Invalid / high-S sig → fail | DONE (engine verifies before any state change; handler a604dff) | N3-T5, N6-T1 | `AT/…/CommitmentSignedMessageHandlerTests.Given_BadSig_Then_ChannelError` |
+| B2-CS-R02 | `num_htlcs` mismatch → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `DT/…/ReceiveCommitTests.Given_WrongNumHtlcs_Then_Violation` |
 | B2-CS-R03 | Invalid HTLC sig → fail | DONE (N3-T1 signer vectors) | N3-T1 | `IT/BOLT3/Bolt3HtlcTxVectorTests.Given_AppendixC_RemoteHtlcSig_Then_Valid` (+ tampered, Appendix F) |
 | B2-CS-R04 | Splice receive rules | N/A | — | — |
-| B2-CS-R05 | Respond with RAA | PARTIAL (engine returns the RAA placeholder; handler N6) | N6-T1 | `…Given_ValidCommit_Then_RevokeAndAckQueued` |
-| B2-CS-R06 | Persist before reply | MISSING | N5-T2, N6-T1 | `…Given_PersistFails_Then_NoRevokeSent` |
+| B2-CS-R05 | Respond with RAA | DONE (a604dff) | N6-T1 | `…Given_ValidCommit_Then_RevokeAndAckQueued` |
+| B2-CS-R06 | Persist before reply | DONE (a604dff; `CommitmentSignedMessageHandlerTests.Given_PersistFails_When_CommitmentSigned_Then_NoRevokeSentAndNoSecretReleased`) | N5-T2, N6-T1 | `…Given_PersistFails_Then_NoRevokeSent` |
 
 ### 6.7 `revoke_and_ack`
 | ID | Requirement | Status | Task | Test |
@@ -580,10 +600,10 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-RAA-S01 | Secret of previous local commitment | DONE (NL-187, NL-189: signer by number, guarded) | N1-T1, N3-T2 | `DT/…/RevokeTests.Given_LocalCommitN_When_Revoke_Then_SecretIndexIsFirstMinus(N-1)` |
 | B2-RAA-S02 | Point for the next local commitment | DONE (NL-187) | N1-T1 | same |
 | B2-RAA-S03 | One RAA per batch | N/A (no batches) | — | — |
-| B2-RAA-R01 | Invalid secret → error + fail | PARTIAL (`PerCommitmentSecretVerifier` + engine `MustFailChannel`; handler N6) | N3-T3, N6-T1 | `BT/…/PerCommitmentSecretVerifierTests`; `AT/…/RevokeAndAckMessageHandlerTests.Given_WrongSecret_Then_ErrorAndFail` |
+| B2-RAA-R01 | Invalid secret → error + fail | DONE (`PerCommitmentSecretVerifier` + engine `MustFailChannel`; handler a604dff) | N3-T3, N6-T1 | `BT/…/PerCommitmentSecretVerifierTests`; `AT/…/RevokeAndAckMessageHandlerTests.Given_WrongSecret_Then_ErrorAndFail` |
 | B2-RAA-R02 | Shachain violation → MAY fail | PARTIAL (shachain rejects and is persisted, NL-136; not wired) | N3-T4 | Appendix D "wrong sequence"; `AT/…Given_ShachainInconsistent_Then_Fail` [B5] |
-| B2-RAA-R03 | RAA without outstanding CS → violation | DONE (engine, N4; not wired until N6) | N4-T3 | `…Given_NoPendingCommit_Then_Violation` |
-| B2-RAA-R04 | Store remote secrets for penalties | PARTIAL (storage done, NL-136; not saved at runtime until N5/N6) | N3-T4 | `IT/Persistence/RemoteShachainPersistenceTests` [B5] |
+| B2-RAA-R03 | RAA without outstanding CS → violation | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_NoPendingCommit_Then_Violation` |
+| B2-RAA-R04 | Store remote secrets for penalties | DONE (saved on every revoke_and_ack, a604dff) | N3-T4 | `IT/Persistence/RemoteShachainPersistenceTests` [B5] |
 | B2-RAA-N01 | Never broadcast revoked commitments | MISSING | N9-T4 | `AT/…/ChannelFailureServiceTests.Given_Revoked_Then_OnlyLatestBroadcast` [B5] |
 | B2-RAA-N02 | Don't sign own commitment unless broadcasting | DONE in effect | N9-T4 | same (code review) |
 
@@ -592,13 +612,13 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 |---|---|---|---|---|
 | B2-FEE-Z01 | `zero_fee_commitments` rules | N/A | — | — |
 | B2-FEE-S01 | Payer keeps feerate sufficient | MISSING | N9-T1 | `AT/…/FeeUpdateSchedulerTests.Given_EstimateUp20Pct_Then_UpdateFeeQueued` |
-| B2-FEE-S02 | Non-payer MUST NOT send | DONE (engine, N4; not wired until N6) | N4-T2 | `DT/…/FeeTests.Given_NotFunder_When_SendFee_Then_Rejected` |
+| B2-FEE-S02 | Non-payer MUST NOT send | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/FeeTests.Given_NotFunder_When_SendFee_Then_Rejected` |
 | B2-FEE-S03 | Non-anchor dust on increase → MAY skip/fail | MISSING | N9-T1 | see B2-DUST-05 |
-| B2-FEE-R01 | Unreasonable feerate → fail | DONE (engine, N4; not wired until N6); bounds come from N9-T1 | N4-T2, N9-T1 | `…Given_FeeAboveMax_Then_Violation` |
-| B2-FEE-R02 | Non-payer sender → fail | DONE (engine, N4; not wired until N6) | N4-T2 | `…Given_FromNonFunder_Then_Violation` |
-| B2-FEE-R03 | Funder can't afford → SHOULD fail | DONE (engine, N4; not wired until N6); checked on the current local commitment and again at commit | N4-T2 | `…Given_FunderCantAffordNewFee_Then_Violation` |
+| B2-FEE-R01 | Unreasonable feerate → fail | DONE (engine N4; wired N6, a604dff/a02afa7); bounds come from N9-T1 | N4-T2, N9-T1 | `…Given_FeeAboveMax_Then_Violation` |
+| B2-FEE-R02 | Non-payer sender → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_FromNonFunder_Then_Violation` |
+| B2-FEE-R03 | Funder can't afford → SHOULD fail | DONE (engine N4; wired N6, a604dff/a02afa7); checked on the current local commitment and again at commit | N4-T2 | `…Given_FunderCantAffordNewFee_Then_Violation` |
 | B2-FEE-R04 | Non-anchor dust after increase → MAY fail | MISSING | N9-T1 | see B2-DUST-05 |
-| B2-FEE-X01 | Replaced, last applies per commitment | DONE (engine, N4; not wired until N6) | N4-T1 | `DT/…/ReduceTests.Given_TwoFeeUpdates_Then_LastApplies` |
+| B2-FEE-X01 | Replaced, last applies per commitment | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T1 | `DT/…/ReduceTests.Given_TwoFeeUpdates_Then_LastApplies` |
 
 ### 6.9 `channel_reestablish`
 | ID | Requirement | Status | Task | Test |
@@ -609,7 +629,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-RE-02 | Fundee remembers after `funding_signed` | DONE | — | `FundingCreatedMessageHandlerTests` |
 | B2-RE-03 | Continue over a new transport | MISSING | N7-T2 | `AT/Channels/Managers/ChannelManagerReconnectTests` |
 | B2-RE-04 | Revert uncommitted peer updates; keep preimages | PARTIAL (engine `RevertUncommitted` keeps `KnownPreimage`; lifecycle N7-T2) | N4-T3, N7-T2 | `DT/…/ReestablishTests.Given_ProposedRemoteAdds_When_Disconnect_Then_Dropped_And_PreimageKept` |
-| B2-RE-05 | Failed channel re-sends error | MISSING (NL-200) | N6-T3, N7-T3 | `AT/…Given_FailedChannel_When_Reconnect_Then_ErrorResent` |
+| B2-RE-05 | Failed channel re-sends error | MISSING (NL-200; `ErrorSent` is persisted since a604dff, re-send is N7) | N6-T3, N7-T3 | `AT/…Given_FailedChannel_When_Reconnect_Then_ErrorResent` |
 | B2-RE-06 | Send reestablish per channel | MISSING | N7-T2 | `…Given_TwoOpenChannels_When_PeerInit_Then_TwoReestablishSent` |
 | B2-RE-07 | Wait for peer's reestablish | MISSING | N7-T2 | `…Given_NotReestablished_When_LocalAdd_Then_Queued` |
 | B2-RE-08 | `next_commitment_number` = L+1 | MISSING | N7-T1 | `DT/Channels/Reestablish/ReestablishPlannerTests` |
@@ -721,7 +741,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B3-CLTX-01 | Simple closing tx | MISSING | N11-T2 | same |
 | B3-DUST-01 | Script dust thresholds | PARTIAL (in DI since NL-068) | N10-T1 | `BT/Services/DustServiceTests` |
 | B3-KEY-01 | Per-commitment key derivation | DONE | — | Appendix E |
-| B3-KEY-02 | Secret generation + shachain storage | DONE (NL-136 storage; saved with each transition by `ApplyAsync`, 4472a8b; runtime call sites N6/N7) | N3-T4 | Appendix D + persistence round trip [B5] |
+| B3-KEY-02 | Secret generation + shachain storage | DONE (NL-136 storage; saved with each transition by `ApplyAsync`, 4472a8b; runtime save on RAA a604dff) | N3-T4 | Appendix D + persistence round trip [B5] |
 | B3-VEC-C | Appendix C commit + HTLC txs byte-exact | DONE (16 commitments + 33 HTLC txs byte-exact) | N2-T2, N2-T4 | `IT/BOLT3/Bolt3IntegrationTests`, `Bolt3HtlcTxVectorTests` |
 | B3-VEC-F | Appendix F commit + HTLC txs | DONE (9 commitments + 15 HTLC txs byte-exact) | N2-T5, N3-T1 | `IT/BOLT3/Bolt3AnchorVectorTests` |
 
@@ -731,13 +751,13 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | X-01 | Serialized per-channel processing, ordered outbound, N replies | DONE (NL-033, NL-193) | N0-T3 | `AT/Node/Managers/PeerManagerTests` |
 | X-02 | Transport lock-before-encrypt, `ReadExactlyAsync` | DONE (NL-104, NL-105) | N0-T2 | `TransportServiceTests` |
 | X-03 | Local/remote channel params | DONE (NL-194) | N1-T4 | `ChannelFactoryTests` |
-| X-04 | msat balances, local/remote numbers, remote next point | DONE (msat NL-191, numbers NL-188; remote current and next points persisted, NL-232 4472a8b; first-snapshot wiring N6) | N1-T1/T2/T5 | `ChannelRoundTripTests` |
+| X-04 | msat balances, local/remote numbers, remote next point | DONE (msat NL-191, numbers NL-188; remote current and next points persisted, NL-232 4472a8b; first snapshot at channel_ready a604dff) | N1-T1/T2/T5 | `ChannelRoundTripTests` |
 | X-05 | HTLC reload bugs | DONE (NL-125..128) | N1-T5 | `ChannelRoundTripTests` |
-| X-06 | Fail-the-channel service | MISSING (NL-200) | N6-T3, N9-T4 | `ChannelFailureServiceTests` |
+| X-06 | Fail-the-channel service | PARTIAL (Failed + `ErrorSent` persisted, updates refused, a604dff; no broadcast service, NL-200) | N6-T3, N9-T4 | `ChannelFailureServiceTests` |
 | X-07 | Feature hygiene | DONE (NL-109, NL-074) | N0-T4 | `FeatureOptionsTests` |
 | X-08 | Application.Tests discovered | DONE (NL-167) | N0-T1 | `dotnet test` count |
 | X-09 | Strict TLV reads on touched messages | DONE (NL-001) | N0-T6, N11-T1 | serializer tests |
-| X-10 | Persist-before-send / crash consistency (I1–I12) | PARTIAL (invariant suite N4-T5 and N5-T3 crash injection done; N6 wiring, N7-T3 open) | N4-T5, N5-T3, N7-T3 | invariant suite, crash tests |
+| X-10 | Persist-before-send / crash consistency (I1–I12) | PARTIAL (invariant suite N4-T5 and N5-T3 crash injection done; N6 wiring done a604dff/a02afa7; N7-T3 open) | N4-T5, N5-T3, N7-T3 | invariant suite, crash tests |
 | X-11 | Startup registration before connect | DONE (NL-052, NL-201) | N1-T6 | `PeerManagerTests` |
 | X-12 | Gossip types don't kill peers | DONE (NL-100) | N0-T5 | serializer tests + DK idle test |
 
@@ -760,7 +780,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 |---|---|---|
 | N0-T4 | §9 risk 7 (feature defaults) | RouteBlinding / AttributionData → No |
 | N6-T1 `UpdateAddHtlcMessageHandler` | M4-T1 | Full BOLT 2 validation + persistence; no peel on receive. M4-T1 reduces to subscribing the switch to `IncomingHtlcLockedIn` |
-| N6-T2 `LocalOnlyHtlcSwitch` | M3-T1 + M3-T2 (create), done | Fail back with `temporary_node_failure` via `IFailureOnionService.CreateErrorPacket` |
+| N6-T2 `LocalOnlyHtlcSwitch` | M3-T1 + M3-T2 (create), done | Fail back via `IFailureOnionService.CreateErrorPacket`: final hop `incorrect_or_unknown_payment_details` (`temporary_node_failure` while no height is known), non-final `temporary_node_failure` (done, a02afa7, aac5f60) |
 | N5-T1 `HtlcEntity.OnionSharedSecret` | M4-T7 (part) | Per-HTLC shared secret column |
 | N8-T1 | M4 prerequisite (NL-075) | `IHopPayloadSerializer` in Domain |
 | N8-T2 `FinalHopHtlcSwitch` | M4-T2, M4-T3 (single part) | Peel after lock-in, replay record, validation, final-hop checks; non-final → `unknown_next_peer` |
