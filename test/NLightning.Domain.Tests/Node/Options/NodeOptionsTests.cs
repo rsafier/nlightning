@@ -172,7 +172,7 @@ public class NodeOptionsTests
         Assert.False(options.HtlcsEnabled);
         Assert.Equal(TimeSpan.FromSeconds(1), options.ReconnectInitialDelay);
         Assert.Equal(TimeSpan.FromSeconds(30), options.ReconnectMaxDelay);
-        Assert.Equal(2_000UL, options.Routing.FeeBaseMsat);
+        Assert.Equal(2_000U, options.Routing.FeeBaseMsat);
         Assert.Equal(500U, options.Routing.FeeProportionalMillionths);
         Assert.Equal((ushort)40, options.Routing.CltvExpiryDelta);
         Assert.Equal(1_008U, options.Routing.MaxCltvExpiryDistance);
@@ -205,6 +205,41 @@ public class NodeOptionsTests
         Assert.True(options.HtlcsEnabled);
         Assert.Equal((ushort)33, options.Routing.CltvExpiryDelta);
         Assert.Contains(options.GetValidationErrors(), e => e.Contains(nameof(RoutingOptions.CltvExpiryDelta)));
+    }
+
+    [Fact]
+    public void Given_FeeBaseAboveU32_When_Bound_Then_BindingFails()
+    {
+        // Arrange (fee_base_msat is a u32 in channel_update and BOLT 11 route hints)
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Routing:FeeBaseMsat"] = "4294967296"
+                           })
+                           .Build();
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => configuration.GetSection("Node").Get<NodeOptions>());
+    }
+
+    [Fact]
+    public void Given_FeeBaseAtU32Max_When_Bound_Then_Accepted()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Routing:FeeBaseMsat"] = "4294967295"
+                           })
+                           .Build();
+
+        // Act
+        var options = configuration.GetSection("Node").Get<NodeOptions>();
+
+        // Assert
+        Assert.NotNull(options);
+        Assert.Equal(uint.MaxValue, options.Routing.FeeBaseMsat);
+        Assert.Empty(options.GetValidationErrors());
     }
 
     [Fact]

@@ -34,9 +34,10 @@ public class RoutingOptions
     public const uint DefaultMaxCltvExpiryDistance = 2016;
 
     /// <summary>
-    /// <c>fee_base_msat</c>: the fixed part of our forwarding fee, in msat.
+    /// <c>fee_base_msat</c>: the fixed part of our forwarding fee, in msat. A <c>u32</c>, as in BOLT 7
+    /// <c>channel_update</c> and BOLT 11 <c>r</c> route hints, so every configured value can be advertised.
     /// </summary>
-    public ulong FeeBaseMsat { get; set; } = 1_000;
+    public uint FeeBaseMsat { get; set; } = 1_000;
 
     /// <summary>
     /// <c>fee_proportional_millionths</c>: the proportional part of our forwarding fee.

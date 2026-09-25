@@ -33,6 +33,17 @@ public readonly record struct HtlcOrigin
     /// </summary>
     public ulong? IncomingHtlcId { get; }
 
+    /// <summary>
+    /// True for an origin built by <see cref="Local"/> or <see cref="Forwarded"/>; false for <c>default</c>, which
+    /// routes nowhere. <c>IChannelOperations.OfferHtlcAsync</c> refuses an invalid origin.
+    /// </summary>
+    public bool IsValid => Kind switch
+    {
+        HtlcOriginKind.Local => PaymentHash is not null,
+        HtlcOriginKind.Forwarded => IncomingChannelId is not null && IncomingHtlcId is not null,
+        _ => false
+    };
+
     private HtlcOrigin(HtlcOriginKind kind, Hash? paymentHash, ChannelId? incomingChannelId, ulong? incomingHtlcId)
     {
         Kind = kind;

@@ -13,7 +13,9 @@ using Protocol.Onion.Enums;
 /// <remarks>
 /// <para>The payment is persisted (<c>IPaymentDbRepository</c>) as <see cref="PaymentStatus.InFlight"/> before its
 /// HTLC is offered, and the HTLC carries <c>HtlcOrigin.Local(PaymentHash)</c>, so after a restart the outcome still
-/// reaches the payment. There is at most one payment per <see cref="PaymentHash"/>.</para>
+/// reaches the payment. There is at most one stored payment per <see cref="PaymentHash"/>: the latest attempt. A
+/// retry of a <see cref="PaymentStatus.Failed"/> payment is a new <see cref="PaymentModel"/> that replaces the failed
+/// one (<c>IPaymentDbRepository.AddAsync</c>); an in-flight or succeeded payment is never retried.</para>
 /// <para>Status moves only from <see cref="PaymentStatus.InFlight"/> to <see cref="PaymentStatus.Succeeded"/> or
 /// <see cref="PaymentStatus.Failed"/>; the mutators throw <see cref="InvalidOperationException"/> otherwise.</para>
 /// </remarks>
@@ -160,6 +162,13 @@ public sealed class PaymentModel
     /// <summary>
     /// The HTLC failed irrevocably, or could not be offered (then <paramref name="failureCode"/> is null).
     /// </summary>
+    /// <remarks>
+    /// <c>IChannelOperations.OfferHtlcAsync</c> saves the add and only then returns the HTLC id, so recording it with
+    /// <see cref="AddOutgoingHtlc"/> is a later save. An <see cref="PaymentStatus.InFlight"/> payment without
+    /// <see cref="OutgoingHtlcId"/> (after a crash, or on a startup replay) may therefore still have a live HTLC:
+    /// fail it without a failure code only once no channel HTLC carries <c>HtlcOrigin.Local(PaymentHash)</c>, because
+    /// a later <see cref="Succeed"/> on a failed payment throws and the preimage would be recorded nowhere.
+    /// </remarks>
     public void Fail(FailureCode? failureCode, int? failureSourceIndex, string? failureReason,
                      DateTimeOffset completedAt)
     {

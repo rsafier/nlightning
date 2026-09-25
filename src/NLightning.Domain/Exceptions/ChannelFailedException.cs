@@ -13,8 +13,9 @@ using Channels.ValueObjects;
 ///   <item>Persist <c>ChannelState.Failed</c> and the <c>error</c> that will be sent (so it can be re-sent on
 ///   reconnect, B2-RE-05) <b>before</b> sending anything.</item>
 ///   <item>Send an <c>error</c> whose <c>channel_id</c> is <see cref="FailedChannelId"/> and whose data is
-///   <see cref="ChannelErrorException.PeerMessage"/>; the local <see cref="Exception.Message"/> never leaves the
-///   node.</item>
+///   <see cref="ChannelErrorException.PeerMessage"/>. That is never null or blank here (it defaults to
+///   <see cref="DefaultPeerMessage"/>), so the send path, which falls back to <see cref="Exception.Message"/> for a
+///   blank peer message, never leaks the local message.</item>
 ///   <item>Refuse every later update on the channel, in both directions.</item>
 ///   <item>When <see cref="MustBroadcast"/> is true, broadcast the latest local commitment through the single
 ///   fail-the-channel service (N9-T4). Until that exists (and while <c>NodeOptions.EnableHtlcs</c> keeps HTLCs on
@@ -22,6 +23,10 @@ using Channels.ValueObjects;
 /// </list>
 /// Unlike <see cref="ChannelWarningException"/>, the connection itself may stay open; the peer's other channels are
 /// unaffected.
+/// <para>Do not throw it before that catcher exists: it derives from <see cref="ChannelErrorException"/>, so today
+/// the generic channel-error path (PeerManager/ChannelManager) catches it, sends the error and disconnects
+/// <b>without</b> persisting <c>ChannelState.Failed</c>. The N6-T3 handler must add a specific
+/// <c>catch (ChannelFailedException)</c> before every generic <c>ChannelErrorException</c> handler.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
 public sealed class ChannelFailedException : ChannelErrorException
@@ -43,16 +48,24 @@ public sealed class ChannelFailedException : ChannelErrorException
     /// </summary>
     public string? RequirementId { get; init; }
 
+    /// <summary>
+    /// The <c>error</c> data sent when the caller gives no (or a blank) peer message.
+    /// </summary>
+    public const string DefaultPeerMessage = "channel failed";
+
     public ChannelFailedException(ChannelId channelId, string message, string? peerMessage = null)
-        : base(message, channelId, peerMessage)
+        : base(message, channelId, PeerMessageOrDefault(peerMessage))
     {
         FailedChannelId = channelId;
     }
 
     public ChannelFailedException(ChannelId channelId, string message, Exception innerException,
                                   string? peerMessage = null)
-        : base(message, channelId, innerException, peerMessage)
+        : base(message, channelId, innerException, PeerMessageOrDefault(peerMessage))
     {
         FailedChannelId = channelId;
     }
+
+    private static string PeerMessageOrDefault(string? peerMessage) =>
+        string.IsNullOrWhiteSpace(peerMessage) ? DefaultPeerMessage : peerMessage;
 }
