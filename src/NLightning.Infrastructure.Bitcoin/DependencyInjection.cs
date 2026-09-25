@@ -1,16 +1,21 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Bitcoin;
 
 using Builders;
 using Builders.Interfaces;
 using Crypto.Functions;
+using Domain.Bitcoin.Interfaces;
 using Domain.Crypto.Interfaces;
+using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Infrastructure.Crypto.Interfaces;
 using Onion;
 using Services;
+using Signers;
 using Wallet;
 using Wallet.Interfaces;
 
@@ -41,6 +46,19 @@ public static class DependencyInjection
         services.AddSingleton<IPerCommitmentSecretVerifier, PerCommitmentSecretVerifier>();
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ISphinxService, SphinxService>();
+
+        // The signer holds the node's secrets; ISecureKeyManager is registered by the host
+        services.AddSingleton<ILightningSigner>(sp =>
+        {
+            var fundingOutputBuilder = sp.GetRequiredService<IFundingOutputBuilder>();
+            var keyDerivationService = sp.GetRequiredService<IKeyDerivationService>();
+            var logger = sp.GetRequiredService<ILogger<LocalLightningSigner>>();
+            var nodeOptions = sp.GetRequiredService<IOptions<NodeOptions>>().Value;
+            var secureKeyManager = sp.GetRequiredService<ISecureKeyManager>();
+            var utxoMemoryRepository = sp.GetRequiredService<IUtxoMemoryRepository>();
+            return new LocalLightningSigner(fundingOutputBuilder, keyDerivationService, logger, nodeOptions,
+                                            secureKeyManager, utxoMemoryRepository);
+        });
 
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();
