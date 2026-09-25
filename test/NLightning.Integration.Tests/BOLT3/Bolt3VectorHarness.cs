@@ -62,6 +62,7 @@ internal sealed class Bolt3VectorHarness
     public Bolt3TestLightningSigner Signer { get; }
     public CommitmentTransactionModelFactory Factory { get; }
     public CommitmentTransactionBuilder CommitmentBuilder { get; }
+    public HtlcTransactionBuilder HtlcBuilder { get; }
     public ChannelModel Channel { get; }
     public Bolt3CommitmentVector Vector { get; }
     public bool HasAnchors { get; }
@@ -81,6 +82,7 @@ internal sealed class Bolt3VectorHarness
                                                       Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(), 0));
         Factory = new CommitmentTransactionModelFactory(new Bolt3TestCommitmentKeyDerivationService(), Signer);
         CommitmentBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
+        HtlcBuilder = new HtlcTransactionBuilder(Options.Create(nodeOptions));
         Channel = CreateChannel(nodeOptions.DustLimitAmount, hasAnchors);
     }
 
@@ -96,6 +98,39 @@ internal sealed class Bolt3VectorHarness
 
     public CommitmentTransactionModel CreateCommitmentModel() =>
         Factory.CreateCommitmentTransactionModel(Channel, Spec, CommitmentSide.Local, Channel.LocalCommitmentNumber);
+
+    /// <summary>
+    /// Builds the commitment with its HTLC output map and the HTLC transaction models, in output order.
+    /// </summary>
+    public (CommitmentTransactionBuildResult Commitment, IReadOnlyList<HtlcTransactionModel> HtlcTxs) BuildHtlcModels()
+    {
+        var model = CreateCommitmentModel();
+        var built = CommitmentBuilder.BuildWithOutputMap(model);
+        return (built, HtlcTransactionModelFactory.CreateHtlcTransactionModels(model, built));
+    }
+
+    /// <summary>
+    /// BIP 143 sighash of an HTLC transaction's input, from what the builder returned.
+    /// </summary>
+    public static uint256 HtlcSigHash(HtlcTransactionBuildResult built, SigHash sigHash)
+    {
+        var tx = Transaction.Load(built.Transaction.RawTxBytes, Network.Main);
+        var witnessScript = new Script((byte[])built.SpentWitnessScript);
+        var spentTxOut = new TxOut(Money.Satoshis(built.SpentAmount.Satoshi), witnessScript.WitHash.ScriptPubKey);
+        return tx.GetSignatureHash(witnessScript, 0, sigHash, spentTxOut, HashVersion.WitnessV0);
+    }
+
+    /// <summary>
+    /// Our HTLC signature (RFC 6979, no low-R grinding, as the vectors were generated) with Appendix C's
+    /// <c>local_privkey</c>, which is also the local HTLC key because the HTLC and payment basepoints are equal.
+    /// </summary>
+    public static ECDSASignature SignLocalHtlc(HtlcTransactionBuildResult built)
+    {
+        var key = Bolt3AppendixCVectors.NodeAPrivkey;
+        Assert.Equal(Bolt3AppendixCVectors.NodeAHtlcPubkey, key.PubKey);
+        return key.Sign(HtlcSigHash(built, SigHash.All), new SigningOptions(SigHash.All, false)).Signature
+                  .MakeCanonical();
+    }
 
     /// <summary>
     /// Signs the unsigned commitment with the local funding key, checks the vector's remote signature, and returns
