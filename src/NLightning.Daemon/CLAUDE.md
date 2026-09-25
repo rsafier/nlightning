@@ -37,7 +37,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 
 ## Tests
 - `test/NLightning.Daemon.Tests` (xUnit v3 + Moq, `Given_X_When_Y_Then_Z`). `dotnet test` runs them (CI included, since NL-167 added `xunit.runner.visualstudio`). The xunit v3 runner also works:
-  - `dotnet run --project test/NLightning.Daemon.Tests` (all 23 tests)
+  - `dotnet run --project test/NLightning.Daemon.Tests` (all tests)
   - `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'`, or `-class <FQN>`
 - InternalsVisibleTo (`AssemblyInfo.cs`) lists `NLightning.Daemon.Tests` (plus the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`). Moq cannot proxy `ILogger<InternalType>` (strong-named Logging.Abstractions), so use `NullLogger<T>.Instance` for internal handlers.
 - Docker end-to-end tests (`test/NLightning.Integration.Tests/Docker/{AbcNetworkTests,ChannelOpeningFlowTests}.cs`) rebuild the DI graph **by hand** instead of calling `ConfigureNltgServices`. Mirror any new registration there. CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
