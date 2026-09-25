@@ -22,6 +22,8 @@ public class DaemonUtils
         DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help"
     };
 
+    private static readonly HashSet<string> s_shortSwitches = ["-n", "-c", "-h", "-?"];
+
     public static void ShowUsage()
     {
         Console.WriteLine("NLTG - NLightning Daemon");
@@ -64,7 +66,9 @@ public class DaemonUtils
     /// <remarks>
     /// <list type="bullet">
     /// <item><c>-n</c> and <c>-c</c> become <c>--network</c> and <c>--config</c>.</item>
-    /// <item>Bare flags become <c>--flag=true</c>, so they don't swallow the next argument as their value.
+    /// <item>Bare flags become <c>--flag=true</c>, so they don't swallow the next argument as their value. An option
+    /// is bare when it is a known flag, is last, or is followed by another option name (<c>--x</c> or a known short
+    /// switch); values that merely start with '-' are kept.
     /// <c>--daemon true|false</c> is kept as a pair.</item>
     /// <item>Password options are dropped: they are not configuration and must not end up in it.</item>
     /// </list>
@@ -98,7 +102,7 @@ public class DaemonUtils
             }
 
             if (arg.StartsWith("--") && !arg.Contains('=')
-             && (s_bareFlags.Contains(arg) || !hasNext || args[i + 1].StartsWith('-')))
+             && (s_bareFlags.Contains(arg) || !hasNext || IsOptionName(args[i + 1])))
             {
                 normalized.Add($"{arg}=true");
                 continue;
@@ -109,6 +113,13 @@ public class DaemonUtils
 
         return normalized.ToArray();
     }
+
+    /// <summary>
+    /// Checks whether an argument names an option rather than being a value, so values that start with '-' (like
+    /// negative numbers or passwords) are kept.
+    /// </summary>
+    private static bool IsOptionName(string arg) =>
+        arg.StartsWith("--") || s_shortSwitches.Contains(arg);
 
     /// <summary>
     /// Checks the command line for <c>--daemon</c>, <c>--daemon=&lt;bool&gt;</c> or <c>--daemon &lt;bool&gt;</c>.

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 
@@ -61,7 +62,7 @@ public static class NodeConfigurationExtensions
         // Get network from the command line or environment variable first
         var initialConfig = new ConfigurationBuilder()
                            .AddCommandLine(args)
-                           .AddEnvironmentVariables("NLTG_")
+                           .Add(new NltgEnvironmentVariablesSource())
                            .Build();
         var network = initialConfig["network"] ?? DefaultNetwork;
 
@@ -117,14 +118,44 @@ public static class NodeConfigurationExtensions
 
         // The default config dir is chosen by network, so the file must not contradict it
         if (!usingCustomConfig)
+        {
+            var fileNetwork = new ConfigurationBuilder().AddJsonFile(configFile!, optional: false,
+                                                                     reloadOnChange: false)
+                                                        .Build()["Node:Network"];
+            if (!string.IsNullOrEmpty(fileNetwork) && !fileNetwork.Equals(network, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"{configFile} sets Node:Network to '{fileNetwork}', but it is in the '{network}' directory. " +
+                    $"Move {configPath} to {Path.Combine(Path.GetDirectoryName(configPath)!, fileNetwork)} and " +
+                    $"start with --network {fileNetwork}, or change Node:Network in the file to '{network}'.");
+
             config.AddInMemoryCollection(new Dictionary<string, string?> { ["Node:Network"] = network });
+        }
 
         var configuration = config
-                           .AddEnvironmentVariables("NLTG_")
+                           .Add(new NltgEnvironmentVariablesSource())
                            .AddCommandLine(args)
                            .Build();
 
         return (configuration, network, configPath!);
+    }
+
+    /// <summary>
+    /// The <c>NLTG_</c> environment variables, without <c>NLTG_PASSWORD</c>: the key password is not configuration and
+    /// must not end up in it.
+    /// </summary>
+    private sealed class NltgEnvironmentVariablesSource : IConfigurationSource
+    {
+        public IConfigurationProvider Build(IConfigurationBuilder builder) =>
+            new NltgEnvironmentVariablesProvider();
+    }
+
+    private sealed class NltgEnvironmentVariablesProvider() : EnvironmentVariablesConfigurationProvider("NLTG_")
+    {
+        public override void Load()
+        {
+            base.Load();
+            Data.Remove("PASSWORD");
+        }
     }
 
     /// <summary>
