@@ -130,7 +130,7 @@ public class ChannelFactory : IChannelFactory
 
             // Create the channel
             return new ChannelModel(channelConfig, payload.ChannelId, commitmentNumber, fundingOutput, false, null,
-                                    null, toLocalAmount, localKeySet, 1, 0, toRemoteAmount, remoteKeySet, 1,
+                                    null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount, remoteKeySet, 0,
                                     remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
         catch (Exception e)
@@ -257,8 +257,8 @@ public class ChannelFactory : IChannelFactory
         {
             // Create the channel using only our data
             return new ChannelModel(channelConfig, _channelIdFactory.CreateTemporaryChannelId(), null,
-                                    null, true, null, null, toLocalAmount, localKeySet, 1, 0, toRemoteAmount,
-                                    null, 1, remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
+                                    null, true, null, null, toLocalAmount, localKeySet, 0, 0, toRemoteAmount,
+                                    null, 0, remoteNodeId, 0, ChannelState.V1Opening, ChannelVersion.V1);
         }
         catch (Exception e)
         {

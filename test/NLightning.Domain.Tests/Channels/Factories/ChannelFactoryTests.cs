@@ -160,6 +160,40 @@ public class ChannelFactoryTests
         Assert.Equal(s_temporaryChannelId, exception.ChannelId);
     }
 
+    [Fact]
+    public async Task Given_NewChannelAsNonInitiator_When_Created_Then_NextHtlcIdsZero()
+    {
+        // Arrange (BOLT 2: the first update_add_htlc sent by either side has id 0)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = FeatureSupport.No };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                              s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(0UL, channel.LocalNextHtlcId);
+        Assert.Equal(0UL, channel.RemoteNextHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_NewChannelAsInitiator_When_Created_Then_NextHtlcIdsZero()
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var request = CreateRequest(LightningMoney.Satoshis(100_000));
+        var negotiatedFeatures = new FeatureOptions { OptionAnchors = FeatureSupport.No };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, negotiatedFeatures,
+                                                                           s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(0UL, channel.LocalNextHtlcId);
+        Assert.Equal(0UL, channel.RemoteNextHtlcId);
+    }
+
     private static ChannelFactory CreateNonInitiatorChannelFactory()
     {
         var signerMock = new Mock<ILightningSigner>();
