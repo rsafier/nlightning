@@ -35,6 +35,13 @@ using Domain.Protocol.Onion.Models;
 /// <para>Replays: an HTLC that already accepted its invoice fails here as "already paid" if processed again; the
 /// caller (HTLC switch) must process each incoming HTLC once, and after a restart act on the HTLC's persisted
 /// state (a fulfill already staged) instead of re-running the final hop.</para>
+/// <para>Concurrency: the invoice check here is a read, not a check-and-mark. Two HTLCs for the same
+/// <c>payment_hash</c> evaluated concurrently (a payer retry, or a malicious payer) would both see the invoice Open
+/// and both be accepted. The caller (W2-B HTLC switch) MUST therefore, under a per-payment-hash lock and inside the
+/// same unit of work that stages the fulfill: re-read the invoice, run this processor, call
+/// <c>invoice.Accept(result.AmountReceived)</c> + <c>UpdateAsync</c>, and save before releasing the lock (or use an
+/// equivalent compare-and-set on the invoice status), so a second concurrent HTLC sees Accepted and is failed with
+/// <c>incorrect_or_unknown_payment_details</c> (PERM|15).</para>
 /// </remarks>
 public sealed class FinalHopProcessor
 {

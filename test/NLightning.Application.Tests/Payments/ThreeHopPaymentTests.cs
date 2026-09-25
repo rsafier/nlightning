@@ -231,8 +231,8 @@ public class ThreeHopPaymentTests : IDisposable
             ]
         };
 
-        var route = _alice.RouteBuilder.Build(target, s_amount, Height, _alice.NodeId,
-                                              peer => peer == _bob.NodeId);
+        var route = _alice.RouteBuilder.Build(target, s_amount, LightningMoney.MilliSatoshis(1_000_000), Height,
+                                              _alice.NodeId, peer => peer == _bob.NodeId);
         return await _alice.OnionFactory.CreateAsync(route);
     }
 

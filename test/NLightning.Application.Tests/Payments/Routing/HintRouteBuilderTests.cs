@@ -19,6 +19,9 @@ public class HintRouteBuilderTests
     private const ushort FinalDelta = 40;
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(50_000_123);
 
+    // roadmap §3: Alice caps the fee at fee_limit_msat = 1e6
+    private static readonly LightningMoney s_maxFee = LightningMoney.MilliSatoshis(1_000_000);
+
     private static readonly CompactPubKey s_us = new TestNodeKeyManager(0x01).NodeId;
     private static readonly CompactPubKey s_bob = new TestNodeKeyManager(0x02).NodeId;
     private static readonly CompactPubKey s_carol = new TestNodeKeyManager(0x03).NodeId;
@@ -43,7 +46,7 @@ public class HintRouteBuilderTests
     public void Given_PayeeIsOurPeer_When_Built_Then_SingleFinalHopWithoutFee()
     {
         // Act: a hint exists but the direct channel wins
-        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, Height, s_us,
+        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, s_maxFee, Height, s_us,
                                           peer => peer == s_david || peer == s_bob);
 
         // Assert
@@ -69,7 +72,7 @@ public class HintRouteBuilderTests
         const uint finalCltv = Height + FinalDelta + 3;
 
         // Act
-        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, Height, s_us,
+        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, s_maxFee, Height, s_us,
                                           peer => peer == s_bob);
 
         // Assert
@@ -92,7 +95,7 @@ public class HintRouteBuilderTests
         const ulong feeC = 2_000 + 50_000_123UL * 500 / 1_000_000;
 
         // Act
-        var route = CreateBuilder().Build(Target([CarolHint()]), s_amount, Height, s_bob, peer => peer == s_carol);
+        var route = CreateBuilder().Build(Target([CarolHint()]), s_amount, s_maxFee, Height, s_bob, peer => peer == s_carol);
 
         // Assert
         Assert.Equal(2, route.Hops.Count);
@@ -106,7 +109,7 @@ public class HintRouteBuilderTests
     public void Given_HintThatPassesThroughUs_When_Built_Then_RouteStartsAfterOurEntry()
     {
         // Act: Bob is "us", the hint is [{Bob, B-C}, {Carol, C-D}], so Bob's channel B-C leads to Carol
-        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, Height, s_bob,
+        var route = CreateBuilder().Build(Target([BobHint(), CarolHint()]), s_amount, s_maxFee, Height, s_bob,
                                           peer => peer == s_carol);
 
         // Assert
@@ -119,7 +122,7 @@ public class HintRouteBuilderTests
     {
         // Act
         var route = CreateBuilder().Build(Target([new RoutingInfo(s_erin, s_scidBc, 0, 0, 40)], [CarolHint()]),
-                                          s_amount, Height, s_us, peer => peer == s_carol);
+                                          s_amount, s_maxFee, Height, s_us, peer => peer == s_carol);
 
         // Assert
         Assert.Equal(s_carol, route.FirstHopNodeId);
@@ -130,7 +133,7 @@ public class HintRouteBuilderTests
     {
         // Act
         var exception = Assert.Throws<InvalidOperationException>(() => CreateBuilder().Build(
-                                                                     Target([BobHint(), CarolHint()]), s_amount,
+                                                                     Target([BobHint(), CarolHint()]), s_amount, s_maxFee,
                                                                      Height, s_us, _ => false));
 
         // Assert
@@ -142,13 +145,89 @@ public class HintRouteBuilderTests
     public void Given_PayeeNotAPeerAndNoHints_When_TryBuild_Then_FalseWithReason()
     {
         // Act
-        var found = CreateBuilder().TryBuild(Target(), s_amount, Height, s_us, _ => false, out var route,
+        var found = CreateBuilder().TryBuild(Target(), s_amount, s_maxFee, Height, s_us, _ => false, out var route,
                                              out var reason);
 
         // Assert
         Assert.False(found);
         Assert.Null(route);
         Assert.Contains("no usable channel", reason);
+        Assert.Contains("no usable route hints", reason);
+    }
+
+    [Fact]
+    public void Given_HintsButNoUsableChannel_When_TryBuild_Then_ReasonListsCandidatesNotMissingHints()
+    {
+        // Act
+        var found = CreateBuilder().TryBuild(Target([CarolHint()]), s_amount, s_maxFee, Height, s_us, _ => false,
+                                             out _, out var reason);
+
+        // Assert
+        Assert.False(found);
+        Assert.DoesNotContain("no usable route hints", reason);
+        Assert.Contains("route hint 0", reason);
+    }
+
+    [Fact]
+    public void Given_HintWithOverpricedFee_When_TryBuild_Then_CandidateIsRejectedWithReason()
+    {
+        // Arrange: the payee writes the fee into the invoice; u32 max ppm is about 4294 times the amount
+        var greedy = new RoutingInfo(s_bob, s_scidBc, 1_000, uint.MaxValue, 40);
+
+        // Act
+        var found = CreateBuilder().TryBuild(Target([greedy]), s_amount, s_maxFee, Height, s_us,
+                                             peer => peer == s_bob, out var route, out var reason);
+
+        // Assert
+        Assert.False(found);
+        Assert.Null(route);
+        Assert.Contains("route hint 0: fee", reason);
+        Assert.Contains("exceeds the limit of 1000000 msat", reason);
+    }
+
+    [Fact]
+    public void Given_OverpricedFirstHintAndCheapSecond_When_Built_Then_CheapHintIsUsed()
+    {
+        // Arrange
+        var greedy = new RoutingInfo(s_bob, s_scidBc, 5_000_000, 0, 40);
+
+        // Act
+        var route = CreateBuilder().Build(Target([greedy], [CarolHint()]), s_amount, s_maxFee, Height, s_us,
+                                          peer => peer == s_bob || peer == s_carol);
+
+        // Assert
+        Assert.Equal(s_carol, route.FirstHopNodeId);
+        Assert.True(route.Fee <= s_maxFee);
+    }
+
+    [Fact]
+    public void Given_FeeExactlyAtLimit_When_Built_Then_RouteIsAccepted()
+    {
+        // Arrange: base fee only, so the route fee is exactly the base
+        var hint = new RoutingInfo(s_carol, s_scidCd, 1_000_000, 0, 40);
+
+        // Act
+        var found = CreateBuilder().TryBuild(Target([hint]), s_amount, s_maxFee, Height, s_us,
+                                             peer => peer == s_carol, out var route, out _);
+        var foundBelow = CreateBuilder().TryBuild(Target([hint]), s_amount, LightningMoney.MilliSatoshis(999_999),
+                                                  Height, s_us, peer => peer == s_carol, out _, out _);
+
+        // Assert
+        Assert.True(found);
+        Assert.Equal(s_maxFee, route!.Fee);
+        Assert.False(foundBelow);
+    }
+
+    [Fact]
+    public void Given_ZeroFeeLimitAndDirectPeer_When_Built_Then_DirectRouteIsAccepted()
+    {
+        // Act
+        var route = CreateBuilder().Build(Target([BobHint()]), s_amount, LightningMoney.Zero, Height, s_us,
+                                          peer => peer == s_david || peer == s_bob);
+
+        // Assert
+        Assert.Single(route.Hops);
+        Assert.True(route.Fee.IsZero);
     }
 
     [Fact]
@@ -158,7 +237,7 @@ public class HintRouteBuilderTests
         _nodeOptions.Routing.MaxCltvExpiryDistance = 122;
 
         // Act
-        var found = CreateBuilder().TryBuild(Target([BobHint(), CarolHint()]), s_amount, Height, s_us,
+        var found = CreateBuilder().TryBuild(Target([BobHint(), CarolHint()]), s_amount, s_maxFee, Height, s_us,
                                              peer => peer == s_bob, out _, out var reason);
 
         // Assert
@@ -173,7 +252,7 @@ public class HintRouteBuilderTests
         var builder = CreateBuilder();
 
         // Act / Assert
-        Assert.Throws<ArgumentException>(() => builder.Build(Target(), LightningMoney.Zero, Height, s_us, _ => true));
-        Assert.Throws<ArgumentException>(() => builder.Build(Target(), s_amount, Height, s_david, _ => true));
+        Assert.Throws<ArgumentException>(() => builder.Build(Target(), LightningMoney.Zero, s_maxFee, Height, s_us, _ => true));
+        Assert.Throws<ArgumentException>(() => builder.Build(Target(), s_amount, s_maxFee, Height, s_david, _ => true));
     }
 }
