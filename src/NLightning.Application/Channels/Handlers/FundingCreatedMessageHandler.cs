@@ -103,6 +103,10 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         channel.UpdateLastSentSignature(ourSignature);
         channel.UpdateState(ChannelState.V1FundingSigned);
 
+        // Remember when we started waiting for the funding transaction, so we can forget the channel if it never
+        // confirms (BOLT 2: the fundee SHOULD forget the channel after 2016 blocks)
+        channel.FundingCreatedAtBlockHeight = _blockchainMonitor.LastProcessedBlockHeight;
+
         // Save to the database
         await PersistChannelAsync(channel);
 

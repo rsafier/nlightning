@@ -42,9 +42,12 @@ public class FundingConfirmedMessageHandler
             // Check if the channel is in the right state
             if (channel.State is not (ChannelState.V1FundingSigned
                                    or ChannelState.ReadyForThem))
+            {
                 _logger.LogError(
                     "Received funding confirmation, but the channel {ChannelId} had a wrong state: {State}",
                     channel.ChannelId, Enum.GetName(channel.State));
+                return;
+            }
 
             var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
 
