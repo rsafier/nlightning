@@ -47,7 +47,7 @@ public class UtxoDbRepository(NLightningDbContext context)
         Expression<Func<UtxoEntity, object>>? include = includeWalletAddress
                                                             ? entity => entity.WalletAddress!
                                                             : null;
-        var utxoEntity = await GetByIdAsync(new { txId, index }, true, include);
+        var utxoEntity = await GetByIdAsync((txId, index), true, include);
         return utxoEntity is null
                    ? null
                    : MapEntityToModel(utxoEntity);
@@ -63,7 +63,9 @@ public class UtxoDbRepository(NLightningDbContext context)
             BlockHeight = model.BlockHeight,
             AddressIndex = model.AddressIndex,
             IsAddressChange = model.IsAddressChange,
-            AddressType = model.AddressType
+            AddressType = model.AddressType,
+            LockedToChannelId = model.LockedToChannelId,
+            UsedInTransactionId = model.UsedInTransactionId
         };
     }
 
@@ -71,7 +73,11 @@ public class UtxoDbRepository(NLightningDbContext context)
     {
         var utxoModel = new UtxoModel(entity.TransactionId, entity.Index, LightningMoney.Satoshis(entity.AmountSats),
                                       entity.BlockHeight, entity.AddressIndex, entity.IsAddressChange,
-                                      entity.AddressType);
+                                      entity.AddressType)
+        {
+            LockedToChannelId = entity.LockedToChannelId,
+            UsedInTransactionId = entity.UsedInTransactionId
+        };
 
         if (entity.WalletAddress is null)
             return utxoModel;
