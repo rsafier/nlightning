@@ -73,9 +73,7 @@ public static class DependencyInjection
                                       loggerFactory.CreateLogger<ChannelManager>(), lightningSigner, sp);
         });
         services.AddSingleton<IMessageFactory, MessageFactory>();
-        services.AddSingleton<CommitmentSigningService>();
-        services.AddSingleton<ICommitmentSigner>(sp => sp.GetRequiredService<CommitmentSigningService>());
-        services.AddSingleton<ICommitmentVerifier>(sp => sp.GetRequiredService<CommitmentSigningService>());
+        services.AddCommitmentEngineServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers
