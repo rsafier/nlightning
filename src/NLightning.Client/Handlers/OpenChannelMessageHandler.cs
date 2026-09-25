@@ -9,6 +9,10 @@ internal class OpenChannelMessageHandler
     internal static async Task HandleAsync(string[] commandArgs, NamedPipeIpcClient client,
                                            CancellationToken cancellationToken)
     {
+        if (commandArgs.Length < 2)
+            throw new ArgumentException("Missing arguments. Usage: openchannel <node> <amount_sats>",
+                                        nameof(commandArgs));
+
         var channelResponse = await client.OpenChannelAsync(commandArgs[0], commandArgs[1], cancellationToken);
         new OpenChannelPrinter().Print(channelResponse);
 

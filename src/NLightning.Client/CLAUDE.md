@@ -4,7 +4,8 @@
 A console exe that sends **one IPC request per call** to a running `NLightning.Daemon` and prints the result. The help text calls it `nltg`, but no AssemblyName is set, so the binary is `NLightning.Client`. It has no Lightning protocol logic of its own. All work is done by the daemon.
 
 ## Layout
-- `Program.cs`: top-level statements. Sets `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` (this must happen first), resolves pipe and cookie paths, then dispatches on a `switch (cmd)` that accepts aliases (`info|node-info`, `connect|connect-peer`, `listpeers|list-peers`, `getaddress|get-address`, `walletbalance|wallet-balance`, `openchannel|open-channel`). The default command is `node-info`.
+- `Program.cs`: top-level statements. Sets `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` (this must happen first), wires Ctrl+C and calls `ClientApp.RunAsync`.
+- `ClientApp.cs`: checks `--help` first, validates the command and its argument count (`ValidateArguments`, exit code 2 on usage errors), resolves pipe and cookie paths, then dispatches on a `switch (cmd)` that accepts aliases (`info|node-info`, `connect|connect-peer`, `listpeers|list-peers`, `getaddress|get-address`, `walletbalance|wallet-balance`, `openchannel|open-channel`). The default command is `node-info`.
 - `Ipc/NamedPipeIpcClient.cs`: one typed method per `ClientCommand` (note `GetWalletBalance` lacks the `Async` suffix), each a copy-paste of the same template. `SendAsync` opens a new `NamedPipeClientStream` for every call (2s connect timeout), writes a 4-byte `BitConverter` length prefix and a MessagePack `IpcEnvelope`, then reads a response frame (max 10,000,000 bytes). If the response is an `IpcEnvelopeKind.Error` envelope, it throws `InvalidOperationException("IPC error {code}: {msg}")`.
 - `Handlers/OpenChannelMessageHandler.cs`: sends `OpenChannel`, then long-polls `OpenChannelSubscription` until the state is `ReadyForUs`/`ReadyForThem` or Ctrl+C.
 - `Printers/`: `IPrinter<T>` plus one `<Name>Printer` per top-level `*IpcResponse` (nested `PeerInfoIpcResponse` is printed inside `ListPeersPrinter`). Output goes to the console only; there is no JSON output mode.
@@ -22,7 +23,7 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 4. On the daemon side, add an `IIpcCommandHandler` in `src/NLightning.Daemon/Ipc/Handlers/` and register it with `AddSingleton<IIpcCommandHandler, X>()` in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`.
 5. Here, add a `<Name>Async` method to `NamedPipeIpcClient`, following the existing template (Version=1, new CorrelationId, `GetAuthTokenAsync`, `Kind = IpcEnvelopeKind.Request`; some existing methods write the equivalent `Kind = 0`).
 6. Add `Printers/<Name>Printer.cs : IPrinter<<Name>IpcResponse>`.
-7. Add the `case` aliases in `Program.cs`, validate `commandArgs` length and `return` on error, then update `ClientUtils.ShowUsage()`.
+7. Add the `case` aliases in `ClientApp.RunAsync` and `ClientApp.ValidateArguments` (argument count), then update `ClientUtils.ShowUsage()`.
 
 ## Conventions
 - File-scoped namespace (`NLightning.Client.<Folder>`). Preferred style: relative `using Domain.X;` / `using Transport.Ipc.X;` directives after the namespace line, System/third-party usings above it (some files, e.g. `Printers/NodeInfoPrinter.cs`, `Printers/WalletBalancePrinter.cs`, still use fully qualified `using NLightning.X;` above it).
@@ -31,17 +32,13 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 
 ## Build / run / test
 - Build: `dotnet build src/NLightning.Client -p:MSBuildWarningsAsMessages=MSB4121`
-- Run: `dotnet run --project src/NLightning.Client -- --network regtest listpeers` (use the space form; see Gotchas). This needs a running daemon and `~/.nltg/<network>/nltg.cookie`.
+- Run: `dotnet run --project src/NLightning.Client -- --network regtest listpeers`. This needs a running daemon and `~/.nltg/<network>/nltg.cookie`.
 - Format: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` (repo root).
-- Tests: there is no Client test project. If you add IPC/client tests, `test/NLightning.Daemon.Tests` (xunit.v3, references Daemon) is the closest home. `dotnet test` discovers its tests; `dotnet run --project test/NLightning.Daemon.Tests -- -method '*X*'` also works.
+- Tests: there is no Client test project. Client tests live in `test/NLightning.Daemon.Tests/Client/` (internals are visible via `AssemblyInfo.cs`). `dotnet test` discovers them; `dotnet run --project test/NLightning.Daemon.Tests -- -namespace NLightning.Daemon.Tests.Client` also works.
 
 ## Gotchas
 - `CommandLineHelper` (in Daemon.Contracts) accepts `--network x`, `--network=x`, `-n x`, `--cookie x`, `--cookie=x` and `-c x`; only the separate-value forms consume the next argument when finding the command. Cookie dir precedence: `--cookie` arg, `--network` arg, `NLTG_COOKIE`, `NLTG_NETWORK`, then `~/.nltg/mainnet`.
-- `connect` with no args prints an error and then indexes `commandArgs[0]` anyway (IndexOutOfRange). `getaddress` (`commandArgs[0]`) and `openchannel` (`commandArgs[0]`, `[1]` in `OpenChannelMessageHandler`) index without any length check.
-- `CommandLineHelper.GetCookiePath` runs before the help check and outside the `try` in `Program.cs`; if `~/.nltg/<network>` does not exist it throws unhandled, so even `--help` fails.
-- `open-channel` uses `.GetAwaiter().GetResult()` inside async top-level code. It should be awaited.
 - `GetAddressIpcResponse.AddressP2Wsh` actually holds a P2WPKH address, and the printer labels it P2WSH. The client defaults the address type to P2Tr.
-- The help text says the cookie file is `nltg.ipc`; it is actually `nltg.cookie` (`nltg.ipc` is the pipe, which is a Unix socket path on macOS/Linux).
 - Frames are MessagePack with LZ4BlockArray compression, and `Hash`/`TxId` are written as raw bytes with no header. Non-.NET clients cannot decode them without matching this format.
 - The daemon returns `ClientException.Message` as the error *code* for OpenChannel errors, so error codes shown to the user may be free text.
 - The protocol has no server push. Progress is reported by the client repeating the request (a long-poll).
