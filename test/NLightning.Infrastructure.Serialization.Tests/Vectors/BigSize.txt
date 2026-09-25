@@ -39,19 +39,19 @@ Bytes: ffffffffffffffffff
 Error: 
 
 # two byte not canonical
-# Value: 0
-# Bytes: fd00fc
-# Error: decoded bigsize is not canonical
+Value: 0
+Bytes: fd00fc
+Error: decoded bigsize is not canonical
 
 # four byte not canonical
-# Value: 0
-# Bytes: fe0000ffff
-# Error: decoded bigsize is not canonical
+Value: 0
+Bytes: fe0000ffff
+Error: decoded bigsize is not canonical
 
 # eight byte not canonical
-# Value: 0
-# Bytes: ff00000000ffffffff
-# Error: decoded bigsize is not canonical
+Value: 0
+Bytes: ff00000000ffffffff
+Error: decoded bigsize is not canonical
 
 # two byte short read
 Value: 0
