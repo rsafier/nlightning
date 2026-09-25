@@ -97,6 +97,7 @@ internal sealed class MessageService : IMessageService
 
     private void ReceiveMessage(object? _, MemoryStream stream)
     {
+        Exception? malformedMessageException = null;
         try
         {
             lock (_disposeLock)
@@ -104,37 +105,63 @@ internal sealed class MessageService : IMessageService
                 if (_disposed)
                     return;
 
-                var message = _messageSerializer.DeserializeMessageAsync(stream).GetAwaiter().GetResult();
+                IMessage? message;
+                try
+                {
+                    message = _messageSerializer.DeserializeMessageAsync(stream).GetAwaiter().GetResult();
+                }
+                catch (Exception e)
+                {
+                    // Handled outside the lock, because it sends a warning and closes the connection
+                    malformedMessageException = e;
+                    message = null;
+                }
+
                 if (message is not null)
                 {
                     OnMessageReceived?.Invoke(this, message);
                 }
             }
         }
-        catch (MessageSerializationException mse)
-        {
-            var message = mse.Message;
-            if (mse.InnerException is PayloadSerializationException pse)
-            {
-                message = pse.InnerException is not null ? pse.InnerException.Message : pse.Message;
-            }
-            else if (mse.InnerException is not null)
-            {
-                message = mse.InnerException.Message;
-            }
-
-            _logger.LogError(mse, "Failed to deserialize message: {Message}", message);
-            // BOLT 1: an all-zero channel_id in an `error` makes the peer fail every channel with us, and BOLT 2 only
-            // allows "send a `warning` and close the connection" or "send an `error` and fail the channel" here. The
-            // offending channel is not known at this layer, so send a connection-level warning instead.
-            SendMessageAsync(new WarningMessage(new ErrorPayload(message))).GetAwaiter().GetResult();
-            RaiseException(this, mse);
-        }
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to receive message");
             RaiseException(this, e);
         }
+
+        if (malformedMessageException is not null)
+            HandleMalformedMessage(malformedMessageException);
+    }
+
+    /// <summary>
+    /// Handles a message we could not deserialize: malformed, truncated, or of an unknown even type.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 1: an `error` with an all-zero channel_id makes the peer fail every channel with us, and BOLT 1/2 allow
+    /// "send a `warning` and close the connection" here (the offending channel is not known at this layer). So we
+    /// send a connection-level warning, then raise a <see cref="ConnectionException"/>, on which
+    /// <c>PeerCommunicationService</c> closes the connection. Channel-level rules that fail a channel (e.g.
+    /// update_fail_malformed_htlc without BADONION) are checked after deserialization, in the Application layer.
+    /// </remarks>
+    private void HandleMalformedMessage(Exception exception)
+    {
+        var message = exception.Message;
+        switch (exception)
+        {
+            case MessageSerializationException { InnerException: PayloadSerializationException pse }:
+                message = pse.InnerException is not null ? pse.InnerException.Message : pse.Message;
+                break;
+            case MessageSerializationException { InnerException: { } innerException }:
+                message = innerException.Message;
+                break;
+            case InvalidMessageException ime:
+                message = ime.Message;
+                break;
+        }
+
+        _logger.LogError(exception, "Failed to deserialize message: {Message}", message);
+        SendMessageAsync(new WarningMessage(new ErrorPayload(message))).GetAwaiter().GetResult();
+        RaiseException(this, exception);
     }
 
     private void RaiseException(object? sender, Exception e)

@@ -4,7 +4,6 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
-using Exceptions;
 using Helpers;
 using Serialization.Messages.Types;
 
@@ -45,15 +44,18 @@ public class UpdateFailMalformedHtlcMessageTests
     [Theory]
     [InlineData("0001")]
     [InlineData("4005")] // PERM | 5 without BADONION
-    public async Task Given_FailureCodeWithoutBadOnion_When_DeserializeAsync_Then_ThrowsMessageSerializationException(
+    public async Task Given_FailureCodeWithoutBadOnion_When_DeserializeAsync_Then_MessageIsDecodedForTheChannelLayer(
         string failureCodeHex)
     {
-        // Arrange (BOLT 2: the receiver MUST fail the channel if BADONION is not set)
+        // Arrange (BOLT 2: the receiver MUST fail the channel if BADONION is not set, which ChannelManager does with
+        // the channel id; a serialization failure could only warn and close the connection)
         var stream = new MemoryStream(Convert.FromHexString(new string('0', 144) + failureCodeHex));
 
-        // Act & Assert
-        await Assert.ThrowsAsync<MessageSerializationException>(() =>
-            _updateFailMalformedHtlcMessageTypeSerializer.DeserializeAsync(stream));
+        // Act
+        var message = await _updateFailMalformedHtlcMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Equal(Convert.ToUInt16(failureCodeHex, 16), message.Payload.FailureCode);
     }
 
     #endregion
