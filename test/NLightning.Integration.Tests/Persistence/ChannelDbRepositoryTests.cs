@@ -2,6 +2,7 @@ namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Protocol.Models;
 using Infrastructure.Repositories.Database.Channel;
 
 public class ChannelDbRepositoryTests
@@ -58,6 +59,48 @@ public class ChannelDbRepositoryTests
         Assert.Equal([2UL], reloaded.RemoteOldHtlcs!.Select(h => h.Id));
         Assert.All(reloaded.LocalOfferedHtlcs!, h => Assert.Equal(HtlcDirection.Outgoing, h.Direction));
         Assert.All(reloaded.RemoteOfferedHtlcs!, h => Assert.Equal(HtlcDirection.Incoming, h.Direction));
+    }
+
+    [Fact]
+    public async Task Given_Channel_When_Reloaded_Then_FundingOutputKeepsTheRemoteFundingPubKey()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.NotNull(reloaded.FundingOutput);
+        Assert.Equal(SqliteDbTestContext.LocalFundingPubKey, reloaded.FundingOutput.LocalFundingPubKey);
+        Assert.Equal(SqliteDbTestContext.RemoteFundingPubKey, reloaded.FundingOutput.RemoteFundingPubKey);
+        Assert.Equal(channel.FundingOutput!.TransactionId, reloaded.FundingOutput.TransactionId);
+        Assert.Equal(channel.FundingOutput.Index, reloaded.FundingOutput.Index);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_ChannelInEitherRole_When_Reloaded_Then_ObscuringFactorUsesOpenerBasepointFirst(
+        bool isInitiator)
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(isInitiator);
+        var expected = isInitiator
+                           ? new CommitmentNumber(SqliteDbTestContext.LocalPaymentBasepoint,
+                                                  SqliteDbTestContext.RemotePaymentBasepoint, db.Sha256)
+                           : new CommitmentNumber(SqliteDbTestContext.RemotePaymentBasepoint,
+                                                  SqliteDbTestContext.LocalPaymentBasepoint, db.Sha256);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.NotNull(reloaded.CommitmentNumber);
+        Assert.Equal(expected.ObscuringFactor, reloaded.CommitmentNumber.ObscuringFactor);
+        Assert.Equal(channel.CommitmentNumber!.ObscuringFactor, reloaded.CommitmentNumber.ObscuringFactor);
     }
 
     [Fact]
