@@ -86,9 +86,10 @@ public class HopPayloadSerializerTests
         Assert.Equal(1500U, payload.OutgoingCltvValue);
         Assert.Equal(new ShortChannelId(0, 0, 1), payload.ShortChannelId);
         Assert.Empty(payload.UnknownTlvs);
-        AssertOffset(payload, OnionPayloadTlvTypes.AmtToForward, 0);
-        AssertOffset(payload, OnionPayloadTlvTypes.OutgoingCltvValue, 4);
-        AssertOffset(payload, OnionPayloadTlvTypes.ShortChannelId, 8);
+        // Offsets count the 1-byte length prefix the peeler stripped (BOLT 4: offset in the decrypted byte stream)
+        AssertOffset(payload, OnionPayloadTlvTypes.AmtToForward, 1);
+        AssertOffset(payload, OnionPayloadTlvTypes.OutgoingCltvValue, 5);
+        AssertOffset(payload, OnionPayloadTlvTypes.ShortChannelId, 9);
     }
 
     [Fact]
@@ -160,14 +161,14 @@ public class HopPayloadSerializerTests
     }
 
     [Theory]
-    [InlineData("020101140100", 20UL, 3)] // unknown even type 20
-    [InlineData("040101020101", 2UL, 3)] // types not increasing
-    [InlineData("020101020102", 2UL, 3)] // duplicate type
-    [InlineData("02020001", 2UL, 0)] // non-minimal tu64
-    [InlineData("0203000001", 2UL, 0)] // tu64 with leading zero
-    [InlineData("0607000000000000000001", 6UL, 0)] // short_channel_id wrong length
-    [InlineData("0201010c21040000000000000000000000000000000000000000000000000000000000000000", 12UL, 3)] // current_path_key with a bad prefix
-    [InlineData("020501", 2UL, 0)] // length exceeds remaining bytes
+    [InlineData("020101140100", 20UL, 4)] // unknown even type 20
+    [InlineData("040101020101", 2UL, 4)] // types not increasing
+    [InlineData("020101020102", 2UL, 4)] // duplicate type
+    [InlineData("02020001", 2UL, 1)] // non-minimal tu64
+    [InlineData("0203000001", 2UL, 1)] // tu64 with leading zero
+    [InlineData("0607000000000000000001", 6UL, 1)] // short_channel_id wrong length
+    [InlineData("0201010c21040000000000000000000000000000000000000000000000000000000000000000", 12UL, 4)] // current_path_key with a bad prefix
+    [InlineData("020501", 2UL, 1)] // length exceeds remaining bytes
     [InlineData("020101fd", 0UL, 0)] // truncated type
     [InlineData("fd00020101", 0UL, 0)] // non-canonical type
     [InlineData("02", 0UL, 0)] // shorter than 2 bytes
@@ -241,7 +242,52 @@ public class HopPayloadSerializerTests
 
         // Assert
         Assert.Equal(new ShortChannelId(0, 0, 1), payload.ShortChannelId);
-        AssertOffset(payload, OnionPayloadTlvTypes.ShortChannelId, 8);
+        AssertOffset(payload, OnionPayloadTlvTypes.ShortChannelId, 9);
+    }
+
+    public static TheoryData<string> FramedVectorPayloads => new()
+    {
+        Hop1, // 1-byte length prefix
+        s_hop4 // 3-byte length prefix
+    };
+
+    [Theory]
+    [MemberData(nameof(FramedVectorPayloads))]
+    public async Task Given_SamePayload_When_DeserializingWithAndWithoutPrefix_Then_OffsetsMatch(string framedHex)
+    {
+        // Arrange
+        var framed = Convert.FromHexString(framedHex);
+        var prefixLength = framed[0] == 0xfd ? 3 : 1;
+        using var input = new MemoryStream(framed);
+
+        // Act
+        var withPrefix = await _serializer.DeserializeWithLengthPrefixAsync(input);
+        var withoutPrefix = await _serializer.DeserializeAsync(framed.AsMemory(prefixLength));
+
+        // Assert
+        foreach (var tlv in withPrefix.Tlvs)
+        {
+            Assert.True(withPrefix.TryGetRecordOffset(tlv.Type, out var expected));
+            Assert.True(expected >= prefixLength);
+            AssertOffset(withoutPrefix, tlv.Type, expected);
+        }
+    }
+
+    [Fact]
+    public async Task Given_InvalidRecordInLongPayload_When_DeserializingWithoutPrefix_Then_OffsetCountsThreeBytePrefix()
+    {
+        // Arrange: 254 bytes (so a 3-byte length prefix): odd type 1 with 250 bytes, then unknown even type 20
+        var payload = new byte[254];
+        payload[0] = 0x01;
+        payload[1] = 0xfa;
+        payload[252] = 0x14;
+        payload[253] = 0x00;
+
+        // Act
+        var exception = await Assert.ThrowsAsync<OnionException>(() => _serializer.DeserializeAsync(payload));
+
+        // Assert: record 20 starts at payload offset 252, i.e. offset 255 in the decrypted byte stream
+        AssertInvalidOnionPayload(exception, 20, 255);
     }
 
     private static void AssertOffset(HopPayload payload, BigSize type, int expectedOffset)

@@ -70,7 +70,9 @@ public class HopPayloadSerializer : IHopPayloadSerializer
                                      ? new MemoryStream(segment.Array!, segment.Offset, segment.Count, false)
                                      : new MemoryStream(payload.ToArray(), false);
 
-        return await ReadPayloadAsync(stream, 0);
+        // BOLT 4 measures invalid_onion_payload offsets in the decrypted byte stream, which starts with the (canonical,
+        // so recomputable) bigsize length prefix the peeler stripped.
+        return await ReadPayloadAsync(stream, GetBigSizeLength(payload.Length));
     }
 
     /// <inheritdoc />
@@ -215,6 +217,16 @@ public class HopPayloadSerializer : IHopPayloadSerializer
         {
             return null;
         }
+    }
+
+    private static int GetBigSizeLength(int value)
+    {
+        return value switch
+        {
+            < 0xfd => 1,
+            <= ushort.MaxValue => 3,
+            _ => 5
+        };
     }
 
     private static ITlvConverter GetConverter<TTlv>(ITlvConverterFactory tlvConverterFactory) where TTlv : BaseTlv

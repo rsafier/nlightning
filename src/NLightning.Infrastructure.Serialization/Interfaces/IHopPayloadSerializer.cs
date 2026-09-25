@@ -11,7 +11,8 @@ using Domain.Protocol.Onion.Models;
 /// even types rejected, known types decoded with their converters (exact length, minimal truncated ints). Unknown
 /// odd records are kept verbatim, so a parsed payload serializes back to the same bytes. Every parse failure is an
 /// <see cref="OnionException"/> with <c>invalid_onion_payload</c> and data <c>bigsize type || u16 offset</c>
-/// (type 0 / offset 0 when the failure cannot be narrowed down to a record).
+/// (type 0 / offset 0 when the failure cannot be narrowed down to a record). Both read paths report offsets from the
+/// start of the decrypted byte stream, i.e. counting the bigsize length prefix, as BOLT 4 defines them.
 /// </remarks>
 public interface IHopPayloadSerializer
 {
@@ -19,7 +20,11 @@ public interface IHopPayloadSerializer
     /// Parses a raw TLV stream, without the bigsize length prefix (what the Sphinx peeler returns).
     /// </summary>
     /// <param name="payload">Exactly the payload bytes.</param>
-    /// <returns>The payload; record offsets are relative to the start of <paramref name="payload"/>.</returns>
+    /// <returns>
+    /// The payload. Record offsets count the canonical bigsize length prefix that preceded
+    /// <paramref name="payload"/> (1 byte below 253, 3 bytes up to 65535), so they match
+    /// <see cref="DeserializeWithLengthPrefixAsync"/> for the same bytes.
+    /// </returns>
     /// <exception cref="OnionException">Thrown with <c>invalid_onion_payload</c> when the payload is invalid.</exception>
     Task<HopPayload> DeserializeAsync(ReadOnlyMemory<byte> payload);
 
