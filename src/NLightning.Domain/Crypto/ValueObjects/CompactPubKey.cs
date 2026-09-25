@@ -9,8 +9,9 @@ public readonly struct CompactPubKey : IEquatable<CompactPubKey>
 
     public CompactPubKey(byte[] value)
     {
+        ArgumentNullException.ThrowIfNull(value);
         if (value.Length != CryptoConstants.CompactPubkeyLen)
-            throw new ArgumentException("PublicKey cannot be empty.", nameof(value));
+            throw new ArgumentException($"PublicKey must be {CryptoConstants.CompactPubkeyLen} bytes.", nameof(value));
 
         if (value[0] != 0x02 && value[0] != 0x03)
             throw new ArgumentException("Invalid CompactPubKey format. The first byte must be 0x02 or 0x03.",
@@ -19,7 +20,14 @@ public readonly struct CompactPubKey : IEquatable<CompactPubKey>
         _value = value;
     }
 
-    public static implicit operator CompactPubKey(byte[] bytes) => new(bytes);
+    /// <summary>
+    /// Converts bytes (a <c>byte[]</c> converts through the implicit span conversion) into a copy-backed key.
+    /// </summary>
+    /// <remarks>
+    /// The source is a span, not <c>byte[]</c>, so a bare <c>null</c> literal cannot bind to this operator:
+    /// <c>cond ? null : key</c> is typed <c>CompactPubKey?</c> instead of throwing at runtime.
+    /// </remarks>
+    public static implicit operator CompactPubKey(ReadOnlySpan<byte> bytes) => new(bytes.ToArray());
     public static implicit operator byte[](CompactPubKey hash) => hash._value;
 
     public static implicit operator ReadOnlySpan<byte>(CompactPubKey compactPubKey) => compactPubKey._value;
