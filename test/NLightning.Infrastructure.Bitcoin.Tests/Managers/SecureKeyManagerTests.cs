@@ -128,6 +128,7 @@ public sealed class SecureKeyManagerTests : IDisposable
 
         // Assert: the private key copy and the parsed ECPrivKey, but no hash object or NBitcoin Key/PubKey wrappers
         Assert.True(perCall <= 512, $"Allocated {perCall} bytes per call.");
+    }
 
     [Fact]
     public void Given_NewKey_When_SaveToFile_Then_WritesVersion2WithRandomSaltNonceAndStrongArgon2()
