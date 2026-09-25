@@ -17,6 +17,11 @@ internal sealed class InMemoryPaymentDbRepository : IPaymentDbRepository
     public int AddCalls { get; private set; }
     public int UpdateCalls { get; private set; }
 
+    /// <summary>
+    /// How many of the next <see cref="UpdateAsync"/> calls throw without storing anything (a failed save).
+    /// </summary>
+    public int FailNextUpdates { get; set; }
+
     public IReadOnlyList<PaymentModel> Payments
     {
         get
@@ -45,6 +50,12 @@ internal sealed class InMemoryPaymentDbRepository : IPaymentDbRepository
         lock (_lock)
         {
             UpdateCalls++;
+            if (FailNextUpdates > 0)
+            {
+                FailNextUpdates--;
+                throw new InvalidOperationException("Injected payment save failure");
+            }
+
             if (!_payments.ContainsKey(payment.PaymentHash))
                 throw new InvalidOperationException($"No payment for {payment.PaymentHash}.");
 

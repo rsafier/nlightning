@@ -2,7 +2,9 @@ using System.Security.Cryptography;
 
 namespace NLightning.Application.Tests.Payments.Send;
 
+using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
+using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -265,6 +267,120 @@ public class PaymentHarnessTests : IDisposable
         Assert.Empty(_harness.Bob.Switch.Events);
         Assert.Empty(_harness.Carol.Switch.Events);
     }
+
+    [Fact]
+    public async Task Given_TheHtlcIdSaveFailsAndNoOriginIsStored_When_CarolFulfills_Then_ThePaymentSucceeds()
+    {
+        // Arrange: like production before NL-250, OfferHtlcAsync stores no origin; the save of the HTLC id fails
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "id lost", null, ct);
+        _harness.Bob.Payments.FailNextUpdates = 1;
+
+        // Act
+        var payment = await _harness.RunAsync(
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+
+        // Assert: the fulfill matched through the HTLC's record in channel memory
+        Assert.Empty(_harness.Bob.Store.Origins);
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        Assert.Equal(invoice.Preimage, payment.Preimage);
+        Assert.Equal((_harness.BobCarol, 0UL), (payment.OutgoingChannelId!.Value, payment.OutgoingHtlcId!.Value));
+        AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_TheHtlcIdSaveFailsAndNoOriginIsStored_When_DavidFails_Then_TheFailureIsStored()
+    {
+        // Arrange: the failed HTLC has left channel memory when its failure arrives
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.David.InvoiceService.CreateInvoiceAsync(s_amount, "id lost", null, ct);
+        Assert.True(await _harness.David.InvoiceService.CancelInvoiceAsync(invoice.PaymentHash, ct));
+        _harness.Bob.Payments.FailNextUpdates = 1;
+
+        // Act
+        var payment = await _harness.RunAsync(
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+
+        // Assert
+        Assert.Equal(PaymentStatus.Failed, payment.Status);
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, payment.FailureCode);
+        Assert.Equal(1, payment.FailureSourceIndex);
+        AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_TheOfferFailsToPersist_When_BobPays_Then_ThePaymentFailsAndTheHashCanBePaidAgain()
+    {
+        // Arrange: the add's save throws (neither a refusal nor an unknown channel)
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "save fails", null, ct);
+        _harness.Bob.Store.FailNextApply = true;
+
+        // Act
+        var first = await _harness.RunAsync(
+                        _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+        var second = await _harness.RunAsync(
+                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+
+        // Assert
+        Assert.Equal(PaymentStatus.Failed, first.Status);
+        Assert.Null(first.FailureCode);
+        Assert.Contains("Injected channel state save failure", first.FailureReason);
+        Assert.Equal(PaymentStatus.Succeeded, second.Status);
+        AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_ALiveHtlcWhoseIdWasNotRecorded_When_ReconcilingAtStartup_Then_ItIsAttached()
+    {
+        // Arrange: the id save fails and nothing is delivered while Bob waits
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "reconcile", null, ct);
+        _harness.Bob.Payments.FailNextUpdates = 1;
+        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, TimeSpan.FromMilliseconds(50), ct);
+        Assert.Null((await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct))!.OutgoingHtlcId);
+
+        // Act
+        var reconciled = await OutcomeHandler(_harness.Bob).ReconcileInFlightPaymentsAsync(ct);
+        var attached = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
+        await _harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(1, reconciled);
+        Assert.Equal(PaymentStatus.InFlight, attached!.Status);
+        Assert.Equal((_harness.BobCarol, 0UL), (attached.OutgoingChannelId!.Value, attached.OutgoingHtlcId!.Value));
+        var stored = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        AssertNoPendingHtlcs();
+    }
+
+    [Fact]
+    public async Task Given_ALiveUnrecordedRetry_When_AnEarlierAttemptsFailureIsReplayed_Then_TheRetryIsNotFailed()
+    {
+        // Arrange: the attempt's HTLC 0 is live and its id was not recorded
+        var ct = TestContext.Current.CancellationToken;
+        var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "replay", null, ct);
+        _harness.Bob.Payments.FailNextUpdates = 1;
+        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, TimeSpan.FromMilliseconds(50), ct);
+
+        // Act: an archived failure of another HTLC with the same hash (an earlier attempt) is replayed
+        var handled = await OutcomeHandler(_harness.Bob).HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(_harness.BobCarol, 77, invoice.PaymentHash,
+                                                 HtlcRemoval.Fail(new byte[292])), ct);
+        var afterReplay = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
+        await _harness.PumpAsync();
+
+        // Assert
+        Assert.False(handled);
+        Assert.Equal(PaymentStatus.InFlight, afterReplay!.Status);
+        var stored = await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct);
+        Assert.Equal(PaymentStatus.Succeeded, stored!.Status);
+        Assert.Equal(0UL, stored.OutgoingHtlcId);
+        AssertNoPendingHtlcs();
+    }
+
+    private static IPaymentOutcomeHandler OutcomeHandler(PaymentHarnessNode node) =>
+        (IPaymentOutcomeHandler)node.PaymentService;
 
     private void AssertNoPendingHtlcs()
     {
