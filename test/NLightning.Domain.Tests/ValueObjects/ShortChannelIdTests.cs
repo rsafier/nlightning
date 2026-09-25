@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace NLightning.Domain.Tests.ValueObjects;
 
 using Domain.Channels.ValueObjects;
@@ -65,6 +67,61 @@ public class ShortChannelIdTests
         Assert.Equal(ExpectedTxIndex, shortChannelId.TransactionIndex);
         Assert.Equal(ExpectedOutputIndex, shortChannelId.OutputIndex);
         Assert.Equal(_expectedValue, shortChannelId);
+    }
+
+    [Theory]
+    // BOLT 7 example: 539268x845x1
+    [InlineData(0x083A8400034D0001UL, 539268U, 845U, (ushort)1)]
+    // Transaction index above 16 bits and output index above 8 bits
+    [InlineData(0x0000010012345678UL, 1U, 0x1234U, (ushort)0x5678)]
+    [InlineData(0x000001ABCDEF1234UL, 1U, 0xABCDEFU, (ushort)0x1234)]
+    // Maximum values for every field
+    [InlineData(0xFFFFFFFFFFFFFFFFUL, 0xFFFFFFU, 0xFFFFFFU, (ushort)0xFFFF)]
+    public void Given_Ulong_When_ConstructorCalled_Then_FieldsUseBolt7Widths(ulong value, uint expectedBlockHeight,
+                                                                             uint expectedTxIndex,
+                                                                             ushort expectedOutputIndex)
+    {
+        // Arrange
+        var expectedBytes = new byte[ShortChannelId.Length];
+        BinaryPrimitives.WriteUInt64BigEndian(expectedBytes, value);
+
+        // Act
+        var shortChannelId = new ShortChannelId(value);
+
+        // Assert
+        Assert.Equal(expectedBlockHeight, shortChannelId.BlockHeight);
+        Assert.Equal(expectedTxIndex, shortChannelId.TransactionIndex);
+        Assert.Equal(expectedOutputIndex, shortChannelId.OutputIndex);
+        Assert.Equal(expectedBytes, (byte[])shortChannelId);
+        Assert.Equal(new ShortChannelId(expectedBytes), shortChannelId);
+        Assert.Equal(new ShortChannelId(expectedBlockHeight, expectedTxIndex, expectedOutputIndex), shortChannelId);
+    }
+
+    [Fact]
+    public void Given_Bolt7Example_When_ParsedAndConvertedFromUlong_Then_TheyAreEqual()
+    {
+        // Arrange
+        const ulong bolt7Value = 0x083A8400034D0001UL;
+
+        // Act
+        var parsed = ShortChannelId.Parse("539268x845x1");
+        ShortChannelId fromUlong = bolt7Value;
+
+        // Assert
+        Assert.Equal(parsed, fromUlong);
+        Assert.Equal("539268x845x1", fromUlong.ToString());
+    }
+
+    [Theory]
+    [InlineData(0x1000000U, 0U)]
+    [InlineData(0U, 0x1000000U)]
+    public void Given_FieldAbove24Bits_When_ConstructorCalled_Then_ArgumentOutOfRangeExceptionIsThrown(
+        uint blockHeight, uint txIndex)
+    {
+        // Arrange
+        // Act
+        // Assert
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ShortChannelId(blockHeight, txIndex, 0));
     }
 
     #endregion
