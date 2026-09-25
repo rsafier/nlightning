@@ -200,22 +200,25 @@ internal sealed class TransportService : ITransportService
         using var messageStream = new MemoryStream();
         await _messageSerializer.SerializeAsync(message, messageStream);
 
-        // Encrypt the message
-        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
-        var size = _transport.WriteMessage(messageStream.ToArray(),
-                                           buffer.AsSpan()[..ProtocolConstants.MaxMessageLength]);
+        var payload = messageStream.ToArray();
 
-        // Write the message to stream
+        // Encrypt and write under the same lock so ciphertexts hit the wire in nonce order
         await _networkWriteSemaphore.WaitAsync(cancellationToken);
+        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
         try
         {
-            var stream = _tcpClient.GetStream();
-            await stream.WriteAsync(buffer.AsMemory()[..size], cancellationToken);
-            await stream.FlushAsync(cancellationToken);
-        }
-        catch (Exception e)
-        {
-            throw new ConnectionException("Error writing message", e);
+            var size = _transport.WriteMessage(payload, buffer.AsSpan()[..ProtocolConstants.MaxMessageLength]);
+
+            try
+            {
+                var stream = _tcpClient.GetStream();
+                await stream.WriteAsync(buffer.AsMemory()[..size], cancellationToken);
+                await stream.FlushAsync(cancellationToken);
+            }
+            catch (Exception e)
+            {
+                throw new ConnectionException("Error writing message", e);
+            }
         }
         finally
         {

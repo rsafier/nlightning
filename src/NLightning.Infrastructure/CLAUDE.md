@@ -48,7 +48,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 ## Gotchas
 - `TlvConverterFactory` is registered in `NLightning.Infrastructure.Bitcoin/DependencyInjection.cs`, not here.
 - `Transport` is both a namespace (`NLightning.Infrastructure.Transport`) and the internal class `Transport/Encryption/Transport.cs`. Refer to the class as `Encryption.Transport`.
-- `TransportService.WriteMessageAsync` encrypts BEFORE taking the write semaphore. Concurrent senders can reorder nonces.
+- `TransportService.WriteMessageAsync` must encrypt and write under the same `_networkWriteSemaphore` hold; encrypting outside it let concurrent senders put ciphertexts on the wire out of nonce order (NL-105).
 - `TransportService.ReadResponseAsync` must keep using `ReadExactlyAsync` for the 18-byte header and the body; a single `ReadAsync` can return a short read and used to kill the connection (NL-104). EOF surfaces as `EndOfStreamException` → `ConnectionException`.
 - `MessageService.ReceiveMessage` deserializes synchronously under a lock on the read loop.
 - `PingPongService.StartPingAsync`: the pong-timeout disconnect path is dead. A timeout makes `Task.Delay` Canceled (not Faulted), so the loop `continue`s and re-pings instead of raising `DisconnectEvent`.

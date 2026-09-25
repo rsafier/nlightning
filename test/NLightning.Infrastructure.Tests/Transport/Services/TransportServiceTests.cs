@@ -9,6 +9,7 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Infrastructure.Tests.Transport.Services;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Interfaces;
 using Domain.Serialization.Interfaces;
 using Domain.Transport;
 using Exceptions;
@@ -211,6 +212,41 @@ public class TransportServiceTests
 
         // Assert
         Assert.Equal(payload, result);
+    }
+
+    [Fact]
+    public async Task Given_ConcurrentSenders_When_WritingMessages_Then_FramesAreWrittenInEncryptionOrder()
+    {
+        // Arrange
+        var transport = new FramingTransport { HoldFirstWrite = true };
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(new byte[] { 1, 2, 3, 4 }).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(transport, serializerMock.Object);
+        var message = new Mock<IMessage>().Object;
+
+        // Act
+        var first = Task.Run(() => connection.Service.WriteMessageAsync(message),
+                             TestContext.Current.CancellationToken);
+        await transport.FirstWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(10),
+                                                         TestContext.Current.CancellationToken);
+        var second = Task.Run(() => connection.Service.WriteMessageAsync(message),
+                              TestContext.Current.CancellationToken);
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        var peerStream = connection.Peer.GetStream();
+        var sequences = new List<int>();
+        for (var i = 0; i < 2; i++)
+        {
+            var header = new byte[ProtocolConstants.MessageHeaderSize];
+            await peerStream.ReadExactlyAsync(header, TestContext.Current.CancellationToken);
+            sequences.Add(BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(2, 4)));
+            var body = new byte[BinaryPrimitives.ReadUInt16BigEndian(header) + 16];
+            await peerStream.ReadExactlyAsync(body, TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        Assert.Equal([0, 1], sequences);
     }
 
     /// <summary>
