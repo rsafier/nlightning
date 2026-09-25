@@ -15,6 +15,7 @@ using ValueObjects;
 /// Both use the same rules, so every event the engine raises is also derived from the records it asked to persist:
 /// <list type="bullet">
 /// <item><see cref="IncomingHtlcLockedIn"/>: an incoming HTLC in <see cref="HtlcState.RcvdAddAckRevocation"/>.</item>
+/// <item><see cref="IncomingHtlcSettled"/>: an incoming HTLC in <see cref="HtlcState.SentRemoveAckRevocation"/>.</item>
 /// <item><see cref="OutgoingHtlcFulfilled"/>: an outgoing HTLC whose preimage we know.</item>
 /// <item><see cref="OutgoingHtlcFailed"/>: an outgoing HTLC in <see cref="HtlcState.RcvdRemoveAckRevocation"/>
 /// removed by a failure.</item>
@@ -48,6 +49,8 @@ public static class ChannelDomainEvents
             {
                 if (htlc.State == HtlcState.RcvdAddAckRevocation)
                     events.Add(new IncomingHtlcLockedIn(channelId, htlc));
+                else if (HtlcStateTable.IsFinal(htlc.State))
+                    events.Add(IncomingSettled(channelId, htlc));
                 continue;
             }
 
@@ -75,8 +78,8 @@ public static class ChannelDomainEvents
     }
 
     /// <summary>
-    /// The events one engine operation raises: an incoming HTLC that reached lock-in, an outgoing HTLC whose preimage is
-    /// newly known, and every outgoing HTLC that settled (failed first when it was a failure).
+    /// The events one engine operation raises: an incoming HTLC that reached lock-in or settled, an outgoing HTLC whose
+    /// preimage is newly known, and every outgoing HTLC that settled (failed first when it was a failure).
     /// </summary>
     internal static IReadOnlyList<IChannelDomainEvent> FromChange(
         ChannelId channelId, ImmutableSortedDictionary<HtlcKey, HtlcRecord> before,
@@ -96,6 +99,8 @@ public static class ChannelDomainEvents
             {
                 if (htlc.State == HtlcState.RcvdAddAckRevocation && old?.State != HtlcState.RcvdAddAckRevocation)
                     (events ??= []).Add(new IncomingHtlcLockedIn(channelId, htlc));
+                else if (HtlcStateTable.IsFinal(htlc.State) && (old is null || !HtlcStateTable.IsFinal(old.State)))
+                    (events ??= []).Add(IncomingSettled(channelId, htlc));
                 continue;
             }
 
@@ -115,6 +120,13 @@ public static class ChannelDomainEvents
         if (!removal.IsFulfill)
             events.Add(new OutgoingHtlcFailed(channelId, htlc.Id, htlc.PaymentHash, removal));
         events.Add(new OutgoingHtlcSettled(channelId, htlc.Id, htlc.PaymentHash, removal.Kind));
+    }
+
+    private static IncomingHtlcSettled IncomingSettled(ChannelId channelId, HtlcRecord htlc)
+    {
+        var removal = htlc.Removal
+                   ?? throw new ArgumentException($"Settled HTLC {htlc.Key} has no removal", nameof(htlc));
+        return new IncomingHtlcSettled(channelId, htlc.Id, htlc.PaymentHash, removal.Kind);
     }
 
     private static Secret? PreimageOf(HtlcRecord htlc) => htlc.KnownPreimage ?? htlc.Removal?.PaymentPreimage;

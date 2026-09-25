@@ -3,6 +3,7 @@ namespace NLightning.Domain.Tests.Channels.Commitments;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
+using Domain.Crypto.ValueObjects;
 using static CommitmentsTestKit;
 
 /// <summary>
@@ -46,7 +47,11 @@ public class CommitmentsEventsTests
         pair.Converge();
         Assert.Single(pair.BobEvents, e => e.Event is IncomingHtlcLockedIn { HtlcId: 0 });
         Assert.Single(pair.BobEvents, e => e.Event is IncomingHtlcLockedIn { HtlcId: 1 });
-        Assert.Equal(2, pair.BobEvents.Count);
+        Assert.Single(pair.BobEvents, e => e.Event is IncomingHtlcSettled
+        {
+            HtlcId: 0, Kind: HtlcRemovalKind.Fulfill
+        });
+        Assert.Equal(3, pair.BobEvents.Count);
     }
 
     [Fact]
@@ -65,8 +70,15 @@ public class CommitmentsEventsTests
         pair.DeliverAliceRevoke(bobRevoke);
         var aliceRevoke = pair.AliceCommits();
         Assert.Empty(pair.AliceEvents); // 18: signed the peer's commitment without it, not yet revoked
-        // Bob only saw the lock-in: removing an incoming HTLC raises nothing
-        Assert.IsType<IncomingHtlcLockedIn>(Assert.Single(pair.BobEvents).Event);
+        // Bob saw the lock-in, then (on the revoke that made his removal final) the incoming settle, nothing else
+        Assert.Collection(pair.BobEvents,
+                          e => Assert.IsType<IncomingHtlcLockedIn>(e.Event),
+                          e =>
+                          {
+                              var settled = Assert.IsType<IncomingHtlcSettled>(e.Event);
+                              Assert.Equal(0UL, settled.HtlcId);
+                              Assert.Equal(HtlcRemovalKind.Fail, settled.Kind);
+                          });
 
         pair.DeliverBobRevoke(aliceRevoke); // 19: irrevocable
 
@@ -223,6 +235,29 @@ public class CommitmentsEventsTests
                           e => Assert.Equal(0UL, Assert.IsType<OutgoingHtlcSettled>(e).HtlcId),
                           e => Assert.Equal(1UL, Assert.IsType<OutgoingHtlcSettled>(e).HtlcId));
         Assert.Empty(afterPruning);
+    }
+
+    [Fact]
+    public void Given_IncomingRemovalsFinalNotPruned_When_DerivePending_Then_IncomingSettledIsReplayed()
+    {
+        // Arrange - Bob fulfilled HTLC 0 and failed HTLC 1 and both removals are final (NL-243: archived rows to prune)
+        var fulfilled = new HtlcRecord(HtlcDirection.Incoming, 0, 1_000, PaymentHash(1), 600,
+                                       HtlcState.SentRemoveAckRevocation,
+                                       HtlcRemoval.Fulfill(new Secret(new byte[32])));
+        var failed = new HtlcRecord(HtlcDirection.Incoming, 1, 1_000, PaymentHash(2), 600,
+                                    HtlcState.SentRemoveAckRevocation, HtlcRemoval.Fail(new byte[] { 1 }));
+        var removing = new HtlcRecord(HtlcDirection.Incoming, 2, 1_000, PaymentHash(3), 600,
+                                      HtlcState.SentRemoveCommit, HtlcRemoval.Fail(new byte[] { 1 }));
+
+        // Act
+        var pending = ChannelDomainEvents.DerivePending(ChannelId, [failed, removing, fulfilled]);
+
+        // Assert - one event per final record, none for a removal that is not final yet
+        Assert.Collection(pending,
+                          e => Assert.Equal(new IncomingHtlcSettled(ChannelId, 0, PaymentHash(1),
+                                                                    HtlcRemovalKind.Fulfill), e),
+                          e => Assert.Equal(new IncomingHtlcSettled(ChannelId, 1, PaymentHash(2),
+                                                                    HtlcRemovalKind.Fail), e));
     }
 
     [Fact]

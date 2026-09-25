@@ -108,14 +108,18 @@ public sealed class ChannelOperationsService : IChannelOperations
     }
 
     /// <inheritdoc />
-    public async Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
-                                       CancellationToken cancellationToken = default)
+    public Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                                 CancellationToken cancellationToken = default) =>
+        FulfillAsync(channelId, htlcId, paymentPreimage, null, cancellationToken);
+
+    /// <inheritdoc />
+    public Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                                 Func<IUnitOfWork, Task> stageWithFulfill,
+                                 CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fulfill_htlc", c =>
-        {
-            using var sha256 = new Sha256();
-            return c.SendFulfill(htlcId, paymentPreimage, sha256);
-        }, cancellationToken);
+        ArgumentNullException.ThrowIfNull(stageWithFulfill);
+        return FulfillAsync(channelId, htlcId, paymentPreimage, (unitOfWork, _) => stageWithFulfill(unitOfWork),
+                            cancellationToken);
     }
 
     /// <inheritdoc />
@@ -195,6 +199,17 @@ public sealed class ChannelOperationsService : IChannelOperations
         _commitScheduler.Schedule(channelId);
         await RaiseDomainEventsAsync(scope);
         return result;
+    }
+
+    private async Task FulfillAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                                    Func<IUnitOfWork, CommitmentsResult, Task>? stageWithTransition,
+                                    CancellationToken cancellationToken)
+    {
+        await RunAsync(channelId, "update_fulfill_htlc", c =>
+        {
+            using var sha256 = new Sha256();
+            return c.SendFulfill(htlcId, paymentPreimage, sha256);
+        }, cancellationToken, stageWithTransition);
     }
 
     /// <summary>The key of the HTLC an <c>update_add_htlc</c> transition added.</summary>

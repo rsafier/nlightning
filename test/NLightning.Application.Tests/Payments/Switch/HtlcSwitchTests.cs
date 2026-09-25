@@ -199,6 +199,58 @@ public class HtlcSwitchTests
     }
 
     [Fact]
+    public void Given_ApplicationRegistrations_When_AddingTheSwitchServicesTwice_Then_TheProbeIsDecoratedOnce()
+    {
+        // Arrange - a stand-in for ConnectedPeerLivenessProbe (which needs the peer manager)
+        var inner = new Mock<IPeerLivenessProbe>();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(inner.Object);
+        services.AddChannelOperationsServices();
+        services.AddSingleton(new Mock<IChannelLockProvider>().Object);
+        services.AddSingleton(_context.ChannelMemoryRepository.Object);
+
+        // Act
+        services.AddHtlcSwitchServices();
+        services.AddHtlcSwitchServices();
+
+        // Assert - one decorator around the probe registered first, one replayer
+        Assert.Single(services, d => d.ServiceType == typeof(LinkUpEventReplayer));
+        using var provider = services.BuildServiceProvider();
+        var probe = Assert.IsType<LinkUpReplayingPeerLivenessProbe>(provider.GetRequiredService<IPeerLivenessProbe>());
+        Assert.Same(inner.Object, probe.Inner);
+    }
+
+    [Fact]
+    public void Given_NoLivenessProbe_When_AddingTheSwitchServices_Then_Throws()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+
+        // Act / Assert
+        Assert.Throws<InvalidOperationException>(() => services.AddHtlcSwitchServices());
+    }
+
+    [Fact]
+    public async Task Given_IncomingHtlcSettled_When_Handled_Then_ItsArchivedRowIsPrunedInOneSave()
+    {
+        // Arrange - NL-243: nothing reads a final incoming row
+        var settled = new IncomingHtlcSettled(TestChannelId, 3, HashOf(SecretOf(1)), HtlcRemovalKind.Fulfill);
+
+        // Act
+        await CreateSwitch().HandleAsync(settled, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["prune"], _calls);
+        _context.ChannelStateDbRepository.Verify(
+            r => r.PruneSettledHtlcsAsync(TestChannelId,
+                                          It.Is<IEnumerable<HtlcKey>>(k => k.Single() == new HtlcKey(
+                                                                                HtlcDirection.Incoming, 3))),
+            Times.Once);
+        _context.UnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_OneKey_When_TwoCallersAcquire_Then_TheSecondWaitsAndTheEntryIsDroppedAfterwards()
     {
         // Arrange

@@ -71,8 +71,7 @@ public class ThreeNodeSwitchTests
         Assert.Equal(ForwardCircuitStatus.Fulfilled, circuit!.Status);
         Assert.Equal(fee, circuit.Fee);
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
-        Assert.Empty(await SettledRowsAsync(harness.Bob, ThreeNodeHarness.BobCarolChannelId));
-        Assert.Empty(await SettledRowsAsync(harness.Alice, ThreeNodeHarness.AliceBobChannelId));
+        await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
     }
 
@@ -110,7 +109,7 @@ public class ThreeNodeSwitchTests
         Assert.Equal(before, Balances(harness));
         AssertNoHtlcs(harness);
         Assert.Equal(ForwardCircuitStatus.Failed, (await GetCircuitAsync(harness, 0))!.Status);
-        Assert.Empty(await SettledRowsAsync(harness.Bob, ThreeNodeHarness.BobCarolChannelId));
+        await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
     }
 
@@ -340,14 +339,44 @@ public class ThreeNodeSwitchTests
         var lockIns = harness.Carol.Events.OfType<IncomingHtlcLockedIn>().ToList();
         Assert.Equal(2, lockIns.Count);
 
+        // The first handler to read the invoice waits there until another handler has read it too (or 500 ms): without
+        // the payment hash lock both would read it Open, with it the second read only comes after the first settled
+        var reads = 0;
+        var overlapped = false;
+        var secondRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Carol.AfterInvoiceRead = async _ =>
+        {
+            var read = Interlocked.Increment(ref reads);
+            if (read > 1)
+            {
+                secondRead.TrySetResult();
+                return;
+            }
+
+            try
+            {
+                await secondRead.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+                overlapped = true;
+            }
+            catch (TimeoutException)
+            {
+                // The second handler waited for the lock
+            }
+        };
+
         // Act
         harness.Carol.SwitchSuspended = false;
         await Task.WhenAll(lockIns.Select(e => Task.Run(() => harness.Carol.Switch.HandleAsync(
                                                             e, TestContext.Current.CancellationToken),
                                                         TestContext.Current.CancellationToken)));
+        harness.Carol.AfterInvoiceRead = null;
         await harness.PumpAsync();
 
-        // Assert: one fulfilled, the other failed from Carol with incorrect_or_unknown_payment_details
+        // Assert: the reads never overlapped (NL-253 check-and-mark under the payment hash lock)
+        Assert.False(overlapped);
+        Assert.True(reads >= 2);
+
+        // One fulfilled, the other failed from Carol with incorrect_or_unknown_payment_details
         var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
         Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
         var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
@@ -362,36 +391,146 @@ public class ThreeNodeSwitchTests
     }
 
     [Fact]
-    public async Task Given_InvoiceAcceptedButFulfillNeverPersisted_When_Replayed_Then_TheHtlcIsFulfilled()
+    public async Task Given_InvoiceAtCarol_When_HerFulfillLeaves_Then_TheInvoiceWasSettledInTheSameSave()
     {
-        // Arrange: Carol "crashed" between saving Accepted and persisting the fulfill
+        // Arrange - NL-253: no crash window between the fulfill's save and the invoice's
         await using var harness = await ThreeNodeHarness.CreateAsync();
-        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "crash window", null,
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "atomic", null,
+                                                                      TestContext.Current.CancellationToken);
+        InvoiceStatus? statusWhenSent = null;
+        harness.Carol.OnPublish = message =>
+        {
+            // Under the channel lock, right after the fulfill's save: read what a crash would leave on disk
+            if (message is UpdateFulfillHtlcMessage)
+                statusWhenSent = harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                                   .GetByPaymentHashAsync(invoice.PaymentHash))
+                                        .GetAwaiter().GetResult()!.Status;
+        };
+
+        // Act
+        await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret));
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(InvoiceStatus.Settled, statusWhenSent);
+        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+    }
+
+    [Fact]
+    public async Task Given_CarolsLinkDownWhenSheWouldFulfill_When_TheLinkComesBack_Then_TheInvoiceStaysOpenUntilItIsPaidOnce()
+    {
+        // Arrange - the HTLC is locked in at Carol, whose link to Bob drops before her switch acts
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "refused", null,
                                                                       TestContext.Current.CancellationToken);
         harness.Carol.SwitchSuspended = true;
         await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret));
         await harness.PumpAsync();
-        await harness.Carol.InScopeAsync(async unitOfWork =>
-        {
-            var stored = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(invoice.PaymentHash);
-            stored!.Accept(s_amount);
-            await unitOfWork.InvoiceDbRepository.UpdateAsync(stored);
-            await unitOfWork.SaveChangesAsync();
-            return true;
-        });
-
-        // Act
+        harness.Disconnect(harness.Bob, harness.Carol);
         harness.Carol.SwitchSuspended = false;
-        await harness.RestartAsync(harness.Carol);
-        await harness.ReconnectAsync(harness.Carol);
+
+        // Act 1: the fulfill is refused (peer away)
+        await harness.Carol.ReplayPendingEventsAsync();
+        var whileAway = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                               .GetByPaymentHashAsync(invoice.PaymentHash));
+
+        // Act 2: the link is reestablished (N7 marks it up; nothing else replays)
+        await harness.ReconnectLinkAsync(harness.Bob, harness.Carol);
         await harness.PumpAsync();
 
-        // Assert
+        // Assert: nothing was persisted while away, then one fulfill and the invoice settled
+        Assert.Equal(InvoiceStatus.Open, whileAway!.Status);
+        Assert.DoesNotContain(harness.Carol.Dropped, m => m is UpdateFulfillHtlcMessage);
+        Assert.Single(harness.Sent, m => m is { From: "Carol", To: "Bob" } && m.Message is UpdateFulfillHtlcMessage);
         Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
         var settled = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                             .GetByPaymentHashAsync(invoice.PaymentHash));
         Assert.Equal(InvoiceStatus.Settled, settled!.Status);
         AssertNoHtlcs(harness);
+        await AssertNoSettledRowsAsync(harness);
+    }
+
+    [Fact]
+    public async Task Given_AliceAwayWhenCarolRevealsThePreimage_When_TheLinkComesBack_Then_BobFulfillsUpstreamWithoutARestart()
+    {
+        // Arrange - the HTLC reaches Carol; Alice's link to Bob drops before Carol settles
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "away", null,
+                                                                      TestContext.Current.CancellationToken);
+        harness.Carol.SwitchSuspended = true;
+        await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret));
+        await harness.PumpAsync();
+        harness.Disconnect(harness.Alice, harness.Bob);
+
+        // Act 1: Carol fulfills; Bob learns the preimage but his upstream fulfill is refused
+        harness.Carol.SwitchSuspended = false;
+        await harness.Carol.ReplayPendingEventsAsync();
+        await harness.PumpAsync();
+        Assert.Contains(harness.Bob.Events, e => e is OutgoingHtlcFulfilled);
+        Assert.DoesNotContain(harness.Sent, m => m is { From: "Bob", To: "Alice" }
+                                              && m.Message is UpdateFulfillHtlcMessage);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
+
+        // Act 2: the link comes back (N7 marks it up); no restart, no harness replay
+        await harness.ReconnectLinkAsync(harness.Alice, harness.Bob);
+        await harness.PumpAsync();
+
+        // Assert: Bob claimed from Alice exactly once
+        Assert.Single(harness.Sent, m => m is { From: "Bob", To: "Alice" } && m.Message is UpdateFulfillHtlcMessage);
+        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        AssertNoHtlcs(harness);
+        await AssertNoSettledRowsAsync(harness);
+        AssertNeverTwoLocks(harness);
+    }
+
+    [Fact]
+    public async Task Given_OfferThrowsBeforeItsSave_When_Forwarding_Then_TheCircuitFailsAndAliceGetsTemporaryChannelFailure()
+    {
+        // Arrange - staging the origin with Bob's add throws something other than a refusal
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "throws", null,
+                                                                      TestContext.Current.CancellationToken);
+        harness.Bob.BeforeSetHtlcOrigin = _ => throw new InvalidOperationException("origin row missing");
+
+        // Act
+        var (_, onion) = await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash,
+                                                                           invoice.PaymentSecret));
+        await harness.PumpAsync();
+
+        // Assert: nothing offered to Carol, the circuit failed, Alice gets Bob's temporary_channel_failure
+        Assert.DoesNotContain(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
+        Assert.Equal(ForwardCircuitStatus.Failed, (await GetCircuitAsync(harness, 0))!.Status);
+        var decrypted = Decrypt(harness, onion, Assert.Single(harness.Alice.PaymentHandler.Failed));
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.TemporaryChannelFailure, decrypted.Code);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_OfferThrowsAfterItsSave_When_Forwarding_Then_TheCircuitRecordsTheOutgoingHtlc()
+    {
+        // Arrange - Bob's add is saved, then publishing it throws (the message is lost with the "connection")
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "saved", null,
+                                                                      TestContext.Current.CancellationToken);
+        harness.Bob.OnPublish = message =>
+        {
+            if (message is UpdateAddHtlcMessage)
+                throw new InvalidOperationException("outbox closed");
+        };
+
+        // Act
+        await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret));
+        await harness.PumpAsync();
+
+        // Assert: the forward is not failed upstream, since a live HTLC carries it
+        var circuit = await GetCircuitAsync(harness, 0);
+        Assert.Equal(ForwardCircuitStatus.Offered, circuit!.Status);
+        Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
+        Assert.NotNull(harness.Bob.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!
+                              .GetHtlc(HtlcDirection.Outgoing, circuit.OutgoingHtlcId!.Value));
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.DoesNotContain(harness.Sent, m => m is { From: "Bob", To: "Alice" } && m.Message is UpdateFailHtlcMessage);
     }
 
     [Fact]
@@ -431,6 +570,14 @@ public class ThreeNodeSwitchTests
         var persisted = await node.InScopeAsync(u => u.ChannelStateDbRepository.LoadAsync(
                                                     channelId, channel.Commitments!.Params));
         return persisted!.SettledHtlcs;
+    }
+
+    /// <summary>NL-243: every archived row (incoming and outgoing) of every channel was pruned.</summary>
+    private static async Task AssertNoSettledRowsAsync(ThreeNodeHarness harness)
+    {
+        foreach (var node in harness.Nodes)
+            foreach (var channel in node.Channels)
+                Assert.Empty(await SettledRowsAsync(node, channel.ChannelId));
     }
 
     private static BalanceSheet Balances(ThreeNodeHarness harness) =>
