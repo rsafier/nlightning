@@ -17,7 +17,7 @@ This is the wire contract for local IPC between the CLI (`src/NLightning.Client`
 3. Add `Responses/<Name>IpcResponse.cs` with the same attributes, plus `FromClientResponse()` if needed.
 4. If a new Domain value object crosses the wire, add `MessagePack/Formatters/<T>Formatter.cs` and register it in the `NLightningFormatterResolver` ctor. For structs used as nullable, also register `typeof(T?)` with a `*NullableFormatter`, following the CompactPubKey pattern.
 5. Daemon side: add `src/NLightning.Daemon/Ipc/Handlers/<Name>IpcHandler.cs : IIpcCommandHandler`. Copy Version, Command and CorrelationId into the response and set Kind=Response. Report errors through `Services/Ipc/Factories/IpcErrorFactory.CreateErrorEnvelope`. Register it with `AddSingleton<IIpcCommandHandler, ...>` in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`. A duplicate `Command` crashes the router (`ToDictionary` in `src/NLightning.Daemon/Services/Ipc/IpcRouting.cs`).
-6. Client side: add a method to `NamedPipeIpcClient.cs`, a printer in `Client/Printers/`, a case in `Client/Program.cs`, and update `Client/Utils/ClientUtils.ShowUsage`.
+6. Client side: add a method to `NamedPipeIpcClient.cs`, a printer in `Client/Printers/`, a case in `Client/ClientApp.cs`, and update `Client/Utils/ClientUtils.ShowUsage`.
 
 ## Conventions
 - File-scoped namespace `NLightning.Transport.Ipc[.Requests|.Responses|.MessagePack[.Formatters]]`. Put `using MessagePack;` above the namespace and relative `using Domain.X;` directives after it.
@@ -29,14 +29,13 @@ This is the wire contract for local IPC between the CLI (`src/NLightning.Client`
 - Must NOT reference Application, Infrastructure.*, Daemon, Client, NBitcoin or EF. This project is consumed by both Client and Daemon, so a reference to either one creates a cycle.
 
 ## Tests
-There are none; nothing under `test/` covers this project. The natural home for new tests is `test/NLightning.Daemon.Tests`. That project lacks `xunit.runner.visualstudio`, so run it with `dotnet run --project test/NLightning.Daemon.Tests -- -class <FQN>` rather than `dotnet test`. Write round-trip tests with `MessagePackSerializer.Serialize/Deserialize(x, NLightningMessagePackOptions.Options)`.
+Formatter round-trip tests live in `test/NLightning.Daemon.Tests/Ipc/Formatters/`. That project lacks `xunit.runner.visualstudio`, so run it with `dotnet run --project test/NLightning.Daemon.Tests -- -class <FQN>` rather than `dotnet test`. Write round-trip tests with `MessagePackSerializer.Serialize/Deserialize(x, NLightningMessagePackOptions.Options)`.
 - Build: `dotnet build src/NLightning.Transport.Ipc -p:MSBuildWarningsAsMessages=MSB4121`
 - Format gate (CI): `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`
 
 ## Gotchas
 - Both ends must set `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` before any serialization. See `src/NLightning.Client/Program.cs` and `src/NLightning.Daemon/Program.cs`. Otherwise LZ4 and resolver mismatches occur.
-- `HashFormatter` and `TxIdFormatter` use `WriteRaw`/`ReadRaw(32)` with no bin header. That output is not valid MessagePack for non-.NET readers, and a default value writes 0 bytes.
-- Bug: `SignedTransactionFormatter` writes TxId with `writer.Write(value.TxId)` (bin header) but reads it with `TxIdFormatter` (raw), so a round-trip breaks. Serialize also has no null check (CS8602). No DTO uses it yet.
+- `HashFormatter` and `TxIdFormatter` write `bin 8` of exactly 32 bytes (`c4 20 ...`) and `nil` for a default value; reading rejects any other length. This replaced a raw 32-byte encoding (no header), so a client and daemon from before and after that change cannot talk to each other. `SignedTransactionFormatter` writes `[TxId, RawTxBytes]` (signatures are dropped) or `nil`.
 - Framing is a 4-byte native-endian length prefix with a 10 MB cap, and each connection carries exactly one request and one response, with no push. For progress updates, use a long-poll "subscription" command, as `OpenChannelSubscription` does. The framing is implemented twice (`src/NLightning.Daemon/Services/Ipc/IpcFraming.cs` and `src/NLightning.Client/Ipc/NamedPipeIpcClient.cs`), so change both together.
 
 ## Onion-routing (BOLT 4) hooks
