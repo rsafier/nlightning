@@ -5,7 +5,7 @@ using Domain.Protocol.Payloads;
 
 public static class TxAddInputValidator
 {
-    public static async void Validate(bool isInitiator, TxAddInputPayload input, int currentInputCount, Func<byte[], Task<bool>> isValidPrevTx, Func<byte[], uint, bool> isUniqueInput, Func<ulong, bool> isSerialIdUnique)
+    public static async Task ValidateAsync(bool isInitiator, TxAddInputPayload input, int currentInputCount, Func<byte[], Task<bool>> isValidPrevTx, Func<byte[], uint, bool> isUniqueInput, Func<ulong, bool> isSerialIdUnique)
     {
         if (isInitiator && (input.SerialId & 1) != 0) // Ensure even serial_id for initiator
         {

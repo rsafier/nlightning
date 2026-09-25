@@ -18,9 +18,9 @@ public class InteractiveTransactionService : IInteractiveTransactionService
         _isInitiator = isInitiator;
     }
 
-    public void AddInput(TxAddInputPayload input)
+    public async Task AddInputAsync(TxAddInputPayload input)
     {
-        TxAddInputValidator.Validate(_isInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
+        await TxAddInputValidator.ValidateAsync(_isInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
         _inputs.Add(input.SerialId, input);
     }
 
