@@ -73,6 +73,22 @@ public class LocalOnlyHtlcSwitchTests
     }
 
     [Fact]
+    public async Task Given_NoBlockProcessedYet_When_FinalHopLockedIn_Then_FailedWithTemporaryNodeFailure()
+    {
+        // Arrange - the payer reads the height of incorrect_or_unknown_payment_details; 0 would mislead it
+        _sphinx.Result = new PeeledOnion(new byte[] { 2, 0 }, s_sharedSecret, null);
+
+        // Act
+        await CreateSwitch(height: 0).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _htlc),
+                                                  TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FailureCode.TemporaryNodeFailure, _encrypted!.Code);
+        _operations.Verify(o => o.FailHtlcAsync(TestChannelId, _htlc.Id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
     public async Task Given_ForwardingOnion_When_LockedIn_Then_FailedWithTemporaryNodeFailure()
     {
         // Arrange - no forwarding yet
@@ -209,13 +225,13 @@ public class LocalOnlyHtlcSwitchTests
         return calls;
     }
 
-    private LocalOnlyHtlcSwitch CreateSwitch()
+    private LocalOnlyHtlcSwitch CreateSwitch(uint height = Height)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
         var provider = services.BuildServiceProvider();
         var blockchainMonitor = new Mock<IBlockchainMonitor>();
-        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(Height);
+        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(height);
 
         return new LocalOnlyHtlcSwitch(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object,
                                        _operations.Object, _failureOnion.Object,

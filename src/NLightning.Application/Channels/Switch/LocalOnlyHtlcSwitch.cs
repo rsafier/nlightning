@@ -35,9 +35,11 @@ using Infrastructure.Crypto.Hashes;
 /// <item>A good onion: its shared secret is stored with the HTLC (<see cref="IChannelOperations.RecordOnionSecretAsync"/>)
 /// and the HTLC is failed with <c>incorrect_or_unknown_payment_details</c> (htlc_msat, current height) when we are
 /// the final hop (we have no invoices yet), or <c>temporary_node_failure</c> when we would have to forward (no
-/// forwarding yet), encrypted with that secret (<see cref="IFailureOnionService.CreateErrorPacket"/>).</item>
+/// forwarding yet) or the current height is not known yet (no block processed), encrypted with that secret (<see cref="IFailureOnionService.CreateErrorPacket"/>).</item>
 /// </list>
 /// The onion is not recorded in the replay cache: a replay after a restart must be allowed to fail the HTLC again.
+/// The BOLT 4 final-node checks (<c>final_incorrect_cltv_expiry</c>, <c>final_incorrect_htlc_amount</c>) come with the
+/// final-hop processor (ABCD W2-B).
 /// </para>
 /// <para>
 /// Outgoing events: fulfilled and failed HTLCs are only logged (no payments or circuits exist yet); a settled one has
@@ -174,10 +176,12 @@ public sealed class LocalOnlyHtlcSwitch : IHtlcSwitch
         // Keep the secret with the HTLC before failing it, so the failure can be rebuilt after a restart
         await _channelOperations.RecordOnionSecretAsync(channelId, htlc.Id, peeled.SharedSecret, cancellationToken);
 
-        var message = peeled.IsFinal
+        // The payer reads the height to tell an expiry problem from an unknown hash, so without a known height the
+        // failure is temporary_node_failure rather than a misleading height of 0
+        var height = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+        var message = peeled.IsFinal && height > 0
                           ? FailureMessage.IncorrectOrUnknownPaymentDetails(LightningMoney.MilliSatoshis(htlc.AmountMsat),
-                                                                            _blockchainMonitor
-                                                                              ?.LastProcessedBlockHeight ?? 0)
+                                                                            height)
                           : FailureMessage.TemporaryNodeFailure();
         var reason = _failureOnionService.CreateErrorPacket(peeled.SharedSecret, message);
         await _channelOperations.FailHtlcAsync(channelId, htlc.Id, reason, cancellationToken);
