@@ -17,7 +17,7 @@ public class SphinxServiceTests
     private static readonly byte[] s_associatedData = Enumerable.Repeat((byte)0x42, 32).ToArray();
 
     private readonly Ecdh _ecdh = new();
-    private readonly SphinxService _sphinxService = new(new Ecdh(), new Secp256K1Math());
+    private readonly SphinxService _sphinxService = new(new Secp256K1Math());
 
     public static TheoryData<int, int> RoundTripCases
     {
@@ -535,7 +535,7 @@ public class SphinxServiceTests
         // Arrange: the key manager throws if the node private key is requested
         var (packet, nodeKeys) = BuildTwoHopPacket();
         var keyManager = new EcdhOnlyKeyManager(nodeKeys[0].PrivKey);
-        var service = new SphinxService(new Ecdh(), new Secp256K1Math(), keyManager);
+        var service = new SphinxService(new Secp256K1Math(), keyManager);
         var expected = _sphinxService.Peel(packet, s_associatedData, nodeKeys[0].PrivKey);
 
         // Act
@@ -562,7 +562,7 @@ public class SphinxServiceTests
         var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, s_associatedData);
         var expected = _sphinxService.Peel(packet, s_associatedData, nodeKey.PrivKey, pathKey.CompactPubKey);
         var keyManager = new EcdhOnlyKeyManager(nodeKey.PrivKey);
-        var service = new SphinxService(new Ecdh(), new Secp256K1Math(), keyManager);
+        var service = new SphinxService(new Secp256K1Math(), keyManager);
 
         // Act
         var peeled = service.PeelAsLocalNode(packet, s_associatedData, pathKey.CompactPubKey);

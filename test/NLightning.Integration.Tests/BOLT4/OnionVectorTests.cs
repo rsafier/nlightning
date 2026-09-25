@@ -19,7 +19,7 @@ using Infrastructure.Bitcoin.Onion;
 /// </summary>
 public class OnionVectorTests
 {
-    private readonly SphinxService _sphinxService = new(new Ecdh(), new Secp256K1Math());
+    private readonly SphinxService _sphinxService = new(new Secp256K1Math());
 
     [Fact]
     public void Given_OnionErrorTestHops_When_ComputingSharedSecrets_Then_AllHopSecretsMatch()
@@ -78,8 +78,9 @@ public class OnionVectorTests
         // Arrange
         var vector = Bolt4Vectors.LoadOnionTest();
         var errorVector = Bolt4Vectors.LoadOnionErrorTest();
-        var (ephemeralPubKeys, _) = new OnionBuilder(new Ecdh(), new Secp256K1Math())
-           .ComputeHopKeys(vector.Hops.Select(h => new CompactPubKey(h.PubKey)).ToList(), vector.SessionKey);
+        var (ephemeralPubKeys, _) =
+            OnionBuilder.ComputeHopKeys(vector.Hops.Select(h => new CompactPubKey(h.PubKey)).ToList(),
+                                        vector.SessionKey);
         OnionPacket? current = new OnionPacket(vector.Onion);
 
         for (var i = 0; i < vector.Hops.Count; i++)

@@ -8,7 +8,6 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
-using Infrastructure.Crypto.Interfaces;
 
 /// <summary>
 /// BOLT 4 Sphinx facade over <see cref="OnionBuilder"/> and <see cref="OnionPeeler"/>.
@@ -29,10 +28,10 @@ internal sealed class SphinxService : ISphinxService
     private readonly OnionPeeler _peeler;
     private readonly ISecureKeyManager? _secureKeyManager;
 
-    public SphinxService(IEcdh ecdh, ISecp256K1Math secp256K1Math, ISecureKeyManager? secureKeyManager = null)
+    public SphinxService(ISecp256K1Math secp256K1Math, ISecureKeyManager? secureKeyManager = null)
     {
-        _builder = new OnionBuilder(ecdh, secp256K1Math);
-        _peeler = new OnionPeeler(ecdh, secp256K1Math);
+        _builder = new OnionBuilder();
+        _peeler = new OnionPeeler(secp256K1Math);
         _secureKeyManager = secureKeyManager;
     }
 
@@ -57,7 +56,7 @@ internal sealed class SphinxService : ISphinxService
     /// <inheritdoc/>
     public IReadOnlyList<Secret> ComputeSharedSecrets(IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey)
     {
-        var (_, sharedSecrets) = _builder.ComputeHopKeys(nodeIds, sessionKey);
+        var (_, sharedSecrets) = OnionBuilder.ComputeHopKeys(nodeIds, sessionKey);
         return sharedSecrets.Select(secret => new Secret(secret)).ToList();
     }
 
