@@ -54,6 +54,7 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new FundingCreatedPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(FundingSignedPayload),
                          new FundingSignedPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(GossipPayload), new GossipPayloadSerializer());
         _serializers.Add(typeof(InitPayload), new InitPayloadSerializer(_featureSetSerializer));
         _serializers.Add(typeof(OpenChannel1Payload), new OpenChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(OpenChannel2Payload), new OpenChannel2PayloadSerializer(_valueObjectSerializerFactory));
@@ -118,5 +119,16 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFee, typeof(UpdateFeePayload));
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcPayload));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(ErrorPayload));
+
+        // BOLT 7 gossip is kept as raw bytes until gossip is implemented
+        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipPayload));
     }
 }
