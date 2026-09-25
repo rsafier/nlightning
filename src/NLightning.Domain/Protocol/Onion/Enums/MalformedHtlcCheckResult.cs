@@ -17,7 +17,7 @@ public enum MalformedHtlcCheckResult
     BadOnionBitNotSet,
 
     /// <summary>
-    /// The <c>sha256_of_onion</c> does not match the onion this node sent: the receiver MAY retry or choose an
+    /// The <c>sha256_of_onion</c> does not match the onion this node sent and is not all zero: the receiver MAY retry or choose an
     /// alternate error response.
     /// </summary>
     Sha256OfOnionMismatch
