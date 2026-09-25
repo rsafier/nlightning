@@ -209,7 +209,8 @@ public class NormalOperationFlowTests : IAsyncLifetime
 
     /// <summary>
     /// BOLT2 plan Proof N8 (fee and dust rounding, plan risk 13): a 5,000 sat HTLC at 10,000 sat/kw is below the trim
-    /// threshold of both commitments (dust limit plus the HTLC-success/timeout fee, about 7,000 sat), so it has no
+    /// threshold of both commitments (dust limit plus the HTLC-success/timeout fee, about 7,000 sat; checked from LND's
+    /// channel before paying, so the test fails if that stops holding), so it has no
     /// output on either side, and it must still settle with the same balances on both sides.
     /// </summary>
     [Fact]
@@ -220,9 +221,11 @@ public class NormalOperationFlowTests : IAsyncLifetime
         var alice = GetAlice();
         var (channel, lndChannel) = await OpenUsableChannelAsync(alice, LightningMoney.Satoshis(1_000_000),
                                                                  LightningMoney.Satoshis(300_000), ct);
+        var amount = LightningMoney.Satoshis(5_000);
+        AssertTrimmedOnBothCommitments(lndChannel, amount);
 
         // Act + Assert
-        await AssertLndPaysOurInvoiceAsync(alice, channel, lndChannel, LightningMoney.Satoshis(5_000), ct);
+        await AssertLndPaysOurInvoiceAsync(alice, channel, lndChannel, amount, ct);
     }
 
     /// <summary>
@@ -396,6 +399,31 @@ public class NormalOperationFlowTests : IAsyncLifetime
     }
 
     private string OurNodeIdHex => Convert.ToHexString(_node.SecureKeyManager.GetNodePubKey());
+
+    /// <summary>
+    /// Asserts that an HTLC of <paramref name="amount"/> offered by LND is trimmed on both commitments (BOLT 3 "Trimmed
+    /// Outputs", non-anchor channel types): below LND's dust limit plus the HTLC-timeout fee (weight 663) on LND's
+    /// commitment, where it is offered, and below our dust limit plus the HTLC-success fee (weight 703) on ours, where
+    /// it is received. Fails loudly when the channel type, a dust limit or the feerate no longer makes it trimmed.
+    /// </summary>
+    private static void AssertTrimmedOnBothCommitments(Channel lndChannel, LightningMoney amount)
+    {
+        const ulong htlcTimeoutWeight = 663;
+        const ulong htlcSuccessWeight = 703;
+
+        Assert.True(lndChannel.CommitmentType is CommitmentType.Legacy or CommitmentType.StaticRemoteKey,
+                    $"the trim thresholds below assume a non-anchor channel, LND reports {lndChannel.CommitmentType}");
+        var feePerKw = (ulong)lndChannel.FeePerKw;
+        var lndThresholdSat = lndChannel.LocalConstraints.DustLimitSat + htlcTimeoutWeight * feePerKw / 1_000;
+        var ourThresholdSat = lndChannel.RemoteConstraints.DustLimitSat + htlcSuccessWeight * feePerKw / 1_000;
+        Console.WriteLine($"Trim thresholds at {feePerKw} sat/kw: LND commitment {lndThresholdSat} sat (dust "
+                        + $"{lndChannel.LocalConstraints.DustLimitSat}), ours {ourThresholdSat} sat (dust "
+                        + $"{lndChannel.RemoteConstraints.DustLimitSat})");
+        Assert.True((ulong)amount.Satoshi < lndThresholdSat,
+                    $"{amount.Satoshi} sat is not trimmed on LND's commitment (threshold {lndThresholdSat} sat)");
+        Assert.True((ulong)amount.Satoshi < ourThresholdSat,
+                    $"{amount.Satoshi} sat is not trimmed on our commitment (threshold {ourThresholdSat} sat)");
+    }
 
     private LNDNodeConnection GetAlice()
     {
