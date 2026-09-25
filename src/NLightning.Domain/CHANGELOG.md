@@ -58,7 +58,8 @@ Major release introducing the Client domain, wallet domain types, channel open v
 
 - Dropped `net8.0` and `net9.0` targets; the library now requires **.NET 10.0** or later;
 - `ISecureKeyManager`: `KeyPath` → `ChannelKeyPath`; `GetNextKey`/`GetKeyAtIndex` → `GetNextChannelKey`/`GetChannelKeyAtIndex`;
-- `OpenChannel1Message`: `ChannelTypeTlv` is now required (non-nullable); constructor parameter order changed;
+- `OpenChannel1Message`: constructor parameter order changed; `ChannelTypeTlv` is nullable because `channel_type` is optional on the wire, and a missing one is rejected by `ChannelOpenValidator`;
+- `NextFundingTlv` now uses BOLT 2 type 1 (`TlvConstants.NextFunding`) and carries `RetransmitFlags` (33-byte value);
 - `ChannelConfig.ChannelReserveAmount` changed from `LightningMoney?` to `LightningMoney`;
 - `Feature.InitialRoutingSync` and `Feature.OptionAnchorOutputs` removed from the `Feature` enum;
 - `LightningMoney.ToString()` output now includes the unit;
