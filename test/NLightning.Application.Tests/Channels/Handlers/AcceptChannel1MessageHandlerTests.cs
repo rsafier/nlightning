@@ -40,7 +40,6 @@ public class AcceptChannel1MessageHandlerTests
     private readonly Mock<ICommitmentTransactionBuilder> _mockCommitmentTransactionBuilder = new();
     private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
     private readonly Mock<IUtxoMemoryRepository> _mockUtxoMemoryRepository = new();
-    private readonly List<string> _calls = [];
     private readonly ChannelModel _tempChannel;
     private readonly AcceptChannel1MessageHandler _handler;
 
@@ -64,13 +63,8 @@ public class AcceptChannel1MessageHandlerTests
            .Returns(true);
         _mockChannelMemoryRepository.Setup(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId))
                                     .Returns(true);
-        _mockChannelMemoryRepository.Setup(r => r.UpgradeChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelModel>()))
-                                    .Callback(() => _calls.Add(nameof(IChannelMemoryRepository.UpgradeChannel)));
 
         _mockUnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_mockChannelDbRepository.Object);
-        _mockUnitOfWork.Setup(u => u.SaveChangesAsync())
-                       .Callback(() => _calls.Add(nameof(IUnitOfWork.SaveChangesAsync)))
-                       .Returns(Task.CompletedTask);
         _mockChannelDbRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>())).ReturnsAsync((ChannelModel?)null);
 
         _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
@@ -163,24 +157,20 @@ public class AcceptChannel1MessageHandlerTests
     }
 
     [Fact]
-    public async Task Given_ValidAcceptChannel_When_HandleAsync_Then_ChannelIsPersistedBeforeFundingCreatedIsSent()
+    public async Task Given_ValidAcceptChannel_When_HandleAsync_Then_ChannelIsNotPersistedBeforeFundingSigned()
     {
         // Arrange
         var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
-        ChannelState? persistedState = null;
-        _mockChannelDbRepository.Setup(r => r.AddAsync(It.IsAny<ChannelModel>()))
-                                .Callback((ChannelModel c) => persistedState = c.State)
-                                .Returns(Task.CompletedTask);
 
         // Act
         var result = await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
 
         // Assert
+        // BOLT 2: a funder that has not broadcast the funding tx SHOULD NOT remember the channel on disconnection
         Assert.IsType<FundingCreatedMessage>(result);
-        _mockChannelDbRepository.Verify(r => r.AddAsync(_tempChannel), Times.Once);
-        Assert.Equal(ChannelState.V1FundingCreated, persistedState);
-        Assert.Equal([nameof(IUnitOfWork.SaveChangesAsync), nameof(IChannelMemoryRepository.UpgradeChannel)],
-                     _calls);
+        _mockChannelDbRepository.Verify(r => r.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Never);
+        _mockChannelMemoryRepository.Verify(r => r.UpgradeChannel(s_tempChannelId, _tempChannel), Times.Once);
         _mockUtxoMemoryRepository.Verify(r => r.UpgradeChannelIdOnLockedUtxos(s_tempChannelId, s_newChannelId),
                                          Times.Once);
     }
