@@ -188,8 +188,15 @@ internal sealed class HarnessNode : IDisposable
     public ICommitScheduler Scheduler { get; }
     public InMemoryChannelStateStore Store { get; } = new();
 
-    /// <summary>What the liveness probe answers for the peer (the peer is "connected").</summary>
+    /// <summary>
+    /// Whether the peer is connected: the liveness probe answers it (with the channel's link pinned at
+    /// <see cref="Open"/>), and while it is false every message this node raises is dropped, as
+    /// <c>PeerManager</c> drops a message for a peer that is not connected.
+    /// </summary>
     public bool PeerAlive { get; set; } = true;
+
+    /// <summary>Messages raised while <see cref="PeerAlive"/> was false (lost, like in production).</summary>
+    public List<IChannelMessage> Dropped { get; } = [];
 
     public bool OutboxIsEmpty => _outbox.IsEmpty;
     public HarnessNode Peer { get; set; } = null!;
@@ -292,7 +299,13 @@ internal sealed class HarnessNode : IDisposable
         NodeId = new Key(Enumerable.Repeat(seedTag, 32).ToArray()).PubKey.ToBytes();
         ChannelManager = new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider, _channels,
                                             NullLogger<ChannelManager>.Instance, Signer, _provider);
-        ChannelManager.OnResponseMessageReady += (_, args) => _outbox.Enqueue(args.ResponseMessage);
+        ChannelManager.OnResponseMessageReady += (_, args) =>
+        {
+            if (PeerAlive)
+                _outbox.Enqueue(args.ResponseMessage);
+            else
+                Dropped.Add(args.ResponseMessage);
+        };
         Operations = _provider.GetRequiredService<IChannelOperations>();
         Scheduler = _provider.GetRequiredService<ICommitScheduler>();
     }
@@ -307,6 +320,7 @@ internal sealed class HarnessNode : IDisposable
                                                                                          Peer.Point(1)));
         _channels.AddChannel(channel);
         Store.Seed(channel.Commitments!);
+        _provider.GetRequiredService<IPeerLivenessProbe>().MarkLinkUp(channel.ChannelId, channel.RemoteNodeId);
     }
 
     /// <summary>Hands the oldest queued message to the peer's channel manager.</summary>
@@ -330,11 +344,16 @@ internal sealed class HarnessNode : IDisposable
             node.ChannelManager.Publish(peerPubKey, messages);
     }
 
-    /// <summary>"Ping before commit" answered by <see cref="PeerAlive"/>.</summary>
+    /// <summary>"Ping before commit" answered by <see cref="PeerAlive"/> for a channel marked up.</summary>
     private sealed class FlagProbe(HarnessNode node) : IPeerLivenessProbe
     {
-        public Task<bool> IsAliveAsync(CompactPubKey peerPubKey, CancellationToken cancellationToken = default) =>
-            Task.FromResult(node.PeerAlive);
+        private readonly ConcurrentDictionary<ChannelId, byte> _links = new();
+
+        public Task<bool> IsAliveAsync(ChannelId channelId, CompactPubKey peerPubKey,
+                                       CancellationToken cancellationToken = default) =>
+            Task.FromResult(node.PeerAlive && _links.ContainsKey(channelId));
+
+        public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey) => _links[channelId] = 0;
     }
 
     /// <summary>Records every event, then hands it to the production switch when there is one.</summary>

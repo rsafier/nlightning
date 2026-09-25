@@ -35,12 +35,14 @@ using Interfaces;
 /// </para>
 /// <para>
 /// Preconditions: HTLCs enabled (<see cref="NodeOptions.HtlcsEnabled"/>), channel <see cref="ChannelState.Open"/>
-/// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules. Only
-/// <see cref="OfferHtlcAsync"/> also needs a connected peer: a removal or a fee update of a channel whose peer is away
-/// is persisted and waits for channel_reestablish (it must never be lost: a fulfill carries a preimage). There is no
-/// channel_reestablish yet (N7), so "reestablished" is not checked. A failed precondition throws
-/// <see cref="CommitmentRefusedException"/> with nothing persisted or sent; an unknown channel throws
-/// <see cref="KeyNotFoundException"/>.
+/// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules, and the channel's link
+/// is up (<see cref="IPeerLivenessProbe"/>: the peer is connected on the connection the channel was opened or
+/// reestablished on). Every operation needs the link, removals and fee updates too: a message raised for a peer that
+/// is not connected is dropped, and there is no retransmission until channel_reestablish (N7), so an update persisted
+/// for an away peer would later be covered by a <c>commitment_signed</c> the peer can't verify. A refused removal is
+/// not lost: the HTLC stays locked in and its event is replayed (startup; N7 after the reestablish). A failed
+/// precondition throws <see cref="CommitmentRefusedException"/> with nothing persisted or sent; an unknown channel
+/// throws <see cref="KeyNotFoundException"/>.
 /// </para>
 /// <para>
 /// The <see cref="HtlcOrigin"/> of an offer is validated but not stored yet: the payment and circuit tables (ABCD W1-C)
@@ -89,7 +91,7 @@ public sealed class ChannelOperationsService : IChannelOperations
             throw new ArgumentException("The onion is empty", nameof(onion));
 
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
-        var result = await RunAsync(channelId, "update_add_htlc", true,
+        var result = await RunAsync(channelId, "update_add_htlc",
                                     c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),
                                                    pathKey?.PathKey, height is > 0 ? height : null),
                                     cancellationToken);
@@ -106,7 +108,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     public async Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
                                        CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fulfill_htlc", false, c =>
+        await RunAsync(channelId, "update_fulfill_htlc", c =>
         {
             using var sha256 = new Sha256();
             return c.SendFulfill(htlcId, paymentPreimage, sha256);
@@ -117,7 +119,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     public async Task FailHtlcAsync(ChannelId channelId, ulong htlcId, ReadOnlyMemory<byte> reason,
                                     CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fail_htlc", false, c => c.SendFail(htlcId, reason.ToArray()),
+        await RunAsync(channelId, "update_fail_htlc", c => c.SendFail(htlcId, reason.ToArray()),
                        cancellationToken);
     }
 
@@ -125,7 +127,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     public async Task FailMalformedHtlcAsync(ChannelId channelId, ulong htlcId, FailureCode failureCode,
                                              Hash sha256OfOnion, CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fail_malformed_htlc", false,
+        await RunAsync(channelId, "update_fail_malformed_htlc",
                        c => c.SendFailMalformed(htlcId, (ushort)failureCode, (byte[])sha256OfOnion),
                        cancellationToken);
     }
@@ -134,7 +136,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     public async Task UpdateFeeAsync(ChannelId channelId, uint feeratePerKw,
                                      CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fee", false, c => c.SendFee(feeratePerKw), cancellationToken);
+        await RunAsync(channelId, "update_fee", c => c.SendFee(feeratePerKw), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -161,7 +163,6 @@ public sealed class ChannelOperationsService : IChannelOperations
     /// hand the transition's events to the switch.
     /// </summary>
     private async Task<CommitmentsResult> RunAsync(ChannelId channelId, string operationName,
-                                                   bool requiresConnectedPeer,
                                                    Func<ChannelCommitments, CommitmentsResult> operation,
                                                    CancellationToken cancellationToken)
     {
@@ -170,10 +171,9 @@ public sealed class ChannelOperationsService : IChannelOperations
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
             var channel = GetOperableChannel(channelId, operationName);
-            if (requiresConnectedPeer
-             && !await _peerLivenessProbe.IsAliveAsync(channel.RemoteNodeId, cancellationToken))
+            if (!await _peerLivenessProbe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
                 throw new CommitmentRefusedException("B2-NO-02",
-                                                     $"{operationName} refused: the peer of channel {channelId} is not connected");
+                                                     $"{operationName} refused: the peer of channel {channelId} is not connected on the channel's link");
 
             // The engine throws CommitmentRefusedException for a broken sender rule; nothing is persisted then
             result = operation(channel.Commitments!);

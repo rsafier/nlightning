@@ -218,6 +218,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         try
         {
             using var channelLocks = await AcquireMessageLocksAsync(message, channelId);
+            var wasOpen = IsOpen(channelId);
 
             IReadOnlyList<IChannelMessage> replies;
             try
@@ -230,6 +231,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 await PersistFailedChannelAsync(scope, cfe);
                 throw;
             }
+
+            if (!wasOpen)
+                MarkLinkUpIfOpened(channelId, peerPubKey);
 
             RaiseResponseMessages(peerPubKey, replies);
 
@@ -370,6 +374,22 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         {
             _logger.LogError(e, "Failed to persist the failed state of channel {ChannelId}", channelId);
         }
+    }
+
+    private bool IsOpen(ChannelId channelId) =>
+        _channelMemoryRepository.TryGetChannelState(channelId, out var state) && state == ChannelState.Open;
+
+    /// <summary>
+    /// A channel that just turned Open (both channel_ready exchanged, on this connection) can carry updates on the
+    /// peer's current connection: pin it in the <see cref="IPeerLivenessProbe"/>. A channel loaded at startup is never
+    /// pinned here; N7 pins it after channel_reestablish. Call it while holding the channel's lock.
+    /// </summary>
+    private void MarkLinkUpIfOpened(ChannelId channelId, CompactPubKey peerPubKey)
+    {
+        if (!IsOpen(channelId) || _serviceProvider.GetService<IPeerLivenessProbe>() is not { } probe)
+            return;
+
+        probe.MarkLinkUp(channelId, peerPubKey);
     }
 
     /// <summary>
@@ -820,6 +840,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                                         channel.FundingOutput.Index!.Value);
 
             await fundingConfirmedHandler.HandleAsync(channel);
+            MarkLinkUpIfOpened(channelId, remoteNodeId);
         }
         catch (Exception e)
         {

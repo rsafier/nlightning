@@ -48,7 +48,9 @@ public class ChannelOperationsServiceTests
                        _published.AddRange(messages);
                    });
         _scheduler.Setup(s => s.Schedule(It.IsAny<ChannelId>())).Callback(() => _context.Calls.Add("schedule"));
-        _probe.Setup(p => p.IsAliveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                          It.IsAny<CancellationToken>()))
+              .ReturnsAsync(true);
     }
 
     [Fact]
@@ -184,7 +186,9 @@ public class ChannelOperationsServiceTests
     public async Task Given_PeerNotConnected_When_Offering_Then_Refused()
     {
         // Arrange
-        _probe.Setup(p => p.IsAliveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                          It.IsAny<CancellationToken>()))
+              .ReturnsAsync(false);
         var service = CreateService();
         var hash = HashOf(SecretOf(1));
 
@@ -198,19 +202,31 @@ public class ChannelOperationsServiceTests
     }
 
     [Fact]
-    public async Task Given_PeerNotConnected_When_Failing_Then_TheFailIsPersistedForTheReestablish()
+    public async Task Given_PeerNotConnected_When_FailingOrUpdatingFee_Then_RefusedAndNothingPersisted()
     {
-        // Arrange - a removal must never be lost; it waits for the peer
+        // Arrange - a message raised for an away peer is dropped and nothing re-sends it before N7, so a removal or a
+        // fee update persisted now would be covered by a commitment_signed the peer can't verify
         var htlc = _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(9));
-        _probe.Setup(p => p.IsAliveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                          It.IsAny<CancellationToken>()))
+              .ReturnsAsync(false);
         var service = CreateService();
 
         // Act
-        await service.FailHtlcAsync(TestChannelId, htlc.Id, new byte[292], TestContext.Current.CancellationToken);
+        var fail = service.FailHtlcAsync(TestChannelId, htlc.Id, new byte[292],
+                                         TestContext.Current.CancellationToken);
+        var fulfill = service.FulfillHtlcAsync(TestChannelId, htlc.Id, SecretOf(9),
+                                               TestContext.Current.CancellationToken);
+        var fee = service.UpdateFeeAsync(TestChannelId, 5_000, TestContext.Current.CancellationToken);
 
-        // Assert
-        Assert.Equal(["apply", "save", "publish", "schedule"], _context.Calls);
-        Assert.Equal(HtlcState.SentRemoveHtlc, _context.State.GetHtlc(HtlcDirection.Incoming, htlc.Id)!.State);
+        // Assert - the HTLC stays locked in, so the switch fails it again once the link is back
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => fail);
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => fulfill);
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => fee);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
+        Assert.Equal(HtlcState.RcvdAddAckRevocation,
+                     _context.State.GetHtlc(HtlcDirection.Incoming, htlc.Id)!.State);
     }
 
     [Fact]
