@@ -139,6 +139,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<long>("FeeRatePerKwSatoshis")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("HasInferredParams")
+                        .HasColumnType("INTEGER");
+
                     b.Property<long>("LocalChannelReserveAmountSats")
                         .HasColumnType("INTEGER");
 

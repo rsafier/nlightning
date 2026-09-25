@@ -10,7 +10,8 @@ namespace NLightning.Infrastructure.Persistence.Entities.Channel;
 /// </summary>
 /// <remarks>
 /// See <see cref="ChannelParams"/> for which side each value binds. Rows written before migration
-/// <c>SplitChannelParams</c> had one set of values; the migration copied it into both sides.
+/// <c>SplitChannelParams</c> had one set of values; the migration copied it into both sides, and
+/// <see cref="HasInferredParams"/> marks them.
 /// </remarks>
 public class ChannelConfigEntity
 {
@@ -105,6 +106,13 @@ public class ChannelConfigEntity
     public byte[]? RemoteUpfrontShutdownScript { get; set; }
 
     public byte UseScidAlias { get; set; }
+
+    /// <summary>
+    /// True for rows written before migration <c>SplitChannelParams</c>, whose Local/Remote values were partly
+    /// inferred (see <see cref="ChannelParams.HasInferredParams"/>). Set by migration
+    /// <c>FlagInferredChannelParams</c>.
+    /// </summary>
+    public bool HasInferredParams { get; set; }
 
     /// <summary>
     /// Default constructor for EF Core.

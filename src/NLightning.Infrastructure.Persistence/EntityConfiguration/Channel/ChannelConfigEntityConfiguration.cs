@@ -36,6 +36,7 @@ public static class ChannelConfigEntityConfiguration
             entity.Property(e => e.RemoteMaxHtlcValueInFlightMsat).IsRequired();
             entity.Property(e => e.FeeRatePerKwSatoshis).IsRequired();
             entity.Property(e => e.OptionAnchorOutputs).IsRequired();
+            entity.Property(e => e.HasInferredParams).IsRequired();
 
             // Nullable byte[] properties
             entity.Property(e => e.LocalUpfrontShutdownScript).IsRequired(false);

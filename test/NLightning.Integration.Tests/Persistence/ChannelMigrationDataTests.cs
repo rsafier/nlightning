@@ -56,6 +56,30 @@ public sealed class ChannelMigrationDataTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task Given_ConfigRowFromBeforeTheSplit_When_Migrated_Then_ItIsMarkedAsInferred()
+    {
+        // Arrange (the split copies one set of values into both sides, which is only approximate: a non-initiator
+        // announced the node's htlc_minimum_msat, and an initiator never stored the peer's limits)
+        await using var context = await CreateContextAtAsync(BeforeSplitChannelParams);
+        await InsertChannelAsync(context);
+        await context.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO "ChannelConfigs" ("ChannelId", "MinimumDepth", "ToSelfDelay", "MaxAcceptedHtlcs",
+                "LocalDustLimitAmountSats", "RemoteDustLimitAmountSats", "HtlcMinimumMsat", "ChannelReserveAmountSats",
+                "MaxHtlcAmountInFlight", "FeeRatePerKwSatoshis", "OptionAnchorOutputs", "UseScidAlias")
+            VALUES ({0}, 3, 144, 30, 354, 546, 1000, 10000, 800000000, 253, 0, 0)
+            """, [s_channelId], TestContext.Current.CancellationToken);
+
+        // Act
+        await context.GetService<IMigrator>().MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Assert
+        var config = await context.ChannelConfigs.AsNoTracking()
+                                  .SingleAsync(TestContext.Current.CancellationToken);
+        Assert.True(config.HasInferredParams);
+    }
+
+    [Fact]
     public async Task Given_ConfigRowWithoutReserve_When_SplitChannelParamsRuns_Then_ReservesAreZero()
     {
         // Arrange
