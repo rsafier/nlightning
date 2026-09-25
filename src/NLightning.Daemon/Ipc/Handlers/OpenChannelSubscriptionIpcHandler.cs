@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Ipc.Handlers;
 
-using Daemon.Handlers;
 using Daemon.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
@@ -44,12 +43,11 @@ public class OpenChannelSubscriptionIpcHandler : IIpcCommandHandler
             // Get the client handler
             using var scope = _serviceProvider.CreateScope();
             var openChannelClientSubscriptionHandler =
-                scope.ServiceProvider.GetService(
-                        typeof(IClientCommandHandler<OpenChannelClientSubscriptionRequest,
-                            OpenChannelClientSubscriptionResponse>)) as
-                    OpenChannelClientSubscriptionHandler ??
+                scope.ServiceProvider
+                     .GetService<IClientCommandHandler<OpenChannelClientSubscriptionRequest,
+                          OpenChannelClientSubscriptionResponse>>() ??
                 throw new InvalidOperationException(
-                    $"Unable to get service {nameof(OpenChannelClientSubscriptionHandler)}");
+                    $"Unable to get the client command handler for {nameof(OpenChannelClientSubscriptionRequest)}");
 
             var clientResponse = await openChannelClientSubscriptionHandler.HandleAsync(request.ToClientRequest(), ct);
 
@@ -68,7 +66,7 @@ public class OpenChannelSubscriptionIpcHandler : IIpcCommandHandler
         catch (ClientException ce)
         {
             _logger.LogError(ce, "Error while handling OpenChannelSubscription");
-            return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.Message, ce.Message);
+            return IpcErrorFactory.CreateErrorEnvelope(envelope, ce.ErrorCode, ce.Message);
         }
         catch (InvalidOperationException oe)
         {

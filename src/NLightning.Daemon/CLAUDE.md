@@ -19,7 +19,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 ## Adding an IPC command
 1. Add an enum value in `src/NLightning.Domain/Client/Enums/ClientCommand.cs`. Append only: the values go over the wire.
 2. Add `[MessagePackObject]` `XIpcRequest`/`XIpcResponse` in `src/NLightning.Transport.Ipc/Requests|Responses`. Use append-only `[Key(n)]`. If a new Domain value object crosses the wire, add a formatter in `MessagePack/Formatters` and register it in `NLightningFormatterResolver`.
-3. Add `internal sealed XIpcHandler : IIpcCommandHandler` in `Ipc/Handlers/`, using `NodeInfoIpcHandler.cs` as the template. Deserialize `envelope.Payload`. Return an envelope that copies Version, Command and CorrelationId with `Kind = IpcEnvelopeKind.Response`. On failure, return `IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.X, msg)` with a code from `Domain/Client/Constants/ErrorCodes.cs`. Use `ce.ErrorCode` for a `ClientException`, not `ce.Message`; the existing OpenChannel handlers get this wrong.
+3. Add `internal sealed XIpcHandler : IIpcCommandHandler` in `Ipc/Handlers/`, using `NodeInfoIpcHandler.cs` as the template. Deserialize `envelope.Payload`. Return an envelope that copies Version, Command and CorrelationId with `Kind = IpcEnvelopeKind.Response`. On failure, return `IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.X, msg)` with a code from `Domain/Client/Constants/ErrorCodes.cs`. Use `ce.ErrorCode` for a `ClientException`, not `ce.Message`. Resolve client handlers by their `IClientCommandHandler<TReq, TResp>` interface, never by casting to the concrete type.
 4. Register it with `services.AddSingleton<IIpcCommandHandler, XIpcHandler>()` in `NodeServiceExtensions`. The router does `ToDictionary(h => h.Command)`, so a duplicate command throws at resolve time.
 5. Long-running or awaited flows go in a scoped `IClientCommandHandler` in `Handlers/`, registered with `AddScoped`. The IPC handler calls `CreateScope()` and resolves it per request. Follow the `TaskCompletionSource(RunContinuationsAsynchronously)` + event subscribe/`finally` unsubscribe pattern used in `OpenChannelClientHandler`.
 6. On the client side, add a method to `src/NLightning.Client/Ipc/NamedPipeIpcClient.cs`, a printer, a case in `Program.cs` and help text in `ClientUtils.ShowUsage`.
@@ -39,7 +39,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - `test/NLightning.Daemon.Tests` (xUnit v3 + Moq, `Given_X_When_Y_Then_Z`). **`dotnet test` discovers 0 tests** because the csproj lacks `xunit.runner.visualstudio`, so CI never runs these tests. Run them with:
   - `dotnet run --project test/NLightning.Daemon.Tests` (all 23 tests)
   - `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'`, or `-class <FQN>`
-- InternalsVisibleTo (`AssemblyInfo.cs`) lists the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`, but not `NLightning.Daemon.Tests`. That is why the internal IPC stack (router, framing, auth, handlers) has no unit tests.
+- InternalsVisibleTo (`AssemblyInfo.cs`) lists `NLightning.Daemon.Tests` (plus the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`). Moq cannot proxy `ILogger<InternalType>` (strong-named Logging.Abstractions), so use `NullLogger<T>.Instance` for internal handlers.
 - Docker end-to-end tests (`test/NLightning.Integration.Tests/Docker/{AbcNetworkTests,ChannelOpeningFlowTests}.cs`) rebuild the DI graph **by hand** instead of calling `ConfigureNltgServices`. Mirror any new registration there. CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`. Format gate: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Run the node: `dotnet run --project src/NLightning.Daemon -- --network regtest`. The first run writes `~/.nltg/regtest/appsettings.json`; set the Bitcoin RPC/ZMQ settings and `Database:RunMigrations=true` there.
@@ -50,7 +50,6 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - Creating a new key requires reachable bitcoind RPC (for birth height). `--password` is visible in the process list.
 - On Unix the IPC pipe is a Unix socket at `{configPath}/nltg.ipc` (`NodeConstants.NamedPipeFile`). Each connection carries one request and one response, with a native-endian 4-byte length prefix and a 10MB cap. The cookie at `{configPath}/nltg.cookie` is never rotated.
 - `NamedPipeIpcService.StopAsync` throws if `StartAsync` never ran. Linux daemonization calls `fork()` after the runtime has started.
-- `OpenChannel*IpcHandler` resolves its handler with `as ConcreteType`, so registering a decorator or substitute makes the cast return null.
 
 ## Onion routing (BOLT 4) hooks
 There is no onion code here yet. When it lands:
