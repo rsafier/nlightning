@@ -30,8 +30,12 @@ public class PeerCommunicationService : IPeerCommunicationService
     private readonly IServiceProvider _serviceProvider;
     private readonly IMessageFactory _messageFactory;
     private readonly TaskCompletionSource<bool> _pingPongTcs = new();
+    private readonly Lock _pingStartLock = new();
 
-    private bool _isInitialized;
+    private volatile bool _isInitialized;
+    private bool _initSent;
+    private bool _pingStarted;
+    private int _disconnecting;
     private CancellationTokenSource? _initWaitCancellationTokenSource;
 
     /// <inheritdoc />
@@ -103,13 +107,16 @@ public class PeerCommunicationService : IPeerCommunicationService
             throw new ConnectionException($"Failed to send init message to peer {PeerCompactPubKey}", e);
         }
 
-        // Set up ping service to keep connection alive
+        // Set up ping service to keep connection alive (it only starts once the peer's init has arrived too)
         if (!_cts.IsCancellationRequested)
         {
             if (!_messageService.IsConnected)
                 throw new ConnectionException($"Failed to connect to peer {PeerCompactPubKey}");
 
-            SetupPingPongService();
+            lock (_pingStartLock)
+                _initSent = true;
+
+            TryStartPingPongService();
         }
     }
 
@@ -151,11 +158,22 @@ public class PeerCommunicationService : IPeerCommunicationService
     /// <inheritdoc />
     public void Disconnect(Exception? exception = null)
     {
+        // Only the first caller disconnects, so DisconnectEvent fires once and we never touch a disposed _cts
+        if (Interlocked.Exchange(ref _disconnecting, 1) == 1)
+            return;
+
         try
         {
             SendExceptionMessage(exception).GetAwaiter().GetResult();
 
+            bool pingStarted;
+            lock (_pingStartLock)
+                pingStarted = _pingStarted;
+
             _ = _cts.CancelAsync();
+            if (!pingStarted)
+                _pingPongTcs.TrySetResult(true);
+
             _logger.LogTrace("Waiting for ping service to stop for peer {peer}", PeerCompactPubKey);
             _pingPongTcs.Task.Wait(TimeSpan.FromSeconds(5));
             _logger.LogTrace("Ping service stopped for peer {peer}", PeerCompactPubKey);
@@ -164,6 +182,24 @@ public class PeerCommunicationService : IPeerCommunicationService
         {
             DisconnectEvent?.Invoke(this, exception);
         }
+    }
+
+    /// <summary>
+    /// Starts the ping loop once both our init has been sent and the peer's init has been received (BOLT 1: no other
+    /// message before init in either direction), so the first ping is actually sent and its pong timeout is real.
+    /// </summary>
+    private void TryStartPingPongService()
+    {
+        lock (_pingStartLock)
+        {
+            if (_pingStarted || !_initSent || !_isInitialized || Volatile.Read(ref _disconnecting) == 1
+             || _cts.IsCancellationRequested)
+                return;
+
+            _pingStarted = true;
+        }
+
+        SetupPingPongService();
     }
 
     private void SetupPingPongService()
@@ -222,6 +258,10 @@ public class PeerCommunicationService : IPeerCommunicationService
         // Forward the message to subscribers
         MessageReceived?.Invoke(this, message);
 
+        // Start pinging once the peer's init was accepted by the subscribers (they disconnect on a bad init)
+        if (message.Type == MessageTypes.Init)
+            TryStartPingPongService();
+
         // Handle ping messages internally
         if (_isInitialized && message.Type == MessageTypes.Ping)
         {
@@ -259,7 +299,7 @@ public class PeerCommunicationService : IPeerCommunicationService
         // the one raising this event.
         ExceptionRaised?.Invoke(this, e);
 
-        if (_cts.IsCancellationRequested)
+        if (Volatile.Read(ref _disconnecting) == 1)
             return;
 
         _logger.LogWarning(e, "Disconnecting peer {peer} because of a ping/pong failure", PeerCompactPubKey);
@@ -326,7 +366,7 @@ public class PeerCommunicationService : IPeerCommunicationService
         ExceptionRaised?.Invoke(this, exception);
 
         // Disconnect if not already disconnecting
-        if (mustDisconnect && !_cts.IsCancellationRequested)
+        if (mustDisconnect && Volatile.Read(ref _disconnecting) == 0)
         {
             _logger.LogWarning(exception, "We're disconnecting peer {peer} because of an exception",
                                PeerCompactPubKey);
@@ -340,6 +380,9 @@ public class PeerCommunicationService : IPeerCommunicationService
         _messageService.OnMessageReceived -= HandleMessageReceived;
         _messageService.OnExceptionRaised -= HandleExceptionRaised;
         _pingPongService.DisconnectEvent -= HandlePingPongDisconnect;
+
+        // A Disconnect after Dispose must not touch the disposed _cts
+        Interlocked.Exchange(ref _disconnecting, 1);
 
         _cts.Dispose();
         _messageService.Dispose();

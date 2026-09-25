@@ -1,14 +1,19 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Tests.Node.Services;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node;
+using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Infrastructure.Node.Services;
+using Infrastructure.Protocol.Services;
 
 public class PeerCommunicationServiceTests
 {
@@ -104,5 +109,115 @@ public class PeerCommunicationServiceTests
         _messageServiceMock.Verify(
             x => x.SendMessageAsync(It.Is<PongMessage>(p => p.Payload.BytesLength == 65531), It.IsAny<bool>(),
                                     It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_RealPingPongService_When_PeerInitArrivesAfterInitialize_Then_PeerIsNotDisconnected()
+    {
+        // Arrange
+        var networkTimeout = TimeSpan.FromMilliseconds(300);
+        _messageFactoryMock.Setup(x => x.CreatePingMessage()).Returns(() => new PingMessage());
+        _messageFactoryMock.Setup(x => x.CreateInitMessage())
+                           .Returns(new InitMessage(new InitPayload(new FeatureSet())));
+        SetupUnitOfWork();
+        var pingPongService = new PingPongService(_messageFactoryMock.Object,
+                                                  Options.Create(new NodeOptions { NetworkTimeout = networkTimeout }));
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, pingPongService, _serviceProviderMock.Object);
+
+        // The peer answers every ping we send with a matching pong
+        _messageServiceMock
+           .Setup(x => x.SendMessageAsync(It.IsAny<PingMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+           .Callback((IMessage ping, bool _, CancellationToken _) =>
+                         _ = Task.Run(() => RaiseMessage(
+                                          new PongMessage(((PingMessage)ping).Payload.NumPongBytes))))
+           .Returns(Task.CompletedTask);
+
+        var disconnectTcs = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.DisconnectEvent += (_, e) => disconnectTcs.TrySetResult(e);
+
+        // Act
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
+        var completed = await Task.WhenAny(disconnectTcs.Task,
+                                           Task.Delay(networkTimeout * 4, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.NotSame(disconnectTcs.Task, completed);
+        _messageServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<PingMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        service.Disconnect();
+    }
+
+    [Fact]
+    public async Task Given_PeerInitNotReceived_When_Initialized_Then_NoPingIsStarted()
+    {
+        // Arrange
+        _messageFactoryMock.Setup(x => x.CreateInitMessage())
+                           .Returns(new InitMessage(new InitPayload(new FeatureSet())));
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, _pingPongServiceMock.Object,
+                                                   _serviceProviderMock.Object);
+
+        // Act
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+
+        // Assert
+        _pingPongServiceMock.Verify(x => x.StartPingAsync(It.IsAny<CancellationToken>()), Times.Never);
+
+        // Act
+        RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
+
+        // Assert
+        _pingPongServiceMock.Verify(x => x.StartPingAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_ConcurrentDisconnects_When_Disconnecting_Then_DisconnectEventFiresOnce()
+    {
+        // Arrange
+        var service = CreateInitializedService();
+        var disconnectCount = 0;
+        service.DisconnectEvent += (_, _) => Interlocked.Increment(ref disconnectCount);
+
+        // Act
+        Parallel.For(0, 8, _ => service.Disconnect(new ConnectionException("test")));
+
+        // Assert
+        Assert.Equal(1, disconnectCount);
+    }
+
+    [Fact]
+    public void Given_DisposedService_When_Disconnecting_Then_NothingThrowsAndNoEventFires()
+    {
+        // Arrange
+        var service = CreateInitializedService();
+        var disconnectRaised = false;
+        service.DisconnectEvent += (_, _) => disconnectRaised = true;
+        service.Dispose();
+
+        // Act
+        var exception = Record.Exception(() => service.Disconnect());
+
+        // Assert
+        Assert.Null(exception);
+        Assert.False(disconnectRaised);
+    }
+
+    private void SetupUnitOfWork()
+    {
+        var unitOfWorkMock = new Mock<IUnitOfWork> { DefaultValue = DefaultValue.Mock };
+        var scopedProviderMock = new Mock<IServiceProvider>();
+        scopedProviderMock.Setup(x => x.GetService(typeof(IUnitOfWork))).Returns(unitOfWorkMock.Object);
+        var scopeMock = new Mock<IServiceScope>();
+        scopeMock.SetupGet(x => x.ServiceProvider).Returns(scopedProviderMock.Object);
+        var scopeFactoryMock = new Mock<IServiceScopeFactory>();
+        scopeFactoryMock.Setup(x => x.CreateScope()).Returns(scopeMock.Object);
+        _serviceProviderMock.Setup(x => x.GetService(typeof(IServiceScopeFactory))).Returns(scopeFactoryMock.Object);
     }
 }
