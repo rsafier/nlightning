@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using NLightning.Tests.Utils.Channels;
 
@@ -14,9 +15,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Protocol.Interfaces;
-using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
-using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Persistence.Contexts;
@@ -89,13 +88,17 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         return new NLightningDbContext(_options, new DatabaseTypeProvider(DatabaseType.Sqlite));
     }
 
-    public static ChannelModel CreateChannel(bool isInitiator, ICollection<Htlc>? localOffered = null,
-                                             ICollection<Htlc>? localFulfilled = null,
-                                             ICollection<Htlc>? localOld = null,
-                                             ICollection<Htlc>? remoteOffered = null,
-                                             ICollection<Htlc>? remoteFulfilled = null,
-                                             ICollection<Htlc>? remoteOld = null,
-                                             WalletAddressModel? changeAddress = null,
+    /// <summary>
+    /// A fresh DbContext over the same database with <paramref name="interceptors"/> added (crash injection).
+    /// </summary>
+    public NLightningDbContext CreateDbContext(params IInterceptor[] interceptors)
+    {
+        var options = new DbContextOptionsBuilder<NLightningDbContext>(_options).AddInterceptors(interceptors)
+                                                                                 .Options;
+        return new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite));
+    }
+
+    public static ChannelModel CreateChannel(bool isInitiator, WalletAddressModel? changeAddress = null,
                                              ChannelState state = ChannelState.Open,
                                              FeatureSupport useScidAlias = FeatureSupport.No,
                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
@@ -133,26 +136,12 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         return new ChannelModel(config, channelId, commitmentNumber, fundingOutput, isInitiator, null, null,
                                 LightningMoney.Satoshis(600_000), localKeySet, 5,
                                 localRevocationNumber ?? localCommitmentNumber, LightningMoney.Satoshis(400_000),
-                                remoteKeySet, 7, RemoteNodeId, remoteRevocationNumber ?? remoteCommitmentNumber, state, ChannelVersion.V1, localOffered, localFulfilled,
-                                localOld, remoteOffered, remoteFulfilled, remoteOld,
+                                remoteKeySet, 7, RemoteNodeId, remoteRevocationNumber ?? remoteCommitmentNumber, state, ChannelVersion.V1,
                                 localCommitmentNumber: localCommitmentNumber,
                                 remoteCommitmentNumber: remoteCommitmentNumber)
         {
             ChangeAddress = changeAddress
         };
-    }
-
-    public static Htlc CreateHtlc(ChannelId channelId, ulong id, HtlcDirection direction, HtlcState state,
-                                  CompactSignature? signature = null)
-    {
-        var paymentHash = new byte[32];
-        paymentHash[0] = (byte)(id + 1);
-        var onion = new byte[1366];
-        var amount = LightningMoney.MilliSatoshis(10_000 + id);
-        var payload = new UpdateAddHtlcPayload(amount, channelId, 500 + (uint)id, id, paymentHash, onion);
-
-        return new Htlc(amount, new UpdateAddHtlcMessage(payload), direction, 500 + (uint)id, id, 42 + id,
-                        paymentHash, state, null, signature);
     }
 
     public async ValueTask DisposeAsync()

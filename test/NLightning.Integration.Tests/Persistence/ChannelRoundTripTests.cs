@@ -124,13 +124,13 @@ public class ChannelRoundTripTests
         // Act
         await using (var updateContext = db.CreateDbContext())
         {
-            var repository = new ChannelDbRepository(updateContext, db.MessageSerializer, db.Sha256);
+            var repository = new ChannelDbRepository(updateContext, db.Sha256);
             await repository.UpdateAsync(channel);
             await updateContext.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
         await using var readContext = db.CreateDbContext();
-        var reloaded = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256)
                           .GetByIdAsync(channel.ChannelId);
 
         // Assert
@@ -143,13 +143,13 @@ public class ChannelRoundTripTests
     {
         await using (var writeContext = db.CreateDbContext())
         {
-            var repository = new ChannelDbRepository(writeContext, db.MessageSerializer, db.Sha256);
+            var repository = new ChannelDbRepository(writeContext, db.Sha256);
             await repository.AddAsync(channel);
             await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
         }
 
         await using var readContext = db.CreateDbContext();
-        var readRepository = new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256);
+        var readRepository = new ChannelDbRepository(readContext, db.Sha256);
         return await readRepository.GetByIdAsync(channel.ChannelId)
             ?? throw new InvalidOperationException("Channel was not reloaded");
     }
@@ -180,9 +180,7 @@ public class ChannelRoundTripTests
         };
 
         var localKeySet = new ChannelKeySetModel(9, s_key1, s_key2, s_key3, s_key4, s_key5, s_key6, 281474976710650);
-        var remoteSecret = Enumerable.Repeat((byte)0x5A, 32).ToArray();
-        var remoteKeySet = new ChannelKeySetModel(0, s_key7, s_key8, s_key6, s_key5, s_key4, s_key3, 281474976710651,
-                                                  remoteSecret);
+        var remoteKeySet = new ChannelKeySetModel(0, s_key7, s_key8, s_key6, s_key5, s_key4, s_key3, 281474976710651);
 
         // BOLT 3: the obscuring factor is SHA256(opener payment_basepoint || accepter payment_basepoint). The
         // commitment numbers are stored on their own (NL-188), so give each side a distinct one.
@@ -201,24 +199,12 @@ public class ChannelRoundTripTests
 
         var sentSignature = new CompactSignature(Enumerable.Repeat((byte)0x31, 64).ToArray());
         var receivedSignature = new CompactSignature(Enumerable.Repeat((byte)0x32, 64).ToArray());
-        var htlcSignature = new CompactSignature(Enumerable.Repeat((byte)0x33, 64).ToArray());
 
-        return new ChannelModel(channelParams, channelId, commitmentNumber, fundingOutput, isInitiator, sentSignature,
+        var channel = new ChannelModel(channelParams, channelId, commitmentNumber, fundingOutput, isInitiator, sentSignature,
                                 receivedSignature, localBalance ?? LightningMoney.MilliSatoshis(600_000_123),
                                 localKeySet, 11, localRevocationNumber,
                                 remoteBalance ?? LightningMoney.MilliSatoshis(399_999_877), remoteKeySet, 13, s_key2,
                                 3, ChannelState.Open, ChannelVersion.V1,
-                                [SqliteDbTestContext.CreateHtlc(channelId, 10, HtlcDirection.Outgoing, HtlcState.Offered,
-                                                                htlcSignature)],
-                                [SqliteDbTestContext.CreateHtlc(channelId, 9, HtlcDirection.Outgoing,
-                                                                HtlcState.Fulfilled)],
-                                [SqliteDbTestContext.CreateHtlc(channelId, 8, HtlcDirection.Outgoing, HtlcState.Failed)],
-                                [SqliteDbTestContext.CreateHtlc(channelId, 12, HtlcDirection.Incoming,
-                                                                HtlcState.Offered)],
-                                [SqliteDbTestContext.CreateHtlc(channelId, 11, HtlcDirection.Incoming,
-                                                                HtlcState.Fulfilled)],
-                                [SqliteDbTestContext.CreateHtlc(channelId, 10, HtlcDirection.Incoming,
-                                                                HtlcState.Expired)],
                                 localCommitmentNumber: localRevocationNumber + 1, remoteCommitmentNumber: 3)
         {
             ShortChannelId = new ShortChannelId(812_345, 678, 3),
@@ -227,6 +213,28 @@ public class ChannelRoundTripTests
             LocalAliases = [new ShortChannelId(16_000_001, 1, 1), new ShortChannelId(16_000_002, 2, 2)],
             RemoteAlias = new ShortChannelId(16_000_003, 3, 3)
         };
+
+        // The commitment state (N5): HTLCs both ways, one locked in, and an unacked commitment_signed of ours
+        var driver = new CommitmentDanceDriver(channelId, channel.ToCommitmentParams(),
+                                               channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
+                                               usCommitmentNumber: channel.LocalCommitmentNumber,
+                                               peerCommitmentNumber: channel.RemoteCommitmentNumber);
+        Assert.NotNull(driver.TryUsAdd(4_000_000));
+        Assert.NotNull(driver.TryUsCommit());
+        Assert.NotNull(driver.TryDeliverRevokeToUs());
+        Assert.NotNull(driver.TryPeerCommit());
+        Assert.NotNull(driver.TryPeerAdd());
+        Assert.NotNull(driver.TryUsAdd(3_000_000));
+        Assert.NotNull(driver.TryUsCommit());
+        channel.UpdateCommitments(driver.Us, new ChannelStateExtras
+        {
+            SentCommitDiff = CommitmentDanceDriver.DiffFor(driver.Us.RemoteNextCommit!.Commit.Number),
+            LastSent = LastSentCommitmentMessage.CommitmentSigned
+        });
+        channel.MarkErrorSent(new byte[] { 0x00, 0x11, 0x42 });
+        channel.MarkDataLossDetected();
+
+        return channel;
     }
 
     private static void AssertChannelsEqual(ChannelModel expected, ChannelModel actual)
@@ -270,9 +278,6 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.LocalNextHtlcId, actual.LocalNextHtlcId);
         Assert.Equal(expected.LocalRevocationNumber, actual.LocalRevocationNumber);
         Assert.Equal(expected.LocalAliases!.OrderBy(a => a.ToString()), actual.LocalAliases!.OrderBy(a => a.ToString()));
-        AssertHtlcsEqual(expected.LocalOfferedHtlcs, actual.LocalOfferedHtlcs);
-        AssertHtlcsEqual(expected.LocalFulfilledHtlcs, actual.LocalFulfilledHtlcs);
-        AssertHtlcsEqual(expected.LocalOldHtlcs, actual.LocalOldHtlcs);
 
         // Remote side
         Assert.Equal(expected.RemoteAlias, actual.RemoteAlias);
@@ -281,9 +286,14 @@ public class ChannelRoundTripTests
         AssertKeySetsEqual(expected.RemoteKeySet!, actual.RemoteKeySet);
         Assert.Equal(expected.RemoteNextHtlcId, actual.RemoteNextHtlcId);
         Assert.Equal(expected.RemoteRevocationNumber, actual.RemoteRevocationNumber);
-        AssertHtlcsEqual(expected.RemoteOfferedHtlcs, actual.RemoteOfferedHtlcs);
-        AssertHtlcsEqual(expected.RemoteFulfilledHtlcs, actual.RemoteFulfilledHtlcs);
-        AssertHtlcsEqual(expected.RemoteOldHtlcs, actual.RemoteOldHtlcs);
+
+        // Commitment state (N5-T1/T2) and failure flags
+        Assert.NotNull(actual.Commitments);
+        CommitmentsAssert.Equal(expected.Commitments!, actual.Commitments);
+        Assert.Equal(expected.SentCommitDiff?.ToArray(), actual.SentCommitDiff?.ToArray());
+        Assert.Equal(expected.LastSentCommitmentMessage, actual.LastSentCommitmentMessage);
+        Assert.Equal(expected.ErrorSent?.ToArray(), actual.ErrorSent?.ToArray());
+        Assert.Equal(expected.DataLossDetected, actual.DataLossDetected);
     }
 
     private static void AssertKeySetsEqual(ChannelKeySetModel expected, ChannelKeySetModel actual)
@@ -296,30 +306,5 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.HtlcCompactBasepoint, actual.HtlcCompactBasepoint);
         Assert.Equal(expected.CurrentPerCommitmentCompactPoint, actual.CurrentPerCommitmentCompactPoint);
         Assert.Equal(expected.CurrentPerCommitmentIndex, actual.CurrentPerCommitmentIndex);
-#pragma warning disable CS0618 // legacy column round-trip only; the peer's secrets live in RemoteShachains
-        Assert.Equal(expected.LastRevealedPerCommitmentSecret, actual.LastRevealedPerCommitmentSecret);
-#pragma warning restore CS0618
-    }
-
-    private static void AssertHtlcsEqual(ICollection<Htlc>? expected, ICollection<Htlc>? actual)
-    {
-        Assert.NotNull(expected);
-        Assert.NotNull(actual);
-        Assert.Equal(expected.Count, actual.Count);
-        foreach (var (e, a) in expected.OrderBy(h => h.Id).Zip(actual.OrderBy(h => h.Id)))
-        {
-            Assert.Equal(e.Id, a.Id);
-            Assert.Equal(e.Amount, a.Amount);
-            Assert.Equal(e.PaymentHash, a.PaymentHash);
-            Assert.Equal(e.PaymentPreimage, a.PaymentPreimage);
-            Assert.Equal(e.CltvExpiry, a.CltvExpiry);
-            Assert.Equal(e.State, a.State);
-            Assert.Equal(e.Direction, a.Direction);
-            Assert.Equal(e.ObscuredCommitmentNumber, a.ObscuredCommitmentNumber);
-            Assert.Equal(e.Signature, a.Signature);
-            Assert.Equal(e.AddMessage.Payload.Id, a.AddMessage.Payload.Id);
-            Assert.Equal(e.AddMessage.Payload.Amount, a.AddMessage.Payload.Amount);
-            Assert.Equal(e.AddMessage.Payload.PaymentHash, a.AddMessage.Payload.PaymentHash);
-        }
     }
 }

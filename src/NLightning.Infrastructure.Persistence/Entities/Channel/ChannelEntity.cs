@@ -125,6 +125,34 @@ public class ChannelEntity
     /// </summary>
     public ShortChannelId? RemoteAlias { get; set; }
 
+    /// <summary>
+    /// The peer's per-commitment point for its next commitment (<c>RemoteCommitmentNumber + 1</c>), from
+    /// <c>channel_ready</c> or the last <c>revoke_and_ack</c> (NL-232). The point of its current commitment is on the
+    /// remote current <see cref="CommitmentEntity"/>.
+    /// </summary>
+    public CompactPubKey? RemoteNextPerCommitmentPoint { get; set; }
+
+    /// <summary>
+    /// The wire bytes of the updates and <c>commitment_signed</c> we sent last, kept until the peer revokes and
+    /// retransmitted verbatim on reestablish (plan decision D4).
+    /// </summary>
+    public byte[]? SentCommitDiff { get; set; }
+
+    /// <summary>
+    /// <c>LastSentCommitmentMessage</c>: which of <c>commitment_signed</c>/<c>revoke_and_ack</c> we sent last.
+    /// </summary>
+    public byte LastSentOrder { get; set; }
+
+    /// <summary>
+    /// The <c>error</c> message we sent when we failed the channel (re-sent on reconnection).
+    /// </summary>
+    public byte[]? ErrorSent { get; set; }
+
+    /// <summary>
+    /// True once <c>channel_reestablish</c> proved that we lost data: never sign or broadcast our commitment again.
+    /// </summary>
+    public bool DataLossDetected { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 

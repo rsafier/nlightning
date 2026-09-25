@@ -63,7 +63,7 @@ public class FundingConfirmedAliasPersistenceTests
         var aliases = channel.LocalAliases.ToList();
         Assert.Equal(fresh.Take(aliases.Count), aliases);
         await using var readContext = db.CreateDbContext();
-        var reloaded = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256)
                           .GetByIdAsync(channel.ChannelId);
         Assert.NotNull(reloaded?.LocalAliases);
         Assert.Equal(aliases.ToHashSet(), reloaded.LocalAliases.ToHashSet());
@@ -91,7 +91,7 @@ public class FundingConfirmedAliasPersistenceTests
         Assert.NotNull(channel.LocalAliases);
         Assert.Equal(new HashSet<ShortChannelId> { s_firstAlias, s_secondAlias }, channel.LocalAliases.ToHashSet());
         await using var readContext = db.CreateDbContext();
-        var reloaded = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256)
                           .GetByIdAsync(channel.ChannelId);
         Assert.Equal(ChannelState.ReadyForUs, reloaded?.State);
         Assert.Equal(new HashSet<ShortChannelId> { s_firstAlias, s_secondAlias }, reloaded!.LocalAliases!.ToHashSet());
@@ -100,7 +100,7 @@ public class FundingConfirmedAliasPersistenceTests
     private static async Task AddChannelAsync(SqliteDbTestContext db, ChannelModel channel)
     {
         await using var context = db.CreateDbContext();
-        await new ChannelDbRepository(context, db.MessageSerializer, db.Sha256).AddAsync(channel);
+        await new ChannelDbRepository(context, db.Sha256).AddAsync(channel);
         await context.SaveChangesAsync(TestContext.Current.CancellationToken);
     }
 
@@ -116,7 +116,7 @@ public class FundingConfirmedAliasPersistenceTests
               .Returns(SqliteDbTestContext.RemoteNodeId);
 
         using var unitOfWork = new UnitOfWork(db.CreateDbContext(), new Mock<ILogger<UnitOfWork>>().Object,
-                                              db.MessageSerializer, db.Sha256, new UtxoMemoryRepository());
+                                              db.Sha256, new UtxoMemoryRepository());
         var handler = new ScriptedAliasHandler(candidates, memoryRepository.Object, signer.Object, unitOfWork);
 
         await handler.HandleAsync(channel);

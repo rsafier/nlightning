@@ -34,9 +34,6 @@ public static class ChannelKeySetEntityConfiguration
             entity.Property(e => e.HtlcBasepoint).IsRequired();
             entity.Property(e => e.CurrentPerCommitmentPoint).IsRequired();
 
-            // Nullable byte[] properties
-            entity.Property(e => e.LastRevealedPerCommitmentSecret).IsRequired(false);
-
             if (databaseType == DatabaseType.MicrosoftSql)
                 OptimizeConfigurationForSqlServer(entity);
         });

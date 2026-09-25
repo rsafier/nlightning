@@ -4,7 +4,6 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Crypto.Hashes;
-using Domain.Serialization.Interfaces;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
 using Infrastructure.Repositories.Database.Bitcoin;
@@ -123,7 +122,7 @@ public class UnitOfWorkUtxoTests
 
     private static UnitOfWork CreateUnitOfWork(NLightningDbContext context, UtxoMemoryRepository memoryRepository)
     {
-        return new UnitOfWork(context, new Mock<ILogger<UnitOfWork>>().Object,
-                              new Mock<IMessageSerializer>().Object, new Mock<ISha256>().Object, memoryRepository);
+        return new UnitOfWork(context, new Mock<ILogger<UnitOfWork>>().Object, new Mock<ISha256>().Object,
+                              memoryRepository);
     }
 }
