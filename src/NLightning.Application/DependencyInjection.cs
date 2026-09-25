@@ -7,6 +7,7 @@ namespace NLightning.Application;
 using Channels.Handlers;
 using Channels.Handlers.Interfaces;
 using Channels.Managers;
+using Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Node.Interfaces;
@@ -38,6 +39,9 @@ public static class DependencyInjection
                                       loggerFactory.CreateLogger<ChannelManager>(), lightningSigner, sp);
         });
         services.AddSingleton<IMessageFactory, MessageFactory>();
+        services.AddSingleton<CommitmentSigningService>();
+        services.AddSingleton<ICommitmentSigner>(sp => sp.GetRequiredService<CommitmentSigningService>());
+        services.AddSingleton<ICommitmentVerifier>(sp => sp.GetRequiredService<CommitmentSigningService>());
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers
