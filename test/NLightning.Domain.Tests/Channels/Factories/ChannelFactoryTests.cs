@@ -1,21 +1,33 @@
+using NLightning.Tests.Utils.Mocks;
+
 namespace NLightning.Domain.Tests.Channels.Factories;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Channels.Enums;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 
 public class ChannelFactoryTests
 {
     private static readonly CompactPubKey s_remoteNodeId =
         Convert.FromHexString("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa");
+
+    private static readonly ChannelId s_temporaryChannelId =
+        Convert.FromHexString("0101010101010101010101010101010101010101010101010101010101010101");
 
     private readonly ChannelFactory _channelFactory =
         new(new Mock<IChannelIdFactory>().Object, new Mock<IChannelOpenValidator>().Object,
@@ -106,6 +118,77 @@ public class ChannelFactoryTests
         Assert.False(exception is ChannelErrorException && (exception.Message.Contains("to cover fees")
                                                          || exception.Message.Contains("Push amount")),
                      exception?.Message);
+    }
+
+    [Fact]
+    public async Task
+        Given_ChannelTypeWithoutUpfrontShutdownScriptAndOptionNotNegotiated_When_CreatingChannelAsNonInitiator_Then_ChannelIsCreated()
+    {
+        // Arrange (BOLT 2: upfront_shutdown_script is only required when option_upfront_shutdown_script is negotiated)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = FeatureSupport.No };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                              s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(s_temporaryChannelId, channel.ChannelId);
+        Assert.Equal(ChannelState.V1Opening, channel.State);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.Compulsory)]
+    public async Task
+        Given_OptionUpfrontShutdownScriptNegotiatedAndScriptMissing_When_CreatingChannelAsNonInitiator_Then_ChannelErrorCarriesTemporaryChannelId(
+            FeatureSupport upfrontShutdownScript)
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = upfrontShutdownScript };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelFactory.CreateChannelV1AsNonInitiatorAsync(message, negotiatedFeatures,
+                                                                                    s_remoteNodeId));
+
+        // Assert
+        Assert.Contains("Upfront shutdown script", exception.Message);
+        Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+    }
+
+    private static ChannelFactory CreateNonInitiatorChannelFactory()
+    {
+        var signerMock = new Mock<ILightningSigner>();
+        var basepoints = new ChannelBasepoints(s_remoteNodeId, s_remoteNodeId, s_remoteNodeId, s_remoteNodeId,
+                                               s_remoteNodeId);
+        var firstPerCommitmentPoint = s_remoteNodeId;
+        signerMock.Setup(s => s.CreateNewChannel(out basepoints, out firstPerCommitmentPoint)).Returns(0);
+
+        var feeServiceMock = new Mock<IFeeService>();
+        feeServiceMock.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                      .ReturnsAsync(LightningMoney.Satoshis(1_000));
+
+        return new ChannelFactory(new Mock<IChannelIdFactory>().Object, new Mock<IChannelOpenValidator>().Object,
+                                  feeServiceMock.Object, signerMock.Object,
+                                  new NodeOptions { MinimumChannelSize = LightningMoney.Satoshis(1_000) },
+                                  new FakeSha256());
+    }
+
+    private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv)
+    {
+        var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags((byte)0),
+                                              s_temporaryChannelId, LightningMoney.Satoshis(1_000), s_remoteNodeId,
+                                              LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
+                                              s_remoteNodeId, LightningMoney.Satoshis(100_000), s_remoteNodeId,
+                                              s_remoteNodeId, LightningMoney.Satoshis(1), 30,
+                                              LightningMoney.Satoshis(100_000), s_remoteNodeId, LightningMoney.Zero,
+                                              s_remoteNodeId, 144);
+
+        return new OpenChannel1Message(payload, channelTypeTlv);
     }
 
     private static OpenChannelClientRequest CreateRequest(LightningMoney fundingAmount,
