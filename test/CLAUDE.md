@@ -14,7 +14,6 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 - `NLightning.Tests.Utils`: a shared library, not a test project. It holds `Mocks/` (FakeFixedKeyDh, FakeHandshake*, FakeServiceProvider, FakeSha256, FakeTransport), `Vectors/` (AEAD, BOLT 3 Appendix B/C/D/F, BOLT 8 `InitiatorValidKeysVector`; the other BOLT 8 vectors live in `Integration.Tests/BOLT8/Vectors/`) and `PortPoolUtil` (ports 49100-49149).
 - `BlazorTests/`: a WASM app plus Playwright tests. They build only with `-c Release.Wasm`/`Debug.Wasm`, and in practice only on linux-x64 because `src/NLightning.Infrastructure/Crypto/Providers/JS/package.json` pins linux-x64 esbuild/rollup.
 - `Docker/custom_lnd`: the LND image that the Docker tests build.
-- `NLightning.Node.Tests`: an orphan csproj containing only a BOM. It is not in the sln, so ignore it.
 
 ## Adding a test (the common case)
 1. Put the test in the project that mirrors the src layer, using the same folder path (e.g. `src/NLightning.Infrastructure/Protocol/Tlv/Converters/X.cs` maps to `test/NLightning.Infrastructure.Tests/Protocol/Tlv/Converters/XTests.cs`).
