@@ -128,15 +128,21 @@ internal static class UpdateValidator
     }
 
     /// <summary>
-    /// B2-FEE-R03: the funder (the peer) must be able to pay the new feerate on our commitment. BOLT 2 does not mention
-    /// the reserve here, so only the fee (and anchors) must be covered.
+    /// B2-FEE-R03: the funder (the peer) must be able to pay the new feerate on our <b>current</b> commitment
+    /// (<see cref="ChannelCommitments.LocalCommit"/>), as BOLT 2 words it. BOLT 2 does not mention the reserve here, so
+    /// only the fee (and anchors) must be covered.
     /// </summary>
+    /// <remarks>Not the prospective view: that one also holds our own unsigned updates, which the funder may not have
+    /// seen when it sent <c>update_fee</c>, so an honest funder would be rejected (two-engine simulator seed
+    /// 152).</remarks>
     public static void ValidateReceiveFee(ChannelCommitments next)
     {
         var p = next.Params;
-        var view = next.BuildProspectiveView(CommitmentSide.Local, feerateOverride: next.LatestFeeratePerKw);
-        var cost = (long)CommitmentFees.FunderCostMsat(view.ToSpec(), p.Local.DustLimitSatoshis, p.OptionAnchors);
-        if (view.RemoteMsat - cost < 0)
+        var current = next.LocalCommit.Spec;
+        var spec = new CommitmentSpec(current.Holder, next.LatestFeeratePerKw, current.LocalMsat, current.RemoteMsat,
+                                      current.Htlcs);
+        var cost = (long)CommitmentFees.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+        if ((long)spec.RemoteMsat - cost < 0)
             throw Violation(next, "B2-FEE-R03",
                             $"The funder cannot afford feerate {next.LatestFeeratePerKw} on our commitment");
     }

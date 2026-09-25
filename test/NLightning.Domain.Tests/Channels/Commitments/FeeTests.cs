@@ -97,6 +97,25 @@ public class FeeTests
     }
 
     [Fact]
+    public void Given_OwnUnsignedAdds_When_FunderFeeReceived_Then_CheckedOnCurrentCommitment()
+    {
+        // Arrange (simulator seed 152): the funder holds 3000 sat; our two unsigned adds, which the funder has not
+        // seen, would make it pay (724 + 2 * 172) * 3 = 3204 sat at feerate 3000, but our current commitment has no
+        // HTLCs: 724 * 3 = 2172 sat, which it can afford.
+        var party = Party(reserveSat: 0);
+        var c = Create(900_000, 3_000, feeratePerKw: 253, localIsFunder: false, local: party, remote: party);
+        c = c.Add(100_000 * Sat, 1).Next.Add(100_000 * Sat, 2).Next;
+
+        // Act
+        var result = c.ReceiveFee(3_000, 253, 100_000);
+
+        // Assert (B2-FEE-R03 is on "the receiving node's current commitment transaction")
+        Assert.Equal(3_000u, result.Next.LatestFeeratePerKw);
+        var exception = Assert.Throws<CommitmentViolationException>(() => c.ReceiveFee(4_200, 253, 100_000));
+        Assert.Equal("B2-FEE-R03", exception.RequirementId); // 724 * 4.2 = 3040 sat does not fit
+    }
+
+    [Fact]
     public void Given_UnsignedPeerFee_When_AnotherReceived_Then_Replaced()
     {
         // Arrange
