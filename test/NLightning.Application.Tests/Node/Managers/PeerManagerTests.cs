@@ -1,5 +1,7 @@
 using System.Net.Sockets;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NLightning.Infrastructure.Protocol.Models;
@@ -8,9 +10,13 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Node.Managers;
 
+using Application.Channels.Services;
+using Application.Gossip;
 using Application.Gossip.Events;
 using Application.Gossip.Interfaces;
+using Application.Gossip.Services;
 using Application.Node.Managers;
+using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -1554,6 +1560,36 @@ public class PeerManagerTests
         // Assert
         _mockPeerService.VerifyAdd(p => p.OnChannelUpdateReceived += It.IsAny<EventHandler<ChannelUpdateMessage>>(),
                                    Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_GossipServicesRegistered_When_PeerManagerIsResolvedFromDi_Then_ChannelUpdatesAreWired()
+    {
+        // Arrange - the one line the composition root needs (AddGossipServices); PeerManager registered as the
+        // Application layer does
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(Options.Create(new NodeOptions()));
+        services.AddSingleton(_mockChannelManager.Object);
+        services.AddSingleton(_mockChannelMemoryRepository.Object);
+        services.AddSingleton(_mockPeerServiceFactory.Object);
+        services.AddSingleton(_mockSecureKeyManager.Object);
+        services.AddSingleton(_mockTcpService.Object);
+        services.AddSingleton(_mockUnitOfWork.Object);
+        services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
+        services.AddSingleton(new Mock<ILightningSigner>().Object);
+        services.AddSingleton<IPeerManager, PeerManager>();
+        services.AddGossipServices();
+        await using var provider = services.BuildServiceProvider();
+
+        // Act
+        var peerManager = Assert.IsType<PeerManager>(provider.GetRequiredService<IPeerManager>());
+        await ConnectMockPeerAsync(peerManager);
+
+        // Assert
+        Assert.IsType<ChannelUpdateService>(provider.GetRequiredService<IChannelUpdateService>());
+        _mockPeerService.VerifyAdd(p => p.OnChannelUpdateReceived += It.IsAny<EventHandler<ChannelUpdateMessage>>(),
+                                   Times.Once);
     }
 
     private PeerManager CreatePeerManager(IChannelUpdateService channelUpdateService)
