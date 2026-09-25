@@ -20,6 +20,17 @@ internal static class ClientApp
     internal const int Failure = 1;
     internal const int UsageError = 2;
 
+    /// <summary>
+    /// The largest <c>count</c> of listinvoices/listpayments; the daemon refuses a larger page
+    /// (<c>ClientRequestGuards.MaxPageSize</c>).
+    /// </summary>
+    internal const int MaxListCount = 1_000;
+
+    /// <summary>
+    /// The longest payinvoice wait; the daemon refuses a longer one (<c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>).
+    /// </summary>
+    internal const uint MaxPayTimeoutSeconds = 300;
+
     internal static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         try
@@ -177,15 +188,17 @@ internal static class ClientApp
                     return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds]";
                 if (commandArgs.Length > 1 && !TryParseInvoiceAmount(commandArgs[1], out _))
                     return $"Invalid amount '{commandArgs[1]}': expected a positive number of msat or 'any'.";
-                if (commandArgs.Length > 2 && !TryParsePositiveUInt(commandArgs[2], out _))
-                    return $"Invalid timeout '{commandArgs[2]}': expected a positive number of seconds.";
+                if (commandArgs.Length > 2
+                 && !(TryParsePositiveUInt(commandArgs[2], out var timeout) && timeout <= MaxPayTimeoutSeconds))
+                    return $"Invalid timeout '{commandArgs[2]}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
                 return null;
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
             case "list-payments":
-                if (commandArgs.Length > 0 && !TryParsePositiveInt(commandArgs[0], out _))
-                    return $"Invalid count '{commandArgs[0]}': expected a positive number.";
+                if (commandArgs.Length > 0
+                 && !(TryParsePositiveInt(commandArgs[0], out var count) && count <= MaxListCount))
+                    return $"Invalid count '{commandArgs[0]}': expected a number from 1 to {MaxListCount}.";
                 if (commandArgs.Length > 1 && !int.TryParse(commandArgs[1], NumberStyles.None,
                                                             CultureInfo.InvariantCulture, out _))
                     return $"Invalid skip '{commandArgs[1]}': expected a number.";
@@ -196,17 +209,18 @@ internal static class ClientApp
     }
 
     /// <summary>
-    /// Parses an amount in msat; <c>any</c> (or <c>0</c>) means no amount.
+    /// Parses an amount in msat; <c>any</c> means no amount. <c>0</c> is rejected: use <c>any</c> for an
+    /// any-amount invoice.
     /// </summary>
     internal static bool TryParseInvoiceAmount(string value, out LightningMoney? amount)
     {
         amount = null;
         if (string.Equals(value, "any", StringComparison.OrdinalIgnoreCase))
             return true;
-        if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var msat))
+        if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var msat) || msat == 0)
             return false;
 
-        amount = msat == 0 ? null : LightningMoney.MilliSatoshis(msat);
+        amount = LightningMoney.MilliSatoshis(msat);
         return true;
     }
 

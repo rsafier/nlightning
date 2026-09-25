@@ -205,7 +205,7 @@ public class PaymentsClientHandlerTests
     [InlineData("   ", null, null)]
     [InlineData("lnbcrt1pay", 0UL, null)]
     [InlineData("lnbcrt1pay", null, 0U)]
-    [InlineData("lnbcrt1pay", null, 3_601U)]
+    [InlineData("lnbcrt1pay", null, PayInvoiceClientHandler.MaxTimeoutSeconds + 1)]
     public async Task Given_InvalidRequest_When_PayInvoice_Then_InvalidOperationAndNothingSent(
         string bolt11, ulong? amountMsat, uint? timeoutSeconds)
     {
@@ -262,6 +262,62 @@ public class PaymentsClientHandlerTests
         // Assert
         Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
         Assert.Equal("already in flight", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_ServiceShutDown_When_PayInvoice_Then_ServerErrorNotInvalidOperation()
+    {
+        // Arrange: ObjectDisposedException derives from InvalidOperationException but is not the duplicate refusal
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                           .ThrowsAsync(new ObjectDisposedException("PaymentService"));
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(() => handler.HandleAsync(
+                                                                      new PayInvoiceClientRequest("lnbcrt1pay"),
+                                                                      TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.ServerError, exception.ErrorCode);
+        Assert.Contains("listpayments", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_ServiceFailsAfterTheOffer_When_PayInvoice_Then_ServerErrorPointsToListPayments()
+    {
+        // Arrange: the payment was persisted InFlight and the HTLC offered, then something below failed
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                           .ThrowsAsync(new KeyNotFoundException("channel vanished after the offer"));
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(() => handler.HandleAsync(
+                                                                      new PayInvoiceClientRequest("lnbcrt1pay"),
+                                                                      TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.ServerError, exception.ErrorCode);
+        Assert.Contains("channel vanished after the offer", exception.Message);
+        Assert.Contains("in flight", exception.Message);
+        Assert.Contains("listpayments", exception.Message);
+        Assert.IsType<KeyNotFoundException>(exception.InnerException);
+    }
+
+    [Fact]
+    public async Task Given_Cancelled_When_PayInvoice_Then_CancellationPropagates()
+    {
+        // Arrange
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                           .ThrowsAsync(new OperationCanceledException());
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<OperationCanceledException>(() => handler.HandleAsync(
+                                                                 new PayInvoiceClientRequest("lnbcrt1pay"),
+                                                                 TestContext.Current.CancellationToken));
     }
 
     #endregion

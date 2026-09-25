@@ -12,6 +12,8 @@ using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
 using Domain.Bitcoin.Interfaces;
+using Domain.Client.Constants;
+using Domain.Client.Exceptions;
 using Domain.Client.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -101,19 +103,20 @@ public static class NodeServiceExtensions
             ListChannelsClientHandler>();
 
         // Invoice and payment handlers (ClientCommand 9-12). They need IInvoiceService/IPaymentService from the
-        // Application payment services; until those are registered, resolving a handler throws and the IPC command
-        // answers "not available". Factories (not type registrations) keep ValidateOnBuild (Development hosts) from
+        // Application payment services; until those are registered, resolving a handler throws a ClientException
+        // (invalid_operation "not available"), which the IPC command returns as is. Any other resolution failure
+        // stays a server_error. Factories (not type registrations) keep ValidateOnBuild (Development hosts) from
         // failing the whole node while the services are missing.
         services.AddScoped<IClientCommandHandler<CreateInvoiceClientRequest, CreateInvoiceClientResponse>>(sp =>
-            new CreateInvoiceClientHandler(sp.GetRequiredService<IInvoiceService>(),
+            new CreateInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                            sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>>(sp =>
-            new PayInvoiceClientHandler(sp.GetRequiredService<IPaymentService>()));
+            new PayInvoiceClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
         services.AddScoped<IClientCommandHandler<ListInvoicesClientRequest, ListInvoicesClientResponse>>(sp =>
-            new ListInvoicesClientHandler(sp.GetRequiredService<IInvoiceService>(),
+            new ListInvoicesClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                           sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(sp =>
-            new ListPaymentsClientHandler(sp.GetRequiredService<IPaymentService>()));
+            new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
         services.TryAddSingleton(TimeProvider.System);
 
         // Register IPC routing and command handlers
@@ -189,4 +192,15 @@ public static class NodeServiceExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Resolves a payment-layer service for a client handler factory. A service that is not registered (a node built
+    /// without the payment services) is a <see cref="ClientException"/> with <see cref="ErrorCodes.InvalidOperation"/>
+    /// ("not available"); a failure while building a registered one propagates unchanged, so it is reported as a
+    /// server error instead of being hidden.
+    /// </summary>
+    internal static T GetPaymentLayerService<T>(IServiceProvider serviceProvider) where T : class =>
+        serviceProvider.GetService<T>()
+     ?? throw new ClientException(ErrorCodes.InvalidOperation,
+                                  $"Not available on this node: {typeof(T).Name} is not registered.");
 }

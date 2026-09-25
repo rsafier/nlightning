@@ -18,8 +18,10 @@ using Transport.Ipc;
 /// </summary>
 /// <remarks>
 /// Errors become error envelopes: a <see cref="ClientException"/> keeps its <see cref="ClientException.ErrorCode"/>
-/// and message; a missing client handler or service (a node built without the payment services) is reported as
-/// <see cref="ErrorCodes.InvalidOperation"/> "not available"; anything else is <see cref="ErrorCodes.ServerError"/>.
+/// and message; a client handler that is not registered is reported as <see cref="ErrorCodes.InvalidOperation"/>
+/// "not available" (a handler whose payment service is missing throws that <see cref="ClientException"/> from its
+/// factory); anything else, including a failure while building a registered handler, is
+/// <see cref="ErrorCodes.ServerError"/>.
 /// </remarks>
 internal abstract class ClientCommandIpcHandler<TIpcRequest, TClientRequest, TClientResponse, TIpcResponse>
     : IIpcCommandHandler
@@ -46,17 +48,15 @@ internal abstract class ClientCommandIpcHandler<TIpcRequest, TClientRequest, TCl
             var request = MessagePackSerializer.Deserialize<TIpcRequest>(envelope.Payload, cancellationToken: ct);
 
             using var scope = _serviceProvider.CreateScope();
-            IClientCommandHandler<TClientRequest, TClientResponse> clientHandler;
-            try
+            // Only a missing registration is "not available". A handler whose factory finds its service missing
+            // throws a ClientException itself; any other construction failure is a wiring bug and a server_error.
+            var clientHandler = scope.ServiceProvider
+                                     .GetService<IClientCommandHandler<TClientRequest, TClientResponse>>();
+            if (clientHandler is null)
             {
-                clientHandler = scope.ServiceProvider
-                                     .GetRequiredService<IClientCommandHandler<TClientRequest, TClientResponse>>();
-            }
-            catch (InvalidOperationException e)
-            {
-                _logger.LogError(e, "No handler for {Command}", Command);
+                _logger.LogError("No handler registered for {Command}", Command);
                 return IpcErrorFactory.CreateErrorEnvelope(envelope, ErrorCodes.InvalidOperation,
-                                                           $"{Command} is not available on this node: {e.Message}");
+                                                           $"{Command} is not available on this node.");
             }
 
             var clientResponse = await clientHandler.HandleAsync(ToClientRequest(request), ct);

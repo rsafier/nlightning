@@ -16,6 +16,13 @@ using Transport.Ipc;
 /// </summary>
 internal sealed class NamedPipeIpcService : INamedPipeIpcService
 {
+    /// <summary>
+    /// How many pipe instances (connected clients) can exist at once. A <c>PayInvoice</c> holds one for its whole wait
+    /// (up to <c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>), so the cap must leave room for the short commands
+    /// (listchannels, listpayments) polled meanwhile; the CLI gives up connecting after 2 s.
+    /// </summary>
+    internal const int MaxServerInstances = 64;
+
     private readonly ILogger<NamedPipeIpcService> _logger;
     private readonly IIpcAuthenticator _authenticator;
     private readonly IIpcFraming _framing;
@@ -80,7 +87,7 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 try
                 {
-                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 10,
+                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxServerInstances,
                                                            PipeTransmissionMode.Byte,
                                                            PipeOptions.Asynchronous);
                     await server.WaitForConnectionAsync(cancellationToken);
