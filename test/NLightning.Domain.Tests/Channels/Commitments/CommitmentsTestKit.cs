@@ -184,6 +184,12 @@ internal sealed class CommitmentPair
                      .Next;
     }
 
+    public void AliceFail(ulong bobHtlcId)
+    {
+        Alice = Alice.SendFail(bobHtlcId, new byte[] { 4, 5, 6 }).Next;
+        Bob = Bob.ReceiveFail(bobHtlcId, new byte[] { 4, 5, 6 }).Next;
+    }
+
     public void BobFail(ulong aliceHtlcId)
     {
         Bob = Bob.SendFail(aliceHtlcId, new byte[] { 1, 2, 3 }).Next;

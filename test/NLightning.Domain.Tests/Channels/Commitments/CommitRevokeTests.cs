@@ -99,6 +99,47 @@ public class CommitRevokeTests
     }
 
     [Fact]
+    public void Given_AddThenFeeFunderCannotPay_When_ReceiveCommit_Then_FeeViolationBeforeVerifyOrRevoke()
+    {
+        // Arrange: the funder (peer, 20000 sat) adds 9000 sat (R02 at feerate 1000: 20000 - 9000 - 896 >= 10000), then
+        // raises the fee to 20000 (R03 on our current commitment: 20000 >= 724 * 20 = 14480). Both are accepted.
+        var c = Create(500_000, 20_000, localIsFunder: false);
+        c = c.ReceiveAdd(0, 9_000 * Sat, PaymentHash(1), 600, Onion).Next;
+        c = c.ReceiveFee(20_000, 253, 100_000).Next;
+        var verifier = new FakeCommitmentVerifier();
+
+        // Act: the commitment it signs leaves it 11000 sat for a 14480 sat fee (the HTLC is trimmed at 20000).
+        var exception = Assert.Throws<CommitmentViolationException>(
+            () => c.ReceiveCommit(new CommitmentSignatures(Signature(1), []), verifier));
+
+        // Assert (BOLT 2 update_fee: "MAY delay this check until the update_fee is committed")
+        Assert.Equal("B2-FEE-R03", exception.RequirementId);
+        Assert.Empty(verifier.Calls);
+        Assert.Equal(0UL, c.LocalCommit.Number);
+    }
+
+    [Fact]
+    public void Given_FunderAddCrossingOurAdds_When_ItsCommitCannotPayFee_Then_AddViolation()
+    {
+        // Arrange: we (non-funder) offered two 5000-sat HTLCs, signed, and the funder revoked; it has not signed them
+        // yet, so its 10000-sat add is judged without them (11000 - 10000 - 896 >= 0, no reserves).
+        var party = Party(reserveSat: 0);
+        var c = Create(989_000, 11_000, localIsFunder: false, local: party, remote: party);
+        c = c.Add(5_000 * Sat, 1).Next.Add(5_000 * Sat, 2).Next;
+        c = c.SendCommit(SignerFor(c)).Next;
+        c = c.ReceiveRevoke(SecretFor(BobTag, 0), Point(BobTag, 2), new FakeRevocationVerifier()).Next;
+        c = c.ReceiveAdd(0, 10_000 * Sat, PaymentHash(3), 600, Onion).Next;
+
+        // Act: its commitment_signed carries all three: 1000 sat left for (724 + 3 * 172) = 1240 sat.
+        var exception = Assert.Throws<CommitmentViolationException>(
+            () => c.ReceiveCommit(new CommitmentSignatures(Signature(1), [Signature(2), Signature(3), Signature(4)]),
+                                  new FakeCommitmentVerifier()));
+
+        // Assert
+        Assert.Equal("B2-ADD-R02", exception.RequirementId);
+    }
+
+    [Fact]
     public void Given_WrongNumHtlcs_When_ReceiveCommit_Then_Violation()
     {
         // Arrange: Bob received Alice's add; her CS carries no HTLC signature.

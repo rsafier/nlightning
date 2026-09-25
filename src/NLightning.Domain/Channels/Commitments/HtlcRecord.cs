@@ -17,6 +17,10 @@ using Enums;
 /// <param name="OnionRoutingPacket">The 1366-byte onion of the <c>update_add_htlc</c> (opaque to the engine; kept so
 /// the add can be retransmitted and the onion peeled after lock-in).</param>
 /// <param name="PathKey">The <c>blinded_path</c> TLV <c>path_key</c> of the add, if any.</param>
+/// <param name="KnownPreimage">The preimage the peer revealed with an <c>update_fulfill_htlc</c> for an HTLC we offered.
+/// Unlike <paramref name="Removal"/> it survives <see cref="ChannelCommitments.RevertUncommitted"/> (BOLT 2: "the
+/// effects of update_fulfill_htlc are not completely reversed"), so persisting an upserted record never loses it and the
+/// preimage can be used (e.g. to fulfill upstream or claim on chain) even when the fulfill is not re-sent.</param>
 public sealed record HtlcRecord(
     HtlcDirection Direction,
     ulong Id,
@@ -26,7 +30,8 @@ public sealed record HtlcRecord(
     HtlcState State,
     HtlcRemoval? Removal = null,
     ReadOnlyMemory<byte> OnionRoutingPacket = default,
-    CompactPubKey? PathKey = null)
+    CompactPubKey? PathKey = null,
+    Secret? KnownPreimage = null)
 {
     public HtlcKey Key => new(Direction, Id);
 

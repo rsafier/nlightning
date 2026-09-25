@@ -143,6 +143,32 @@ public class CommitmentsScenarioTests
     }
 
     [Fact]
+    public void Given_UnsignedPeerFulfill_When_RevertUncommitted_Then_PreimageKept()
+    {
+        // Arrange: Bob fulfilled Alice's locked-in HTLC but has not signed it yet.
+        var pair = new CommitmentPair(600_000, 400_000);
+        pair.AliceAdd(10_000 * Sat, 1);
+        pair.Converge();
+        pair.BobFulfill(0, 1);
+        Assert.Equal(Preimage(1), pair.Alice.GetHtlc(HtlcDirection.Outgoing, 0)!.KnownPreimage);
+
+        // Act
+        var result = pair.Alice.RevertUncommitted();
+
+        // Assert (B2-RE-04: "the effects of update_fulfill_htlc are not completely reversed")
+        var reverted = result.Next.GetHtlc(HtlcDirection.Outgoing, 0)!;
+        Assert.Equal(HtlcState.SentAddAckRevocation, reverted.State);
+        Assert.Null(reverted.Removal);
+        Assert.Equal(Preimage(1), reverted.KnownPreimage);
+        Assert.Equal(Preimage(1), Assert.Single(result.Transition.UpsertedHtlcs).KnownPreimage);
+
+        // The re-sent fulfill is applied as usual and keeps it too.
+        var again = result.Next.ReceiveFulfill(0, Preimage(1), Sha256).Next.GetHtlc(HtlcDirection.Outgoing, 0)!;
+        Assert.Equal(HtlcState.RcvdRemoveHtlc, again.State);
+        Assert.Equal(Preimage(1), again.KnownPreimage);
+    }
+
+    [Fact]
     public void Given_OurUnsignedUpdates_When_RevertUncommitted_Then_Kept()
     {
         // Arrange

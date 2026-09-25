@@ -221,11 +221,16 @@ public sealed record ChannelCommitments
     /// <param name="side">The commitment.</param>
     /// <param name="extra">A candidate HTLC to include.</param>
     /// <param name="feerateOverride">The feerate to use instead.</param>
-    /// <param name="peerView">Keep only what the peer provably knew when it sent the update being judged: leave out our
-    /// adds it has not signed yet (<see cref="HtlcState.SentAddHtlc"/>, <see cref="HtlcState.SentAddCommit"/>,
-    /// <see cref="HtlcState.RcvdAddRevocation"/>). The two directions cross, so the peer may have offered before it
-    /// received them; its <c>commitment_signed</c> that covers them precedes (in its stream) every update it sends
-    /// afterwards, and this stays true when updates are retransmitted after a reconnection.</param>
+    /// <param name="peerView">Judge the peer's update by what it provably knew when it sent it: leave out our adds it
+    /// has not signed yet (<see cref="HtlcState.SentAddHtlc"/>, <see cref="HtlcState.SentAddCommit"/>,
+    /// <see cref="HtlcState.RcvdAddRevocation"/>), and count our removals it has already acked
+    /// (<see cref="HtlcState.RcvdRemoveRevocation"/>) as done (credited to the offerer on a fail, to the receiver on a
+    /// fulfill). The two directions cross, so the peer may have offered before it received our adds; its
+    /// <c>commitment_signed</c> that covers them precedes (in its stream) every update it sends afterwards, and this
+    /// stays true when updates are retransmitted after a reconnection. Likewise the <c>commitment_signed</c> that
+    /// follows its <c>revoke_and_ack</c> always carries our acked removal, so the commitment that first holds the
+    /// judged update holds the removal too. Only the fee is re-checked at commit time
+    /// (<see cref="UpdateValidator.ValidateReceivedCommitFee"/>).</param>
     internal CommitmentView BuildProspectiveView(CommitmentSide side, HtlcRecord? extra = null,
                                                  uint? feerateOverride = null, bool peerView = false) =>
         BuildView(side, prospective: true, extra, feerateOverride, peerView);
@@ -244,7 +249,11 @@ public sealed record ChannelCommitments
                                                   or HtlcState.RcvdAddRevocation)
                 continue;
 
-            var removed = HtlcStateTable.IsRemovedFrom(htlc.State, side);
+            // Our removal the peer has acked (its revoke_and_ack covers it) is in the peer's own commitment and will be
+            // in the next one it signs for us, ahead of any update it sends afterwards: the peer may already spend
+            // what it frees (LND counts it as removed from then on).
+            var removed = HtlcStateTable.IsRemovedFrom(htlc.State, side)
+                       || (peerView && htlc.State == HtlcState.RcvdRemoveRevocation);
             var present = prospective ? !removed : htlc.IsInCommit(side);
             var amount = checked((long)htlc.AmountMsat);
             if (present)
@@ -457,7 +466,12 @@ public sealed record ChannelCommitments
 
     private CommitmentsResult ReceiveRemove(HtlcRecord htlc, HtlcRemoval removal)
     {
-        var removed = htlc with { State = HtlcStateTable.Next(htlc.State, HtlcEvent.RecvRemove), Removal = removal };
+        var removed = htlc with
+        {
+            State = HtlcStateTable.Next(htlc.State, HtlcEvent.RecvRemove),
+            Removal = removal,
+            KnownPreimage = removal.PaymentPreimage ?? htlc.KnownPreimage
+        };
         return Result(this with { Htlcs = Htlcs.SetItem(htlc.Key, removed) }, []);
     }
 
@@ -563,8 +577,9 @@ public sealed record ChannelCommitments
     /// sender), so one is accepted: it only advances the commitment number. The returned
     /// <see cref="OutboundRevokeAndAck"/> must be sent (B2-CS-R05) after the new commitment is persisted (B2-CS-R06).
     /// </remarks>
-    /// <exception cref="CommitmentViolationException"><c>num_htlcs</c> mismatch (B2-CS-R02) or invalid signature
-    /// (B2-CS-R01, B2-CS-R03).</exception>
+    /// <exception cref="CommitmentViolationException">The funder (the peer) cannot pay the fee of the new commitment
+    /// (B2-FEE-R03 when it carries a new feerate, else B2-ADD-R02), <c>num_htlcs</c> mismatch (B2-CS-R02) or invalid
+    /// signature (B2-CS-R01, B2-CS-R03).</exception>
     public CommitmentsResult ReceiveCommit(CommitmentSignatures signatures, ICommitmentVerifier verifier)
     {
         ArgumentNullException.ThrowIfNull(signatures);
@@ -572,6 +587,7 @@ public sealed record ChannelCommitments
 
         var committed = Advance(HtlcEvent.RecvCommit, out var settledOnCommit);
         var spec = committed.BuildSpec(CommitmentSide.Local);
+        UpdateValidator.ValidateReceivedCommitFee(this, spec);
         var number = checked(LocalCommit.Number + 1);
         var expected = CommitmentFees.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
@@ -619,12 +635,23 @@ public sealed record ChannelCommitments
     /// removals return to <see cref="HtlcState.SentAddAckRevocation"/> and its unsigned fee update is dropped. Our own
     /// unsigned updates stay (they are re-sent on reestablish).
     /// </summary>
+    /// <remarks>
+    /// A reverted fulfill keeps its preimage in <see cref="HtlcRecord.KnownPreimage"/> (B2-RE-04: "the effects of
+    /// update_fulfill_htlc are not completely reversed"). The caller must run this on every disconnect and after every
+    /// <see cref="Restore"/> before <c>channel_reestablish</c>: <see cref="ReceiveAdd"/> expects the rewound id and treats
+    /// a repeated one as a violation.
+    /// </remarks>
     public CommitmentsResult RevertUncommitted()
     {
         var dropped = Htlcs.Values.Where(h => h.State == HtlcState.RcvdAddHtlc).ToList();
         var htlcs = Htlcs.RemoveRange(dropped.Select(h => h.Key));
         foreach (var htlc in Htlcs.Values.Where(h => h.State == HtlcState.RcvdRemoveHtlc))
-            htlcs = htlcs.SetItem(htlc.Key, htlc with { State = HtlcState.SentAddAckRevocation, Removal = null });
+            htlcs = htlcs.SetItem(htlc.Key, htlc with
+            {
+                State = HtlcState.SentAddAckRevocation,
+                Removal = null,
+                KnownPreimage = htlc.Removal?.PaymentPreimage ?? htlc.KnownPreimage
+            });
 
         var next = this with
         {

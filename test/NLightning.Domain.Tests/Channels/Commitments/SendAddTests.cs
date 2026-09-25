@@ -148,6 +148,20 @@ public class SendAddTests
     }
 
     [Fact]
+    public void Given_SpikeBufferViolatedOnOurCommitmentOnly_When_SendAdd_Then_Refused()
+    {
+        // Arrange: the peer's 20000-sat dust limit trims the HTLC on its commitment, our 354-sat one does not. At 2x
+        // feerate the peer's commitment costs 1448 + 344 = 1792 sat, ours (724 + 172) * 2 + 344 = 2136 sat.
+        var c = Create(22_000, 978_000, local: Party(dustSat: 354), remote: Party(dustSat: 20_000));
+
+        // Act / Assert (B2-ADD-S03 "after adding that HTLC to its commitment transaction":
+        // 22000 - 10000 - 1792 >= 10000 on the peer's commitment, 22000 - 10000 - 2136 < 10000 on ours)
+        AssertRefused("B2-ADD-S03", () => c.Add(10_000 * Sat));
+        Assert.Single(Create(22_200, 977_800, local: Party(dustSat: 354), remote: Party(dustSat: 20_000))
+                     .Add(10_000 * Sat).Next.Htlcs);
+    }
+
+    [Fact]
     public void Given_NonFunderAdd_When_FunderCantPayFee_Then_Refused()
     {
         // Arrange: we are not the funder; the peer (funder) holds 10800 sat and must keep our 10000 sat reserve.
@@ -178,8 +192,8 @@ public class SendAddTests
         // Arrange
         var c = Create(15_000, 985_000, localIsFunder: false);
 
-        // Act / Assert (the peer would reject it under B2-ADD-R02)
-        AssertRefused("B2-ADD-R02", () => c.Add(6_000 * Sat));
+        // Act / Assert (B2-ADD-S01: "while maintaining its channel reserve"; the peer would reject it under B2-ADD-R02)
+        AssertRefused("B2-ADD-S01", () => c.Add(6_000 * Sat));
         Assert.Single(c.Add(5_000 * Sat).Next.Htlcs);
     }
 
