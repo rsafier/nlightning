@@ -73,7 +73,7 @@ public class OpenChannel1MessageHandlerTests
                                     maxAcceptedHtlcs, maxHtlcAmountInFlight, emptyPubKey, LightningMoney.Zero,
                                     emptyPubKey, toSelfDelay);
         _validMessage =
-            new OpenChannel1Message(payload, new ChannelTypeTlv(FeatureSet.NewBasicChannelType().GetBytes()!));
+            new OpenChannel1Message(payload, new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
 
         // Setup ChannelConfig
         var channelConfig = new ChannelConfig(channelReserveAmount, feeRateAmountPerKw, htlcMinimumAmount,
@@ -111,7 +111,7 @@ public class OpenChannel1MessageHandlerTests
                                                   emptyPubKey, emptyPubKey, emptyPubKey, htlcMinimumAmount,
                                                   maxAcceptedHtlcs, maxHtlcAmountInFlight, 3, emptyPubKey,
                                                   emptyPubKey, toSelfDelay),
-                        new ChannelTypeTlv(FeatureSet.NewBasicChannelType().GetBytes()!)));
+                        new ChannelTypeTlv(FeatureSet.NewBasicChannelType())));
     }
 
     [Fact]
@@ -148,6 +148,37 @@ public class OpenChannel1MessageHandlerTests
                 _channel.LocalKeySet.RevocationCompactBasepoint, _channel.ChannelId,
                 _channel.ChannelConfig.ToSelfDelay, It.IsAny<UpfrontShutdownScriptTlv>()),
             Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ValidMessage_When_HandleAsync_Then_ChannelTypeTlvIsBigEndianStaticRemoteKey()
+    {
+        // Arrange
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Returns(false);
+
+        ChannelTypeTlv? capturedChannelType = null;
+        _mockMessageFactory
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<LightningMoney>(), It.IsAny<ChannelTypeTlv>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<ushort>(), It.IsAny<LightningMoney>(), It.IsAny<uint>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<ChannelId>(), It.IsAny<ushort>(),
+                                                     It.IsAny<UpfrontShutdownScriptTlv>()))
+           .Callback(new InvocationAction(invocation => capturedChannelType = (ChannelTypeTlv)invocation.Arguments[1]))
+           .Returns((AcceptChannel1Message)null!);
+
+        // Act
+        await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.NotNull(capturedChannelType);
+        Assert.Equal(new byte[] { 0x10, 0x00 }, capturedChannelType.Value);
+        Assert.True(capturedChannelType.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.False(capturedChannelType.Features.HasFeature(Feature.OptionUpfrontShutdownScript));
     }
 
     [Fact]

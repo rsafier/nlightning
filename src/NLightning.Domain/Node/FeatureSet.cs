@@ -366,6 +366,25 @@ public class FeatureSet
     }
 
     /// <summary>
+    /// Gets the feature bits as a big-endian byte array, the wire encoding of BOLT 9 feature fields such as
+    /// <c>channel_type</c> (the last byte holds bits 0-7).
+    /// </summary>
+    /// <returns>The big-endian bytes, or null if no bit is set.</returns>
+    /// <remarks>
+    /// <see cref="GetBytes"/> is little-endian (the first byte holds bits 0-7); this is its reverse and the inverse of
+    /// <see cref="DeserializeFromBytes"/>.
+    /// </remarks>
+    public byte[]? GetWireBytes()
+    {
+        var bytes = GetBytes();
+        if (bytes is null)
+            return null;
+
+        Array.Reverse(bytes);
+        return bytes;
+    }
+
+    /// <summary>
     /// Deserializes the features from a byte array.
     /// </summary>
     /// <param name="data">The byte array to deserialize from.</param>

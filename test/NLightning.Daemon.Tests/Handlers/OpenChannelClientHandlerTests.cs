@@ -124,6 +124,68 @@ public class OpenChannelClientHandlerTests
     }
 
     [Fact]
+    public async Task GivenValidRequest_WhenHandleAsync_ThenChannelTypeTlvIsBigEndianStaticRemoteKey()
+    {
+        // Arrange
+        var peerId = CreateDummyPubKey();
+        var nodeInfo = $"{peerId}@127.0.0.1:9735";
+        var fundingAmount = LightningMoney.Satoshis(100000);
+        var request = new OpenChannelClientRequest(nodeInfo, fundingAmount);
+
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(200000));
+
+        var localKeySet = new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId);
+        var channelModel = new ChannelModel(new ChannelConfig(), CreateRandomChannelId(), null, null, true, null, null,
+                                            fundingAmount, localKeySet, 0, 0, LightningMoney.Zero, null, 0, peerId, 0,
+                                            ChannelState.V1Opening, ChannelVersion.V1);
+        var tempChannelId = channelModel.ChannelId;
+
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ReturnsAsync(channelModel);
+
+        ChannelTypeTlv? capturedChannelType = null;
+        var openChannel1Message = CreateDummyOpenChannel1Message(tempChannelId, fundingAmount, peerId);
+        _messageFactoryMock.Setup(x => x.CreateOpenChannel1Message(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<LightningMoney>(), It.IsAny<ushort>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<ChannelFlags>(),
+                                                                   It.IsAny<ChannelTypeTlv>(),
+                                                                   It.IsAny<UpfrontShutdownScriptTlv>()))
+                           .Callback(new InvocationAction(invocation =>
+                                                              capturedChannelType =
+                                                                  invocation.Arguments.OfType<ChannelTypeTlv>()
+                                                                            .Single()))
+                           .Returns(openChannel1Message);
+
+        peerServiceMock.Setup(x => x.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        _channelMemoryRepositoryMock.Raise(x => x.OnChannelUpgraded += null, null!,
+                                           new ChannelUpgradedEventArgs(tempChannelId, CreateRandomChannelId()));
+        await handleTask;
+
+        // Assert
+        Assert.NotNull(capturedChannelType);
+        // Big-endian: static_remotekey (bit 12) lives in the last two bytes, whatever else the channel type sets
+        Assert.Equal(new byte[] { 0x10, 0x00 }, capturedChannelType.Value[^2..]);
+        Assert.True(capturedChannelType.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.False(capturedChannelType.Features.HasFeature(Feature.OptionUpfrontShutdownScript));
+    }
+
+    [Fact]
     public async Task GivenPeerNotConnected_WhenHandleAsync_ThenConnectsToPeer()
     {
         // Arrange

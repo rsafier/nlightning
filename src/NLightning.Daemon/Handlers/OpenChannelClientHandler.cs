@@ -112,7 +112,7 @@ public sealed class OpenChannelClientHandler
             if (channel.ChannelConfig.MinimumDepth == 0)
                 channelTypeFeatureSet.SetFeature(Feature.OptionZeroconf, true);
 
-            var featureSetBytes = channelTypeFeatureSet.GetBytes() ?? throw new ClientException(
+            var featureSetBytes = channelTypeFeatureSet.GetWireBytes() ?? throw new ClientException(
                                       ErrorCodes.InvalidOperation,
                                       $"Error creating {nameof(ChannelTypeTlv)}. This should never happen.");
             var channelTypeTlv = new ChannelTypeTlv(featureSetBytes);
