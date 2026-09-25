@@ -99,16 +99,19 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.FundingAmount is not null)
         {
-            // Check if the push amount is too large
+            // Check if the push amount is too large (push_msat <= 1000 * funding_satoshis; both are msat here)
             if (parameters.PushAmount is not null
-             && parameters.PushAmount > 1_000 * parameters.FundingAmount)
+             && parameters.PushAmount > parameters.FundingAmount)
                 throw new ChannelErrorException($"Push amount is too large: {parameters.PushAmount}");
 
-            // Check if there are enough funds to pay for fees
-            var expectedWeight = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No
-                                     ? TransactionConstants.InitialCommitmentTransactionWeightNoAnchor
-                                     : TransactionConstants.InitialCommitmentTransactionWeightWithAnchor;
+            // Check if there are enough funds to pay for fees (and both anchors when option_anchors applies)
+            var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
+            var expectedWeight = hasAnchors
+                                     ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
+                                     : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
             var expectedFee = LightningMoney.Satoshis(expectedWeight * parameters.CurrentFeeRatePerKw.Satoshi / 1000);
+            if (hasAnchors)
+                expectedFee += 2 * TransactionConstants.AnchorOutputAmount;
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");

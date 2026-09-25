@@ -18,15 +18,13 @@ public static class TransactionConstants
 
     public const int TxIdLength = 32;
 
-    public const int InitialCommitmentTransactionWeightNoAnchor = WeightConstants.WitnessHeader
-                                                                + WeightConstants.MultisigWitnessWeight
-                                                                + 4 * WeightConstants.P2WshInputWeight
-                                                                + WeightConstants.P2WshOutputWeight
-                                                                + WeightConstants.P2WpkhOutputWeight;
+    /// <summary>
+    /// BOLT 3 expected weight of a commitment transaction without HTLC outputs when option_anchors does not apply.
+    /// </summary>
+    public const int InitialCommitmentTransactionWeightNoAnchor = 724;
 
-    public const int InitialCommitmentTransactionWeightWithAnchor = WeightConstants.WitnessHeader
-                                                                  + WeightConstants.MultisigWitnessWeight
-                                                                  + 4 * WeightConstants.P2WshInputWeight
-                                                                  + 2 * WeightConstants.P2WshOutputWeight
-                                                                  + 2 * WeightConstants.AnchorOutputWeight;
+    /// <summary>
+    /// BOLT 3 expected weight of a commitment transaction without HTLC outputs when option_anchors applies.
+    /// </summary>
+    public const int InitialCommitmentTransactionWeightWithAnchor = 1124;
 }
