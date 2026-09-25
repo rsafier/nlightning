@@ -10,6 +10,7 @@ using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Enums;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Models;
 using Models;
 
 /// <summary>
@@ -17,7 +18,9 @@ using Models;
 /// </summary>
 public class SecretStorageService : ISecretStorageService
 {
-    private readonly StoredSecret?[] _knownSecrets = new StoredSecret?[49];
+    private const ulong MaxIndex = (1UL << 48) - 1;
+
+    private readonly StoredSecret?[] _knownSecrets = new StoredSecret?[ShachainEntry.BucketCount];
     private readonly ICryptoProvider _cryptoProvider = CryptoFactory.GetCryptoProvider();
     private IntPtr _perCommitmentSeedPtr = IntPtr.Zero;
     private readonly Dictionary<BasepointType, IntPtr> _basepointSecrets = new();
@@ -25,8 +28,16 @@ public class SecretStorageService : ISecretStorageService
     /// <inheritdoc/>
     public bool InsertSecret(Secret secret, ulong index)
     {
+        if (index > MaxIndex)
+            return false;
+
+        // Secrets are revealed in descending index order: the last one inserted always has the lowest stored index
+        var lowestIndex = GetLowestStoredIndex();
+        if (lowestIndex is not null && index >= lowestIndex.Value)
+            return false;
+
         // Find the bucket for this secret
-        var bucket = GetBucketIndex(index);
+        var bucket = ShachainEntry.GetBucket(index);
 
         var storedSecret = new byte[CryptoConstants.SecretLen];
         var derivedSecret = new byte[CryptoConstants.SecretLen];
@@ -154,29 +165,124 @@ public class SecretStorageService : ISecretStorageService
     }
 
     /// <inheritdoc/>
-    /// <exception cref="InvalidOperationException">Thrown when the basepoint private key is not stored</exception>
-    public PrivKey GetBasepointPrivateKey(uint keyIndex, BasepointType type)
+    public PrivKey GetBasepointPrivateKey(BasepointType type)
     {
-        throw new NotImplementedException("Getting basepoint private keys is not implemented yet.");
+        if (!_basepointSecrets.TryGetValue(type, out var securePtr) || securePtr == IntPtr.Zero)
+            throw new InvalidOperationException($"No private key stored for basepoint {type}");
+
+        var privKey = new byte[CryptoConstants.PrivkeyLen];
+        Marshal.Copy(securePtr, privKey, 0, CryptoConstants.PrivkeyLen);
+        return privKey;
     }
 
     /// <inheritdoc/>
-    public void LoadFromIndex(uint index)
+    public void Load(IEnumerable<ShachainEntry> entries)
     {
-        throw new NotImplementedException("Loading from index is not implemented yet.");
-    }
+        ArgumentNullException.ThrowIfNull(entries);
 
-    private static int GetBucketIndex(ulong index)
-    {
-        for (var b = 0; b < 48; b++)
+        var entryList = entries.OrderBy(e => e.Bucket).ToList();
+        var seenBuckets = new bool[ShachainEntry.BucketCount];
+        foreach (var entry in entryList)
         {
-            if (((index >> b) & 1) == 1)
-            {
-                return b;
-            }
+            if (entry.Bucket is < 0 or >= ShachainEntry.BucketCount)
+                throw new ArgumentException($"Bucket {entry.Bucket} is out of range", nameof(entries));
+
+            if (entry.Index > MaxIndex)
+                throw new ArgumentException($"Index {entry.Index} does not fit in 48 bits", nameof(entries));
+
+            if (ShachainEntry.GetBucket(entry.Index) != entry.Bucket)
+                throw new ArgumentException($"Index {entry.Index} does not belong in bucket {entry.Bucket}",
+                                            nameof(entries));
+
+            if (seenBuckets[entry.Bucket])
+                throw new ArgumentException($"Bucket {entry.Bucket} appears twice", nameof(entries));
+
+            if (((byte[]?)entry.Secret)?.Length != CryptoConstants.SecretLen)
+                throw new ArgumentException($"The secret in bucket {entry.Bucket} is not {CryptoConstants.SecretLen} bytes",
+                                            nameof(entries));
+
+            seenBuckets[entry.Bucket] = true;
         }
 
-        return 48; // For index 0 (seed)
+        // Re-run the insert_secret checks: when the secret of a higher bucket was inserted, every lower bucket holding
+        // a higher index was already there and had to be derivable from it
+        var derivedSecret = new byte[CryptoConstants.SecretLen];
+        try
+        {
+            foreach (var higher in entryList)
+            {
+                foreach (var lower in entryList)
+                {
+                    if (lower.Bucket >= higher.Bucket || lower.Index <= higher.Index)
+                        continue;
+
+                    DeriveSecret(higher.Secret, higher.Bucket, lower.Index, derivedSecret);
+                    if (!CryptographicOperations.FixedTimeEquals(derivedSecret, lower.Secret))
+                        throw new ArgumentException(
+                            $"The secret in bucket {lower.Bucket} is not derivable from the one in bucket {higher.Bucket}",
+                            nameof(entries));
+                }
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(derivedSecret);
+        }
+
+        // All checks passed: replace the stored secrets
+        FreeKnownSecrets();
+        foreach (var entry in entryList)
+            _knownSecrets[entry.Bucket] = new StoredSecret(entry.Index, AllocateSecret(entry.Secret));
+    }
+
+    /// <inheritdoc/>
+    public IReadOnlyList<ShachainEntry> Export()
+    {
+        var entries = new List<ShachainEntry>();
+        for (var b = 0; b < _knownSecrets.Length; b++)
+        {
+            var known = _knownSecrets[b];
+            if (known is null)
+                continue;
+
+            var secret = new byte[CryptoConstants.SecretLen];
+            Marshal.Copy(known.SecretPtr, secret, 0, CryptoConstants.SecretLen);
+            entries.Add(new ShachainEntry(b, known.Index, secret));
+        }
+
+        return entries;
+    }
+
+    private ulong? GetLowestStoredIndex()
+    {
+        ulong? lowest = null;
+        foreach (var known in _knownSecrets)
+        {
+            if (known is not null && (lowest is null || known.Index < lowest.Value))
+                lowest = known.Index;
+        }
+
+        return lowest;
+    }
+
+    private IntPtr AllocateSecret(ReadOnlySpan<byte> secret)
+    {
+        var securePtr = _cryptoProvider.MemoryAlloc(CryptoConstants.SecretLen);
+        _cryptoProvider.MemoryLock(securePtr, CryptoConstants.SecretLen);
+        Marshal.Copy(secret.ToArray(), 0, securePtr, CryptoConstants.SecretLen);
+        return securePtr;
+    }
+
+    private void FreeKnownSecrets()
+    {
+        for (var i = 0; i < _knownSecrets.Length; i++)
+        {
+            if (_knownSecrets[i] == null)
+                continue;
+
+            FreeSecret(_knownSecrets[i]!.SecretPtr);
+            _knownSecrets[i] = null;
+        }
     }
 
     private static void DeriveSecret(ReadOnlySpan<byte> baseSecret, int bits, ulong index, Span<byte> derivedSecret)
@@ -220,14 +326,7 @@ public class SecretStorageService : ISecretStorageService
     private void ReleaseUnmanagedResources()
     {
         // Free all secrets
-        for (var i = 0; i < _knownSecrets.Length; i++)
-        {
-            if (_knownSecrets[i] == null)
-                continue;
-
-            FreeSecret(_knownSecrets[i]!.SecretPtr);
-            _knownSecrets[i] = null;
-        }
+        FreeKnownSecrets();
 
         // Free per-commitment seed
         if (_perCommitmentSeedPtr != IntPtr.Zero)

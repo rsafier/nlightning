@@ -33,6 +33,7 @@ public class NLightningDbContext : DbContext
     public DbSet<ChannelKeySetEntity> ChannelKeySets { get; set; }
     public DbSet<HtlcEntity> Htlcs { get; set; }
     public DbSet<ChannelLocalAliasEntity> ChannelLocalAliases { get; set; }
+    public DbSet<RemoteShachainEntity> RemoteShachains { get; set; }
 
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
@@ -53,6 +54,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureChannelKeySetEntity(_databaseType);
         modelBuilder.ConfigureHtlcEntity(_databaseType);
         modelBuilder.ConfigureChannelLocalAliasEntity(_databaseType);
+        modelBuilder.ConfigureRemoteShachainEntity(_databaseType);
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);

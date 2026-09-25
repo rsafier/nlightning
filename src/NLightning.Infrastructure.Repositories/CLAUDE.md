@@ -7,7 +7,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 - `Database/BaseDbRepository.cs`: generic `Get` / `GetByIdAsync(object id)` / `Insert` / `Update` / `Delete*`. Reads use AsNoTracking by default. `Update` is tracking-aware.
 - `Database/Helpers/PrimaryKeyHelper.cs`: builds the PK predicate. Pass composite keys as a **ValueTuple, in key order**.
 - `Database/Bitcoin/`: BlockchainState, Utxo, WalletAddresses, WatchedTransaction, RevocationWatch (an empty stub; its entity is not in the DbContext).
-- `Database/Channel/`: Channel (full aggregate), ChannelConfig, ChannelKeySet, Htlc. Htlc stores the serialized `UpdateAddHtlcMessage`, which includes the 1366-byte onion.
+- `Database/Channel/`: Channel (full aggregate), ChannelConfig, ChannelKeySet, Htlc, RemoteShachain. Htlc stores the serialized `UpdateAddHtlcMessage`, which includes the 1366-byte onion. `RemoteShachainDbRepository` (`IUnitOfWork.RemoteShachainDbRepository`, NL-136) stores the peer's shachain as up to 49 `(ChannelId, Bucket)` rows: `SaveAsync(channelId, ISecretStorageService.Export())` upserts by bucket and removes absent buckets (staged, commit with the uow), `GetByChannelIdAsync` returns `ShachainEntry`s for `ISecretStorageService.Load`. It is not part of the `ChannelDbRepository` graph (no navigation on `ChannelEntity`); rows cascade on channel delete.
 - `Database/Node/PeerDbRepository.cs`
 - `Memory/ChannelMemoryRepository.cs`: live channels and temp channels (keyed by `(peerPubKey, tempChannelId)`). Raises `OnChannelUpgraded` / `OnChannelUpdated`.
 - `Memory/UtxoMemoryRepository.cs`: the UTXO set, balances (confirmed means `BlockHeight + 3 <= currentBlockHeight`, hard-coded), and Branch-and-Bound coin selection with a greedy fallback.
