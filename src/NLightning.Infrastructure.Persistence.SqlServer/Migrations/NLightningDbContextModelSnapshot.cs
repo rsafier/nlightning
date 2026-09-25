@@ -243,7 +243,7 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("LastSentSignature")
                         .HasColumnType("varbinary(64)");
 
-                    b.Property<long>("LocalBalanceSatoshis")
+                    b.Property<long>("LocalBalanceMsat")
                         .HasColumnType("bigint");
 
                     b.Property<decimal>("LocalCommitmentNumber")
@@ -261,7 +261,7 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("RemoteAlias")
                         .HasColumnType("varbinary(8)");
 
-                    b.Property<long>("RemoteBalanceSatoshis")
+                    b.Property<long>("RemoteBalanceMsat")
                         .HasColumnType("bigint");
 
                     b.Property<decimal>("RemoteCommitmentNumber")
@@ -276,6 +276,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<decimal>("RemoteRevocationNumber")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
