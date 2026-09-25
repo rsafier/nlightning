@@ -27,6 +27,7 @@ internal sealed class TransportService : ITransportService
     private IHandshakeService? _handshakeService;
     private ITransport? _transport;
     private bool _disposed;
+    private volatile bool _writeFaulted;
 
     // event that will be called when a message is received
     public event EventHandler<MemoryStream>? MessageReceived;
@@ -207,17 +208,24 @@ internal sealed class TransportService : ITransportService
         var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxEncryptedPacketLength);
         try
         {
+            if (_writeFaulted)
+                throw new ConnectionException("Connection was closed after a failed write");
+
             var size = _transport.WriteMessage(payload,
                                                buffer.AsSpan()[..ProtocolConstants.MaxEncryptedPacketLength]);
 
+            // The frame's nonces are now spent: it must reach the wire whole, so the caller's token no longer
+            // applies, and any failure leaves the stream out of sync with the peer's nonces, so it is fatal.
             try
             {
                 var stream = _tcpClient.GetStream();
-                await stream.WriteAsync(buffer.AsMemory()[..size], cancellationToken);
-                await stream.FlushAsync(cancellationToken);
+                await stream.WriteAsync(buffer.AsMemory()[..size], _cts.Token);
+                await stream.FlushAsync(_cts.Token);
             }
             catch (Exception e)
             {
+                _writeFaulted = true;
+                _tcpClient.Close();
                 throw new ConnectionException("Error writing message", e);
             }
         }

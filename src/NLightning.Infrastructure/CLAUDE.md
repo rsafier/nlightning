@@ -48,7 +48,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 ## Gotchas
 - `TlvConverterFactory` is registered in `NLightning.Infrastructure.Bitcoin/DependencyInjection.cs`, not here.
 - `Transport` is both a namespace (`NLightning.Infrastructure.Transport`) and the internal class `Transport/Encryption/Transport.cs`. Refer to the class as `Encryption.Transport`.
-- `TransportService.WriteMessageAsync` must encrypt and write under the same `_networkWriteSemaphore` hold; encrypting outside it let concurrent senders put ciphertexts on the wire out of nonce order (NL-105).
+- `TransportService.WriteMessageAsync` must encrypt and write under the same `_networkWriteSemaphore` hold; encrypting outside it let concurrent senders put ciphertexts on the wire out of nonce order (NL-105). Once a frame is encrypted its nonces are spent: the socket write uses `_cts.Token`, not the caller's token (a cancelled half-sent frame desyncs the peer), and any write failure closes the connection and sets `_writeFaulted` so the stream is never reused.
 - `TransportService.ReadResponseAsync` must keep using `ReadExactlyAsync` for the 18-byte header and the body; a single `ReadAsync` can return a short read and used to kill the connection (NL-104). EOF surfaces as `EndOfStreamException` → `ConnectionException`.
 - BOLT 8 bounds the *plaintext* at `ProtocolConstants.MaxMessageLength` (65535). Size transport buffers with `MaxEncryptedMessageLength` (body, 65551) / `MaxEncryptedPacketLength` (header + body, 65569), not `MaxMessageLength` (NL-106). `Transport.WriteMessage` validates length before encrypting so a rejected payload does not consume a nonce.
 - `MessageService.ReceiveMessage` deserializes synchronously under a lock on the read loop.

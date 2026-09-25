@@ -289,6 +289,65 @@ public class TransportServiceTests
         Assert.Equal(payload, result);
     }
 
+    [Fact]
+    public async Task Given_WriteStalledOnFullSocket_When_CallerCancels_Then_FrameIsStillSentWhole()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)(i * 3)).ToArray();
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object, 4096);
+        var message = new Mock<IMessage>().Object;
+
+        // Fill the socket buffers (the peer is not reading) until a write stalls
+        using var callerCts = new CancellationTokenSource();
+        Task? stalledWrite = null;
+        var framesWritten = 0;
+        for (var i = 0; i < 200 && stalledWrite is null; i++)
+        {
+            var write = connection.Service.WriteMessageAsync(message, callerCts.Token);
+            framesWritten++;
+            if (await Task.WhenAny(write, Task.Delay(1000, TestContext.Current.CancellationToken)) != write)
+                stalledWrite = write;
+            else
+                await write;
+        }
+
+        Assert.NotNull(stalledWrite);
+
+        // Act - the caller gives up after the frame's nonces have been spent
+        await callerCts.CancelAsync();
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+        var completedEarly = stalledWrite.IsCompleted;
+
+        var peerStream = connection.Peer.GetStream();
+        var drain = Task.Run(async () =>
+        {
+            var sequences = new List<int>();
+            for (var i = 0; i < framesWritten + 1; i++)
+            {
+                var header = new byte[ProtocolConstants.MessageHeaderSize];
+                await peerStream.ReadExactlyAsync(header, TestContext.Current.CancellationToken);
+                sequences.Add(BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(2, 4)));
+                var body = new byte[BinaryPrimitives.ReadUInt16BigEndian(header) + 16];
+                await peerStream.ReadExactlyAsync(body, TestContext.Current.CancellationToken);
+                Assert.Equal(payload, body[..^16]);
+            }
+
+            return sequences;
+        }, TestContext.Current.CancellationToken);
+
+        await stalledWrite.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await connection.Service.WriteMessageAsync(message, TestContext.Current.CancellationToken);
+        var received = await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert - the cancelled frame was not cut short and the next frame follows it in nonce order
+        Assert.False(completedEarly);
+        Assert.Equal(Enumerable.Range(0, framesWritten + 1), received);
+    }
+
     /// <summary>
     /// Plaintext BOLT 8-shaped framing: header = 2-byte length, 4-byte sequence number, 12 zero bytes;
     /// body = payload followed by a 16-byte zero "MAC". The sequence number stands in for the nonce.
@@ -386,9 +445,12 @@ public class TransportServiceTests
         }
 
         public static async Task<ConnectedTransportService> CreateAsync(ITransport transport,
-                                                                        IMessageSerializer serializer)
+                                                                        IMessageSerializer serializer,
+                                                                        int? socketBufferSize = null)
         {
             var listener = new TcpListener(IPAddress.Loopback, 0);
+            if (socketBufferSize is not null)
+                listener.Server.ReceiveBufferSize = socketBufferSize.Value;
             listener.Start();
 
             var acceptTask = Task.Run(async () =>
@@ -404,6 +466,8 @@ public class TransportServiceTests
             });
 
             var client = new TcpClient();
+            if (socketBufferSize is not null)
+                client.SendBufferSize = socketBufferSize.Value;
             await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
             var service = new TransportService(new Mock<ILogger>().Object, serializer, TimeSpan.FromSeconds(30),
                                                new ScriptedHandshakeService(transport), client);
