@@ -115,25 +115,13 @@ public class HopPayloadValidatorTests
     }
 
     [Fact]
-    public void Given_FinalPayloadWithScid_When_Validating_Then_FailsWithType6AtItsOffset()
+    public void Given_FinalPayloadWithScid_When_Validating_Then_Succeeds()
     {
-        // Arrange
-        var tlvStream = new TlvStream();
-        tlvStream.Add(Amt, Cltv, Scid, PaymentData);
-        var offsets = new Dictionary<BigSize, int>
-        {
-            [OnionPayloadTlvTypes.AmtToForward] = 0,
-            [OnionPayloadTlvTypes.OutgoingCltvValue] = 5,
-            [OnionPayloadTlvTypes.ShortChannelId] = 10,
-            [OnionPayloadTlvTypes.PaymentData] = 20
-        };
-        var payload = new HopPayload(tlvStream, offsets);
+        // Arrange: "MUST NOT include short_channel_id for the final node" is a writer rule; the reader ignores it
+        var payload = new HopPayload(Amt, Cltv, Scid, PaymentData);
 
-        // Act
-        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, true, false));
-
-        // Assert
-        AssertInvalidOnionPayload(exception, OnionPayloadTlvTypes.ShortChannelId, 10);
+        // Act & Assert
+        Assert.True(HopPayloadValidator.TryValidate(payload, true, false, out _));
     }
 
     [Fact]
@@ -259,14 +247,41 @@ public class HopPayloadValidatorTests
         AssertInvalidOnionPayload(exception, new BigSize(extraType), 0);
     }
 
+    [Theory]
+    [InlineData(301UL)]
+    [InlineData(65537UL)]
+    public void Given_BlindedIntermediatePayloadWithUnknownOddTlv_When_Validating_Then_FailsWithThatTypeAndOffset(
+        ulong unknownType)
+    {
+        // Arrange: BOLT 4 allows only encrypted_recipient_data and current_path_key, with no unknown-odd exception
+        var tlvStream = new TlvStream();
+        tlvStream.Add(EncryptedData, new BaseTlv(new BigSize(unknownType), [0x2a]));
+        var offsets = new Dictionary<BigSize, int>
+        {
+            [OnionPayloadTlvTypes.EncryptedRecipientData] = 1,
+            [new BigSize(unknownType)] = 40
+        };
+        var payload = new HopPayload(tlvStream, offsets);
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, false, true));
+
+        // Assert
+        AssertInvalidOnionPayload(exception, new BigSize(unknownType), 40);
+    }
+
     [Fact]
-    public void Given_BlindedIntermediatePayloadWithUnknownOddTlv_When_Validating_Then_Succeeds()
+    public void Given_BlindedFinalPayloadWithUnknownOddTlv_When_Validating_Then_FailsWithThatType()
     {
         // Arrange
-        var payload = new HopPayload(EncryptedData, new BaseTlv(new BigSize(301), [0x2a]));
+        var payload = new HopPayload(Amt, Cltv, EncryptedData, PathKey, TotalAmount,
+                                     new BaseTlv(new BigSize(65537), [0x01]));
 
-        // Act & Assert
-        Assert.True(HopPayloadValidator.TryValidate(payload, false, true, out _));
+        // Act
+        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, true, false));
+
+        // Assert
+        AssertInvalidOnionPayload(exception, new BigSize(65537), 0);
     }
 
     [Fact]

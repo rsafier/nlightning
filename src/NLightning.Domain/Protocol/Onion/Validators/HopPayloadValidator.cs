@@ -24,8 +24,13 @@ using Protocol.ValueObjects;
 /// payment_constraints, allowed_features), belong to the route-blinding processor (M5).
 /// </para>
 /// <para>
-/// Unknown odd records are ignored, as BOLT 1 requires. The "MUST return an error if the payload contains other tlv
-/// fields" rules for blinded hops are therefore applied to the known onion types only.
+/// Outside a blinded route, unknown odd records are ignored, as BOLT 1 allows. For blinded hops BOLT 4 says the
+/// reader "MUST return an error if the payload contains other tlv fields" than the allowed ones, with no exception
+/// for unknown odd types, so every record (known or not) is checked against the allowed set.
+/// </para>
+/// <para>
+/// A non-blinded final hop that carries <c>short_channel_id</c> is accepted: "MUST NOT include short_channel_id" is a
+/// writer rule only, and the final-node reader requirements do not check it.
 /// </para>
 /// </remarks>
 public static class HopPayloadValidator
@@ -102,8 +107,7 @@ public static class HopPayloadValidator
                         "current_path_key is required when update_add_htlc carries no path_key.");
 
         var allowedTypes = isFinalHop ? s_blindedFinalAllowedTypes : s_blindedIntermediateAllowedTypes;
-        var forbidden = payload.Tlvs.FirstOrDefault(tlv => OnionPayloadTlvTypes.KnownTypes.Contains(tlv.Type)
-                                                        && !allowedTypes.Contains(tlv.Type));
+        var forbidden = payload.Tlvs.FirstOrDefault(tlv => !allowedTypes.Contains(tlv.Type));
         if (forbidden is not null)
             return Fail(payload, forbidden.Type,
                         $"TLV type {forbidden.Type.Value} is not allowed in a blinded "
@@ -144,10 +148,7 @@ public static class HopPayloadValidator
                        ? Missing(payload, OnionPayloadTlvTypes.ShortChannelId, "short_channel_id")
                        : null;
 
-        // The writer MUST NOT include short_channel_id for the final node.
-        if (payload.ShortChannelId is not null)
-            return Fail(payload, OnionPayloadTlvTypes.ShortChannelId,
-                        "short_channel_id must not be present in a final hop payload.");
+        // A short_channel_id at the final node is ignored: "MUST NOT include" it is a writer-only rule.
 
         // BOLT 4 reader, final node: "MUST return an error if total_msat is not present". Outside a blinded route
         // total_msat is carried only by payment_data.
