@@ -37,6 +37,7 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(ChannelTypeTlv), new ChannelTypeTlvConverter());
         _converters.Add(typeof(FeeRangeTlv), new FeeRangeTlvConverter());
         _converters.Add(typeof(FundingOutputContributionTlv), new FundingOutputContributionTlvConverter());
+        _converters.Add(typeof(FundingTxIdTlv), new FundingTxIdTlvConverter());
         _converters.Add(typeof(NetworksTlv), new NetworksTlvConverter());
         _converters.Add(typeof(NextFundingTlv), new NextFundingTlvConverter());
         _converters.Add(typeof(RemoteAddressTlv), new RemoteAddressTlvConverter());

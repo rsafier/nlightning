@@ -63,13 +63,13 @@ public class ClosingSignedMessageTypeSerializer : IMessageTypeSerializer<Closing
             var payload = await payloadSerializer.DeserializeAsync(stream)
                        ?? throw new SerializationException("Error serializing payload");
 
-            // Deserialize extension
+            // Deserialize extension. BOLT 2: fee_range is optional (a sender only SHOULD set it).
             if (stream.Position >= stream.Length)
-                throw new SerializationException("Required extension is missing");
+                return new ClosingSignedMessage(payload);
 
             var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
             if (!extension.TryGetTlv(TlvConstants.FeeRange, out var baseFeeRangeTlv))
-                throw new SerializationException("Required extension is missing");
+                return new ClosingSignedMessage(payload);
 
             var tlvConverter = _tlvConverterFactory.GetConverter<FeeRangeTlv>()
                             ?? throw new SerializationException(
@@ -78,7 +78,7 @@ public class ClosingSignedMessageTypeSerializer : IMessageTypeSerializer<Closing
 
             return new ClosingSignedMessage(payload, feeRangeTlv);
         }
-        catch (SerializationException e)
+        catch (Exception e) when (e is SerializationException or InvalidCastException)
         {
             throw new MessageSerializationException("Error deserializing ClosingSignedMessage", e);
         }

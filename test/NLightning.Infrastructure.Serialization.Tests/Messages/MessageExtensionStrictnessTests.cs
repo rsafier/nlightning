@@ -22,7 +22,7 @@ public class MessageExtensionStrictnessTests
     public static TheoryData<string> MessageNames =>
     [
         "init", "open_channel", "accept_channel", "open_channel2", "accept_channel2", "tx_init_rbf", "tx_ack_rbf",
-        "channel_ready", "channel_reestablish", "closing_signed"
+        "channel_ready", "channel_reestablish", "closing_signed", "closing_signed_no_fee_range", "commitment_signed"
     ];
 
     [Theory]
@@ -104,6 +104,17 @@ public class MessageExtensionStrictnessTests
                 Zero32 + "0000000000000002"
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
               + "011000000000000000010000000000000003"),
+            "closing_signed_no_fee_range" => (
+                new ClosingSignedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, fee_satoshis, signature
+                Zero32 + "0000000000000002"
+              + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
+            "commitment_signed" => (
+                new CommitmentSignedMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, signature, num_htlcs = 0, funding_txid
+                Zero32
+              + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
+              + "0000" + "0120" + Zero32),
             _ => throw new ArgumentOutOfRangeException(nameof(messageName), messageName, null)
         };
     }

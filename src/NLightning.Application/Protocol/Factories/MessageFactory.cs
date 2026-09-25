@@ -720,17 +720,20 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="signature">The signature for the commitment transaction.</param>
     /// <param name="htlcSignatures">The signatures for each open htlc.</param>
+    /// <param name="fundingTxId">The funding transaction spent by the signed commitment. BOLT 2: the sender MUST set
+    /// the <c>funding_txid</c> TLV.</param>
     /// <returns>The CommitmentSigned message.</returns>
     /// <seealso cref="CommitmentSignedMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="CompactSignature"/>
     /// <seealso cref="CommitmentSignedPayload"/>
     public CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId, CompactSignature signature,
-                                                                 IEnumerable<CompactSignature> htlcSignatures)
+                                                                 IEnumerable<CompactSignature> htlcSignatures,
+                                                                 TxId fundingTxId)
     {
         var payload = new CommitmentSignedPayload(channelId, htlcSignatures, signature);
 
-        return new CommitmentSignedMessage(payload);
+        return new CommitmentSignedMessage(payload, new FundingTxIdTlv(fundingTxId));
     }
 
     /// <summary>

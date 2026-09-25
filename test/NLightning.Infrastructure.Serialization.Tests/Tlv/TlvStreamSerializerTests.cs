@@ -193,6 +193,7 @@ public class TlvStreamSerializerTests
             new ChannelTypeTlv([0x10, 0x00]),
             new FeeRangeTlv(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(2_000)),
             new FundingOutputContributionTlv(LightningMoney.Satoshis(100_000)),
+            new FundingTxIdTlv(Enumerable.Range(0, 32).Select(i => (byte)(i + 1)).ToArray()),
             new NetworksTlv([BitcoinNetwork.Mainnet.ChainHash]),
             new NextFundingTlv(Enumerable.Range(0, 32).Select(i => (byte)i).ToArray()),
             new RemoteAddressTlv(1, "192.168.0.1", 9735),
