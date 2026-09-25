@@ -37,7 +37,6 @@ There are none; nothing under `test/` covers this project. The natural home for 
 - Both ends must set `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` before any serialization. See `src/NLightning.Client/Program.cs` and `src/NLightning.Daemon/Program.cs`. Otherwise LZ4 and resolver mismatches occur.
 - `HashFormatter` and `TxIdFormatter` use `WriteRaw`/`ReadRaw(32)` with no bin header. That output is not valid MessagePack for non-.NET readers, and a default value writes 0 bytes.
 - Bug: `SignedTransactionFormatter` writes TxId with `writer.Write(value.TxId)` (bin header) but reads it with `TxIdFormatter` (raw), so a round-trip breaks. Serialize also has no null check (CS8602). No DTO uses it yet.
-- `GetAddressIpcResponse.AddressP2Wsh` actually carries a P2WPKH address. The request DTO defaults to P2Wpkh, but `NamedPipeIpcClient` defaults to P2Tr when no type argument is given (`p2wpkh`/`all` also accepted).
 - Framing is a 4-byte native-endian length prefix with a 10 MB cap, and each connection carries exactly one request and one response, with no push. For progress updates, use a long-poll "subscription" command, as `OpenChannelSubscription` does. The framing is implemented twice (`src/NLightning.Daemon/Services/Ipc/IpcFraming.cs` and `src/NLightning.Client/Ipc/NamedPipeIpcClient.cs`), so change both together.
 
 ## Onion-routing (BOLT 4) hooks
