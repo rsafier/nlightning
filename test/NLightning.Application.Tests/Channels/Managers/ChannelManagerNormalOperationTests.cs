@@ -78,10 +78,9 @@ public class ChannelManagerNormalOperationTests
         channelManager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
 
         // Act
-        var replies = await channelManager.HandleChannelMessageAsync(message, new FeatureOptions(), PeerNodeId);
+        await channelManager.HandleChannelMessageAsync(message, new FeatureOptions(), PeerNodeId);
 
-        // Assert
-        Assert.Same(reply, Assert.Single(replies));
+        // Assert - raised once, only through the event (NL-234: nothing is returned to send twice)
         Assert.Same(reply, Assert.Single(raised));
     }
 
@@ -126,11 +125,13 @@ public class ChannelManagerNormalOperationTests
         var channelManager = CreateChannelManager();
 
         // Act
-        var replies = await channelManager.HandleChannelMessageAsync(CreateMessage(MessageTypes.UpdateAddHtlc),
-                                                                     new FeatureOptions(), PeerNodeId);
+        var raised = new List<IChannelMessage>();
+        channelManager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
+        await channelManager.HandleChannelMessageAsync(CreateMessage(MessageTypes.UpdateAddHtlc),
+                                                       new FeatureOptions(), PeerNodeId);
 
         // Assert
-        Assert.Empty(replies);
+        Assert.Empty(raised);
     }
 
     [Fact]
@@ -164,9 +165,9 @@ public class ChannelManagerNormalOperationTests
     }
 
     [Fact]
-    public async Task Given_FailedChannel_When_UpdateArrives_Then_ChannelErrorIsRaisedAgain()
+    public async Task Given_FailedChannel_When_UpdateArrives_Then_TheChannelErrorIsRaisedAgain()
     {
-        // Arrange - a failed channel refuses every update (real handler)
+        // Arrange - a failed channel ignores every message and re-sends its error (B2-RE-05), without the handler
         var context = new NormalOperationTestContext(state: ChannelState.Failed);
         context.ChannelMemoryRepository.Setup(r => r.TryGetChannelState(TestChannelId, out It.Ref<ChannelState>.IsAny))
                .Returns(new TryGetStateDelegate((ChannelId _, out ChannelState state) =>
@@ -185,13 +186,14 @@ public class ChannelManagerNormalOperationTests
                                                 services.BuildServiceProvider());
 
         // Act
-        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+        var exception = await Assert.ThrowsAsync<ChannelFailedException>(
                             () => channelManager.HandleChannelMessageAsync(
                                 UpdateAddHtlcMessageHandlerTests.CreateAdd(0, 50_000_000), new FeatureOptions(),
                                 PeerNodeId));
 
-        // Assert
+        // Assert - the error names the channel; nothing is persisted again
         Assert.Equal(TestChannelId, exception.ChannelId);
+        Assert.Equal(ChannelFailedException.DefaultPeerMessage, exception.PeerMessage);
         Assert.Empty(context.Calls);
     }
 

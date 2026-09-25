@@ -24,6 +24,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
 using Gossip.Events;
 using Gossip.Interfaces;
 using Infrastructure.Protocol.Models;
@@ -672,6 +673,8 @@ public sealed class PeerManager : IPeerManager
                 replaced.Close();
             }
 
+            // None of the peer's channels is reestablished on the new connection (BOLT 2), before it is visible
+            _channelManager.OnPeerConnectionChanged(peerId);
             _peers[peerId] = session;
 
             var previousLoop = _inboundLoops.GetValueOrDefault(peerId) ?? Task.CompletedTask;
@@ -785,8 +788,11 @@ public sealed class PeerManager : IPeerManager
             peerService.OnChannelUpdateReceived -= session.ChannelUpdateHandler;
         peerService.Dispose();
 
-        if (removed)
-            ReconnectIfNeeded(session);
+        if (!removed)
+            return;
+
+        _channelManager.OnPeerConnectionChanged(session.Peer.NodeId);
+        ReconnectIfNeeded(session);
     }
 
     /// <summary>
@@ -813,6 +819,11 @@ public sealed class PeerManager : IPeerManager
         _currentSession.Value = session;
         try
         {
+            // Before any other channel message on this connection: channel_reestablish (or the stored error) for
+            // every channel with the peer (BOLT 2 Message Retransmission)
+            if (!cancellationToken.IsCancellationRequested)
+                await StartReestablishAsync(session);
+
             await foreach (var message in inbound.ReadAllAsync(cancellationToken))
             {
                 // ReadAllAsync keeps returning queued items after cancellation; the connection is gone, drop them
@@ -829,6 +840,48 @@ public sealed class PeerManager : IPeerManager
         catch (OperationCanceledException)
         {
             // The connection closed
+        }
+        finally
+        {
+            // The last message of this connection was handled: undo the peer's uncommitted updates before the next
+            // connection's loop (which waits for this one) sends channel_reestablish
+            await RevertPeerUpdatesAsync(session);
+        }
+    }
+
+    /// <summary>
+    /// Raises our <c>channel_reestablish</c> for the peer's channels (through the outbox, via the channel manager) and
+    /// queues the stored error of its failed channels. A failure is logged: the channels stay unusable on this
+    /// connection, and the peer is not disconnected for our own error.
+    /// </summary>
+    private async Task StartReestablishAsync(PeerSession session)
+    {
+        try
+        {
+            var errors = await _channelManager.OnPeerConnectedAsync(session.Peer.NodeId);
+            if (errors is null)
+                return;
+
+            foreach (var error in errors)
+                if (!session.Outbox.TryEnqueueError(error))
+                    _logger.LogWarning("Peer {Peer} is disconnecting, dropping the error of channel {ChannelId}",
+                                       session.Peer.NodeId, error.Payload.ChannelId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to start channel_reestablish with peer {Peer}", session.Peer.NodeId);
+        }
+    }
+
+    private async Task RevertPeerUpdatesAsync(PeerSession session)
+    {
+        try
+        {
+            await _channelManager.OnPeerDisconnectedAsync(session.Peer.NodeId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to revert the uncommitted updates of peer {Peer}", session.Peer.NodeId);
         }
     }
 
@@ -868,6 +921,22 @@ public sealed class PeerManager : IPeerManager
                                              ChannelId? channelId)
     {
         var peerPubKey = session.PeerService.PeerPubKey;
+
+        if (exception is ChannelFailedException cfe)
+        {
+            // The channel is failed (and persisted as such): send its error and keep the connection, so the peer's
+            // other channels go on (BOLT 1: the sender MAY close the connection; BOLT 2 re-sends it on reconnection)
+            _logger.LogError("Channel {ChannelId} of peer {Peer} is failed ({messageType}): {message}",
+                             cfe.FailedChannelId, peerPubKey, Enum.GetName(messageType), cfe.Message);
+
+            var errorMessage = new ErrorMessage(new ErrorPayload(cfe.FailedChannelId,
+                                                                 cfe.PeerMessage
+                                                              ?? ChannelFailedException.DefaultPeerMessage));
+            if (!session.Outbox.TryEnqueueError(errorMessage))
+                _logger.LogWarning("Peer {Peer} is disconnecting, dropping the error of channel {ChannelId}", peerPubKey,
+                                   cfe.FailedChannelId);
+            return true;
+        }
 
         if (exception is ChannelErrorException cee)
         {

@@ -6,6 +6,7 @@ namespace NLightning.Application.Node.Services;
 using Domain.Exceptions;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 
 /// <summary>
 /// The single, ordered send path for one peer's channel messages (BOLT2 plan D2, §3.7; NL-193).
@@ -72,6 +73,15 @@ public sealed class PeerOutbox
     }
 
     /// <summary>
+    /// Queues an `error`; the connection stays up (e.g. a failed channel's error, BOLT 1 allows keeping it).
+    /// </summary>
+    public bool TryEnqueueError(ErrorMessage error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        return _queue.Writer.TryWrite(new OutboxItem(OutboxItemKind.Error, error, null));
+    }
+
+    /// <summary>
     /// Queues a disconnect after everything already queued, then closes the outbox. The peer service sends the
     /// `error`/`warning` for <paramref name="reason"/> (if any) and closes the connection.
     /// </summary>
@@ -104,6 +114,9 @@ public sealed class PeerOutbox
                     case OutboxItemKind.Gossip:
                         await _peerService.SendGossipMessageAsync(item.Message!).ConfigureAwait(false);
                         break;
+                    case OutboxItemKind.Error:
+                        await _peerService.SendErrorAsync((ErrorMessage)item.Message!).ConfigureAwait(false);
+                        break;
                     case OutboxItemKind.Warning:
                         await _peerService.SendWarningAsync((WarningException)item.Reason!).ConfigureAwait(false);
                         break;
@@ -125,6 +138,7 @@ public sealed class PeerOutbox
         Message,
         Gossip,
         Warning,
+        Error,
         Disconnect
     }
 

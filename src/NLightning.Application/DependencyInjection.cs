@@ -9,6 +9,7 @@ using Channels.Handlers;
 using Channels.Handlers.Interfaces;
 using Channels.Interfaces;
 using Channels.Managers;
+using Channels.Reestablish;
 using Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
@@ -80,6 +81,7 @@ public static class DependencyInjection
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddCommitmentEngineServices();
         services.AddChannelStateTransitionServices();
+        services.AddReestablishServices();
         services.AddChannelOperationsServices();
         services.AddGossipServices();
         services.AddPaymentsServices();

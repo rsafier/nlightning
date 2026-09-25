@@ -209,6 +209,13 @@ public sealed class PeerService : IPeerService
     }
 
     /// <inheritdoc/>
+    public Task SendErrorAsync(ErrorMessage errorMessage)
+    {
+        ArgumentNullException.ThrowIfNull(errorMessage);
+        return _peerCommunicationService.SendMessageAsync(errorMessage);
+    }
+
+    /// <inheritdoc/>
     public Task SendGossipMessageAsync(IMessage message)
     {
         ArgumentNullException.ThrowIfNull(message);

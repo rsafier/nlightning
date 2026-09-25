@@ -158,12 +158,10 @@ public class ChannelManagerConcurrencyTests
         channelManager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
 
         // Act
-        var returned = await channelManager.HandleChannelMessageAsync(CreateChannelReady(channelId),
-                                                                      new FeatureOptions(), s_pubKey);
+        await channelManager.HandleChannelMessageAsync(CreateChannelReady(channelId), new FeatureOptions(), s_pubKey);
 
         // Assert
         Assert.Equal(replies, raised);
-        Assert.Equal(replies, returned);
     }
 
     [Fact]
