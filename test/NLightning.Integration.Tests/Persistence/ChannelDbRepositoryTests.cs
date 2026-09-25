@@ -1,8 +1,11 @@
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Protocol.Models;
+using Infrastructure.Repositories.Database.Bitcoin;
 using Infrastructure.Repositories.Database.Channel;
 
 public class ChannelDbRepositoryTests
@@ -101,6 +104,69 @@ public class ChannelDbRepositoryTests
         Assert.NotNull(reloaded.CommitmentNumber);
         Assert.Equal(expected.ObscuringFactor, reloaded.CommitmentNumber.ObscuringFactor);
         Assert.Equal(channel.CommitmentNumber!.ObscuringFactor, reloaded.CommitmentNumber.ObscuringFactor);
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithChangeAddress_When_Reloaded_Then_ChangeAddressIsRestored()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var changeAddress = new WalletAddressModel(AddressType.P2Wpkh, 3, true,
+                                                   "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080");
+        await using (var addressContext = db.CreateDbContext())
+        {
+            new WalletAddressesDbRepository(addressContext).AddRange([
+                new WalletAddressModel(AddressType.P2Wpkh, 3, false, "bcrt1qnotchange"),
+                changeAddress
+            ]);
+            await addressContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var channel = SqliteDbTestContext.CreateChannel(true, changeAddress: changeAddress);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.NotNull(reloaded.ChangeAddress);
+        Assert.Equal(changeAddress.AddressType, reloaded.ChangeAddress.AddressType);
+        Assert.Equal(changeAddress.Index, reloaded.ChangeAddress.Index);
+        Assert.True(reloaded.ChangeAddress.IsChange);
+        Assert.Equal(changeAddress.Address, reloaded.ChangeAddress.Address);
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithoutChangeAddress_When_ChangeAddressAddedByUpdate_Then_ChangeAddressIsRestored()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var changeAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, true, "bcrt1qchange");
+        await using (var addressContext = db.CreateDbContext())
+        {
+            new WalletAddressesDbRepository(addressContext).AddRange([changeAddress]);
+            await addressContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var channel = SqliteDbTestContext.CreateChannel(true);
+        var reloaded = await SaveAndReloadAsync(db, channel);
+        Assert.Null(reloaded.ChangeAddress);
+        reloaded.ChangeAddress = changeAddress;
+
+        // Act
+        await using (var updateContext = db.CreateDbContext())
+        {
+            var repository = new ChannelDbRepository(updateContext, db.MessageSerializer, db.Sha256);
+            await repository.UpdateAsync(reloaded);
+            await updateContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var updated = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+                         .GetByIdAsync(channel.ChannelId);
+        Assert.NotNull(updated?.ChangeAddress);
+        Assert.Equal(changeAddress.Address, updated.ChangeAddress.Address);
+        Assert.True(updated.ChangeAddress.IsChange);
     }
 
     [Fact]
