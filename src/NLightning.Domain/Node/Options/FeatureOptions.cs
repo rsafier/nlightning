@@ -15,16 +15,21 @@ public class FeatureOptions
     /// option_data_loss_protect.
     /// </summary>
     /// <remarks>
-    /// BOLT 9 marks it ASSUMED, but LND/CLN still expect the bit, so it is advertised as Optional: advertising it as
-    /// Compulsory would make us reject spec-compliant peers that omit ASSUMED bits.
-    /// channel_reestablish itself is not implemented yet (NL-035).
+    /// BOLT 9 marks it ASSUMED, but LND/CLN still expect the bit, so it is still advertised, as Optional rather than
+    /// Compulsory because channel_reestablish itself is not implemented yet (NL-035). ASSUMED bits are sent in init
+    /// and node_announcement for interop even though BOLT 9 gives them no context; a peer that omits them is treated
+    /// as supporting them (see <see cref="FeatureSet.IsCompatible"/>).
     /// </remarks>
     public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable an upfront shutdown script.
     /// </summary>
-    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: we never generate a local upfront script and shutdown does not enforce the peer's one yet,
+    /// which BOLT 2 requires once option_upfront_shutdown_script is negotiated.
+    /// </remarks>
+    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable gossip queries.
