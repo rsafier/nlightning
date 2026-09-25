@@ -6,6 +6,7 @@ namespace NLightning.Application.Channels.Handlers;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
@@ -58,8 +59,9 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
                                               payload.ChannelId,
                                               "This channel requires a ShortChannelIdTlv to be provided");
 
-        // Store their new per-commitment point
-        if (channel.RemoteKeySet!.CurrentPerCommitmentIndex == 0)
+        // Store their second per-commitment point, only on the first channel_ready (the remote index counts down
+        // from 2^48-1, so it is still at the first index until we store it)
+        if (channel.RemoteKeySet!.CurrentPerCommitmentIndex == CryptoConstants.FirstPerCommitmentIndex)
             channel.RemoteKeySet.UpdatePerCommitmentPoint(payload.SecondPerCommitmentPoint);
 
         switch (currentState)

@@ -46,7 +46,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `dotnet test test/NLightning.Application.Tests` runs all the tests (CI included, since NL-167 added xunit.runner.visualstudio). The xunit v3 runner also works:
   `dotnet run --project test/NLightning.Application.Tests`, or
   `test/NLightning.Application.Tests/bin/Debug/net10.0/NLightning.Application.Tests -class NLightning.Application.Tests.Node.Managers.PeerManagerTests`
-- Existing coverage: OpenChannel1, AcceptChannel1 (funding outpoint flow only), FundingCreated, FundingSigned (rebuilt funding tx guard), FundingConfirmed, ChannelManager (block events) and PeerManager. Nothing covers ChannelReady or MessageFactory.
+- Existing coverage: OpenChannel1, AcceptChannel1 (funding outpoint flow only), FundingCreated, FundingSigned (rebuilt funding tx guard), FundingConfirmed, ChannelReady, ChannelManager (block events) and PeerManager. Nothing covers MessageFactory.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`.
 
 ## Gotchas
