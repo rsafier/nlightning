@@ -13,7 +13,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `Channels/Handlers/Interfaces/IChannelMessageHandler.cs`: `Task<IChannelMessage?> HandleAsync(msg, ChannelState currentState, FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)`. A non-null return value is sent back to the same peer.
 - `Channels/Handlers/`:
   - `OpenChannel1MessageHandler`: we are the non-initiator. Receives open_channel, replies accept_channel.
-  - `AcceptChannel1MessageHandler`: we are the initiator. Receives accept_channel, builds the funding tx, replies funding_created.
+  - `AcceptChannel1MessageHandler`: we are the initiator. Receives accept_channel, builds the funding tx, persists the channel, replies funding_created.
   - `FundingCreatedMessageHandler`: non-initiator. Replies funding_signed, persists the channel and watches the funding tx.
   - `FundingSignedMessageHandler`: initiator. Signs, publishes and watches the funding tx. Sends no reply.
   - `ChannelReadyMessageHandler`
@@ -46,14 +46,14 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `dotnet test` finds **0 tests** here ("No test is available") because the csproj lacks xunit.runner.visualstudio, which the other test projects reference; CI's `dotnet test` therefore silently skips them. Run the tests with:
   `dotnet run --project test/NLightning.Application.Tests` (24 tests), or
   `test/NLightning.Application.Tests/bin/Debug/net10.0/NLightning.Application.Tests -class NLightning.Application.Tests.Node.Managers.PeerManagerTests`
-- Existing coverage: OpenChannel1, FundingCreated, FundingConfirmed, ChannelReady, ChannelManager (block events) and PeerManager. Nothing covers AcceptChannel1, FundingSigned or MessageFactory.
+- Existing coverage: OpenChannel1, FundingCreated, FundingConfirmed, ChannelReady, AcceptChannel1, ChannelManager (block events) and PeerManager. Nothing covers FundingSigned or MessageFactory.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`.
 
 ## Gotchas
 - Opening messages carry the **temporary** channel id. `currentState` only looks up real channels, so it is `None` for them, and the handlers must call `TryGetTemporaryChannelState(peer, id)` themselves. funding_created still carries the temp id. Only the initiator calls `UpgradeChannel`, which fires the `OnChannelUpgraded` event the Daemon's OpenChannelClientHandler waits on.
 - `ForgetStaleChannels` only forgets fundee (non-initiator) channels still awaiting funding (`V1FundingSigned`/`ReadyForThem`) whose `FundingCreatedAtBlockHeight` is non-zero and at least 2016 blocks old. `FundingCreatedMessageHandler` sets that field to `IBlockchainMonitor.LastProcessedBlockHeight`; `HandleFundingConfirmationAsync` later overwrites it with the funding tx's first-seen height.
 - `ConfirmUnconfirmedChannels` only re-drives `V1FundingSigned`/`ReadyForThem` channels whose watched funding tx is already `IsCompleted` (e.g. confirmed while offline). `HandleFundingConfirmationAsync` and `FundingConfirmedMessageHandler` ignore any other state, so channel_ready is sent once per confirmation. Re-sending channel_ready on reconnect belongs to channel_reestablish (not implemented).
-- The catch-block cleanup in `AcceptChannel1MessageHandler` looks inverted, and it doesn't release locked UTXOs. The initiator channel isn't persisted until funding_signed arrives.
+- `AcceptChannel1MessageHandler` persists the initiator channel (state `V1FundingCreated`, via `ChannelDbRepository.AddAsync`) before returning funding_created, so `FundingSignedMessageHandler` later takes the update path. On failure it removes the temporary channel by its temporary id (or the upgraded channel) and releases the locked UTXOs; failures in the validation checks before its `try` still rely on the Daemon's OpenChannelClientHandler to release them.
 - No per-channel lock: two messages for the same channel can race on the shared ChannelModel. `PeerManager._peers` is a plain Dictionary. Reply continuations are attached with `ContinueWith` and never awaited, so exceptions in them go unobserved.
 - Handler discovery uses reflection (`Assembly.GetTypes()`), which trimming or AOT may break.
 

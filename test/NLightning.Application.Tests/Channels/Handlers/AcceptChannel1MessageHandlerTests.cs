@@ -162,6 +162,68 @@ public class AcceptChannel1MessageHandlerTests
                                                             s_pubKey));
     }
 
+    [Fact]
+    public async Task Given_ValidAcceptChannel_When_HandleAsync_Then_ChannelIsPersistedBeforeFundingCreatedIsSent()
+    {
+        // Arrange
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        ChannelState? persistedState = null;
+        _mockChannelDbRepository.Setup(r => r.AddAsync(It.IsAny<ChannelModel>()))
+                                .Callback((ChannelModel c) => persistedState = c.State)
+                                .Returns(Task.CompletedTask);
+
+        // Act
+        var result = await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        Assert.IsType<FundingCreatedMessage>(result);
+        _mockChannelDbRepository.Verify(r => r.AddAsync(_tempChannel), Times.Once);
+        Assert.Equal(ChannelState.V1FundingCreated, persistedState);
+        Assert.Equal([nameof(IUnitOfWork.SaveChangesAsync), nameof(IChannelMemoryRepository.UpgradeChannel)],
+                     _calls);
+        _mockUtxoMemoryRepository.Verify(r => r.UpgradeChannelIdOnLockedUtxos(s_tempChannelId, s_newChannelId),
+                                         Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ErrorAfterChannelIdChanged_When_HandleAsync_Then_TempChannelIsRemovedAndUtxosReleased()
+    {
+        // Arrange
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        _mockCommitmentTransactionBuilder.Setup(b => b.Build(It.IsAny<CommitmentTransactionModel>()))
+                                         .Throws(new InvalidOperationException("boom"));
+
+        // Act
+        await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                            message, ChannelState.None, new FeatureOptions(),
+                                                            s_pubKey));
+
+        // Assert
+        _mockChannelMemoryRepository.Verify(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId), Times.Once);
+        _mockUtxoMemoryRepository.Verify(r => r.ReturnUtxosNotSpentOnChannel(s_tempChannelId), Times.Once);
+        _mockChannelMemoryRepository.Verify(r => r.UpgradeChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelModel>()),
+                                            Times.Never);
+        _mockChannelDbRepository.Verify(r => r.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ErrorBeforeChannelIdChanged_When_HandleAsync_Then_TempChannelIsRemovedAndUtxosReleased()
+    {
+        // Arrange
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>()))
+                                 .Throws(new InvalidOperationException("boom"));
+
+        // Act
+        await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                            message, ChannelState.None, new FeatureOptions(),
+                                                            s_pubKey));
+
+        // Assert
+        _mockChannelMemoryRepository.Verify(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId), Times.Once);
+        _mockUtxoMemoryRepository.Verify(r => r.ReturnUtxosNotSpentOnChannel(s_tempChannelId), Times.Once);
+    }
+
     private static AcceptChannel1Message CreateMessage(UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv)
     {
         var payload = new AcceptChannel1Payload(s_tempChannelId, LightningMoney.Satoshis(1_000), s_pubKey,
