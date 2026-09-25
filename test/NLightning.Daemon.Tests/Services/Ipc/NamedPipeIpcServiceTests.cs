@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Services.Ipc;
 
+using Daemon.Contracts.Utilities;
 using Daemon.Ipc.Interfaces;
 using Daemon.Services.Ipc;
 using TestCollections;
@@ -50,6 +51,63 @@ public class NamedPipeIpcServiceTests : IDisposable
 
         // Assert
         Assert.Same(stopTask, completed);
+    }
+
+    [Fact]
+    public async Task GivenExistingCookie_WhenStartAsync_ThenCookieIsRotated()
+    {
+        // Arrange
+        var cookiePath = NodeUtils.GetCookieFilePath(_configPath);
+        await File.WriteAllTextAsync(cookiePath, "old-cookie", TestContext.Current.CancellationToken);
+        var service = CreateService();
+
+        // Act
+        await service.StartAsync(CancellationToken.None);
+        var firstCookie = await File.ReadAllTextAsync(cookiePath, TestContext.Current.CancellationToken);
+        await service.StopAsync();
+
+        var restartedService = CreateService();
+        await restartedService.StartAsync(CancellationToken.None);
+        var secondCookie = await File.ReadAllTextAsync(cookiePath, TestContext.Current.CancellationToken);
+        await restartedService.StopAsync();
+
+        // Assert
+        Assert.NotEqual("old-cookie", firstCookie);
+        Assert.Equal(64, firstCookie.Length);
+        Assert.NotEqual(firstCookie, secondCookie);
+    }
+
+    [Fact]
+    public async Task GivenStartedService_WhenStartAsync_ThenCookieIsOwnerOnly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        var cookiePath = NodeUtils.GetCookieFilePath(_configPath);
+        var service = CreateService();
+
+        // Act
+        await service.StartAsync(CancellationToken.None);
+        var mode = OperatingSystem.IsWindows() ? UnixFileMode.None : File.GetUnixFileMode(cookiePath);
+        await service.StopAsync();
+
+        // Assert
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, mode);
+    }
+
+    [Fact]
+    public async Task GivenStartedService_WhenStopAsync_ThenCookieIsDeleted()
+    {
+        // Arrange
+        var cookiePath = NodeUtils.GetCookieFilePath(_configPath);
+        var service = CreateService();
+        await service.StartAsync(CancellationToken.None);
+
+        // Act
+        await service.StopAsync();
+
+        // Assert
+        Assert.False(File.Exists(cookiePath));
     }
 
     private NamedPipeIpcService CreateService()

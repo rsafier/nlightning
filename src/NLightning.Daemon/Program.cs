@@ -56,15 +56,11 @@ try
         return 0;
     }
 
-    string? password = null;
+    // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
+    var password = PasswordUtils.ResolvePassword(args, Console.In, Log.Logger);
 
-    // Try to get password from args or prompt
-    if (args.Contains("--password"))
-    {
-        var idx = Array.IndexOf(args, "--password");
-        if (idx >= 0 && idx + 1 < args.Length)
-            password = args[idx + 1];
-    }
+    // Don't leak the password to anything else that reads our environment
+    Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
 
     if (string.IsNullOrWhiteSpace(password))
     {

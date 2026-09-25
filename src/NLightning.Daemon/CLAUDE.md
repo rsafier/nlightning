@@ -47,8 +47,8 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 ## Gotchas
 - `-n` and `-c` are not mapped for the config provider (`AddCommandLine(args)` with no switch mappings ignores unmapped single-dash keys), so use `--network` and `--config` despite `DaemonUtils.ShowUsage` advertising `-n`/`-c`. In the config provider a bare flag such as `--daemon` consumes the next argument as its value (e.g. `--daemon --network regtest` loses the network), so put it last or write `--daemon=true`. The daemonize decision itself scans raw `args` for `--daemon`/`--daemon=true`, so position does not matter there.
 - With `--config`, the network comes from `Node:Network` in the file. The default dir is `mainnet`, but the template sets `regtest`.
-- Creating a new key requires reachable bitcoind RPC (for birth height). `--password` is visible in the process list.
-- On Unix the IPC pipe is a Unix socket at `{configPath}/nltg.ipc` (`NodeConstants.NamedPipeFile`). Each connection carries one request and one response, with a native-endian 4-byte length prefix and a 10MB cap. The cookie at `{configPath}/nltg.cookie` is never rotated.
+- Creating a new key requires reachable bitcoind RPC (for birth height). The key password comes from `PasswordUtils.ResolvePassword`: `--password-file`, `--password-stdin`, `--password` (warns: visible in the process list), then `NLTG_PASSWORD`, else an interactive prompt. `Program.cs` clears `NLTG_PASSWORD` from its own environment after reading it.
+- On Unix the IPC pipe is a Unix socket at `{configPath}/nltg.ipc` (`NodeConstants.NamedPipeFile`). Each connection carries one request and one response, with a native-endian 4-byte length prefix and a 10MB cap. `NamedPipeIpcService` writes a new random cookie to `{configPath}/nltg.cookie` (mode 0600 on Unix) on every start and deletes it on stop.
 - `NamedPipeIpcService.StopAsync` throws if `StartAsync` never ran. Linux daemonization calls `fork()` after the runtime has started.
 
 ## Onion routing (BOLT 4) hooks
