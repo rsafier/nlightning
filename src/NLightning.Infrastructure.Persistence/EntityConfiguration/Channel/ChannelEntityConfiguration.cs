@@ -30,8 +30,8 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.RemoteRevocationNumber).IsRequired();
             entity.Property(e => e.State).IsRequired();
             entity.Property(e => e.Version).IsRequired();
-            entity.Property(e => e.LocalBalanceSatoshis).IsRequired();
-            entity.Property(e => e.RemoteBalanceSatoshis).IsRequired();
+            entity.Property(e => e.LocalBalanceMsat).IsRequired();
+            entity.Property(e => e.RemoteBalanceMsat).IsRequired();
             entity.Property(e => e.ChannelId)
                   .HasConversion<ChannelIdConverter>()
                   .IsRequired();
@@ -46,6 +46,9 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.LastSentSignature).IsRequired(false);
             entity.Property(e => e.LastReceivedSignature).IsRequired(false);
             entity.Property(e => e.RemoteAlias)
+                  .HasConversion<ShortChannelIdConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.ShortChannelId)
                   .HasConversion<ShortChannelIdConverter>()
                   .IsRequired(false);
 
@@ -86,13 +89,12 @@ public static class ChannelEntityConfiguration
 
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<ChannelEntity> entity)
     {
-        entity.Property(e => e.LocalBalanceSatoshis).HasColumnType("bigint");
-        entity.Property(e => e.RemoteBalanceSatoshis).HasColumnType("bigint");
         entity.Property(e => e.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
         entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
         entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.LastSentSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.RemoteAlias).HasColumnType($"varbinary({ShortChannelId.Length})");
+        entity.Property(e => e.ShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
     }
 }

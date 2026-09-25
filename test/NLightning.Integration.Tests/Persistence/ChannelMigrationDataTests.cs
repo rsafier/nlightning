@@ -15,6 +15,7 @@ using Infrastructure.Persistence.Providers;
 public sealed class ChannelMigrationDataTests : IAsyncDisposable
 {
     private const string BeforeSplitChannelParams = "20260925155346_AddChannelScidAliases";
+    private const string BeforeMsatBalances = "20260925171209_SplitChannelParams";
 
     private static readonly byte[] s_channelId = Enumerable.Repeat((byte)0x07, 32).ToArray();
 
@@ -76,6 +77,61 @@ public sealed class ChannelMigrationDataTests : IAsyncDisposable
                                   .SingleAsync(TestContext.Current.CancellationToken);
         Assert.Equal(0, config.LocalChannelReserveAmountSats);
         Assert.Equal(0, config.RemoteChannelReserveAmountSats);
+    }
+
+    [Fact]
+    public async Task Given_SatoshiBalances_When_StoreMsatBalancesRuns_Then_BalancesAreInMsat()
+    {
+        // Arrange (NL-191)
+        await using var context = await CreateContextAtAsync(BeforeMsatBalances);
+        await InsertChannelAsync(context);
+
+        // Act
+        await context.GetService<IMigrator>().MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Assert
+        var channel = await context.Channels.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(600_000_000, channel.LocalBalanceMsat);
+        Assert.Equal(400_000_000, channel.RemoteBalanceMsat);
+        Assert.Null(channel.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithoutHtlcsAndNextIdsOne_When_StoreMsatBalancesRuns_Then_NextIdsAreZero()
+    {
+        // Arrange (NL-190: HTLC ids start at 0)
+        await using var context = await CreateContextAtAsync(BeforeMsatBalances);
+        await InsertChannelAsync(context);
+
+        // Act
+        await context.GetService<IMigrator>().MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Assert
+        var channel = await context.Channels.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(0UL, channel.LocalNextHtlcId);
+        Assert.Equal(0UL, channel.RemoteNextHtlcId);
+    }
+
+    [Fact]
+    public async Task Given_ChannelWithAnHtlcRow_When_StoreMsatBalancesRuns_Then_NextIdsAreKept()
+    {
+        // Arrange
+        await using var context = await CreateContextAtAsync(BeforeMsatBalances);
+        await InsertChannelAsync(context);
+        await context.Database.ExecuteSqlRawAsync(
+            """
+            INSERT INTO "Htlcs" ("ChannelId", "HtlcId", "Direction", "AddMessageBytes", "AmountMsat", "CltvExpiry",
+                "ObscuredCommitmentNumber", "PaymentHash", "State")
+            VALUES ({0}, 0, 0, {1}, 1000, 500, 0, {2}, 0)
+            """, [s_channelId, new byte[] { 0x00 }, new byte[32]], TestContext.Current.CancellationToken);
+
+        // Act
+        await context.GetService<IMigrator>().MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Assert
+        var channel = await context.Channels.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1UL, channel.LocalNextHtlcId);
+        Assert.Equal(1UL, channel.RemoteNextHtlcId);
     }
 
     public async ValueTask DisposeAsync()

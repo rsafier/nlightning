@@ -227,8 +227,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             State = (byte)channelModel.State,
             Version = (byte)channelModel.Version,
 
-            LocalBalanceSatoshis = channelModel.LocalBalance.Satoshi,
-            RemoteBalanceSatoshis = channelModel.RemoteBalance.Satoshi,
+            LocalBalanceMsat = checked((long)channelModel.LocalBalance.MilliSatoshi),
+            RemoteBalanceMsat = checked((long)channelModel.RemoteBalance.MilliSatoshi),
+            ShortChannelId = IsSet(channelModel.ShortChannelId) ? channelModel.ShortChannelId : (ShortChannelId?)null,
 
             ChangeAddressType = channelModel.ChangeAddress?.AddressType,
             ChangeAddressIndex = channelModel.ChangeAddress?.Index,
@@ -333,9 +334,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
         return new ChannelModel(config, channelEntity.ChannelId, commitmentNumber, fundingOutput,
                                 channelEntity.IsInitiator, lastSentSig, lastReceivedSig,
-                                LightningMoney.Satoshis(channelEntity.LocalBalanceSatoshis), localKeySet,
+                                LightningMoney.MilliSatoshis((ulong)channelEntity.LocalBalanceMsat), localKeySet,
                                 channelEntity.LocalNextHtlcId, channelEntity.LocalRevocationNumber,
-                                LightningMoney.Satoshis(channelEntity.RemoteBalanceSatoshis), remoteKeySet,
+                                LightningMoney.MilliSatoshis((ulong)channelEntity.RemoteBalanceMsat), remoteKeySet,
                                 channelEntity.RemoteNextHtlcId, remoteNodeId, channelEntity.RemoteRevocationNumber,
                                 (ChannelState)channelEntity.State, (ChannelVersion)channelEntity.Version,
                                 localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, remoteOfferedHtlcs,
@@ -346,6 +347,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                ? channelEntity.LocalAliases.Select(a => a.Alias).ToList()
                                : null,
             RemoteAlias = channelEntity.RemoteAlias,
+            ShortChannelId = channelEntity.ShortChannelId ?? default,
             ChangeAddress = channelEntity.ChangeAddress is null
                                 ? null
                                 : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress)
@@ -429,6 +431,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             return primaryKey.Properties.Select(p => entry.Property(p.Name).CurrentValue).ToArray();
         }
     }
+
+    /// <summary>
+    /// A channel that is not confirmed yet has a default <see cref="ShortChannelId"/>, which has no bytes.
+    /// </summary>
+    private static bool IsSet(ShortChannelId shortChannelId) => ((byte[]?)shortChannelId) is not null;
 
     private static ICollection<Htlc> GetHtlcsOrNull(ICollection<Htlc>? htlcs)
     {
