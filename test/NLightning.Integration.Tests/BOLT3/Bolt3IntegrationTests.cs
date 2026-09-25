@@ -29,6 +29,7 @@ using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Crypto.Hashes;
 using Infrastructure.Protocol.Services;
 using Mocks;
+using Vectors;
 
 public class Bolt3IntegrationTests
 {
@@ -251,19 +252,46 @@ public class Bolt3IntegrationTests
 
     #region Appendix C HTLC Transaction Vectors
 
-    [Fact(Skip = "NL-056: HTLC-success / HTLC-timeout second-stage transactions are not implemented")]
+    [Fact]
     public void Given_Bolt3Specifications_When_CreatingHtlcTransactionsFor5HtlcsUntrimmed_Then_ShouldBeEqualToTestVector()
     {
-        // When NL-056 lands: build the HTLC-success/HTLC-timeout transactions for ExpectedCommitTx1 (feerate 0,
-        // to_self_delay 144, local delayed/revocation keys from Bolt3AppendixCVectors) and assert they equal the
-        // vectors below with witnesses stripped, then validate the remote HTLC signatures.
-        Assert.Fail("No HTLC second-stage transaction builder exists yet (NL-056)");
+        // Given - "commitment tx with all five HTLCs untrimmed (minimum feerate)": feerate 0, to_self_delay 144
+        Transaction[] expectedHtlcTxs =
+        [
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc0SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc2TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc1SuccessTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc3TimeoutTx,
+            Bolt3AppendixCVectors.ExpectedCommitTx1Htlc4SuccessTx
+        ];
+        var vector = Bolt3SpecVectors.GetAppendixC("commitment tx with all five HTLCs untrimmed (minimum feerate)");
+        var harness = new Bolt3VectorHarness(vector, false);
+
+        // When
+        var (commitment, htlcModels) = harness.BuildHtlcModels();
+        var signedHtlcTxs = htlcModels.Select((model, i) =>
+        {
+            var built = harness.HtlcBuilder.Build(model);
+            var remoteSignature = new ECDSASignature(Convert.FromHexString(vector.HtlcTxs[i].RemoteSigHex));
+            var localSignature = Bolt3VectorHarness.SignLocalHtlc(built);
+            var preimage = model.Type == HtlcTransactionType.Success
+                               ? Bolt3VectorHarness.Preimages[model.SpentOutput.Htlc.Id]
+                               : null;
+            return harness.HtlcBuilder.AddWitness(model, built, remoteSignature.ToCompact(),
+                                                  localSignature.ToCompact(), preimage);
+        }).ToList();
+
+        // Then
+        Assert.Equal(Bolt3AppendixCVectors.ExpectedCommitTx1.GetHash().ToBytes(), (byte[])commitment.Transaction.TxId);
+        Assert.Equal(expectedHtlcTxs.Length, signedHtlcTxs.Count);
+        for (var i = 0; i < expectedHtlcTxs.Length; i++)
+            Assert.Equal(expectedHtlcTxs[i].ToHex(), Convert.ToHexString(signedHtlcTxs[i].RawTxBytes).ToLowerInvariant());
     }
 
     [Fact]
     public void Given_Bolt3HtlcTransactionVectors_When_Inspected_Then_TheySpendTheMatchingCommitmentOutputs()
     {
-        // Given - guards the vector data that the NL-056 test will consume
+        // Given - guards the vector data the NL-056 test consumes
         Transaction[] htlcTxs =
         [
             Bolt3AppendixCVectors.ExpectedCommitTx1Htlc0SuccessTx,

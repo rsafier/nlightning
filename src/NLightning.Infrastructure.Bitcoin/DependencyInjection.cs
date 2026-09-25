@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.AddSingleton<IFailureOnionService, FailureOnionService>(); // needs IFailureMessageSerializer (Serialization)
         services.AddSingleton<IFundingOutputBuilder, FundingOutputBuilder>();
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
+        services.AddSingleton<IHtlcTransactionBuilder, HtlcTransactionBuilder>();
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ISphinxService, SphinxService>();
