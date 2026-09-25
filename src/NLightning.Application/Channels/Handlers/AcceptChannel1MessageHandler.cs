@@ -114,9 +114,8 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         if (minimumDepth != tempChannel.ChannelConfig.MinimumDepth)
             throw new ChannelErrorException("Minimum depth is not acceptable", payload.ChannelId);
 
-        // Check for the upfront shutdown script
-        if (message.UpfrontShutdownScriptTlv is null
-         && (negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No || message.ChannelTypeTlv is not null))
+        // Check for the upfront shutdown script: it's only required when option_upfront_shutdown_script was negotiated
+        if (message.UpfrontShutdownScriptTlv is null && negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No)
             throw new ChannelErrorException("Upfront shutdown script is required but not provided");
 
         BitcoinScript? remoteUpfrontShutdownScript = null;

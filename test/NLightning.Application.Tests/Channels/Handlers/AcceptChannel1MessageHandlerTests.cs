@@ -18,6 +18,7 @@ using Domain.Channels.Validators.Parameters;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
@@ -30,157 +31,194 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 public class AcceptChannel1MessageHandlerTests
 {
-    private const ushort BuiltFundingOutputIndex = 1;
-    private const uint MinimumDepth = 3;
+    private static readonly CompactPubKey s_pubKey = CreatePubKey(0x01);
+    private static readonly ChannelId s_tempChannelId = CreateChannelId(0x01);
+    private static readonly ChannelId s_newChannelId = CreateChannelId(0x02);
 
     private readonly Mock<IChannelIdFactory> _mockChannelIdFactory = new();
-    private readonly Mock<IMessageFactory> _mockMessageFactory = new();
-    private readonly AcceptChannel1MessageHandler _handler;
+    private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
+    private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
+    private readonly Mock<ICommitmentTransactionBuilder> _mockCommitmentTransactionBuilder = new();
+    private readonly Mock<IFundingTransactionBuilder> _mockFundingTransactionBuilder = new();
+    private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
+    private readonly Mock<IUtxoMemoryRepository> _mockUtxoMemoryRepository = new();
+    private readonly List<string> _calls = [];
     private readonly ChannelModel _tempChannel;
-    private readonly AcceptChannel1Message _message;
-    private readonly CompactPubKey _peerPubKey;
-    private readonly ChannelId _tempChannelId;
-    private readonly ChannelId _newChannelId;
-    private readonly TxId _builtTxId;
-    private readonly CompactSignature _ourSignature;
+    private readonly AcceptChannel1MessageHandler _handler;
 
     public AcceptChannel1MessageHandlerTests()
     {
-        var mockBitcoinWalletService = new Mock<IBitcoinWalletService>();
-        var mockChannelMemoryRepository = new Mock<IChannelMemoryRepository>();
-        var mockChannelOpenValidator = new Mock<IChannelOpenValidator>();
-        var mockCommitmentTransactionBuilder = new Mock<ICommitmentTransactionBuilder>();
-        var mockCommitmentTransactionModelFactory = new Mock<ICommitmentTransactionModelFactory>();
-        var mockFundingTransactionBuilder = new Mock<IFundingTransactionBuilder>();
-        var mockFundingTransactionModelFactory = new Mock<IFundingTransactionModelFactory>();
-        var mockLightningSigner = new Mock<ILightningSigner>();
-        var mockUnitOfWork = new Mock<IUnitOfWork>();
-        var mockChannelDbRepository = new Mock<IChannelDbRepository>();
-        var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        _tempChannel = CreateTempChannel();
 
-        CompactPubKey emptyPubKey = new byte[]
-        {
-            0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00
-        };
-        _peerPubKey = emptyPubKey;
-        _tempChannelId = ChannelId.Zero;
-        byte[] newChannelIdBytes = ChannelId.Zero;
-        newChannelIdBytes[0] = 1;
-        _newChannelId = newChannelIdBytes;
-        byte[] builtTxIdBytes = TxId.One;
-        builtTxIdBytes[0] = 0x03;
-        _builtTxId = builtTxIdBytes;
-        var ourSignatureBytes = new byte[64];
-        ourSignatureBytes[0] = 1;
-        _ourSignature = new CompactSignature(ourSignatureBytes);
-
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
-                                              LightningMoney.Zero, 0, LightningMoney.Zero, MinimumDepth, false,
-                                              LightningMoney.Zero, 144, FeatureSupport.No);
-        var localKeySet = new ChannelKeySetModel(0, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey,
-                                                 emptyPubKey);
-        _tempChannel = new ChannelModel(channelConfig, _tempChannelId, null, null, true, null, null,
-                                        LightningMoney.Satoshis(10_000), localKeySet, 1, 0, LightningMoney.Zero,
-                                        null, 1, _peerPubKey, 0, ChannelState.V1Opening, ChannelVersion.V1);
-
-        var payload = new AcceptChannel1Payload(_tempChannelId, LightningMoney.Zero, emptyPubKey, LightningMoney.Zero,
-                                                emptyPubKey, emptyPubKey, emptyPubKey, LightningMoney.Zero, 30,
-                                                LightningMoney.Zero, MinimumDepth, emptyPubKey, emptyPubKey, 144);
-        _message = new AcceptChannel1Message(payload, new ChannelTypeTlv([]),
-                                             new UpfrontShutdownScriptTlv(new byte[] { }));
-
-        mockChannelMemoryRepository
-           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
-                                                     out It.Ref<ChannelState>.IsAny))
-           .Returns(false);
-        mockChannelMemoryRepository
-#pragma warning disable CS8601 // Possible null reference assignment.
-           .Setup(x => x.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
-                                                out It.Ref<ChannelModel>.IsAny))
-#pragma warning restore CS8601 // Possible null reference assignment.
-           .Callback((CompactPubKey _, ChannelId _, out ChannelModel? channel) =>
+        _mockChannelMemoryRepository
+           .Setup(r => r.TryGetTemporaryChannelState(s_pubKey, s_tempChannelId, out It.Ref<ChannelState>.IsAny))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelState state) =>
+            {
+                state = ChannelState.V1Opening;
+            })
+           .Returns(true);
+        _mockChannelMemoryRepository
+           .Setup(r => r.TryGetTemporaryChannel(s_pubKey, s_tempChannelId, out It.Ref<ChannelModel>.IsAny!))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelModel channel) =>
             {
                 channel = _tempChannel;
             })
            .Returns(true);
+        _mockChannelMemoryRepository.Setup(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId))
+                                    .Returns(true);
+        _mockChannelMemoryRepository.Setup(r => r.UpgradeChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelModel>()))
+                                    .Callback(() => _calls.Add(nameof(IChannelMemoryRepository.UpgradeChannel)));
 
-        var minimumDepth = MinimumDepth;
-        mockChannelOpenValidator
-           .Setup(x => x.PerformMandatoryChecks(It.IsAny<ChannelOpenMandatoryValidationParameters>(),
-                                                out minimumDepth));
+        _mockUnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_mockChannelDbRepository.Object);
+        _mockUnitOfWork.Setup(u => u.SaveChangesAsync())
+                       .Callback(() => _calls.Add(nameof(IUnitOfWork.SaveChangesAsync)))
+                       .Returns(Task.CompletedTask);
+        _mockChannelDbRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>())).ReturnsAsync((ChannelModel?)null);
 
-        var utxos = new List<UtxoModel>
-        {
-            new(TxId.One, 0, LightningMoney.Satoshis(20_000), 100, 0, false, AddressType.P2Wpkh)
-        };
-        mockUtxoMemoryRepository.Setup(x => x.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns(utxos);
-        mockBitcoinWalletService
-           .Setup(x => x.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
-           .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, "address"));
+        _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
+
+        var mockWalletService = new Mock<IBitcoinWalletService>();
+        mockWalletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+                         .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, "bcrt1qchange"));
+
+        var mockFundingTransactionModelFactory = new Mock<IFundingTransactionModelFactory>();
         mockFundingTransactionModelFactory
-           .Setup(x => x.Create(It.IsAny<ChannelModel>(), utxos, It.IsAny<WalletAddressModel?>()))
-           .Returns((ChannelModel channel, List<UtxoModel> u, WalletAddressModel? _) =>
-                        new FundingTransactionModel(u, channel.FundingOutput!, LightningMoney.Satoshis(1_000)));
-        mockFundingTransactionBuilder
-           .Setup(x => x.Build(It.IsAny<FundingTransactionModel>()))
-           .Returns(new FundingTransactionBuildResult(new SignedTransaction(_builtTxId, [0x02, 0x00]),
-                                                      BuiltFundingOutputIndex));
+           .Setup(f => f.Create(It.IsAny<ChannelModel>(), It.IsAny<List<UtxoModel>>(),
+                                It.IsAny<WalletAddressModel?>()))
+           .Returns((ChannelModel c, List<UtxoModel> u, WalletAddressModel? _) =>
+                        new FundingTransactionModel(u, c.FundingOutput!, LightningMoney.Zero));
 
-        _mockChannelIdFactory.Setup(x => x.CreateV1(It.IsAny<TxId>(), It.IsAny<ushort>())).Returns(_newChannelId);
-        mockUnitOfWork.Setup(x => x.ChannelDbRepository).Returns(mockChannelDbRepository.Object);
-        mockChannelDbRepository
-           .Setup(x => x.GetByIdAsync(It.IsAny<ChannelId>()))
-           .ReturnsAsync((ChannelModel?)null);
+        _mockFundingTransactionBuilder
+           .Setup(b => b.Build(It.IsAny<FundingTransactionModel>()))
+           .Returns(new FundingTransactionBuildResult(new SignedTransaction(TxId.One, [0x00]), 0));
 
+        _mockChannelIdFactory.Setup(f => f.CreateV1(It.IsAny<TxId>(), It.IsAny<ushort>())).Returns(s_newChannelId);
+
+        var mockCommitmentTransactionModelFactory = new Mock<ICommitmentTransactionModelFactory>();
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote))
-           .Returns((ChannelModel channel, CommitmentSide _) =>
-                        new CommitmentTransactionModel(channel.CommitmentNumber!, LightningMoney.Zero,
-                                                       channel.FundingOutput!));
-        mockCommitmentTransactionBuilder
-           .Setup(x => x.Build(It.IsAny<CommitmentTransactionModel>()))
-           .Returns(new SignedTransaction(TxId.Zero, [0x00, 0x01]));
-        mockLightningSigner
-           .Setup(x => x.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
-           .Returns(_ourSignature);
+           .Setup(f => f.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote))
+           .Returns((ChannelModel c, CommitmentSide _) =>
+                        new CommitmentTransactionModel(c.CommitmentNumber!, LightningMoney.Zero, c.FundingOutput!));
+        _mockCommitmentTransactionBuilder.Setup(b => b.Build(It.IsAny<CommitmentTransactionModel>()))
+                                         .Returns(new SignedTransaction(TxId.Zero, [0x01]));
 
-        _mockMessageFactory
-           .Setup(x => x.CreateFundingCreatedMessage(It.IsAny<ChannelId>(), It.IsAny<TxId>(), It.IsAny<ushort>(),
+        var signature = new CompactSignature(new byte[64]);
+        var mockSigner = new Mock<ILightningSigner>();
+        mockSigner.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
+                  .Returns(signature);
+
+        var mockMessageFactory = new Mock<IMessageFactory>();
+        mockMessageFactory
+           .Setup(f => f.CreateFundingCreatedMessage(It.IsAny<ChannelId>(), It.IsAny<TxId>(), It.IsAny<ushort>(),
                                                      It.IsAny<CompactSignature>()))
-           .Returns((ChannelId channelId, TxId txId, ushort index, CompactSignature signature) =>
-                        new FundingCreatedMessage(new FundingCreatedPayload(channelId, txId, index, signature)));
+           .Returns((ChannelId id, TxId txId, ushort index, CompactSignature sig) =>
+                        new FundingCreatedMessage(new FundingCreatedPayload(id, txId, index, sig)));
 
-        _handler = new AcceptChannel1MessageHandler(mockBitcoinWalletService.Object, _mockChannelIdFactory.Object,
-                                                    mockChannelMemoryRepository.Object,
-                                                    mockChannelOpenValidator.Object,
-                                                    mockCommitmentTransactionBuilder.Object,
+        var mockValidator = new Mock<IChannelOpenValidator>();
+        uint minimumDepth = 3;
+        mockValidator.Setup(v => v.PerformMandatoryChecks(It.IsAny<ChannelOpenMandatoryValidationParameters>(),
+                                                          out minimumDepth));
+
+        _handler = new AcceptChannel1MessageHandler(mockWalletService.Object, _mockChannelIdFactory.Object,
+                                                    _mockChannelMemoryRepository.Object, mockValidator.Object,
+                                                    _mockCommitmentTransactionBuilder.Object,
                                                     mockCommitmentTransactionModelFactory.Object,
-                                                    mockFundingTransactionBuilder.Object,
-                                                    mockFundingTransactionModelFactory.Object,
-                                                    mockLightningSigner.Object,
+                                                    _mockFundingTransactionBuilder.Object,
+                                                    mockFundingTransactionModelFactory.Object, mockSigner.Object,
                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
-                                                    _mockMessageFactory.Object, new FakeSha256(),
-                                                    mockUnitOfWork.Object, mockUtxoMemoryRepository.Object);
+                                                    mockMessageFactory.Object, new FakeSha256(),
+                                                    _mockUnitOfWork.Object, _mockUtxoMemoryRepository.Object);
+    }
+
+    [Fact]
+    public async Task Given_NoUpfrontShutdownScriptAndFeatureNotNegotiated_When_HandleAsync_Then_ChannelIsAccepted()
+    {
+        // Arrange
+        var message = CreateMessage(null);
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = FeatureSupport.No };
+
+        // Act
+        var result = await _handler.HandleAsync(message, ChannelState.None, negotiatedFeatures, s_pubKey);
+
+        // Assert
+        Assert.IsType<FundingCreatedMessage>(result);
+    }
+
+    [Fact]
+    public async Task Given_NoUpfrontShutdownScriptAndFeatureNegotiated_When_HandleAsync_Then_ChannelIsRejected()
+    {
+        // Arrange
+        var message = CreateMessage(null);
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = FeatureSupport.Optional };
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ChannelErrorException>(() => _handler.HandleAsync(
+                                                            message, ChannelState.None, negotiatedFeatures,
+                                                            s_pubKey));
     }
 
     [Fact]
     public async Task Given_BuilderReturnsNonZeroIndex_When_Handling_Then_FundingOutpointFlowsIntoFundingCreated()
     {
+        // Arrange
+        const ushort builtFundingOutputIndex = 1;
+        byte[] builtTxIdBytes = TxId.One;
+        builtTxIdBytes[0] = 0x03;
+        TxId builtTxId = builtTxIdBytes;
+        _mockFundingTransactionBuilder
+           .Setup(b => b.Build(It.IsAny<FundingTransactionModel>()))
+           .Returns(new FundingTransactionBuildResult(new SignedTransaction(builtTxId, [0x02, 0x00]),
+                                                      builtFundingOutputIndex));
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+
         // Act
-        var result = await _handler.HandleAsync(_message, ChannelState.None, new FeatureOptions(), _peerPubKey);
+        var result = await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
 
         // Assert
         var fundingCreated = Assert.IsType<FundingCreatedMessage>(result);
-        Assert.Equal(_builtTxId, _tempChannel.FundingOutput?.TransactionId);
-        Assert.Equal(BuiltFundingOutputIndex, _tempChannel.FundingOutput?.Index);
-        Assert.Equal(_builtTxId, fundingCreated.Payload.FundingTxId);
-        Assert.Equal(BuiltFundingOutputIndex, fundingCreated.Payload.FundingOutputIndex);
-        Assert.Equal(_tempChannelId, fundingCreated.Payload.ChannelId);
-        _mockChannelIdFactory.Verify(x => x.CreateV1(_builtTxId, BuiltFundingOutputIndex), Times.Once);
-        Assert.Equal(_newChannelId, _tempChannel.ChannelId);
+        Assert.Equal(builtTxId, _tempChannel.FundingOutput?.TransactionId);
+        Assert.Equal(builtFundingOutputIndex, _tempChannel.FundingOutput?.Index);
+        Assert.Equal(builtTxId, fundingCreated.Payload.FundingTxId);
+        Assert.Equal(builtFundingOutputIndex, fundingCreated.Payload.FundingOutputIndex);
+        Assert.Equal(s_tempChannelId, fundingCreated.Payload.ChannelId);
+        _mockChannelIdFactory.Verify(x => x.CreateV1(builtTxId, builtFundingOutputIndex), Times.Once);
+        Assert.Equal(s_newChannelId, _tempChannel.ChannelId);
+    }
+
+    private static AcceptChannel1Message CreateMessage(UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv)
+    {
+        var payload = new AcceptChannel1Payload(s_tempChannelId, LightningMoney.Satoshis(1_000), s_pubKey,
+                                                LightningMoney.Satoshis(546), s_pubKey, s_pubKey, s_pubKey,
+                                                LightningMoney.Zero, 30, LightningMoney.Satoshis(100_000), 3,
+                                                s_pubKey, s_pubKey, 144);
+        return new AcceptChannel1Message(payload, new ChannelTypeTlv([0x10, 0x00]), upfrontShutdownScriptTlv);
+    }
+
+    private static ChannelModel CreateTempChannel()
+    {
+        var channelConfig = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
+                                              LightningMoney.Zero, LightningMoney.Satoshis(546), 30,
+                                              LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Zero, 144,
+                                              FeatureSupport.No);
+        var keySet = new ChannelKeySetModel(0, s_pubKey, s_pubKey, s_pubKey, s_pubKey, s_pubKey, s_pubKey);
+
+        return new ChannelModel(channelConfig, s_tempChannelId, null, null, true, null, null,
+                                LightningMoney.Satoshis(100_000), keySet, 0, 0, LightningMoney.Zero, null, 0, s_pubKey,
+                                0, ChannelState.V1Opening, ChannelVersion.V1);
+    }
+
+    private static CompactPubKey CreatePubKey(byte last)
+    {
+        var bytes = new byte[33];
+        bytes[0] = 0x02;
+        bytes[32] = last;
+        return bytes;
+    }
+
+    private static ChannelId CreateChannelId(byte first)
+    {
+        var bytes = new byte[32];
+        bytes[0] = first;
+        return bytes;
     }
 }
