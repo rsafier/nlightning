@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace NLightning.Infrastructure.Crypto.Hashes;
 
 using Domain.Crypto.Constants;
@@ -58,7 +61,8 @@ public sealed class Argon2Id : IDisposable
     }
 
     /// <summary>
-    /// Derives a 32-byte key with explicit parameters.
+    /// Derives a 32-byte key with explicit parameters. The password is hashed as its full UTF-8 encoding on every
+    /// crypto backend.
     /// </summary>
     /// <param name="password">The password.</param>
     /// <param name="salt">A <see cref="SaltLen"/>-byte salt.</param>
@@ -70,6 +74,28 @@ public sealed class Argon2Id : IDisposable
     {
         ArgumentNullException.ThrowIfNull(password);
 
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
+        try
+        {
+            DeriveKeyFromPasswordBytesAndSalt(passwordBytes, salt, key, opsLimit, memLimit);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+        }
+    }
+
+    /// <summary>
+    /// Derives a 32-byte key from raw password bytes with explicit parameters.
+    /// </summary>
+    /// <param name="password">The password bytes; all of them are hashed.</param>
+    /// <param name="salt">A <see cref="SaltLen"/>-byte salt.</param>
+    /// <param name="key">The 32-byte output key.</param>
+    /// <param name="opsLimit">Number of passes over memory.</param>
+    /// <param name="memLimit">Memory limit in <b>bytes</b>.</param>
+    public void DeriveKeyFromPasswordBytesAndSalt(ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt, Span<byte> key,
+                                                  ulong opsLimit, ulong memLimit)
+    {
         if (key.Length != CryptoConstants.PrivkeyLen)
             throw new ArgumentException($"Key must be {CryptoConstants.PrivkeyLen} bytes long", nameof(key));
 

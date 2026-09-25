@@ -95,7 +95,7 @@ internal static partial class LibsodiumWrapper
     [LibraryImport(Name)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int crypto_pwhash(ref byte outBuf, ulong outLen,
-                                              [MarshalAs(UnmanagedType.LPStr)] string passwd, ulong passwdLen,
+                                              ref byte passwd, ulong passwdLen,
                                               ref byte salt, ulong opslimit, ulong memlimit, int alg);
     #endregion
 

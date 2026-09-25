@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- `SecureKeyManager` writes version 2 key files (random per-file salt and nonce, Argon2id 64 MiB). Version 1 files
+  are still read and are upgraded on first load; the original is kept as `<key file>.v1.bak`. **Builds older than
+  this one cannot read a version 2 key file**, so to roll back restore the `.v1.bak` copy;
+- Key file writes are atomic and keep the existing file's permissions (new files are created `0600` on Unix),
+  follow symlinks to replace the real file, and leave no temp file behind when they fail;
+- Key file passwords are hashed as their full UTF-8 encoding on every crypto backend. Files written by the libsodium
+  backend with a non-ASCII password (which hashed only the first `password.Length` UTF-8 bytes) still open, and are
+  rewritten with the full encoding;
+
 ## v1.0.0
 
 Major release adding wallet address management, funding transaction building, and comprehensive key management improvements.

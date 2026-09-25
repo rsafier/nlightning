@@ -1,7 +1,6 @@
 #if CRYPTO_NATIVE
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using Konscious.Security.Cryptography;
 using Org.BouncyCastle.Crypto.Engines;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -250,18 +249,29 @@ internal sealed partial class NativeCryptoProvider : ICryptoProvider
         }
     }
 
-    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, string password, ReadOnlySpan<byte> salt,
+    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt,
                                                  ulong opsLimit, ulong memLimit)
     {
-        using var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password));
-        argon2.Salt = salt.ToArray();
-        argon2.Iterations = (int)opsLimit;
-        argon2.MemorySize = (int)(memLimit / 1024); // memLimit is in bytes, MemorySize is in KB
-        argon2.DegreeOfParallelism = 1;
+        var passwordBytes = password.ToArray();
+        byte[]? derived = null;
+        try
+        {
+            using var argon2 = new Argon2id(passwordBytes);
+            argon2.Salt = salt.ToArray();
+            argon2.Iterations = (int)opsLimit;
+            argon2.MemorySize = (int)(memLimit / 1024); // memLimit is in bytes, MemorySize is in KB
+            argon2.DegreeOfParallelism = 1;
 
-        var derived = argon2.GetBytes(key.Length);
-        derived.CopyTo(key);
-        return 0;
+            derived = argon2.GetBytes(key.Length);
+            derived.CopyTo(key);
+            return 0;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+            if (derived is not null)
+                CryptographicOperations.ZeroMemory(derived);
+        }
     }
 
     public void RandomBytes(Span<byte> buffer)

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -175,6 +176,151 @@ public sealed class SecureKeyManagerTests : IDisposable
         Assert.Equal(LegacyKeyFileFixture, CreateLegacyKeyFileJson(Password));
     }
 
+    [Fact]
+    public void Given_NonAsciiPasswordsDifferingAtTheEnd_When_FromFilePath_Then_OnlyTheRightOneOpensTheFile()
+    {
+        // Arrange: before the fix, libsodium hashed only the first password.Length UTF-8 bytes, so both matched
+        using (var keyManager = NewKeyManager())
+            keyManager.SaveToFile("\u00fc\u00fc1");
+
+        // Act / Assert
+        Assert.Throws<CryptographicException>(() => SecureKeyManager.FromFilePath(
+                                                  _filePath, BitcoinNetwork.Regtest, "\u00fc\u00fc2"));
+        using var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, "\u00fc\u00fc1");
+        Assert.Equal(ExpectedNodePubKey(), (byte[])loaded.GetNodePubKey());
+    }
+
+    [Fact]
+    public void Given_Version1FileWithTruncatedNonAsciiPasswordEncoding_When_FromFilePath_Then_OpensAndUpgrades()
+    {
+        // Arrange: the old libsodium backend hashed the UTF-8 password cut to password.Length bytes
+        const string nonAsciiPassword = "p\u00e4ssw\u00f6rd";
+        var truncated = Encoding.UTF8.GetBytes(nonAsciiPassword)[..nonAsciiPassword.Length];
+        var json = CreateLegacyKeyFileJson(truncated);
+        File.WriteAllText(_filePath, json);
+
+        // Act
+        using (var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, nonAsciiPassword))
+            Assert.Equal(ExpectedNodePubKey(), (byte[])loaded.GetNodePubKey());
+
+        // Assert: upgraded to v2 with the full UTF-8 encoding, which the truncated encoding cannot open
+        var upgraded = ReadKeyFile();
+        Assert.Equal(KeyFileData.CurrentVersion, upgraded.Version);
+        Assert.Equal(json, File.ReadAllText(_filePath + ".v1.bak"));
+        Assert.False(TryDecryptVersion2(upgraded, truncated));
+        Assert.True(TryDecryptVersion2(upgraded, Encoding.UTF8.GetBytes(nonAsciiPassword)));
+    }
+
+    [Fact]
+    public void Given_Version1KeyFile_When_FromFilePath_Then_KeepsTheOriginalAsBackup()
+    {
+        // Arrange
+        var json = CreateLegacyKeyFileJson(Password);
+        File.WriteAllText(_filePath, json);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(_filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        // Act
+        using (SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password))
+        {
+        }
+
+        // Assert
+        var backupPath = _filePath + ".v1.bak";
+        Assert.Equal(json, File.ReadAllText(backupPath));
+        Assert.Equal(KeyFileData.CurrentVersion, ReadKeyFile().Version);
+        if (!OperatingSystem.IsWindows())
+            Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(backupPath));
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void Given_RestrictedKeyFile_When_SaveToFile_Then_KeepsItsPermissions()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        const UnixFileMode restricted = UnixFileMode.UserRead;
+        File.SetUnixFileMode(_filePath, restricted | UnixFileMode.UserWrite);
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        Assert.Equal(restricted | UnixFileMode.UserWrite, File.GetUnixFileMode(_filePath));
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task Given_KeyFileWithCustomMode_When_UpdateLastUsedChannelIndexOnFile_Then_KeepsItsPermissions()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        const UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
+        File.SetUnixFileMode(_filePath, mode);
+
+        // Act
+        await keyManager.UpdateLastUsedChannelIndexOnFile();
+
+        // Assert
+        Assert.Equal(mode, File.GetUnixFileMode(_filePath));
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void Given_NoKeyFile_When_SaveToFile_Then_CreatesItOwnerOnly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        using var keyManager = NewKeyManager();
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_filePath));
+    }
+
+    [Fact]
+    public void Given_SymlinkedKeyFile_When_SaveToFile_Then_KeepsTheLinkAndUpdatesTheTarget()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "symlinks need privileges on Windows");
+
+        // Arrange
+        var targetPath = Path.Combine(_directory, "real.key.json");
+        File.WriteAllText(targetPath, "{}");
+        File.CreateSymbolicLink(_filePath, targetPath);
+        using var keyManager = NewKeyManager();
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        Assert.NotNull(new FileInfo(_filePath).LinkTarget);
+        Assert.Equal(KeyFileData.CurrentVersion, ReadKeyFile().Version);
+        Assert.Equal(File.ReadAllText(targetPath), File.ReadAllText(_filePath));
+    }
+
+    [Fact]
+    public void Given_ReplaceFails_When_SaveToFile_Then_LeavesNoTempFile()
+    {
+        // Arrange: a directory at the key path makes the final move fail
+        Directory.CreateDirectory(_filePath);
+        using var keyManager = NewKeyManager();
+
+        // Act
+        Assert.ThrowsAny<IOException>(() => keyManager.SaveToFile(Password));
+
+        // Assert
+        Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
     private SecureKeyManager NewKeyManager()
     {
         return new SecureKeyManager(s_privateKey.ToArray(), BitcoinNetwork.Regtest, _filePath, 123);
@@ -183,6 +329,28 @@ public sealed class SecureKeyManagerTests : IDisposable
     private KeyFileData ReadKeyFile()
     {
         return JsonSerializer.Deserialize<KeyFileData>(File.ReadAllText(_filePath))!;
+    }
+
+    private static bool TryDecryptVersion2(KeyFileData data, byte[] passwordBytes)
+    {
+        var key = new byte[32];
+        using (var argon2Id = new Argon2Id())
+            argon2Id.DeriveKeyFromPasswordBytesAndSalt(passwordBytes, Convert.FromBase64String(data.Salt!), key,
+                                                       data.Argon2OpsLimit, data.Argon2MemLimit);
+
+        var cipherText = Convert.FromBase64String(data.EncryptedExtKey);
+        var plainText = new byte[cipherText.Length - 16];
+        try
+        {
+            using var xChaCha20Poly1305 = new XChaCha20Poly1305();
+            xChaCha20Poly1305.Decrypt(key, Convert.FromBase64String(data.Nonce!), ReadOnlySpan<byte>.Empty,
+                                      cipherText, plainText);
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
     }
 
     private static byte[] ExpectedNodePubKey()
@@ -196,12 +364,17 @@ public sealed class SecureKeyManagerTests : IDisposable
     /// </summary>
     private static string CreateLegacyKeyFileJson(string password)
     {
+        return CreateLegacyKeyFileJson(Encoding.UTF8.GetBytes(password));
+    }
+
+    private static string CreateLegacyKeyFileJson(byte[] passwordBytes)
+    {
         var extKey = new ExtKey(new Key(s_privateKey.ToArray()), Network.RegTest.GenesisHash.ToBytes());
         var extKeyBytes = Encoding.UTF8.GetBytes(extKey.ToString(Network.RegTest));
 
         var key = new byte[32];
         using (var argon2Id = new Argon2Id())
-            argon2Id.DeriveKeyFromPasswordAndSalt(password, s_legacySalt, key, 3, 1 << 16);
+            argon2Id.DeriveKeyFromPasswordBytesAndSalt(passwordBytes, s_legacySalt, key, 3, 1 << 16);
 
         var cipherText = new byte[extKeyBytes.Length + 16];
         using (var xChaCha20Poly1305 = new XChaCha20Poly1305())

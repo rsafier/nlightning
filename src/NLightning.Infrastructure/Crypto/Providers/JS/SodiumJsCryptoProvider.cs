@@ -206,7 +206,8 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
         }
     }
 
-    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, string password, ReadOnlySpan<byte> salt, ulong opsLimit, ulong memLimit)
+    public int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt,
+                                                 ulong opsLimit, ulong memLimit)
     {
         throw new NotImplementedException();
     }

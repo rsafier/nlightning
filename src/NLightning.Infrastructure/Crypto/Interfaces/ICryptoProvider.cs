@@ -51,8 +51,11 @@ internal interface ICryptoProvider : IDisposable
     #endregion
 
     #region Key Derivation From Password
-    int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, string password, ReadOnlySpan<byte> salt, ulong opsLimit,
-                                          ulong memLimit);
+    /// <summary>
+    /// Derives <paramref name="key"/> with Argon2id from the raw <paramref name="password"/> bytes (all of them).
+    /// </summary>
+    int DeriveKeyFromPasswordUsingArgon2I(Span<byte> key, ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt,
+                                          ulong opsLimit, ulong memLimit);
     #endregion
 
     #region Random

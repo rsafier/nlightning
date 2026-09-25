@@ -257,7 +257,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var network = Network.GetNetwork(expectedNetwork)
                    ?? throw new ArgumentException("Invalid network specified.", nameof(expectedNetwork));
 
-        var extKeyBytes = DecryptExtKey(data, password);
+        var extKeyBytes = DecryptExtKey(data, password, out var usedLegacyPasswordEncoding);
         ExtKey extKey;
         try
         {
@@ -275,11 +275,17 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 OutputChannelDescriptor = data.Descriptor
             };
 
-        if (data.Version < KeyFileData.CurrentVersion)
+        if (data.Version < KeyFileData.CurrentVersion || usedLegacyPasswordEncoding)
         {
-            // Migrate legacy key files (fixed salt, zero nonce, weak Argon2id parameters) to the current format.
+            // Migrate legacy key files (fixed salt, zero nonce, weak Argon2id parameters, or a password hashed with
+            // the truncated libsodium encoding) to the current format. Older binaries cannot read the new format,
+            // so keep a copy of the original file first.
             try
             {
+                var backupPath = BackupKeyFile(filePath, data.Version);
+                Console.Error.WriteLine($"Upgrading key file {filePath} to version {KeyFileData.CurrentVersion}. " +
+                                        $"The original file was saved to {backupPath}; builds older than this " +
+                                        "one cannot read the upgraded file.");
                 keyManager.SaveToFile(password);
             }
             catch (Exception e)
@@ -300,7 +306,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         return Path.Combine(configPath, "nltg.key.json");
     }
 
-    private static byte[] DecryptExtKey(KeyFileData data, string password)
+    private static byte[] DecryptExtKey(KeyFileData data, string password, out bool usedLegacyPasswordEncoding)
     {
         ArgumentNullException.ThrowIfNull(password);
 
@@ -343,16 +349,25 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             throw new SerializationException("Invalid key file: encryptedExtKey is too short");
 
         var extKeyBytes = new byte[encryptedExtKey.Length - CryptoConstants.Xchacha20Poly1305TagLen];
-        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
+        var passwordBytes = Encoding.UTF8.GetBytes(password);
         try
         {
-            using (var argon2Id = new Argon2Id())
+            usedLegacyPasswordEncoding = false;
+            if (TryDecrypt(passwordBytes, salt, nonce, opsLimit, memLimit, encryptedExtKey, extKeyBytes))
+                return extKeyBytes;
+
+            // Before the fix for the libsodium password length, the libsodium backend hashed only the first
+            // password.Length (UTF-16 char count) bytes of the UTF-8 password. For non-ASCII passwords, retry with
+            // that truncated encoding so files written by those builds still open.
+            if (passwordBytes.Length != password.Length
+             && TryDecrypt(passwordBytes.AsSpan(0, password.Length), salt, nonce, opsLimit, memLimit, encryptedExtKey,
+                           extKeyBytes))
             {
-                argon2Id.DeriveKeyFromPasswordAndSalt(password, salt, key, opsLimit, memLimit);
+                usedLegacyPasswordEncoding = true;
+                return extKeyBytes;
             }
 
-            using var xChaCha20Poly1305 = new XChaCha20Poly1305();
-            xChaCha20Poly1305.Decrypt(key, nonce, ReadOnlySpan<byte>.Empty, encryptedExtKey, extKeyBytes);
+            throw new CryptographicException("Decryption failed.");
         }
         catch
         {
@@ -361,10 +376,34 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
         finally
         {
+            CryptographicOperations.ZeroMemory(passwordBytes);
+        }
+    }
+
+    private static bool TryDecrypt(ReadOnlySpan<byte> passwordBytes, ReadOnlySpan<byte> salt,
+                                   ReadOnlySpan<byte> nonce, ulong opsLimit, ulong memLimit,
+                                   ReadOnlySpan<byte> encryptedExtKey, Span<byte> extKeyBytes)
+    {
+        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
+        try
+        {
+            using (var argon2Id = new Argon2Id())
+            {
+                argon2Id.DeriveKeyFromPasswordBytesAndSalt(passwordBytes, salt, key, opsLimit, memLimit);
+            }
+
+            using var xChaCha20Poly1305 = new XChaCha20Poly1305();
+            xChaCha20Poly1305.Decrypt(key, nonce, ReadOnlySpan<byte>.Empty, encryptedExtKey, extKeyBytes);
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+        finally
+        {
             CryptographicOperations.ZeroMemory(key);
         }
-
-        return extKeyBytes;
     }
 
     private static byte[] DecodeBase64Field(string? value, string name, int expectedLength)
@@ -388,18 +427,112 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         return bytes;
     }
 
-    private static void WriteFileAtomically(string path, string contents)
+    /// <summary>
+    /// Copies the key file to <c>{filePath}.v{version}.bak</c> (keeping its permissions) unless that backup already
+    /// exists, and returns the backup path.
+    /// </summary>
+    private static string BackupKeyFile(string filePath, int version)
     {
-        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
-        File.WriteAllText(tempPath, contents);
-        File.Move(tempPath, path, true);
+        var backupPath = $"{filePath}.v{Math.Max(version, KeyFileData.LegacyVersion)}.bak";
+        if (File.Exists(backupPath))
+            return backupPath;
+
+        var sourcePath = ResolveFinalPath(filePath);
+        WriteFileAtomically(backupPath, File.ReadAllText(sourcePath), sourcePath);
+        return backupPath;
+    }
+
+    private static void WriteFileAtomically(string path, string contents, string? modeSourcePath = null)
+    {
+        var targetPath = ResolveFinalPath(path);
+        var tempPath = CreateTempPath(targetPath);
+        try
+        {
+            using (var stream = new FileStream(tempPath, CreateTempFileOptions()))
+            {
+                stream.Write(Encoding.UTF8.GetBytes(contents));
+                stream.Flush(true);
+            }
+
+            CopyUnixFileMode(modeSourcePath ?? targetPath, tempPath);
+            File.Move(tempPath, targetPath, true);
+        }
+        catch
+        {
+            TryDeleteFile(tempPath);
+            throw;
+        }
     }
 
     private static async Task WriteFileAtomicallyAsync(string path, string contents)
     {
-        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
-        await File.WriteAllTextAsync(tempPath, contents);
-        File.Move(tempPath, path, true);
+        var targetPath = ResolveFinalPath(path);
+        var tempPath = CreateTempPath(targetPath);
+        try
+        {
+            await using (var stream = new FileStream(tempPath, CreateTempFileOptions()))
+            {
+                await stream.WriteAsync(Encoding.UTF8.GetBytes(contents));
+                await stream.FlushAsync();
+            }
+
+            CopyUnixFileMode(targetPath, tempPath);
+            File.Move(tempPath, targetPath, true);
+        }
+        catch
+        {
+            TryDeleteFile(tempPath);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Follows symlinks so an atomic replace swaps the real file, not the link.
+    /// </summary>
+    private static string ResolveFinalPath(string path)
+    {
+        var info = new FileInfo(path);
+        if (info.LinkTarget is null)
+            return path;
+
+        return info.ResolveLinkTarget(true)?.FullName ?? path;
+    }
+
+    private static string CreateTempPath(string targetPath) => $"{targetPath}.{Guid.NewGuid():N}.tmp";
+
+    /// <summary>
+    /// The temp file is created owner-only (0600 on Unix), so key material is never readable by others, even briefly.
+    /// </summary>
+    private static FileStreamOptions CreateTempFileOptions()
+    {
+        var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+        return options;
+    }
+
+    /// <summary>
+    /// Keeps the permissions the operator set on the existing file (for example chmod 600) across the replace.
+    /// </summary>
+    private static void CopyUnixFileMode(string sourcePath, string destinationPath)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(sourcePath))
+            return;
+
+        File.SetUnixFileMode(destinationPath, File.GetUnixFileMode(sourcePath));
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Best effort: the original exception is more useful than a cleanup failure.
+        }
     }
 
     private ExtKey GetMasterKey()
