@@ -56,8 +56,8 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
     /// <inheritdoc/>
     public bool IsValid()
     {
-        // All numeric fields are unsigned (u32/u16) and every value is valid
-        return true;
+        // BOLT 11: an `r` field MUST contain one or more entries; the numeric fields are unsigned and always valid
+        return Value.Count > 0;
     }
 
     /// <summary>

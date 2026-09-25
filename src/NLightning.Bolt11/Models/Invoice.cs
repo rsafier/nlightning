@@ -637,6 +637,11 @@ public partial class Invoice
         {
             EnsureRequiredFeatures();
 
+            // A field can become invalid after it was added (e.g. a route hint collection that was emptied)
+            var invalidField = _taggedFields.FirstOrDefault(x => !x.IsValid());
+            if (invalidField is not null)
+                throw new InvalidOperationException($"Invalid {invalidField.Type} field: field validation failed");
+
             // Calculate the size needed for the buffer
             var sizeInBits = 35 + (_taggedFields.CalculateSizeInBits() * 5) + (_taggedFields.Count * 15);
 

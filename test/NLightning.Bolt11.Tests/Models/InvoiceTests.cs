@@ -402,6 +402,34 @@ public class InvoiceTests
         Assert.Equal(invoice.Timestamp, decoded.ExpiryDate.ToUnixTimeSeconds());
     }
 
+    [Fact]
+    public void Given_EmptyRouteHint_When_Added_Then_ArgumentExceptionIsThrown()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "empty route", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => invoice.AddRouteHint([]));
+        Assert.Throws<ArgumentException>(() => invoice.RoutingInfos = []);
+        Assert.Empty(invoice.RouteHints);
+    }
+
+    [Fact]
+    public void Given_RouteHintEmptiedAfterAdding_When_Encoded_Then_InvoiceSerializationExceptionIsThrown()
+    {
+        // Arrange
+        var routingInfos = new RoutingInfoCollection { s_defaultRoutingInfo };
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "emptied route", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        invoice.AddRouteHint(routingInfos);
+        routingInfos.Clear();
+
+        // Act & Assert
+        var exception = Assert.Throws<InvoiceSerializationException>(() => invoice.Encode(new Key()));
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
+    }
+
     #endregion
 
     #region Encoding/Decoding
