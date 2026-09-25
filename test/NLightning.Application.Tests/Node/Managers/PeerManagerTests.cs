@@ -1328,6 +1328,95 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_InboundInitPending_When_ManagerStops_Then_StopDoesNotWaitForTheInit()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerService = CreateMockPeerService();
+        peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
+        SetupInboundPeerService(peerService);
+        RaiseInboundConnection(RemoteHost);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Act
+        await peerManager.StopAsync();
+
+        // Assert
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(3), $"StopAsync took {stopwatch.Elapsed}");
+        Assert.Empty(peerManager.ListPeers());
+        peerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+        peerService.Verify(p => p.Dispose(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_InboundInitDone_When_StopBeginsBeforeTheSessionIsInstalled_Then_TheConnectionIsClosed()
+    {
+        // Arrange - the stop check after the init and the install used to be two steps: a stop in between took its
+        // snapshot of the sessions before the install, so the new session was never disconnected
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var stopListening = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockTcpService.Setup(t => t.StopListeningAsync())
+                       .Callback(stopListening.SetResult)
+                       .Returns(Task.CompletedTask);
+        Task? stop = null;
+        var peerService = CreateMockPeerService();
+        peerService.SetupAdd(p => p.OnChannelMessageReceived += It.IsAny<EventHandler<ChannelMessageEventArgs>>())
+                   .Callback(() =>
+                    {
+                        // Between the init check and the install: start stopping and let the stop run ahead
+                        stop = Task.Run(peerManager.StopAsync);
+                        stopListening.Task.Wait(s_timeout);
+                        Thread.Sleep(300);
+                    });
+        SetupInboundPeerService(peerService);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+        await WaitUntilAsync(() => stop is not null);
+        await stop!.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(peerManager.ListPeers());
+        peerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+        _mockPeerDbRepository.Verify(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_InboundPeerBeingSaved_When_ManagerStops_Then_StopWaitsForTheSave()
+    {
+        // Arrange - the inbound setup runs on its own task; its database save used to run after StopAsync returned
+        // (and the host disposed the services)
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var saveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var saveGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Returns(() =>
+                              {
+                                  saveEntered.TrySetResult();
+                                  return saveGate.Task;
+                              });
+        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                        .Callback(() => RaiseDisconnect(_mockPeerService));
+        RaiseInboundConnection(RemoteHost);
+        await saveEntered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Act
+        var stop = peerManager.StopAsync();
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        var stoppedBeforeTheSave = stop.IsCompleted;
+        saveGate.SetResult();
+        await stop.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(stoppedBeforeTheSave);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.AtLeastOnce);
+    }
+
+    [Fact]
     public async Task Given_ConnectedPeer_When_OurChannelUpdateIsReady_Then_ItIsSentThroughTheOutboxAsGossip()
     {
         // Arrange
