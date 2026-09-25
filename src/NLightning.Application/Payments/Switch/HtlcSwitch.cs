@@ -48,18 +48,20 @@ using Onion;
 ///   secret is stored (<see cref="IChannelOperations.RecordOnionSecretAsync"/>), then it is failed
 ///   (<c>update_fail_malformed_htlc</c>, or <c>update_fail_htlc</c> with an error onion), paid (final hop) or
 ///   forwarded.</item>
-///   <item>Final hop (NL-253): under a per-payment-hash lock, the invoice is re-read, checked by
-///   <see cref="FinalHopProcessor"/>, marked <c>Accepted</c> and saved before <c>update_fulfill_htlc</c> is persisted;
-///   the invoice is <c>Settled</c> right after the fulfill is persisted (the engine raises no event when an incoming
-///   removal becomes irrevocable). A second HTLC for the same hash then sees <c>Accepted</c> and fails with
-///   <c>incorrect_or_unknown_payment_details</c>. An <c>Accepted</c> invoice that no incoming HTLC fulfilled (a crash
-///   or a refused fulfill between the two saves) is claimed again by the next HTLC that passes the checks.</item>
+///   <item>Final hop (NL-253): under a per-payment-hash lock, the invoice is re-read and checked by
+///   <see cref="FinalHopProcessor"/>, then <c>update_fulfill_htlc</c> is persisted with the invoice moved to
+///   <c>Settled</c> (<c>Accept</c> then <c>Settle</c>, re-read and checked still <c>Open</c>) in the <b>same</b> save
+///   (<see cref="IChannelOperations.FulfillHtlcAsync(ChannelId, ulong, Secret, Func{IUnitOfWork, Task}, CancellationToken)"/>):
+///   there is no crash window where one is stored without the other. A second HTLC for the same hash then sees
+///   <c>Settled</c> and fails with <c>incorrect_or_unknown_payment_details</c>; a refused or failed fulfill leaves the
+///   invoice <c>Open</c> for the replay.</item>
 ///   <item>Forward: the onion's <c>short_channel_id</c> is resolved to an open channel (its local aliases or the
 ///   peer's alias; the real scid only when <c>option_scid_alias</c> is off), checked by <see cref="IForwardingPolicy"/>
 ///   (a failure is returned with our signed <c>channel_update</c> for the UPDATE codes when its scid is the onion's,
 ///   else with <c>len = 0</c>), recorded as a <c>Pending</c> <see cref="ForwardCircuitModel"/>, offered with
-///   <c>HtlcOrigin.Forwarded</c> (persisted with the add, NL-250), then marked <c>Offered</c>. A refused offer fails the
-///   circuit and returns <c>temporary_channel_failure</c>.</item>
+///   <c>HtlcOrigin.Forwarded</c> (persisted with the add, NL-250), then marked <c>Offered</c>. When the offer throws
+///   (refused, or any other failure) and no channel HTLC carries the origin, the circuit is failed and the upstream
+///   HTLC gets <c>temporary_channel_failure</c>; when the add did persist, the circuit is marked <c>Offered</c>.</item>
 /// </list>
 /// <para>Outgoing events, routed by the outgoing HTLC's stored <see cref="HtlcOrigin"/>:</para>
 /// <list type="bullet">
@@ -73,13 +75,19 @@ using Onion;
 ///   channel that is not loaded yet keeps the row); for our own payment, every
 ///   <see cref="ILocalPaymentHtlcHandler"/> handled its resolution.</item>
 ///   <item><c>HtlcOrigin.Local</c> resolutions go to the registered <see cref="ILocalPaymentHtlcHandler"/>s.</item>
+///   <item><see cref="IncomingHtlcSettled"/>: our removal of an incoming HTLC is final and nothing reads its archived
+///   row any more (the circuit or invoice was resolved before the removal was sent), so it is pruned (NL-243).</item>
 /// </list>
 /// <para>Idempotent: events are re-derived on startup and after a reestablish. The work on one incoming HTLC (its
 /// lock-in and the resolutions of the outgoing HTLC that forwards it) is serialized by a per-incoming-HTLC lock, so a
 /// fulfill is never sent twice and never lost. Locks are always taken in the order incoming HTLC, payment hash,
 /// channel (the channel lock only inside <see cref="IChannelOperations"/> or the prune), and never two channel locks.
 /// A refused channel operation (<see cref="CommitmentRefusedException"/>, e.g. the peer is away) is logged: nothing was
-/// persisted and the event comes back with the next replay.</para>
+/// persisted, and the HTLC it was for is still pending in the persisted state. Its event is derived again by the next
+/// replay: at startup (useless while no link is up) and, with
+/// <see cref="HtlcSwitchServiceCollectionExtensions.AddHtlcSwitchServices"/>, whenever the channel's link is marked up
+/// (<see cref="LinkUpEventReplayer"/>). Before BOLT2 N7 a link is marked only when a channel opens, so an HTLC refused
+/// because its peer disconnected waits for N7's <c>MarkLinkUp</c> after the reestablish (NL-252).</para>
 /// </remarks>
 public sealed class HtlcSwitch : IHtlcSwitch
 {
@@ -147,11 +155,16 @@ public sealed class HtlcSwitch : IHtlcSwitch
                 case OutgoingHtlcSettled settled:
                     await HandleOutgoingSettledAsync(settled, cancellationToken);
                     break;
+                case IncomingHtlcSettled incomingSettled:
+                    await PruneAsync(incomingSettled.ChannelId,
+                                     new HtlcKey(HtlcDirection.Incoming, incomingSettled.HtlcId), cancellationToken);
+                    break;
             }
         }
         catch (CommitmentRefusedException e)
         {
-            // Nothing was persisted or sent by the refused operation: the event is replayed later
+            // Nothing was persisted or sent by the refused operation: the HTLC is still pending, and its event is
+            // derived again when the channel's link comes up (LinkUpEventReplayer) or at the next startup
             _logger.LogWarning("Could not act on {Event} for HTLC {HtlcId} of channel {ChannelId}: {Reason}",
                                channelEvent.GetType().Name, channelEvent.HtlcId, channelEvent.ChannelId, e.Message);
         }
@@ -235,7 +248,7 @@ public sealed class HtlcSwitch : IHtlcSwitch
     }
 
     /// <summary>
-    /// Final hop (M4-T3, NL-253): check-and-mark the invoice under its payment hash lock, then fulfill.
+    /// Final hop (M4-T3, NL-253): check the invoice under its payment hash lock, then fulfill and settle it in one save.
     /// </summary>
     private async Task ReceiveAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
                                     CancellationToken cancellationToken)
@@ -252,47 +265,56 @@ public sealed class HtlcSwitch : IHtlcSwitch
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
 
-        Secret preimage;
+        FinalHopResult decision;
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
-
-            // Accepted but not paid by any HTLC: the fulfill that followed the accept was never persisted
-            var reclaim = invoice is { Status: InvoiceStatus.Accepted }
-                       && !IsFulfilledByAnyIncomingHtlc(htlc.PaymentHash);
-            var decision = _finalHopProcessor.Evaluate(reclaim ? AsOpen(invoice!) : invoice, htlc.PaymentHash,
-                                                       amount, htlc.CltvExpiry, final.Payload, height);
-            if (!decision.IsAccepted)
-            {
-                await FailBackAsync(channelId, htlc, final.SharedSecret, decision.Failure!, cancellationToken);
-                return;
-            }
-
-            preimage = decision.Preimage!.Value;
-            if (!reclaim)
-            {
-                invoice!.Accept(amount);
-                await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
-                await unitOfWork.SaveChangesAsync();
-            }
+            decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, amount, htlc.CltvExpiry,
+                                                   final.Payload, height);
         }
 
-        await _channelOperations.FulfillHtlcAsync(channelId, htlc.Id, preimage, cancellationToken);
+        if (!decision.IsAccepted)
+        {
+            await FailBackAsync(channelId, htlc, final.SharedSecret, decision.Failure!, cancellationToken);
+            return;
+        }
+
+        try
+        {
+            // The invoice settles in the fulfill's own save: no crash leaves one without the other
+            await _channelOperations.FulfillHtlcAsync(channelId, htlc.Id, decision.Preimage!.Value,
+                                                      unitOfWork => SettleInvoiceAsync(unitOfWork, htlc.PaymentHash,
+                                                                                       amount),
+                                                      cancellationToken);
+        }
+        catch (InvoiceNotOpenException e)
+        {
+            // Canceled (or paid) since it was checked: nothing was persisted, fail the HTLC as for any unusable invoice
+            _logger.LogInformation("Invoice {PaymentHash} changed before HTLC {HtlcId} of channel {ChannelId} was "
+                                 + "fulfilled: {Reason}", htlc.PaymentHash, htlc.Id, channelId, e.Message);
+            await FailBackAsync(channelId, htlc, final.SharedSecret,
+                                FailureMessage.IncorrectOrUnknownPaymentDetails(amount, height), cancellationToken);
+            return;
+        }
+
         _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId} for "
                              + "our invoice {PaymentHash}", htlc.Id, htlc.AmountMsat, channelId, htlc.PaymentHash);
+    }
 
-        using (var scope = _serviceScopeFactory.CreateScope())
-        {
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
-            if (invoice is { Status: InvoiceStatus.Accepted })
-            {
-                invoice.Settle(_timeProvider.GetUtcNow());
-                await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
-                await unitOfWork.SaveChangesAsync();
-            }
-        }
+    /// <summary>
+    /// Stages <c>Open</c> → <c>Accepted</c> → <c>Settled</c> on the fulfill's unit of work (under the channel lock and
+    /// the payment hash lock), after checking again that the invoice is still <c>Open</c>.
+    /// </summary>
+    private async Task SettleInvoiceAsync(IUnitOfWork unitOfWork, Hash paymentHash, LightningMoney amount)
+    {
+        var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(paymentHash);
+        if (invoice is not { Status: InvoiceStatus.Open })
+            throw new InvoiceNotOpenException($"the invoice is {invoice?.Status.ToString() ?? "gone"}");
+
+        invoice.Accept(amount);
+        invoice.Settle(_timeProvider.GetUtcNow());
+        await unitOfWork.InvoiceDbRepository.UpdateAsync(invoice);
     }
 
     /// <summary>
@@ -343,11 +365,25 @@ public sealed class HtlcSwitch : IHtlcSwitch
                 outgoingChannel.ChannelId, forward.AmountToForward, htlc.PaymentHash, forward.OutgoingCltvValue,
                 forward.NextPacket, null, HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), cancellationToken);
         }
-        catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
-            // Nothing was persisted for the offer: the forward failed before it started
-            _logger.LogInformation("Forward of HTLC {HtlcId} of channel {ChannelId} to {ShortChannelId} refused: {Reason}",
-                                   htlc.Id, incomingChannelId, requestedScid, e.Message);
+            // A refusal persisted nothing; any other failure (staging, save, publish) may come after the add was saved,
+            // so the channel state decides. A cancellation leaves the circuit Pending for the replay
+            // (ResumeCircuitAsync decides the same way)
+            if (e is CommitmentRefusedException or KeyNotFoundException)
+                _logger.LogInformation("Forward of HTLC {HtlcId} of channel {ChannelId} to {ShortChannelId} refused: "
+                                     + "{Reason}", htlc.Id, incomingChannelId, requestedScid, e.Message);
+            else
+                _logger.LogError(e, "Forward of HTLC {HtlcId} of channel {ChannelId} to {ShortChannelId} failed",
+                                 htlc.Id, incomingChannelId, requestedScid);
+
+            if (await FindForwardedHtlcAsync(incomingChannelId, htlc.Id) is { } offered)
+            {
+                await UpdateCircuitAsync(incomingChannelId, htlc.Id, c => c.Status == ForwardCircuitStatus.Pending,
+                                         c => c.AddOutgoingHtlc(offered.ChannelId, offered.Htlc.Id));
+                return;
+            }
+
             await UpdateCircuitAsync(incomingChannelId, htlc.Id,
                                      c => c.Status == ForwardCircuitStatus.Pending,
                                      c => c.MarkFailed(_timeProvider.GetUtcNow()));
@@ -376,22 +412,13 @@ public sealed class HtlcSwitch : IHtlcSwitch
         {
             case ForwardCircuitStatus.Pending:
                 {
-                    IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)> outgoing;
-                    using (var scope = _serviceScopeFactory.CreateScope())
-                    {
-                        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                        outgoing = await unitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
-                                       HtlcOrigin.Forwarded(incomingChannelId, incomingHtlcId));
-                    }
-
-                    if (outgoing.Count > 0)
+                    if (await FindForwardedHtlcAsync(incomingChannelId, incomingHtlcId) is { } offered)
                     {
                         // The add persisted but the circuit's Offered update did not: record it; the outgoing HTLC's
                         // events resolve the forward
-                        var (outgoingChannelId, outgoingKey) = outgoing[0];
                         await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
                                                  c => c.Status == ForwardCircuitStatus.Pending,
-                                                 c => c.AddOutgoingHtlc(outgoingChannelId, outgoingKey.Id));
+                                                 c => c.AddOutgoingHtlc(offered.ChannelId, offered.Htlc.Id));
                         return;
                     }
 
@@ -408,19 +435,86 @@ public sealed class HtlcSwitch : IHtlcSwitch
                 await FailCircuitUpstreamLocallyAsync(circuit, cancellationToken);
                 return;
 
-            case ForwardCircuitStatus.Fulfilled when circuit is { OutgoingChannelId: { } channelId, OutgoingHtlcId: { } id }
-                                                   && FindKnownPreimage(channelId, id) is { } preimage:
-                await FulfillUpstreamAsync(incomingChannelId, incomingHtlcId, preimage, cancellationToken);
-                return;
+            case not ForwardCircuitStatus.Pending
+                when circuit is { OutgoingChannelId: { } outgoingChannelId, OutgoingHtlcId: { } outgoingHtlcId }:
+                {
+                    // The upstream HTLC still waits although its forward may be resolved downstream (an upstream
+                    // removal refused while the peer was away, or a crash before it): resolve it from the outgoing
+                    // record, live or archived (it is not pruned before the upstream HTLC has its removal)
+                    var record = await FindOutgoingRecordAsync(outgoingChannelId, outgoingHtlcId);
+                    var resolutions = record is null
+                                          ? []
+                                          : ChannelDomainEvents.DerivePending(outgoingChannelId, [record]);
+                    var resolved = false;
+                    foreach (var resolution in resolutions)
+                    {
+                        switch (resolution)
+                        {
+                            case OutgoingHtlcFulfilled fulfilled when !resolved:
+                                await FulfillForwardLockedAsync(incomingChannelId, incomingHtlcId, fulfilled,
+                                                                cancellationToken);
+                                resolved = true;
+                                break;
+                            case OutgoingHtlcFailed failed when !resolved:
+                                await FailForwardLockedAsync(incomingChannelId, incomingHtlcId, failed,
+                                                             cancellationToken);
+                                resolved = true;
+                                break;
+                            case OutgoingHtlcSettled when resolved
+                                                       && await IsForwardDoneAsync(incomingChannelId, incomingHtlcId):
+                                // Its settle event was consumed while the upstream still waited: prune it now
+                                await PruneAsync(outgoingChannelId, record!.Key, cancellationToken);
+                                break;
+                        }
+                    }
+
+                    if (!resolved)
+                        LogWaiting(circuit);
+                    return;
+                }
 
             default:
-                // Offered, or resolved through an outgoing HTLC: its replayed events resolve the upstream HTLC (its
-                // record is not pruned before)
-                if (_logger.IsEnabled(LogLevel.Debug))
-                    _logger.LogDebug("HTLC {HtlcId} of channel {ChannelId} waits for its {Status} forward", incomingHtlcId,
-                                     incomingChannelId, circuit.Status);
+                LogWaiting(circuit);
                 return;
         }
+    }
+
+    private void LogWaiting(ForwardCircuitModel circuit)
+    {
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("HTLC {HtlcId} of channel {ChannelId} waits for its {Status} forward", circuit.IncomingHtlcId,
+                             circuit.IncomingChannelId, circuit.Status);
+    }
+
+    /// <summary>
+    /// The record of an HTLC we offered: the live one in memory, else its archived (settled, unpruned) row. Null when
+    /// the channel is not loaded or the record is gone.
+    /// </summary>
+    private async Task<HtlcRecord?> FindOutgoingRecordAsync(ChannelId channelId, ulong htlcId)
+    {
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+         || channel.Commitments is not { } commitments)
+            return null;
+
+        if (commitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } live)
+            return live;
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channelId, commitments.Params);
+        var key = new HtlcKey(HtlcDirection.Outgoing, htlcId);
+        return persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == key);
+    }
+
+    /// <summary>The channel HTLC that carries the forward's origin, when its add was persisted.</summary>
+    private async Task<(ChannelId ChannelId, HtlcKey Htlc)?> FindForwardedHtlcAsync(ChannelId incomingChannelId,
+                                                                                   ulong incomingHtlcId)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var outgoing = await unitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
+                           HtlcOrigin.Forwarded(incomingChannelId, incomingHtlcId));
+        return outgoing.Count > 0 ? outgoing[0] : null;
     }
 
     private async Task FailCircuitUpstreamLocallyAsync(ForwardCircuitModel circuit,
@@ -461,24 +555,7 @@ public sealed class HtlcSwitch : IHtlcSwitch
                 {
                     using var incomingLock =
                         await _incomingLocks.AcquireAsync((incomingChannelId, incomingHtlcId), cancellationToken);
-
-                    // The preimage is final knowledge: fulfill upstream at once (B2-FWD-05)
-                    try
-                    {
-                        await FulfillUpstreamAsync(incomingChannelId, incomingHtlcId, fulfilled.PaymentPreimage,
-                                                   cancellationToken);
-                    }
-                    catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
-                    {
-                        // Replayed later: the outgoing record (and its preimage) is kept until the upstream is resolved
-                        _logger.LogWarning("Could not fulfill upstream HTLC {HtlcId} of channel {ChannelId} yet: {Reason}",
-                                           incomingHtlcId, incomingChannelId, e.Message);
-                    }
-
-                    await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
-                                             c => c.Status is ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered,
-                                             c => c.MarkFulfilled(fulfilled.ChannelId, fulfilled.HtlcId,
-                                                                  _timeProvider.GetUtcNow()));
+                    await FulfillForwardLockedAsync(incomingChannelId, incomingHtlcId, fulfilled, cancellationToken);
                     return;
                 }
 
@@ -507,42 +584,7 @@ public sealed class HtlcSwitch : IHtlcSwitch
                 {
                     using var incomingLock =
                         await _incomingLocks.AcquireAsync((incomingChannelId, incomingHtlcId), cancellationToken);
-
-                    if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is { } incoming)
-                    {
-                        var sharedSecret = await GetIncomingSharedSecretAsync(incomingChannelId, incoming);
-                        var reason = sharedSecret is { } secret
-                                         ? ReturnPacket(secret, failed.Removal)
-                                         : null;
-                        try
-                        {
-                            if (reason is not null)
-                            {
-                                await _channelOperations.FailHtlcAsync(incomingChannelId, incomingHtlcId, reason,
-                                                                       cancellationToken);
-                                LogFailedBack(incomingChannelId, incoming,
-                                              $"downstream {failed.Removal.Kind} on channel {failed.ChannelId}");
-                            }
-                            else
-                            {
-                                // Without the incoming shared secret nothing can be encrypted for the origin
-                                await _channelOperations.FailMalformedHtlcAsync(
-                                    incomingChannelId, incomingHtlcId, FailureCode.InvalidOnionHmac,
-                                    Sha256Of(incoming.OnionRoutingPacket), cancellationToken);
-                            }
-                        }
-                        catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
-                        {
-                            // Replayed later: the outgoing record is kept until the upstream is resolved
-                            _logger.LogWarning("Could not fail upstream HTLC {HtlcId} of channel {ChannelId} yet: {Reason}",
-                                               incomingHtlcId, incomingChannelId, e.Message);
-                        }
-                    }
-
-                    await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
-                                             c => c.Status is ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered,
-                                             c => c.MarkFailed(failed.ChannelId, failed.HtlcId,
-                                                               _timeProvider.GetUtcNow()));
+                    await FailForwardLockedAsync(incomingChannelId, incomingHtlcId, failed, cancellationToken);
                     return;
                 }
 
@@ -556,6 +598,76 @@ public sealed class HtlcSwitch : IHtlcSwitch
                                    failed.HtlcId, failed.ChannelId, failed.Removal.Kind);
                 return;
         }
+    }
+
+    /// <summary>
+    /// A forward's downstream HTLC was fulfilled: fulfill upstream at once (B2-FWD-05), then mark the circuit
+    /// <c>Fulfilled</c>. The caller holds the incoming HTLC's lock.
+    /// </summary>
+    private async Task FulfillForwardLockedAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                                 OutgoingHtlcFulfilled fulfilled, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await FulfillUpstreamAsync(incomingChannelId, incomingHtlcId, fulfilled.PaymentPreimage, cancellationToken);
+        }
+        catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+        {
+            // The outgoing record (and its preimage) is kept until the upstream is resolved, so the lock-in replayed
+            // when the upstream link comes up (or at startup) fulfills from it (ResumeCircuitAsync)
+            _logger.LogWarning("Could not fulfill upstream HTLC {HtlcId} of channel {ChannelId} yet: {Reason}",
+                               incomingHtlcId, incomingChannelId, e.Message);
+        }
+
+        await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
+                                 c => c.Status is ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered,
+                                 c => c.MarkFulfilled(fulfilled.ChannelId, fulfilled.HtlcId,
+                                                      _timeProvider.GetUtcNow()));
+    }
+
+    /// <summary>
+    /// A forward's downstream HTLC failed irrevocably: fail upstream with the wrapped (or converted) error, then mark
+    /// the circuit <c>Failed</c>. The caller holds the incoming HTLC's lock.
+    /// </summary>
+    private async Task FailForwardLockedAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                              OutgoingHtlcFailed failed, CancellationToken cancellationToken)
+    {
+        if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is { } incoming)
+        {
+            var sharedSecret = await GetIncomingSharedSecretAsync(incomingChannelId, incoming);
+            var reason = sharedSecret is { } secret
+                             ? ReturnPacket(secret, failed.Removal)
+                             : null;
+            try
+            {
+                if (reason is not null)
+                {
+                    await _channelOperations.FailHtlcAsync(incomingChannelId, incomingHtlcId, reason,
+                                                           cancellationToken);
+                    LogFailedBack(incomingChannelId, incoming,
+                                  $"downstream {failed.Removal.Kind} on channel {failed.ChannelId}");
+                }
+                else
+                {
+                    // Without the incoming shared secret nothing can be encrypted for the origin
+                    await _channelOperations.FailMalformedHtlcAsync(incomingChannelId, incomingHtlcId,
+                                                                    FailureCode.InvalidOnionHmac,
+                                                                    Sha256Of(incoming.OnionRoutingPacket),
+                                                                    cancellationToken);
+                }
+            }
+            catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+            {
+                // The outgoing record is kept until the upstream is resolved: the lock-in replayed when the upstream
+                // link comes up (or at startup) fails from it (ResumeCircuitAsync)
+                _logger.LogWarning("Could not fail upstream HTLC {HtlcId} of channel {ChannelId} yet: {Reason}",
+                                   incomingHtlcId, incomingChannelId, e.Message);
+            }
+        }
+
+        await UpdateCircuitAsync(incomingChannelId, incomingHtlcId,
+                                 c => c.Status is ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered,
+                                 c => c.MarkFailed(failed.ChannelId, failed.HtlcId, _timeProvider.GetUtcNow()));
     }
 
     private async Task HandleOutgoingSettledAsync(OutgoingHtlcSettled settled, CancellationToken cancellationToken)
@@ -590,17 +702,26 @@ public sealed class HtlcSwitch : IHtlcSwitch
                     return;
             }
 
-            using var channelLock = await _channelLockProvider.AcquireAsync(settled.ChannelId, cancellationToken);
-            using var scope = _serviceScopeFactory.CreateScope();
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            await unitOfWork.ChannelStateDbRepository.PruneSettledHtlcsAsync(
-                settled.ChannelId, [new HtlcKey(HtlcDirection.Outgoing, settled.HtlcId)]);
-            await unitOfWork.SaveChangesAsync();
+            await PruneAsync(settled.ChannelId, new HtlcKey(HtlcDirection.Outgoing, settled.HtlcId),
+                             cancellationToken);
         }
         finally
         {
             incomingLock?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Removes the archived row of a settled HTLC (NL-243) under the channel's lock, in one save. The repository skips a
+    /// row that is not final (or already gone), so a replayed settle event is harmless.
+    /// </summary>
+    private async Task PruneAsync(ChannelId channelId, HtlcKey htlc, CancellationToken cancellationToken)
+    {
+        using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await unitOfWork.ChannelStateDbRepository.PruneSettledHtlcsAsync(channelId, [htlc]);
+        await unitOfWork.SaveChangesAsync();
     }
 
     /// <summary>
@@ -716,22 +837,6 @@ public sealed class HtlcSwitch : IHtlcSwitch
      && channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlcId) is { State: HtlcState.RcvdAddAckRevocation } htlc
             ? htlc
             : null;
-
-    private bool IsFulfilledByAnyIncomingHtlc(Hash paymentHash) =>
-        _channelMemoryRepository.FindChannels(c => c.Commitments is not null)
-                                .Any(c => c.Commitments!.Htlcs.Values.Any(h => h.Direction == HtlcDirection.Incoming
-                                                                          && h.PaymentHash == paymentHash
-                                                                          && h.Removal is { IsFulfill: true }));
-
-    private Secret? FindKnownPreimage(ChannelId channelId, ulong htlcId) =>
-        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
-     && channel.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } htlc
-            ? htlc.KnownPreimage ?? htlc.Removal?.PaymentPreimage
-            : null;
-
-    private static InvoiceModel AsOpen(InvoiceModel invoice) =>
-        new(invoice.PaymentHash, invoice.Preimage, invoice.PaymentSecret, invoice.Amount, invoice.Description,
-            invoice.Bolt11, invoice.CreatedAt, invoice.ExpirySeconds, invoice.MinFinalCltvExpiry);
 
     /// <summary>
     /// The open channel the onion's <c>short_channel_id</c> names: one of our aliases or the peer's alias, or the real
@@ -858,3 +963,7 @@ public sealed class HtlcSwitch : IHtlcSwitch
 
     #endregion
 }
+
+/// <summary>The invoice left <c>Open</c> between the final-hop check and the fulfill's save (e.g. it was canceled).
+/// </summary>
+internal sealed class InvoiceNotOpenException(string message) : InvalidOperationException(message);

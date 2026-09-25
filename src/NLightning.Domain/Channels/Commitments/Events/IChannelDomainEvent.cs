@@ -4,7 +4,7 @@ using ValueObjects;
 
 /// <summary>
 /// Something the commitment engine learned that the rest of the node must act on (plan N4-T4, §3.4 I8): an incoming
-/// HTLC is locked in, or an outgoing HTLC was fulfilled, irrevocably failed or settled.
+/// HTLC is locked in or settled, or an outgoing HTLC was fulfilled, irrevocably failed or settled.
 /// </summary>
 /// <remarks>
 /// The engine returns events in <see cref="CommitmentsResult.Events"/>. The caller raises them only <b>after</b> the

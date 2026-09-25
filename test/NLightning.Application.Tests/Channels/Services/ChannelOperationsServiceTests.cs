@@ -114,6 +114,48 @@ public class ChannelOperationsServiceTests
     }
 
     [Fact]
+    public async Task Given_StagedWrite_When_Fulfilling_Then_ItIsStagedAfterTheTransitionAndSavedWithIt()
+    {
+        // Arrange - NL-253: the final hop's invoice settles in the fulfill's own save
+        var preimage = SecretOf(9);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        var service = CreateService();
+
+        // Act
+        await service.FulfillHtlcAsync(TestChannelId, htlc.Id, preimage, unitOfWork =>
+        {
+            Assert.Same(_context.UnitOfWork.Object, unitOfWork);
+            _context.Calls.Add("staged");
+            return Task.CompletedTask;
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["apply", "staged", "save", "publish", "schedule"], _context.Calls);
+        Assert.IsType<UpdateFulfillHtlcMessage>(Assert.Single(_published));
+    }
+
+    [Fact]
+    public async Task Given_StagedWriteThrows_When_Fulfilling_Then_NothingIsSavedOrSent()
+    {
+        // Arrange
+        var preimage = SecretOf(9);
+        var htlc = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        var service = CreateService();
+        var before = _context.State;
+
+        // Act
+        var fulfill = service.FulfillHtlcAsync(TestChannelId, htlc.Id, preimage,
+                                               _ => throw new InvalidOperationException("invoice canceled"),
+                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fulfill);
+        Assert.DoesNotContain("save", _context.Calls);
+        Assert.Same(before, _context.State);
+        Assert.Empty(_published);
+    }
+
+    [Fact]
     public async Task Given_LockedInIncomingHtlc_When_FailingMalformed_Then_UpdateFailMalformedIsSent()
     {
         // Arrange

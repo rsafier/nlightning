@@ -103,6 +103,7 @@ internal sealed class SimulatorStats
     public int FulfilledEvents;
     public int FailedEvents;
     public int SettledEvents;
+    public int IncomingSettledEvents;
 
     /// <summary>Runs that ended with the non-funder failing the channel because the funder's update crossed its adds
     /// (see <see cref="CommitmentPairSimulator"/>).</summary>
@@ -135,6 +136,7 @@ internal sealed class SimulatorStats
         FulfilledEvents += other.FulfilledEvents;
         FailedEvents += other.FailedEvents;
         SettledEvents += other.SettledEvents;
+        IncomingSettledEvents += other.IncomingSettledEvents;
         CrossedFeeFailures += other.CrossedFeeFailures;
         foreach (var (id, n) in other.Refusals)
             Refusals[id] = Refusals.GetValueOrDefault(id) + n;
@@ -147,7 +149,7 @@ internal sealed class SimulatorStats
       + $"re-sent CS {RetransmittedCommitments}, RAA {RetransmittedRevocations}, updates {RetransmittedUpdates}), "
       + $"gate refusals {GateRefusals}, max open HTLCs {MaxOpenHtlcs}, crossed-fee channel failures "
       + $"{CrossedFeeFailures}; events: locked-in {LockedInEvents}, fulfilled {FulfilledEvents}, failed "
-      + $"{FailedEvents}, settled {SettledEvents}; refusals: "
+      + $"{FailedEvents}, settled {SettledEvents}, incoming settled {IncomingSettledEvents}; refusals: "
       + string.Join(", ", Refusals.Select(r => $"{r.Key} {r.Value}"));
 }
 
@@ -696,6 +698,8 @@ internal sealed class CommitmentPairSimulator
     {
         var settledOutgoing = result.Transition.SettledHtlcs.Where(h => h.Direction == HtlcDirection.Outgoing)
                                     .ToDictionary(h => h.Id);
+        var settledIncoming = result.Transition.SettledHtlcs.Where(h => h.Direction == HtlcDirection.Incoming)
+                                    .ToDictionary(h => h.Id);
         foreach (var domainEvent in result.Events)
         {
             Check(domainEvent.ChannelId.Equals(CommitmentsTestKit.ChannelId),
@@ -738,6 +742,17 @@ internal sealed class CommitmentPairSimulator
                           $"{node.Name} raised OutgoingHtlcSettled #{settled.HtlcId} twice");
                     Stats.SettledEvents++;
                     break;
+                case IncomingHtlcSettled incomingSettled:
+                    Check(settledIncoming.TryGetValue(incomingSettled.HtlcId, out var incomingHtlc)
+                       && incomingHtlc is { State: HtlcState.SentRemoveAckRevocation }
+                       && incomingHtlc.Removal!.Kind == incomingSettled.Kind,
+                          $"{node.Name} raised IncomingHtlcSettled #{incomingSettled.HtlcId} for an HTLC that did not settle");
+                    Check(node.LockedInEvents.Contains(incomingSettled.HtlcId),
+                          $"{node.Name} settled incoming HTLC #{incomingSettled.HtlcId} that was never locked in");
+                    Check(node.IncomingSettledEvents.Add(incomingSettled.HtlcId),
+                          $"{node.Name} raised IncomingHtlcSettled #{incomingSettled.HtlcId} twice");
+                    Stats.IncomingSettledEvents++;
+                    break;
                 default:
                     throw Fail($"{node.Name} raised unknown event {domainEvent}");
             }
@@ -746,6 +761,9 @@ internal sealed class CommitmentPairSimulator
         // Every outgoing HTLC that settled raised its settle event now.
         foreach (var id in settledOutgoing.Keys)
             Check(node.SettledEvents.Contains(id), $"{node.Name} settled HTLC #{id} without OutgoingHtlcSettled");
+        foreach (var id in settledIncoming.Keys)
+            Check(node.IncomingSettledEvents.Contains(id),
+                  $"{node.Name} settled incoming HTLC #{id} without IncomingHtlcSettled");
 
         // Completeness: every locked-in incoming HTLC and every known preimage has had its event.
         foreach (var htlc in result.Next.Htlcs.Values)
@@ -956,6 +974,8 @@ internal sealed class CommitmentPairSimulator
             Check(!node.FulfilledEvents.Overlaps(node.FailedEvents)
                && node.SettledEvents.SetEquals(node.FulfilledEvents.Union(node.FailedEvents)),
                   $"{node.Name} settled HTLCs do not match its fulfilled/failed events");
+            Check(node.IncomingSettledEvents.SetEquals(node.LockedInEvents),
+                  $"{node.Name} settled {node.IncomingSettledEvents.Count} incoming HTLCs, locked in {node.LockedInEvents.Count}");
         }
 
         Check(Alice.State.LocalBalanceMsat == (ulong)_expectedAliceMsat,
@@ -1175,6 +1195,7 @@ internal sealed class SimNode(string name, byte tag, byte peerTag, ChannelCommit
     public HashSet<ulong> FulfilledEvents { get; } = [];
     public HashSet<ulong> FailedEvents { get; } = [];
     public HashSet<ulong> SettledEvents { get; } = [];
+    public HashSet<ulong> IncomingSettledEvents { get; } = [];
 
     /// <summary>The last local commitment whose signatures were checked (they are checked once per commitment).</summary>
     public LocalCommit? Verified { get; set; }

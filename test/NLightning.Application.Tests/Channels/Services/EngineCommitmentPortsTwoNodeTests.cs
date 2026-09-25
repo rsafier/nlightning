@@ -71,15 +71,22 @@ public class EngineCommitmentPortsTwoNodeTests
         Assert.Equal(RealSigningCommitmentPair.InitialFeeratePerKw * 2, bob.State.LocalCommit.Spec.FeeratePerKw);
 
         // N4-T4 events: each lock-in once on revoke_and_ack, the fulfill at once, fails and settles only when final
+        // (incoming settles too, NL-243)
         Assert.Equal([(typeof(IncomingHtlcLockedIn), big), (typeof(IncomingHtlcLockedIn), small),
+                      (typeof(IncomingHtlcSettled), big), (typeof(IncomingHtlcSettled), small),
                       (typeof(OutgoingHtlcFailed), back), (typeof(OutgoingHtlcSettled), back)],
                      bob.Events.Select(e => (e.Event.GetType(), e.Event.HtlcId)));
         Assert.Equal([(typeof(IncomingHtlcLockedIn), back), (typeof(OutgoingHtlcFulfilled), big),
                       (typeof(OutgoingHtlcSettled), big),
-                      (typeof(OutgoingHtlcFailed), small), (typeof(OutgoingHtlcSettled), small)],
+                      (typeof(OutgoingHtlcFailed), small), (typeof(OutgoingHtlcSettled), small),
+                      (typeof(IncomingHtlcSettled), back)],
                      alice.Events.Select(e => (e.Event.GetType(), e.Event.HtlcId)));
-        Assert.All(alice.Events.Concat(bob.Events).Where(e => e.Event is not OutgoingHtlcFulfilled),
+        Assert.All(alice.Events.Concat(bob.Events)
+                            .Where(e => e.Event is not (OutgoingHtlcFulfilled or IncomingHtlcSettled)),
                    e => Assert.Equal("receive revoke", e.Step));
+        // Our removal of an incoming HTLC is final once we revoke the commitment that still had it
+        Assert.All(alice.Events.Concat(bob.Events).Where(e => e.Event is IncomingHtlcSettled),
+                   e => Assert.Equal("receive commit", e.Step));
         Assert.Equal("receive fulfill", Assert.Single(alice.Events, e => e.Event is OutgoingHtlcFulfilled).Step);
     }
 

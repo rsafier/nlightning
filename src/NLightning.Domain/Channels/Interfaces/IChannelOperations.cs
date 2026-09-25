@@ -3,6 +3,7 @@ namespace NLightning.Domain.Channels.Interfaces;
 using Crypto.ValueObjects;
 using Money;
 using Payments.ValueObjects;
+using Persistence.Interfaces;
 using Protocol.Onion.Enums;
 using Protocol.Onion.ValueObjects;
 using Protocol.Tlv;
@@ -66,6 +67,21 @@ public interface IChannelOperations
     /// </summary>
     Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
                           CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fulfills an incoming HTLC like <see cref="FulfillHtlcAsync(ChannelId, ulong, Secret, CancellationToken)"/> and
+    /// commits <paramref name="stageWithFulfill"/>'s writes in the <b>same</b> save as the fulfill (for example the
+    /// final hop's invoice moving to <c>Settled</c>, NL-253), so neither can be persisted without the other.
+    /// </summary>
+    /// <param name="channelId">The incoming channel.</param>
+    /// <param name="htlcId">The peer's id of the HTLC.</param>
+    /// <param name="paymentPreimage">The preimage.</param>
+    /// <param name="stageWithFulfill">Called under the channel's lock with the unit of work of the fulfill, after the
+    /// transition is staged and before the save. It must only stage writes (never save). If it throws, nothing is
+    /// persisted or sent and the exception propagates.</param>
+    /// <param name="cancellationToken">Cancels waiting for the channel lock; once the save started it completes.</param>
+    Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                          Func<IUnitOfWork, Task> stageWithFulfill, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Fails an incoming HTLC (<c>update_fail_htlc</c>) with an already encrypted error onion

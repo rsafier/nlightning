@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace NLightning.Application.Payments.Switch;
 
+using Channels.Interfaces;
 using Domain.Channels.Interfaces;
 
 /// <summary>
@@ -12,20 +13,39 @@ public static class HtlcSwitchServiceCollectionExtensions
 {
     /// <summary>
     /// Replaces the registered <see cref="IHtlcSwitch"/> (by default <c>LocalOnlyHtlcSwitch</c>, which fails every
-    /// HTLC back) with <see cref="HtlcSwitch"/>, a singleton.
+    /// HTLC back) with <see cref="HtlcSwitch"/>, a singleton, and decorates the registered
+    /// <see cref="IPeerLivenessProbe"/> with <see cref="LinkUpReplayingPeerLivenessProbe"/>, so every
+    /// <c>MarkLinkUp</c> replays the channel's pending HTLC events (<see cref="LinkUpEventReplayer"/>).
     /// </summary>
     /// <remarks>
     /// Call it after <c>AddChannelOperationsServices()</c> and <c>AddPaymentsServices()</c> (both inside
-    /// <c>AddApplicationServices</c>). Besides those it needs <c>IFailureOnionService</c> (<c>AddBitcoinInfrastructure</c>)
-    /// and a scoped <c>IUnitOfWork</c> with the forward-circuit and invoice repositories
-    /// (<c>AddRepositoriesInfrastructureServices</c>); <c>IBlockchainMonitor</c>, <c>IChannelUpdateService</c> (UPDATE
-    /// failures carry our signed <c>channel_update</c>) and <see cref="ILocalPaymentHtlcHandler"/>s are used when
-    /// registered.
+    /// <c>AddApplicationServices</c>), and after any other <see cref="IPeerLivenessProbe"/> registration. Besides those it
+    /// needs <c>IFailureOnionService</c> (<c>AddBitcoinInfrastructure</c>) and a scoped <c>IUnitOfWork</c> with the
+    /// forward-circuit and invoice repositories (<c>AddRepositoriesInfrastructureServices</c>); <c>IBlockchainMonitor</c>,
+    /// <c>IChannelUpdateService</c> (UPDATE failures carry our signed <c>channel_update</c>) and
+    /// <see cref="ILocalPaymentHtlcHandler"/>s are used when registered. Calling it twice changes nothing more.
     /// </remarks>
+    /// <exception cref="InvalidOperationException">No <see cref="IPeerLivenessProbe"/> is registered yet.</exception>
     public static IServiceCollection AddHtlcSwitchServices(this IServiceCollection services)
     {
         services.TryAddSingleton(TimeProvider.System);
         services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch, HtlcSwitch>());
+
+        if (services.Any(d => d.ServiceType == typeof(LinkUpEventReplayer)))
+            return services;
+
+        var probe = services.LastOrDefault(d => d.ServiceType == typeof(IPeerLivenessProbe))
+                 ?? throw new InvalidOperationException(
+                        "Register IPeerLivenessProbe (AddChannelOperationsServices) before AddHtlcSwitchServices");
+        services.AddSingleton<LinkUpEventReplayer>();
+        services.Replace(ServiceDescriptor.Singleton<IPeerLivenessProbe>(
+                             sp => new LinkUpReplayingPeerLivenessProbe(CreateInner(sp, probe),
+                                                                        sp.GetRequiredService<LinkUpEventReplayer>())));
         return services;
     }
+
+    private static IPeerLivenessProbe CreateInner(IServiceProvider serviceProvider, ServiceDescriptor descriptor) =>
+        (IPeerLivenessProbe)(descriptor.ImplementationInstance
+                          ?? descriptor.ImplementationFactory?.Invoke(serviceProvider)
+                          ?? ActivatorUtilities.CreateInstance(serviceProvider, descriptor.ImplementationType!));
 }

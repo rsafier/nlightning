@@ -26,6 +26,7 @@ using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -36,8 +37,11 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -70,8 +74,11 @@ using Infrastructure.Serialization;
 /// channel states at that moment; every node's channel lock provider records a flow that takes a second channel lock
 /// while holding one. <see cref="RestartAsync"/> stops a node (the messages it had queued are lost, its peers see it
 /// as disconnected) and starts it again from its database: channels reloaded and registered (startup replay while
-/// no link is up), then <see cref="ReconnectAsync"/> stands in for <c>channel_reestablish</c> (N7): the links go up
-/// and the pending events are replayed. Restarts are only meant at a quiescent point, since nothing retransmits.</para>
+/// no link is up), then <see cref="ReconnectAsync"/> stands in for <c>channel_reestablish</c> (N7): the links are
+/// marked up through the production (decorated) <see cref="IPeerLivenessProbe"/>, whose
+/// <see cref="LinkUpEventReplayer"/> replays the pending events, as in the daemon. <see cref="Disconnect"/> and
+/// <see cref="ReconnectLinkAsync"/> do the same for one link without a restart. Restarts and reconnections are only
+/// meant at a quiescent point, since nothing retransmits.</para>
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class ThreeNodeHarness : IAsyncDisposable
@@ -132,6 +139,7 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     /// </summary>
     public async Task PumpAsync()
     {
+        await WhenReplaysIdleAsync();
         for (var steps = 0; steps < 20_000; steps++)
         {
             await WhenSchedulersIdleAsync();
@@ -157,6 +165,7 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     /// </summary>
     public async Task RestartAsync(SwitchNode node)
     {
+        await WhenReplaysIdleAsync();
         await WhenSchedulersIdleAsync();
         foreach (var peer in Nodes.Where(n => n != node))
         {
@@ -181,6 +190,8 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     /// </summary>
     public async Task ReconnectAsync(SwitchNode node)
     {
+        // Every link is up before any replay runs (as when N7 has reestablished all of the node's channels), so a
+        // replayed lock-in can be forwarded; then the production MarkLinkUp replays each channel
         foreach (var peer in Nodes.Where(n => n != node))
         {
             peer.SetPeerAlive(node.NodeId, true);
@@ -189,11 +200,46 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
 
         foreach (var channel in node.Channels)
         {
-            node.MarkLinkUp(channel.ChannelId, channel.RemoteNodeId);
-            Find(channel.RemoteNodeId).MarkLinkUp(channel.ChannelId, node.NodeId);
+            node.Probe.MarkLinkUp(channel.ChannelId, channel.RemoteNodeId);
+            Find(channel.RemoteNodeId).Probe.MarkLinkUp(channel.ChannelId, node.NodeId);
         }
 
-        await node.ReplayPendingEventsAsync();
+        foreach (var peer in Nodes.Where(n => n != node))
+            await ReconnectLinkAsync(node, peer);
+    }
+
+    /// <summary>
+    /// The link between <paramref name="a"/> and <paramref name="b"/> drops without a restart: each side sees the
+    /// other disconnected and every channel between them is down until marked up again (as
+    /// <c>ConnectedPeerLivenessProbe</c> after a reconnection).
+    /// </summary>
+    public void Disconnect(SwitchNode a, SwitchNode b)
+    {
+        a.SetPeerAlive(b.NodeId, false);
+        b.SetPeerAlive(a.NodeId, false);
+        foreach (var channel in a.Channels.Where(c => c.RemoteNodeId == b.NodeId))
+        {
+            a.Probe.MarkLinkDown(channel.ChannelId);
+            b.Probe.MarkLinkDown(channel.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// Stands in for <c>channel_reestablish</c> (N7) between <paramref name="a"/> and <paramref name="b"/>: both see
+    /// each other again and both ends of every channel between them call the production
+    /// <see cref="IPeerLivenessProbe.MarkLinkUp"/> (nothing else); waits for the replays it triggers.
+    /// </summary>
+    public async Task ReconnectLinkAsync(SwitchNode a, SwitchNode b)
+    {
+        a.SetPeerAlive(b.NodeId, true);
+        b.SetPeerAlive(a.NodeId, true);
+        foreach (var channel in a.Channels.Where(c => c.RemoteNodeId == b.NodeId))
+        {
+            a.MarkLinkUp(channel.ChannelId, b.NodeId);
+            b.MarkLinkUp(channel.ChannelId, a.NodeId);
+        }
+
+        await WhenReplaysIdleAsync();
     }
 
     /// <summary>
@@ -284,6 +330,12 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     {
         foreach (var node in Nodes.Where(n => n.IsRunning))
             await node.Scheduler.WhenIdleAsync();
+    }
+
+    private async Task WhenReplaysIdleAsync()
+    {
+        foreach (var node in Nodes.Where(n => n.IsRunning))
+            await node.Replayer.WhenIdleAsync();
     }
 
     private async Task OpenChannelAsync(SwitchNode funder, uint funderKeyIndex, SwitchNode fundee, uint fundeeKeyIndex,
@@ -381,6 +433,18 @@ internal sealed class SwitchNode
     /// <summary>Messages raised for a peer that was away (lost, like in production).</summary>
     public List<IChannelMessage> Dropped { get; } = [];
 
+    /// <summary>Called with every message the node publishes, under the channel's lock, right after the save that
+    /// produced it (before it is routed).</summary>
+    public Action<IChannelMessage>? OnPublish { get; set; }
+
+    /// <summary>Called after every invoice read through a unit of work (<c>IInvoiceDbRepository.GetByPaymentHashAsync</c>),
+    /// before the caller gets the result; its task delays the caller.</summary>
+    public Func<Hash, Task>? AfterInvoiceRead { get; set; }
+
+    /// <summary>Called before every <c>IChannelStateDbRepository.SetHtlcOriginAsync</c> (staged with an offer's add);
+    /// throwing from it fails the offer before its save.</summary>
+    public Action<HtlcOrigin>? BeforeSetHtlcOrigin { get; set; }
+
     public bool IsRunning => _provider is not null;
     public IServiceProvider Services => _provider ?? throw new InvalidOperationException($"{Name} is stopped");
     public ChannelManager ChannelManager { get; private set; } = null!;
@@ -390,6 +454,7 @@ internal sealed class SwitchNode
     public IInvoiceService Invoices => Services.GetRequiredService<IInvoiceService>();
     public IChannelMemoryRepository Memory => Services.GetRequiredService<IChannelMemoryRepository>();
     public ILightningSigner Signer => Services.GetRequiredService<ILightningSigner>();
+    public LinkUpEventReplayer Replayer => Services.GetRequiredService<LinkUpEventReplayer>();
 
     public IReadOnlyList<ChannelModel> Channels => Memory.FindChannels(_ => true);
 
@@ -420,7 +485,10 @@ internal sealed class SwitchNode
 
     public void SetPeerAlive(CompactPubKey peer, bool alive) => _peerAlive[peer] = alive;
 
-    public void MarkLinkUp(ChannelId channelId, CompactPubKey peer) => Probe.MarkLinkUp(channelId, peer);
+    /// <summary>Marks the link up through the production (decorated) probe, which replays the channel's pending events.
+    /// </summary>
+    public void MarkLinkUp(ChannelId channelId, CompactPubKey peer) =>
+        Services.GetRequiredService<IPeerLivenessProbe>().MarkLinkUp(channelId, peer);
 
     public IReadOnlyDictionary<ChannelId, ChannelCommitments> SnapshotCommitments() =>
         Channels.Where(c => c.Commitments is not null).ToDictionary(c => c.ChannelId, c => c.Commitments!);
@@ -451,6 +519,7 @@ internal sealed class SwitchNode
         if (_provider is null)
             return;
 
+        await Replayer.WhenIdleAsync();
         await Scheduler.WhenIdleAsync();
         var provider = _provider;
         _provider = null;
@@ -532,6 +601,8 @@ internal sealed class SwitchNode
         services.AddBitcoinInfrastructure();
         services.AddPersistenceInfrastructureServices(configuration);
         services.AddRepositoriesInfrastructureServices();
+        services.Replace(ServiceDescriptor.Scoped<IUnitOfWork>(
+                             sp => new HookedUnitOfWork(ActivatorUtilities.CreateInstance<UnitOfWork>(sp), this)));
         services.AddSingleton(blockchainMonitor.Object);
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
         services.AddCommitmentEngineServices();
@@ -569,8 +640,12 @@ internal sealed class SwitchNode
     /// <summary>Publishes through the node's channel manager, which is built after the provider.</summary>
     private sealed class LazyPublisher(SwitchNode node) : IChannelMessagePublisher
     {
-        public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages) =>
+        public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages)
+        {
+            foreach (var message in messages)
+                node.OnPublish?.Invoke(message);
             node.ChannelManager.Publish(peerPubKey, messages);
+        }
     }
 
     /// <summary>Records every event and hands it to the production switch unless the switch is suspended.</summary>
@@ -601,7 +676,89 @@ internal sealed class LinkProbe(SwitchNode node) : IPeerLivenessProbe
 
     public void MarkLinkUp(ChannelId channelId, CompactPubKey peerPubKey) => _links[channelId] = 0;
 
+    public void MarkLinkDown(ChannelId channelId) => _links.TryRemove(channelId, out _);
+
     public void Clear() => _links.Clear();
+}
+
+/// <summary>
+/// The production <see cref="UnitOfWork"/> with the invoice reads hooked (<see cref="SwitchNode.AfterInvoiceRead"/>).
+/// </summary>
+[ExcludeFromCodeCoverage]
+internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUnitOfWork
+{
+    public IBlockchainStateDbRepository BlockchainStateDbRepository => inner.BlockchainStateDbRepository;
+    public IWatchedTransactionDbRepository WatchedTransactionDbRepository => inner.WatchedTransactionDbRepository;
+    public IWalletAddressesDbRepository WalletAddressesDbRepository => inner.WalletAddressesDbRepository;
+    public IUtxoDbRepository UtxoDbRepository => inner.UtxoDbRepository;
+    public IChannelConfigDbRepository ChannelConfigDbRepository => inner.ChannelConfigDbRepository;
+    public IChannelDbRepository ChannelDbRepository => inner.ChannelDbRepository;
+    public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;
+    public IChannelStateDbRepository ChannelStateDbRepository =>
+        new HookedChannelStateRepository(inner.ChannelStateDbRepository, node);
+    public IRemoteShachainDbRepository RemoteShachainDbRepository => inner.RemoteShachainDbRepository;
+    public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
+    public IInvoiceDbRepository InvoiceDbRepository => new HookedInvoiceRepository(inner.InvoiceDbRepository, node);
+    public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
+    public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
+
+    public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
+    public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);
+    public void TrySpendUtxo(TxId transactionId, uint index) => inner.TrySpendUtxo(transactionId, index);
+    public void SaveChanges() => inner.SaveChanges();
+    public Task SaveChangesAsync() => inner.SaveChangesAsync();
+    public void Dispose() => inner.Dispose();
+
+    private sealed class HookedChannelStateRepository(IChannelStateDbRepository inner, SwitchNode node)
+        : IChannelStateDbRepository
+    {
+        public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null) =>
+            inner.InitializeAsync(snapshot, extras);
+
+        public Task ApplyAsync(ChannelCommitments next, ChannelTransition transition,
+                               ChannelStateExtras? extras = null) =>
+            inner.ApplyAsync(next, transition, extras);
+
+        public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params) =>
+            inner.LoadAsync(channelId, @params);
+
+        public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret) =>
+            inner.SetOnionSharedSecretAsync(channelId, htlc, sharedSecret);
+
+        public Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc) =>
+            inner.GetOnionSharedSecretAsync(channelId, htlc);
+
+        public Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin)
+        {
+            node.BeforeSetHtlcOrigin?.Invoke(origin);
+            return inner.SetHtlcOriginAsync(channelId, htlc, origin);
+        }
+
+        public Task<HtlcOrigin?> GetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc) =>
+            inner.GetHtlcOriginAsync(channelId, htlc);
+
+        public Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin) =>
+            inner.FindHtlcsByOriginAsync(origin);
+
+        public Task PruneSettledHtlcsAsync(ChannelId channelId, IEnumerable<HtlcKey> htlcs) =>
+            inner.PruneSettledHtlcsAsync(channelId, htlcs);
+    }
+
+    private sealed class HookedInvoiceRepository(IInvoiceDbRepository inner, SwitchNode node) : IInvoiceDbRepository
+    {
+        public Task AddAsync(InvoiceModel invoice) => inner.AddAsync(invoice);
+        public Task UpdateAsync(InvoiceModel invoice) => inner.UpdateAsync(invoice);
+
+        public async Task<InvoiceModel?> GetByPaymentHashAsync(Hash paymentHash)
+        {
+            var invoice = await inner.GetByPaymentHashAsync(paymentHash);
+            if (node.AfterInvoiceRead is { } hook)
+                await hook(paymentHash);
+            return invoice;
+        }
+
+        public Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take) => inner.ListAsync(skip, take);
+    }
 }
 
 /// <summary>
