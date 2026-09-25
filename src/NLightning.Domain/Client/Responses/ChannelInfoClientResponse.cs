@@ -72,7 +72,7 @@ public sealed class ChannelInfoClientResponse
     /// <summary>
     /// Our forwarding <c>fee_base_msat</c> on this channel (what a route hint through us must use).
     /// </summary>
-    public ulong FeeBaseMsat { get; init; }
+    public uint FeeBaseMsat { get; init; }
 
     /// <summary>
     /// Our forwarding <c>fee_proportional_millionths</c> on this channel.

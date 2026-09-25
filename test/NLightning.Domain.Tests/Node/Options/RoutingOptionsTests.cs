@@ -25,7 +25,7 @@ public class RoutingOptionsTests
         var options = new RoutingOptions();
 
         // Assert
-        Assert.Equal(1_000UL, options.FeeBaseMsat);
+        Assert.Equal(1_000U, options.FeeBaseMsat);
         Assert.Equal(1U, options.FeeProportionalMillionths);
         Assert.Equal((ushort)40, options.CltvExpiryDelta);
         Assert.Equal(2_016U, options.MaxCltvExpiryDistance);

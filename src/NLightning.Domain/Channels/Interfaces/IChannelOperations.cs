@@ -47,9 +47,14 @@ public interface IChannelOperations
     /// <param name="cltvExpiry">The absolute <c>cltv_expiry</c>.</param>
     /// <param name="onion">The 1366-byte onion for the peer.</param>
     /// <param name="pathKey">The route-blinding path key to put in the <c>update_add_htlc</c> TLVs, if any.</param>
-    /// <param name="origin">What the HTLC belongs to; persisted atomically with the add.</param>
+    /// <param name="origin">What the HTLC belongs to; persisted atomically with the add. Must be
+    /// <see cref="HtlcOrigin.IsValid"/>.</param>
     /// <param name="cancellationToken">Cancels waiting for the channel lock; once the save started it completes.</param>
-    /// <returns>The HTLC id assigned to the add.</returns>
+    /// <returns>The HTLC id assigned to the add. Recording it on the payment or circuit is a later save, so a crash
+    /// can leave the HTLC live while its payment or circuit does not know the id yet (see
+    /// <c>IForwardCircuitDbRepository</c> and <c>IPaymentDbRepository</c>).</returns>
+    /// <exception cref="ArgumentException"><paramref name="origin"/> is not valid (for example
+    /// <c>default(HtlcOrigin)</c>). Nothing is persisted.</exception>
     Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash, uint cltvExpiry,
                                OnionPacket onion, BlindedPathTlv? pathKey, HtlcOrigin origin,
                                CancellationToken cancellationToken = default);

@@ -62,13 +62,82 @@ public class ForwardCircuitModelTests
     }
 
     [Fact]
-    public void Given_PendingCircuit_When_Fulfilled_Then_Throws()
+    public void Given_PendingCircuit_When_FulfilledWithoutOutgoingHtlc_Then_Throws()
     {
         // Arrange
         var circuit = CreateCircuit();
 
         // Act & Assert
         Assert.Throws<InvalidOperationException>(() => circuit.MarkFulfilled(s_createdAt));
+    }
+
+    [Fact]
+    public void Given_PendingCircuitWhoseOfferedSaveWasLost_When_FulfilledWithOutgoingHtlc_Then_FulfilledAndHtlcRecorded()
+    {
+        // Arrange: the outgoing add was saved but the crash came before the circuit's Offered save
+        var circuit = CreateCircuit();
+
+        // Act
+        circuit.MarkFulfilled(s_outgoing, 3, s_createdAt.AddSeconds(1));
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, circuit.Status);
+        Assert.Equal(s_outgoing, circuit.OutgoingChannelId);
+        Assert.Equal(3UL, circuit.OutgoingHtlcId);
+        Assert.Equal(s_createdAt.AddSeconds(1), circuit.ResolvedAt);
+    }
+
+    [Fact]
+    public void Given_PendingCircuit_When_FailedWithOutgoingHtlc_Then_FailedAndHtlcRecorded()
+    {
+        // Arrange
+        var circuit = CreateCircuit();
+
+        // Act
+        circuit.MarkFailed(s_outgoing, 3, s_createdAt);
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Failed, circuit.Status);
+        Assert.Equal(3UL, circuit.OutgoingHtlcId);
+    }
+
+    [Fact]
+    public void Given_OfferedCircuit_When_FulfilledWithSameOutgoingHtlc_Then_Fulfilled()
+    {
+        // Arrange
+        var circuit = CreateCircuit();
+        circuit.AddOutgoingHtlc(s_outgoing, 3);
+
+        // Act
+        circuit.MarkFulfilled(s_outgoing, 3, s_createdAt);
+
+        // Assert
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, circuit.Status);
+    }
+
+    [Fact]
+    public void Given_OfferedCircuit_When_ResolvedWithAnotherOutgoingHtlc_Then_Throws()
+    {
+        // Arrange
+        var circuit = CreateCircuit();
+        circuit.AddOutgoingHtlc(s_outgoing, 3);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => circuit.MarkFulfilled(s_outgoing, 4, s_createdAt));
+        Assert.Throws<InvalidOperationException>(() => circuit.MarkFailed(s_incoming, 3, s_createdAt));
+        Assert.Equal(ForwardCircuitStatus.Offered, circuit.Status);
+    }
+
+    [Fact]
+    public void Given_FulfilledCircuit_When_FulfilledWithOutgoingHtlcAgain_Then_Throws()
+    {
+        // Arrange
+        var circuit = CreateCircuit();
+        circuit.MarkFulfilled(s_outgoing, 3, s_createdAt);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => circuit.MarkFulfilled(s_outgoing, 3, s_createdAt));
+        Assert.Throws<InvalidOperationException>(() => circuit.MarkFailed(s_outgoing, 3, s_createdAt));
     }
 
     [Fact]

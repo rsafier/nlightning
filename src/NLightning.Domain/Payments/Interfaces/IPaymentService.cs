@@ -17,7 +17,8 @@ using Money;
 /// <para>The payment completes when the channel layer raises <c>OutgoingHtlcFulfilled</c> (succeeded, with the
 /// preimage) or <c>OutgoingHtlcFailed</c> (failed only once the removal is irrevocable; the error onion is decrypted
 /// with the per-hop shared secrets and interpreted with <c>FailureInterpreter</c>). A second payment for a hash that
-/// is in flight or succeeded is refused.</para>
+/// is in flight or succeeded is refused; a hash whose stored payment failed may be paid again, and the new attempt
+/// replaces the failed one (<c>IPaymentDbRepository.AddAsync</c>).</para>
 /// </remarks>
 public interface IPaymentService
 {
@@ -33,6 +34,8 @@ public interface IPaymentService
     /// <returns>The payment as stored when it completed or the wait ended.</returns>
     /// <exception cref="ArgumentException">The invoice is malformed, expired, for another network, or the amount is
     /// missing or inconsistent. Nothing is persisted.</exception>
+    /// <exception cref="InvalidOperationException">A payment for the invoice's hash is already in flight or
+    /// succeeded. Nothing is persisted.</exception>
     Task<PaymentModel> PayInvoiceAsync(string bolt11, LightningMoney? amount, TimeSpan timeout,
                                        CancellationToken cancellationToken = default);
 

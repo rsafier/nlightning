@@ -141,7 +141,9 @@ public sealed class ForwardCircuitModel
     }
 
     /// <summary>
-    /// The downstream peer revealed the preimage.
+    /// The downstream peer revealed the preimage of the recorded outgoing HTLC. Requires
+    /// <see cref="ForwardCircuitStatus.Offered"/>; when the circuit may still be
+    /// <see cref="ForwardCircuitStatus.Pending"/>, use <see cref="MarkFulfilled(ChannelId, ulong, DateTimeOffset)"/>.
     /// </summary>
     public void MarkFulfilled(DateTimeOffset resolvedAt)
     {
@@ -153,8 +155,27 @@ public sealed class ForwardCircuitModel
     }
 
     /// <summary>
+    /// The downstream peer revealed the preimage of outgoing HTLC <paramref name="outgoingHtlcId"/> on
+    /// <paramref name="outgoingChannelId"/>. Valid from <see cref="ForwardCircuitStatus.Pending"/> too (the outgoing
+    /// HTLC is recorded here), because the circuit's <c>Offered</c> update is saved after the outgoing add; from
+    /// <see cref="ForwardCircuitStatus.Offered"/> the HTLC must be the recorded one.
+    /// </summary>
+    public void MarkFulfilled(ChannelId outgoingChannelId, ulong outgoingHtlcId, DateTimeOffset resolvedAt)
+    {
+        RecordOutgoingForResolution(outgoingChannelId, outgoingHtlcId, "fulfill");
+        ResolvedAt = resolvedAt;
+        Status = ForwardCircuitStatus.Fulfilled;
+    }
+
+    /// <summary>
     /// The outgoing HTLC failed irrevocably, or the offer was refused.
     /// </summary>
+    /// <remarks>
+    /// Fail a <see cref="ForwardCircuitStatus.Pending"/> circuit this way only once no channel HTLC carries
+    /// <c>HtlcOrigin.Forwarded(IncomingChannelId, IncomingHtlcId)</c> (the offer threw, or a startup replay checked
+    /// every channel): a Pending circuit can have a live downstream HTLC. When the failed outgoing HTLC is known, use
+    /// <see cref="MarkFailed(ChannelId, ulong, DateTimeOffset)"/>.
+    /// </remarks>
     public void MarkFailed(DateTimeOffset resolvedAt)
     {
         if (Status is not (ForwardCircuitStatus.Pending or ForwardCircuitStatus.Offered))
@@ -162,5 +183,35 @@ public sealed class ForwardCircuitModel
 
         ResolvedAt = resolvedAt;
         Status = ForwardCircuitStatus.Failed;
+    }
+
+    /// <summary>
+    /// Outgoing HTLC <paramref name="outgoingHtlcId"/> on <paramref name="outgoingChannelId"/> failed irrevocably.
+    /// Valid from <see cref="ForwardCircuitStatus.Pending"/> (records the HTLC) or
+    /// <see cref="ForwardCircuitStatus.Offered"/> (it must be the recorded HTLC).
+    /// </summary>
+    public void MarkFailed(ChannelId outgoingChannelId, ulong outgoingHtlcId, DateTimeOffset resolvedAt)
+    {
+        RecordOutgoingForResolution(outgoingChannelId, outgoingHtlcId, "fail");
+        ResolvedAt = resolvedAt;
+        Status = ForwardCircuitStatus.Failed;
+    }
+
+    private void RecordOutgoingForResolution(ChannelId outgoingChannelId, ulong outgoingHtlcId, string action)
+    {
+        switch (Status)
+        {
+            case ForwardCircuitStatus.Pending:
+                OutgoingChannelId = outgoingChannelId;
+                OutgoingHtlcId = outgoingHtlcId;
+                return;
+            case ForwardCircuitStatus.Offered:
+                if (OutgoingChannelId != outgoingChannelId || OutgoingHtlcId != outgoingHtlcId)
+                    throw new InvalidOperationException(
+                        $"Cannot {action} the circuit through an outgoing HTLC it did not offer.");
+                return;
+            default:
+                throw new InvalidOperationException($"Cannot {action} a circuit that is {Status}.");
+        }
     }
 }
