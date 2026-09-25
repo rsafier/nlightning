@@ -42,4 +42,20 @@ public class Bolt3CommitmentVectorTests
         var expectedLocalSignature = Transaction.Parse(vector.CommitTxHex, Network.Main).Inputs[0].WitScript[1];
         Assert.Equal(vector.LocalSigHex + "01", Convert.ToHexString(expectedLocalSignature).ToLowerInvariant());
     }
+
+    [Theory]
+    [MemberData(nameof(AppendixCNames))]
+    public void Given_AppendixCVector_When_BuildingWithOutputMap_Then_HtlcOutputsAreInSpecOrder(string name)
+    {
+        // Arrange
+        var vector = Bolt3SpecVectors.GetAppendixC(name);
+        var harness = new Bolt3VectorHarness(vector, false);
+
+        // Act
+        var result = harness.CommitmentBuilder.BuildWithOutputMap(harness.CreateCommitmentModel());
+
+        // Assert - one entry per HTLC transaction vector, same output index and HTLC, in transaction order
+        Assert.Equal(vector.HtlcTxs.Select(h => ((ulong)h.HtlcId!.Value, (uint)h.OutputIndex)),
+                     result.HtlcOutputsInTxOrder.Select(h => (h.Output.Htlc.Id, h.Vout)));
+    }
 }

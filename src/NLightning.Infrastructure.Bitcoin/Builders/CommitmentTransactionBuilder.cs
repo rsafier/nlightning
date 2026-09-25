@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Bitcoin.Builders;
 using Comparers;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Node.Options;
 using Interfaces;
@@ -21,7 +22,12 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
                    throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
     }
 
-    public SignedTransaction Build(CommitmentTransactionModel transaction)
+    /// <inheritdoc />
+    public SignedTransaction Build(CommitmentTransactionModel transaction) =>
+        BuildWithOutputMap(transaction).Transaction;
+
+    /// <inheritdoc />
+    public CommitmentTransactionBuildResult BuildWithOutputMap(CommitmentTransactionModel transaction)
     {
         if (transaction.FundingOutput.TransactionId is null || transaction.FundingOutput.Index is null)
             throw new ArgumentException("Funding output must have a valid transaction Id and index.");
@@ -41,8 +47,8 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
         // Set the sequence number derived from the commitment number
         tx.Inputs.Add(outpoint, null, null, new Sequence(transaction.GetSequence()));
 
-        // Create a list to collect all outputs
-        var outputs = new List<BaseOutput>();
+        // Collect all outputs, remembering which HTLC each HTLC output came from
+        var outputs = new List<(BaseOutput Output, HtlcOutputInfo? Htlc)>();
 
         // Convert and add to_local output if present
         if (transaction.ToLocalOutput != null)
@@ -52,7 +58,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
                                                   new PubKey(transaction.ToLocalOutput.RevocationPubKey),
                                                   transaction.ToLocalOutput.ToSelfDelay);
 
-            outputs.Add(toLocalOutput);
+            outputs.Add((toLocalOutput, null));
         }
 
         // Convert and add to_remote output if present
@@ -62,7 +68,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
             var toRemoteOutput = new ToRemoteOutput(transaction.ToRemoteOutput.Amount, hasAnchors,
                                                     new PubKey(transaction.ToRemoteOutput.RemotePaymentPubKey));
 
-            outputs.Add(toRemoteOutput);
+            outputs.Add((toRemoteOutput, null));
         }
 
         // Convert and add local anchor output if present
@@ -71,7 +77,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
             var localAnchorOutput = new ToAnchorOutput(transaction.LocalAnchorOutput.Amount,
                                                        new PubKey(transaction.LocalAnchorOutput.FundingPubKey));
 
-            outputs.Add(localAnchorOutput);
+            outputs.Add((localAnchorOutput, null));
         }
 
         // Convert and add remote anchor output if present
@@ -80,7 +86,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
             var remoteAnchorOutput = new ToAnchorOutput(transaction.RemoteAnchorOutput.Amount,
                                                         new PubKey(transaction.RemoteAnchorOutput.FundingPubKey));
 
-            outputs.Add(remoteAnchorOutput);
+            outputs.Add((remoteAnchorOutput, null));
         }
 
         // Convert and add offered HTLC outputs
@@ -93,7 +99,7 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
                                                     new PubKey(htlcOutput.RemoteHtlcPubKey),
                                                     new PubKey(htlcOutput.RevocationPubKey));
 
-            outputs.Add(offeredHtlc);
+            outputs.Add((offeredHtlc, htlcOutput));
         }
 
         // Convert and add received HTLC outputs
@@ -105,19 +111,24 @@ public class CommitmentTransactionBuilder : ICommitmentTransactionBuilder
                                                       new PubKey(htlcOutput.RemoteHtlcPubKey),
                                                       new PubKey(htlcOutput.RevocationPubKey));
 
-            outputs.Add(receivedHtlc);
+            outputs.Add((receivedHtlc, htlcOutput));
         }
 
-        // Sort outputs using TransactionOutputComparer
-        outputs.Sort(TransactionOutputComparer.Instance);
+        // BOLT 3 ordering: BIP 69 (amount, scriptPubKey), HTLC ties broken by cltv_expiry. OrderBy is stable, so
+        // fully identical outputs keep the model's order and the HTLC map stays deterministic.
+        var sortedOutputs = outputs.OrderBy(o => o.Output, TransactionOutputComparer.Instance).ToList();
 
-        // Add sorted outputs to the transaction
-        foreach (var output in outputs)
+        // Add sorted outputs to the transaction and record where each HTLC landed
+        var htlcOutputsInTxOrder = new List<(HtlcOutputInfo Output, uint Vout)>();
+        for (var vout = 0; vout < sortedOutputs.Count; vout++)
         {
+            var (output, htlc) = sortedOutputs[vout];
             tx.Outputs.Add(output.ToTxOut());
+            if (htlc is not null)
+                htlcOutputsInTxOrder.Add((htlc, (uint)vout));
         }
 
-        // Return as SignedTransaction
-        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
+        return new CommitmentTransactionBuildResult(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()),
+                                                    htlcOutputsInTxOrder);
     }
 }
