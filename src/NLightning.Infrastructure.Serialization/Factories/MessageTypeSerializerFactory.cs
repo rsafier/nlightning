@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Serialization.Factories;
 
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
 using Interfaces;
 using Messages.Types;
 
@@ -109,6 +110,24 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(UpdateFulfillHtlcMessage),
                          new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(WarningMessage), new WarningMessageTypeSerializer(_payloadSerializerFactory));
+
+        // BOLT 7 gossip is kept as raw bytes until gossip is implemented
+        RegisterGossipSerializer(p => new ChannelAnnouncementMessage(p));
+        RegisterGossipSerializer(p => new NodeAnnouncementMessage(p));
+        RegisterGossipSerializer(p => new ChannelUpdateMessage(p));
+        RegisterGossipSerializer(p => new AnnouncementSignaturesMessage(p));
+        RegisterGossipSerializer(p => new QueryShortChannelIdsMessage(p));
+        RegisterGossipSerializer(p => new ReplyShortChannelIdsEndMessage(p));
+        RegisterGossipSerializer(p => new QueryChannelRangeMessage(p));
+        RegisterGossipSerializer(p => new ReplyChannelRangeMessage(p));
+        RegisterGossipSerializer(p => new GossipTimestampFilterMessage(p));
+    }
+
+    private void RegisterGossipSerializer<TMessage>(Func<GossipPayload, TMessage> messageFactory)
+        where TMessage : GossipMessage
+    {
+        _serializers.Add(typeof(TMessage),
+                         new GossipMessageTypeSerializer<TMessage>(_payloadSerializerFactory, messageFactory));
     }
 
     private void RegisterTypeDictionary()
@@ -145,5 +164,15 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFee, typeof(UpdateFeeMessage));
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcMessage));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(WarningMessage));
+
+        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementMessage));
+        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementMessage));
+        _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(ChannelUpdateMessage));
+        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(AnnouncementSignaturesMessage));
+        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsMessage));
+        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndMessage));
+        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(QueryChannelRangeMessage));
+        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(ReplyChannelRangeMessage));
+        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipTimestampFilterMessage));
     }
 }

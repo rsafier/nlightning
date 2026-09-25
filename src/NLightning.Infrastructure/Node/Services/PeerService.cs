@@ -165,6 +165,12 @@ public sealed class PeerService : IPeerService
             OnAttentionMessageReceived?.Invoke(
                 this, new AttentionMessageEventArgs(warningMessageString, PeerPubKey, channelId));
         }
+        else if (message is GossipMessage)
+        {
+            // BOLT 7 gossip is not implemented yet: accept the message so the connection stays up, and drop it
+            _logger.LogDebug("Dropping gossip message ({messageType}) from peer {peer}",
+                             Enum.GetName(message.Type), PeerPubKey);
+        }
     }
 
     /// <summary>

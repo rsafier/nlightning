@@ -46,6 +46,7 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - Most message TLV extensions still use the open `DeserializeAsync`, which does NOT reject unknown even types (BOLT 1 violation). Only `UpdateAddHtlcMessageTypeSerializer` uses `DeserializeStrictAsync` with its known set (`{0}`); migrate the others as they are touched. `BigSizeTypeSerializer` is canonical (throws `ArgumentException(NonCanonicalErrorMessage)`). `TlvSerializer` rejects length > remaining bytes before allocating.
 - `PingPayloadSerializer`/`PongPayloadSerializer` check but don't consume the ignored bytes.
 - `OpenChannel1MessageTypeSerializer` requires a `channel_type` TLV.
+- BOLT 7 gossip (256-259, 261-265) is registered but NOT parsed: `GossipMessageTypeSerializer<TMessage>` + `GossipPayloadSerializer` keep every remaining byte as `GossipPayload.Data` (so even gossip types no longer kill the peer). Replace with real payload serializers when gossip is implemented.
 - Warning reuses `ErrorPayload` (`PayloadSerializerFactory` maps `MessageTypes.Warning`).
 - File names differ from class names (`*MessageTypeSerializer` / `*PayloadSerializer`): `Messages/Types/UpdateAddHtlcMessageSerializer.cs`, `UpdateFailHtlcMessageSerializer.cs`, `UpdateFufillHtlcMessageSerializer.cs` (typo), `FundingCreatedTypeSerializer.cs`, `FundingSignedTypeSerializer.cs`; `Payloads/UpdateFufillHtlcSerializer.cs` (class `UpdateFulfillHtlcPayloadSerializer`).
 - `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage` bytes in the DB — changing that wire format affects persisted rows.

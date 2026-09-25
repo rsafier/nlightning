@@ -59,10 +59,15 @@ public enum MessageTypes : ushort
 
     #region Routing
 
-    AnnouncementSignatures = 259,
     ChannelAnnouncement = 256,
     NodeAnnouncement = 257,
-    ChannelUpdate = 258
+    ChannelUpdate = 258,
+    AnnouncementSignatures = 259,
+    QueryShortChannelIds = 261,
+    ReplyShortChannelIdsEnd = 262,
+    QueryChannelRange = 263,
+    ReplyChannelRange = 264,
+    GossipTimestampFilter = 265
 
     #endregion
 }
