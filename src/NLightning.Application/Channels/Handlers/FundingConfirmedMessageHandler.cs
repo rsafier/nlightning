@@ -55,7 +55,7 @@ public class FundingConfirmedMessageHandler
             var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
 
             // Create our new per-commitment point
-            channel.CommitmentNumber.Increment();
+            channel.UpdateCommitmentNumber(channel.CommitmentNumber.Increment());
             var newPerCommitmentPoint =
                 _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, channel.CommitmentNumber.Value);
             channel.LocalKeySet.UpdatePerCommitmentPoint(newPerCommitmentPoint);

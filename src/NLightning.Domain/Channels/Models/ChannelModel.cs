@@ -143,6 +143,20 @@ public class ChannelModel
         CommitmentNumber = commitmentNumber;
     }
 
+    public void UpdateCommitmentNumber(CommitmentNumber commitmentNumber)
+    {
+        if (CommitmentNumber is null)
+            throw new InvalidOperationException("Commitment number not set");
+
+        if (commitmentNumber.ObscuringFactor != CommitmentNumber.ObscuringFactor)
+            throw new InvalidOperationException("Commitment number belongs to a different channel");
+
+        if (commitmentNumber.Value < CommitmentNumber.Value)
+            throw new InvalidOperationException("Commitment number cannot go backwards");
+
+        CommitmentNumber = commitmentNumber;
+    }
+
     public void AddFundingOutput(FundingOutputInfo fundingOutput)
     {
         if (FundingOutput is not null)

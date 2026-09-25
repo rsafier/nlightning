@@ -1,5 +1,6 @@
 using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Protocol.Models;
+using NLightning.Infrastructure.Crypto.Hashes;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Domain.Tests.Protocol.ValueObjects;
@@ -10,10 +11,10 @@ public class CommitmentNumberTests
     private const ulong ExpectedObscuringFactor = 0x2bb038521914UL;
     private const ulong ExpectedObscuredValue = InitialCommitmentNumber ^ ExpectedObscuringFactor;
 
-    private readonly CompactPubKey _localPaymentBasepoint =
+    private readonly CompactPubKey _openerPaymentBasepoint =
         Convert.FromHexString("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa");
 
-    private readonly CompactPubKey _remotePaymentBasepoint =
+    private readonly CompactPubKey _accepterPaymentBasepoint =
         Convert.FromHexString("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991");
 
     [Fact]
@@ -26,7 +27,7 @@ public class CommitmentNumberTests
 
         // When
         var commitmentNumber =
-            new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object,
+            new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object,
                                  InitialCommitmentNumber);
 
         // Then
@@ -35,7 +36,7 @@ public class CommitmentNumberTests
     }
 
     [Fact]
-    public void Given_CommitmentNumber_When_Increment_Then_ValueIsIncreased()
+    public void Given_CommitmentNumber_When_Increment_Then_ReturnsNextValueWithoutMutatingOriginal()
     {
         // Given
         var sha256Mock = new Mock<FakeSha256>();
@@ -44,14 +45,30 @@ public class CommitmentNumberTests
 
         const ulong expectedCommitmentNumber = InitialCommitmentNumber + 1;
         var commitmentNumber =
-            new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object,
+            new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object,
                                  InitialCommitmentNumber);
 
         // When
-        commitmentNumber.Increment();
+        var nextCommitmentNumber = commitmentNumber.Increment();
 
         // Then
-        Assert.Equal(expectedCommitmentNumber, commitmentNumber.Value);
+        Assert.NotSame(commitmentNumber, nextCommitmentNumber);
+        Assert.Equal(InitialCommitmentNumber, commitmentNumber.Value);
+        Assert.Equal(expectedCommitmentNumber, nextCommitmentNumber.Value);
+        Assert.Equal(commitmentNumber.ObscuringFactor, nextCommitmentNumber.ObscuringFactor);
+    }
+
+    [Fact]
+    public void Given_Bolt3Basepoints_When_ConstructingWithOpenerFirst_Then_ObscuringFactorMatchesSpec()
+    {
+        // Given
+        var sha256 = new Sha256();
+
+        // When
+        var commitmentNumber = new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256);
+
+        // Then - BOLT 3 Appendix C: SHA256(opener || accepter) gives obscuring factor 0x2bb038521914
+        Assert.Equal(ExpectedObscuringFactor, commitmentNumber.ObscuringFactor);
     }
 
     [Fact]
@@ -62,7 +79,7 @@ public class CommitmentNumberTests
         sha256Mock.Setup(x => x.GetHashAndReset())
                   .Returns(Convert.FromHexString("C8BFEA84214B45899482A4BAD1D85C42130743ED78BA3711F5532BB038521914"));
 
-        var commitmentNumber = new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object);
+        var commitmentNumber = new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object);
 
         // When
         var obscuringFactor = commitmentNumber.ObscuringFactor;
@@ -80,7 +97,7 @@ public class CommitmentNumberTests
                   .Returns(Convert.FromHexString("C8BFEA84214B45899482A4BAD1D85C42130743ED78BA3711F5532BB038521914"));
 
         var commitmentNumber =
-            new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object,
+            new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object,
                                  InitialCommitmentNumber);
 
         // When
@@ -100,7 +117,7 @@ public class CommitmentNumberTests
 
         const uint expectedLocktime = (uint)((0x20 << 24) | (ExpectedObscuredValue & 0xFFFFFF));
         var commitmentNumber =
-            new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object,
+            new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object,
                                  InitialCommitmentNumber);
 
         // When
@@ -120,7 +137,7 @@ public class CommitmentNumberTests
 
         const uint expectedSequence = (uint)((0x80U << 24) | ((ExpectedObscuredValue >> 24) & 0xFFFFFF));
         var commitmentNumber =
-            new CommitmentNumber(_localPaymentBasepoint, _remotePaymentBasepoint, sha256Mock.Object,
+            new CommitmentNumber(_openerPaymentBasepoint, _accepterPaymentBasepoint, sha256Mock.Object,
                                  InitialCommitmentNumber);
 
         // When

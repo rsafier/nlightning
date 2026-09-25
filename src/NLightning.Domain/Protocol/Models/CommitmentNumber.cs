@@ -12,7 +12,7 @@ public class CommitmentNumber
     /// <summary>
     /// Gets the commitment number value.
     /// </summary>
-    public ulong Value { get; private set; }
+    public ulong Value { get; }
 
     /// <summary>
     /// Gets the obscuring factor derived from payment basepoints.
@@ -27,21 +27,34 @@ public class CommitmentNumber
     /// <summary>
     /// Represents a commitment number in the Lightning Network.
     /// </summary>
-    public CommitmentNumber(CompactPubKey localPaymentBasepoint, CompactPubKey remotePaymentBasepoint, ISha256 sha256,
-                            ulong initialValue = 0)
+    /// <param name="openerPaymentBasepoint">The payment basepoint of the channel opener (funder).</param>
+    /// <param name="accepterPaymentBasepoint">The payment basepoint of the channel accepter (fundee).</param>
+    /// <param name="sha256">The SHA256 hash function instance.</param>
+    /// <param name="initialValue">The commitment number value.</param>
+    /// <remarks>
+    /// BOLT 3 obscures the commitment number with SHA256(opener payment_basepoint || accepter payment_basepoint),
+    /// so the order depends on who opened the channel, not on which side is local.
+    /// </remarks>
+    public CommitmentNumber(CompactPubKey openerPaymentBasepoint, CompactPubKey accepterPaymentBasepoint,
+                            ISha256 sha256, ulong initialValue = 0)
     {
         Value = initialValue;
-        ObscuringFactor = CalculateObscuringFactor(localPaymentBasepoint, remotePaymentBasepoint, sha256);
+        ObscuringFactor = CalculateObscuringFactor(openerPaymentBasepoint, accepterPaymentBasepoint, sha256);
+    }
+
+    private CommitmentNumber(ulong value, ulong obscuringFactor)
+    {
+        Value = value;
+        ObscuringFactor = obscuringFactor;
     }
 
     /// <summary>
-    /// Increments the commitment number.
+    /// Returns the next commitment number. This instance is not changed.
     /// </summary>
-    /// <returns>This instance for chaining.</returns>
+    /// <returns>A new instance with the value incremented by one and the same obscuring factor.</returns>
     public CommitmentNumber Increment()
     {
-        Value++;
-        return this;
+        return new CommitmentNumber(Value + 1, ObscuringFactor);
     }
 
     /// <summary>
@@ -65,16 +78,16 @@ public class CommitmentNumber
     /// <summary>
     /// Calculates the 48-bit obscuring factor by hashing the concatenation of payment basepoints.
     /// </summary>
-    /// <param name="localBasepoint">The local payment basepoint.</param>
-    /// <param name="remoteBasepoint">The remote payment basepoint.</param>
+    /// <param name="openerBasepoint">The opener's payment basepoint.</param>
+    /// <param name="accepterBasepoint">The accepter's payment basepoint.</param>
     /// <param name="sha256">The SHA256 hash function instance.</param>
     /// <returns>The 48-bit obscuring factor as ulong.</returns>
-    private static ulong CalculateObscuringFactor(CompactPubKey localBasepoint, CompactPubKey remoteBasepoint,
+    private static ulong CalculateObscuringFactor(CompactPubKey openerBasepoint, CompactPubKey accepterBasepoint,
                                                   ISha256 sha256)
     {
         // Hash the concatenation of payment basepoints
-        sha256.AppendData(localBasepoint);
-        sha256.AppendData(remoteBasepoint);
+        sha256.AppendData(openerBasepoint);
+        sha256.AppendData(accepterBasepoint);
 
         Span<byte> hashResult = stackalloc byte[32];
         sha256.GetHashAndReset(hashResult);

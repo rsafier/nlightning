@@ -149,7 +149,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
         tempChannel.UpdateChannelConfig(channelConfig);
 
-        // Generate the correct commitment number
+        // Generate the correct commitment number (we are the opener: opener basepoint first)
         var commitmentNumber = new CommitmentNumber(tempChannel.LocalKeySet.PaymentCompactBasepoint,
                                                     remoteKeySet.PaymentCompactBasepoint, _sha256);
 
