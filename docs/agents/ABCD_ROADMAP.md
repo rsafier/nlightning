@@ -1,0 +1,245 @@
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land.
+
+# Roadmap: `wip/fafo` @ `3c625e1` to a green ABCD Docker e2e test (LND Alice → NLightning Bob → NLightning Carol → LND David)
+
+I only read files; nothing was changed. The working tree has uncommitted doc edits from the integrating agent (CLAUDE.md files, plans, ISSUES.md), so I checked every code claim against source files.
+
+## 0. Where things stand (checked in code)
+
+- **Done and on the branch:**
+  - N0–N3: ordered inbound loop, `PeerOutbox`, `ChannelLockProvider`, per-side params, msat balances and SCID, commitment numbers, the BOLT 3 HTLC txs and signer, and the persisted shachain.
+  - N4 pure engine: `src/NLightning.Domain/Channels/Commitments/ChannelCommitments.cs` has `SendAdd/ReceiveAdd/…/SendCommit/ReceiveCommit/ReceiveRevoke/RevertUncommitted/ReceiveFee`, plus the simulator.
+  - ONION M1–M3: `ISphinxService`, `IHopPayloadSerializer` (already moved to `src/NLightning.Domain/Serialization/Interfaces/`, so N8-T1/NL-075 is effectively done), `IFailureOnionService`, `FailureInterpreter`, `FailureChannelUpdateFactory`.
+- **The engine is not usable yet:**
+  - There are two signer-port families: `Domain/Channels/Interfaces/ICommitmentSigner.cs` and `Domain/Channels/Commitments/Interfaces/ICommitmentSigner.cs` (NL-230).
+  - There are two fee calculators (NL-231).
+  - The engine emits no lock-in or irrevocable-removal events; N4-T4 is only partly done.
+- **Wire handling:** `ChannelManager.DispatchChannelMessageAsync` only handles the open flow. Every HTLC message, reestablish and close falls to `default`, which sends a warning.
+- **Missing entirely:**
+  - `NodeOptions.EnableHtlcs`, forwarding fee/CLTV policy options, invoice/payment/circuit storage, and `ClientCommand` values after `ListChannels = 8` (`src/NLightning.Domain/Client/Enums/ClientCommand.cs`).
+  - Nothing in `src/` references Bolt11. `Invoice.Encode(Key)` exists; NL-120 (no validation on encode) is still open.
+- **Channels are always private:** `OpenChannelClientHandler.cs:112` sends `ChannelFlags(None)`. `FeatureOptions.ScidAlias = No` by default, so channels use the real SCID (NL-225 persists it).
+- **Docker infra:**
+  - `Fixtures/LightningRegtestNetworkFixture.cs` starts miner, LND alice/bob/carol (LND 0.20.0-beta from `test/Docker/custom_lnd`, LNUnit 3.0.4) with LND–LND channels, in collection `"regtest"`.
+  - Our node runs **in-process**: `Docker/Utils/NLightningTestNode.cs` builds `AddNltgNodeServices`, uses SQLite hard-coded, listens on `127.0.0.1:{port}`, and restarts with the same key manager and DB file. It can only connect to an `LNDNodeConnection`.
+  - LNUnit exposes `RouterClient`, `AddInvoiceAsync`, `LookupInvoice`, `RestartByAlias`, `WaitUntilSyncedToChain` and interceptors.
+  - The Docker tests pass locally because the Docker context is **OrbStack**, which routes container bridge IPs to the Mac. `PostgresFixture`/`SqlServerFixture` connect to the bridge IP, which fails on Docker Desktop.
+  - I found no process-wide mutable statics in `src/`, so **two NLightning nodes in one test process is viable**.
+
+---
+
+## 1. Gap analysis for the ABCD goal
+
+### 1.1 Route discovery: the key decision
+
+There is no BOLT 7 gossip, so Alice's LND cannot see B–C or C–D in its graph. Three options:
+
+| Option | What it needs | Verdict |
+|---|---|---|
+| **A. Public channels plus minimal BOLT 7** | We send and relay `announcement_signatures`, `channel_announcement`, `channel_update` and `node_announcement`. David's C–D announcement must be relayed Carol → Bob → Alice, which means a graph store, signature checks, relay and throttling, honouring `gossip_timestamp_filter`, and real `query_channel_range` replies (we advertise `gossip_queries`; today replies are empty with `full_information=0`). Also 6-conf announce depth and NL-236 (public/private option). | Legitimate but large: 2–3 more waves on NL-099. **Not on the critical path.** |
+| **B. Invoice route hints (recommended)** | David's invoice is made with LND `AddInvoice` and explicit `route_hints` (the `lnrpc.Invoice.route_hints` field accepts caller hints): `[{node=Bob, chan_id=scid(B–C), Bob's fee/cltv}, {node=Carol, chan_id=scid(C–D), Carol's fee/cltv}]`. Alice pays the real BOLT11 with `routerrpc.SendPaymentV2`, so LND does the pathfinding (its own A–B channel plus hint edges), computes fees and CLTVs, and builds the onion. | This is how private channels are reached in production. It checks our forwarding, policy enforcement, onion peel/forward, final hop and error wrapping against LND's own maths. It needs **zero** BOLT 7. |
+| C. `SendToRouteV2` with a hand-built route | The test builds the hops. | Fallback only if B hits an LND pathfinding quirk. It is weaker: the test, not LND, computes the fees. |
+
+What LND needs for private-channel forwarding under Option B:
+- The first hop is Alice's own channel, so she needs no policy from Bob.
+- LND treats hint nodes it does not know as TLV-onion capable.
+- The scids must be the real SCIDs. There is no scid_alias because `ScidAlias` is No, so nothing is negotiated.
+- The only point where `channel_update` matters is **UPDATE-class failures** (`temporary_channel_failure`, `fee_insufficient`, …). BOLT 4 now allows `len=0`, but whether LND 0.20 accepts an empty update is **unverified**.
+- LND builds **automatic** private hints (`addinvoice --private`) only when it holds the peer's `channel_update`. So David can only auto-hint C→D if Carol sends her `channel_update` directly after `channel_ready` (BOLT 7 allows this for unannounced channels).
+
+Recommendation:
+- B for the main test and variants (a), (b) and (c).
+- A small BOLT 7 subset, typed `channel_update` (258) with node-key signing plus direct peer exchange, as a hardening lane. It makes UPDATE failures carry a real, signed update and enables David's auto hints.
+
+### 1.2 Per-component gaps (R = required for the goal; S = strongly recommended; D = defer)
+
+| Component | Gap | Plan IDs / NL | Need |
+|---|---|---|---|
+| Engine ↔ builder seam | Engine ports not implemented over `CommitmentSigningService`/`PerCommitmentSecretVerifier`; `CommitmentSpec`→`CommitmentTxSpec` adapter; one fee calculator | NL-230, NL-231 ("Remaining before N5" §1) | R |
+| Engine events | `IncomingHtlcLockedIn`, `OutgoingHtlcFulfilled` (immediate), `OutgoingHtlcFailed` (only when irrevocable), `OutgoingHtlcSettled`; must be re-derivable from persisted states | N4-T4, B2-NO-03, B2-FWD-01/02/05 | R |
+| Commitment persistence | Migration `AddCommitmentState` (HTLC state 10–39, `KnownPreimage`, fee updates, `RemoteNextCommit`, `SentCommitDiff` wire bytes, remote current and next points, `OnionSharedSecret`); `ChannelStateDbRepository.ApplyAsync`; shachain save/load at runtime; SQLite `synchronous=FULL`; crash injection | N5-T1..T3, NL-232, NL-238, NL-025, NL-192 (done), NL-237 | R |
+| HTLC wire handlers | 128–135 plus `update_fee` handler and `ChannelManager` cases; state guard (Open and reestablished) | N6-T1, NL-031 | R |
+| Operations / scheduler / switch seam | `IChannelOperations` (Offer/Fulfill/Fail/FailMalformed, persist-before-send), `CommitScheduler` (debounce; never sign while `RemoteNextCommit` exists), `IHtlcSwitch`, `EnableHtlcs` (default on regtest only) | N6-T2 | R |
+| Failed-channel path | `ChannelState.Failed = 35`, persisted `ErrorSent`, refuse updates | N6-T3, NL-200 | S (keeps a violation from turning into a silent split-brain) |
+| Reestablish | `ReestablishPlanner`, lifecycle hooks in `PeerManager`, gating, `RevertUncommitted` on disconnect, retransmit (`SentCommitDiff` verbatim, RAA regenerated, `LastSentOrder`, `channel_ready` when both numbers are 1) | N7-T1..T3, NL-035 | R |
+| Data-loss detection | `DataLossDetected` flag | N7-T4 | S (cheap once the planner exists; LND treats data_loss_protect as required) |
+| Other N7 | Non-Open startup states (T5); funder remember rule (T6: wontfix plus a test) | N7-T5/T6 | D / trivial |
+| Final hop and invoices | Invoice store, preimage/secret generation, BOLT11 encode with the node key (features 9/14 compulsory, `s`, `c`; no `basic_mpp`), `FinalHopProcessor` (0x400F with (htlc_msat, height), 0x0012, 0x0013), settle when removal is irrevocable | N8-T2, ONION M4-T2/T3, NL-114, NL-120 | R |
+| Forwarding | `HtlcForwardingPolicy` (BOLT 7 fee `base + amt*ppm/1e6`, `cltv_expiry - outgoing ≥ delta`, `expiry_too_far`, amount ≥ htlc_min, outgoing liquidity → `temporary_channel_failure`), scid (real or alias) → channel via `IChannelMemoryRepository`, offer only after incoming lock-in, never hold two channel locks | ONION M4-T4, B2-FWD-01/04 | R |
+| Upstream propagation | Fulfill upstream immediately on downstream preimage; fail upstream only when the downstream removal is irrevocable; wrap with the stored incoming shared secret; convert malformed (M3-T3 helper exists) | ONION M4-T5, B2-FWD-02/05 | R |
+| Forwarding persistence | Circuit table in→out (channel, htlc id, amounts, CLTVs, shared secret) plus startup replay, so variant (b) works | ONION M4-T7, NL-137 | R |
+| Send side | `PaymentService`: decode BOLT11, route = direct peer, or our channel to `hint[0].node` then the hint hops; multi-hop onion via `ConstructWithSharedSecrets`; final CLTV = height + `c` + 3; CSPRNG session key; `PaymentEntity`; origin decrypt plus `FailureInterpreter` | N8-T3 + M4-T6 (multi-hop via hints) | R for variant (c) |
+| IPC | `CreateInvoice` (9), `PayInvoice` (10), plus `ListInvoices`/`ListPayments` and a `ListChannels` "reestablished/usable" flag (next free values); client handlers the Docker test calls in-process; CLI output | §3.9, NL-152 | R (client handlers) |
+| Fee/policy config | `RoutingOptions`: `FeeBaseMsat`, `FeeProportionalMillionths`, `CltvExpiryDelta` (≥34, default 40), `MaxCltvExpiryDistance` (2016), `InvoiceMinFinalCltvExpiry` (default 40), HTLC min/max; bound from config | B2-CLTV-07 (part) | R |
+| N9 | T1 fee scheduler: D (all test channels are NLightning-funded, so we never receive `update_fee`, and we never send one). T2: forward-time CLTV checks are R (they live in the M4 policy); the block-driven `HtlcExpiryMonitor` (fail incoming before expiry, offerer deadline) is S for safety, not needed for the test. T3 dust exposure: D. T4 `ChannelFailureService` broadcast: D (regtest; `EnableHtlcs` gate). **`update_fee` receive handler: include in N6-T1 anyway** (the engine already has `ReceiveFee`), so a later LND-funded channel does not break. | N9 | see cell |
+| BOLT 7 subset | Typed `ChannelUpdateMessage` (258) plus signing with the node key, embedded in UPDATE failures, sent directly to the peer after `channel_ready`/reestablish, peer's update stored | NL-099 (sub), NL-236 | S |
+| attribution_data | We don't advertise it. Ignore incoming TLV 1 on fail/fulfill (odd, so the strict reader drops it) and do not relay it upstream. | M3b, NL-072, NL-022 | D |
+| Replay cache | Stays in-memory (NL-078); lost on Bob's restart | NL-078 | D (decision) |
+| Test infra | 4th LND `david` in the shared fixture; `NLightningTestNode`: node name/log prefix, DB provider parameter, `ConnectToAsync(NLightningTestNode)`, fast reconnect backoff knob; chain-sync barrier; LND helpers (hint invoices, hold invoices, `SendPaymentV2`, `ResetMissionControl`); Postgres/SqlServer fixtures publish `127.0.0.1` ports so they don't depend on OrbStack | NL-156 follow-up, NL-237 | R |
+
+---
+
+## 2. Waves and lanes
+
+Rules for every wave:
+- (i) Lanes own **disjoint** file sets.
+- (ii) Exactly one lane per wave may touch `Entities/`, `EntityConfiguration/`, `NLightningDbContext.cs`, `Domain/Persistence/Interfaces/IUnitOfWork.cs`, the `UnitOfWork` implementation, and migrations for all three providers.
+- (iii) Shared hub files are owned by one lane per wave, named below: `src/NLightning.Application/DependencyInjection.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, `Serialization/Factories/{MessageTypeSerializerFactory,PayloadSerializerFactory}.cs`, `ChannelManager.cs`, `PeerManager.cs`. Other lanes put their registrations in an `Add<Area>Services` extension inside their own folder, and the integrator adds the one-line call.
+- (iv) Lanes do **not** edit `docs/agents/ISSUES.md` or the plans. Each lane reports its ledger deltas and the integrator applies them. This avoids merge conflicts on the summary table.
+- (v) Every lane ends green on: Release and Release.Native build, `dotnet format --verify-no-changes`, `!~Docker` tests, and the invariant simulator.
+
+### Wave 0: seams, contracts, schema for the commitment state, test infra (6 parallel lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W0-A Engine seam + events** | NL-230, NL-231, N4-T4 | `src/NLightning.Domain/Channels/Commitments/**` (keep the `ChannelTransition` persistence fields **frozen**; add `Events` to `CommitmentsResult`); new `Domain/Channels/Commitments/Events/*` (`IChannelDomainEvent`, the 4 events); new `Domain/Channels/Interfaces/IHtlcSwitch.cs`; `Domain/Channels/Interfaces/ICommitment{Signer,Verifier}.cs` (merge or delete the duplicates); `Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs`; `Application/Channels/Services/CommitmentSigningService.cs` plus new `Application/Channels/Services/Engine*Port.cs` adapters; tests under `test/NLightning.Domain.Tests/Channels/Commitments/**` and `test/NLightning.Application.Tests/Channels/Services/**` | Two-engine test with **real** signatures (txids equal on both sides after add/CS/RAA/fulfill/fail/fee); `…Given_IncomingAdd_When_BothRevoked_Then_IncomingHtlcLockedInOnce`; `…Given_DownstreamFail_Then_OutgoingHtlcFailedOnlyWhenIrrevocable`; 500-seed simulator green |
+| **W0-B Persistence (migration owner)** | N5-T1, N5-T2, N5-T3; NL-232, NL-238, NL-025; `HtlcEntity.OnionSharedSecret` now | `src/NLightning.Infrastructure.Persistence/**` (entities, configurations, `NLightningDbContext`, `DependencyInjection.cs` for `synchronous=FULL`), 3 provider projects' `Migrations/**`, `src/NLightning.Infrastructure.Repositories/**` (new `ChannelStateDbRepository`, `ChannelDbRepository.UpdateAsync` stops writing HTLCs, `UnitOfWork`), `Domain/Persistence/Interfaces/IUnitOfWork.cs`, new `Domain/Channels/Interfaces/IChannelStateDbRepository.cs`, `Domain/Channels/Models/ChannelModel.cs` (holds the `ChannelCommitments` snapshot), `test/NLightning.Tests.Utils/Mocks/CrashingUnitOfWork.cs`, `test/NLightning.Integration.Tests/Persistence/**`, `Docker/PostgresTests.cs`, `Docker/SqlServerTests.cs` | SQLite: 50 simulator transitions, reload, equal; reload mid-dance identical; k-th save crash leaves no partial rows; Postgres and SQL Server container tests migrate **seeded pre-migration rows** forward (NL-237) and round-trip the commitment state |
+| **W0-C Contracts** | N6-T2 interface part, payments contracts, options, IPC Domain types | New `Domain/Channels/Interfaces/IChannelOperations.cs`; `Domain/Channels/Enums/ChannelState.cs` (`Failed = 35`); new `Domain/Exceptions/ChannelFailedException.cs`; `Domain/Node/Options/NodeOptions.cs` (`EnableHtlcs`); new `Domain/Node/Options/RoutingOptions.cs`; new `Domain/Payments/**` (Invoice/Payment/ForwardCircuit models, `IInvoiceDbRepository`, `IPaymentDbRepository`, `IForwardCircuitDbRepository`, `IInvoiceService`, `IPaymentService`, `IForwardingPolicy`); `Domain/Client/Enums/ClientCommand.cs` (9 CreateInvoice, 10 PayInvoice, 11 ListInvoices, 12 ListPayments; `CloseChannel` gets the next free value later); `Domain/Client/{Requests,Responses}/*Invoice*|*Payment*`; `ChannelInfoClientResponse.cs` (`IsReestablished`, `FeeBaseMsat/FeePpm`) | Build; `RoutingOptions` validation tests (delta ≥ 34); BOLT 7 fee-formula table tests; options binding test |
+| **W0-D Bolt11 for the node** | NL-120, encode path used by the node | `src/NLightning.Bolt11/**`, `test/NLightning.Bolt11.Tests/**` | Encode with node key → decode → validate; features 9/14 compulsory, no 17; multiple `r` round-trip; decode 3 real LND 0.20 invoice strings (plain, with custom hints, hold) as fixtures |
+| **W0-E BOLT 7 `channel_update` wire + signing** (S) | NL-099 subset | New `Domain/Protocol/Messages/ChannelUpdateMessage.cs` + payload; `Infrastructure.Serialization/Payloads|Messages/Types/ChannelUpdate*`; **hub:** both serializer factories (258 stops being raw `GossipMessage`); `ILightningSigner.cs`/`LocalLightningSigner.cs` (`SignNodeMessage(hash)`); new `Domain/Protocol/Onion/Factories/` overload so `FailureChannelUpdateFactory` takes the typed update; tests in Serialization.Tests / Bitcoin.Tests | Round trip; signature verifies with the node id; an LND-captured 258 parses and verifies |
+| **W0-F Multi-node test infra** | Docker harness | `test/NLightning.Integration.Tests/Fixtures/**` (add `david` via `AddPolarLNDNode("david", [])`; Postgres/SqlServer publish ports on `127.0.0.1`), `TestCollections/**`, `Docker/Utils/**` (`NLightningTestNode`: name/log prefix, provider parameter {Sqlite, Postgres, SqlServer}, `ConnectToAsync(NLightningTestNode)`, `ReconnectBackoffInitial` override hook, `CrashAsync()`; new `ChainSync.cs` barrier; new `LndTestHelpers.cs`), `Docker/AbcNetworkTests.cs` (expects 4 LND nodes) | The 12 existing Docker tests still pass; new smoke test: Bob and Carol (in-process) connect to each other and to alice/david, all at the same block height after mining 3 |
+
+W0-A and W0-B only share `ChannelTransition`, which is frozen. W0-B builds `ApplyAsync` against its current shape. The `NodeOptions` reconnect-backoff knob, if needed, belongs to W0-C, and W0-F consumes it after merge.
+
+### Wave 1: HTLC dance on the wire, payment core, payment schema, IPC (5 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W1-A Channel wiring** | N6-T1 (+ `update_fee` receive), N6-T2 (`ChannelOperationsService`, `CommitScheduler` with ping-before-commit, `LocalOnlyHtlcSwitch`, `EnableHtlcs` gate), N6-T3, N6-T4; NL-234, NL-235 | `src/NLightning.Application/Channels/**` (new handlers, `Managers/ChannelManager.cs`, `Services/*`), `Application/Node/Managers/PeerManager.cs` (failed-channel error path), **hub:** `Application/DependencyInjection.cs`; `test/NLightning.Application.Tests/Channels/**` including `Harness/TwoNodeHarness.cs` | Handler tests (`Given_PersistFails_Then_NoRevokeSent`, …); harness: 30 HTLCs each way, fee round, txids identical every step (I7); **Docker N6-T5** after merge with W0-B: Alice `SendToRouteV2` to Bob with a random hash, Bob fails back `temporary_node_failure`, channel stays Active, commitment numbers 2/2 |
+| **W1-B Payment core (pure/app)** | ONION M4-T2 processor, M4-T3, M4-T4 policy, M4-T6 onion/route build (no channel calls) | New `src/NLightning.Application/Payments/{Onion,FinalHop,Policy,Routing,Invoices}/**` (`IncomingOnionProcessor`, `FinalHopProcessor`, `HtlcForwardingPolicy`, `HintRouteBuilder`, `PaymentOnionFactory`, `InvoiceService`), `Application/NLightning.Application.csproj` (reference Bolt11), `Payments/PaymentsServiceCollectionExtensions.cs`; `test/NLightning.Application.Tests/Payments/**` | Build a 3-hop onion and peel it at each hop with our processor (real Sphinx); final-hop codes 0x400F/0x0012/0x0013; policy table (fee ±1 msat, delta, too-far, below-min); `InvoiceService` produces a BOLT11 that W0-D decodes, and (fixture) LND decodes |
+| **W1-C Payment schema (migration owner)** | `AddInvoicesPaymentsAndCircuits` (N8 + M4-T7), NL-137 | Persistence, provider-migration and Repositories trees as in W0-B, plus `IUnitOfWork` | SQLite round trip for each table; container round trips (Postgres/SqlServer) |
+| **W1-D IPC / CLI** | §3.9 commands, NL-152 | `src/NLightning.Transport.Ipc/**`, `src/NLightning.Daemon/{Ipc,Handlers,Services}/**`, **hub:** `Daemon/Extensions/NodeServiceExtensions.cs` (+ `RoutingOptions` config binding), `src/NLightning.Client/**`, `test/NLightning.Daemon.Tests/**` | MessagePack round trips; client/IPC handlers with mocked `IInvoiceService`/`IPaymentService`; CLI output snapshot |
+| **W1-E Direct `channel_update` exchange** (S) | NL-099 subset, NL-236 half | New `Application/Gossip/ChannelUpdateService.cs` (subscribes to `IChannelMemoryRepository.OnChannelUpdated` → Open), `Domain/Node/Interfaces/IPeerService.cs` + `Infrastructure/Node/Services/PeerService.cs` (send a non-channel message; route inbound 258 to an event; store the peer's update in memory) | Unit tests; Docker: after opening C–D, David `GetChanInfo(scid)` shows Carol's policy, and `addinvoice --private` contains the C→D hint |
+
+### Wave 2: reestablish, forwarding switch, send, single-hop Docker proofs (4 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W2-A Reestablish** | N7-T1..T5 (T6 test) | New `Domain/Channels/Reestablish/**`, `Application/Channels/Reestablish/**`, `ChannelReestablishMessageHandler`, **hubs:** `ChannelManager.cs`, `IChannelManager.cs`, `PeerManager.cs`, `Application/DependencyInjection.cs` | Exhaustive planner table; harness disconnect at every message boundary plus crash at every persist point → convergence (I11); **Docker Proof N7** (a) restart us, (b) `RestartByAlias("alice")`, (c) crash after CS persist |
+| **W2-B HTLC switch** | M4-T2 wiring, T4 forward, T5 propagation, T7 replay; N8-T2 settle | New `Application/Payments/Switch/**` (`HtlcSwitch` replacing `LocalOnlyHtlcSwitch` through its own extension), `test/NLightning.Application.Tests/Payments/Switch/**`, new `…/Harness/ThreeNodeHarness.cs` | In-process A→B→C: forward, fulfill propagation, final failure decoded at origin with the right source index, malformed conversion, **restart B mid-forward on SQLite** (circuit replay), never two locks held |
+| **W2-C Send** | N8-T3 + M4-T6 multi-hop via hints; origin decrypt | New `Application/Payments/Send/**` (`PaymentService`) | Harness: B pays C directly and pays D through C via a hint; failure → `FailureInterpreter` result stored on the payment |
+| **W2-D Docker proofs + ABCD authoring** | N8 proofs; ABCD test code | `Docker/NormalOperationFlowTests.cs` (N8: LND pays our invoice; we pay an LND invoice; 10 concurrent payments each way; trimmed HTLC), new `Docker/Abcd/**` | N8 proofs green at wave end; ABCD compiles and runs (expected to go green in Wave 3) |
+
+### Wave 3: ABCD green, provider matrix, hardening (3 lanes)
+
+| Lane | Scope | Files owned | Proof |
+|---|---|---|---|
+| **W3-A ABCD stabilization** | Fix what the e2e test finds. This lane is **serial and exclusive** across `src/NLightning.Application/**`; other Wave-3 lanes stay out of Application | `src/NLightning.Application/**`, `Docker/Abcd/**` | ABCD suite passes **3 runs in a row** (script loop, fresh fixture each run) |
+| **W3-B Provider matrix** | Full-stack runs on real DBs | `Docker/Utils/NLightningTestNode.cs` provider wiring, new `Docker/Abcd/AbcdProviderMatrixTests.cs`, Postgres/SqlServer container tests; migration owner **only if** a schema fix is needed | ABCD happy path with Bob=Postgres and Carol=SqlServer; SQLite and Postgres/SqlServer container tests green |
+| **W3-C Hardening** | Signed `channel_update` inside UPDATE failures; `HtlcExpiryMonitor` subset (N9-T2: fail incoming at or before `cltv_expiry - delta`); optional LND-funded channel proof (receive `update_fee`) | `Infrastructure`/`Domain` files only (failure factory, `Domain/Channels/Policies/HtlcDeadlinePolicy.cs`, monitor in `Infrastructure.Bitcoin` or a new Application folder coordinated with W3-A) | Variant a2 (below) green; deadline table tests |
+
+Final gate after Wave 3: Release and Release.Native builds, format, all `!~Docker` tests, the 10k-seed Long simulator, all Docker tests (existing 12 + N6/N7/N8 proofs + ABCD + provider matrix), each ABCD run 3× in a row.
+
+---
+
+## 3. The ABCD test design
+
+**Location:** `test/NLightning.Integration.Tests/Docker/Abcd/`, in collection `"regtest"` (shares `LightningRegtestNetworkFixture`; never runs in parallel with the other Docker classes that force-remove containers).
+
+**Topology:**
+- Built once per fixture through a lazily created `AbcdNetwork` held by the fixture (`fixture.GetOrCreateAsync(...)`, disposed with it).
+- xUnit class fixtures can't take collection fixtures reliably, so the lazy object on the fixture is the simplest option.
+- Each test first checks its preconditions and then asserts **deltas**, so test order does not matter.
+
+Nodes:
+- **Alice:** fixture LND `alice`.
+- **David:** new fixture LND `david`, no auto channels.
+- **Bob, Carol:** `NLightningTestNode`s in this process, each with its own port (`PortPoolUtil`), `FakeSecureKeyManager` and SQLite file. Log prefix `[bob]`/`[carol]`.
+- Policies (distinct values, so a fee mix-up shows):
+  - Bob: base 1,000 msat, 100 ppm, delta 40.
+  - Carol: base 2,000 msat, 500 ppm, delta 40.
+
+Channels (all NLightning-funded, so no `update_fee` is received and the plan's D9 holds):
+1. Bob → Alice: 2,000,000 sat, push 1,000,000.
+2. Bob → Carol: 2,000,000 sat.
+3. Carol → David: 2,000,000 sat.
+
+All at 10,000 sat/kw. Bob and Carol fund their wallets with `FundWalletAsync`. Mine 6, then loop "mine 1, sync barrier" until LND lists each channel `Active`, our `State == Open && IsPeerConnected && IsReestablished`, and `ShortChannelId` is set.
+
+**Reestablish step:**
+- `alice.DisconnectPeer(bob)`: Bob reconnects.
+- `carol.PeerManager.DisconnectPeer(bob)` then reconnect explicitly.
+- Restart Carol (Stop/Start, same key and DB): she reconnects to Bob and David.
+- Assert every channel goes back to Active/usable, `channel_reestablish` was sent and received on each (count via `OnResponseMessageReady` plus inbound hook), and commitment numbers are unchanged.
+
+**Happy path:**
+- `X = 50,000,123 msat`.
+- David `AddInvoice{value_msat=X, private=false, route_hints=[{Bob, scid(B–C), 1000, 100, 40}, {Carol, scid(C–D), 2000, 500, 40}]}`.
+- `ResetMissionControl` on Alice.
+- Alice `SendPaymentV2{payment_request, max_parts=1, outgoing_chan_ids=[A–B], fee_limit_msat=1e6, timeout_seconds=60}`.
+
+Assertions:
+- `SUCCEEDED`; the preimage equals David's `LookupInvoice.r_preimage`; David's invoice is `SETTLED` with `amt_paid_msat == X`.
+- `fee_C = 2000 + floor(X*500/1e6)`, `amt_BC = X + fee_C`, `fee_B = 1000 + floor(amt_BC*100/1e6)`.
+- Alice's `payment.fee_msat == fee_B + fee_C`; route `hops[0].fee_msat == fee_B`, `hops[1].fee_msat == fee_C`, `hops.Count == 3`.
+- Bob via `ListChannels` (msat): A–B local `+ (amt_BC + fee_B)`, B–C local `− amt_BC`. Carol: B–C `+ amt_BC`, C–D `− X`.
+- LND balances (sat): Alice A–B local `− floor(...)`, David C–D local `+ ⌊X/1000⌋`, each within 1 sat.
+- Zero pending HTLCs (LND `pending_htlcs` empty; our Offered/Received counts 0).
+- B–C commitment numbers mirror each other on Bob and Carol.
+- Every channel still Active and every peer still connected.
+
+**Variant (a), final-hop failure decodable at Alice:**
+- David makes a hinted invoice, then `invoicesrpc.CancelInvoice`, then Alice pays.
+- Expect `FAILED` with `FAILURE_REASON_INCORRECT_PAYMENT_DETAILS`, attempt `failure.code == INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS` and `failure_source_index == 3`. That index proves Carol and Bob each wrapped the error onion correctly.
+- Balances unchanged, zero pending HTLCs, channels Active.
+- **a2 (W3-C stretch):** the hint underprices Carol's fee. Carol fails with `fee_insufficient` plus a signed `channel_update`, LND applies it and **retries successfully** (checks our `channel_update` bytes and signature).
+
+**Variant (b), Bob restarts with an HTLC in flight:**
+1. David `AddHoldInvoice(hash(p))` with hints.
+2. Alice pays through a streaming call that is not awaited.
+3. Wait until David's invoice is `ACCEPTED`, which proves the HTLC is locked in on all three hops.
+4. `bob.StopAsync()` (plus a `CrashAsync()` variant); wait until Alice and Carol drop Bob.
+5. **b2 (main):** David `SettleInvoice(p)` while Bob is down. Carol learns the preimage and persists it; her upstream fulfill waits.
+6. `bob.StartAsync()`. Bob reconnects to both peers and reestablishes; Carol retransmits the fulfill; Bob's circuit replay fulfills Alice.
+7. Alice `SUCCEEDED` with preimage `p`; fees and balances as in the happy path; zero pending HTLCs.
+- **b1:** settle after Bob is back.
+- No blocks are mined while the HTLC is in flight.
+
+**Variant (c):**
+- **Bob as sender:** David invoice with hint `[{Carol, scid(C–D), 2000, 500, 40}]`, then `bob.PayInvoiceAsync(bolt11)` through the client handler. Expect a preimage equal to David's, David `SETTLED`; Bob B–C `−(X + fee_C)`, Carol `+fee_C`.
+- **Bob as receiver:** `bob.CreateInvoiceAsync(X2)`; Alice `SendPaymentV2` (direct, `fee_msat == 0`). Bob's invoice is Settled, Bob's A–B local `+X2`, the preimage matches.
+
+**Flake avoidance:**
+- Poll with deadlines everywhere; no fixed sleeps.
+- `ChainSync.WaitAllAtTipAsync()` after every mine: every LND `GetInfo.synced_to_chain && block_height == tip`, and each NLightning `BlockchainMonitor.LastProcessedBlockHeight == tip`. This prevents CLTV disagreements, which LND reports as `expiry_too_soon`/`incorrect_cltv_expiry`.
+- Mine only when no HTLC is in flight.
+- `max_parts=1`, pinned `outgoing_chan_ids`, `ResetMissionControl` before each payment.
+- Select LND channels by channel point, never by index.
+- A test-only reconnect backoff of 1 s instead of 5 s.
+- Log the LND version.
+- Dump `docker logs alice|david` and both node logs on failure.
+- Timeouts: 90 s for active, 60 s per payment, 6 min per test.
+- Run with `scripts/run-abcd.sh` (proposed): 3× `dotnet test --filter FullyQualifiedName~Docker.Abcd`, stop at the first red.
+
+---
+
+## 4. Decisions for you (with my recommended defaults)
+
+1. **Route discovery: route hints (B) or public channels plus BOLT 7 relay (A).** Default: **B**, with W0-E/W1-E adding direct `channel_update` exchange. A becomes the NL-099 epic afterwards.
+2. **Who funds the test channels.** Default: **NLightning funds all three, with push to Alice**, so we never receive LND `update_fee`. The `update_fee` receive handler still ships in N6-T1. An LND-funded variant is a W3-C stretch; LND's funder `update_fee` timing in regtest is unverified.
+3. **Empty (`len=0`) vs signed `channel_update` in UPDATE failures.** BOLT 4 allows empty, but LND 0.20 acceptance is **unverified**. Default: signed update once W0-E lands; empty only before then.
+4. **attribution_data.** Default: don't advertise it, ignore it inbound, don't relay it (M3b later). Unverified whether LND 0.20 attaches TLV 1 to `update_fail_htlc` regardless; it is odd, so ignoring it is spec-compliant.
+5. **Replay cache after restart (NL-078).** Default: keep it in-memory for this goal, and record that a restart loses replay protection (regtest only).
+6. **Policy defaults.** `cltv_expiry_delta` 40 (BOLT 2 recommends ≥34; LND uses 80); invoice `c` 40; `max_cltv_expiry_distance` 2016; fee base 1000 msat / 1 ppm in production defaults (the test sets its own values).
+7. **`EnableHtlcs`.** Default: true on regtest only, false elsewhere, until N9-T4 and BOLT 5 exist.
+8. **Hosting Bob and Carol.** Default: **in-process** (same DI as the daemon, debuggable, restartable; no static state conflicts found). A containerised `nltg` image is optional later.
+9. **Fixture.** Default: **extend** the shared regtest fixture with `david` instead of adding a second fixture, since container names like `miner` would clash.
+10. **Timing of the restart variant.** Default: settle while Bob is down (b2) as the main assertion, b1 as a sub-case.
+11. **`HtlcExpiryMonitor` (N9-T2).** It is not needed for the test to pass, but a forwarding node without it can lose funds. Default: W3-C, and a gate before any non-regtest use.
+12. **Ledger IDs.** The next free ID is NL-239. Proposed new entries: route-hint e2e approach, multi-node test harness, direct `channel_update` exchange, `RoutingOptions`, and container fixtures depending on OrbStack routing.
+
+## 5. Risks
+
+- **HTLC signature order and trimming** must match LND on both commitments. The vectors cover it; the Docker N6 proof comes first.
+- **Hub-file merge pressure:** `ChannelManager`/`PeerManager` change in Wave 1 and again in Wave 2, and the DI hubs change every wave. Keep the one-owner-per-wave rule.
+- **Two NLightning nodes run identical code**, so a symmetric bug can pass between Bob and Carol. LND on both ends plus the reestablish and restart variants guard against this.
+- **Two NLightning nodes connecting to each other at the same time:** the LND tie-break is implemented, but between two of our own nodes it is untested. Cover it in the W0-F smoke test.
+- **SQL Server runs x64 under emulation on Apple Silicon.** It is slow; give container waits generous deadlines.
+- **Engine events must be re-derived at startup** (I8) or variant (b) will double-fulfill or lose the fulfill. W2-B's restart harness is the guard.
+
+### Critical Files for Implementation
+- /Users/ms/nlightning/src/NLightning.Domain/Channels/Commitments/ChannelCommitments.cs
+- /Users/ms/nlightning/src/NLightning.Application/Channels/Managers/ChannelManager.cs
+- /Users/ms/nlightning/src/NLightning.Application/Node/Managers/PeerManager.cs
+- /Users/ms/nlightning/test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs
+- /Users/ms/nlightning/test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs
