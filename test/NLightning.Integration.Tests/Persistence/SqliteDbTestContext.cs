@@ -94,13 +94,15 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              ICollection<Htlc>? remoteOffered = null,
                                              ICollection<Htlc>? remoteFulfilled = null,
                                              ICollection<Htlc>? remoteOld = null,
-                                             WalletAddressModel? changeAddress = null)
+                                             WalletAddressModel? changeAddress = null,
+                                             ChannelState state = ChannelState.Open,
+                                             FeatureSupport useScidAlias = FeatureSupport.No)
     {
         var sha256 = new Sha256();
         var config = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
                                        LightningMoney.MilliSatoshis(1_000), LightningMoney.Satoshis(546), 483,
                                        LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Satoshis(546), 144,
-                                       FeatureSupport.No);
+                                       useScidAlias);
 
         var localKeySet = new ChannelKeySetModel(0, LocalFundingPubKey, LocalFundingPubKey, LocalPaymentBasepoint,
                                                  LocalFundingPubKey, LocalFundingPubKey, LocalFundingPubKey);
@@ -125,7 +127,7 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         return new ChannelModel(config, channelId, commitmentNumber, fundingOutput, isInitiator, null, null,
                                 LightningMoney.Satoshis(600_000), localKeySet, 5, 0,
                                 LightningMoney.Satoshis(400_000), remoteKeySet, 7, RemoteNodeId, 0,
-                                ChannelState.Open, ChannelVersion.V1, localOffered, localFulfilled, localOld, null,
+                                state, ChannelVersion.V1, localOffered, localFulfilled, localOld, null,
                                 remoteOffered, remoteFulfilled, remoteOld)
         {
             ChangeAddress = changeAddress

@@ -62,9 +62,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var config = channelEntity.Config;
         var keySets = channelEntity.KeySets;
         var htlcs = channelEntity.Htlcs;
+        var localAliases = channelEntity.LocalAliases;
         channelEntity.Config = null;
         channelEntity.KeySets = null;
         channelEntity.Htlcs = null;
+        channelEntity.LocalAliases = null;
 
         Update(channelEntity);
 
@@ -76,10 +78,24 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         await SyncChildrenAsync<ChannelConfigEntity>(c => c.ChannelId == channelId, config is null ? [] : [config]);
         await SyncChildrenAsync<ChannelKeySetEntity>(k => k.ChannelId == channelId, keySets ?? []);
         var removedHtlcs = await SyncChildrenAsync<HtlcEntity>(h => h.ChannelId == channelId, htlcs ?? []);
+        var removedAliases =
+            await SyncChildrenAsync<ChannelLocalAliasEntity>(a => a.ChannelId == channelId, localAliases ?? []);
 
         // A tracked channel still references the removed children, and change detection must not add them back
         foreach (var htlc in removedHtlcs)
             trackedEntity.Htlcs?.Remove(htlc);
+        foreach (var alias in removedAliases)
+            trackedEntity.LocalAliases?.Remove(alias);
+    }
+
+    public async Task<IReadOnlyCollection<(ChannelId ChannelId, ShortChannelId Alias)>> GetLocalAliasesAsync()
+    {
+        var aliases = await _context.ChannelLocalAliases
+                                    .AsNoTracking()
+                                    .Select(a => new { a.ChannelId, a.Alias })
+                                    .ToListAsync();
+
+        return aliases.Select(a => (a.ChannelId, a.Alias)).ToList();
     }
 
     public async Task<ChannelModel?> GetByIdAsync(ChannelId channelId)
@@ -90,6 +106,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                  .Include(c => c.KeySets)
                                  .Include(c => c.Htlcs)
                                  .Include(c => c.ChangeAddress)
+                                 .Include(c => c.LocalAliases)
                                  .FirstOrDefaultAsync(c => c.ChannelId == channelId);
 
         if (channelEntity is null)
@@ -106,6 +123,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
                                    .Include(c => c.ChangeAddress)
+                                   .Include(c => c.LocalAliases)
                                    .ToListAsync();
 
         return await Task.WhenAll(
@@ -131,6 +149,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
                                    .Include(c => c.ChangeAddress)
+                                   .Include(c => c.LocalAliases)
                                    .Where(c => readyStateList.Contains(c.State))
                                    .ToListAsync();
 
@@ -147,6 +166,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                    .Include(c => c.KeySets)
                                    .Include(c => c.Htlcs)
                                    .Include(c => c.ChangeAddress)
+                                   .Include(c => c.LocalAliases)
                                    .Where(c => c.RemoteNodeId.Equals(peerNodeId))
                                    .ToListAsync();
 
@@ -183,6 +203,16 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                     await HtlcDbRepository.MapDomainToEntityAsync(channelModel.ChannelId, htlc, messageSerializer));
         }
 
+        List<ChannelLocalAliasEntity>? localAliasEntities = null;
+        if (channelModel.LocalAliases is { Count: > 0 })
+            localAliasEntities = channelModel.LocalAliases
+                                             .Select(alias => new ChannelLocalAliasEntity
+                                             {
+                                                 Alias = alias,
+                                                 ChannelId = channelModel.ChannelId
+                                             })
+                                             .ToList();
+
         return new ChannelEntity
         {
             ChannelId = channelModel.ChannelId,
@@ -210,9 +240,12 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             LastSentSignature = channelModel.LastSentSignature?.Value ?? null,
             LastReceivedSignature = channelModel.LastReceivedSignature?.Value ?? null,
 
+            RemoteAlias = channelModel.RemoteAlias,
+
             Config = config,
             KeySets = keySets,
-            Htlcs = htlcEntities
+            Htlcs = htlcEntities,
+            LocalAliases = localAliasEntities
         };
     }
 
@@ -309,6 +342,10 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 remoteFulfilledHtlcs, remoteOldHtlcs)
         {
             FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight,
+            LocalAliases = channelEntity.LocalAliases is { Count: > 0 }
+                               ? channelEntity.LocalAliases.Select(a => a.Alias).ToList()
+                               : null,
+            RemoteAlias = channelEntity.RemoteAlias,
             ChangeAddress = channelEntity.ChangeAddress is null
                                 ? null
                                 : WalletAddressesDbRepository.MapEntityToModel(channelEntity.ChangeAddress)

@@ -100,6 +100,11 @@ public class ChannelEntity
     /// </summary>
     public required decimal RemoteBalanceSatoshis { get; set; }
 
+    /// <summary>
+    /// The scid alias the peer asked us to use for this channel (BOLT 2 channel_ready short_channel_id TLV), if any.
+    /// </summary>
+    public ShortChannelId? RemoteAlias { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 
@@ -125,6 +130,11 @@ public class ChannelEntity
     /// Each HTLC represents a conditional payment in the channel.
     /// </summary>
     public virtual ICollection<HtlcEntity>? Htlcs { get; set; }
+
+    /// <summary>
+    /// The scid aliases we generated for this channel and sent to the peer in channel_ready.
+    /// </summary>
+    public virtual ICollection<ChannelLocalAliasEntity>? LocalAliases { get; set; }
 
     /// <summary>
     /// A collection of transactions that are monitored for a specific channel,
