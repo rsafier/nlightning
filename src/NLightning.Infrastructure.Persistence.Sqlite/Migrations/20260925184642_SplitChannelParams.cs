@@ -1,0 +1,143 @@
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
+{
+    /// <inheritdoc />
+    public partial class SplitChannelParams : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.RenameColumn(
+                name: "ToSelfDelay",
+                table: "ChannelConfigs",
+                newName: "RemoteToSelfDelay");
+
+            migrationBuilder.RenameColumn(
+                name: "MaxHtlcAmountInFlight",
+                table: "ChannelConfigs",
+                newName: "RemoteMaxHtlcValueInFlightMsat");
+
+            migrationBuilder.RenameColumn(
+                name: "MaxAcceptedHtlcs",
+                table: "ChannelConfigs",
+                newName: "RemoteMaxAcceptedHtlcs");
+
+            migrationBuilder.RenameColumn(
+                name: "HtlcMinimumMsat",
+                table: "ChannelConfigs",
+                newName: "RemoteHtlcMinimumMsat");
+
+            migrationBuilder.AddColumn<long>(
+                name: "LocalChannelReserveAmountSats",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: 0L);
+
+            migrationBuilder.AddColumn<ulong>(
+                name: "LocalHtlcMinimumMsat",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: 0ul);
+
+            migrationBuilder.AddColumn<ushort>(
+                name: "LocalMaxAcceptedHtlcs",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: (ushort)0);
+
+            migrationBuilder.AddColumn<ulong>(
+                name: "LocalMaxHtlcValueInFlightMsat",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: 0ul);
+
+            migrationBuilder.AddColumn<ushort>(
+                name: "LocalToSelfDelay",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: (ushort)0);
+
+            migrationBuilder.AddColumn<long>(
+                name: "RemoteChannelReserveAmountSats",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: false,
+                defaultValue: 0L);
+
+            // Data step (NL-194): rows written before the split hold one set of values; copy it into both sides.
+            // A non-initiator used to echo the opener's values, so both sides really were equal; an initiator never
+            // stored the peer's limits, and its old commitments were built with the one stored to_self_delay.
+            migrationBuilder.Sql(
+                "UPDATE \"ChannelConfigs\" SET \"LocalChannelReserveAmountSats\" = COALESCE(\"ChannelReserveAmountSats\", 0), \"RemoteChannelReserveAmountSats\" = COALESCE(\"ChannelReserveAmountSats\", 0), \"LocalHtlcMinimumMsat\" = \"RemoteHtlcMinimumMsat\", \"LocalMaxAcceptedHtlcs\" = \"RemoteMaxAcceptedHtlcs\", \"LocalMaxHtlcValueInFlightMsat\" = \"RemoteMaxHtlcValueInFlightMsat\", \"LocalToSelfDelay\" = \"RemoteToSelfDelay\";");
+
+            migrationBuilder.DropColumn(
+                name: "ChannelReserveAmountSats",
+                table: "ChannelConfigs");
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AddColumn<long>(
+                name: "ChannelReserveAmountSats",
+                table: "ChannelConfigs",
+                type: "INTEGER",
+                nullable: true);
+
+            migrationBuilder.Sql(
+                "UPDATE \"ChannelConfigs\" SET \"ChannelReserveAmountSats\" = \"LocalChannelReserveAmountSats\";");
+
+            migrationBuilder.DropColumn(
+                name: "LocalChannelReserveAmountSats",
+                table: "ChannelConfigs");
+
+            migrationBuilder.DropColumn(
+                name: "LocalHtlcMinimumMsat",
+                table: "ChannelConfigs");
+
+            migrationBuilder.DropColumn(
+                name: "LocalMaxAcceptedHtlcs",
+                table: "ChannelConfigs");
+
+            migrationBuilder.DropColumn(
+                name: "LocalMaxHtlcValueInFlightMsat",
+                table: "ChannelConfigs");
+
+            migrationBuilder.DropColumn(
+                name: "LocalToSelfDelay",
+                table: "ChannelConfigs");
+
+            migrationBuilder.DropColumn(
+                name: "RemoteChannelReserveAmountSats",
+                table: "ChannelConfigs");
+
+            migrationBuilder.RenameColumn(
+                name: "RemoteToSelfDelay",
+                table: "ChannelConfigs",
+                newName: "ToSelfDelay");
+
+            migrationBuilder.RenameColumn(
+                name: "RemoteMaxHtlcValueInFlightMsat",
+                table: "ChannelConfigs",
+                newName: "MaxHtlcAmountInFlight");
+
+            migrationBuilder.RenameColumn(
+                name: "RemoteMaxAcceptedHtlcs",
+                table: "ChannelConfigs",
+                newName: "MaxAcceptedHtlcs");
+
+            migrationBuilder.RenameColumn(
+                name: "RemoteHtlcMinimumMsat",
+                table: "ChannelConfigs",
+                newName: "HtlcMinimumMsat");
+        }
+    }
+}

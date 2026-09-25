@@ -145,26 +145,29 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("ChannelId")
                         .HasColumnType("varbinary(32)");
 
-                    b.Property<long?>("ChannelReserveAmountSats")
-                        .HasColumnType("bigint");
-
                     b.Property<long>("FeeRatePerKwSatoshis")
                         .HasColumnType("bigint");
 
-                    b.Property<decimal>("HtlcMinimumMsat")
-                        .HasColumnType("decimal(20,0)");
+                    b.Property<long>("LocalChannelReserveAmountSats")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("LocalDustLimitAmountSats")
                         .HasColumnType("bigint");
 
-                    b.Property<byte[]>("LocalUpfrontShutdownScript")
-                        .HasColumnType("varbinary(max)");
+                    b.Property<decimal>("LocalHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<int>("MaxAcceptedHtlcs")
+                    b.Property<int>("LocalMaxAcceptedHtlcs")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("MaxHtlcAmountInFlight")
+                    b.Property<decimal>("LocalMaxHtlcValueInFlightMsat")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("LocalToSelfDelay")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("LocalUpfrontShutdownScript")
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("MinimumDepth")
                         .HasColumnType("bigint");
@@ -172,14 +175,26 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<bool>("OptionAnchorOutputs")
                         .HasColumnType("bit");
 
+                    b.Property<long>("RemoteChannelReserveAmountSats")
+                        .HasColumnType("bigint");
+
                     b.Property<long>("RemoteDustLimitAmountSats")
                         .HasColumnType("bigint");
 
+                    b.Property<decimal>("RemoteHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("RemoteMaxAcceptedHtlcs")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("RemoteMaxHtlcValueInFlightMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("RemoteToSelfDelay")
+                        .HasColumnType("int");
+
                     b.Property<byte[]>("RemoteUpfrontShutdownScript")
                         .HasColumnType("varbinary(max)");
-
-                    b.Property<int>("ToSelfDelay")
-                        .HasColumnType("int");
 
                     b.Property<byte>("UseScidAlias")
                         .HasColumnType("tinyint");
