@@ -57,6 +57,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsFromBeforeAddInvoicesPaymentsAndCircuits_When_Migrated_Then_TheyMoveForwardAndTheNewTablesRoundTrip()
+    {
+        // Arrange (ABCD W1-C: a snapshot saved before the migration still loads and takes an HTLC origin; invoices,
+        // payments with their route and forward circuits round-trip on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_payment_schema");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await PaymentSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                 DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
     {
         // Arrange (NL-237: the data steps of PersistCommitmentNumbers, SplitChannelParams,

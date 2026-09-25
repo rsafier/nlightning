@@ -4,6 +4,7 @@ using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
+using NLightning.Domain.Payments.Interfaces;
 using NLightning.Domain.Persistence.Interfaces;
 
 namespace NLightning.Tests.Utils.Mocks;
@@ -48,6 +49,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelStateDbRepository ChannelStateDbRepository => inner.ChannelStateDbRepository;
     public IRemoteShachainDbRepository RemoteShachainDbRepository => inner.RemoteShachainDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
+    public IInvoiceDbRepository InvoiceDbRepository => inner.InvoiceDbRepository;
+    public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
+    public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 

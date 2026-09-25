@@ -9,6 +9,8 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Payments.Enums;
+using Domain.Payments.ValueObjects;
 using Persistence.Contexts;
 using Persistence.Entities.Channel;
 
@@ -144,6 +146,70 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     }
 
     /// <inheritdoc />
+    public async Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin)
+    {
+        if (!origin.IsValid)
+            throw new ArgumentException("The HTLC origin is not valid", nameof(origin));
+
+        var entity = await FindHtlcAsync(channelId, htlc)
+                  ?? throw new InvalidOperationException($"HTLC {htlc} of channel {channelId} does not exist");
+        entity.OriginKind = (byte)origin.Kind;
+        entity.OriginPaymentHash = origin.PaymentHash is { } paymentHash ? ((byte[])paymentHash).ToArray() : null;
+        entity.OriginIncomingChannelId = origin.IncomingChannelId;
+        entity.OriginIncomingHtlcId = origin.IncomingHtlcId;
+    }
+
+    /// <inheritdoc />
+    public async Task<HtlcOrigin?> GetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc)
+    {
+        var direction = (byte)htlc.Direction;
+        var row = await _context.Htlcs.AsNoTracking()
+                                .Where(h => h.ChannelId == channelId && h.HtlcId == htlc.Id
+                                         && h.Direction == direction)
+                                .Select(h => new
+                                {
+                                    h.OriginKind,
+                                    h.OriginPaymentHash,
+                                    h.OriginIncomingChannelId,
+                                    h.OriginIncomingHtlcId
+                                })
+                                .FirstOrDefaultAsync();
+
+        return row?.OriginKind is null
+                   ? null
+                   : MapOrigin(channelId, htlc, row.OriginKind.Value, row.OriginPaymentHash,
+                               row.OriginIncomingChannelId, row.OriginIncomingHtlcId);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin)
+    {
+        if (!origin.IsValid)
+            throw new ArgumentException("The HTLC origin is not valid", nameof(origin));
+
+        var kind = (byte)origin.Kind;
+        var query = _context.Htlcs.AsNoTracking().Where(h => h.OriginKind == kind);
+        if (origin.Kind == HtlcOriginKind.Local)
+        {
+            var paymentHash = ((byte[])origin.PaymentHash!.Value).ToArray();
+            query = query.Where(h => h.OriginPaymentHash == paymentHash);
+        }
+        else
+        {
+            ChannelId? incomingChannelId = origin.IncomingChannelId!.Value;
+            var incomingHtlcId = origin.IncomingHtlcId;
+            query = query.Where(h => h.OriginIncomingChannelId == incomingChannelId
+                                  && h.OriginIncomingHtlcId == incomingHtlcId);
+        }
+
+        var rows = await query.Select(h => new { h.ChannelId, h.HtlcId, h.Direction }).ToListAsync();
+        return rows.Select(r => (r.ChannelId, new HtlcKey((HtlcDirection)r.Direction, r.HtlcId)))
+                   .OrderBy(r => r.ChannelId.ToString(), StringComparer.Ordinal)
+                   .ThenBy(r => r.Item2)
+                   .ToList();
+    }
+
+    /// <inheritdoc />
     public async Task PruneSettledHtlcsAsync(ChannelId channelId, IEnumerable<HtlcKey> htlcs)
     {
         ArgumentNullException.ThrowIfNull(htlcs);
@@ -253,6 +319,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         channel.LocalRevocationNumber = next.LocalCommit.Number;
         channel.RemoteRevocationNumber = next.RemoteCommit.Number;
         channel.RemoteNextPerCommitmentPoint = next.RemoteNextPerCommitmentPoint;
+        channel.MaxDustHtlcExposureMsat = next.Params.MaxDustHtlcExposureMsat;
 
         if (extras?.SentCommitDiff is { } diff)
             channel.SentCommitDiff = diff.ToArray();
@@ -260,6 +327,23 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             channel.SentCommitDiff = null;
         if (extras?.LastSent is { } lastSent)
             channel.LastSentOrder = (byte)lastSent;
+    }
+
+    private static HtlcOrigin MapOrigin(ChannelId channelId, HtlcKey htlc, byte kind, byte[]? paymentHash,
+                                        ChannelId? incomingChannelId, ulong? incomingHtlcId)
+    {
+        var origin = (HtlcOriginKind)kind switch
+        {
+            HtlcOriginKind.Local when paymentHash is not null => HtlcOrigin.Local(new Hash(paymentHash)),
+            HtlcOriginKind.Forwarded when incomingChannelId is { } channel && incomingHtlcId is { } id =>
+                HtlcOrigin.Forwarded(channel, id),
+            _ => default
+        };
+
+        return origin.IsValid
+                   ? origin
+                   : throw new InvalidOperationException(
+                         $"HTLC {htlc} of channel {channelId} has an inconsistent origin (kind {kind})");
     }
 
     private static HtlcRecord MapHtlcToDomain(HtlcEntity row)

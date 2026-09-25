@@ -12,6 +12,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Channel;
 using Bitcoin;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -41,7 +42,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     [
         nameof(ChannelEntity.RemoteNextPerCommitmentPoint),
         nameof(ChannelEntity.SentCommitDiff),
-        nameof(ChannelEntity.LastSentOrder)
+        nameof(ChannelEntity.LastSentOrder),
+        nameof(ChannelEntity.MaxDustHtlcExposureMsat)
     ];
 
     /// <summary>
@@ -160,6 +162,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         return await MapWithStateAsync(channelEntity);
     }
 
+    /// <inheritdoc />
+    public Task<bool> ExistsAsync(ChannelId channelId) => DbSet.AsNoTracking().AnyAsync(c => c.ChannelId == channelId);
+
     public async Task<IEnumerable<ChannelModel>> GetAllAsync()
     {
         var channelEntities = await DbSet
@@ -219,8 +224,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     private async Task<ChannelModel> MapWithStateAsync(ChannelEntity channelEntity)
     {
         var channelModel = MapEntityToDomain(channelEntity, _sha256);
-        var state = await _channelStateDbRepository.LoadAsync(channelModel.ChannelId,
-                                                              channelModel.ToCommitmentParams());
+
+        // The snapshot runs under the dust policy it was saved with (NL-242) and keeps the inferred-limits flag of a
+        // channel migrated by SplitChannelParams, so its guessed limits are still never enforced after a restart
+        var @params = CommitmentParams.FromChannel(channelModel, channelEntity.MaxDustHtlcExposureMsat);
+        var state = await _channelStateDbRepository.LoadAsync(channelModel.ChannelId, @params);
         if (state is not null)
             channelModel.UpdateCommitments(state.Commitments, new ChannelStateExtras
             {

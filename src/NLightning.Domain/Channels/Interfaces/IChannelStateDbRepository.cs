@@ -3,6 +3,7 @@ namespace NLightning.Domain.Channels.Interfaces;
 using Commitments;
 using Crypto.ValueObjects;
 using Models;
+using Payments.ValueObjects;
 using ValueObjects;
 
 /// <summary>
@@ -59,6 +60,27 @@ public interface IChannelStateDbRepository
 
     /// <summary>The Sphinx shared secret stored for an HTLC, if any.</summary>
     Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc);
+
+    /// <summary>
+    /// Stages the <see cref="HtlcOrigin"/> of an HTLC we offered (<c>IChannelOperations.OfferHtlcAsync</c>): call it
+    /// after <see cref="ApplyAsync"/> staged the add, in the same unit of work, so the origin commits with the add.
+    /// <see cref="ApplyAsync"/> never overwrites it.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="origin"/> is not valid (<see cref="HtlcOrigin.IsValid"/>).
+    /// </exception>
+    /// <exception cref="InvalidOperationException">The HTLC row does not exist (staged or stored).</exception>
+    Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin);
+
+    /// <summary>The origin stored for an HTLC, or null (no row, or an HTLC without one).</summary>
+    Task<HtlcOrigin?> GetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc);
+
+    /// <summary>
+    /// The stored HTLCs, on any channel, that carry <paramref name="origin"/> (startup replay, ONION M4-T7: a
+    /// <c>Pending</c> forward circuit or an <c>InFlight</c> payment without a recorded HTLC is failed only when this is
+    /// empty). Archived (final) rows are included until pruned; check their state.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="origin"/> is not valid.</exception>
+    Task<IReadOnlyList<(ChannelId ChannelId, HtlcKey Htlc)>> FindHtlcsByOriginAsync(HtlcOrigin origin);
 
     /// <summary>
     /// Stages the deletion of archived (final) HTLC rows once their events are handled. Non-final HTLCs are ignored.

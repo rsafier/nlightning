@@ -77,13 +77,36 @@ public sealed class PaymentModel
 
     public DateTimeOffset? CompletedAt { get; private set; }
 
+    /// <summary>
+    /// The route the onion was built for, first hop (our peer) first and the payee last, with each hop's Sphinx shared
+    /// secret; empty when it was not recorded. Persisted with the payment so a failure returned after a restart can
+    /// still be decrypted and attributed.
+    /// </summary>
+    public IReadOnlyList<PaymentHop> Route { get; }
+
+    /// <summary>
+    /// The shared secret of each hop of <see cref="Route"/>, first hop first (for
+    /// <c>IFailureOnionService.DecryptErrorPacket</c>).
+    /// </summary>
+    public IReadOnlyList<Secret> HopSharedSecrets => Route.Select(h => h.SharedSecret).ToList();
+
+    /// <param name="paymentHash">The payment hash.</param>
+    /// <param name="bolt11">The BOLT 11 invoice paid, if any.</param>
+    /// <param name="payeeNodeId">The payee.</param>
+    /// <param name="amount">The amount the payee receives.</param>
+    /// <param name="fee">The routing fees.</param>
+    /// <param name="createdAt">When the payment was created.</param>
+    /// <param name="route">The route of the onion (see <see cref="Route"/>); null or empty when not recorded. When
+    /// given, its last hop must be <paramref name="payeeNodeId"/>.</param>
     public PaymentModel(Hash paymentHash, string? bolt11, CompactPubKey payeeNodeId, LightningMoney amount,
-                        LightningMoney fee, DateTimeOffset createdAt)
+                        LightningMoney fee, DateTimeOffset createdAt, IReadOnlyList<PaymentHop>? route = null)
     {
         ArgumentNullException.ThrowIfNull(amount);
         ArgumentNullException.ThrowIfNull(fee);
         if (amount.IsZero)
             throw new ArgumentOutOfRangeException(nameof(amount), "A payment amount must be positive.");
+        if (route is { Count: > 0 } && route[^1].NodeId != payeeNodeId)
+            throw new ArgumentException("The last hop of the route must be the payee.", nameof(route));
 
         PaymentHash = paymentHash;
         Bolt11 = bolt11;
@@ -91,6 +114,7 @@ public sealed class PaymentModel
         Amount = amount;
         Fee = fee;
         CreatedAt = createdAt;
+        Route = route is null ? [] : [.. route];
         Status = PaymentStatus.InFlight;
     }
 
@@ -101,7 +125,8 @@ public sealed class PaymentModel
                                        LightningMoney amount, LightningMoney fee, DateTimeOffset createdAt,
                                        PaymentStatus status, ChannelId? outgoingChannelId, ulong? outgoingHtlcId,
                                        Secret? preimage, FailureCode? failureCode, int? failureSourceIndex,
-                                       string? failureReason, DateTimeOffset? completedAt)
+                                       string? failureReason, DateTimeOffset? completedAt,
+                                       IReadOnlyList<PaymentHop>? route = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown payment status.");
@@ -114,7 +139,7 @@ public sealed class PaymentModel
         if (status != PaymentStatus.InFlight && completedAt is null)
             throw new ArgumentException("A completed payment needs its completion time.", nameof(completedAt));
 
-        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt)
+        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt, route)
         {
             Status = status,
             OutgoingChannelId = outgoingChannelId,

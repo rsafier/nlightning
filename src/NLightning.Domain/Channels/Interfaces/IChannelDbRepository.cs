@@ -10,6 +10,12 @@ public interface IChannelDbRepository
     Task AddAsync(ChannelModel channelModel);
     Task UpdateAsync(ChannelModel channelModel);
     Task<ChannelModel?> GetByIdAsync(ChannelId channelId);
+
+    /// <summary>
+    /// Whether the channel is stored, without loading it (no HTLC, commitment or key rows are read; NL-243). Prefer it
+    /// to <see cref="GetByIdAsync"/> as an existence check: it also never throws for a channel with legacy HTLC rows.
+    /// </summary>
+    Task<bool> ExistsAsync(ChannelId channelId);
     Task<IEnumerable<ChannelModel>> GetAllAsync();
     Task<IEnumerable<ChannelModel>> GetReadyChannelsAsync();
     Task<IEnumerable<ChannelModel?>> GetByPeerIdAsync(CompactPubKey peerNodeId);

@@ -5,9 +5,11 @@ namespace NLightning.Infrastructure.Persistence.Contexts;
 using Entities.Bitcoin;
 using Entities.Channel;
 using Entities.Node;
+using Entities.Payment;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Node;
+using EntityConfiguration.Payment;
 using Enums;
 using Providers;
 
@@ -40,6 +42,12 @@ public class NLightningDbContext : DbContext
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
 
+    // Payment DbSets
+    public DbSet<InvoiceEntity> Invoices { get; set; }
+    public DbSet<PaymentEntity> Payments { get; set; }
+    public DbSet<PaymentHopEntity> PaymentHops { get; set; }
+    public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -62,5 +70,10 @@ public class NLightningDbContext : DbContext
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);
+
+        // Payment entities
+        modelBuilder.ConfigureInvoiceEntity(_databaseType);
+        modelBuilder.ConfigurePaymentEntity(_databaseType);
+        modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
     }
 }

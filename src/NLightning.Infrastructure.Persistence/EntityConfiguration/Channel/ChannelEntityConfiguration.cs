@@ -63,6 +63,9 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.ErrorSent).IsRequired(false);
             entity.Property(e => e.DataLossDetected).IsRequired();
 
+            // Dust exposure policy of the snapshot (migration AddInvoicesPaymentsAndCircuits, NL-242)
+            entity.Property(e => e.MaxDustHtlcExposureMsat).IsRequired(false);
+
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
                   .WithOne()

@@ -123,4 +123,55 @@ public class PaymentModelTests
                                                                     PaymentStatus.InFlight, null, 1, null, null,
                                                                     null, null, null));
     }
+
+    [Fact]
+    public void Given_RouteEndingAtThePayee_When_Created_Then_RouteAndSharedSecretsAreKeptInOrder()
+    {
+        // Arrange
+        var hop = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)8, 32)]);
+        PaymentHop[] route =
+        [
+            new(hop, new ShortChannelId(1, 2, 3), LightningMoney.MilliSatoshis(50_027_123UL), 900,
+                new Secret(Enumerable.Repeat((byte)0xA1, 32).ToArray())),
+            new(s_payee, new ShortChannelId(4, 5, 6), LightningMoney.MilliSatoshis(50_000_123UL), 860,
+                new Secret(Enumerable.Repeat((byte)0xA2, 32).ToArray()))
+        ];
+
+        // Act
+        var payment = new PaymentModel(new Hash(Enumerable.Repeat((byte)1, 32).ToArray()), null, s_payee,
+                                       LightningMoney.MilliSatoshis(50_000_123UL),
+                                       LightningMoney.MilliSatoshis(27_000UL), s_createdAt, route);
+
+        // Assert
+        Assert.Equal(route, payment.Route);
+        Assert.Equal(route.Select(h => h.SharedSecret), payment.HopSharedSecrets);
+    }
+
+    [Fact]
+    public void Given_RouteNotEndingAtThePayee_When_Created_Then_Throws()
+    {
+        // Arrange
+        var other = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)8, 32)]);
+        PaymentHop[] route =
+        [
+            new(other, new ShortChannelId(1, 2, 3), LightningMoney.MilliSatoshis(1UL), 900,
+                new Secret(new byte[32]))
+        ];
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => new PaymentModel(new Hash(new byte[32]), null, s_payee,
+                                                                LightningMoney.MilliSatoshis(1UL),
+                                                                LightningMoney.Zero, s_createdAt, route));
+    }
+
+    [Fact]
+    public void Given_NoRoute_When_Created_Then_RouteIsEmpty()
+    {
+        // Act
+        var payment = CreatePayment();
+
+        // Assert
+        Assert.Empty(payment.Route);
+        Assert.Empty(payment.HopSharedSecrets);
+    }
 }

@@ -97,6 +97,28 @@ public class HtlcEntity
     /// </summary>
     public byte[]? OnionSharedSecret { get; set; }
 
+    /// <summary>
+    /// <c>HtlcOriginKind</c> of an HTLC we offered (1 our payment, 2 a forward); null when unknown (incoming HTLCs,
+    /// rows from before migration <c>AddInvoicesPaymentsAndCircuits</c>). Written on its own
+    /// (<c>ChannelStateDbRepository.SetHtlcOriginAsync</c>), never by a state transition.
+    /// </summary>
+    public byte? OriginKind { get; set; }
+
+    /// <summary>
+    /// The payment hash of our payment, for <see cref="OriginKind"/> 1.
+    /// </summary>
+    public byte[]? OriginPaymentHash { get; set; }
+
+    /// <summary>
+    /// The channel of the forwarded incoming HTLC, for <see cref="OriginKind"/> 2.
+    /// </summary>
+    public ChannelId? OriginIncomingChannelId { get; set; }
+
+    /// <summary>
+    /// The id of the forwarded incoming HTLC, for <see cref="OriginKind"/> 2.
+    /// </summary>
+    public ulong? OriginIncomingHtlcId { get; set; }
+
     // Default constructor for EF Core
     internal HtlcEntity()
     {
