@@ -1,0 +1,50 @@
+# NLightning.Client (CLI for the daemon)
+
+## Purpose
+A console exe that sends **one IPC request per call** to a running `NLightning.Daemon` and prints the result. The help text calls it `nltg`, but no AssemblyName is set, so the binary is `NLightning.Client`. It has no Lightning protocol logic of its own. All work is done by the daemon.
+
+## Layout
+- `Program.cs`: top-level statements. Sets `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` (this must happen first), resolves pipe and cookie paths, then dispatches on a `switch (cmd)` that accepts aliases (`info|node-info`, `connect|connect-peer`, `listpeers|list-peers`, `getaddress|get-address`, `walletbalance|wallet-balance`, `openchannel|open-channel`). The default command is `node-info`.
+- `Ipc/NamedPipeIpcClient.cs`: one typed method per `ClientCommand` (note `GetWalletBalance` lacks the `Async` suffix), each a copy-paste of the same template. `SendAsync` opens a new `NamedPipeClientStream` for every call (2s connect timeout), writes a 4-byte `BitConverter` length prefix and a MessagePack `IpcEnvelope`, then reads a response frame (max 10,000,000 bytes). If the response is an `IpcEnvelopeKind.Error` envelope, it throws `InvalidOperationException("IPC error {code}: {msg}")`.
+- `Handlers/OpenChannelMessageHandler.cs`: sends `OpenChannel`, then long-polls `OpenChannelSubscription` until the state is `ReadyForUs`/`ReadyForThem` or Ctrl+C.
+- `Printers/`: `IPrinter<T>` plus one `<Name>Printer` per top-level `*IpcResponse` (nested `PeerInfoIpcResponse` is printed inside `ListPeersPrinter`). Output goes to the console only; there is no JSON output mode.
+- `Utils/ClientUtils.cs`: `ShowUsage()`.
+
+## Dependency rules
+- Allowed references: `NLightning.Domain`, `NLightning.Transport.Ipc` (wire DTOs and formatters), `NLightning.Daemon.Contracts` (CLI parsing in `Helpers/CommandLineHelper.cs`, and `NodeUtils`/`NodeConstants` for `nltg.ipc`/`nltg.cookie`).
+- Must NOT reference: Application, Infrastructure.*, Daemon, Persistence, Repositories, Serialization, or NBitcoin. The client is a thin shell over the IPC contract.
+- `NLightning.Daemon` references this project, so never add a Client -> Daemon reference (that would be a cycle).
+
+## Adding a new CLI command (the common task)
+1. Add a `ClientCommand` value in `src/NLightning.Domain/Client/Enums/ClientCommand.cs`. Append only; values are on the wire.
+2. Add `[MessagePackObject]` `<Name>IpcRequest` and `<Name>IpcResponse` in `src/NLightning.Transport.Ipc/Requests|Responses/` using `[Key(n)]`. Append keys; never reorder or reuse them.
+3. If a new Domain value object crosses the wire, add a formatter in `src/NLightning.Transport.Ipc/MessagePack/Formatters/` and register it in `NLightningFormatterResolver`. If a DTO has a nullable struct property, also register a `T?` formatter (as done for `PeerAddressInfo?` and `CompactPubKey?`).
+4. On the daemon side, add an `IIpcCommandHandler` in `src/NLightning.Daemon/Ipc/Handlers/` and register it with `AddSingleton<IIpcCommandHandler, X>()` in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`.
+5. Here, add a `<Name>Async` method to `NamedPipeIpcClient`, following the existing template (Version=1, new CorrelationId, `GetAuthTokenAsync`, `Kind = IpcEnvelopeKind.Request`; some existing methods write the equivalent `Kind = 0`).
+6. Add `Printers/<Name>Printer.cs : IPrinter<<Name>IpcResponse>`.
+7. Add the `case` aliases in `Program.cs`, validate `commandArgs` length and `return` on error, then update `ClientUtils.ShowUsage()`.
+
+## Conventions
+- File-scoped namespace (`NLightning.Client.<Folder>`). Preferred style: relative `using Domain.X;` / `using Transport.Ipc.X;` directives after the namespace line, System/third-party usings above it (some files, e.g. `Printers/NodeInfoPrinter.cs`, `Printers/WalletBalancePrinter.cs`, still use fully qualified `using NLightning.X;` above it).
+- Root `.editorconfig`: naming rules are errors (`_camelCase` private fields, `s_camelCase` private statics), unused usings (IDE0005) is an error, `var` preference is a warning. CI (`.github/workflows/pr.yml`, `dotnet.yml`) runs `dotnet format --verify-no-changes`.
+- Pass the `CancellationToken` through every call. Ctrl+C cancels `cts` in `Program.cs`.
+
+## Build / run / test
+- Build: `dotnet build src/NLightning.Client -p:MSBuildWarningsAsMessages=MSB4121`
+- Run: `dotnet run --project src/NLightning.Client -- --network regtest listpeers` (use the space form; see Gotchas). This needs a running daemon and `~/.nltg/<network>/nltg.cookie`.
+- Format: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` (repo root).
+- Tests: there is no Client test project. If you add IPC/client tests, `test/NLightning.Daemon.Tests` (xunit.v3, references Daemon) is the closest home. Its csproj lacks `xunit.runner.visualstudio`, so `dotnet test` may discover 0 tests; running the xunit.v3 exe directly (`dotnet run --project test/NLightning.Daemon.Tests -- -method '*X*'`) is the fallback. Not verified by running.
+
+## Gotchas
+- `CommandLineHelper` (in Daemon.Contracts, shared with the daemon) has bugs. `--cookie <path>`/`-c <path>` assigns the flag itself instead of the path, so only `--cookie=<path>` works. `GetCommand` always skips the next argument after an option, even for the `--network=regtest` form, so `--network=regtest listpeers` silently runs `node-info`. `-?` is advertised but not recognized. `NLTG_COOKIE` is only consulted when `NLTG_NETWORK` is unset.
+- `connect` with no args prints an error and then indexes `commandArgs[0]` anyway (IndexOutOfRange). `getaddress` (`commandArgs[0]`) and `openchannel` (`commandArgs[0]`, `[1]` in `OpenChannelMessageHandler`) index without any length check.
+- `CommandLineHelper.GetCookiePath` runs before the help check and outside the `try` in `Program.cs`; if `~/.nltg/<network>` does not exist it throws unhandled, so even `--help` fails.
+- `open-channel` uses `.GetAwaiter().GetResult()` inside async top-level code. It should be awaited.
+- `GetAddressIpcResponse.AddressP2Wsh` actually holds a P2WPKH address, and the printer labels it P2WSH. The client defaults the address type to P2Tr.
+- The help text says the cookie file is `nltg.ipc`; it is actually `nltg.cookie` (`nltg.ipc` is the pipe, which is a Unix socket path on macOS/Linux).
+- Frames are MessagePack with LZ4BlockArray compression, and `Hash`/`TxId` are written as raw bytes with no header. Non-.NET clients cannot decode them without matching this format.
+- The daemon returns `ClientException.Message` as the error *code* for OpenChannel errors, so error codes shown to the user may be free text.
+- The protocol has no server push. Progress is reported by the client repeating the request (a long-poll).
+
+## Onion routing (BOLT 4) hooks
+This project has no onion or payment code. When BOLT 4 lands, expose it here with the 7-step recipe: e.g. `ClientCommand.PayInvoice`/`SendPayment`/`DecodeInvoice` (decode via `src/NLightning.Bolt11`, but on the daemon side, since Bolt11 depends on Infrastructure) and a `PaymentStatus` long-poll that follows the `OpenChannelMessageHandler` pattern. Map BOLT 4 failure codes (PERM/NODE/UPDATE/BADONION flags) to a structured error DTO or to `src/NLightning.Domain/Client/Constants/ErrorCodes.cs` rather than a plain string.

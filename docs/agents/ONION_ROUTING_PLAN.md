@@ -1,0 +1,451 @@
+# BOLT 4 Onion Routing: Implementation Plan for NLightning
+
+This plan is for agents that will implement BOLT 4 (Sphinx onion routing) in this repo. Work through it one task at a time. Every repo claim cites a repo-relative path. Claims marked **(unverified)** have not been checked against code and should be confirmed before you rely on them.
+
+- Spec source: `lightning/bolts` master, `04-onion-routing.md`, `02-peer-protocol.md` (HTLC messages), `01-messaging.md` (BigSize/TLV). Vector JSON files live at `https://raw.githubusercontent.com/lightning/bolts/master/bolt04/<name>.json`.
+- Status as of this writing: there is **no Sphinx/onion code** in `src/` or `test/`. The onion is carried only as raw bytes (see §3.1).
+
+---
+
+## 0. How to use this document (agents)
+
+1. Do milestones in order: M1 → M2 → M3, then M4, which needs the prerequisites in §7. M5 and M6 are optional or later.
+2. Each task gives its target files, acceptance criteria and required vectors. A task is done only when:
+   - `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121` passes,
+   - `dotnet build -c Release.Native -p:MSBuildWarningsAsMessages=MSB4121` passes (this is required for any crypto change),
+   - `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` passes, because the `.editorconfig` IDE and naming rules are errors,
+   - the new tests pass under both configurations, run with `dotnet test --no-build -c <cfg> --filter 'FullyQualifiedName!~Docker'`.
+3. Put new tests in test projects that `dotnet test` actually discovers. **Do not** put them in `test/NLightning.Application.Tests` or `test/NLightning.Daemon.Tests` until those projects get a `xunit.runner.visualstudio` package reference. They have none today, so CI discovers 0 tests there. Use `dotnet run --project <proj>` to run them locally.
+4. Known environmental failure: `PeerAddressTests.Given_HttpAddress_...` in `test/NLightning.Infrastructure.Tests/Protocol/Models/PeerAddressTests.cs` needs live DNS. Ignore it.
+5. The WASM build (`Release.Wasm`) only works on linux-x64 (CI). `src/NLightning.Infrastructure/Crypto/Providers/JS/package.json` pins linux-x64 esbuild/rollup. On macOS, write the JS provider code and let CI verify it.
+
+---
+
+## 1. Spec requirements summary
+
+### 1.1 Primitives and conventions
+| Primitive | Definition |
+|---|---|
+| Shared secret | `ss = SHA256(compressed(k * P))` (libsecp256k1 default ECDH) |
+| Key derivation | `key = HMAC-SHA256(key = ASCII(label), msg = 32-byte secret)`, with no NUL terminator |
+| PRG / stream | ChaCha20 (RFC 8439) with a **96-bit all-zero nonce**, **block counter 0**, run as a keystream (XOR over zeros). This is not AEAD |
+| HMAC compare | Constant time (`CryptographicOperations.FixedTimeEquals`) |
+| Blinding factor | `bf = SHA256(ephemeral_pubkey(33) \|\| ss)`; next ephemeral pubkey = `epk * bf` (point tweak-mul); sender privkey = `ek * bf mod n` |
+
+### 1.2 Key-type labels (ASCII → hex)
+| Label | Hex | Use |
+|---|---|---|
+| `rho` | `72686f` | hop_payloads stream; blinded-path `encrypted_recipient_data` AEAD key |
+| `mu` | `6d75` | packet HMAC |
+| `um` | `756d` | error-packet HMAC; attribution HMACs |
+| `pad` | `706164` | initial mix-header fill (keyed from the **session key**) |
+| `ammag` | `616d6d6167` | error-packet obfuscation stream |
+| `ammagext` | `616d6d6167657874` | attribution_data obfuscation (M3b) |
+| `fulfillment` | ASCII | fulfillment_payload AEAD key (optional) |
+| `blinded_node_id` | ASCII | route-blinding tweak |
+
+The hex values for `ammag` and `ammagext` were derived from ASCII, not quoted from the spec. Confirm them against `onion-error-test.json` (`ammag_key`).
+
+### 1.3 Sizes and constants
+| Constant | Value |
+|---|---|
+| `onion_packet` total | **1366** = version(1) + public_key(33) + hop_payloads(**1300**) + hmac(**32**) |
+| Packet version | `0x00`. Any other version fails with `invalid_onion_version` |
+| hop payload framing | `bigsize(len) \|\| payload(len, TLV stream) \|\| hmac(32)`; `len` 0 = legacy (unsupported), 1 = reserved, so `len < 2` fails |
+| shift_size | `bigsize_len(len) + len + 32` (1 + len + 32 if len < 253, else 3 + len + 32) |
+| Peel stream length | 2 × len(hop_payloads) = 2600 for payments (hop_payloads ‖ 1300 zero bytes). The spec says peeling is identical for onion messages with variable `len` (~L909-914, L942), so parameterize the Sphinx core on hop_payloads length now (see §4.1) |
+| Error packet | `hmac(32) \|\| u16 failure_len \|\| failuremsg \|\| u16 pad_len \|\| pad`; `failure_len + pad_len >= 256` (SHOULD be = 256, which gives a **292-byte** packet); max 32768 |
+| Origin error-decrypt iterations | SHOULD run 27 constant iterations |
+| `max_htlc_cltv` | 2016 blocks (`expiry_too_far`) |
+| onion_message (M6) | type 513; packet payload 1300 or 32768 bytes (message len 1366 / 32834) |
+| Associated data | `payment_hash` for payments; empty for onion messages |
+
+### 1.4 Hop payload TLV (`payload` namespace)
+| Type | Name | Encoding |
+|---|---|---|
+| 2 | amt_to_forward | tu64 |
+| 4 | outgoing_cltv_value | tu32 |
+| 6 | short_channel_id | 8 bytes (u64 BOLT 7 scid) |
+| 8 | payment_data | `[32 payment_secret][tu64 total_msat]` |
+| 10 | encrypted_recipient_data | bytes |
+| 12 | current_path_key | point (33) |
+| 16 | payment_metadata | bytes |
+| 18 | total_amount_msat | tu64 |
+
+Writer and reader rules:
+- Non-final hop: amt, cltv and scid; no payment_data.
+- Final hop: amt and cltv; payment_data if the invoice has a payment_secret; payment_metadata if the invoice has one.
+- Blinded non-final hop: **only** encrypted_recipient_data and (optionally) current_path_key; amt_to_forward/outgoing_cltv_value are absent and computed from `payment_relay` (04-onion-routing.md ~L317-321). Any other TLV → error.
+- Blinded final hop: only amt, cltv, total_amount_msat, encrypted_recipient_data and current_path_key; amt, cltv and total_amount_msat are required.
+- path_key (in `update_add_htlc`) XOR current_path_key (in the payload): error if both are present, or if encrypted_recipient_data is present and neither is. Non-blinded payloads must have neither.
+- Final non-blinded hop: error if `total_msat` (in payment_data) is not present (~L339-341).
+- Reject unknown **even** types. Reject non-strictly-increasing types. Require minimal encodings for BigSize and truncated ints.
+
+### 1.5 Packet construction (sender)
+1. `ek_1 = session_key`. For each hop i compute `ss_i`, `epk_i` and `bf_i`, then `ek_{i+1} = ek_i * bf_i`.
+2. Filler: over hops `0..n-2`, left-shift by that hop's shift_size, zero-fill, XOR with the tail of the hop's 2600-byte `rho` stream. Filler length = Σ shift_size(0..n-2). **Implement the variable-length version**, not the spec's legacy fixed-65-byte Go sample.
+3. `mix_header = ChaCha20(HMAC("pad", session_key))[0..1300]`.
+4. For `i = n-1 .. 0`:
+   - right-shift the mix_header by shift_size_i;
+   - write `bigsize(len) ‖ payload_i ‖ next_hmac` (`next_hmac` = 32 zero bytes for the last hop);
+   - XOR with `rho_i[0..1300]`;
+   - for i = n-1 only, overwrite the tail with the filler;
+   - `next_hmac = HMAC(mu_i, mix_header ‖ associated_data)`.
+5. Output `0x00 ‖ epk_1 ‖ mix_header ‖ next_hmac`.
+
+### 1.6 Packet processing (reader), in this order
+1. `version != 0` → `invalid_onion_version`.
+2. Invalid pubkey → `invalid_onion_key`.
+3. Replay check on the HMAC (payments) (MAY redeem if the preimage is known).
+4. If `path_key` is present (update_add_htlc TLV 0 or onion current_path_key): `blinding_ss = ECDH(path_key, node_priv)`, then tweak the node privkey by `HMAC("blinded_node_id", blinding_ss)`.
+5. `ss = ECDH(public_key, node_priv)`. Verify `HMAC(mu, hop_payloads ‖ associated_data)` in constant time. Mismatch → `invalid_onion_hmac`.
+6. XOR `hop_payloads ‖ 1300 zeros` with the 2600-byte `rho` stream.
+7. Parse bigsize len (must be minimal and `>= 2`), then the payload, then 32 bytes of next_hmac. If anything is short → `invalid_onion_payload`.
+8. `next_hmac == 0` → final hop. Otherwise forward with `version 0 ‖ epk * SHA256(epk ‖ ss) ‖ unwrapped[0..1300] ‖ next_hmac`.
+
+### 1.7 Failure codes
+Flags: `BADONION=0x8000`, `PERM=0x4000`, `NODE=0x2000`, `UPDATE=0x1000`. `failuremsg = u16 code ‖ data ‖ [optional TLV stream]`. The origin MUST ignore trailing bytes.
+
+| Code | Name | Data |
+|---|---|---|
+| 0x2002 | temporary_node_failure | – |
+| 0x6002 | permanent_node_failure | – |
+| 0x6003 | required_node_feature_missing | – |
+| 0xC004 | invalid_onion_version | sha256_of_onion |
+| 0xC005 | invalid_onion_hmac | sha256_of_onion |
+| 0xC006 | invalid_onion_key | sha256_of_onion |
+| 0x1007 | temporary_channel_failure | u16 len ‖ channel_update |
+| 0x4008 | permanent_channel_failure | – |
+| 0x4009 | required_channel_feature_missing | – |
+| 0x400A | unknown_next_peer | – |
+| 0x100B | amount_below_minimum | u64 htlc_msat ‖ u16 len ‖ channel_update |
+| 0x100C | fee_insufficient | u64 htlc_msat ‖ u16 len ‖ channel_update |
+| 0x100D | incorrect_cltv_expiry | u32 cltv_expiry ‖ u16 len ‖ channel_update |
+| 0x100E | expiry_too_soon | u16 len ‖ channel_update |
+| 0x400F | incorrect_or_unknown_payment_details | u64 htlc_msat ‖ u32 height |
+| 0x0012 | final_incorrect_cltv_expiry | u32 cltv_expiry |
+| 0x0013 | final_incorrect_htlc_amount | u64 incoming_htlc_amt |
+| 0x1014 | channel_disabled | u16 disabled_flags ‖ u16 len ‖ channel_update |
+| 0x0015 | expiry_too_far | – |
+| 0x4016 | invalid_onion_payload | bigsize type ‖ u16 offset |
+| 0x0017 | mpp_timeout | – |
+| 0xC018 | invalid_onion_blinding | sha256_of_onion |
+
+`channel_update` is now optional (`len = 0` is allowed). This matters here because BOLT 7 `channel_update` is not implemented (§7).
+
+BOLT 2 rules:
+- `update_fail_malformed_htlc` (135): the receiver MUST reject it if the BADONION bit is missing. Otherwise the receiver converts it into an upstream `update_fail_htlc`, wrapping `failure_code ‖ sha256_of_onion` with its own shared secret.
+- `update_fail_htlc` (131) optionally carries TLV 1 `attribution_data` = 20×u32 hold times ‖ 210×4-byte truncated HMACs (920 bytes). See M3b.
+
+### 1.8 Official test vectors (all required)
+| File | Used in |
+|---|---|
+| `bolt04/onion-test.json` (5 hops, session key `0x41`×32, assoc data `0x42`×32, one 275-byte payload) | M2 |
+| `bolt04/onion-error-test.json` (failure 0x2002 from hop 4, per-hop shared secret/ammag, 292-byte packet) | M3 |
+| Inline BOLT 4 "Test Vector > Returning Errors" (attribution) and "Returning success" traces | M3b / optional |
+| `bolt04/route-blinding-test.json` | M5 |
+| `bolt04/blinded-payment-onion-test.json` | M5 |
+| `bolt04/blinded-onion-message-onion-test.json` | M6 |
+| BOLT 1 Appendix A (BigSize) and Appendix B (TLV decoding) | M1 |
+
+Always fetch them from the canonical URLs above and commit them under the test project's `Vectors/` folder.
+
+---
+
+## 2. Existing primitives to reuse (verified)
+
+| Need | Existing API | Location | Notes |
+|---|---|---|---|
+| ECDH shared secret | `IEcdh.SecP256K1Dh(PrivKey k, ReadOnlySpan<byte> rk, Span<byte> sharedKey)` | interface `src/NLightning.Infrastructure/Crypto/Interfaces/IEcdh.cs`; impl `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Ecdh.cs` (NBitcoin `GetSharedPubkey` then SHA256 of `Compress()`) | Already the BOLT 4 definition. Singleton registered in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs`. Its only test checks key length (`test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Functions/EcdhTests.cs`) |
+| Session key / keypair | `IEcdh.GenerateKeyPair()` | same | NBitcoin `new Key()` |
+| Node private key | `ISecureKeyManager.GetNodeKeyPair()` | `src/NLightning.Domain/Protocol/Interfaces/ISecureKeyManager.cs` | Needed for peel. `ILightningSigner` exposes only the node pubkey |
+| SHA256 | `ISha256` / `new Sha256()` | `src/NLightning.Domain/Crypto/Hashes/ISha256.cs`, `src/NLightning.Infrastructure/Crypto/Hashes/Sha256.cs` | Every instance allocates provider memory, so reuse one per packet operation |
+| EC tweak-mul (pub/priv) | `MultiplyPubKey`, `MultiplyPrivateKey` (**private static**) | `src/NLightning.Infrastructure.Bitcoin/Services/KeyDerivationService.cs` (~L167, ~L209) on `NLightningCryptoContext.Instance` (`src/NLightning.Infrastructure.Bitcoin/Crypto/Contexts/NLightningCryptoContext.cs`) | Must be extracted (M1-T3) |
+| HMAC-SHA256 | `Hkdf.HmacHash` (**private**, `Debug.Assert(key.Length == 32)`) | `src/NLightning.Infrastructure/Crypto/Functions/Hkdf.cs` | Cannot be reused as is because labels are 2–15 bytes |
+| ChaCha20-Poly1305 AEAD | `ChaCha20Poly1305.Encrypt/Decrypt(key, ulong nonce, ad, in, out)` | `src/NLightning.Infrastructure/Crypto/Ciphers/ChaCha20Poly1305.cs` | nonce 0 → 12 zero bytes. Use it for route-blinding `encrypted_recipient_data` (M5). **Do not** derive a keystream from it: AEAD starts at counter 1 |
+| Constant-time compare | `CryptographicOperations.FixedTimeEquals` | used in `src/NLightning.Infrastructure/Protocol/Services/SecretStorageService.cs` | Never compare HMACs with value-object `Equals`, which uses `SequenceEqual` |
+| BigSize | `BigSize` value object; `BigSizeTypeSerializer` | `src/NLightning.Domain/Protocol/ValueObjects/BigSize.cs`; `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs` | Decoder is **not canonical**. Fix it in M1 |
+| TLV model | `BaseTlv`, `TlvStream` (file `TLVStream.cs`), `ITlvConverter<T>`, `TlvConverterFactory` | `src/NLightning.Domain/Protocol/Tlv/BaseTlv.cs`, `src/NLightning.Domain/Protocol/Models/TLVStream.cs`, `src/NLightning.Domain/Protocol/Interfaces/ITlvConverter.cs`, `src/NLightning.Infrastructure/Protocol/Factories/TlvConverterFactory.cs` | `TlvStream` re-sorts silently and has no unknown-even check |
+| TLV wire | `TlvSerializer`, `TlvStreamSerializer` | `src/NLightning.Infrastructure.Serialization/Tlv/` | `SerializeAsync` has a **closed** pattern switch (unknown TLV class → `SerializationException`). Deserialize reads to `stream.Length` |
+| Route-blinding TLV on update_add_htlc | `BlindedPathTlv` (type 0, `CompactPubKey PathKey`) + converter | `src/NLightning.Domain/Protocol/Tlv/BlindedPathTlv.cs`, `src/NLightning.Infrastructure/Protocol/Tlv/Converters/BlindedPathTlvConverter.cs` | Used in M5 |
+| Value objects | `PrivKey`, `CompactPubKey`, `Secret`, `Hash`, `CryptoKeyPair`, `ShortChannelId`, `LightningMoney` | `src/NLightning.Domain/Crypto/ValueObjects/`, `src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs`, `src/NLightning.Domain/Money/LightningMoney.cs` | See gotchas in §7 (ShortChannelId ulong-ctor mask bug) and §9 (`LightningMoney` implicit conversions = msat) |
+| Feature bits | `VarOnionOptin=9`, `OptionRouteBlinding=25`, `OptionAttributionData=37`, `OptionOnionMessages=39` | `src/NLightning.Domain/Enums/Feature.cs` | `FeatureOptions` advertises RouteBlinding and AttributionData as Optional by default even though neither is implemented (`src/NLightning.Domain/Node/Options/FeatureOptions.cs:55` `OptionRouteBlinding`, `:69` `OptionAttributionData`) |
+| Wire messages | `UpdateAddHtlcMessage/Payload`, `UpdateFailHtlcPayload` (opaque `Reason`), `UpdateFailMalformedHtlcPayload` (`Sha256OfOnion`, `ushort FailureCode`) + serializers + `IMessageFactory.Create*` | `src/NLightning.Domain/Protocol/{Messages,Payloads}/`, `src/NLightning.Infrastructure.Serialization/Payloads/`, `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` | Onion is `ReadOnlyMemory<byte>? OnionRoutingPacket` (`UpdateAddHtlcPayload.cs:54`) |
+
+## 3. Missing primitives and types
+
+### 3.1 Current raw hooks (to be typed)
+- `UpdateAddHtlcPayload.OnionRoutingPacket` is optional raw bytes (`src/NLightning.Domain/Protocol/Payloads/UpdateAddHtlcPayload.cs:54`). The serializer reads 1366 bytes only `if (stream.Position + 1366 <= stream.Length)` (`src/NLightning.Infrastructure.Serialization/Payloads/UpdateAddHtlcPayloadSerializer.cs:67`), so a truncated message is silently accepted with a null onion.
+- `UpdateAddHtlcMessageSerializer.cs:68` looks up the blinded-path TLV with `TlvConstants.UpfrontShutdownScript`. It works only because both constants are 0.
+
+### 3.2 Missing crypto primitives (native + WASM considerations)
+| Primitive | Plan | Libsodium (`CRYPTO_LIBSODIUM`) | Native (`CRYPTO_NATIVE`) | JS/WASM (`CRYPTO_JS`) |
+|---|---|---|---|---|
+| Raw ChaCha20 keystream (IETF, 12-byte nonce, counter 0) | Add `int ChaCha20IetfXor(ReadOnlySpan<byte> key, ReadOnlySpan<byte> nonce, ReadOnlySpan<byte> input, Span<byte> output)` to `ICryptoProvider` (`src/NLightning.Infrastructure/Crypto/Interfaces/ICryptoProvider.cs`) | `[LibraryImport("libsodium")]` `crypto_stream_chacha20_ietf_xor` in `Providers/Libsodium/LibsodiumWrapper.cs` + `SodiumCryptoProvider.cs` | BouncyCastle `ChaCha7539Engine` (package already referenced under Native), or extend `Providers/Native/Ciphers/ChaCha20.cs`, which only has `QuarterRound` today | `[JSImport("sodium.crypto_stream_chacha20_ietf_xor","blazorSodium")]` in `Providers/JS/LibsodiumJsWrapper.cs` + `SodiumJsCryptoProvider.cs`; the sumo build exposes it (unverified whether `blazorSodium.js` re-exports need editing) |
+| HMAC-SHA256 with arbitrary key length (keys > 64 B hashed with SHA256 first, per RFC 2104) | New `public sealed class HmacSha256` in `src/NLightning.Infrastructure/Crypto/Functions/HmacSha256.cs`, built on `Sha256` with the ipad/opad logic from `Hkdf.HmacHash` but no 32-byte assert. Provider-agnostic, so no ICryptoProvider change | n/a | n/a | n/a (works because it rides on Sha256) |
+| EC tweak-mul / tweak-add | Extract into `ISecp256K1Math` (Domain interface) implemented by `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Secp256K1Math.cs`; refactor `KeyDerivationService` to use it | managed NBitcoin.Secp256k1 (all targets) | same | same |
+
+A managed, provider-agnostic ChaCha20 is an acceptable alternative for the keystream, and it avoids three-provider work. The per-provider approach is preferred for performance and for consistency with the repo's pattern. Whichever you choose, check it against RFC 8439 §2.4.2 and the BOLT 4 vectors, which use counter 0.
+
+### 3.3 Missing serialization support
+- Canonical BigSize decoding: reject `0xfd` with value < `0xfd`, `0xfe` with value < `0x10000`, and `0xff` with value < `0x100000000`. Re-enable the three commented-out vectors in `test/NLightning.Infrastructure.Serialization.Tests/Vectors/BigSize.txt`.
+- Truncated ints tu16/tu32/tu64: no support exists. `EndianBitConverter` trim/pad (`src/NLightning.Infrastructure/Converters/EndianBitConverter.cs`) is not spec-compliant (0 → `[0x00]`, no leading-zero rejection). Do not use it.
+- Strict TLV stream reading: strictly increasing types, reject unknown even types, length ≤ remaining bytes, known type ⇒ exact length.
+- An open-ended `TlvStreamSerializer`: fall back to the raw `BaseTlv` when the runtime type is exactly `BaseTlv`, or use a registry keyed by runtime type.
+
+## 4. Proposed types and placement
+
+Naming follows repo conventions:
+- file-scoped namespace, with relative `using` placed after the namespace line;
+- one type per file;
+- `_camelCase` / `s_camelCase` fields;
+- tests named `Given_X_When_Y_Then_Z`;
+- `*Tlv : BaseTlv` with a matching `*TlvConverter : ITlvConverter<T>`.
+
+Onion TLV type numbers MUST NOT go into the flat `src/NLightning.Domain/Protocol/Constants/TlvConstants.cs`, where numbers already collide by design. Give them their own constants classes.
+
+### 4.1 Domain (`src/NLightning.Domain`)
+| File | Type | Purpose |
+|---|---|---|
+| `Protocol/Onion/Constants/OnionConstants.cs` | `static class OnionConstants` ([ExcludeFromCodeCoverage]) | `PacketLength=1366`, `HopPayloadsLength=1300`, `HmacLength=32`, `Version=0`, `MaxErrorPacketLength=32768`, `MinFailurePadLength=256`, `MaxHtlcCltv=2016`, key labels as `ReadOnlySpan<byte>`/`byte[]` (`Rho`, `Mu`, `Um`, `Pad`, `Ammag`, `AmmagExt`, `BlindedNodeId`, `Fulfillment`) |
+| `Protocol/Onion/Constants/OnionPayloadTlvTypes.cs` | static BigSize fields 2,4,6,8,10,12,16,18 | hop payload namespace |
+| `Protocol/Onion/Constants/EncryptedDataTlvTypes.cs` | 1,2,4,6,8,10,12,14 | route-blinding namespace (M5) |
+| `Protocol/Onion/Constants/FailureTlvTypes.cs` | failure TLV namespace | M3 |
+| `Protocol/Onion/ValueObjects/OnionPacket.cs` | `readonly struct OnionPacket : IValueObject` (`byte Version`, `ReadOnlyMemory<byte> PublicKey` (33 raw bytes, **not** `CompactPubKey`), `ReadOnlyMemory<byte> HopPayloads`, `ReadOnlyMemory<byte> Hmac` (32)); the ctor validates **only** total length and never the version byte or pubkey prefix; `ToBytes()` / from raw bytes | typed packet. `CompactPubKey`'s ctor throws on a prefix other than 0x02/0x03 (`src/NLightning.Domain/Crypto/ValueObjects/CompactPubKey.cs:10-19`). If deserialization rejected bad versions or keys, `update_add_htlc` parsing would fail and the spec-required `update_fail_malformed_htlc` with `invalid_onion_version`/`invalid_onion_key` (04-onion-routing.md ~L918-921) could not be sent. Version and pubkey validation belong in `Peel` |
+| `Protocol/Onion/Models/HopPayload.cs` | `HopPayload` with a `TlvStream` plus typed accessors, **all nullable** (AmtToForward?, OutgoingCltvValue?, ShortChannelId?, PaymentData?, EncryptedRecipientData?, CurrentPathKey?, PaymentMetadata?, TotalAmountMsat?) | parsed per-hop payload |
+| `Protocol/Onion/Models/OnionHop.cs` | `(CompactPubKey NodeId, ReadOnlyMemory<byte> Payload)`. `Payload` is the serialized TLV stream **without** the bigsize length prefix (the builder adds it) | construction input. Raw bytes because `NLightning.Infrastructure.Bitcoin` has no reference to `NLightning.Infrastructure.Serialization` (`src/NLightning.Infrastructure.Bitcoin/NLightning.Infrastructure.Bitcoin.csproj:49`), so the builder cannot call `HopPayloadSerializer`. Callers (Application) serialize `HopPayload` first. This also lets unknown odd TLVs pass through verbatim |
+| `Protocol/Onion/Models/PeeledOnion.cs` | `(HopPayload Payload, Secret SharedSecret, OnionPacket? NextPacket, bool IsFinal)` | peel output |
+| `Protocol/Onion/Tlv/AmtToForwardTlv.cs`, `OutgoingCltvValueTlv.cs`, `OnionShortChannelIdTlv.cs`, `PaymentDataTlv.cs`, `EncryptedRecipientDataTlv.cs`, `CurrentPathKeyTlv.cs`, `PaymentMetadataTlv.cs`, `TotalAmountMsatTlv.cs` | `: BaseTlv` | typed records. Do not reuse `Protocol/Tlv/ShortChannelIdTlv.cs` (channel_ready namespace) |
+| `Protocol/Onion/Enums/FailureCode.cs` | `enum FailureCode : ushort` (all codes in §1.7) | failure codes |
+| `Protocol/Onion/Enums/FailureCodeFlags.cs` | `[Flags] enum : ushort { BadOnion=0x8000, Perm=0x4000, Node=0x2000, Update=0x1000 }` + extension `IsBadOnion()` etc. | flag helpers |
+| `Protocol/Onion/Models/FailureMessage.cs` | `(FailureCode Code, ReadOnlyMemory<byte> Data, TlvStream? Extension)` + typed factory methods per code | failuremsg |
+| `Protocol/Onion/Models/DecryptedFailure.cs` | `(int ErringHopIndex, FailureMessage Message)` | origin-side result |
+| `Protocol/Onion/Interfaces/ISphinxService.cs` | `OnionPacket Construct(IReadOnlyList<OnionHop> hops, PrivKey sessionKey, ReadOnlySpan<byte> associatedData, int hopPayloadsLength = OnionConstants.HopPayloadsLength)`, `PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, CompactPubKey? pathKey = null)` (length taken from the packet) | Sphinx core. The builder, peeler and filler work on any hop_payloads length (stream = 2 × len), so M6 onion messages (1300 or 32768) reuse them unchanged. The 1366-byte check belongs at the `update_add_htlc` boundary (serializer), not in `OnionPacket`/Sphinx |
+| `Protocol/Onion/Interfaces/IFailureOnionService.cs` | `byte[] CreateErrorPacket(Secret ss, FailureMessage msg)`, `byte[] WrapErrorPacket(Secret ss, ReadOnlySpan<byte> packet)`, `DecryptedFailure? DecryptErrorPacket(IReadOnlyList<Secret> hopSecrets, ReadOnlySpan<byte> packet)` | error onion |
+| `Protocol/Onion/Interfaces/IOnionReplayCache.cs` | `bool TryAdd(ReadOnlySpan<byte> hmac)` | replay protection |
+| `Crypto/Interfaces/ISecp256K1Math.cs` (or `Crypto/Functions/`) | `CompactPubKey MultiplyPubKey(CompactPubKey, ReadOnlySpan<byte> scalar)`, `PrivKey MultiplyPrivKey(PrivKey, ReadOnlySpan<byte> scalar)`, `AddPubKeys`, `AddPrivKeys` | EC math port |
+| `Exceptions/OnionException.cs` | `OnionException : ErrorException` carrying `FailureCode`, `ReadOnlyMemory<byte>? Data` | peel/validation failure signal |
+
+The Domain project has no NuGet refs (`src/NLightning.Domain/NLightning.Domain.csproj`). Keep all of the above BCL-only.
+
+### 4.2 Infrastructure (crypto)
+| File | Type |
+|---|---|
+| `src/NLightning.Infrastructure/Crypto/Functions/HmacSha256.cs` | public HMAC (any key length; keys > 64 B hashed first per RFC 2104), reusing one `Sha256` |
+| `src/NLightning.Infrastructure/Crypto/Ciphers/ChaCha20Stream.cs` | public wrapper over `ICryptoProvider.ChaCha20IetfXor`: `GenerateStream(key, Span<byte> output)` and `Xor(key, in, out)` (nonce fixed at 12 zero bytes) |
+| `src/NLightning.Infrastructure/Crypto/Interfaces/ICryptoProvider.cs` + 3 providers | new `ChaCha20IetfXor` |
+| `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Secp256K1Math.cs` | `ISecp256K1Math` impl (extracted from `KeyDerivationService`) |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/SphinxKeyGenerator.cs` | `DeriveKey(label, ss)`, `ComputeBlindingFactor(epk, ss)` |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/OnionBuilder.cs` | construction + filler (internal) |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/OnionPeeler.cs` | peel (internal) |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/SphinxService.cs` | `ISphinxService` facade over builder and peeler |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/FailureOnionService.cs` | `IFailureOnionService` |
+| `src/NLightning.Infrastructure.Bitcoin/Onion/RouteBlinding/*` | M5 |
+| `src/NLightning.Infrastructure/Protocol/Onion/OnionReplayCache.cs` | in-memory `IOnionReplayCache` (bounded; persistent version later) |
+
+Why Infrastructure.Bitcoin: Sphinx needs secp256k1 point math (NBitcoin), and `IEcdh` is implemented there. It also gets `ISha256`/`HmacSha256`/`ChaCha20Stream` from `NLightning.Infrastructure` through its project reference. Register the services in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs` (`AddBitcoinInfrastructure`), next to `IEcdh`. Anything needing `ISecureKeyManager` (node key for peel) takes it by constructor injection, because it is registered in the Daemon (`src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`) **and** by hand in the Docker integration tests (`test/NLightning.Integration.Tests/Docker/AbcNetworkTests.cs`, `ChannelOpeningFlowTests.cs`). Keep both DI graphs in sync.
+
+### 4.3 Serialization
+| File | Purpose |
+|---|---|
+| `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs` | canonical decode fix |
+| `src/NLightning.Infrastructure.Serialization/Onion/TruncatedIntSerializer.cs` (or `src/NLightning.Infrastructure/Converters/TruncatedInt.cs`) | tu16/tu32/tu64 encode and strict decode |
+| `src/NLightning.Infrastructure.Serialization/Tlv/TlvStreamSerializer.cs` | open-ended serialize; optional strict mode (`DeserializeStrictAsync(stream, knownTypes)`) |
+| `src/NLightning.Infrastructure.Serialization/ValueObjects/OnionPacketTypeSerializer.cs` | fixed-layout 1366; register in `Factories/ValueObjectSerializerFactory.cs` |
+| `src/NLightning.Infrastructure.Serialization/Onion/HopPayloadSerializer.cs` | `bigsize len ‖ strict TLV stream` over a bounded sub-stream (the HMAC is handled by the peeler) |
+| `src/NLightning.Infrastructure.Serialization/Onion/FailureMessageSerializer.cs` | `u16 code ‖ data ‖ tlv` plus error-packet framing (`u16 failure_len ‖ msg ‖ u16 pad_len ‖ pad`) |
+| `src/NLightning.Infrastructure/Protocol/Tlv/Converters/Onion/*TlvConverter.cs` | one converter per onion TLV; register in `TlvConverterFactory.RegisterConverters`. **Registration alone is not enough:** `TlvStreamSerializer.SerializeAsync` (`src/NLightning.Infrastructure.Serialization/Tlv/TlvStreamSerializer.cs:27-58`) is a closed type switch that throws for any unlisted type. `RemoteAddressTlv` is registered (`TlvConverterFactory.cs:21-33`) but has no switch arm. M1-T7 replaces the switch with a registry lookup |
+| `src/NLightning.Infrastructure.Serialization/Payloads/UpdateAddHtlcPayloadSerializer.cs` | always write/read exactly `OnionConstants.PacketLength` bytes |
+| `src/NLightning.Infrastructure.Serialization/Messages/Types/UpdateAddHtlcMessageSerializer.cs:68` | use `TlvConstants.BlindedPath` |
+
+Register new serializers in `src/NLightning.Infrastructure.Serialization/DependencyInjection.cs` if they are exposed as services.
+
+### 4.4 Application (`src/NLightning.Application`)
+| File | Purpose |
+|---|---|
+| `Channels/Handlers/UpdateAddHtlcMessageHandler.cs` | BOLT 2 add validation + store the HTLC. **Does not peel**, and needs a `case MessageTypes.UpdateAddHtlc` in `Channels/Managers/ChannelManager.cs` (switch at ~L88; the `default` branch throws `ChannelErrorException`, which makes `PeerManager` disconnect the peer) |
+| `Channels/Handlers/UpdateFulfillHtlcMessageHandler.cs`, `UpdateFailHtlcMessageHandler.cs`, `UpdateFailMalformedHtlcMessageHandler.cs` | settle/fail downstream HTLCs; malformed: check BADONION, convert upstream |
+| `Payments/Services/HtlcSwitch.cs` (+ `IHtlcSwitch` in Domain) | after lock-in (post revoke_and_ack): `ISphinxService.Peel`, then decide final / forward / fail; schedule outgoing messages via `ChannelManager.OnResponseMessageReady` (the existing cross-peer send pattern) |
+| `Payments/Services/HtlcForwardingPolicy.cs` | fee/CLTV-delta checks → failure codes 0x100B/0x100C/0x100D/0x100E/0x0015/0x400A |
+| `Payments/Services/FinalHopProcessor.cs` | invoice lookup, payment_secret/total_msat/MPP (0x400F, 0x0012, 0x0013, 0x0017) |
+| `Payments/Managers/PaymentManager.cs` | send side: build route, `ISphinxService.Construct` with `payment_hash` as associated data, `IMessageFactory.CreateUpdateAddHtlcMessage(..., onion)`, keep per-hop shared secrets for error decryption |
+
+`IChannelMessageHandler<T>` implementations are registered automatically by reflection (`src/NLightning.Application/DependencyInjection.cs`). Services such as HtlcSwitch must be added explicitly.
+
+### 4.5 Persistence (M4)
+New columns and tables need migrations in **all three** provider projects (`src/NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}`) via `src/NLightning.Infrastructure.Persistence/scripts/add_migration.sh <CamelCaseName>`:
+- `HtlcEntity` (`src/NLightning.Infrastructure.Persistence/Entities/Channel/HtlcEntity.cs`): `OnionSharedSecret byte[]?`, `WasBlinded bool` (path_key or current_path_key set), and a failure reason blob.
+- `HtlcForwardEntity`: in (channel, htlc_id) → out (channel, htlc_id), amounts, CLTVs.
+- `PaymentAttemptEntity`: route, per-hop shared secrets or the session key, status.
+- `InvoiceEntity`: payment_hash, preimage, payment_secret, amount, expiry, status.
+
+Alternatively, the shared secret can be recomputed from `HtlcEntity.AddMessageBytes`, which already stores the full `UpdateAddHtlcMessage` including the onion, plus the node key. That avoids a column at the cost of an ECDH per failure.
+
+---
+
+## 5. Milestones
+
+### M1: Primitives and serialization groundwork (no protocol behavior)
+
+| Task | Files | Acceptance / vectors |
+|---|---|---|
+| **M1-T1** HMAC-SHA256 | `src/NLightning.Infrastructure/Crypto/Functions/HmacSha256.cs`; test `test/NLightning.Infrastructure.Tests/Crypto/Functions/HmacSha256Tests.cs` | RFC 4231 test cases 1–4, 6 and 7 (key lengths 20, 4, 20, 25, 131; keys > 64 B hashed first). Also `HMAC("rho", ss)` equals `System.Security.Cryptography.HMACSHA256.HashData` (cross-check in the test only) |
+| **M1-T2** ChaCha20 keystream in all three providers | `ICryptoProvider.cs`; `Providers/Libsodium/LibsodiumWrapper.cs`, `SodiumCryptoProvider.cs`; `Providers/Native/NativeCryptoProvider.cs`; `Providers/JS/LibsodiumJsWrapper.cs`, `SodiumJsCryptoProvider.cs`; wrapper `Crypto/Ciphers/ChaCha20Stream.cs`; tests `test/NLightning.Infrastructure.Tests/Crypto/Ciphers/ChaCha20StreamTests.cs` | RFC 8439 §2.4.2 vector **with counter 0 adapted**, or libsodium `crypto_stream_chacha20_ietf` known-answer; the keystream for key=0, nonce=0 matches RFC 8439 A.1 test vector #1 (counter 0). Passes under `-c Release` **and** `-c Release.Native`. JS path compiles in CI (`Release.Wasm`); add a Blazor test in `test/BlazorTests/NLightning.Blazor.Tests` if the page is extended (optional) |
+| **M1-T3** EC math extraction | `src/NLightning.Domain/Crypto/Interfaces/ISecp256K1Math.cs` (or place under an existing Domain folder); `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Secp256K1Math.cs`; refactor `src/NLightning.Infrastructure.Bitcoin/Services/KeyDerivationService.cs` to call it; DI in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs` | BOLT 3 Appendix E vectors in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs` still pass (regression guard). New unit tests: `k*(bf*G) == (k*bf)*G`; invalid scalar (0 or ≥ n) throws |
+| **M1-T4** ECDH vector test | `test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Functions/EcdhTests.cs` | `onion-test.json` has no shared secrets or ephemeral keys (only `generate.{session_key, associated_data, hops[{pubkey,payload}]}`, `onion`, and `decode` = hop privkeys 0x41..0x45 ×32). Use `onion-error-test.json` `generate.hops[i].hop_shared_secret` (same keys, per its comment). In M1 assert hop 0 only: `ECDH(session_key 0x41×32, hops[0].pubkey) == 53eb63ea...` and `ECDH(decode[0] privkey, pub(session_key)) == 53eb63ea...`. Hops 1-4 need the epk blinding chain, so verify them in M2-T1 |
+| **M1-T5** Canonical BigSize | `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs`; re-enable the 3 vectors in `test/NLightning.Infrastructure.Serialization.Tests/Vectors/BigSize.txt` | BOLT 1 Appendix A: all decode vectors including "not canonical" → exception |
+| **M1-T6** Truncated ints | new `TruncatedInt` helper + tests `test/NLightning.Infrastructure.Serialization.Tests/ValueObjects/TruncatedIntTests.cs` | tu64 BOLT 1 Appendix B vectors: 0 → empty; leading zero byte → reject; length > 8/4/2 → reject |
+| **M1-T7** Strict and open TLV stream | `src/NLightning.Infrastructure.Serialization/Tlv/TlvStreamSerializer.cs`, `TlvSerializer.cs` | BOLT 1 Appendix B "TLV decoding failures" (for the `n1` namespace, adapt it: known types {1,2,3,254}) all fail; successes round-trip. Existing message tests (`test/NLightning.Infrastructure.Serialization.Tests/Messages/*`) still pass. Required design: replace the closed switch with a runtime-type lookup (converter by `tlv.GetType()` through the non-generic `ITlvConverter.ConvertToBase(BaseTlv)`), falling back to raw `BaseTlv` when the runtime type is exactly `BaseTlv`. Raw `BaseTlv` serializes without throwing. Add a test that every converter registered in `TlvConverterFactory` (including `RemoteAddressTlv`) serializes through `TlvStreamSerializer` |
+| **M1-T8** Domain onion types (no crypto) | §4.1 files: `OnionConstants`, TLV type classes, `OnionPacket`, onion TLVs + converters, `FailureCode` + flags; tests in `test/NLightning.Domain.Tests/Protocol/Onion/` and `test/NLightning.Infrastructure.Tests/Protocol/Tlv/Converters/Onion/` | `OnionPacket` rejects only a wrong total length. It accepts any version byte and any 33 pubkey bytes, including a bad prefix (see §4.1); `Peel` throws `OnionException(InvalidOnionVersion/InvalidOnionKey)` (M2-T3). Each converter round-trips and rejects the wrong type or length. `FailureCode.InvalidOnionHmac.IsBadOnion()` is true |
+| **M1-T9** Fix update_add_htlc onion framing | `UpdateAddHtlcPayload.cs` (make the onion non-nullable or typed `OnionPacket`), `UpdateAddHtlcPayloadSerializer.cs`, `UpdateAddHtlcMessageSerializer.cs:68`, `IMessageFactory`/`MessageFactory.CreateUpdateAddHtlcMessage`; update `test/NLightning.Infrastructure.Serialization.Tests/Messages/UpdateAddHtlcMessageTests.cs` | Short buffer → exception, not a null onion. Round trip unchanged for the existing vector. Note: `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage` bytes, so existing rows with no onion would fail to deserialize. There are none in practice because no HTLC path exists (unverified; check the DBs if any exist) |
+
+Before starting M2, M1 must build and test green in Release and Release.Native.
+
+### M2: Packet construction and peeling (bolt04 onion-test.json)
+
+| Task | Files | Acceptance / vectors |
+|---|---|---|
+| **M2-T1** Key generator | `src/NLightning.Infrastructure.Bitcoin/Onion/SphinxKeyGenerator.cs` | Known answers from `onion-error-test.json` (same session key and hop keys as `onion-test.json`): every hop's `hop_shared_secret` via the epk chain (completes M1-T4 for hops 1-4), every hop's `ammag_key`, and hops[4] `um_key`. rho/mu have no published per-hop values; assert them via end-to-end M2-T2/T3 |
+| **M2-T2** Construct | `OnionBuilder.cs`, `SphinxService.Construct` (raw payload bytes, see `OnionHop` in §4.1; do not add a Bitcoin→Serialization reference) | `Construct(hops from onion-test.json, session 0x41×32, assoc 0x42×32)` produces **exactly** the expected 1366-byte onion (hex compare). The JSON `payload` values **already include the bigsize length** ("All the payloads already have the variable length encoded"), so strip it before passing (or test the builder's framing against it). They contain unknown odd TLVs that must be kept verbatim: hop 1 type 513 (60 B), hop 4 type 301 (224 B). Must cover the 275-byte payload (bigsize 3-byte len) and variable filler. Separately, `HopPayloadSerializer` must round-trip these payloads, keeping the unknown odd TLVs |
+| **M2-T3** Peel | `OnionPeeler.cs`, `SphinxService.Peel` | Using each hop's privkey from the JSON: payload bytes match; next packet equals what the next hop receives; the last hop reports `IsFinal` (next_hmac all zero). A flipped bit anywhere in hop_payloads → `OnionException(InvalidOnionHmac)`. Version 1 → `InvalidOnionVersion`. Invalid pubkey → `InvalidOnionKey`. Bad bigsize/len < 2/short → `InvalidOnionPayload` |
+| **M2-T4** Hop payload semantic validation | `src/NLightning.Domain/Protocol/Onion/Validators/HopPayloadValidator.cs` (pure) | Rules from §1.4: non-final without scid → `InvalidOnionPayload(type=6)`; final with scid → reject; final non-blinded without `total_msat` → reject; path_key/current_path_key both present or both missing when blinded → reject; blinded non-final with any TLV other than 10/12 → reject (M5 extends it with the payment_relay computation); unknown even type → `InvalidOnionPayload(type, offset)` |
+| **M2-T5** Replay cache | `IOnionReplayCache` + in-memory impl | Same HMAC twice → second `TryAdd` false |
+
+Test location: new folder `test/NLightning.Integration.Tests/BOLT4/` with `Vectors/onion-test.json`. Add `<Content Include="BOLT4/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>` to `test/NLightning.Integration.Tests/NLightning.Integration.Tests.csproj`, which already does the same for `BOLT11/Vectors/ValidInvoices.txt` (L55). Parse the JSON with `System.Text.Json`. Unit-level tests go in `test/NLightning.Infrastructure.Bitcoin.Tests/Onion/`.
+
+### M3: Failure messages (legacy error onion)
+
+| Task | Files | Acceptance / vectors |
+|---|---|---|
+| **M3-T1** FailureMessage model + serializer | `FailureMessage.cs`, `FailureMessageSerializer.cs` | Round-trip every code in §1.7, including the optional TLV extension. Parsing ignores trailing bytes |
+| **M3-T2** Create / wrap / decrypt | `FailureOnionService.cs` | `onion-error-test.json` has **no** intermediate streams or packets: top-level `generate`/`errorpacket`, and per hop only `version`, `pubkey`, `hop_shared_secret`, `ammag_key` (`um_key` and the plaintext `payload` only on hops[4]). From it assert: each hop's shared secret and `ammag_key` (and hops[4] `um_key`); the erring node's plaintext framing equals `hops[4].payload` (`0002 2002 00fe 00..`, without HMAC); the final origin-received 292-byte `errorpacket` matches byte-for-byte; origin decrypt yields hop 4 / 0x2002. Take intermediate checks (per-hop `stream` and `error packet for node N`) from the inline BOLT 4 "Test Vector > Returning Errors" trace (`04-onion-routing.md` ~L1892-1963). That trace uses a different failure (0x400F incorrect_or_unknown_payment_details + TLV 34001, `failure_len` 0x0140, not padded to 256); its legacy (non-attribution) error-packet lines can be used in M3 without doing M3b. The origin decrypt runs a constant 27 iterations |
+| **M3-T3** Malformed conversion | `FailureOnionService` helper `CreateFromMalformed(Secret ss, FailureCode code, ReadOnlySpan<byte> sha256OfOnion)` | Non-BADONION code → throws/validation failure (BOLT 2 MUST reject); valid code → erring-node packet with data = sha256_of_onion |
+| **M3b (optional)** attribution_data | `UpdateFailHtlcMessage` TLV 1 (`AttributionDataTlv`, 920 bytes) + converter; extend `FailureOnionService` | Inline BOLT 4 "Returning Errors" trace (incorrect_or_unknown_payment_details, htlc_msat=100, height=800000, TLV 34001). Gate on `Feature.OptionAttributionData`. Until done, **set its default to No** in `FeatureOptions` |
+
+### M4: Integration with the HTLC flow (blocked on §7)
+
+| Task | Files | Acceptance |
+|---|---|---|
+| **M4-T1** Receive update_add_htlc | `UpdateAddHtlcMessageHandler.cs`, `ChannelManager` switch case | First step: add `xunit.runner.visualstudio` 3.1.5 to `test/NLightning.Application.Tests/NLightning.Application.Tests.csproj` (matching the other test csprojs) so the tests are discovered (§0.3), and put M4 Application unit tests there. Unit tests with mocks: BOLT 2 limits enforced; HTLC persisted; the peer is **not** disconnected |
+| **M4-T2** Peel after lock-in | `HtlcSwitch` invoked from the revoke_and_ack handler | Malformed onion → `update_fail_malformed_htlc` with SHA256(onion) + BADONION code. Blinded context → `invalid_onion_blinding` rules (§1.7 notes) |
+| **M4-T3** Final hop | `FinalHopProcessor` + invoice store (uses `src/NLightning.Bolt11`; requires a ProjectReference that does not exist today) | Unknown hash, bad secret or low amount → 0x400F with (htlc_msat, height); mismatched cltv/amount → 0x0012/0x0013; MPP timeout 60 s → 0x0017 |
+| **M4-T4** Forward | `HtlcSwitch` + `HtlcForwardingPolicy`; outgoing `update_add_htlc` on the channel resolved by `ShortChannelId`/aliases via `IChannelMemoryRepository` | Fee/CLTV failures map to the correct codes; `channel_update` len = 0 until BOLT 7 exists; forward link persisted |
+| **M4-T5** Upstream failure/fulfill propagation | fail/fulfill handlers | Downstream fail → wrap with the stored shared secret → upstream `update_fail_htlc`; malformed → convert (M3-T3); fulfill → propagate the preimage |
+| **M4-T6** Send (origin) | `PaymentManager`, new IPC command (`ClientCommand` in `src/NLightning.Domain/Client/Enums/ClientCommand.cs`, DTOs in `src/NLightning.Transport.Ipc`, handler in `src/NLightning.Daemon/Ipc/Handlers`) | Direct-channel and route-hint payment to LND in the Docker regtest fixture (`test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs`: alice↔bob, carol→alice, carol→bob). Keep these tests in the `Docker` namespace so CI skips them |
+| **M4-T7** Persistence | §4.5 entities + 3 migrations | Restart mid-forward: fail/fulfill can still be propagated |
+
+### M5: Route blinding
+- **Files:** `src/NLightning.Infrastructure.Bitcoin/Onion/RouteBlinding/{BlindedPathBuilder,BlindedHopProcessor}.cs`, the encrypted_data TLVs (§4.1), and the fee formula helper `amt_to_forward = ((amount_msat - fee_base) * 1e6 + 1e6 + fee_prop - 1) / (1e6 + fee_prop)`.
+- **Mechanics:**
+  - `encrypted_recipient_data = ChaCha20Poly1305(rho_i, nonce 0, no AD)` using the existing `ChaCha20Poly1305.Encrypt(key, 0, …)`.
+  - `B_i = HMAC("blinded_node_id", ss_i) * N_i`.
+  - The next path_key is `next_path_key_override` or `E_{i+1} = SHA256(E_i ‖ ss_i) * E_i`.
+- **Vectors:** `route-blinding-test.json` (every per-hop field) and `blinded-payment-onion-test.json` (full route plus per-hop decrypt).
+- **Integration:**
+  - Read `BlindedPathTlv` from `update_add_htlc`.
+  - `MessageFactory.CreateUpdateAddHtlcMessage` needs a `BlindedPathTlv?` parameter; it has none today.
+  - The error rules: `invalid_onion_blinding`; the introduction point converts via `update_fail_htlc`; nodes inside the path use malformed.
+- **Until M5 ships:** set the `OptionRouteBlinding` default to No in `FeatureOptions`.
+
+### M6 (optional): Onion messages
+- **Wire message:**
+  - `MessageTypes.OnionMessage = 513` in `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs`;
+  - `OnionMessagePayload`/`OnionMessageMessage` deriving from **BaseMessage**, because this is not a channel message;
+  - serializers registered in **both** dictionaries of `MessageTypeSerializerFactory` and `PayloadSerializerFactory`.
+- **Dispatch:** add a branch in `src/NLightning.Infrastructure/Node/Services/PeerService.cs` `HandleMessage` (~L100) and a new event on `IPeerService`. `HandleMessage` handles init (before initialization), `IChannelMessage`, `ErrorMessage` (~L116) and `WarningMessage` (~L142); any other type (e.g. onion_message) is silently dropped. Add an `else if (message is OnionMessageMessage ...)` branch to that chain. The send path needs to bypass `IPeerService.SendMessageAsync`, which only accepts `IChannelMessage`.
+- **Onion format:** variable packet size (1300/32768; the Sphinx core is already length-parameterized per §4.1, and `OnionMessagePayload` validates its own length), empty associated data, onionmsg_tlv (2, 4, 64, 66, 68), no error replies.
+- **Vectors:** `blinded-onion-message-onion-test.json`.
+
+---
+
+## 6. Porting legacy code
+
+> The user has older onion code **outside this repository**. It is not in git history (no onion or sphinx match in any branch). Treat it as a reference implementation to mine, not as code to paste in.
+
+### 6.0 Known legacy source: LNBolt (nbd-wtf/LNUnit)
+
+The legacy code is **LNBolt** (https://github.com/nbd-wtf/LNUnit/tree/master/LNBolt, MIT). The full review is in [LNBOLT_REVIEW.md](LNBOLT_REVIEW.md). **Verdict: re-implement from the spec, and use LNBolt only as a readable outline. Do not copy it verbatim.**
+
+- **Correct in LNBolt:** the sender shared-secret chain, ECDH (33-byte keys), the blinding factor `SHA256(E||ss)`, the rho/mu/um keys, the ChaCha20 stream (zero nonce), `GenerateFiller`, and the single-hop peel (mu HMAC over `hop_payloads||associated_data`). Against `onion-test.json`, all 5 shared secrets match and hop 0 decodes.
+- **Why it worked for the HTLC interceptor:** the virtual node was always the final hop, and only `payment_data`/keysend was read. The forwarding path was never exercised.
+- **Broken in LNBolt. These are the traps to avoid in our implementation:**
+  - The next ephemeral key uses scalar `ss*b` where it should use a point `b*E`.
+  - The next-HMAC offset comes from lossy re-serialization. It should come from the parsed BigSize prefix.
+  - Final-hop detection fails when the payload carries extra TLVs.
+  - Construction has no length prefix and no `pad`-key initial stream.
+  - `Peel` mutates its input.
+  - Signed `BigInteger` encoding gives 31- or 33-byte scalars.
+  - The HMAC compare isn't constant-time.
+  - Version, pubkey and length are never validated.
+  - Error onions (`um`/`ammag`, failure HMAC, attribution) are missing entirely.
+  - Legacy realm-0 payloads are still accepted.
+- **Oracle:** `reference/sphinx-harness/Program.cs` is a spec-direct construction that reproduces `onion-test.json` byte-for-byte. Use it to cross-check intermediate values (shared secrets, ephemeral keys, filler) while debugging M2. It is not production code.
+- **Dependencies:** do not bring in LNBolt's `ServiceStack.Text` (AGPL/commercial dual license) or BouncyCastle. Map everything onto the primitives listed in item 4 below.
+
+**Evaluation checklist.** Run this before porting anything.
+1. **Provenance and license:** confirm the author and license are compatible with this repo's LICENSE.
+2. **Spec version:** check that it uses TLV hop payloads (variable-length), not the legacy fixed 65-byte `hop_data` realm-0 format. If it only supports the legacy format, reuse only the key-derivation, stream and filler ideas.
+3. **Vector check before port:** make the legacy code run against `onion-test.json` and `onion-error-test.json` in a throwaway harness outside the solution (see `reference/sphinx-harness/`). **If it doesn't reproduce the vectors byte-for-byte, do not port it.** Port only the parts that are proven correct.
+4. **Primitive mapping:** replace its crypto with this repo's primitives. Its HMAC becomes `HmacSha256` (M1-T1), its ChaCha becomes `ChaCha20Stream` (M1-T2), its ECDH becomes `IEcdh.SecP256K1Dh`, and its EC tweak becomes `ISecp256K1Math`. Legacy code MUST NOT bring in a new crypto dependency: no new NuGet packages in Domain, and nothing that breaks the three `CRYPTO_*` builds.
+5. **Layering:** pure models go to Domain (§4.1, BCL only), crypto and algorithms to `Infrastructure.Bitcoin/Onion`, byte framing to `Infrastructure.Serialization`, and orchestration to Application. Split any monolithic legacy classes along these lines.
+6. **Style:** file-scoped namespaces with relative usings after the namespace line, `_camelCase` fields, no `this.`, `var`, and no unused usings or parameters. `dotnet format --verify-no-changes` must pass. Rename types to match §4 so later milestones line up.
+7. **Safety review:**
+   - constant-time HMAC compare (`FixedTimeEquals`);
+   - every length checked before slicing;
+   - no `Debug.Assert`-only validation, because Release strips it;
+   - fixed nonces used only with single-use keys;
+   - session keys from a CSPRNG (`IEcdh.GenerateKeyPair()` or `RandomNumberGenerator`, **not** `SodiumJsCryptoProvider.RandomBytes`, which swallows exceptions);
+   - key material zeroed where practical.
+8. **Tests first:** land the vector tests (M2/M3) before or together with the ported code. Port tests from the legacy code only if they are spec vectors or clearly correct property tests.
+9. **Commit shape:** one milestone task per commit/PR, with lowercase imperative subjects in the repo's style (e.g. `add sphinx onion builder with bolt04 vectors`).
+
+---
+
+## 7. Dependencies on missing HTLC / commitment / graph work
+
+M1–M3 and M5 (crypto and vectors) can proceed now. M4 is blocked on the following:
+
+| Prerequisite | Evidence | Needed for |
+|---|---|---|
+| Handlers for update_add/fulfill/fail/fail_malformed, commitment_signed, revoke_and_ack, update_fee, channel_reestablish | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` switch has only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` throws | any HTLC |
+| ChannelModel HTLC mutators (add/settle/fail, next id, balances, revocation numbers) | `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (get-only collections/balances) | M4-T1..T5 |
+| Richer `HtlcState` (commitment-dance stages, forwarded) | `src/NLightning.Domain/Channels/Enums/HtlcState.cs` (Offered/Fulfilled/Failed/Expired only) | peel-after-lock-in |
+| HTLC signatures (htlc_signatures in commitment_signed; SIGHASH_SINGLE\|ANYONECANPAY for anchors) | `ILightningSigner` (`src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`) has no HTLC-tx signing; HTLC tx classes in `src/NLightning.Infrastructure.Bitcoin/Transactions/` are commented out; `HtlcResolutionOutput` has swapped key args | commitment_signed |
+| HTLC reload bug | `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs:201,204,210,213,223` uses `byte.Equals(enum)`, which is always false because `HtlcEntity.State`/`Direction` are `byte` (`src/NLightning.Infrastructure.Persistence/Entities/Channel/HtlcEntity.cs:28,72`). Affected: the State filters at 201 (Offered) and 210 (Fulfilled), which match nothing, and every Direction check at 204, 213 and 223, which sends every HTLC to the remote lists. The `oldStates` branch (219-220) casts to `byte` explicitly and is correct. Fix all five lines | restart safety |
+| ShortChannelId(ulong) masks | `src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs:56-57` uses `0xFFFF`/`0xFF` (should be `0xFFFFFF`/`0xFFFF`) | hop payload scid (u64) → channel lookup |
+| SCID tx index | `BlockchainMonitorService.CheckBlockForWatchedTransactions` records the index among watched txs, not the block position: `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs:473` `ushort index = 0`, `continue` for unwatched txs at :479, `SetHeightAndIndex(blockHeight, index)` at :486, `index++` in `finally` at :498 (reached only for watched txs) | correct scid in forwards/invoices |
+| Per-channel ordering / concurrency | `ChannelManager` handles messages concurrently with no per-channel lock; `TransportService.WriteMessageAsync` encrypts before taking the write semaphore (`src/NLightning.Infrastructure/Transport/Services/TransportService.cs`) | cross-peer forwarding |
+| Transport partial reads | `TransportService.ReadResponseAsync` uses `ReadAsync` rather than `ReadExactlyAsync` (`src/NLightning.Infrastructure/Transport/Services/TransportService.cs:267` header, `:291` body). Also, the send path encrypts at `:203` before taking `_networkWriteSemaphore` at `:209`, so concurrent sends may reach the wire out of encryption-nonce order (inferred from the ordering; not reproduced) | reliable 1366-byte+ messages |
+| BOLT 7 (channel_update, graph) | `MessageTypes` has 256–259 enum values only; even gossip types throw in `MessageSerializer` | channel_update in failures (optional; len 0 allowed), pathfinding beyond direct channels / route hints |
+| BOLT 11 in the node | `src/NLightning.Bolt11` isn't referenced by any `src` project; `MinFinalCltvExpiry` returns null rather than the default 18; only one `r` field is kept | final hop and send |
+| Invoice / preimage / payment stores | none exist in Persistence | M4-T3, M4-T6 |
+
+---
+
+## 8. Test-vector wiring summary
+
+| Vector | Test project/folder | csproj entry |
+|---|---|---|
+| RFC 4231, RFC 8439 | `test/NLightning.Infrastructure.Tests/Crypto/…` (inline constants) | – |
+| BOLT 1 BigSize/TLV | `test/NLightning.Infrastructure.Serialization.Tests/Vectors/` | already globbed (`Vectors\*.*`) |
+| onion-test.json, onion-error-test.json, route-blinding-test.json, blinded-payment-onion-test.json, blinded-onion-message-onion-test.json | `test/NLightning.Integration.Tests/BOLT4/Vectors/` | add `<Content Include="BOLT4/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>` |
+| Shared C# constants (session key, assoc data) | `test/NLightning.Tests.Utils/Vectors/Bolt4Vectors.cs` | – |
+
+Namespaces must not contain `Docker` unless the test really needs Docker, because the CI filter is a substring match.
+
+---
+
+## 9. Risks
+
+1. **Three-provider drift:** a new `ICryptoProvider` method must compile and behave identically under `CRYPTO_LIBSODIUM`, `CRYPTO_NATIVE` and `CRYPTO_JS`. WASM can only be built on linux-x64 CI. Mitigation: shared known-answer tests in both `Release` and `Release.Native`, and CI for Wasm.
+2. **ChaCha20 counter mismatch:** AEAD wrappers start at counter 1 and BOLT 4 needs counter 0. The M2 vectors will catch this.
+3. **Filler bugs with variable payloads:** copying the spec's legacy fixed-hop Go sample gives wrong output. The 275-byte payload in `onion-test.json` covers this case.
+4. **Non-canonical encodings accepted:** until M1-T5, M1-T6 and M1-T7 land, peeling could accept malleable payloads.
+5. **Timing leaks:** use `FixedTimeEquals` for HMACs, and keep the origin error decrypt at a constant 27 iterations.
+6. **Performance:** each `new Sha256()` allocates provider memory through `ICryptoProvider.MemoryAlloc` (`src/NLightning.Infrastructure/Crypto/Hashes/Sha256.cs:21`): `sodium_malloc` (guarded, mlocked pages) under `CRYPTO_LIBSODIUM` (`Providers/Libsodium/SodiumCryptoProvider.cs:102-105`), `Marshal.AllocHGlobal` under `CRYPTO_NATIVE` (`Providers/Native/NativeCryptoProvider.cs:80-83`). Reuse instances per packet and avoid per-hop allocations in hot paths.
+7. **Feature advertisement:** RouteBlinding and AttributionData are advertised as Optional without being implemented. Peers may send blinded HTLCs or attribution TLVs. Default them to No until M5/M3b.
+8. **DI divergence:** registrations in `NodeServiceExtensions` are not picked up by the hand-built DI in the Docker integration tests, and vice versa.
+9. **Schema churn:** every persistence change needs 3 migrations and running DB containers. `HtlcEntity.AddMessageBytes` stores the wire format, so changing the `update_add_htlc` encoding affects stored rows.
+10. **Blocked integration:** M4 depends on the large BOLT 2 normal-operation work (§7). Don't wire half an HTLC path that disconnects peers or loses funds. Keep the Sphinx library standalone until then.
+11. **Legacy code risk:** unported assumptions such as the legacy hop format, a different ECDH hashing, or missing length checks. Only port what reproduces the vectors (§6).
+12. **`LightningMoney` implicit conversions:** `long`/`ulong` convert implicitly in both directions and the unit is **msat** (`src/NLightning.Domain/Money/LightningMoney.cs:377-398`). Use explicit `MilliSatoshi` accessors/factories when encoding or decoding tu64 `amt_to_forward`/`total_msat`, so no sat/msat mixups slip through.

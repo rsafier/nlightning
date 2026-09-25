@@ -1,0 +1,52 @@
+# NLightning.Infrastructure.Repositories
+
+This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRepository` interfaces backed by EF Core, and the two `I*MemoryRepository` singletons. It maps EF entities to Domain models and back by hand. The EF model, entities and migrations are in `../NLightning.Infrastructure.Persistence` (see persistence notes there).
+
+## Layout
+- `UnitOfWork.cs`: the scoped `IUnitOfWork` (interface: `src/NLightning.Domain/Persistence/Interfaces/IUnitOfWork.cs`). It creates each Db repo lazily over one `NLightningDbContext`, and has `GetPeersForStartupAsync`, `AddUtxo`/`TrySpendUtxo` (memory + DB) and `SaveChanges(Async)`.
+- `Database/BaseDbRepository.cs`: generic `Get` / `GetByIdAsync(object id)` / `Insert` / `Update` / `Delete*`. Reads use AsNoTracking by default. `Update` is tracking-aware.
+- `Database/Helpers/PrimaryKeyHelper.cs`: builds the PK predicate. Pass composite keys as a **ValueTuple, in key order**.
+- `Database/Bitcoin/`: BlockchainState, Utxo, WalletAddresses, WatchedTransaction, RevocationWatch (an empty stub; its entity is not in the DbContext).
+- `Database/Channel/`: Channel (full aggregate), ChannelConfig, ChannelKeySet, Htlc. Htlc stores the serialized `UpdateAddHtlcMessage`, which includes the 1366-byte onion.
+- `Database/Node/PeerDbRepository.cs`
+- `Memory/ChannelMemoryRepository.cs`: live channels and temp channels (keyed by `(peerPubKey, tempChannelId)`). Raises `OnChannelUpgraded` / `OnChannelUpdated`.
+- `Memory/UtxoMemoryRepository.cs`: the UTXO set, balances (confirmed means `BlockHeight + 3 <= currentBlockHeight`, hard-coded), and Branch-and-Bound coin selection with a greedy fallback.
+- `DependencyInjection.cs`: `AddRepositoriesInfrastructureServices()` registers `IUnitOfWork` (scoped) and the memory repos (singleton). Individual Db repos are **not** registered in DI.
+
+## Dependency rules
+- It references only `NLightning.Domain` and `NLightning.Infrastructure.Persistence` (see the csproj). Do NOT add references to Application, Infrastructure, Infrastructure.Bitcoin, Serialization or Daemon. Get serialization and hashing through Domain abstractions (`IMessageSerializer`, `ISha256`), which UnitOfWork receives by injection.
+- Entity constructors are `internal`. InternalsVisibleTo lives in `src/NLightning.Infrastructure.Persistence/AssemblyInfo.cs`.
+- Never expose EF entities outside this project. Return Domain models only.
+
+## Adding a Db repository (common task)
+1. If the table is new, add the entity, the `Configure<Name>Entity` config, the DbSet in `NLightningDbContext`, and migrations for all 3 providers. That all happens in the Persistence project (`scripts/add_migration.sh`).
+2. Add `I<Name>DbRepository` in `src/NLightning.Domain/<Area>/Interfaces/`.
+3. Add `Database/<Area>/<Name>DbRepository.cs : BaseDbRepository<<Name>Entity>, I<Name>DbRepository`, with static `MapDomainToEntity` / `MapEntityToDomain`. Make a mapper `internal static` if other repos reuse it, as `ChannelDbRepository` does with the config, key set and HTLC mappers.
+4. Add a lazy property to `IUnitOfWork` and `UnitOfWork`.
+5. Callers resolve `IUnitOfWork` from a scope (`IServiceScopeFactory.CreateScope()`) and must call `SaveChangesAsync()`. Nothing is written without it.
+6. Update the `IUnitOfWork` mocks if the interface changed: `test/NLightning.Application.Tests` (`Channels/Handlers/FundingCreatedMessageHandlerTests.cs`, `Node/Managers/PeerManagerTests.cs`) and `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/BlockchainMonitorServiceTests.cs`.
+
+## Conventions
+- Most files: System.*/Microsoft.* usings, then the file-scoped namespace, then relative `using Domain.X;` / `using Persistence.X;` below it. Exceptions exist (`Database/Channel/HtlcDbRepository.cs` uses fully qualified `using NLightning.*;` above the namespace); follow the majority style in new files.
+- Channel/HTLC enums (`State`, `Version`, `Direction`) are stored as `byte` on entities; `UtxoEntity.AddressType` is the enum type itself. Money types vary: `FundingAmountSatoshis` and `UtxoEntity.AmountSats` are `long`, `HtlcEntity.AmountMsat` is `ulong`, `ChannelEntity.Local/RemoteBalanceSatoshis` are `decimal`. Check the entity before mapping.
+- Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions.
+
+## Tests
+- There are no unit tests for this project (`Docker/SqliteTests.cs`, `PostgresTests.cs`, `SqlServerTests.cs` in the integration project are commented out). Coverage comes only from Docker e2e tests: `test/NLightning.Integration.Tests/Docker/{ChannelOpeningFlowTests,AbcNetworkTests}.cs`, run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"` (needs Docker).
+- Build and verify: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121 && dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
+- Suggested addition: SQLite in-memory round-trip tests (MigrationsAssembly `NLightning.Infrastructure.Persistence.Sqlite`) for Channel and Htlc repos. They would catch the bugs below.
+
+## Known bugs / gotchas (verify before relying on these paths)
+- `ChannelDbRepository.MapEntityToDomain` (L201, L204, L210, L213, L223) compares `byte` `State`/`Direction` against enums with `.Equals(...)`. In memory that is `byte.Equals(object)` with a boxed enum, which is always false: Offered/Fulfilled HTLCs are not reloaded, and Expired/Failed ones all land in the remote list. `HtlcDbRepository.GetByChannelIdAndStateAsync` (L63) and `GetByChannelIdAndDirectionAsync` (L70) use the same pattern inside EF queries; how EF translates it is unverified. Compare `== (byte)HtlcState.X` instead.
+- `ChannelDbRepository` L230-231 builds `FundingOutputInfo` with the local funding pubkey twice, so the remote key is lost on reload. `CommitmentNumber` is always built as (local, remote) payment basepoints, which is wrong for non-initiator channels: `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs` L123 passes the remote (opener) basepoint first.
+- `UtxoDbRepository.GetByIdAsync` (L50) passes an anonymous object `new { txId, index }`. `PrimaryKeyHelper` needs `(txId, index)` and will throw.
+- `HtlcDbRepository` never writes `Signature`. The Utxo mapper ignores `LockedToChannelId`/`UsedInTransactionId`. `ChannelModel.ChangeAddress` is never mapped.
+- `BaseDbRepository.Get` applies Skip/Take before orderBy (L35-38), so paging is unordered.
+- `UnitOfWork.AddUtxo`/`TrySpendUtxo` roll back memory only on immediate exceptions and swallow them. A failure at SaveChanges time leaves memory and the DB out of sync.
+- `ChannelMemoryRepository.TryGetChannel` returns the shared mutable model. Call `UpdateChannel` afterwards so that `OnChannelUpdated` fires.
+- Do not inject `IUnitOfWork` into singletons. `UnitOfWork.Dispose` disposes the DbContext.
+
+## Onion routing (BOLT 4) hooks
+- Today the onion packet persists only inside `HtlcEntity.AddMessageBytes` (a serialized `UpdateAddHtlcMessage`).
+- Forwarding will need new repos and tables here. Candidates: a per-incoming-HTLC shared secret (for wrapping failures), a forwarding circuit (in channel/htlc to out channel/htlc), failure reasons, an invoice/preimage store, and a lookup from scid/alias to ChannelId, likely via `IChannelMemoryRepository`.
+- Fix the HTLC enum-Equals reload bug first. Otherwise in-flight HTLCs are not restored after a restart.

@@ -1,0 +1,59 @@
+# NLightning.Infrastructure.Bitcoin
+
+This project is the NBitcoin-backed implementation of the Domain's Bitcoin and crypto ports. It builds BOLT 3 funding and commitment transactions from Domain models and generates the output scripts. It also handles BOLT 3 key derivation, the local signer, HD key storage, the wallet, fee polling, and chain monitoring over bitcoind RPC plus ZMQ `rawblock`. It contains no onion logic; the only protocol-message code is `InteractiveTransactionService` (tx_add/remove payload validation), and `AddBitcoinInfrastructure` also registers `ITlvConverterFactory` -> `TlvConverterFactory` from `NLightning.Infrastructure`. Target is net10.0 (via src/Directory.Build.props), csproj version 1.0.0.
+
+## Layout
+- `Builders/`: `CommitmentTransactionBuilder`, `FundingTransactionBuilder` and `FundingOutputBuilder`. They take a Domain `*Model`/`*OutputInfo` and return an UNSIGNED tx as Domain `SignedTransaction(txid, rawBytes)`. The interfaces are in `Builders/Interfaces/`, except `IFundingOutputBuilder`, which sits in `Builders/`.
+- `Outputs/`: `BaseOutput` (implements Domain `IOutput`) and `BaseHtlcOutput`, with subclasses `FundingOutput`, `ToLocalOutput`, `ToRemoteOutput`, `ToAnchorOutput`, `OfferedHtlcOutput`, `ReceivedHtlcOutput`, `HtlcResolutionOutput` and `ChangeOutput`.
+- `Comparers/TransactionOutputComparer.cs`: BOLT 3 output ordering (amount, then scriptPubKey, then cltv_expiry).
+- `Services/`: `KeyDerivationService` (BOLT 3 derivation and per-commitment secrets), `CommitmentKeyDerivationService`, `FeeService` (registered by the Daemon via `AddHttpClient<IFeeService, FeeService>`), `DustService` and `InteractiveTransactionService` (neither is registered in any DI container).
+- `Signers/LocalLightningSigner.cs`: implements `ILightningSigner`. Channel key m/6425'/0'/0'/0/i has hardened children 0'-5' (funding, revocation, payment, delayed, htlc, per-commitment seed).
+- `Managers/SecureKeyManager.cs`: implements `ISecureKeyManager`. The master key lives in locked memory, and the key file is encrypted with Argon2id + XChaCha20-Poly1305.
+- `Wallet/`: `BitcoinChainService` (RPC), `BitcoinWalletService` (deposit addresses), `BlockchainMonitorService` (ZMQ, watched txs, UTXOs). Interfaces are in `Wallet/Interfaces/`.
+- `Crypto/`: `Functions/Ecdh.cs` (internal; `IEcdh` = SHA256(compressed k*P)), `Contexts/NLightningCryptoContext.cs` (internal blinded secp256k1 Context), `Hashes/Ripemd160.cs`.
+- `Encoders/Bech32Encoder.cs`: internal. NLightning.Bolt11 uses it through InternalsVisibleTo (`AssemblyInfo.cs`).
+- `Options/` (`BitcoinOptions` from config section "Bitcoin", `FeeEstimationOptions` from "FeeEstimation"), `Exceptions/InvalidScriptException.cs`, `Utils/ScriptCoinUtils.cs`.
+- DEAD CODE: everything in `Transactions/` is commented out (`PenaltyTransaction` is an empty class), and the `Adapters/OutputAdapters/` interfaces have no implementations. Don't revive either one. New transaction types follow the Builder-over-Domain-model pattern.
+
+## Adding a new output or transaction type
+1. Output script: subclass `BaseOutput` (or `BaseHtlcOutput`) in `Outputs/`, override `ScriptType`, and pass the redeem script to `base(amount, script)` from a static `Generate*Script(...)`. Throw `InvalidScriptException` when `script.IsUnspendable || !script.IsValid`.
+2. If the output goes on commitment txs, add the Domain `*OutputInfo` -> output conversion in `CommitmentTransactionBuilder.Build` and check how `TransactionOutputComparer` tie-breaks it.
+3. For a new transaction type (e.g. HTLC-success/timeout): add a data-only Domain model/factory in `src/NLightning.Domain/Bitcoin/Transactions/`, then add an `IXBuilder` in `Builders/Interfaces/` and `XBuilder` in `Builders/`. Signing goes through `ILightningSigner` (add a method there and implement it in `LocalLightningSigner`).
+4. Register singletons in `DependencyInjection.AddBitcoinInfrastructure` (only `IBitcoinWalletService` is scoped). `SecureKeyManager`, `LocalLightningSigner` and `FeeService` are NOT registered there; they are wired by hand in `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs` AND in the Docker tests (`test/NLightning.Integration.Tests/Docker/AbcNetworkTests.cs`, `ChannelOpeningFlowTests.cs`), so a change to their constructors must be mirrored in all three places. Services in `AddBitcoinInfrastructure` may depend on them (e.g. `CommitmentKeyDerivationService` takes `ILightningSigner`).
+5. Add tests in `test/NLightning.Infrastructure.Bitcoin.Tests/<Folder>/`, plus BOLT 3 vectors in `test/NLightning.Integration.Tests/BOLT3/` if applicable.
+
+## Conventions
+- Use a file-scoped namespace. External usings (NBitcoin, Microsoft.*) go above it; NLightning usings go below it as relative names (`using Domain.Money;`).
+- Domain value objects cross the boundary as bytes and are converted here (`new PubKey(compactPubKey)`, `new uint256(txId)`). Domain stays NBitcoin-free.
+- Resolve the network with `Network.GetNetwork(nodeOptions.BitcoinNetwork)`. The builders, `LocalLightningSigner` and `SecureKeyManager` throw on an unknown network, but `BitcoinChainService`, `BitcoinWalletService` and `BlockchainMonitorService` fall back to `Network.Main`, which is inconsistent.
+- Singletons that need the DB create a scope per operation: `CreateScope()` then `GetRequiredService<IUnitOfWork>()` (see `Wallet/BlockchainMonitorService.cs`).
+- Guard logging with `_logger.IsEnabled(...)`. Name tests `Given_X_When_Y_Then_Z` (xUnit v3 + Moq).
+- `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` is a CI gate: `_field`/`s_field` naming, no unused usings.
+
+## Dependency rules
+- Allowed: the ProjectReference to `NLightning.Infrastructure` (which brings in Domain), plus NBitcoin 9.0.5, NBitcoin.Secp256k1 3.2.0, NetMQ and MessagePack.
+- MUST NOT reference Application, Daemon, Client, Serialization, Persistence/Repositories or Bolt11. Application references this project, not the reverse.
+
+## Tests
+- `dotnet test test/NLightning.Infrastructure.Bitcoin.Tests/NLightning.Infrastructure.Bitcoin.Tests.csproj` (27 uncommented `[Fact]`/`[Theory]` methods; `Outputs/BaseOutputTests.cs`, `FundingOutputTests.cs`, `ToRemoteOutputTests.cs`, `ChangeOutputTests.cs` and everything in `Transactions/` are commented out).
+- BOLT 3 vectors: `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Bolt3IntegrationTests"`. The Appendix B body is commented out, and the Appendix F anchor vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are not referenced by any test.
+- CI-style run: `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121 && dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'`. Never drop the Docker filter unless you want LNUnit containers.
+
+## Gotchas (verified bugs)
+- `BaseOutput.Amount` setter (`Outputs/BaseOutput.cs:24`) doesn't assign anything, so setting it has no effect.
+- `HtlcResolutionOutput` passes (revocation, delayed) into parameters declared (delayed, revocation), so the keys are swapped in the script.
+- `BlockchainMonitorService.CheckBlockForWatchedTransactions` (`Wallet/BlockchainMonitorService.cs`) only increments the index for watched txs, so the stored `TransactionIndex` is wrong whenever unwatched txs precede it in the block, and so is the ShortChannelId built from it in `src/NLightning.Application/Channels/Managers/ChannelManager.cs`.
+- `BaseOutput(amount, redeemScript)` calls the virtual `ScriptType` before the subclass ctor runs, so `ToRemoteOutput._hasAnchorOutputs` is still false at that point. It is currently harmless only because P2WPKH and P2WSH take the same `WitHash` branch (`OfferedHtlcOutput` also reports P2WPKH for a P2WSH script).
+- `InteractiveTransactionService.IsSerialIdUnique`/`IsSerialIdPresent` only check `_inputs`, so output serial-id validation is wrong.
+- `SecureKeyManager` uses a fixed Argon2 salt (`s_salt`) and a never-filled (all-zero) stackalloc nonce. The node key (`GetNodeKeyPair`) is the master key itself.
+- `FundingTransactionBuilder.Build` mutates the model (sets `FundingOutput.TransactionId` and `Index = 0`; the funding output is always at index 0).
+- `LocalLightningSigner.SignChannelTransaction` hardcodes input 0 + SIGHASH_ALL. There's no HTLC-signature API yet.
+- `LocalLightningSigner.SignWalletTransaction` throws NotImplementedException, and channel signing info is memory-only (re-register via `RegisterChannel`).
+- `BitcoinChainService`'s constructor makes a blocking RPC call, so DI resolution fails if bitcoind is down.
+
+## Onion-routing (BOLT 4) hooks
+- `Ecdh.SecP256K1Dh` already computes the Sphinx per-hop shared secret, SHA256(compressed(k*P)).
+- Ephemeral-key blinding needs `MultiplyPubKey`/`MultiplyPrivateKey`. These exist only as PRIVATE helpers in `Services/KeyDerivationService.cs` (on `NLightningCryptoContext`). Extract them into a shared EC-ops service rather than duplicating them. Sphinx code that needs EC math belongs here (or behind a Domain interface implemented here).
+- Peeling needs the node private key. `ISecureKeyManager.GetNodeKeyPair()` has it, but `ILightningSigner` only exposes `GetNodePublicKey`, so add an ECDH-with-node-key method.
+- Fix the short_channel_id index bug before implementing forwarding, since hop payloads route by scid.
+- HTLC on-chain resolution (HTLC-success/timeout txs, HTLC signatures) is missing. The offered/received HTLC scripts and commitment building with HTLCs are complete and vector-tested.
