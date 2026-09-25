@@ -1,3 +1,5 @@
+using System.Data.Common;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
@@ -13,6 +15,7 @@ using Infrastructure.Persistence;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Persistence.Entities.Channel;
 using Infrastructure.Persistence.Enums;
+using Infrastructure.Persistence.Interceptors;
 using Infrastructure.Persistence.Providers;
 
 public class PersistenceConfigurationTests
@@ -49,6 +52,63 @@ public class PersistenceConfigurationTests
 
         // Assert
         Assert.True(options.FindExtension<CoreOptionsExtension>()?.IsSensitiveDataLoggingEnabled ?? false);
+    }
+
+    [Fact]
+    public async Task Given_SqliteProvider_When_TheNodeOpensAConnection_Then_SynchronousIsFull()
+    {
+        // Arrange (N5-T3: a committed transition must survive a power loss before its message is sent)
+        var path = Path.Combine(Path.GetTempPath(), $"nltg-durability-{Guid.NewGuid():N}.db");
+        try
+        {
+            await using var serviceProvider = BuildServiceProvider("sqlite", $"Data Source={path};Pooling=False", null);
+            await using var scope = serviceProvider.CreateAsyncScope();
+            var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
+
+            // Act
+            await context.Database.OpenConnectionAsync(TestContext.Current.CancellationToken);
+            var synchronous = await ReadSynchronousAsync(context.Database.GetDbConnection());
+            await context.Database.CloseConnectionAsync();
+
+            // Assert
+            Assert.Equal(2L, synchronous);
+            var interceptors = context.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()!
+                                      .Interceptors;
+            Assert.Contains(interceptors!, i => i is SqliteDurabilityInterceptor);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Given_ConnectionWithSynchronousOff_When_TheDurabilityInterceptorRuns_Then_SynchronousIsFull()
+    {
+        // Arrange: the setting is per connection, so a connection string or build could lower it
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA synchronous=OFF;";
+            await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+        }
+
+        Assert.Equal(0L, await ReadSynchronousAsync(connection));
+
+        // Act
+        await new SqliteDurabilityInterceptor().ConnectionOpenedAsync(connection, null!,
+                                                                      TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2L, await ReadSynchronousAsync(connection));
+    }
+
+    private static async Task<long> ReadSynchronousAsync(DbConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA synchronous;";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
     }
 
     [Fact]
