@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Breaking
+
+- `CompactPubKey`: the implicit conversion from `byte[]` is replaced by an implicit conversion from
+  `ReadOnlySpan<byte>`, which copies the bytes. Code compiled against earlier versions that used
+  `op_Implicit(byte[])` must be recompiled (`MissingMethodException` otherwise). With C# 14 (the .NET 10 default)
+  `CompactPubKey key = bytes;` still compiles because `byte[]` converts to a span; on older language versions write
+  `new CompactPubKey(bytes)` or `bytes.AsSpan()`. A `null` literal no longer binds to the conversion, so
+  `cond ? null : key` is typed `CompactPubKey?` instead of throwing at runtime;
+
 ## v2.0.0
 
 Major release introducing the Client domain, wallet domain types, channel open validation, and comprehensive interface updates.
