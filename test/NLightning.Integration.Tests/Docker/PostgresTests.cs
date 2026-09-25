@@ -45,29 +45,49 @@ public class PostgresTests
     [Fact]
     public async Task Given_PostgresRowsFromBeforeAddCommitmentState_When_Migrated_Then_TheyMoveForwardAndStateRoundTrips()
     {
-        // Arrange (NL-237: the data steps run on real rows; a database of its own, since the other test migrates the
-        // shared one to the latest schema)
-        var connectionString = _fixture.DbConnectionString!.Replace("Database=nlightning",
-                                                                     "Database=nltg_commitment_state",
+        // Arrange (NL-237: the data steps run on real rows; a database of its own, since the other tests migrate
+        // theirs to the latest schema)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_commitment_state");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await CommitmentStateMigrationRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                            DatabaseType.PostgreSql,
+                                                            TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PostgresRowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
+    {
+        // Arrange (NL-237: the data steps of PersistCommitmentNumbers, SplitChannelParams,
+        // StoreMsatBalancesAndShortChannelId and FlagInferredChannelParams run on real rows)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_legacy_channels");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await LegacyChannelMigrationRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                          DatabaseType.PostgreSql,
+                                                          TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Options for a database of its own on the container's server, once the server accepts
+    /// connections.</summary>
+    private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)
+    {
+        var connectionString = _fixture.DbConnectionString!.Replace("Database=nlightning", $"Database={database}",
                                                                      StringComparison.Ordinal);
         var options = new DbContextOptionsBuilder<NLightningDbContext>()
                      .UseNpgsql(connectionString,
                                 x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Postgres"))
                      .UseSnakeCaseNamingConvention()
                      .Options;
-        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
 
         // Postgres may still be starting after its port opens
-        await using (var context = new NLightningDbContext(options, databaseTypeProvider))
-        {
-            while (!await CanReachServerAsync(context))
-                await Task.Delay(100, TestContext.Current.CancellationToken);
-        }
+        await using var context = new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.PostgreSql));
+        while (!await CanReachServerAsync(context))
+            await Task.Delay(100, TestContext.Current.CancellationToken);
 
-        // Act & Assert
-        await CommitmentStateMigrationRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
-                                                            DatabaseType.PostgreSql,
-                                                            TestContext.Current.CancellationToken);
+        return options;
     }
 
     /// <summary>The database does not exist yet, so ask the server instead of the database.</summary>
