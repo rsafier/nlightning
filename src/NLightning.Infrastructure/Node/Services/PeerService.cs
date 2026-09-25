@@ -18,18 +18,80 @@ using Domain.Protocol.Messages;
 /// <summary>
 /// Service for peer communication
 /// </summary>
+/// <remarks>
+/// The transport read loop is already running when the constructor returns, so a channel message can arrive before
+/// anyone subscribed to <see cref="OnChannelMessageReceived"/> (e.g. the channel_reestablish LND sends right after
+/// init). Such messages are kept, in order, and handed to the first subscriber. Likewise, a subscriber to
+/// <see cref="OnDisconnect"/> that comes after the disconnection is told right away, so nobody keeps a dead peer.
+/// </remarks>
 public sealed class PeerService : IPeerService
 {
+    /// <summary>
+    /// Channel messages kept while nobody is subscribed to <see cref="OnChannelMessageReceived"/>. A peer that sends
+    /// more before we subscribe is disconnected.
+    /// </summary>
+    internal const int MaxPendingChannelMessages = 1024;
+
     private readonly IPeerCommunicationService _peerCommunicationService;
     private readonly ILogger<PeerService> _logger;
+    private readonly Lock _channelMessageLock = new();
+    private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
+    private readonly Lock _disconnectLock = new();
 
     private bool _isInitialized;
+    private EventHandler<ChannelMessageEventArgs>? _onChannelMessageReceived;
+    private EventHandler<PeerDisconnectedEventArgs>? _onDisconnect;
+    private PeerDisconnectedEventArgs? _disconnectedArgs;
 
     /// <inheritdoc/>
-    public event EventHandler<PeerDisconnectedEventArgs>? OnDisconnect;
+    /// <remarks>Subscribing after the disconnection calls the handler right away (once).</remarks>
+    public event EventHandler<PeerDisconnectedEventArgs>? OnDisconnect
+    {
+        add
+        {
+            PeerDisconnectedEventArgs? disconnectedArgs;
+            lock (_disconnectLock)
+            {
+                disconnectedArgs = _disconnectedArgs;
+                if (disconnectedArgs is null)
+                    _onDisconnect += value;
+            }
+
+            if (disconnectedArgs is not null)
+                value?.Invoke(this, disconnectedArgs);
+        }
+        remove
+        {
+            lock (_disconnectLock)
+                _onDisconnect -= value;
+        }
+    }
 
     /// <inheritdoc/>
-    public event EventHandler<ChannelMessageEventArgs>? OnChannelMessageReceived;
+    /// <remarks>
+    /// The first subscriber first gets, in order, the channel messages that arrived while nobody was subscribed.
+    /// Handlers run on the transport read loop, one message at a time.
+    /// </remarks>
+    public event EventHandler<ChannelMessageEventArgs>? OnChannelMessageReceived
+    {
+        add
+        {
+            lock (_channelMessageLock)
+            {
+                _onChannelMessageReceived += value;
+                if (value is null)
+                    return;
+
+                while (_pendingChannelMessages.TryDequeue(out var args))
+                    value(this, args);
+            }
+        }
+        remove
+        {
+            lock (_channelMessageLock)
+                _onChannelMessageReceived -= value;
+        }
+    }
 
     /// <inheritdoc/>
     public event EventHandler<AttentionMessageEventArgs>? OnAttentionMessageReceived;
@@ -111,7 +173,7 @@ public sealed class PeerService : IPeerService
             _logger.LogTrace("Received channel message ({messageType}) from peer {peer}",
                              Enum.GetName(message.Type), PeerPubKey);
 
-            OnChannelMessageReceived?.Invoke(this, new ChannelMessageEventArgs(channelMessage, PeerPubKey));
+            RaiseChannelMessage(new ChannelMessageEventArgs(channelMessage, PeerPubKey));
         }
         else if (message is ErrorMessage errorMessage)
         {
@@ -212,6 +274,32 @@ public sealed class PeerService : IPeerService
         }
     }
 
+    /// <summary>
+    /// Hands a channel message to the subscribers, or keeps it until the first one subscribes. Holding the lock
+    /// while calling them keeps the arrival order, also against the replay in the subscription.
+    /// </summary>
+    private void RaiseChannelMessage(ChannelMessageEventArgs args)
+    {
+        lock (_channelMessageLock)
+        {
+            if (_onChannelMessageReceived is not null)
+            {
+                _onChannelMessageReceived(this, args);
+                return;
+            }
+
+            if (_pendingChannelMessages.Count < MaxPendingChannelMessages)
+            {
+                _pendingChannelMessages.Enqueue(args);
+                return;
+            }
+        }
+
+        _logger.LogWarning("Too many channel messages from peer {peer} before we were ready, disconnecting",
+                           PeerPubKey);
+        Disconnect(new ConnectionException("Too many channel messages before the peer was ready"));
+    }
+
     private async Task SendGossipReplyAsync(IMessage reply)
     {
         try
@@ -237,7 +325,18 @@ public sealed class PeerService : IPeerService
     private void HandleDisconnection(object? sender, Exception e)
     {
         _logger.LogTrace(e, "Handling disconnection for peer {Peer}", PeerPubKey);
-        OnDisconnect?.Invoke(this, new PeerDisconnectedEventArgs(PeerPubKey, e));
+        EventHandler<PeerDisconnectedEventArgs>? handlers;
+        PeerDisconnectedEventArgs args;
+        lock (_disconnectLock)
+        {
+            if (_disconnectedArgs is not null)
+                return;
+
+            args = _disconnectedArgs = new PeerDisconnectedEventArgs(PeerPubKey, e);
+            handlers = _onDisconnect;
+        }
+
+        handlers?.Invoke(this, args);
     }
 
     /// <summary>

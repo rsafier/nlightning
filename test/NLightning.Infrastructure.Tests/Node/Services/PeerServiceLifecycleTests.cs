@@ -168,6 +168,77 @@ public class PeerServiceLifecycleTests
         Assert.NotNull(received);
     }
 
+    [Fact]
+    public void Given_ChannelMessagesBeforeAnySubscriber_When_Subscribing_Then_TheyAreDeliveredInOrder()
+    {
+        // Arrange (the read loop runs before PeerManager subscribes; LND sends channel_reestablish right after init)
+        using var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(_features.GetNodeFeatures(), new NetworksTlv([ChainConstants.Regtest])));
+        var first = CreateChannelMessage();
+        var second = CreateChannelMessage();
+        RaiseMessage(first);
+        RaiseMessage(second);
+        var received = new List<IChannelMessage>();
+
+        // Act
+        peerService.OnChannelMessageReceived += (_, args) => received.Add(args.Message);
+        var third = CreateChannelMessage();
+        RaiseMessage(third);
+
+        // Assert
+        Assert.Equal(new IChannelMessage[] { first, second, third }, received);
+        _communicationMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_TooManyChannelMessagesBeforeAnySubscriber_When_Receiving_Then_Disconnects()
+    {
+        // Arrange
+        using var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(_features.GetNodeFeatures(), new NetworksTlv([ChainConstants.Regtest])));
+
+        // Act
+        for (var i = 0; i <= PeerService.MaxPendingChannelMessages; i++)
+            RaiseMessage(CreateChannelMessage());
+
+        // Assert
+        _communicationMock.Verify(x => x.Disconnect(It.IsAny<ConnectionException>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_AlreadyDisconnected_When_SubscribingToOnDisconnect_Then_HandlerIsCalledRightAway()
+    {
+        // Arrange (a peer that drops before PeerManager subscribes must not stay in the peer table)
+        using var peerService = CreatePeerService();
+        _communicationMock.Raise(x => x.DisconnectEvent += null, _communicationMock.Object,
+                                 new ConnectionException("gone"));
+        var calls = 0;
+
+        // Act
+        peerService.OnDisconnect += (_, _) => calls++;
+
+        // Assert
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void Given_Subscribed_When_DisconnectEventRaisedTwice_Then_OnDisconnectIsRaisedOnce()
+    {
+        // Arrange
+        using var peerService = CreatePeerService();
+        var calls = 0;
+        peerService.OnDisconnect += (_, _) => calls++;
+
+        // Act
+        _communicationMock.Raise(x => x.DisconnectEvent += null, _communicationMock.Object,
+                                 new ConnectionException("gone"));
+        _communicationMock.Raise(x => x.DisconnectEvent += null, _communicationMock.Object,
+                                 new ConnectionException("gone again"));
+
+        // Assert
+        Assert.Equal(1, calls);
+    }
+
     private PeerService CreatePeerService(TimeSpan? timeout = null)
     {
         return new PeerService(_communicationMock.Object, _features, _loggerMock.Object,
