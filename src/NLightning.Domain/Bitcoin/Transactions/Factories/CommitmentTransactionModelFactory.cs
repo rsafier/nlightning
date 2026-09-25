@@ -1,5 +1,4 @@
 using NLightning.Domain.Bitcoin.Interfaces;
-using NLightning.Domain.Bitcoin.Transactions.Constants;
 using NLightning.Domain.Bitcoin.Transactions.Enums;
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Models;
@@ -7,7 +6,6 @@ using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Channels.Enums;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
-using NLightning.Domain.Exceptions;
 using NLightning.Domain.Money;
 using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Protocol.Models;
@@ -84,12 +82,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         };
 
         var hasAnchors = channel.ChannelConfig.OptionAnchorOutputs;
-        var feeRatePerKw = channel.ChannelConfig.FeeRateAmountPerKw.Satoshi;
-
-        // BOLT 3 base weight (no HTLC outputs): 724, or 1124 if option_anchors applies
-        var weight = hasAnchors
-                         ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
-                         : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
+        var feeRatePerKw = (ulong)channel.ChannelConfig.FeeRateAmountPerKw.Satoshi;
 
         // Set initial amounts for to_local and to_remote outputs
         var toLocalAmount = side == CommitmentSide.Local
@@ -105,65 +98,50 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                                   ? channel.ChannelConfig.LocalDustLimitAmount
                                   : channel.ChannelConfig.RemoteDustLimitAmount;
 
-        if (htlcs is { Count: > 0 })
+        foreach (var htlc in htlcs)
         {
-            // Second-stage HTLC transaction fees; zero when option_anchors applies
-            var offeredHtlcFee = hasAnchors
-                                     ? LightningMoney.Zero
-                                     : LightningMoney.Satoshis(
-                                         WeightConstants.HtlcTimeoutWeightNoAnchors * feeRatePerKw / 1000);
-            var receivedHtlcFee = hasAnchors
-                                      ? LightningMoney.Zero
-                                      : LightningMoney.Satoshis(
-                                          WeightConstants.HtlcSuccessWeightNoAnchors * feeRatePerKw / 1000);
+            // Determine if this is an offered or received HTLC from the perspective of the commitment holder
+            var isOffered = side == CommitmentSide.Local
+                                ? htlc.Direction == HtlcDirection.Outgoing
+                                : htlc.Direction == HtlcDirection.Incoming;
 
-            foreach (var htlc in htlcs)
+            // The HTLC amount comes out of the balance of the side that offered it
+            if (isOffered)
+                toLocalAmount = toLocalAmount > htlc.Amount ? toLocalAmount - htlc.Amount : LightningMoney.Zero;
+            else
+                toRemoteAmount = toRemoteAmount > htlc.Amount
+                                     ? toRemoteAmount - htlc.Amount
+                                     : LightningMoney.Zero;
+
+            // Trim the HTLC if its amount minus the second-stage fee is below the holder's dust limit
+            if (CommitmentFeeCalculator.IsHtlcTrimmed(htlc.Amount, isOffered, dustLimitAmount, feeRatePerKw,
+                                                      hasAnchors))
+                continue;
+
+            if (isOffered)
             {
-                // Determine if this is an offered or received HTLC from the perspective of the commitment holder
-                var isOffered = side == CommitmentSide.Local
-                                    ? htlc.Direction == HtlcDirection.Outgoing
-                                    : htlc.Direction == HtlcDirection.Incoming;
-
-                // The HTLC amount comes out of the balance of the side that offered it
-                if (isOffered)
-                    toLocalAmount = toLocalAmount > htlc.Amount ? toLocalAmount - htlc.Amount : LightningMoney.Zero;
-                else
-                    toRemoteAmount = toRemoteAmount > htlc.Amount
-                                         ? toRemoteAmount - htlc.Amount
-                                         : LightningMoney.Zero;
-
-                // Trim the HTLC if its amount minus the second-stage fee is below the holder's dust limit
-                var htlcFee = isOffered ? offeredHtlcFee : receivedHtlcFee;
-                if (htlc.Amount.Satoshi < dustLimitAmount.Satoshi + htlcFee.Satoshi)
-                    continue;
-
-                weight += WeightConstants.HtlcOutputWeight;
-                if (isOffered)
-                {
-                    offeredHtlcOutputs.Add(new OfferedHtlcOutputInfo(
-                                               htlc,
-                                               commitmentKeys.LocalHtlcPubKey,
-                                               commitmentKeys.RemoteHtlcPubKey,
-                                               commitmentKeys.RevocationPubKey));
-                }
-                else
-                {
-                    receivedHtlcOutputs.Add(new ReceivedHtlcOutputInfo(
-                                                htlc,
-                                                commitmentKeys.LocalHtlcPubKey,
-                                                commitmentKeys.RemoteHtlcPubKey,
-                                                commitmentKeys.RevocationPubKey));
-                }
+                offeredHtlcOutputs.Add(new OfferedHtlcOutputInfo(
+                                           htlc,
+                                           commitmentKeys.LocalHtlcPubKey,
+                                           commitmentKeys.RemoteHtlcPubKey,
+                                           commitmentKeys.RevocationPubKey));
+            }
+            else
+            {
+                receivedHtlcOutputs.Add(new ReceivedHtlcOutputInfo(
+                                            htlc,
+                                            commitmentKeys.LocalHtlcPubKey,
+                                            commitmentKeys.RemoteHtlcPubKey,
+                                            commitmentKeys.RevocationPubKey));
             }
         }
 
-        // Base fee: feerate_per_kw * weight / 1000, rounded down to whole satoshis
-        var fee = LightningMoney.Satoshis(weight * feeRatePerKw / 1000);
+        // Base fee: feerate_per_kw * (724 or 1124 + 172 per untrimmed HTLC) / 1000, rounded down
+        var untrimmedHtlcCount = offeredHtlcOutputs.Count + receivedHtlcOutputs.Count;
+        var fee = CommitmentFeeCalculator.CommitmentBaseFee(feeRatePerKw, hasAnchors, untrimmedHtlcCount);
 
-        // The funder pays the base fee and, with option_anchors, both anchor outputs
-        var funderCost = hasAnchors
-                             ? fee + 2 * TransactionConstants.AnchorOutputAmount
-                             : fee;
+        // The funder pays the base fee and, with option_anchors, both anchor outputs. Its output may end at zero.
+        var funderCost = CommitmentFeeCalculator.FunderCost(feeRatePerKw, hasAnchors, untrimmedHtlcCount);
         ref var feePayerAmount =
             ref GetFeePayerAmount(side, channel.IsInitiator, ref toLocalAmount, ref toRemoteAmount);
         feePayerAmount = feePayerAmount > funderCost
@@ -183,11 +161,8 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
             remoteAnchorOutput = new AnchorOutputInfo(counterpartyFundingPubKey, false);
         }
 
-        // Fail if both amounts are below ChannelReserve
-        if (channel.ChannelConfig.ChannelReserveAmount is not null
-         && toLocalAmount.Satoshi < channel.ChannelConfig.ChannelReserveAmount.Satoshi
-         && toRemoteAmount.Satoshi < channel.ChannelConfig.ChannelReserveAmount.Satoshi)
-            throw new ChannelErrorException("Both to_local and to_remote amounts are below the reserve limits.");
+        // The channel reserve is an update-validation rule, never a transaction-building one: a commitment whose outputs
+        // are both below the reserve (e.g. Appendix C "fee greater than funder amount") must still build (NL-196).
 
         // Only create output if the amount is above the dust limit
         if (toLocalAmount.Satoshi >= dustLimitAmount.Satoshi)

@@ -27,10 +27,10 @@ public static class TransactionConstants
     /// <summary>
     /// BOLT 3 expected weight of a commitment transaction without HTLC outputs when option_anchors does not apply.
     /// </summary>
-    public const int InitialCommitmentTransactionWeightNoAnchor = 724;
+    public const int InitialCommitmentTransactionWeightNoAnchor = WeightConstants.CommitmentWeightNoAnchors;
 
     /// <summary>
     /// BOLT 3 expected weight of a commitment transaction without HTLC outputs when option_anchors applies.
     /// </summary>
-    public const int InitialCommitmentTransactionWeightWithAnchor = 1124;
+    public const int InitialCommitmentTransactionWeightWithAnchor = WeightConstants.CommitmentWeightAnchors;
 }

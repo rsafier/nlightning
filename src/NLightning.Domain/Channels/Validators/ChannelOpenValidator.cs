@@ -1,6 +1,6 @@
 namespace NLightning.Domain.Channels.Validators;
 
-using Bitcoin.Transactions.Constants;
+using Bitcoin.Transactions.Factories;
 using Constants;
 using Domain.Enums;
 using Exceptions;
@@ -108,12 +108,7 @@ public class ChannelOpenValidator : IChannelOpenValidator
             // The initial commitment is built with the peer's feerate_per_kw, so use it when present.
             var feeRatePerKw = parameters.FeeRatePerKw ?? parameters.CurrentFeeRatePerKw;
             var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
-            var expectedWeight = hasAnchors
-                                     ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
-                                     : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
-            var expectedFee = LightningMoney.Satoshis(expectedWeight * feeRatePerKw.Satoshi / 1000);
-            if (hasAnchors)
-                expectedFee += 2 * TransactionConstants.AnchorOutputAmount;
+            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, hasAnchors, 0);
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");
@@ -123,6 +118,19 @@ public class ChannelOpenValidator : IChannelOpenValidator
             if (funderAmount < expectedFee)
                 throw new ChannelErrorException(
                     $"Funder amount is too small to cover fees: {funderAmount} < {expectedFee}");
+
+            // BOLT 2: fail if both to_local and to_remote of the initial commitment are <= channel_reserve_satoshis
+            // (NL-220). Outputs are whole satoshis (rounded down); the funder's output is net of fee and anchors.
+            if (parameters.PushAmount is not null)
+            {
+                var funderOutputSats = funderAmount.Satoshi - expectedFee.Satoshi;
+                var fundeeOutputSats = parameters.PushAmount.Satoshi;
+                var reserveSats = parameters.ChannelReserveAmount.Satoshi;
+                if (funderOutputSats <= reserveSats && fundeeOutputSats <= reserveSats)
+                    throw new ChannelErrorException(
+                        $"Both initial outputs are at or below the channel reserve: to_local {funderOutputSats} sat, "
+                      + $"to_remote {fundeeOutputSats} sat, channel_reserve {reserveSats} sat");
+            }
 
             // Check if this is a large channel and if we support it
             if (parameters.FundingAmount >= ChannelConstants.LargeChannelAmount &&

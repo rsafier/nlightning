@@ -1,7 +1,7 @@
 namespace NLightning.Domain.Channels.Factories;
 
 using Bitcoin.Interfaces;
-using Bitcoin.Transactions.Constants;
+using Bitcoin.Transactions.Factories;
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
 using Client.Requests;
@@ -181,12 +181,7 @@ public class ChannelFactory : IChannelFactory
         // Check if there are enough funds to pay for fees
         var currentFeeRatePerKw = request.FeeRatePerKw ?? await _feeService.GetFeeRatePerKwAsync();
         var hasAnchors = negotiatedFeatures.OptionAnchors > FeatureSupport.No;
-        var expectedWeight = hasAnchors
-                                 ? TransactionConstants.InitialCommitmentTransactionWeightWithAnchor
-                                 : TransactionConstants.InitialCommitmentTransactionWeightNoAnchor;
-        var expectedFee = LightningMoney.Satoshis(expectedWeight * currentFeeRatePerKw.Satoshi / 1000);
-        if (hasAnchors)
-            expectedFee += 2 * TransactionConstants.AnchorOutputAmount;
+        var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)currentFeeRatePerKw.Satoshi, hasAnchors, 0);
         if (request.FundingAmount < expectedFee + channelReserveAmount)
             throw new ChannelErrorException($"Funding amount is too small to cover fees: {request.FundingAmount}");
 
