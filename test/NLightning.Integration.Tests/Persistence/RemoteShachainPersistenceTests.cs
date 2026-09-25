@@ -136,6 +136,67 @@ public class RemoteShachainPersistenceTests
     }
 
     [Fact]
+    public async Task Given_OneUnitOfWork_When_SavedTwiceBeforeSaveChanges_Then_LastExportIsStored()
+    {
+        // Arrange - regression: the second SaveAsync did not see the rows the first one added (only a database query
+        // was used), so it added the same (ChannelId, Bucket) again and EF threw
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channelId = await SeedChannelAsync(db);
+        using var storage = new SecretStorageService();
+        Assert.True(storage.InsertSecret(s_secrets[0], Bolt3AppendixDVectors.StorageIndexMax));
+        Assert.True(storage.InsertSecret(s_secrets[1], Bolt3AppendixDVectors.StorageIndexMax - 1));
+        var firstExport = storage.Export();
+        Assert.True(storage.InsertSecret(s_secrets[2], Bolt3AppendixDVectors.StorageIndexMax - 2));
+        Assert.True(storage.InsertSecret(s_secrets[3], Bolt3AppendixDVectors.StorageIndexMax - 3));
+        var secondExport = storage.Export();
+
+        // Act
+        await using (var context = db.CreateDbContext())
+        {
+            var repository = new RemoteShachainDbRepository(context);
+            await repository.SaveAsync(channelId, firstExport);
+            await repository.SaveAsync(channelId, secondExport);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var entries = await new RemoteShachainDbRepository(readContext).GetByChannelIdAsync(channelId);
+        Assert.Equal(secondExport.Select(e => (e.Bucket, e.Index)), entries.Select(e => (e.Bucket, e.Index)));
+    }
+
+    [Fact]
+    public async Task Given_OneUnitOfWork_When_BucketRemovedThenSavedAgain_Then_RowIsKept()
+    {
+        // Arrange - a stored bucket dropped by one SaveAsync and needed again by the next one in the same unit of work
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channelId = await SeedChannelAsync(db);
+        using var storage = new SecretStorageService();
+        Assert.True(storage.InsertSecret(s_secrets[0], Bolt3AppendixDVectors.StorageIndexMax));
+        Assert.True(storage.InsertSecret(s_secrets[1], Bolt3AppendixDVectors.StorageIndexMax - 1));
+        var export = storage.Export();
+        await using (var writeContext = db.CreateDbContext())
+        {
+            await new RemoteShachainDbRepository(writeContext).SaveAsync(channelId, export);
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        await using (var context = db.CreateDbContext())
+        {
+            var repository = new RemoteShachainDbRepository(context);
+            await repository.SaveAsync(channelId, [export[0]]);
+            await repository.SaveAsync(channelId, export);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var entries = await new RemoteShachainDbRepository(readContext).GetByChannelIdAsync(channelId);
+        Assert.Equal(export.Select(e => (e.Bucket, e.Index)), entries.Select(e => (e.Bucket, e.Index)));
+    }
+
+    [Fact]
     public async Task Given_ChannelWithShachain_When_ChannelDeleted_Then_ShachainRowsAreDeleted()
     {
         // Arrange

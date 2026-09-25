@@ -28,7 +28,12 @@ public class RemoteShachainDbRepository : BaseDbRepository<RemoteShachainEntity>
     {
         ArgumentNullException.ThrowIfNull(entries);
 
+        // The query returns the tracked instance of every stored row (also one an earlier SaveAsync in this unit of
+        // work marked Deleted); rows an earlier SaveAsync added are only in DbSet.Local
         var existing = await DbSet.Where(e => e.ChannelId == channelId).ToDictionaryAsync(e => e.Bucket);
+        foreach (var added in DbSet.Local.Where(e => e.ChannelId == channelId))
+            existing[added.Bucket] = added;
+
         var buckets = new HashSet<byte>();
 
         foreach (var entry in entries)
@@ -43,6 +48,10 @@ public class RemoteShachainDbRepository : BaseDbRepository<RemoteShachainEntity>
             {
                 entity.Index = index;
                 entity.Secret = secret.ToArray();
+
+                var tracked = DbSet.Entry(entity);
+                if (tracked.State == EntityState.Deleted)
+                    tracked.State = EntityState.Modified;
             }
             else
             {
@@ -58,7 +67,7 @@ public class RemoteShachainDbRepository : BaseDbRepository<RemoteShachainEntity>
 
         foreach (var (bucket, entity) in existing)
         {
-            if (!buckets.Contains(bucket))
+            if (!buckets.Contains(bucket) && DbSet.Entry(entity).State != EntityState.Deleted)
                 DbSet.Remove(entity);
         }
     }
