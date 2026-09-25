@@ -653,6 +653,9 @@ public partial class Invoice
             var bech32Encoder = new Bech32Encoder(HumanReadablePart);
             _invoiceString = bech32Encoder.EncodeLightningInvoice(bitWriter, signature);
 
+            // Without an `n` field the payee is whoever signed, so drop any key recovered from an earlier signature
+            _recoveredPayeePubKey = nodeKey.PubKey;
+
             return _invoiceString;
         }
         catch (Exception e)

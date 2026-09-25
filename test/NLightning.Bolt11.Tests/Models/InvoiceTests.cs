@@ -353,6 +353,24 @@ public class InvoiceTests
         Assert.Equal(otherKey.PubKey, decoded.PayeePubKey);
     }
 
+    [Fact]
+    public void Given_DecodedInvoiceWithoutNField_When_EncodedWithAnotherKey_Then_PayeePubKeyIsTheNewKey()
+    {
+        // Arrange
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+        var recoveredKey = invoice.PayeePubKey;
+        var otherKey = new Key();
+
+        // Act
+        invoice.Encode(otherKey);
+
+        // Assert
+        Assert.NotEqual(recoveredKey, otherKey.PubKey);
+        Assert.Equal(otherKey.PubKey, invoice.PayeePubKey);
+    }
+
     #endregion
 
     #region Encoding/Decoding
