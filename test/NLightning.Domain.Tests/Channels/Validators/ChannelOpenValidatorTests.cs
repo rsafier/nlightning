@@ -235,6 +235,51 @@ public class ChannelOpenValidatorTests
         Assert.Null(exception);
     }
 
+    [Fact]
+    public void Given_BothInitialOutputsAtOrBelowReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange - NL-220: 724 * 10000 / 1000 = 7240 sat fee; funding 9240, push 1000 leaves the funder 1000 sat.
+        // Both outputs equal the 1000 sat reserve ("less than or equal" in BOLT 2).
+        var parameters = CreateParameters(LightningMoney.Satoshis(9_240), LightningMoney.Satoshis(1_000),
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("at or below the channel reserve", exception.Message);
+    }
+
+    [Fact]
+    public void Given_FundeeOutputAboveReserve_When_PerformingMandatoryChecks_Then_DoesNotThrow()
+    {
+        // Arrange - funder output 999 sat (below the reserve) but the fundee output 1001 sat is above it
+        var parameters = CreateParameters(LightningMoney.Satoshis(9_240), LightningMoney.Satoshis(1_001),
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndBothInitialOutputsBelowReserve_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange - 11240 sat fee + 660 sat anchors: funding 13_400, push 700 leaves the funder 800 sat
+        var parameters = CreateParameters(LightningMoney.Satoshis(13_400), LightningMoney.Satoshis(700),
+                                          FeatureSupport.Optional);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("at or below the channel reserve", exception.Message);
+    }
+
     private static ChannelOpenMandatoryValidationParameters CreateParameters(
         LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors,
         FeatureSupport largeChannels = FeatureSupport.Optional)

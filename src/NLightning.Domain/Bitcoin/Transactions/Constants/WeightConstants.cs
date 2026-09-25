@@ -28,9 +28,28 @@ public static class WeightConstants
     public const int HtlcOutputWeight = P2WshOutputWeight;
     public const int AnchorOutputWeight = P2WshOutputWeight;
 
+    /// <summary>BOLT 3 expected commitment weight without HTLC outputs, no option_anchors.</summary>
+    public const int CommitmentWeightNoAnchors = 724;
+
+    /// <summary>BOLT 3 expected commitment weight without HTLC outputs, with option_anchors.</summary>
+    public const int CommitmentWeightAnchors = 1124;
+
+    /// <summary>
+    /// BOLT 3 expected HTLC-timeout weight with option_anchors. Informational only: with anchors the HTLC-timeout fee
+    /// is 0, so this weight never feeds a fee or a trimming decision (NL-195). Use <c>CommitmentFeeCalculator</c>.
+    /// </summary>
     public const int HtlcTimeoutWeightAnchors = 666;
+
+    /// <summary>BOLT 3 expected HTLC-timeout weight without option_anchors (fee = feerate_per_kw * 663 / 1000).</summary>
     public const int HtlcTimeoutWeightNoAnchors = 663;
+
+    /// <summary>
+    /// BOLT 3 expected HTLC-success weight with option_anchors. Informational only: with anchors the HTLC-success fee
+    /// is 0, so this weight never feeds a fee or a trimming decision (NL-195). Use <c>CommitmentFeeCalculator</c>.
+    /// </summary>
     public const int HtlcSuccessWeightAnchors = 706;
+
+    /// <summary>BOLT 3 expected HTLC-success weight without option_anchors (fee = feerate_per_kw * 703 / 1000).</summary>
     public const int HtlcSuccessWeightNoAnchors = 703;
 
     public const int TransactionBaseWeight = 10 * 4; // version, input count, output count, locktime

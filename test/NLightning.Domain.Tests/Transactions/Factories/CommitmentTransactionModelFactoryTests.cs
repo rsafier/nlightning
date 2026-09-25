@@ -291,6 +291,70 @@ public class CommitmentTransactionModelFactoryTests
                                                        channel, CommitmentSide.Local, 1UL << 48));
     }
 
+    [Fact]
+    public void Given_BothOutputsBelowReserve_When_CreatingCommitment_Then_TransactionIsBuilt()
+    {
+        // Arrange - NL-196: the reserve is an update-validation rule; Appendix C "fee greater than funder amount"
+        // style commitments must still build.
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(5_000), LightningMoney.Satoshis(4_000),
+                                    channelReserve: LightningMoney.Satoshis(100_000));
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal(LightningMoney.Satoshis(5_000), transactionModel.ToLocalOutput.Amount);
+        Assert.NotNull(transactionModel.ToRemoteOutput);
+        Assert.Equal(LightningMoney.Satoshis(4_000), transactionModel.ToRemoteOutput.Amount);
+    }
+
+    [Fact]
+    public void Given_FeeGreaterThanFunderBalance_When_CreatingCommitment_Then_FunderOutputOmittedAndNoThrow()
+    {
+        // Arrange - funder balance 1_000 sat cannot pay 724 * 15_000 / 1000 = 10_860 sat
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(3_000_000),
+                                    LightningMoney.Satoshis(15_000), channelReserve: LightningMoney.Satoshis(10_000));
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        Assert.Null(transactionModel.ToLocalOutput);
+        Assert.NotNull(transactionModel.ToRemoteOutput);
+        Assert.Equal(LightningMoney.Satoshis(10_860), transactionModel.Fee);
+    }
+
+    [Fact]
+    public void Given_AnchorsAndHtlcAtDustLimit_When_CreatingLocalCommitment_Then_HtlcIsNotTrimmed()
+    {
+        // Arrange - NL-195: with option_anchors the HTLC-timeout fee is 0, so 546 sat at a 546 sat dust limit stays
+        // even at a high feerate (the 666 weight would trim it).
+        var offeredHtlc = new Htlc(LightningMoney.Satoshis(546), null!, HtlcDirection.Outgoing, 500, 0, 0,
+                                   Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
+        var dustHtlc = new Htlc(LightningMoney.MilliSatoshis(545_999), null!, HtlcDirection.Outgoing, 501, 1, 0,
+                                Bolt3AppendixCVectors.Htlc3PaymentHash, HtlcState.Offered);
+        var channel = CreateChannel(true, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000),
+                                    LightningMoney.Satoshis(10_000), [offeredHtlc, dustHtlc]);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        var htlcOutput = Assert.Single(transactionModel.OfferedHtlcOutputs);
+        Assert.Equal(0UL, htlcOutput.Htlc.Id);
+        Assert.Equal(LightningMoney.Satoshis((1124 + 172) * 10_000 / 1000), transactionModel.Fee);
+    }
+
     private static CommitmentTransactionModelFactory CreateFactory()
     {
         return new CommitmentTransactionModelFactory(new Mock<ICommitmentKeyDerivationService>().Object,
@@ -303,9 +367,10 @@ public class CommitmentTransactionModelFactoryTests
                                               List<Htlc>? localOfferedHtlcs = null,
                                               List<Htlc>? remoteOfferedHtlcs = null,
                                               ulong localCommitmentNumber = Bolt3AppendixCVectors.CommitmentNumber,
-                                              ulong remoteCommitmentNumber = 0)
+                                              ulong remoteCommitmentNumber = 0,
+                                              LightningMoney? channelReserve = null)
     {
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw ?? LightningMoney.Zero,
+        var channelConfig = new ChannelConfig(channelReserve ?? LightningMoney.Zero, feeRatePerKw ?? LightningMoney.Zero,
                                               LightningMoney.Zero, localDustLimit, 0, LightningMoney.Zero, 0,
                                               optionAnchors, remoteDustLimit, Bolt3AppendixCVectors.LocalDelay,
                                               FeatureSupport.No);
