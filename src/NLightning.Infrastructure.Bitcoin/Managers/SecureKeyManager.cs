@@ -7,6 +7,7 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Managers;
 
+using Crypto.Functions;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
@@ -38,6 +39,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     /// Argon2id passes used by version 1 key files.
     /// </summary>
     private const ulong LegacyArgon2OpsLimit = 3;
+
+    private static readonly Ecdh s_ecdh = new();
 
     private readonly string _filePath;
     private readonly object _lastUsedIndexLock = new();
@@ -157,6 +160,21 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     {
         var masterKey = GetMasterKey();
         return masterKey.PrivateKey.PubKey.ToBytes();
+    }
+
+    /// <inheritdoc/>
+    public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
+    {
+        // The node key is the master private key; copy it out of locked memory only for the ECDH, then wipe it
+        var privateKey = GetPrivateKeyBytes();
+        try
+        {
+            s_ecdh.SecP256K1Dh(privateKey, publicKey, sharedSecret);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+        }
     }
 
     public async Task UpdateLastUsedChannelIndexOnFile()

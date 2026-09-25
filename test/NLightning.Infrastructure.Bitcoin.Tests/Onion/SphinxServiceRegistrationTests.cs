@@ -4,6 +4,8 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Onion;
 
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
+using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;
 
 public class SphinxServiceRegistrationTests
@@ -29,17 +31,22 @@ public class SphinxServiceRegistrationTests
     public void Given_BitcoinInfrastructureWithKeyManager_When_ResolvingSphinxService_Then_KeyManagerIsInjected()
     {
         // Arrange
-        var keyManager = new Mock<ISecureKeyManager>();
+        var ecdh = new Ecdh();
+        var nodeKey = ecdh.GenerateKeyPair();
+        var keyManager = new EcdhOnlyKeyManager(nodeKey.PrivKey);
         var services = new ServiceCollection();
-        services.AddSingleton(keyManager.Object);
+        services.AddSingleton<ISecureKeyManager>(keyManager);
         services.AddBitcoinInfrastructure();
         using var provider = services.BuildServiceProvider();
         var sphinxService = provider.GetRequiredService<ISphinxService>();
+        var packet = sphinxService.Construct([new OnionHop(nodeKey.CompactPubKey, new byte[] { 0x02, 0x00 })],
+                                             ecdh.GenerateKeyPair().PrivKey, ReadOnlySpan<byte>.Empty);
 
-        // Act: the key manager is consulted before the packet is touched, so a default packet reaches it
-        Assert.ThrowsAny<Exception>(() => sphinxService.PeelAsLocalNode(default, ReadOnlySpan<byte>.Empty));
+        // Act
+        var peeled = sphinxService.PeelAsLocalNode(packet, ReadOnlySpan<byte>.Empty);
 
         // Assert
-        keyManager.Verify(m => m.GetNodeKeyPair(), Times.Once);
+        Assert.True(peeled.IsFinal);
+        Assert.Equal(1, keyManager.EcdhCalls);
     }
 }

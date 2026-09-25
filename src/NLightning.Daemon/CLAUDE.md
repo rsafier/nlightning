@@ -55,7 +55,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 
 ## Onion routing (BOLT 4) hooks
 There is no onion code here yet. When it lands:
-- Register sphinx, forwarding and payment services in their layer's DI. Wire them here only if they need the node private key (`SecureKeyManager.GetNodeKeyPair()` for ECDH peeling), following the `LocalLightningSigner` pattern, and mirror the wiring in the Docker test DI.
+- Register sphinx, forwarding and payment services in their layer's DI. Wire them here only if they need the node private key (prefer `ISecureKeyManager.ComputeNodeSharedSecret` over `GetNodeKeyPair()` for ECDH), following the `LocalLightningSigner` pattern, and mirror the wiring in the Docker test DI.
 - Start a forwarding or interceptor loop from `NltgDaemonService.ExecuteAsync` and stop it in `StopAsync`, or register it as a separate `AddHostedService`.
 - Add a payment IPC surface (`SendPayment`/`PayInvoice`/`DecodeInvoice` using `NLightning.Bolt11`, which the Daemon does not reference yet). Report payment progress with the existing long-poll subscription pattern, because the IPC transport has no server push. Map BOLT 4 failure codes to new `ErrorCodes`.
 - Add forwarding policy (CLTV delta, fee base/ppm) to `NodeOptions` (`Node` section) and to `CreateDefaultConfigJson`.

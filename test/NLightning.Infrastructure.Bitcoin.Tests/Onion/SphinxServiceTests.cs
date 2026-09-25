@@ -4,7 +4,6 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Onion;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
-using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
@@ -531,21 +530,49 @@ public class SphinxServiceTests
     }
 
     [Fact]
-    public void Given_SecureKeyManager_When_PeelingWithoutExplicitKey_Then_UsesNodeKey()
+    public void Given_SecureKeyManager_When_PeelingWithoutExplicitKey_Then_UsesNodeEcdhWithoutCopyingNodeKey()
     {
-        // Arrange
+        // Arrange: the key manager throws if the node private key is requested
         var (packet, nodeKeys) = BuildTwoHopPacket();
-        var keyManager = new Mock<ISecureKeyManager>();
-        keyManager.Setup(m => m.GetNodeKeyPair()).Returns(nodeKeys[0]);
-        var service = new SphinxService(new Ecdh(), new Secp256K1Math(), keyManager.Object);
+        var keyManager = new EcdhOnlyKeyManager(nodeKeys[0].PrivKey);
+        var service = new SphinxService(new Ecdh(), new Secp256K1Math(), keyManager);
+        var expected = _sphinxService.Peel(packet, s_associatedData, nodeKeys[0].PrivKey);
 
         // Act
         var peeled = service.PeelAsLocalNode(packet, s_associatedData);
 
-        // Assert: the key manager hands out a fresh copy of the node key, which is wiped after the peel
+        // Assert
         Assert.False(peeled.IsFinal);
-        keyManager.Verify(m => m.GetNodeKeyPair(), Times.Once);
-        Assert.All(nodeKeys[0].PrivKey.Value, b => Assert.Equal(0, b));
+        Assert.Equal(expected.SharedSecret, peeled.SharedSecret);
+        Assert.Equal(expected.Payload, peeled.Payload);
+        Assert.Equal(expected.NextPacket, peeled.NextPacket);
+        Assert.Equal(1, keyManager.EcdhCalls);
+    }
+
+    [Fact]
+    public void Given_SecureKeyManagerAndBlindedHop_When_PeelingWithoutExplicitKey_Then_MatchesExplicitKeyPeel()
+    {
+        // Arrange
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var pathKey = _ecdh.GenerateKeyPair();
+        var hops = new List<OnionHop>
+        {
+            new(BlindNodeId(nodeKey.CompactPubKey, pathKey.PrivKey), Enumerable.Repeat((byte)0x01, 20).ToArray())
+        };
+        var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, s_associatedData);
+        var expected = _sphinxService.Peel(packet, s_associatedData, nodeKey.PrivKey, pathKey.CompactPubKey);
+        var keyManager = new EcdhOnlyKeyManager(nodeKey.PrivKey);
+        var service = new SphinxService(new Ecdh(), new Secp256K1Math(), keyManager);
+
+        // Act
+        var peeled = service.PeelAsLocalNode(packet, s_associatedData, pathKey.CompactPubKey);
+
+        // Assert: ECDH(path_key) and ECDH(E * tweak), without materializing the blinded node key
+        Assert.True(peeled.IsFinal);
+        Assert.Equal(expected.SharedSecret, peeled.SharedSecret);
+        Assert.Equal(expected.PathKeySharedSecret, peeled.PathKeySharedSecret);
+        Assert.Equal(expected.Payload, peeled.Payload);
+        Assert.Equal(2, keyManager.EcdhCalls);
     }
 
     [Fact]
