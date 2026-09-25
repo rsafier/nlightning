@@ -174,7 +174,10 @@ public class ChannelRoundTripTests
                                       LightningMoney.MilliSatoshis(800_000_002), 144,
                                       new BitcoinScript([0x00, 0x14, .. Enumerable.Repeat((byte)0x22, 20)]));
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(2_535), 6, true,
-                                              FeatureSupport.Compulsory);
+                                              FeatureSupport.Compulsory)
+        {
+            HasInferredParams = true
+        };
 
         var localKeySet = new ChannelKeySetModel(9, s_key1, s_key2, s_key3, s_key4, s_key5, s_key6, 281474976710650);
         var remoteSecret = Enumerable.Repeat((byte)0x5A, 32).ToArray();

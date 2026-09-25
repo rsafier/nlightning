@@ -35,6 +35,17 @@ public readonly record struct ChannelParams
     /// <summary>Whether <c>option_scid_alias</c> is in the channel type (Compulsory) or only negotiated (Optional).</summary>
     public FeatureSupport UseScidAlias { get; }
 
+    /// <summary>
+    /// True for channels opened before the parameters were split per side (NL-194): migration
+    /// <c>SplitChannelParams</c> copied the one stored set into both <see cref="Local"/> and <see cref="Remote"/>, so
+    /// some values are guesses. As non-initiator we announced the node's htlc_minimum_msat, not the stored (opener's)
+    /// one; as initiator the peer's accept_channel limits (htlc_minimum_msat, max_accepted_htlcs,
+    /// max_htlc_value_in_flight_msat, channel_reserve_satoshis) were never stored, and our own open_channel may have
+    /// used node defaults instead of the stored values. Don't enforce these limits as protocol rules for such a
+    /// channel (e.g. failing it over an HTLC below <c>Local.HtlcMinimumAmount</c>).
+    /// </summary>
+    public bool HasInferredParams { get; init; }
+
     public ChannelParams(ChannelParty local, ChannelParty remote, LightningMoney feeRateAmountPerKw, uint minimumDepth,
                          bool optionAnchorOutputs, FeatureSupport useScidAlias)
     {
@@ -50,7 +61,10 @@ public readonly record struct ChannelParams
     /// Returns a copy with the peer's parameters replaced (the initiator learns them from <c>accept_channel</c>).
     /// </summary>
     public ChannelParams WithRemote(ChannelParty remote) =>
-        new(Local, remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias);
+        new(Local, remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
+        {
+            HasInferredParams = HasInferredParams
+        };
 
     /// <summary>
     /// The <c>channel_type</c> these parameters describe: <c>option_static_remotekey</c>, plus <c>option_anchors</c>,

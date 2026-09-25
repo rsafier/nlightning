@@ -148,6 +148,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("FeeRatePerKwSatoshis")
                         .HasColumnType("bigint");
 
+                    b.Property<bool>("HasInferredParams")
+                        .HasColumnType("bit");
+
                     b.Property<long>("LocalChannelReserveAmountSats")
                         .HasColumnType("bigint");
 

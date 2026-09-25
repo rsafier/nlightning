@@ -44,6 +44,7 @@ public class ChannelConfigDbRepository(NLightningDbContext context)
             MinimumDepth = config.MinimumDepth,
             OptionAnchorOutputs = config.OptionAnchorOutputs,
             UseScidAlias = (byte)config.UseScidAlias,
+            HasInferredParams = config.HasInferredParams,
 
             LocalChannelReserveAmountSats = SatoshisOrZero(config.Local.ChannelReserveAmount),
             LocalDustLimitAmountSats = SatoshisOrZero(config.Local.DustLimitAmount),
@@ -80,7 +81,10 @@ public class ChannelConfigDbRepository(NLightningDbContext context)
 
         return new ChannelParams(local, remote, LightningMoney.Satoshis(entity.FeeRatePerKwSatoshis),
                                  entity.MinimumDepth, entity.OptionAnchorOutputs,
-                                 (FeatureSupport)entity.UseScidAlias);
+                                 (FeatureSupport)entity.UseScidAlias)
+        {
+            HasInferredParams = entity.HasInferredParams
+        };
     }
 
     // A default ChannelParty (e.g. the peer's side before accept_channel) has null amounts

@@ -73,8 +73,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                 defaultValue: 0L);
 
             // Data step (NL-194): rows written before the split hold one set of values; copy it into both sides.
-            // A non-initiator used to echo the opener's values, so both sides really were equal; an initiator never
-            // stored the peer's limits, and its old commitments were built with the one stored to_self_delay.
+            // This is only approximate (migration FlagInferredChannelParams marks these rows): a non-initiator stored
+            // the opener's values but announced the node's htlc_minimum_msat and dust limit in accept_channel, so its
+            // Local htlc minimum is the opener's; an initiator never stored the peer's accept_channel limits, so its
+            // Remote htlc minimum, max accepted, max in flight and reserve are our own values, and its open_channel
+            // may have used node defaults instead of the stored ones. Old commitments were built with the one stored
+            // to_self_delay, which is kept on both sides.
             migrationBuilder.Sql(
                 "UPDATE [ChannelConfigs] SET [LocalChannelReserveAmountSats] = COALESCE([ChannelReserveAmountSats], 0), [RemoteChannelReserveAmountSats] = COALESCE([ChannelReserveAmountSats], 0), [LocalHtlcMinimumMsat] = [RemoteHtlcMinimumMsat], [LocalMaxAcceptedHtlcs] = [RemoteMaxAcceptedHtlcs], [LocalMaxHtlcValueInFlightMsat] = [RemoteMaxHtlcValueInFlightMsat], [LocalToSelfDelay] = [RemoteToSelfDelay];");
 

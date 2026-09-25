@@ -64,6 +64,29 @@ public class ChannelParamsTests
         Assert.Equal(channelParams.MinimumDepth, updated.MinimumDepth);
     }
 
+    [Fact]
+    public void Given_InferredParams_When_WithRemote_Then_StillMarkedInferred()
+    {
+        // Arrange (a pre-NL-194 channel keeps its "inferred" mark whatever is updated)
+        var channelParams = CreateParams(3, false, FeatureSupport.No) with { HasInferredParams = true };
+
+        // Act
+        var updated = channelParams.WithRemote(ChannelParty.Unknown);
+
+        // Assert
+        Assert.True(updated.HasInferredParams);
+    }
+
+    [Fact]
+    public void Given_NewParams_When_Created_Then_NotMarkedInferred()
+    {
+        // Act
+        var channelParams = CreateParams(3, false, FeatureSupport.No);
+
+        // Assert
+        Assert.False(channelParams.HasInferredParams);
+    }
+
     private static ChannelParams CreateParams(uint minimumDepth, bool anchors, FeatureSupport useScidAlias)
     {
         var local = new ChannelParty(LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
