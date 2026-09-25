@@ -488,7 +488,8 @@ public class InvoiceTests
         Assert.NotNull(decoded.Features);
         Assert.True(decoded.Features.IsFeatureSet(Feature.BasicMpp, false));
         Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
-        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
+        // SetFeature(BasicMpp) already sets its BOLT 9 dependency payment_secret as optional, which Encode keeps
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret));
     }
 
     [Fact]
