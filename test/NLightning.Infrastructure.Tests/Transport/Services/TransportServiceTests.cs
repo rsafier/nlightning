@@ -367,6 +367,38 @@ public class TransportServiceTests
     }
 
     [Fact]
+    public async Task Given_SocketReadableWithNothingAvailable_When_Writing_Then_TheWriteStillGoesOut()
+    {
+        // Arrange - NL-240, deterministic: the old write check (Poll readable + Available == 0 => "closed") failed a
+        // write on a live connection whenever the read loop drained the socket between the two calls. A peer that
+        // shut down its sending side leaves our socket in that same state for good (readable, nothing available),
+        // while it still reads what we send.
+        var payload = new byte[] { 0, 18, 0, 2, 0, 0 };
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object);
+        var peerStream = connection.Peer.GetStream();
+        connection.Peer.Client.Shutdown(SocketShutdown.Send);
+        var ourSocket = connection.Client.Client;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!(ourSocket.Poll(1, SelectMode.SelectRead) && ourSocket.Available == 0) && DateTime.UtcNow < deadline)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        Assert.True(ourSocket.Poll(1, SelectMode.SelectRead) && ourSocket.Available == 0,
+                    "the socket never looked closed to the probe");
+
+        // Act
+        await connection.Service.WriteMessageAsync(new Mock<IMessage>().Object, TestContext.Current.CancellationToken);
+        var frame = new byte[ProtocolConstants.MessageHeaderSize + payload.Length + 16];
+        await peerStream.ReadExactlyAsync(frame, TestContext.Current.CancellationToken).AsTask()
+                        .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FramingTransport.BuildFrame(payload, 0), frame);
+    }
+
+    [Fact]
     public async Task Given_PeerSendsMaximumSizeMessage_When_Reading_Then_MessageIsReceived()
     {
         // Arrange
@@ -534,11 +566,16 @@ public class TransportServiceTests
         public TransportService Service { get; }
         public TcpClient Peer { get; }
 
-        private ConnectedTransportService(TcpListener listener, TransportService service, TcpClient peer)
+        /// <summary>Our end of the connection (owned by <see cref="Service"/>).</summary>
+        public TcpClient Client { get; }
+
+        private ConnectedTransportService(TcpListener listener, TransportService service, TcpClient peer,
+                                          TcpClient client)
         {
             _listener = listener;
             Service = service;
             Peer = peer;
+            Client = client;
         }
 
         public static async Task<ConnectedTransportService> CreateAsync(ITransport transport,
@@ -570,7 +607,7 @@ public class TransportServiceTests
                                                new ScriptedHandshakeService(transport), client);
             await service.InitializeAsync();
 
-            return new ConnectedTransportService(listener, service, await acceptTask);
+            return new ConnectedTransportService(listener, service, await acceptTask, client);
         }
 
         public void Dispose()
