@@ -219,6 +219,53 @@ public class ChannelManagerConcurrencyTests
         Assert.Equal(ChannelState.Open, channel.State);
     }
 
+    [Fact]
+    public async Task Given_TransitionHoldsTheTemporaryChannelLock_When_OpeningStarts_Then_OpenChannelFollowsItsMessages()
+    {
+        // Arrange (open_channel used to be sent straight through IPeerService, outside the lock and the outbox)
+        var channel = CreateChannel(ChannelState.V1Opening, 0x06);
+        var earlierMessage = CreateChannelReady(channel.ChannelId);
+        var openChannel = CreateChannelReady(channel.ChannelId);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SetupChannelReadyHandler(async () =>
+        {
+            entered.TrySetResult();
+            await gate.Task;
+            return [earlierMessage];
+        });
+        var channelManager = CreateChannelManager();
+        var events = new List<object>();
+        channelManager.OnResponseMessageReady += (_, args) =>
+        {
+            lock (events)
+                events.Add(args.ResponseMessage);
+        };
+        _mockChannelMemoryRepository.Setup(r => r.AddTemporaryChannel(s_pubKey, channel))
+                                    .Callback(() =>
+                                     {
+                                         lock (events)
+                                             events.Add("stored");
+                                     });
+        var handling = Task.Run(() => channelManager.HandleChannelMessageAsync(CreateChannelReady(channel.ChannelId),
+                                                                               new FeatureOptions(), s_pubKey),
+                                TestContext.Current.CancellationToken);
+        await entered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Act
+        var opening = channelManager.StartOpeningChannelAsync(s_pubKey, channel, openChannel);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        int eventsWhileLocked;
+        lock (events)
+            eventsWhileLocked = events.Count;
+        gate.SetResult();
+        await Task.WhenAll(handling, opening).WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, eventsWhileLocked);
+        Assert.Equal(new object[] { earlierMessage, "stored", openChannel }, events);
+    }
+
     private void SetupChannelReadyHandler(Func<Task<IReadOnlyList<IChannelMessage>>> body)
     {
         _mockChannelReadyHandler

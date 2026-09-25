@@ -80,6 +80,19 @@ public class ChannelManager : IChannelManager
     }
 
     /// <inheritdoc />
+    public async Task StartOpeningChannelAsync(CompactPubKey peerPubKey, ChannelModel channel,
+                                               IChannelMessage openChannelMessage)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(openChannelMessage);
+
+        using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
+
+        _channelMemoryRepository.AddTemporaryChannel(peerPubKey, channel);
+        RaiseResponseMessages(peerPubKey, [openChannelMessage]);
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// The channel's lock (keyed by the message's channel id, or temporary_channel_id) is held from before the handler
     /// runs until its replies have been raised through <see cref="OnResponseMessageReady"/>, so two messages for one
