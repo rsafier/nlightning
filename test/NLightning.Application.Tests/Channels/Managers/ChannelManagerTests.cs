@@ -86,7 +86,7 @@ public class ChannelManagerTests
     }
 
     [Fact]
-    public void Given_UnconfirmedChannelWithoutCreationHeight_When_NewBlockDetected_Then_ChannelIsNotMarkedStale()
+    public void Given_UnconfirmedChannelWithoutCreationHeight_When_NewBlockDetected_Then_CreationHeightIsSetAndPersisted()
     {
         // Arrange
         var channel = CreateChannel(ChannelState.V1FundingSigned, false, 1, 0);
@@ -98,6 +98,41 @@ public class ChannelManagerTests
 
         // Assert
         Assert.Equal(ChannelState.V1FundingSigned, channel.State);
+        Assert.Equal(900_000u, channel.FundingCreatedAtBlockHeight);
+        _mockChannelDbRepository.Verify(r => r.UpdateAsync(channel), Times.Once);
+        _mockUnitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    [Fact]
+    public void Given_UnconfirmedChannelWithoutCreationHeight_When_TimeoutPassesAfterFirstSeen_Then_ChannelIsMarkedStale()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.ReadyForThem, false, 1, 0);
+        _channels.Add(channel);
+        CreateChannelManager();
+        RaiseNewBlock(900_000);
+
+        // Act
+        RaiseNewBlock(900_000 + ChannelConstants.MaxUnconfirmedChannelAge);
+
+        // Assert
+        Assert.Equal(ChannelState.Stale, channel.State);
+    }
+
+    [Fact]
+    public void Given_InitiatorChannelWithoutCreationHeight_When_NewBlockDetected_Then_CreationHeightIsNotChanged()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.V1FundingSigned, true, 1, 0);
+        _channels.Add(channel);
+        CreateChannelManager();
+
+        // Act
+        RaiseNewBlock(900_000);
+
+        // Assert
+        Assert.Equal(0u, channel.FundingCreatedAtBlockHeight);
+        _mockChannelDbRepository.Verify(r => r.UpdateAsync(It.IsAny<ChannelModel>()), Times.Never);
     }
 
     [Fact]

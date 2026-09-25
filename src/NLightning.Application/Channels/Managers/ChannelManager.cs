@@ -188,6 +188,10 @@ public class ChannelManager : IChannelManager
 
     private void ForgetStaleChannels(int currentHeight)
     {
+        // Channels saved before FundingCreatedMessageHandler recorded the creation height have it as 0; start their
+        // timeout now so they can still be forgotten.
+        BackfillMissingFundingCreatedHeights(currentHeight);
+
         var heightLimit = currentHeight - ChannelConstants.MaxUnconfirmedChannelAge;
         if (heightLimit < 0)
         {
@@ -228,6 +232,56 @@ public class ChannelManager : IChannelManager
                                  staleChannel.ChannelId, currentHeight);
             }
         }
+    }
+
+    private void BackfillMissingFundingCreatedHeights(int currentHeight)
+    {
+        if (currentHeight <= 0)
+            return;
+
+        var channelsWithoutHeight = _channelMemoryRepository.FindChannels(IsAwaitingFundingWithoutCreationHeight);
+        if (channelsWithoutHeight.Count == 0)
+            return;
+
+        using var scope = _serviceProvider.CreateScope();
+        using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        foreach (var channel in channelsWithoutHeight)
+        {
+            _logger.LogInformation(
+                "Channel {ChannelId} has no funding creation height, starting its unconfirmed timeout at {BlockHeight}",
+                channel.ChannelId, currentHeight);
+
+            channel.FundingCreatedAtBlockHeight = (uint)currentHeight;
+            _channelMemoryRepository.UpdateChannel(channel);
+
+            try
+            {
+                uow.ChannelDbRepository.UpdateAsync(channel).GetAwaiter().GetResult();
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Failed to persist funding creation height for channel {ChannelId}",
+                                 channel.ChannelId);
+            }
+        }
+
+        try
+        {
+            uow.SaveChangesAsync().GetAwaiter().GetResult();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to persist funding creation heights at block height {BlockHeight}",
+                             currentHeight);
+        }
+    }
+
+    private static bool IsAwaitingFundingWithoutCreationHeight(ChannelModel channel)
+    {
+        return !channel.IsInitiator
+            && channel.State is ChannelState.V1FundingSigned or ChannelState.ReadyForThem
+            && channel.FundingCreatedAtBlockHeight == 0;
     }
 
     private static bool IsAwaitingFundingAndStale(ChannelModel channel, int heightLimit)
