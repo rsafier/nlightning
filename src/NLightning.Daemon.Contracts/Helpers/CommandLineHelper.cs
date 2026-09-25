@@ -6,6 +6,7 @@ namespace NLightning.Daemon.Contracts.Helpers;
 public static class CommandLineHelper
 {
     public const string DashH = "-h";
+    public const string DashQuestion = "-?";
     public const string DashDashHelp = "--help";
     public const string DashN = "-n";
     public const string DashDashNetwork = "--network";
@@ -14,6 +15,9 @@ public static class CommandLineHelper
     public const string DashDashCookie = "--cookie";
     public const string DashDashCookieEquals = "--cookie=";
 
+    public const string NetworkEnvironmentVariable = "NLTG_NETWORK";
+    public const string CookieEnvironmentVariable = "NLTG_COOKIE";
+
     /// <summary>
     /// Parse command line arguments to check for help request
     /// </summary>
@@ -21,18 +25,23 @@ public static class CommandLineHelper
     {
         return args.Any(arg =>
                             arg.Equals(DashDashHelp, StringComparison.OrdinalIgnoreCase)
-                         || arg.Equals(DashH, StringComparison.OrdinalIgnoreCase));
+                         || arg.Equals(DashH, StringComparison.OrdinalIgnoreCase)
+                         || arg.Equals(DashQuestion, StringComparison.Ordinal));
     }
 
     public static string? GetCommand(string[] args)
     {
         for (var i = 0; i < args.Length; i++)
         {
-            if (IsOption(args[i]))
+            if (IsOptionWithSeparateValue(args[i]))
             {
+                // Skip the option's value
                 i++;
                 continue;
             }
+
+            if (IsOption(args[i]))
+                continue;
 
             return args[i].ToLowerInvariant();
         }
@@ -49,6 +58,13 @@ public static class CommandLineHelper
         {
             if (!cmdFound)
             {
+                if (IsOptionWithSeparateValue(args[i]))
+                {
+                    // Skip the option's value, so it is never mistaken for the command
+                    i++;
+                    continue;
+                }
+
                 if (args[i].Equals(command, StringComparison.OrdinalIgnoreCase))
                     cmdFound = true;
 
@@ -61,6 +77,13 @@ public static class CommandLineHelper
         return cmdArgs.ToArray();
     }
 
+    /// <summary>
+    /// Resolves the directory that holds the cookie file.
+    /// </summary>
+    /// <remarks>
+    /// Precedence: <c>--cookie</c>/<c>-c</c>, then <c>--network</c>/<c>-n</c>, then <c>NLTG_COOKIE</c>, then
+    /// <c>NLTG_NETWORK</c>, then <c>~/.nltg/mainnet</c>.
+    /// </remarks>
     public static string GetCookiePath(string[] args)
     {
         string? network = null;
@@ -69,64 +92,49 @@ public static class CommandLineHelper
         // Check command line args
         for (var i = 0; i < args.Length; i++)
         {
-            // Check for network
-            if (args[i].StartsWith(DashN) || args[i].StartsWith(DashDashNetwork, StringComparison.OrdinalIgnoreCase))
+            var arg = args[i];
+            if (arg.Equals(DashDashNetwork, StringComparison.OrdinalIgnoreCase) || arg.Equals(DashN))
             {
-                if ((args[i].Equals(DashDashNetwork, StringComparison.OrdinalIgnoreCase) || args[i].Equals(DashN))
-                 && i + 1 < args.Length)
-                {
-                    network = args[i + 1];
-                }
-                else if (args[i].StartsWith(DashDashNetworkEquals, StringComparison.OrdinalIgnoreCase))
-                {
-                    network = args[i][DashDashNetworkEquals.Length..];
-                }
-
-                if (network is not null)
-                    break;
+                if (i + 1 < args.Length)
+                    network ??= args[++i];
             }
-            else if (args[i].StartsWith(DashC) || // Check for cookie
-                     args[i].StartsWith(DashDashCookie, StringComparison.OrdinalIgnoreCase))
+            else if (arg.StartsWith(DashDashNetworkEquals, StringComparison.OrdinalIgnoreCase))
             {
-                if ((args[i].Equals(DashDashCookie, StringComparison.OrdinalIgnoreCase) || args[i].Equals(DashC))
-                 && i + 1 < args.Length)
-                {
-                    cookiePath = args[i];
-                }
-                else if (args[i].StartsWith(DashDashCookieEquals, StringComparison.OrdinalIgnoreCase))
-                {
-                    cookiePath = args[i][DashDashCookieEquals.Length..];
-                }
-
-                if (cookiePath is not null)
-                    break;
+                network ??= arg[DashDashNetworkEquals.Length..];
+            }
+            else if (arg.Equals(DashDashCookie, StringComparison.OrdinalIgnoreCase) || arg.Equals(DashC))
+            {
+                if (i + 1 < args.Length)
+                    cookiePath ??= args[++i];
+            }
+            else if (arg.StartsWith(DashDashCookieEquals, StringComparison.OrdinalIgnoreCase))
+            {
+                cookiePath ??= arg[DashDashCookieEquals.Length..];
             }
         }
 
-        // Check the environment if no args provided
-        if (cookiePath is null && network is null)
+        // Command line args take precedence over the environment
+        if (string.IsNullOrEmpty(cookiePath) && string.IsNullOrEmpty(network))
         {
-            var envNetwork = Environment.GetEnvironmentVariable("NLTG_NETWORK");
-            if (!string.IsNullOrEmpty(envNetwork))
+            var envCookie = Environment.GetEnvironmentVariable(CookieEnvironmentVariable);
+            if (!string.IsNullOrEmpty(envCookie))
             {
-                network = envNetwork;
+                cookiePath = envCookie;
             }
             else
             {
-                var envCookie = Environment.GetEnvironmentVariable("NLTG_COOKIE");
-                if (!string.IsNullOrEmpty(envCookie))
-                {
-                    cookiePath = envCookie;
-                }
+                var envNetwork = Environment.GetEnvironmentVariable(NetworkEnvironmentVariable);
+                if (!string.IsNullOrEmpty(envNetwork))
+                    network = envNetwork;
             }
         }
 
-        // Go with default paths if no environments provided
-        if (cookiePath is not null)
+        if (!string.IsNullOrEmpty(cookiePath))
             return ExtractDirectoryFromCookiePath(cookiePath);
 
+        // Go with the default path if no cookie path was provided
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        cookiePath = Path.Combine(homeDir, ".nltg", network ?? "mainnet");
+        cookiePath = Path.Combine(homeDir, ".nltg", string.IsNullOrEmpty(network) ? "mainnet" : network);
         return Directory.Exists(cookiePath) ? cookiePath : throw new InvalidOperationException("Cookie not found");
     }
 
@@ -144,8 +152,11 @@ public static class CommandLineHelper
         return Directory.Exists(cookiePath) ? cookiePath : throw new InvalidOperationException("Cookie not found");
     }
 
-    private static bool IsOption(string arg) => arg.StartsWith("-n")
-                                             || arg.StartsWith("--network")
-                                             || arg.StartsWith("-c")
-                                             || arg.StartsWith("--cookie");
+    private static bool IsOptionWithSeparateValue(string arg) =>
+        arg.Equals(DashN)
+     || arg.Equals(DashDashNetwork, StringComparison.OrdinalIgnoreCase)
+     || arg.Equals(DashC)
+     || arg.Equals(DashDashCookie, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsOption(string arg) => arg.StartsWith('-');
 }
