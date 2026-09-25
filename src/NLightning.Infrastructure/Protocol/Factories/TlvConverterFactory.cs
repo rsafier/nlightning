@@ -1,8 +1,10 @@
 namespace NLightning.Infrastructure.Protocol.Factories;
 
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
 using Tlv.Converters;
+using Tlv.Converters.Onion;
 
 public class TlvConverterFactory : ITlvConverterFactory
 {
@@ -41,5 +43,15 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(RequireConfirmedInputsTlv), new RequireConfirmedInputsTlvConverter());
         _converters.Add(typeof(ShortChannelIdTlv), new ShortChannelIdTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
+
+        // Onion hop payload (BOLT 4) TLVs
+        _converters.Add(typeof(AmtToForwardTlv), new AmtToForwardTlvConverter());
+        _converters.Add(typeof(OutgoingCltvValueTlv), new OutgoingCltvValueTlvConverter());
+        _converters.Add(typeof(OnionShortChannelIdTlv), new OnionShortChannelIdTlvConverter());
+        _converters.Add(typeof(PaymentDataTlv), new PaymentDataTlvConverter());
+        _converters.Add(typeof(EncryptedRecipientDataTlv), new EncryptedRecipientDataTlvConverter());
+        _converters.Add(typeof(CurrentPathKeyTlv), new CurrentPathKeyTlvConverter());
+        _converters.Add(typeof(PaymentMetadataTlv), new PaymentMetadataTlvConverter());
+        _converters.Add(typeof(TotalAmountMsatTlv), new TotalAmountMsatTlvConverter());
     }
 }
