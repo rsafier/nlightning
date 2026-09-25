@@ -237,6 +237,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             RemoteNextHtlcId = channelModel.RemoteNextHtlcId,
             LocalRevocationNumber = channelModel.LocalRevocationNumber,
             RemoteRevocationNumber = channelModel.RemoteRevocationNumber,
+            LocalCommitmentNumber = channelModel.LocalCommitmentNumber,
+            RemoteCommitmentNumber = channelModel.RemoteCommitmentNumber,
             LastSentSignature = channelModel.LastSentSignature?.Value ?? null,
             LastReceivedSignature = channelModel.LastReceivedSignature?.Value ?? null,
 
@@ -320,13 +322,6 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             : (remoteKeySet.PaymentCompactBasepoint, localKeySet.PaymentCompactBasepoint);
         var commitmentNumber = new CommitmentNumber(openerPaymentBasepoint, accepterPaymentBasepoint, sha256);
 
-        // There are no commitment-number columns yet (migration SplitChannelParamsAndMsatBalances, BOLT2 plan N1-T5).
-        // Until then the numbers come from the revocation numbers: once a commitment is revoked the next one is
-        // current, so the current commitment number equals the number of revocations of that side. Nothing advances
-        // either number yet, so this reload is exact (NL-188).
-        var localCommitmentNumber = channelEntity.LocalRevocationNumber;
-        var remoteCommitmentNumber = channelEntity.RemoteRevocationNumber;
-
         var remoteNodeId = channelEntity.RemoteNodeId;
 
         CompactSignature? lastSentSig = null;
@@ -346,8 +341,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 (ChannelState)channelEntity.State, (ChannelVersion)channelEntity.Version,
                                 localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, null, remoteOfferedHtlcs,
                                 remoteFulfilledHtlcs, remoteOldHtlcs,
-                                localCommitmentNumber: localCommitmentNumber,
-                                remoteCommitmentNumber: remoteCommitmentNumber)
+                                localCommitmentNumber: channelEntity.LocalCommitmentNumber,
+                                remoteCommitmentNumber: channelEntity.RemoteCommitmentNumber)
         {
             FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight,
             LocalAliases = channelEntity.LocalAliases is { Count: > 0 }

@@ -1,4 +1,6 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -140,6 +142,79 @@ public class ChannelDbRepositoryTests
         // Assert
         Assert.Equal(3UL, reloaded.LocalCommitmentNumber);
         Assert.Equal(5UL, reloaded.RemoteCommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_LocalCommitmentAheadOfRevocations_When_Reloaded_Then_CommitmentNumbersAreKept()
+    {
+        // Arrange - regression (NL-188 review): the reload rebuilt the commitment numbers from the revocation numbers,
+        // so after persisting local commitment 1 before sending revoke_and_ack for 0 a restart reloaded it as 0
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(false, localCommitmentNumber: 1, remoteCommitmentNumber: 1,
+                                                        localRevocationNumber: 0, remoteRevocationNumber: 0);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.Equal(1UL, reloaded.LocalCommitmentNumber);
+        Assert.Equal(1UL, reloaded.RemoteCommitmentNumber);
+        Assert.Equal(0UL, reloaded.LocalRevocationNumber);
+        Assert.Equal(0UL, reloaded.RemoteRevocationNumber);
+    }
+
+    [Fact]
+    public async Task Given_SavedChannel_When_UpdatedWithAdvancedLocalCommitment_Then_ReloadKeepsTheNewNumber()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await SaveAndReloadAsync(db, SqliteDbTestContext.CreateChannel(true));
+        var advanced = SqliteDbTestContext.CreateChannel(true, localCommitmentNumber: 1, localRevocationNumber: 0);
+
+        // Act
+        await using (var updateContext = db.CreateDbContext())
+        {
+            var repository = new ChannelDbRepository(updateContext, db.MessageSerializer, db.Sha256);
+            await repository.UpdateAsync(advanced);
+            await updateContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var updated = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+                         .GetByIdAsync(advanced.ChannelId);
+        Assert.NotNull(updated);
+        Assert.Equal(1UL, updated.LocalCommitmentNumber);
+        Assert.Equal(0UL, updated.LocalRevocationNumber);
+        Assert.Equal(0UL, updated.RemoteCommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_ChannelSavedBeforeCommitmentNumberColumns_When_Migrated_Then_NumbersComeFromRevocations()
+    {
+        // Arrange - drop the columns by migrating down past PersistCommitmentNumbers, then migrate up again
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true, localCommitmentNumber: 2, remoteCommitmentNumber: 3);
+        await SaveAndReloadAsync(db, channel);
+        await using (var migrateContext = db.CreateDbContext())
+        {
+            var migrations = migrateContext.Database.GetMigrations().ToList();
+            var target = migrations.Single(m => m.EndsWith("_PersistCommitmentNumbers", StringComparison.Ordinal));
+            var previous = migrations[migrations.IndexOf(target) - 1];
+            var migrator = migrateContext.GetService<IMigrator>();
+            await migrator.MigrateAsync(previous, TestContext.Current.CancellationToken);
+
+            // Act
+            await migrator.MigrateAsync(cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var reloaded = await new ChannelDbRepository(readContext, db.MessageSerializer, db.Sha256)
+                          .GetByIdAsync(channel.ChannelId);
+        Assert.NotNull(reloaded);
+        Assert.Equal(2UL, reloaded.LocalCommitmentNumber);
+        Assert.Equal(3UL, reloaded.RemoteCommitmentNumber);
     }
 
     [Fact]

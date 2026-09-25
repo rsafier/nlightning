@@ -97,7 +97,9 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              WalletAddressModel? changeAddress = null,
                                              ChannelState state = ChannelState.Open,
                                              FeatureSupport useScidAlias = FeatureSupport.No,
-                                             ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0)
+                                             ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
+                                             ulong? localRevocationNumber = null,
+                                             ulong? remoteRevocationNumber = null)
     {
         var sha256 = new Sha256();
         var config = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
@@ -125,11 +127,12 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         channelIdBytes[31] = isInitiator ? (byte)1 : (byte)2;
         var channelId = new ChannelId(channelIdBytes);
 
-        // In steady state a side's current commitment number equals the number of commitments it has revoked
+        // At rest a side's current commitment number equals the number of commitments it has revoked; mid-dance
+        // the commitment number runs one ahead, so callers can set the revocation numbers on their own
         return new ChannelModel(config, channelId, commitmentNumber, fundingOutput, isInitiator, null, null,
-                                LightningMoney.Satoshis(600_000), localKeySet, 5, localCommitmentNumber,
-                                LightningMoney.Satoshis(400_000), remoteKeySet, 7, RemoteNodeId,
-                                remoteCommitmentNumber, state, ChannelVersion.V1, localOffered, localFulfilled,
+                                LightningMoney.Satoshis(600_000), localKeySet, 5,
+                                localRevocationNumber ?? localCommitmentNumber, LightningMoney.Satoshis(400_000),
+                                remoteKeySet, 7, RemoteNodeId, remoteRevocationNumber ?? remoteCommitmentNumber, state, ChannelVersion.V1, localOffered, localFulfilled,
                                 localOld, null, remoteOffered, remoteFulfilled, remoteOld,
                                 localCommitmentNumber: localCommitmentNumber,
                                 remoteCommitmentNumber: remoteCommitmentNumber)
