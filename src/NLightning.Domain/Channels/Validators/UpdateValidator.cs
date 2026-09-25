@@ -69,10 +69,17 @@ internal static class UpdateValidator
             if (remoteView.LocalMsat < reserve || localView.LocalMsat < reserve)
                 throw Refused("B2-ADD-R02", "The HTLC would take our balance below our channel reserve");
 
-            var funderCost = (long)CommitmentFees.FunderCostMsat(remoteView.ToSpec(), p.Remote.DustLimitSatoshis,
-                                                                 p.OptionAnchors);
-            if (remoteView.RemoteMsat - funderCost < (long)p.RemoteReserveMsat)
-                throw Refused("B2-ADD-S04", "The funder could not pay the fee of its commitment after this HTLC");
+            // BOLT 2: "the updated local or remote transaction". Both are needed: with different dust limits an HTLC
+            // can be trimmed on one commitment and cost fee on the other.
+            foreach (var view in (CommitmentView[])[remoteView, localView])
+            {
+                var funderCost = (long)CommitmentFees.FunderCostMsat(view.ToSpec(),
+                                                                     p.Holder(view.Holder).DustLimitSatoshis,
+                                                                     p.OptionAnchors);
+                if (view.RemoteMsat - funderCost < (long)p.RemoteReserveMsat)
+                    throw Refused("B2-ADD-S04",
+                                  $"The funder could not pay the fee of the {view.Holder} commitment after this HTLC");
+            }
         }
 
         if (p.MaxDustHtlcExposureMsat is { } maxDust)
