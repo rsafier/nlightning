@@ -249,6 +249,46 @@ public class TransportServiceTests
         Assert.Equal([0, 1], sequences);
     }
 
+    [Fact]
+    public async Task Given_MaximumSizeMessage_When_Writing_Then_FullFrameIsSent()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)i).ToArray();
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection =
+            await ConnectedTransportService.CreateAsync(new FramingTransport(), serializerMock.Object);
+
+        // Act
+        await connection.Service.WriteMessageAsync(new Mock<IMessage>().Object, TestContext.Current.CancellationToken);
+        var frame = new byte[ProtocolConstants.MessageHeaderSize + ProtocolConstants.MaxMessageLength + 16];
+        await connection.Peer.GetStream().ReadExactlyAsync(frame, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FramingTransport.BuildFrame(payload, 0), frame);
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsMaximumSizeMessage_When_Reading_Then_MessageIsReceived()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)(i * 7)).ToArray();
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        connection.Service.ExceptionRaised += (_, e) => received.TrySetException(e);
+
+        // Act
+        await connection.Peer.GetStream().WriteAsync(FramingTransport.BuildFrame(payload, 0),
+                                                     TestContext.Current.CancellationToken);
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
     /// <summary>
     /// Plaintext BOLT 8-shaped framing: header = 2-byte length, 4-byte sequence number, 12 zero bytes;
     /// body = payload followed by a 16-byte zero "MAC". The sequence number stands in for the nonce.

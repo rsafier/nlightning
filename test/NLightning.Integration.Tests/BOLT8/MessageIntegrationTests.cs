@@ -68,4 +68,71 @@ public class MessageIntegrationTests
             initializedParties.ResponderTransport.Dispose();
         }
     }
+
+    [Fact]
+    public void Given_MaximumSizeMessage_When_SentAndReceived_Then_MessageRoundTrips()
+    {
+        // Arrange - BOLT 8 caps the plaintext (not the ciphertext) at 65535 bytes
+        var initializedParties = new InitializedPartiesVector();
+
+        try
+        {
+            var message = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)i).ToArray();
+            var messageBuffer = new byte[ProtocolConstants.MaxEncryptedPacketLength];
+            var receivedMessageBuffer = new byte[ProtocolConstants.MaxEncryptedMessageLength];
+
+            // Act
+            var messageSize = initializedParties.InitiatorTransport.WriteMessage(message, messageBuffer);
+            var receivedMessageLength =
+                initializedParties.ResponderTransport.ReadMessageLength(messageBuffer.AsSpan(0, 18));
+            var receivedMessageSize =
+                initializedParties.ResponderTransport.ReadMessagePayload(
+                    messageBuffer.AsSpan(18, receivedMessageLength), receivedMessageBuffer);
+
+            // Assert
+            Assert.Equal(2 + 16 + 65535 + 16, messageSize);
+            Assert.Equal(65535 + 16, receivedMessageLength);
+            Assert.Equal(message, receivedMessageBuffer[..receivedMessageSize]);
+        }
+        finally
+        {
+            initializedParties.InitiatorTransport.Dispose();
+            initializedParties.ResponderTransport.Dispose();
+        }
+    }
+
+    [Fact]
+    public void Given_OversizedMessage_When_Writing_Then_ThrowsWithoutConsumingANonce()
+    {
+        // Arrange
+        var initializedParties = new InitializedPartiesVector();
+
+        try
+        {
+            var oversized = new byte[ProtocolConstants.MaxMessageLength + 1];
+            var message = "hello"u8.ToArray();
+            var messageBuffer = new byte[ProtocolConstants.MaxEncryptedPacketLength + 1];
+            var receivedMessageBuffer = new byte[ProtocolConstants.MaxEncryptedMessageLength];
+
+            // Act
+            Assert.Throws<ArgumentException>(() =>
+                                                 initializedParties.InitiatorTransport.WriteMessage(
+                                                     oversized, messageBuffer));
+            var messageSize = initializedParties.InitiatorTransport.WriteMessage(message, messageBuffer);
+            var receivedMessageLength =
+                initializedParties.ResponderTransport.ReadMessageLength(messageBuffer.AsSpan(0, 18));
+            var receivedMessageSize =
+                initializedParties.ResponderTransport.ReadMessagePayload(
+                    messageBuffer.AsSpan(18, receivedMessageLength), receivedMessageBuffer);
+
+            // Assert - the first valid message is still the spec's message 0
+            Assert.Equal(ValidMessagesVector.Message0, messageBuffer[..messageSize]);
+            Assert.Equal(message, receivedMessageBuffer[..receivedMessageSize]);
+        }
+        finally
+        {
+            initializedParties.InitiatorTransport.Dispose();
+            initializedParties.ResponderTransport.Dispose();
+        }
+    }
 }

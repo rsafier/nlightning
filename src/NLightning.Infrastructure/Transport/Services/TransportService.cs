@@ -204,10 +204,11 @@ internal sealed class TransportService : ITransportService
 
         // Encrypt and write under the same lock so ciphertexts hit the wire in nonce order
         await _networkWriteSemaphore.WaitAsync(cancellationToken);
-        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
+        var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxEncryptedPacketLength);
         try
         {
-            var size = _transport.WriteMessage(payload, buffer.AsSpan()[..ProtocolConstants.MaxMessageLength]);
+            var size = _transport.WriteMessage(payload,
+                                               buffer.AsSpan()[..ProtocolConstants.MaxEncryptedPacketLength]);
 
             try
             {
@@ -254,7 +255,7 @@ internal sealed class TransportService : ITransportService
     {
         while (!_cts.IsCancellationRequested)
         {
-            var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxMessageLength);
+            var buffer = ArrayPool<byte>.Shared.Rent(ProtocolConstants.MaxEncryptedPacketLength);
             var memoryBuffer = buffer.AsMemory();
 
             try
@@ -276,7 +277,7 @@ internal sealed class TransportService : ITransportService
                 if (_cts.IsCancellationRequested)
                     break;
 
-                if (messageLen > ProtocolConstants.MaxMessageLength)
+                if (messageLen > ProtocolConstants.MaxEncryptedMessageLength)
                     throw new ConnectionException("Peer sent message too long");
 
                 await stream.ReadExactlyAsync(memoryBuffer[..messageLen], _cts.Token);
