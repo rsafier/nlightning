@@ -1,5 +1,31 @@
 > Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land.
 
+## Status
+
+### Wave 0: integrated into `wip/fafo` @ `0b7e617` (2026-09-25)
+
+All six lanes are done; their commits were cherry-picked with `-x` with no conflicts (order w0b, w0a, w0c, w0d, w0e, w0f) and two `integrate:` commits fixed the seams. Gates at `0b7e617`: Release and Release.Native build with 0 errors and the 7 baseline CS warnings; `dotnet format --verify-no-changes` clean; 3367 non-Docker tests pass in both configs, 0 skips (Domain 1232, Integration 492, Serialization 466, Infrastructure 326, Infrastructure.Bitcoin 305, Bolt11 275, Application 147, Daemon 124); 10k-seed Long simulator passes; Docker 24/24 on OrbStack (integrator run).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W0-A Engine seam + events | done | 192e212, 2fa8cf4, b166ea0, 7ba115f (+ c68a34d integrate) | NL-230, NL-231 fixed; N4-T4 done; NL-194 follow-up (`HasInferredLimits`); new NL-244 |
+| W0-B Persistence (migration owner) | done; shachain runtime calls left to W1-A (Application) | 4472a8b, bb2731a, f2e1a4a, a8d1381, 79f7657 | NL-025, NL-232 (partial: first-snapshot wiring), NL-237, NL-238 fixed; NL-137 partial; new NL-241, NL-242, NL-243 |
+| W0-C Contracts | done | 2ede2ee, 1390027 (+ 0b7e617 integrate: options validation, `PeerManager` backoff from `NodeOptions`) | NL-200, NL-152, NL-137 partial (contracts) |
+| W0-D Bolt11 for the node | done | 2d8a9fe, 2c9f812, f93d059 | NL-120 fixed |
+| W0-E `channel_update` wire + signing | done | e7b5269, 3ba2e4f | NL-099 partial |
+| W0-F Multi-node test infra | done; tolerates two known connect bugs | 6f1a316, cb06e60 (+ 0b7e617 integrate) | new NL-239, NL-240 |
+
+Deviations accepted in wave 0 (details in the BOLT2 plan "ABCD wave 0 record"): `CommitmentsResult.Transition` keeps its name (plan said `Persist`); `IHtlcSwitch` has one `HandleAsync(IChannelDomainEvent)`; the `Commitments` table is keyed by slot, not `(Side, Number)`, and has no txid; `IChannelOperations` has no shutdown until N10; `CommitmentSigningService` is a concrete class; `ErrorSent`/`DataLossDetected` columns shipped early.
+
+### Carried into wave 1
+
+- **W1-A (channel wiring)** must also: create the first snapshot with `IChannelStateDbRepository.InitializeAsync` with both remote points before `ChannelReadyMessageHandler` overwrites the key set's first point (NL-232 rest); per transition `ApplyAsync` + one `SaveChangesAsync`, then `ChannelModel.UpdateCommitments`, then send; call shachain `Export` on RAA and `Load` at startup (NL-136); after a restart `RevertUncommitted` and persist it before reestablish; replay `ChannelDomainEvents.DerivePending` per channel inside a try/catch (legacy states throw) into an idempotent switch; pass the dust policy on reload (NL-242); plan pruning (NL-243); NL-234, NL-235, NL-199, NL-138. Keep `services.AddCommitmentEngineServices()` in `Application/DependencyInjection.cs` (W0-A put it there).
+- **W1-C (payment schema)** implements the W0-C ports (`IInvoiceDbRepository`, `IPaymentDbRepository`, `IForwardCircuitDbRepository`); the W0-B migration chain is the base (build the provider projects in Debug first, NL-233).
+- **W1-D (IPC)** fixes NL-241 (listchannels pending-HTLC counts) and binds `RoutingOptions` (validation already runs at startup since 0b7e617).
+- **W1-E** builds on the typed, signed `channel_update` (send after channel_ready, store the peer's).
+- **Test infra:** NL-239 and NL-240 (NLightning-to-NLightning connect bugs) are tolerated by `NLightningTestNode.ConnectToAsync` retries; fix them before the B–C hop is relied on (W1 or W2 owner of `PeerManager`/`PeerService`), then drop the tolerance.
+- Tech debt: NL-244 (`Htlc.AddMessage` null in the engine adapter).
+
 # Roadmap: `wip/fafo` @ `3c625e1` to a green ABCD Docker e2e test (LND Alice → NLightning Bob → NLightning Carol → LND David)
 
 I only read files; nothing was changed. The working tree has uncommitted doc edits from the integrating agent (CLAUDE.md files, plans, ISSUES.md), so I checked every code claim against source files.
