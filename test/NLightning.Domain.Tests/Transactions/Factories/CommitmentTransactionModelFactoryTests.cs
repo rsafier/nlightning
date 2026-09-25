@@ -8,6 +8,7 @@ using NLightning.Tests.Utils.Vectors;
 namespace NLightning.Domain.Tests.Transactions.Factories;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -353,6 +354,126 @@ public class CommitmentTransactionModelFactoryTests
         var htlcOutput = Assert.Single(transactionModel.OfferedHtlcOutputs);
         Assert.Equal(0UL, htlcOutput.Htlc.Id);
         Assert.Equal(LightningMoney.Satoshis((1124 + 172) * 10_000 / 1000), transactionModel.Fee);
+    }
+
+    [Fact]
+    public void Given_Spec_When_CreatingLocalCommitment_Then_ChannelBalancesAndHtlcsAreIgnored()
+    {
+        // Arrange - the spec's balances are already net of its HTLC; the channel's balances must not be used
+        var offeredHtlc = new Htlc(LightningMoney.Satoshis(10_000), null!, HtlcDirection.Outgoing, 500, 0, 0,
+                                   Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(1), LightningMoney.Satoshis(1));
+        var spec = new CommitmentSpec(6_990_000_000, 3_000_000_000, 0, [offeredHtlc]);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal(LightningMoney.Satoshis(6_990_000), transactionModel.ToLocalOutput.Amount);
+        Assert.NotNull(transactionModel.ToRemoteOutput);
+        Assert.Equal(LightningMoney.Satoshis(3_000_000), transactionModel.ToRemoteOutput.Amount);
+        Assert.Single(transactionModel.OfferedHtlcOutputs);
+    }
+
+    [Fact]
+    public void Given_Spec_When_CreatingRemoteCommitment_Then_BalancesAndHtlcDirectionsAreFromTheHolder()
+    {
+        // Arrange - we are the funder: on the remote holder's tx our balance is to_remote and pays the fee
+        var outgoingHtlc = new Htlc(LightningMoney.Satoshis(10_000), null!, HtlcDirection.Outgoing, 500, 0, 0,
+                                    Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var spec = new CommitmentSpec(6_990_000_000, 3_000_000_000, 1_000, [outgoingHtlc]);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Remote, 7,
+                                                                       s_emptyCompactPubKey);
+
+        // Assert - (724 + 172) * 1000 / 1000 = 896 sat, paid out of our (the funder's) to_remote
+        Assert.Single(transactionModel.ReceivedHtlcOutputs);
+        Assert.Empty(transactionModel.OfferedHtlcOutputs);
+        Assert.Equal(LightningMoney.Satoshis(896), transactionModel.Fee);
+        Assert.NotNull(transactionModel.ToLocalOutput);
+        Assert.Equal(LightningMoney.Satoshis(3_000_000), transactionModel.ToLocalOutput.Amount);
+        Assert.NotNull(transactionModel.ToRemoteOutput);
+        Assert.Equal(LightningMoney.Satoshis(6_990_000 - 896), transactionModel.ToRemoteOutput.Amount);
+        Assert.Equal(7UL, transactionModel.Number);
+    }
+
+    [Fact]
+    public void Given_RemoteSideWithoutPoint_When_CreatingFromSpec_Then_Throws()
+    {
+        // Arrange
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var factory = CreateFactory();
+
+        // Act / Assert
+        Assert.Throws<ArgumentNullException>(() => factory.CreateCommitmentTransactionModel(
+                                                 channel, new CommitmentSpec(1_000_000, 1_000_000, 0),
+                                                 CommitmentSide.Remote, 0));
+    }
+
+    [Fact]
+    public void Given_LocalSideWithPoint_When_CreatingFromSpec_Then_Throws()
+    {
+        // Arrange
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var factory = CreateFactory();
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => factory.CreateCommitmentTransactionModel(
+                                             channel, new CommitmentSpec(1_000_000, 1_000_000, 0),
+                                             CommitmentSide.Local, 0, s_emptyCompactPubKey));
+    }
+
+    [Fact]
+    public void Given_Spec_When_CreatingCommitment_Then_ModelCarriesHtlcTransactionParameters()
+    {
+        // Arrange
+        var channel = CreateChannel(true, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Zero, LightningMoney.Zero);
+        var spec = new CommitmentSpec(7_000_000_000, 3_000_000_000, 253);
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, spec, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        Assert.Equal(253UL, transactionModel.FeeRatePerKw);
+        Assert.True(transactionModel.HasAnchors);
+        Assert.Equal(Bolt3AppendixCVectors.LocalDelay, transactionModel.ToSelfDelay);
+        Assert.NotNull(transactionModel.LocalDelayedPubKey);
+        Assert.NotNull(transactionModel.RevocationPubKey);
+    }
+
+    [Fact]
+    public void Given_GrossChannelBalances_When_BuildingSpecFromChannel_Then_EachHtlcLeavesItsOfferersBalance()
+    {
+        // Arrange
+        var offered = new Htlc(LightningMoney.Satoshis(2_000), null!, HtlcDirection.Outgoing, 500, 0, 0,
+                               Bolt3AppendixCVectors.Htlc2PaymentHash, HtlcState.Offered);
+        var received = new Htlc(LightningMoney.Satoshis(1_000), null!, HtlcDirection.Incoming, 501, 0, 0,
+                                Bolt3AppendixCVectors.Htlc0PaymentHash, HtlcState.Offered);
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000),
+                                    LightningMoney.Satoshis(15_000), [offered], [received]);
+
+        // Act
+        var spec = CommitmentSpec.FromChannel(channel);
+
+        // Assert
+        Assert.Equal(6_998_000_000UL, spec.ToLocalMsat);
+        Assert.Equal(2_999_000_000UL, spec.ToRemoteMsat);
+        Assert.Equal(15_000UL, spec.FeeRatePerKw);
+        Assert.Equal(2, spec.Htlcs.Count);
     }
 
     private static CommitmentTransactionModelFactory CreateFactory()

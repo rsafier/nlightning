@@ -3,9 +3,11 @@ using NLightning.Domain.Bitcoin.Transactions.Enums;
 using NLightning.Domain.Bitcoin.Transactions.Interfaces;
 using NLightning.Domain.Bitcoin.Transactions.Models;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
+using NLightning.Domain.Channels.Commitments;
 using NLightning.Domain.Channels.Enums;
 using NLightning.Domain.Channels.Models;
 using NLightning.Domain.Channels.ValueObjects;
+using NLightning.Domain.Crypto.ValueObjects;
 using NLightning.Domain.Money;
 using NLightning.Domain.Protocol.Interfaces;
 using NLightning.Domain.Protocol.Models;
@@ -24,9 +26,28 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         _lightningSigner = lightningSigner;
     }
 
+    /// <inheritdoc />
     public CommitmentTransactionModel CreateCommitmentTransactionModel(ChannelModel channel, CommitmentSide side,
                                                                        ulong commitmentNumber)
     {
+        ArgumentNullException.ThrowIfNull(channel);
+
+        var remotePerCommitmentPoint = side == CommitmentSide.Remote
+                                           ? channel.RemoteKeySet?.CurrentPerCommitmentCompactPoint
+                                           : null;
+
+        return CreateCommitmentTransactionModel(channel, CommitmentSpec.FromChannel(channel), side, commitmentNumber,
+                                                remotePerCommitmentPoint);
+    }
+
+    /// <inheritdoc />
+    public CommitmentTransactionModel CreateCommitmentTransactionModel(ChannelModel channel, CommitmentSpec spec,
+                                                                       CommitmentSide side, ulong commitmentNumber,
+                                                                       CompactPubKey? remotePerCommitmentPoint = null)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(spec);
+
         if (commitmentNumber > CommitmentNumber.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(commitmentNumber), commitmentNumber,
                                                   "Commitment numbers are 48-bit values");
@@ -46,28 +67,27 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
             throw new InvalidOperationException(
                 "Channel must have a FundingOutput to create a commitment transaction model");
 
-        // Create base output information
-        ToLocalOutputInfo? toLocalOutput = null;
-        ToRemoteOutputInfo? toRemoteOutput = null;
-        AnchorOutputInfo? localAnchorOutput = null;
-        AnchorOutputInfo? remoteAnchorOutput = null;
-        var offeredHtlcOutputs = new List<OfferedHtlcOutputInfo>();
-        var receivedHtlcOutputs = new List<ReceivedHtlcOutputInfo>();
-
-        // Get the HTLCs based on the commitment side
-        var htlcs = new List<Htlc>();
-        htlcs.AddRange(channel.LocalOfferedHtlcs?.ToList() ?? []);
-        htlcs.AddRange(channel.RemoteOfferedHtlcs?.ToList() ?? []);
+        // The remote holder's point must be given explicitly; ours comes from the signer by commitment number
+        switch (side)
+        {
+            case CommitmentSide.Remote when remotePerCommitmentPoint is null:
+                throw new ArgumentNullException(nameof(remotePerCommitmentPoint),
+                                                "A remote commitment needs the remote per-commitment point");
+            case CommitmentSide.Local when remotePerCommitmentPoint is not null:
+                throw new ArgumentException(
+                    "A local commitment derives its per-commitment point from the commitment number",
+                    nameof(remotePerCommitmentPoint));
+        }
 
         // Get basepoints from the signer instead of the old key set model
         var localBasepoints = _lightningSigner.GetChannelBasepoints(channel.LocalKeySet.KeyIndex);
-        var remoteBasepoints = new ChannelBasepoints(channel.RemoteKeySet!.FundingCompactPubKey,
+        var remoteBasepoints = new ChannelBasepoints(channel.RemoteKeySet.FundingCompactPubKey,
                                                      channel.RemoteKeySet.RevocationCompactBasepoint,
                                                      channel.RemoteKeySet.PaymentCompactBasepoint,
                                                      channel.RemoteKeySet.DelayedPaymentCompactBasepoint,
                                                      channel.RemoteKeySet.HtlcCompactBasepoint);
 
-        // Derive the commitment keys from the appropriate perspective
+        // Derive the commitment keys from the holder's perspective
         var commitmentKeys = side switch
         {
             // Our per-commitment point comes from the signer for this commitment number (never an index, NL-187)
@@ -75,43 +95,36 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                 channel.LocalKeySet.KeyIndex, localBasepoints, remoteBasepoints, commitmentNumber),
 
             CommitmentSide.Remote => _commitmentKeyDerivationService.DeriveRemoteCommitmentKeys(
-                localBasepoints, remoteBasepoints, channel.RemoteKeySet.CurrentPerCommitmentCompactPoint),
+                localBasepoints, remoteBasepoints, remotePerCommitmentPoint!.Value),
 
             _ => throw new ArgumentOutOfRangeException(nameof(side), side,
                                                        "You should use either Local or Remote commitment side.")
         };
 
         var hasAnchors = channel.ChannelConfig.OptionAnchorOutputs;
-        var feeRatePerKw = (ulong)channel.ChannelConfig.FeeRateAmountPerKw.Satoshi;
+        var feeRatePerKw = spec.FeeRatePerKw;
 
-        // Set initial amounts for to_local and to_remote outputs
-        var toLocalAmount = side == CommitmentSide.Local
-                                ? channel.LocalBalance
-                                : channel.RemoteBalance;
-
-        var toRemoteAmount = side == CommitmentSide.Local
-                                 ? channel.RemoteBalance
-                                 : channel.LocalBalance;
+        // "local"/"remote" in the spec are the local node; on a commitment they are the holder and the other side
+        var toLocalAmount = LightningMoney.MilliSatoshis(side == CommitmentSide.Local
+                                                             ? spec.ToLocalMsat
+                                                             : spec.ToRemoteMsat);
+        var toRemoteAmount = LightningMoney.MilliSatoshis(side == CommitmentSide.Local
+                                                              ? spec.ToRemoteMsat
+                                                              : spec.ToLocalMsat);
 
         // Every output of a commitment transaction is trimmed against the dust limit of its holder
         var dustLimitAmount = side == CommitmentSide.Local
                                   ? channel.ChannelConfig.LocalDustLimitAmount
                                   : channel.ChannelConfig.RemoteDustLimitAmount;
 
-        foreach (var htlc in htlcs)
+        var offeredHtlcOutputs = new List<OfferedHtlcOutputInfo>();
+        var receivedHtlcOutputs = new List<ReceivedHtlcOutputInfo>();
+        foreach (var htlc in spec.Htlcs)
         {
-            // Determine if this is an offered or received HTLC from the perspective of the commitment holder
+            // Offered or received from the perspective of the commitment holder
             var isOffered = side == CommitmentSide.Local
                                 ? htlc.Direction == HtlcDirection.Outgoing
                                 : htlc.Direction == HtlcDirection.Incoming;
-
-            // The HTLC amount comes out of the balance of the side that offered it
-            if (isOffered)
-                toLocalAmount = toLocalAmount > htlc.Amount ? toLocalAmount - htlc.Amount : LightningMoney.Zero;
-            else
-                toRemoteAmount = toRemoteAmount > htlc.Amount
-                                     ? toRemoteAmount - htlc.Amount
-                                     : LightningMoney.Zero;
 
             // Trim the HTLC if its amount minus the second-stage fee is below the holder's dust limit
             if (CommitmentFeeCalculator.IsHtlcTrimmed(htlc.Amount, isOffered, dustLimitAmount, feeRatePerKw,
@@ -119,21 +132,13 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                 continue;
 
             if (isOffered)
-            {
-                offeredHtlcOutputs.Add(new OfferedHtlcOutputInfo(
-                                           htlc,
-                                           commitmentKeys.LocalHtlcPubKey,
-                                           commitmentKeys.RemoteHtlcPubKey,
-                                           commitmentKeys.RevocationPubKey));
-            }
+                offeredHtlcOutputs.Add(new OfferedHtlcOutputInfo(htlc, commitmentKeys.LocalHtlcPubKey,
+                                                                 commitmentKeys.RemoteHtlcPubKey,
+                                                                 commitmentKeys.RevocationPubKey));
             else
-            {
-                receivedHtlcOutputs.Add(new ReceivedHtlcOutputInfo(
-                                            htlc,
-                                            commitmentKeys.LocalHtlcPubKey,
-                                            commitmentKeys.RemoteHtlcPubKey,
-                                            commitmentKeys.RevocationPubKey));
-            }
+                receivedHtlcOutputs.Add(new ReceivedHtlcOutputInfo(htlc, commitmentKeys.LocalHtlcPubKey,
+                                                                   commitmentKeys.RemoteHtlcPubKey,
+                                                                   commitmentKeys.RevocationPubKey));
         }
 
         // Base fee: feerate_per_kw * (724 or 1124 + 172 per untrimmed HTLC) / 1000, rounded down
@@ -148,55 +153,56 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
                              ? feePayerAmount - funderCost
                              : LightningMoney.Zero;
 
-        if (hasAnchors)
-        {
-            // to_local_anchor belongs to the commitment holder, to_remote_anchor to the other side
-            var holderFundingPubKey = side == CommitmentSide.Local
-                                          ? channel.LocalKeySet.FundingCompactPubKey
-                                          : channel.RemoteKeySet.FundingCompactPubKey;
-            var counterpartyFundingPubKey = side == CommitmentSide.Local
-                                                ? channel.RemoteKeySet.FundingCompactPubKey
-                                                : channel.LocalKeySet.FundingCompactPubKey;
-            localAnchorOutput = new AnchorOutputInfo(holderFundingPubKey, true);
-            remoteAnchorOutput = new AnchorOutputInfo(counterpartyFundingPubKey, false);
-        }
-
         // The channel reserve is an update-validation rule, never a transaction-building one: a commitment whose outputs
         // are both below the reserve (e.g. Appendix C "fee greater than funder amount") must still build (NL-196).
 
-        // Only create output if the amount is above the dust limit
+        // Outputs are whole satoshis (rounded down) and omitted below the holder's dust limit
+        var toSelfDelay = channel.ChannelConfig.ToSelfDelay;
+        ToLocalOutputInfo? toLocalOutput = null;
         if (toLocalAmount.Satoshi >= dustLimitAmount.Satoshi)
-        {
-            toLocalOutput = new ToLocalOutputInfo(toLocalAmount, commitmentKeys.LocalDelayedPubKey,
-                                                  commitmentKeys.RevocationPubKey,
-                                                  channel.ChannelConfig.ToSelfDelay);
-        }
+            toLocalOutput = new ToLocalOutputInfo(LightningMoney.Satoshis(toLocalAmount.Satoshi),
+                                                  commitmentKeys.LocalDelayedPubKey, commitmentKeys.RevocationPubKey,
+                                                  toSelfDelay);
 
+        ToRemoteOutputInfo? toRemoteOutput = null;
         if (toRemoteAmount.Satoshi >= dustLimitAmount.Satoshi)
         {
             var remotePubKey = side == CommitmentSide.Local
                                    ? channel.RemoteKeySet.PaymentCompactBasepoint
                                    : channel.LocalKeySet.PaymentCompactBasepoint;
 
-            toRemoteOutput =
-                new ToRemoteOutputInfo(toRemoteAmount, remotePubKey, channel.ChannelConfig.OptionAnchorOutputs);
+            toRemoteOutput = new ToRemoteOutputInfo(LightningMoney.Satoshis(toRemoteAmount.Satoshi), remotePubKey,
+                                                    hasAnchors);
         }
 
-        if (offeredHtlcOutputs.Count == 0 && receivedHtlcOutputs.Count == 0)
+        AnchorOutputInfo? localAnchorOutput = null;
+        AnchorOutputInfo? remoteAnchorOutput = null;
+        if (hasAnchors)
         {
-            // If no HTLCs and no to_local, we can remove our anchor output
-            if (toLocalOutput is null)
-                localAnchorOutput = null;
-
-            // If no HTLCs and no to_remote, we can remove their anchor output
-            if (toRemoteOutput is null)
-                remoteAnchorOutput = null;
+            // to_local_anchor belongs to the commitment holder, to_remote_anchor to the other side. Each exists only
+            // if its side's balance output exists or there are untrimmed HTLCs.
+            var holderFundingPubKey = side == CommitmentSide.Local
+                                          ? channel.LocalKeySet.FundingCompactPubKey
+                                          : channel.RemoteKeySet.FundingCompactPubKey;
+            var counterpartyFundingPubKey = side == CommitmentSide.Local
+                                                ? channel.RemoteKeySet.FundingCompactPubKey
+                                                : channel.LocalKeySet.FundingCompactPubKey;
+            if (toLocalOutput is not null || untrimmedHtlcCount > 0)
+                localAnchorOutput = new AnchorOutputInfo(holderFundingPubKey, true);
+            if (toRemoteOutput is not null || untrimmedHtlcCount > 0)
+                remoteAnchorOutput = new AnchorOutputInfo(counterpartyFundingPubKey, false);
         }
 
-        // Create and return the commitment transaction model
-        return new CommitmentTransactionModel(channel.CommitmentNumber!, commitmentNumber, fee, channel.FundingOutput!,
+        return new CommitmentTransactionModel(channel.CommitmentNumber, commitmentNumber, fee, channel.FundingOutput,
                                               localAnchorOutput, remoteAnchorOutput, toLocalOutput, toRemoteOutput,
-                                              offeredHtlcOutputs, receivedHtlcOutputs);
+                                              offeredHtlcOutputs, receivedHtlcOutputs)
+        {
+            FeeRatePerKw = feeRatePerKw,
+            HasAnchors = hasAnchors,
+            ToSelfDelay = toSelfDelay,
+            LocalDelayedPubKey = commitmentKeys.LocalDelayedPubKey,
+            RevocationPubKey = commitmentKeys.RevocationPubKey
+        };
     }
 
     private static ref LightningMoney GetFeePayerAmount(CommitmentSide side, bool isInitiator,
