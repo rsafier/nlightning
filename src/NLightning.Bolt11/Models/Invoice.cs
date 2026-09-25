@@ -851,7 +851,9 @@ public partial class Invoice
             return;
         }
 
+        // BOLT 11: with an `n` field the signature MUST be low-S (high-S is only allowed for key recovery)
         if (NBitcoin.Crypto.ECDSASignature.TryParseFromCompact(Signature.Signature, out var ecdsa)
+         && ecdsa.IsLowS
          && PayeePubKey.Verify(nBitcoinHash, ecdsa))
             return;
 
