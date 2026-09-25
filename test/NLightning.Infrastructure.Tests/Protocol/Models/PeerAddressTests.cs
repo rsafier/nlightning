@@ -1,5 +1,4 @@
 using System.Net;
-using NBitcoin;
 using NLightning.Domain.Crypto.ValueObjects;
 
 namespace NLightning.Infrastructure.Tests.Protocol.Models;
@@ -28,20 +27,34 @@ public class PeerAddressTests
     public void Given_HttpAddress_When_ConstructingPeerAddress_Then_HostAndPortAreCorrectlyResolved()
     {
         // Arrange
+        // "localhost" resolves from the hosts file, so this stays hermetic (no live DNS).
         CompactPubKey pubKey =
             Convert.FromHexString("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7");
-        const string address = "http://dnstest.nlightn.ing:8080/";
+        const string address = "http://localhost:8080/";
 
         // Act
         var peerAddress = new PeerAddress(pubKey, address);
 
         // Assert
         Assert.Equal(pubKey, peerAddress.PubKey);
-        Assert.Equal(peerAddress.Host.IsIPv4()
-                         ? IPAddress.Parse("127.0.0.1")
-                         : IPAddress.Parse("0000:0000:0000:0000:0000:0000:0000:0001"),
-                     peerAddress.Host);
+        Assert.True(IPAddress.IsLoopback(peerAddress.Host));
         Assert.Equal(8080, peerAddress.Port);
+    }
+
+    [Fact]
+    public void Given_SingleStringHttpAddress_When_ConstructingPeerAddress_Then_HostAndPortAreCorrectlyResolved()
+    {
+        // Arrange
+        const string address = "028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7@http://localhost:9735/";
+
+        // Act
+        var peerAddress = new PeerAddress(address);
+
+        // Assert
+        Assert.Equal("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7",
+                     peerAddress.PubKey.ToString());
+        Assert.True(IPAddress.IsLoopback(peerAddress.Host));
+        Assert.Equal(9735, peerAddress.Port);
     }
 
     [Fact]

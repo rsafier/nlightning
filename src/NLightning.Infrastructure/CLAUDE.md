@@ -40,7 +40,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 ## Tests & commands
 - `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121`
 - `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` (the CI gate; `dotnet build` does not catch these)
-- `dotnet test test/NLightning.Infrastructure.Tests --filter "FullyQualifiedName!~Given_HttpAddress_When_ConstructingPeerAddress"` (that test resolves `dnstest.nlightn.ing` via live DNS)
+- `dotnet test test/NLightning.Infrastructure.Tests` (hermetic; the `PeerAddressTests` HTTP cases resolve `localhost` only)
 - CI runs `dotnet test --filter 'FullyQualifiedName!~Docker'` (Docker tests live in `test/NLightning.Integration.Tests/Docker/`).
 - BOLT 8 vectors: `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~BOLT8"`
 - Crypto provider tests are `#if`-gated: `SodiumCryptoProviderTests` is `#if CRYPTO_LIBSODIUM` (default configs), `NativeCryptoProviderTests` is `#if CRYPTO_NATIVE` (`*.Native`).

@@ -44,7 +44,7 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 
 ## Gotchas
 - `!~Docker` is a substring filter, so keep Docker tests in `NLightning.Integration.Tests.Docker` and don't put "Docker" in other test names.
-- `PeerAddressTests.Given_HttpAddress_...` needs live DNS and fails offline. That is an environment issue, not a regression.
+- Keep tests hermetic: no live DNS or internet outside the Docker namespace. `PeerAddressTests` HTTP cases resolve `localhost` for that reason.
 - The Docker fixtures force-remove containers named miner/alice/bob/carol, build `../../../../Docker/custom_lnd` relative to bin, and share one regtest network across the `regtest` collection, so state carries over between tests. Always `PortPoolUtil.ReleasePort` in Dispose.
 - Count active tests with `grep -E '^\s*\[(Fact|Theory)'`, because many files are commented out.
 
