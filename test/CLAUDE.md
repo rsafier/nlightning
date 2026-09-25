@@ -3,7 +3,7 @@
 The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cutting spec-vector and Docker tests. Tests must never be referenced from src/.
 
 ## Layout
-- `NLightning.Domain.Tests`: value objects, Money, FeatureSet (BOLT 9), TLV/BigSize models, payloads, CommitmentNumber, CommitmentTransactionModelFactory, BitReader/Writer.
+- `NLightning.Domain.Tests`: value objects, Money, FeatureSet (BOLT 9), TLV/BigSize models, payloads, CommitmentNumber, CommitmentTransactionModelFactory, BitReader/Writer, and the commitment state machine (`Channels/Commitments/`: exhaustive `HtlcStateTableTests`, per-rule tests named after the BOLT 2 plan matrix, and `CommitmentsTestKit.cs` with fake signer/verifier ports and the two-engine `CommitmentPair` that checks spec agreement and conservation after every signature).
 - `NLightning.Application.Tests`: channel handlers (OpenChannel1, AcceptChannel1, FundingCreated, FundingSigned) and PeerManager. Moq-heavy.
 - `NLightning.Infrastructure.Tests`: crypto providers (`#if CRYPTO_LIBSODIUM` / `#if CRYPTO_NATIVE`), transport (BOLT 8 states/services), TLV converters, MessageService, PeerService (`PeerServiceTests`: gossip/stfu/networks; `PeerServiceLifecycleTests`: init handshake/routing), PeerCommunicationService (`PeerCommunicationServiceTests`: ping limits/ping loop start/disconnect; `PeerCommunicationServiceLifecycleTests`: ping/pong, init timeout), PeerAddress.
 - `NLightning.Infrastructure.Bitcoin.Tests`: builders, outputs (`Outputs/*OutputTests.cs`), output comparer, ECDH, signer, BlockchainMonitor. There are no `Transactions/` tests because the src `Transactions/*Transaction.cs` classes are commented out.
