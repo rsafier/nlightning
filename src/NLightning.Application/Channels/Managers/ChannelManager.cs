@@ -195,7 +195,9 @@ public class ChannelManager : IChannelManager
             return;
         }
 
-        var staleChannels = _channelMemoryRepository.FindChannels(c => c.FundingCreatedAtBlockHeight <= heightLimit);
+        // BOLT 2: only the fundee SHOULD forget a channel whose funding transaction was not seen after 2016 blocks.
+        // Only consider channels still awaiting funding confirmation, with a real (non-zero) creation height.
+        var staleChannels = _channelMemoryRepository.FindChannels(c => IsAwaitingFundingAndStale(c, heightLimit));
 
         _logger.LogDebug(
             "Forgetting stale channels created before block height {HeightLimit}, found {StaleChannelCount} channels",
@@ -228,42 +230,59 @@ public class ChannelManager : IChannelManager
         }
     }
 
+    private static bool IsAwaitingFundingAndStale(ChannelModel channel, int heightLimit)
+    {
+        return !channel.IsInitiator
+            && channel.State is ChannelState.V1FundingSigned or ChannelState.ReadyForThem
+            && channel.FundingCreatedAtBlockHeight > 0
+            && channel.FundingCreatedAtBlockHeight <= heightLimit;
+    }
+
     private void ConfirmUnconfirmedChannels(int currentHeight)
     {
+        // Only channels still waiting for our own funding confirmation. ReadyForUs channels were already confirmed
+        // for us (and sent channel_ready), so re-running the confirmation for them would bump the commitment number
+        // and re-send channel_ready on every block.
+        var unconfirmedChannels = _channelMemoryRepository.FindChannels(IsAwaitingOurFundingConfirmation);
+        if (unconfirmedChannels.Count == 0)
+            return;
+
         using var scope = _serviceProvider.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
 
-        // Try to fetch the channel from memory
-        var unconfirmedChannels =
-            _channelMemoryRepository.FindChannels(c => c.State is ChannelState.ReadyForThem or ChannelState.ReadyForUs);
-
         foreach (var unconfirmedChannel in unconfirmedChannels)
         {
-            // If the channel was created before the current block height, we can consider it confirmed
-            if (unconfirmedChannel.FundingCreatedAtBlockHeight <= currentHeight)
+            if (unconfirmedChannel.FundingOutput?.TransactionId is null)
             {
-                if (unconfirmedChannel.FundingOutput.TransactionId is null)
-                {
-                    _logger.LogError("Channel {ChannelId} has no funding transaction Id, cannot confirm",
-                                     unconfirmedChannel.ChannelId);
-                    continue;
-                }
-
-                var watchedTransaction =
-                    uow.WatchedTransactionDbRepository.GetByTransactionIdAsync(
-                        unconfirmedChannel.FundingOutput.TransactionId.Value).GetAwaiter().GetResult();
-                if (watchedTransaction is null)
-                {
-                    _logger.LogError("Watched transaction for channel {ChannelId} not found",
-                                     unconfirmedChannel.ChannelId);
-                    continue;
-                }
-
-                // Create a TransactionConfirmedEventArgs and call the event handler
-                var args = new TransactionConfirmedEventArgs(watchedTransaction, (uint)currentHeight);
-                HandleFundingConfirmationAsync(this, args);
+                _logger.LogError("Channel {ChannelId} has no funding transaction Id, cannot confirm",
+                                 unconfirmedChannel.ChannelId);
+                continue;
             }
+
+            var watchedTransaction =
+                uow.WatchedTransactionDbRepository.GetByTransactionIdAsync(
+                    unconfirmedChannel.FundingOutput.TransactionId.Value).GetAwaiter().GetResult();
+            if (watchedTransaction is null)
+            {
+                _logger.LogError("Watched transaction for channel {ChannelId} not found",
+                                 unconfirmedChannel.ChannelId);
+                continue;
+            }
+
+            // Only a watched transaction that already reached its required depth (e.g. while we were offline) is
+            // confirmed here; pending ones are confirmed by the blockchain monitor when they reach the depth.
+            if (!watchedTransaction.IsCompleted)
+                continue;
+
+            // Create a TransactionConfirmedEventArgs and call the event handler
+            var args = new TransactionConfirmedEventArgs(watchedTransaction, (uint)currentHeight);
+            HandleFundingConfirmationAsync(this, args);
         }
+    }
+
+    private static bool IsAwaitingOurFundingConfirmation(ChannelModel channel)
+    {
+        return channel.State is ChannelState.V1FundingSigned or ChannelState.ReadyForThem;
     }
 
     private void HandleFundingConfirmationAsync(object? sender, TransactionConfirmedEventArgs args)
@@ -305,6 +324,15 @@ public class ChannelManager : IChannelManager
 
             _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
             _channelMemoryRepository.AddChannel(channel);
+        }
+
+        // Funding confirmation is only processed once per channel
+        if (!IsAwaitingOurFundingConfirmation(channel))
+        {
+            _logger.LogDebug("Ignoring funding confirmation for channel {ChannelId} in state {State}", channelId,
+                             Enum.GetName(channel.State));
+            scope.Dispose();
+            return;
         }
 
         var fundingConfirmedHandler = scope.ServiceProvider.GetRequiredService<FundingConfirmedMessageHandler>();

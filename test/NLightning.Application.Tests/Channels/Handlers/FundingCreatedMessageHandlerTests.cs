@@ -229,6 +229,41 @@ public class FundingCreatedMessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_ValidMessage_When_HandleAsync_Then_FundingCreatedAtBlockHeightIsCurrentHeight()
+    {
+        // Arrange
+        const uint currentHeight = 850_000;
+        _mockBlockchainMonitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(currentHeight);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelState state) =>
+            {
+                state = ChannelState.V1Opening;
+            })
+           .Returns(true);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                out It.Ref<ChannelModel>.IsAny!))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelModel? channel) =>
+            {
+                channel = _channel;
+            })
+           .Returns(true);
+        uint persistedHeight = 0;
+        _mockChannelDbRepository.Setup(x => x.AddAsync(It.IsAny<ChannelModel>()))
+                                .Callback((ChannelModel c) => persistedHeight = c.FundingCreatedAtBlockHeight)
+                                .Returns(Task.CompletedTask);
+
+        // Act
+        await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.Equal(currentHeight, _channel.FundingCreatedAtBlockHeight);
+        Assert.Equal(currentHeight, persistedHeight);
+    }
+
+    [Fact]
     public async Task HandleAsync_WhenCurrentStateIsNotNone_ThrowsChannelErrorException()
     {
         // Act & Assert
