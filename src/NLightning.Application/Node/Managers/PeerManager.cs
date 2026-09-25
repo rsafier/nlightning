@@ -9,6 +9,7 @@ namespace NLightning.Application.Node.Managers;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -48,8 +49,21 @@ public sealed class PeerManager : IPeerManager
     private readonly ITcpService _tcpService;
     private readonly IServiceProvider _serviceProvider;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
+    private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
+    private CancellationTokenSource _reconnectCts = new();
 
     private CancellationTokenSource? _cts;
+
+    /// <summary>
+    /// Wait before the first reconnection attempt to a peer we could not reach on startup. Doubles after every
+    /// failed attempt, up to <see cref="ReconnectMaxDelay"/>.
+    /// </summary>
+    internal TimeSpan ReconnectInitialDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The longest wait between two reconnection attempts.
+    /// </summary>
+    internal TimeSpan ReconnectMaxDelay { get; set; } = TimeSpan.FromMinutes(10);
 
     public PeerManager(IChannelManager channelManager, ILogger<PeerManager> logger,
                        IPeerServiceFactory peerServiceFactory, ITcpService tcpService, IServiceProvider serviceProvider)
@@ -67,6 +81,7 @@ public sealed class PeerManager : IPeerManager
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _reconnectCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
 
         _tcpService.OnNewPeerConnected += HandleNewPeerConnected;
 
@@ -74,18 +89,24 @@ public sealed class PeerManager : IPeerManager
         using var scope = _serviceProvider.CreateScope();
         using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var peers = await uow.GetPeersForStartupAsync();
+
+        // Register every channel of every peer (memory and signer) before the first connection: a peer may send
+        // channel_reestablish right after init (NL-201). Channels of unreachable peers are registered too, so
+        // blockchain events (funding confirmations, stale-channel handling) still apply to them (NL-052).
+        foreach (var peer in peers)
+            await RegisterExistingChannelsAsync(peer);
+
         foreach (var peer in peers)
         {
-            // Register the peer's channels even if we can't reconnect now, so blockchain events (funding
-            // confirmations, stale-channel handling) still apply to them
-            RegisterExistingChannels(peer);
-
             try
             {
                 _ = await ConnectToPeerAsync(peer.PeerAddressInfo, uow);
-                if (!_peers.ContainsKey(peer.NodeId))
-                    // TODO: Retry the connection with backoff
-                    _logger.LogWarning("Unable to connect to peer {PeerId} on startup", peer.NodeId);
+                continue;
+            }
+            catch (InvalidOperationException)
+            {
+                // Already connected (the peer connected to us first)
+                continue;
             }
             catch (ConnectionException)
             {
@@ -95,6 +116,9 @@ public sealed class PeerManager : IPeerManager
             {
                 _logger.LogError(e, "Error connecting to peer {PeerId} on startup", peer.NodeId);
             }
+
+            if (HasActiveChannels(peer))
+                StartReconnectLoop(peer);
         }
 
         await uow.SaveChangesAsync();
@@ -106,6 +130,17 @@ public sealed class PeerManager : IPeerManager
     {
         if (_cts is null)
             throw new InvalidOperationException($"{nameof(PeerManager)} is not running");
+
+        // Stop reconnecting first, so no loop connects a peer while we disconnect them
+        await _reconnectCts.CancelAsync();
+        try
+        {
+            await Task.WhenAll(_reconnectLoops.Values);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Reconnect loop ended with an error");
+        }
 
         foreach (var peerKey in _peers.Keys)
             try
@@ -170,24 +205,83 @@ public sealed class PeerManager : IPeerManager
         return _peers.TryGetValue(peerId, out var session) ? session.Peer : null;
     }
 
-    private void RegisterExistingChannels(PeerModel peer)
+    /// <summary>
+    /// Registers (and waits for) every channel of <paramref name="peer"/> that is not Closed or Stale. A channel that
+    /// fails to register is logged and skipped; the others are still registered.
+    /// </summary>
+    private async Task RegisterExistingChannelsAsync(PeerModel peer)
     {
         if (peer.Channels is not { Count: > 0 })
             return;
 
-        // Only register channels that are not closed or stale
-        foreach (var channel in peer.Channels.Where(c => c.State is not (ChannelState.Closed or ChannelState.Stale)))
+        foreach (var channel in peer.Channels.Where(IsActiveChannel))
         {
             try
             {
-                // We don't care about the result here, as we just want to register the existing channels
-                _ = _channelManager.RegisterExistingChannelAsync(channel);
+                await _channelManager.RegisterExistingChannelAsync(channel);
             }
             catch (Exception e)
             {
                 _logger.LogError(e, "Error registering channel {ChannelId} for peer {PeerId} on startup",
                                  channel.ChannelId, peer.NodeId);
             }
+        }
+    }
+
+    private static bool IsActiveChannel(ChannelModel channel) =>
+        channel.State is not (ChannelState.Closed or ChannelState.Stale);
+
+    private static bool HasActiveChannels(PeerModel peer) =>
+        peer.Channels is { Count: > 0 } && peer.Channels.Any(IsActiveChannel);
+
+    /// <summary>
+    /// Keeps trying to connect to a peer we could not reach on startup (it has channels with us), with exponential
+    /// backoff, until it is connected (by us or by itself) or the manager stops.
+    /// </summary>
+    private void StartReconnectLoop(PeerModel peer)
+    {
+        var token = _reconnectCts.Token;
+        _reconnectLoops.GetOrAdd(peer.NodeId, _ => Task.Run(() => ReconnectWithBackoffAsync(peer, token), token));
+    }
+
+    private async Task ReconnectWithBackoffAsync(PeerModel peer, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var delay = ReconnectInitialDelay;
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(delay, cancellationToken);
+
+                if (_peers.ContainsKey(peer.NodeId))
+                    return;
+
+                try
+                {
+                    await ConnectToPeerAsync(peer.PeerAddressInfo);
+                    _logger.LogInformation("Reconnected to peer {PeerId}", peer.NodeId);
+                    return;
+                }
+                catch (InvalidOperationException)
+                {
+                    // The peer connected to us in the meantime
+                    return;
+                }
+                catch (Exception e)
+                {
+                    delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, ReconnectMaxDelay.Ticks));
+                    _logger.LogDebug(e, "Unable to reconnect to peer {PeerId}, retrying in {Delay}", peer.NodeId,
+                                     delay);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Stopping
+        }
+        finally
+        {
+            _reconnectLoops.TryRemove(peer.NodeId, out _);
         }
     }
 
