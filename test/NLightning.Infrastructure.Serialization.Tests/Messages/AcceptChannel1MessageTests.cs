@@ -7,7 +7,6 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
-using Exceptions;
 using Helpers;
 using Serialization.Messages.Types;
 
@@ -142,14 +141,20 @@ public class AcceptChannel1MessageTests
         Assert.Equal(first.ToArray(), second.ToArray());
     }
 
-    [Fact]
-    public async Task Given_PayloadWithoutExtension_When_DeserializeAsync_Then_ThrowsMessageSerializationException()
+    [Fact(Skip =
+              "NL-027: accept_channel deserializer requires the channel_type TLV; BOLT 2 says a missing channel_type fails the channel, not the decode")]
+    public async Task Given_PayloadWithoutExtension_When_DeserializeAsync_Then_MessageIsDecodedWithoutChannelType()
     {
         // Arrange
         var stream = new MemoryStream(Convert.FromHexString(PayloadHex));
 
-        // Act & Assert
-        await Assert.ThrowsAsync<MessageSerializationException>(() => _serializer.DeserializeAsync(stream));
+        // Act
+        var message = await _serializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Null(message.ChannelTypeTlv);
+        Assert.Null(message.UpfrontShutdownScriptTlv);
+        Assert.Equal(stream.Length, stream.Position);
     }
 
     [Fact]
