@@ -37,7 +37,7 @@ This project is the NBitcoin-backed implementation of the Domain's Bitcoin and c
 
 ## Tests
 - `dotnet test test/NLightning.Infrastructure.Bitcoin.Tests/NLightning.Infrastructure.Bitcoin.Tests.csproj` (27 uncommented `[Fact]`/`[Theory]` methods; `Outputs/BaseOutputTests.cs`, `FundingOutputTests.cs`, `ToRemoteOutputTests.cs`, `ChangeOutputTests.cs` and everything in `Transactions/` are commented out).
-- BOLT 3 vectors: `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Bolt3IntegrationTests"`. The Appendix B body is commented out, and the Appendix F anchor vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are not referenced by any test.
+- BOLT 3 vectors: `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Bolt3IntegrationTests"`. The Appendix B body is commented out, and the Appendix F anchor commitment vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are checked by txid plus both signatures. The Appendix C/F fixtures move received-HTLC amounts to the remote balance, because the factory takes each HTLC out of the offerer's balance while the vectors take all of them out of to_local.
 - CI-style run: `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121 && dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'`. Never drop the Docker filter unless you want LNUnit containers.
 
 ## Gotchas (verified bugs)
