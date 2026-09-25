@@ -49,7 +49,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `TlvConverterFactory` is registered in `NLightning.Infrastructure.Bitcoin/DependencyInjection.cs`, not here.
 - `Transport` is both a namespace (`NLightning.Infrastructure.Transport`) and the internal class `Transport/Encryption/Transport.cs`. Refer to the class as `Encryption.Transport`.
 - `TransportService.WriteMessageAsync` encrypts BEFORE taking the write semaphore. Concurrent senders can reorder nonces.
-- `TransportService.ReadResponseAsync` uses `ReadAsync`, not `ReadExactlyAsync`, so a partial TCP read kills the connection.
+- `TransportService.ReadResponseAsync` must keep using `ReadExactlyAsync` for the 18-byte header and the body; a single `ReadAsync` can return a short read and used to kill the connection (NL-104). EOF surfaces as `EndOfStreamException` → `ConnectionException`.
 - `MessageService.ReceiveMessage` deserializes synchronously under a lock on the read loop.
 - `PingPongService.StartPingAsync`: the pong-timeout disconnect path is dead. A timeout makes `Task.Delay` Canceled (not Faulted), so the loop `continue`s and re-pings instead of raising `DisconnectEvent`.
 - `RemoteAddressTlvConverter`: Tor v3 decode reads 36 address bytes (`Value[1..37]`) instead of 35; type 5 (DNS) encode overwrites `customAddressBytes[1]` and decode expects length+3 instead of length+4. No tests exist. (`TlvStreamSerializer` now finds converters by runtime type, so it no longer throws for `RemoteAddressTlv`.)

@@ -1,15 +1,19 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
-using NLightning.Domain.Serialization.Interfaces;
 using NLightning.Tests.Utils;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Tests.Transport.Services;
 
+using Domain.Crypto.ValueObjects;
+using Domain.Serialization.Interfaces;
 using Domain.Transport;
 using Exceptions;
+using Infrastructure.Protocol.Constants;
+using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Services;
 
 // ReSharper disable AccessToDisposedClosure
@@ -179,6 +183,164 @@ public class TransportServiceTests
         {
             tcpListener.Dispose();
             PortPoolUtil.ReleasePort(availablePort);
+        }
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsFrameInSmallTcpChunks_When_Reading_Then_MessageIsReceived()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, 2000).Select(i => (byte)i).ToArray();
+        var frame = FramingTransport.BuildFrame(payload, 0);
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        connection.Service.ExceptionRaised += (_, e) => received.TrySetException(e);
+        var peerStream = connection.Peer.GetStream();
+
+        // Act - header and body both arrive split across several TCP segments
+        foreach (var (start, end) in new[] { (0, 5), (5, 18), (18, 700), (700, frame.Length) })
+        {
+            await peerStream.WriteAsync(frame.AsMemory(start, end - start), TestContext.Current.CancellationToken);
+            await peerStream.FlushAsync(TestContext.Current.CancellationToken);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+        }
+
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
+    /// <summary>
+    /// Plaintext BOLT 8-shaped framing: header = 2-byte length, 4-byte sequence number, 12 zero bytes;
+    /// body = payload followed by a 16-byte zero "MAC". The sequence number stands in for the nonce.
+    /// </summary>
+    private sealed class FramingTransport : ITransport
+    {
+        private readonly ManualResetEventSlim _secondWriteEntered = new();
+        private int _nextSequence;
+
+        public bool HoldFirstWrite { get; init; }
+
+        public TaskCompletionSource FirstWriteEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public static byte[] BuildFrame(ReadOnlySpan<byte> payload, int sequence)
+        {
+            var frame = new byte[ProtocolConstants.MessageHeaderSize + payload.Length + 16];
+            BinaryPrimitives.WriteUInt16BigEndian(frame, (ushort)payload.Length);
+            BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(2), sequence);
+            payload.CopyTo(frame.AsSpan(ProtocolConstants.MessageHeaderSize));
+            return frame;
+        }
+
+        public int WriteMessage(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
+        {
+            var sequence = Interlocked.Increment(ref _nextSequence) - 1;
+            if (HoldFirstWrite)
+            {
+                if (sequence == 0)
+                {
+                    // Give a concurrent sender the chance to encrypt (and write) before this one finishes
+                    FirstWriteEntered.TrySetResult();
+                    if (_secondWriteEntered.Wait(TimeSpan.FromMilliseconds(500)))
+                        Thread.Sleep(200);
+                }
+                else
+                {
+                    _secondWriteEntered.Set();
+                }
+            }
+
+            var frame = BuildFrame(payload, sequence);
+            if (frame.Length > messageBuffer.Length)
+                throw new ArgumentException("Message buffer does not have enough space to hold the ciphertext.");
+
+            frame.CopyTo(messageBuffer);
+            return frame.Length;
+        }
+
+        public int ReadMessageLength(ReadOnlySpan<byte> lc) => BinaryPrimitives.ReadUInt16BigEndian(lc) + 16;
+
+        public int ReadMessagePayload(ReadOnlySpan<byte> message, Span<byte> payloadBuffer)
+        {
+            message[..^16].CopyTo(payloadBuffer);
+            return message.Length - 16;
+        }
+
+        public void Dispose()
+        {
+            _secondWriteEntered.Dispose();
+        }
+    }
+
+    private sealed class ScriptedHandshakeService(ITransport transport) : IHandshakeService
+    {
+        private int _step;
+
+        public bool IsInitiator => true;
+        public CompactPubKey? RemoteStaticPublicKey { get; } = new Key().PubKey.ToBytes();
+
+        public int PerformStep(ReadOnlySpan<byte> inMessage, Span<byte> outMessage, out ITransport? outTransport)
+        {
+            _step++;
+            outTransport = _step == 2 ? transport : null;
+            return _step == 1 ? 50 : 66;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ConnectedTransportService : IDisposable
+    {
+        private readonly TcpListener _listener;
+
+        public TransportService Service { get; }
+        public TcpClient Peer { get; }
+
+        private ConnectedTransportService(TcpListener listener, TransportService service, TcpClient peer)
+        {
+            _listener = listener;
+            Service = service;
+            Peer = peer;
+        }
+
+        public static async Task<ConnectedTransportService> CreateAsync(ITransport transport,
+                                                                        IMessageSerializer serializer)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+
+            var acceptTask = Task.Run(async () =>
+            {
+                var peer = await listener.AcceptTcpClientAsync();
+                peer.NoDelay = true;
+                var stream = peer.GetStream();
+                var buffer = new byte[66];
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, 50));
+                await stream.WriteAsync(buffer.AsMemory(0, 50));
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, 66));
+                return peer;
+            });
+
+            var client = new TcpClient();
+            await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
+            var service = new TransportService(new Mock<ILogger>().Object, serializer, TimeSpan.FromSeconds(30),
+                                               new ScriptedHandshakeService(transport), client);
+            await service.InitializeAsync();
+
+            return new ConnectedTransportService(listener, service, await acceptTask);
+        }
+
+        public void Dispose()
+        {
+            Service.Dispose();
+            Peer.Dispose();
+            _listener.Dispose();
         }
     }
 }

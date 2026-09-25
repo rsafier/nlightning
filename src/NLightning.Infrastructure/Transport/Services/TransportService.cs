@@ -262,20 +262,11 @@ internal sealed class TransportService : ITransportService
                 if (_tcpClient is null || !IsSocketConnected())
                     throw new InvalidOperationException("TcpClient is not connected while trying to read a message");
 
-                // Read response
+                // Read the encrypted header; a TCP read may return fewer bytes than requested
                 var stream = _tcpClient.GetStream();
-                var lenRead = await stream.ReadAsync(memoryBuffer[..ProtocolConstants.MessageHeaderSize], _cts.Token);
+                await stream.ReadExactlyAsync(memoryBuffer[..ProtocolConstants.MessageHeaderSize], _cts.Token);
                 if (_cts.IsCancellationRequested)
                     break;
-
-                if (lenRead != ProtocolConstants.MessageHeaderSize)
-                {
-                    if (!IsSocketConnected() || lenRead == 0)
-                        throw new ConnectionException(
-                            "TcpClient is not connected while trying to read a message header");
-
-                    throw new ConnectionException("Peer sent wrong length");
-                }
 
                 var messageLen =
                     _transport.ReadMessageLength(memoryBuffer[..ProtocolConstants.MessageHeaderSize].Span);
@@ -285,17 +276,11 @@ internal sealed class TransportService : ITransportService
                 if (messageLen > ProtocolConstants.MaxMessageLength)
                     throw new ConnectionException("Peer sent message too long");
 
-                if (!IsSocketConnected())
-                    throw new ConnectionException("TcpClient is not connected while trying to read a message body");
-
-                lenRead = await stream.ReadAsync(memoryBuffer[..messageLen], _cts.Token);
+                await stream.ReadExactlyAsync(memoryBuffer[..messageLen], _cts.Token);
                 if (_cts.IsCancellationRequested)
                     break;
 
-                if (lenRead != messageLen)
-                    throw new ConnectionException("Peer sent wrong body length");
-
-                messageLen = _transport.ReadMessagePayload(memoryBuffer[..lenRead].Span, buffer);
+                messageLen = _transport.ReadMessagePayload(memoryBuffer[..messageLen].Span, buffer);
 
                 // Raise event
                 var messageStream = new MemoryStream(buffer[..messageLen]);
