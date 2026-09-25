@@ -3,7 +3,7 @@
 This plan is for agents that will implement BOLT 4 (Sphinx onion routing) in this repo. Work through it one task at a time. Every repo claim cites a repo-relative path. Claims marked **(unverified)** have not been checked against code and should be confirmed before you rely on them.
 
 - Spec source: `lightning/bolts` master, `04-onion-routing.md`, `02-peer-protocol.md` (HTLC messages), `01-messaging.md` (BigSize/TLV). Vector JSON files live at `https://raw.githubusercontent.com/lightning/bolts/master/bolt04/<name>.json`.
-- Status: **M1 and M2 are done** on `wip/fafo`: crypto primitives, canonical BigSize, truncated ints, strict/open TLV streams, OnionPacket and onion TLV types, Sphinx construct/peel, hop payload serializer/validator and the replay cache. See §5 "M1/M2 as built" for the as-built file list and the deviations from this plan. §2 and §4 describe the pre-M1 design and are kept for reference; §3 is updated with the M1 status. M3 onward is not started, and nothing in Application calls the onion code yet.
+- Status: **M1 and M2 are done** on `wip/fafo`: crypto primitives, canonical BigSize, truncated ints, strict/open TLV streams, OnionPacket and onion TLV types, Sphinx construct/peel, hop payload serializer/validator and the replay cache. See §5 "M1/M2 as built" for the as-built file list and the deviations from this plan. §2 and §4 describe the pre-M1 design and are kept for reference; §3 is updated with the M1 status. **M3 (legacy error onions) is done** too (`wip/fafo` @ `3c625e1`): failure message model/serializer, create/wrap/decrypt byte-exact against `onion-error-test.json` and the inline Returning Errors trace, malformed conversion and an origin-side interpreter; see §5 "M3 as built". M3b (attribution_data), M4, M5 and M6 are not started, and nothing in Application calls the onion code yet (the BOLT 2 plan wires it in N6/N8).
 
 ---
 
@@ -377,7 +377,7 @@ Verification on `wip/fafo` HEAD (finalizer run):
 - **`OnionPacket`:**
   - It is a `readonly struct` over one byte array, and its constructors take any hop_payloads length.
   - There is no `OnionPacketTypeSerializer`: update_add_htlc keeps raw bytes and the fixed length is enforced at the payload.
-  - `FailureTlvTypes`, `FailureMessage`, `DecryptedFailure` and `IFailureOnionService` are M3 and do not exist yet.
+  - `FailureMessage`, `DecryptedFailure` and `IFailureOnionService` came with M3 (see "M3 as built"); `FailureTlvTypes` was not needed.
 - **`HopPayloadValidator`:** it is a static class, `Validate`/`TryValidate(payload, isFinalHop, hasUpdateAddPathKey)`.
   - Blinded hops reject every TLV outside the allowed set, including unknown odd TLVs.
   - A non-blinded final hop that carries `short_channel_id` is accepted, because that is a writer-only rule.
@@ -389,18 +389,20 @@ Verification on `wip/fafo` HEAD (finalizer run):
 
 **Open follow-ups going into M3/M4** (not done in M1/M2):
 - **Feature defaults:** done. `OptionRouteBlinding` and `OptionAttributionData` default to No and are experimental-gated (NL-074, NL-206); take each out of `FeatureOptions.ExperimentalFeatures` when M5/M3b lands.
-- **M3:** failure message model/serializer, error-packet create/wrap/decrypt (27 constant iterations), malformed conversion, and `onion-error-test.json` packet checks. The `um`/`ammag` keys are already derivable through `SphinxKeyGenerator`.
+- **M3:** done (see "M3 as built").
 - **`current_path_key` (TLV 12):** it is still only length/prefix-checked. M5 must curve-validate it and map failures to `invalid_onion_blinding`.
 - **M4 prerequisites:**
   - The replay cache must become cltv-keyed and persistent.
   - The per-HTLC shared secret must be persisted.
-  - Done: the `ShortChannelId(ulong)` masks (NL-101) and the SCID tx index (NL-102) are fixed; scid aliases are persisted (NL-103, NL-209). The real SCID is not persisted yet (NL-225).
+  - Done: the `ShortChannelId(ulong)` masks (NL-101) and the SCID tx index (NL-102) are fixed; scid aliases are persisted (NL-103, NL-209). The real SCID is persisted (NL-225, 2d1fca6).
   - Done: Application.Tests runs under `dotnet test` (NL-167).
   - Done: `IHopPayloadSerializer` lives in Domain and the serialization DI is self-sufficient (NL-075, NL-076).
 - **Unused vectors:** only `route-blinding-test.json` (M5), apart from the loader test. `blinded-onion-message-onion-test.json` is used by `OnionVectorTests.Given_BlindedOnionMessageVector_When_PeelingChain_Then_EachNextPacketMatches` (NL-183).
 - **CI checks:** the JS/WASM ChaCha20 path is verified only in CI `Release.Wasm`. The Docker DI (`AbcNetworkTests`, `ChannelOpeningFlowTests`) calls `AddInfrastructureServices`, `AddSerializationInfrastructureServices` and `AddBitcoinInfrastructure`, so it already gets the new singletons. Mirror any M4 hand registrations there.
 
-### M3: Failure messages (legacy error onion)
+### M3: Failure messages (legacy error onion) — DONE
+
+All of M3-T1..T3 are done; M3b is not started. For the as-built files and deviations, see "M3 as built" below.
 
 | Task | Files | Acceptance / vectors |
 |---|---|---|
@@ -408,6 +410,26 @@ Verification on `wip/fafo` HEAD (finalizer run):
 | **M3-T2** Create / wrap / decrypt | `FailureOnionService.cs` (the origin gets the per-hop secrets from `ISphinxService.ConstructWithSharedSecrets`; `ComputeSharedSecrets` is only for rebuilding them after a restart) | `onion-error-test.json` has **no** intermediate streams or packets: top-level `generate`/`errorpacket`, and per hop only `version`, `pubkey`, `hop_shared_secret`, `ammag_key` (`um_key` and the plaintext `payload` only on hops[4]). From it assert: each hop's shared secret and `ammag_key` (and hops[4] `um_key`); the erring node's plaintext framing equals `hops[4].payload` (`0002 2002 00fe 00..`, without HMAC); the final origin-received 292-byte `errorpacket` matches byte-for-byte; origin decrypt yields hop 4 / 0x2002. Take intermediate checks (per-hop `stream` and `error packet for node N`) from the inline BOLT 4 "Test Vector > Returning Errors" trace (`04-onion-routing.md` ~L1892-1963). That trace uses a different failure (0x400F incorrect_or_unknown_payment_details + TLV 34001, `failure_len` 0x0140, not padded to 256); its legacy (non-attribution) error-packet lines can be used in M3 without doing M3b. The origin decrypt runs a constant 27 iterations |
 | **M3-T3** Malformed conversion | `FailureOnionService` helper `CreateFromMalformed(Secret ss, FailureCode code, ReadOnlySpan<byte> sha256OfOnion)` | Non-BADONION code → throws/validation failure (BOLT 2 MUST reject); valid code → erring-node packet with data = sha256_of_onion |
 | **M3b (optional)** attribution_data | `UpdateFailHtlcMessage` TLV 1 (`AttributionDataTlv`, 920 bytes) + converter; extend `FailureOnionService` | Inline BOLT 4 "Returning Errors" trace (incorrect_or_unknown_payment_details, htlc_msat=100, height=800000, TLV 34001). Gate on `Feature.OptionAttributionData`. Until done, **set its default to No** in `FeatureOptions` |
+
+### M3 as built (record)
+
+Commits on `wip/fafo` (lane `l4-onion-m3`, cherry-picked with `-x`): ded60a1 (M3-T1 model + serializer), ce3cfeb (M3-T2 create/wrap/decrypt), 9b2e294 (M3-T3 malformed conversion + channel_update embedding), 37df603 (origin interpretation), a657719 (vector transcription fix), 3c1d68a (all-zero sha256_of_onion), a42c33b (legacy codes). Ledger: NL-070 and NL-071 fixed; NL-072 (M3b) and NL-022 stay open.
+
+- **Domain** (`src/NLightning.Domain/Protocol/Onion/`): `Models/FailureMessage` (code, exact code-specific `Data` validated against the BOLT 4 layout of every defined code, raw `Extension` TLVs; one static factory per code; typed accessors; `FromMalformed`; `WithChannelUpdate`), `Models/DecryptedFailure`, `Models/FailureInterpretation` + `Interpreters/FailureInterpreter`, `Validators/MalformedHtlcValidator` + `Enums/MalformedHtlcCheckResult`, `Factories/FailureChannelUpdateFactory`, `Interfaces/IFailureOnionService`; `Serialization/Interfaces/IFailureMessageSerializer`; `Protocol/Tlv/BigSizeCodec` (internal span-based canonical bigsize shared with `InvalidOnionPayloadFailureFactory`).
+- **Infrastructure.Bitcoin:** `Onion/FailureOnionService` (singleton in `AddBitcoinInfrastructure`; resolves `IFailureMessageSerializer`, which `AddSerializationInfrastructureServices` registers, so both layers must be added, as the daemon and Docker DI do).
+- **Infrastructure.Serialization:** `Onion/FailureMessageSerializer` (failuremsg <-> `FailureMessage`, trailing non-TLV bytes ignored; body framing `u16 failure_len || failuremsg || u16 pad_len || pad`, min 256, max packet 32768).
+- **Tests:** `test/NLightning.Integration.Tests/BOLT4/FailureOnionVectorTests.cs` (onion-error-test.json and the inline trace, every hop, both directions), `BOLT4/MalformedFailureConversionTests.cs`, `BOLT4/Vectors/returning-errors-trace.json` (transcribed from the inline BOLT 4 trace), unit tests in `test/NLightning.Domain.Tests/Protocol/Onion/`, `test/NLightning.Infrastructure.Bitcoin.Tests/Onion/FailureOnionServiceTests.cs`, `test/NLightning.Infrastructure.Serialization.Tests/Onion/FailureMessageSerializerTests.cs`.
+
+Deviations from the M3 plan:
+- No `FailureTlvTypes`: BOLT 4 defines no failure TLV types, so `FailureMessage.Extension` keeps raw `BaseTlv` records.
+- The serializer interface is synchronous and lives in Domain (`Serialization/Interfaces`), not in Serialization.
+- The malformed helper is `IFailureOnionService.CreateErrorPacketFromMalformed(incomingSharedSecret, code, sha256OfOnion)` (plan: `CreateFromMalformed`); it goes through `FailureMessage.FromMalformed`, which throws unless the BADONION bit is set. `MalformedHtlcValidator` treats an all-zero `sha256_of_onion` as valid (e.g. `invalid_onion_blinding` from a blinded path), which the plan did not mention.
+- Origin decrypt runs **max(27, hops)** iterations (plan: a constant 27) with an all-zero dummy secret past the route end, a constant-time HMAC compare, and never attributes a dummy iteration; it returns `null` when no hop matches.
+- Added beyond the plan: `FailureInterpreter` (origin-side interpretation: attribution, final node, permanent/node failure, retry, which hop/channel to exclude; a readable-code-less intermediate failure blames the erring node, an unattributable one blames nobody), `FailureChannelUpdateFactory` (writes `u16 258 || payload` as LND/CLN/Eclair/LDK do; BOLT 4 is silent on the prefix; reads with or without it), and recognition of the legacy codes 17 `final_expiry_too_soon` and PERM|16 `incorrect_payment_amount` on receipt (never sent).
+
+Remaining:
+- **M3b** attribution_data + `fulfillment_payload` (NL-072, NL-022); `ammagext` label still unconfirmed. Keep `OptionAttributionData` experimental-gated until then.
+- **Wiring** (BOLT 2 plan): N6-T2 fails back with `CreateErrorPacket` (`temporary_node_failure`); N8-T2 final hop; N8-T3 origin decrypt + `FailureInterpreter`; M4-T5 upstream wrap/convert. `channel_update` in UPDATE failures stays empty (len 0) until BOLT 7 (NL-099).
 
 ### M4: Integration with the HTLC flow (blocked on §7)
 
@@ -491,18 +513,18 @@ The legacy code is **LNBolt** (https://github.com/nbd-wtf/LNUnit/tree/master/LNB
 
 ## 7. Dependencies on missing HTLC / commitment / graph work
 
-M1–M3 and M5 (crypto and vectors) can proceed now. M4 is blocked on the following:
+M1–M3 are done; M3b and M5 (crypto and vectors) can proceed now. M4 is blocked on the following:
 
 | Prerequisite | Evidence | Needed for |
 |---|---|---|
-| Handlers for update_add/fulfill/fail/fail_malformed, commitment_signed, revoke_and_ack, update_fee, channel_reestablish | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` switch has only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` throws | any HTLC |
-| ChannelModel HTLC mutators (add/settle/fail, next id, balances, revocation numbers) | `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (get-only collections/balances) | M4-T1..T5 |
-| Richer `HtlcState` (commitment-dance stages, forwarded) | `src/NLightning.Domain/Channels/Enums/HtlcState.cs` (Offered/Fulfilled/Failed/Expired only) | peel-after-lock-in |
-| HTLC signatures (htlc_signatures in commitment_signed; SIGHASH_SINGLE\|ANYONECANPAY for anchors) | `ILightningSigner` (`src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`) has no HTLC-tx signing; HTLC tx classes in `src/NLightning.Infrastructure.Bitcoin/Transactions/` are commented out; `HtlcResolutionOutput` has swapped key args | commitment_signed |
+| Handlers for update_add/fulfill/fail/fail_malformed, commitment_signed, revoke_and_ack, update_fee, channel_reestablish | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` switch has only the open flow; `default` sends a channel-scoped warning. Engine exists (BOLT2 N4); handlers are BOLT2 N6, reestablish N7 | any HTLC |
+| ChannelModel HTLC mutators (add/settle/fail, next id, balances, revocation numbers) | Partial: the pure BOLT 2 engine `src/NLightning.Domain/Channels/Commitments/ChannelCommitments` holds HTLCs, msat balances, next ids and commitment numbers (BOLT2 N4); `ChannelModel` is still get-only until BOLT2 N5/N6 | M4-T1..T5 |
+| Richer `HtlcState` (commitment-dance stages, forwarded) | **Done** (BOLT2 N4-T1): core-lightning `htlc_state` values 10-19/30-39 in `HtlcState`, `HtlcStateTable.IsAddIrrevocablyCommitted`; lock-in events not modelled yet (N4-T4) | peel-after-lock-in |
+| HTLC signatures (htlc_signatures in commitment_signed; SIGHASH_SINGLE\|ANYONECANPAY for anchors) | **Done** (BOLT2 N2-T4, N3-T1: NL-056, NL-057, NL-058): `HtlcTransactionBuilder`, signer HTLC APIs, `CommitmentSigningService`; Appendix C/F vectors byte-exact | commitment_signed |
 | HTLC reload bug | **Fixed** (NL-125, NL-126, NL-127, NL-128: fd41d73, 1e8c803); `ChannelDbRepository.UpdateAsync` also upserts HTLC rows (NL-192) | HTLC persistence |
 | ShortChannelId(ulong) masks | **Fixed** (NL-101, 83d529d) | hop payload scid (u64) → channel lookup |
 | SCID tx index | **Fixed** (NL-102, 7df8f2d): block position, 24-bit, migration `WidenWatchedTransactionIndex` | correct scid |
-| Per-channel ordering / concurrency | `ChannelManager` handles messages concurrently with no per-channel lock; the transport write ordering is fixed (NL-105); the per-channel lock is BOLT2 N0-T3 (NL-033) | cross-peer forwarding |
+| Per-channel ordering / concurrency | **Done** (NL-033, NL-193): `IChannelLockProvider` per channel, one ordered inbound loop and one `PeerOutbox` per peer. Cross-channel forwarding must never hold two channel locks (enqueue the outgoing add under the outgoing channel's lock only) | cross-peer forwarding |
 | Transport partial reads | **Fixed** (NL-104 d0e0bbb, NL-105 d865a7e): `ReadExactlyAsync`, lock held across encrypt + write | 1366-byte onions |
 | BOLT 7 (channel_update, graph) | 256–259 parse as raw `GossipMessage` and are dropped (NL-100); queries get empty replies (NL-205); no channel_update model or graph (NL-099) | channel_update in failures (optional; len 0 allowed), pathfinding beyond direct channels / route hints |
 | BOLT 11 in the node | `src/NLightning.Bolt11` isn't referenced by any `src` project; the library fixes (default `c` = 18, every `r` field kept: NL-115, NL-116) are done | final hop and send |

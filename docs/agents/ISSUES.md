@@ -6,6 +6,8 @@ Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,
 
 Updated 2026-09-25 after the fix swarm and its follow-ups were integrated into `wip/fafo` (at `1a38360`): statuses carry the `wip/fafo` SHAs (the swarm commits were cherry-picked with `-x`), and NL-203..NL-225 record the cross-batch review findings and the follow-ups the batches reported.
 
+Updated 2026-09-25 after the four-lane work (l1 runtime, l2 BOLT 3/signer, l3 state machine, l4 onion M3) was integrated into `wip/fafo` (at `3c625e1`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `integrate:` commits have no lane counterpart), and NL-226..NL-238 record the lanes' new findings and open items.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -40,12 +42,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 7 | 22 | 29 | 42 | 100 |
+| open | 5 | 9 | 25 | 46 | 85 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 7 | 21 | 58 | 36 | 122 |
+| fixed | 9 | 35 | 66 | 40 | 150 |
 | wontfix | 0 | 0 | 1 | 2 | 3 |
 | duplicate | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **14** | **43** | **88** | **80** | **225** |
+| **Total** | **14** | **44** | **92** | **88** | **238** |
 
 ### Epics
 
@@ -53,7 +55,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (open, critical)
 - NL-035: channel_reestablish / option_data_loss_protect (open, critical)
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
-- NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (open, high)
+- NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 open)
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (open, high)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical)
@@ -400,21 +402,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N0-T6
 
 ### NL-198 closing_signed deserializer requires the optional fee_range TLV
-- **Status:** open
+- **Status:** fixed (1b68d6c)
 - **Severity:** high
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/ClosingSignedMessageTypeSerializer.cs:61-65`, `src/NLightning.Domain/Protocol/Messages/ClosingSignedMessage.cs`
-- **Evidence:** Throws "Required extension is missing" when `fee_range` is absent; the spec makes it optional, so legacy peers' `closing_signed` would be rejected.
+- **Evidence:** Throws "Required extension is missing" when `fee_range` is absent; the spec makes it optional, so legacy peers' `closing_signed` would be rejected. Fixed: nullable `FeeRangeTlv`, strict known set {1}. N10 must negotiate with and without it (NL-034).
 - **Fix sketch:** Nullable `FeeRangeTlv`, strict known set {1}; round-trip tests with and without it.
 - **Blocks/Blocked-by:** Part of NL-034
 - **Plan ref:** BOLT2 N0-T6
 
 ### NL-199 commitment_signed has no funding_txid TLV
-- **Status:** open
+- **Status:** fixed (1b68d6c)
 - **Severity:** medium
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Protocol/Messages/CommitmentSignedMessage.cs`, `src/NLightning.Infrastructure.Serialization/Messages/Types/CommitmentSignedMessageTypeSerializer.cs`
-- **Evidence:** No TLV stream at all; bolts master says the sender MUST set TLV 1 `funding_txid` (receiver ignores a CS whose `funding_txid` does not match, outside splicing).
+- **Evidence:** No TLV stream at all; bolts master says the sender MUST set TLV 1 `funding_txid` (receiver ignores a CS whose `funding_txid` does not match, outside splicing). Fixed: `FundingTxIdTlv` (type 1) + converter, strict known set {1}; `CreateCommitmentSignedMessage` always sets it. The receiver rule (ignore a CS whose funding_txid doesn't match, outside splicing) belongs to the N6 handler (NL-031).
 - **Fix sketch:** `FundingTxIdTlv` + converter, strict known set {1}, set it in `MessageFactory`.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N0-T6
@@ -428,27 +430,27 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:88-133`
-- **Evidence:** The switch handles only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` (L133) throws `ChannelErrorException`, so any update_add_htlc, commitment_signed, update_fee etc. **disconnects the peer**. No handlers exist. Update: `default` now throws a channel-scoped `ChannelWarningException` (the peer stays connected), an unknown channel_id gets an `error` for that id, and malformed-without-BADONION warns and closes (699c67b, 00095cb).
+- **Evidence:** The switch handles only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` (L133) throws `ChannelErrorException`, so any update_add_htlc, commitment_signed, update_fee etc. **disconnects the peer**. No handlers exist. Update: `default` now throws a channel-scoped `ChannelWarningException` (the peer stays connected), an unknown channel_id gets an `error` for that id, and malformed-without-BADONION warns and closes (699c67b, 00095cb). Update (four-lane integration, `3c625e1`): the building blocks now exist but nothing is wired: ordered per-peer processing and per-channel lock (NL-033, NL-193), per-side params (NL-194), separate commitment numbers (NL-188), HTLC txs and signatures (NL-056, NL-057), revocation guard (NL-189), remote shachain storage (NL-136), and the pure commitment engine with its two-engine invariant simulator (`Channels/Commitments/`, N4). Still missing: persistence of the engine state (N5), the handlers and `ChannelManager` cases (N6), reestablish (N7). The engine/builder seam is NL-230.
 - **Fix sketch:** Handlers + ChannelManager cases for all 7 messages, commitment dance state machine, per-channel locking, persistence of every state transition. Sub-issues: NL-032, NL-033, NL-057, NL-056, NL-125, NL-051, NL-187, NL-188, NL-190, NL-193, NL-194, NL-200.
 - **Blocks/Blocked-by:** Blocks NL-073, NL-034, NL-035, NL-094
 - **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 5; BOLT2 N4-N6
 
 ### NL-032 ChannelModel has no HTLC/balance/next-id mutators; HtlcState has 4 values
-- **Status:** open
+- **Status:** open (partial: c1f215f, 0edfa14)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Channels/Models/ChannelModel.cs:40-61`, `src/NLightning.Domain/Channels/Enums/HtlcState.cs:3-8`
-- **Evidence:** HTLC collections, balances, next ids and revocation numbers are get-only. `HtlcState` = Offered/Fulfilled/Failed/Expired, no commitment-dance stages.
+- **Evidence:** HTLC collections, balances, next ids and revocation numbers are get-only. `HtlcState` = Offered/Fulfilled/Failed/Expired, no commitment-dance stages. Update: the pure engine `Channels/Commitments/ChannelCommitments` holds HTLC records, msat balances, next ids and commitment numbers, and `HtlcState` now has core-lightning's 20 `htlc_state` values (10-19/30-39; legacy 0-3 kept decodable and rejected by the machine) driven by `HtlcStateTable` (c1f215f, 0edfa14). `ChannelModel` itself still has no mutators; N5 persists the engine state and N6 wires it.
 - **Fix sketch:** Add add/settle/fail mutators and per-side commitment states (pending/committed/revoked, lock-in).
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** ONION_ROUTING_PLAN §7; BOLT2 N4-T1
 
 ### NL-033 No per-channel ordering lock; PeerManager peer table not thread-safe; unobserved reply continuations
-- **Status:** open
+- **Status:** fixed (d60a891, 9c057f2)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs:38,300,339,379`, `ChannelManager.cs`
-- **Evidence:** Two messages for one channel can race on the shared `ChannelModel`; `_peers` is a plain `Dictionary`; replies attached with `ContinueWith` are never awaited, so exceptions are lost.
+- **Evidence:** Two messages for one channel can race on the shared `ChannelModel`; `_peers` is a plain `Dictionary`; replies attached with `ContinueWith` are never awaited, so exceptions are lost. Fixed: `IChannelLockProvider` per-channel lock around every channel mutation (peer messages, funding confirmation, stale/backfill, startup registration), `ConcurrentDictionary` of peer sessions, one ordered inbound loop per peer and a `PeerOutbox` as the single send path (d60a891); a closed connection's inbound loop stops, a reconnecting peer replaces its old session, and simultaneous connects keep the lower pubkey's connection (9c057f2).
 - **Fix sketch:** Per-channel async lock/queue; `ConcurrentDictionary`; await or log continuations.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** ONION_ROUTING_PLAN §7 "Per-channel ordering"; BOLT2 N0-T3
@@ -674,51 +676,51 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-187 Second local per-commitment point is derived from index 1 instead of 2^48-2
-- **Status:** open
+- **Status:** fixed (b74e526)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs:52-54`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs:127-139`
-- **Evidence:** The handler passes `CommitmentNumber.Value` (1) to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is passed unchanged to `GeneratePerCommitmentSecret` as the BOLT 3 index. The first point uses `FirstPerCommitmentIndex`, so the second RAA would break the peer's shachain.
+- **Evidence:** The handler passes `CommitmentNumber.Value` (1) to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is passed unchanged to `GeneratePerCommitmentSecret` as the BOLT 3 index. The first point uses `FirstPerCommitmentIndex`, so the second RAA would break the peer's shachain. Fixed: `PerCommitmentIndex.From(n) = 2^48-1-n`, every signer per-commitment API takes a commitment number, and channel_ready's second point is at index 2^48-2.
 - **Fix sketch:** Signer APIs take commitment numbers and convert with `index = 2^48-1-n`; add a `PerCommitmentIndex` helper; test the point sent in channel_ready.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N1-T1
 
 ### NL-188 One CommitmentNumber is shared by the local and remote commitments
-- **Status:** open
+- **Status:** fixed (b74e526, 0b8dd33, 72a4ac6, 3c625e1)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (`CommitmentNumber`), `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:225`
-- **Evidence:** The factory uses `channel.CommitmentNumber` for both sides; local and remote numbers diverge during the commitment dance, so one of the two commitments gets the wrong obscured number. No local/remote commitment numbers are persisted.
+- **Evidence:** The factory uses `channel.CommitmentNumber` for both sides; local and remote numbers diverge during the commitment dance, so one of the two commitments gets the wrong obscured number. No local/remote commitment numbers are persisted. Fixed: `ChannelModel.LocalCommitmentNumber`/`RemoteCommitmentNumber`, `CommitmentNumber` is an immutable opener/accepter obscuring helper, both numbers are persisted (migration `PersistCommitmentNumbers`), the factory refuses a stored remote point that belongs to another number (72a4ac6; the missing second remote point is NL-232), and listchannels reports both (3c625e1).
 - **Fix sketch:** Separate `LocalCommitmentNumber`/`RemoteCommitmentNumber` (persisted); make `CommitmentNumber` an immutable obscuring helper.
 - **Blocks/Blocked-by:** Part of NL-031; related NL-069, NL-127
 - **Plan ref:** BOLT2 N1-T1
 
 ### NL-190 Next HTLC ids start at 1 instead of 0
-- **Status:** open
+- **Status:** fixed (efd8a2f, 2d1fca6)
 - **Severity:** high
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs:133,253`
-- **Evidence:** `ChannelModel` is created with `localNextHtlcId = 1` and `remoteNextHtlcId = 1`; BOLT 2 requires the first id to be 0. `Bolt3IntegrationTests.GetTestChannelModel` also passes 1.
+- **Evidence:** `ChannelModel` is created with `localNextHtlcId = 1` and `remoteNextHtlcId = 1`; BOLT 2 requires the first id to be 0. `Bolt3IntegrationTests.GetTestChannelModel` also passes 1. Fixed: new channels start both ids at 0 (efd8a2f); the `StoreMsatBalancesAndShortChannelId` data step resets 1/1 to 0 on channels without HTLC rows (2d1fca6).
 - **Fix sketch:** Start at 0; unit test.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N1-T3
 
 ### NL-193 Channel handlers return one message; out-of-band sends are unordered
-- **Status:** open
+- **Status:** fixed (d60a891, a38b571)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Handlers/Interfaces/IChannelMessageHandler.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs:299-301,364-384`
-- **Evidence:** `HandleAsync` returns `Task<IChannelMessage?>`; receiving `commitment_signed` must emit `revoke_and_ack` then possibly `commitment_signed`, and reestablish needs several ordered messages. `OnResponseMessageReady` sends fire-and-forget, with no ordering relative to replies.
+- **Evidence:** `HandleAsync` returns `Task<IChannelMessage?>`; receiving `commitment_signed` must emit `revoke_and_ack` then possibly `commitment_signed`, and reestablish needs several ordered messages. `OnResponseMessageReady` sends fire-and-forget, with no ordering relative to replies. Fixed: handlers return `IReadOnlyList<IChannelMessage>`, raised in order under the channel lock; every send goes through the per-peer `PeerOutbox` (d60a891); the IPC open-channel path raises open_channel through `IChannelManager.StartOpeningChannelAsync` under the temporary channel's lock (a38b571). Remaining hazard: NL-234.
 - **Fix sketch:** Return a list; route replies and events through one per-peer ordered outbox.
 - **Blocks/Blocked-by:** Part of NL-031; related NL-033
 - **Plan ref:** BOLT2 N0-T3
 
 ### NL-194 ChannelConfig is one-sided: one set of limits and one to_self_delay for both directions
-- **Status:** open
+- **Status:** fixed (2aba47d, de4c93d, 90a83d0, 49db838)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Channels/ValueObjects/ChannelConfig.cs`, `ChannelFactory.cs:115-120`, `src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs:88-97`, `AcceptChannel1MessageHandler.cs:137-150`, `CommitmentTransactionModelFactory.cs:200`
-- **Evidence:** Non-initiator copies the opener's reserve/htlc_minimum/max_accepted/max_in_flight/to_self_delay and echoes them back in accept_channel; initiator keeps its own limits but takes the peer's to_self_delay; the factory uses that one delay for both commitments. BOLT 2 add/fee limits can't be evaluated per direction. The Docker open test pushes 0, so the peer's commitment has no to_local output and the mismatch stays invisible (inferred).
+- **Evidence:** Non-initiator copies the opener's reserve/htlc_minimum/max_accepted/max_in_flight/to_self_delay and echoes them back in accept_channel; initiator keeps its own limits but takes the peer's to_self_delay; the factory uses that one delay for both commitments. BOLT 2 add/fee limits can't be evaluated per direction. The Docker open test pushes 0, so the peer's commitment has no to_local output and the mismatch stays invisible (inferred). Fixed: `ChannelParams { Local, Remote }` of `ChannelParty`; accept_channel carries our values; the factory uses the counterparty's to_self_delay and the holder's dust per side; migration `SplitChannelParams` (+ `FlagInferredChannelParams`: rows from before the split carry `HasInferredParams` and must not be failed over those limits).
 - **Fix sketch:** Split into `ChannelParams { Local, Remote }` with documented direction rules; accept_channel sends our NodeOptions values; the factory uses the holder's delay per side; migration with a data step.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N1-T4
@@ -734,11 +736,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N6-T3, N9-T4
 
 ### NL-201 Startup connects before registering channels, and registration is fire-and-forget
-- **Status:** open
+- **Status:** fixed (424ae84, d39ca18, 9c057f2)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs:63-84`
-- **Evidence:** `StartAsync` connects to each peer first and only then calls `_ = _channelManager.RegisterExistingChannelAsync(channel)` without awaiting; a peer's immediate `channel_reestablish` (LND sends it after init) can arrive for a channel that isn't registered yet. Update: since NL-052 (753cbd9) registration happens before the connect attempt, but `RegisterExistingChannelAsync` is still not awaited.
+- **Evidence:** `StartAsync` connects to each peer first and only then calls `_ = _channelManager.RegisterExistingChannelAsync(channel)` without awaiting; a peer's immediate `channel_reestablish` (LND sends it after init) can arrive for a channel that isn't registered yet. Update: since NL-052 (753cbd9) registration happens before the connect attempt, but `RegisterExistingChannelAsync` is still not awaited. Fixed: startup awaits registration (memory + signer) of every non-Closed/Stale channel before connecting; unreachable peers with active channels are retried with backoff (5 s doubling to 10 min) (424ae84), and so are peers with active channels that drop at runtime (9c057f2). Marking channels as awaiting reestablish is N7 (NL-035).
 - **Fix sketch:** Load and await registration (incl. signer) for every non-Closed channel before connecting.
 - **Blocks/Blocked-by:** Related NL-052, NL-035
 - **Plan ref:** BOLT2 N1-T6
@@ -754,21 +756,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-217 Outgoing open_channel sets announce_channel when scid_alias is negotiated Compulsory
-- **Status:** open
+- **Status:** fixed (2aba47d)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs:127-128`
-- **Evidence:** `if (peer.NegotiatedFeatures.ScidAlias == FeatureSupport.Compulsory) channelFlags = AnnounceChannel`; BOLT 2 requires announce_channel = 0 when option_scid_alias is in channel_type. Unreachable by default (ScidAlias defaults to No). Reported by the features batch, verified in code.
+- **Evidence:** `if (peer.NegotiatedFeatures.ScidAlias == FeatureSupport.Compulsory) channelFlags = AnnounceChannel`; BOLT 2 requires announce_channel = 0 when option_scid_alias is in channel_type. Unreachable by default (ScidAlias defaults to No). Reported by the features batch, verified in code. Fixed: `OpenChannelClientHandler` never sets announce_channel together with option_scid_alias. Public-channel policy: NL-236.
 - **Fix sketch:** Never announce when scid_alias is in channel_type; decide announce from config.
 - **Blocks/Blocked-by:** Related NL-103
 - **Plan ref:** —
 
 ### NL-218 accept_channel builds its own channel_type instead of echoing the opener's
-- **Status:** open
+- **Status:** fixed (2aba47d)
 - **Severity:** medium
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs:70-84`
-- **Evidence:** Uses `FeatureSet.NewBasicChannelType()`; BOLT 2 says an acceptor that sets channel_type MUST set it to the open_channel value (or fail). Harmless while we only accept the basic type. Reported by the features batch, verified in code.
+- **Evidence:** Uses `FeatureSet.NewBasicChannelType()`; BOLT 2 says an acceptor that sets channel_type MUST set it to the open_channel value (or fail). Harmless while we only accept the basic type. Reported by the features batch, verified in code. Fixed: accept_channel echoes the opener's channel_type bytes; `ChannelOpenValidator` refuses bits other than 12/22/46/50 and scid_alias when not negotiated; `AcceptChannel1MessageHandler` fails a channel_type different from ours.
 - **Fix sketch:** Validate the opener's channel_type against what we support and echo it.
 - **Blocks/Blocked-by:** Related NL-112
 - **Plan ref:** BOLT2 N11 (anchors)
@@ -784,11 +786,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-220 open_channel receiver has no rule for "both initial outputs <= channel_reserve"
-- **Status:** open
+- **Status:** fixed (e053fb8)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs`
-- **Evidence:** BOLT 2 open_channel receiver MUST fail if both to_local and to_remote of the initial commitment are <= channel_reserve_satoshis. Today it is only rejected by accident, through the commitment factory throw that NL-196 removes. Reported by the open-validation batch.
+- **Evidence:** BOLT 2 open_channel receiver MUST fail if both to_local and to_remote of the initial commitment are <= channel_reserve_satoshis. Today it is only rejected by accident, through the commitment factory throw that NL-196 removes. Reported by the open-validation batch. Fixed: `ChannelOpenValidator` rejects an open_channel whose initial to_local and to_remote are both <= channel_reserve_satoshis.
 - **Fix sketch:** Add the check to the validator before fixing NL-196.
 - **Blocks/Blocked-by:** Related NL-196
 - **Plan ref:** —
@@ -803,26 +805,66 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** Related NL-047, NL-067
 - **Plan ref:** —
 
+### NL-227 open_channel carried funding minus push as funding_satoshis
+- **Status:** fixed (0958f18)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs`
+- **Evidence:** `funding_satoshis` was set from the opener's balance (funding − push), so for any channel with `push_msat` LND built a smaller funding output and rejected our commitment signature ("counterparty's commitment signature is invalid"). Found by the Proof-N1 Docker test. Fixed: open_channel sends `request.FundingAmount`; Daemon regression test `Given_PushAmount_When_HandleAsync_Then_OpenChannelCarriesTheWholeFundingAmount`.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** BOLT2 Proof N1
+
+### NL-234 IChannelManager.HandleChannelMessageAsync both sends and returns the replies
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Channels/Interfaces/IChannelManager.cs`, `src/NLightning.Application/Channels/Managers/ChannelManager.cs`
+- **Evidence:** It raises every reply through `OnResponseMessageReady` under the channel lock and also returns them as `Task<IReadOnlyList<IChannelMessage>>`. Documented, but a new caller that sends the returned list would send each reply twice (reported by the N0-T3 lane).
+- **Fix sketch:** Return only a status/count, or stop raising and let the single caller enqueue.
+- **Blocks/Blocked-by:** Related NL-193
+- **Plan ref:** BOLT2 N6-T1
+
+### NL-235 Block events keyed by the real channel id are not serialized against the handler that creates the channel
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs`
+- **Evidence:** A channel is locked by its temporary id until funding_created/funding_signed and by its real id afterwards, so a block event for the real id can run while the handler that is creating the channel still holds only the temporary-id lock. Harmless today because the channel is not in memory until that handler adds it (reported by the N0-T3 lane).
+- **Fix sketch:** Take both locks in a fixed order during the id switch, or add the channel to memory only after releasing under the real-id lock.
+- **Blocks/Blocked-by:** Related NL-033
+- **Plan ref:** BOLT2 N5-T2, N6-T1
+
+### NL-236 No public-channel policy: scid_alias is put in channel_type whenever negotiated and announce_channel is never set
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Channels/ValueObjects/ChannelParams.cs` (`ToChannelType`), `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs`
+- **Evidence:** Since NL-217/NL-218 the initiator uses option_scid_alias in the channel_type whenever the peer negotiated it (`UseScidAlias` Compulsory) and never announces. There is no way to request a public (announced) channel without scid_alias (reported by the N1-T4 lane).
+- **Fix sketch:** Add an open-channel option (public/private) that drops scid_alias from the type and sets announce_channel; design with BOLT 7 announcements.
+- **Blocks/Blocked-by:** Related NL-099, NL-217
+- **Plan ref:** —
+
 ---
 
 ## BOLT 3: Transactions and scripts
 
 ### NL-056 HTLC-success / HTLC-timeout second-stage transactions not implemented
-- **Status:** open
+- **Status:** fixed (dfe8866, b222896)
 - **Severity:** high
 - **Kind:** gap
-- **Location:** `src/NLightning.Infrastructure.Bitcoin/Transactions/{BaseHtlcTransaction,HtlcSuccessTransaction,HtlcTimeoutTransaction}.cs` (fully commented out)
-- **Evidence:** No builder, no Appendix C HTLC-tx vector tests.
+- **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/HtlcTransactionModelFactory.cs`, `src/NLightning.Infrastructure.Bitcoin/Builders/HtlcTransactionBuilder.cs`
+- **Evidence:** No builder, no Appendix C HTLC-tx vector tests. Fixed: Domain `HtlcTransactionModelFactory` + `HtlcTransactionBuilder` (unsigned tx, witness script, amount; `AddWitness`); all 33 Appendix C and 15 Appendix F HTLC txs byte-exact (`Bolt3HtlcTxVectorTests`, `Bolt3AnchorVectorTests`); the commented-out classes are deleted and the NL-056 test skip is gone.
 - **Fix sketch:** Builders + Appendix C/F HTLC vectors.
 - **Blocks/Blocked-by:** Part of NL-031; blocks NL-094
 - **Plan ref:** BOLT_COVERAGE roadmap step 5; BOLT2 N2-T4
 
 ### NL-057 ILightningSigner has no HTLC-signature API; channel signing hardcodes input 0 + SIGHASH_ALL
-- **Status:** open
+- **Status:** fixed (615395c, 908bd32)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs`
-- **Evidence:** `htlc_signatures` in commitment_signed cannot be produced or verified; anchors need SIGHASH_SINGLE|ANYONECANPAY.
+- **Evidence:** `htlc_signatures` in commitment_signed cannot be produced or verified; anchors need SIGHASH_SINGLE|ANYONECANPAY. Fixed: `SignRemoteHtlcTransactions`, `ValidateLocalHtlcSignatures` and `SignLocalHtlcTransaction` over `HtlcSigningContext` (remote sighash SINGLE|ANYONECANPAY with anchors, else ALL); `CommitmentSigningService` signs/verifies a commitment with its HTLC signatures in output order; Appendix C/F signer vectors byte-exact. `SignChannelTransaction` still assumes input 0 + ALL, which is right for commitment and closing txs.
 - **Fix sketch:** Add HTLC tx sign/verify with sighash parameter.
 - **Blocks/Blocked-by:** Part of NL-031; blocked-by NL-056
 - **Plan ref:** ONION_ROUTING_PLAN §7; BOLT2 N3-T1
@@ -858,11 +900,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-061 option_anchors commitment fee: weight 1116 vs 1124, only one anchor deducted
-- **Status:** fixed (4f9f550)
+- **Status:** fixed (4f9f550, b222896)
 - **Severity:** medium
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:173,243-255`, `src/NLightning.Domain/Bitcoin/Transactions/Constants/TransactionConstants.cs:21-27`
-- **Evidence:** `AdjustForAnchorOutputs` subtracts `AnchorOutputAmount` once; spec deducts two 330-sat anchors from the funder and uses base weight 1124. Appendix F vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are unused. Anchors default No. Byte-exact against all 9 Appendix F vectors.
+- **Evidence:** `AdjustForAnchorOutputs` subtracts `AnchorOutputAmount` once; spec deducts two 330-sat anchors from the funder and uses base weight 1124. Appendix F vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are unused. Anchors default No. Byte-exact against all 9 Appendix F vectors. Appendix F HTLC txs and every Appendix F commitment are also checked from the verbatim spec vectors (b222896).
 - **Fix sketch:** Fix weights/deduction; wire Appendix F tests.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** BOLT2 N2-T1, N2-T5
@@ -908,11 +950,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N10-T2
 
 ### NL-066 SecretStorageService: GetBasepointPrivateKey and LoadFromIndex throw NotImplementedException
-- **Status:** open
+- **Status:** fixed (e3145a5)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Services/SecretStorageService.cs:160,166`
-- **Evidence:** The shachain can't be reloaded or used to derive basepoint secrets.
+- **Evidence:** The shachain can't be reloaded or used to derive basepoint secrets. Fixed: `Export()`/`Load(entries)` replace `LoadFromIndex` (Load validates bucket placement and the cross-bucket derivations), `GetBasepointPrivateKey` returns the stored key, and out-of-order secrets are rejected.
 - **Fix sketch:** Implement both, backed by NL-136.
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
 - **Plan ref:** BOLT2 N3-T4
@@ -922,7 +964,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs:52,189`
-- **Evidence:** `TODO: Load channel key data from database`; after a restart channels must be re-registered by hand. `SignWalletTransaction` throws.
+- **Evidence:** `TODO: Load channel key data from database`; after a restart channels must be re-registered by hand. `SignWalletTransaction` throws. Update: registration now carries `LocalCommitmentNumber` and `RemoteHtlcBasepoint` (615395c), and startup awaits it for every active channel before connecting (NL-201). Key data is still memory-only and `SignWalletTransaction` still throws.
 - **Fix sketch:** Load channel key data from the DB on demand; implement wallet signing.
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
 - **Plan ref:** BOLT2 N1-T6 (re-registration only)
@@ -948,65 +990,85 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N1-T1
 
 ### NL-189 Local commitment key derivation computes the current per-commitment secret; no revocation guard
-- **Status:** open
+- **Status:** fixed (615395c)
 - **Severity:** critical
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/CommitmentKeyDerivationService.cs:27`, `src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`
-- **Evidence:** `DeriveLocalCommitmentKeys` calls `ReleasePerCommitmentSecret` for the current commitment and returns it in `CommitmentKeys.PerCommitmentSecret`. It is not sent today, but nothing stops a caller from revealing the secret of an unrevoked commitment, which would let the peer take all channel funds.
+- **Evidence:** `DeriveLocalCommitmentKeys` calls `ReleasePerCommitmentSecret` for the current commitment and returns it in `CommitmentKeys.PerCommitmentSecret`. It is not sent today, but nothing stops a caller from revealing the secret of an unrevoked commitment, which would let the peer take all channel funds. Fixed: `RevealPerCommitmentSecret(channelId, n)` throws unless n < the signer's local commitment number, which only `AdvanceLocalCommitment` (after persistence) moves; local keys are derived from the point and `CommitmentKeys` carries no secret.
 - **Fix sketch:** Derive local keys from the point; make secret release internal behind a guard `n < LocalCommitted` advanced only after persistence; remove the secret from `CommitmentKeys`.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N3-T2
 
 ### NL-195 option_anchors HTLC trim fee uses 666/706 weights instead of zero
-- **Status:** open
+- **Status:** fixed (e053fb8)
 - **Severity:** medium
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:105-115`, `src/NLightning.Domain/Bitcoin/Transactions/Constants/WeightConstants.cs:30-33`
-- **Evidence:** With anchors the HTLC-timeout/success fee is 0 (zero-fee HTLC txs), so trimming uses the dust limit alone; the factory uses weights 666/706. Anchors default No.
+- **Evidence:** With anchors the HTLC-timeout/success fee is 0 (zero-fee HTLC txs), so trimming uses the dust limit alone; the factory uses weights 666/706. Anchors default No. Fixed: `CommitmentFeeCalculator` uses HTLC tx fee 0 with anchors; Appendix F byte-exact. The duplicate fee code is NL-231.
 - **Fix sketch:** Fee 0 with anchors in a `CommitmentFeeCalculator`; Appendix F vectors.
 - **Blocks/Blocked-by:** Related NL-061
 - **Plan ref:** BOLT2 N2-T1
 
 ### NL-196 Commitment factory throws when both outputs are below the channel reserve
-- **Status:** open
+- **Status:** fixed (e053fb8)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:189-193`
-- **Evidence:** The reserve is an update-validation rule, not a tx-building rule; Appendix C's "fee greater than funder amount" case needs the tx to build.
+- **Evidence:** The reserve is an update-validation rule, not a tx-building rule; Appendix C's "fee greater than funder amount" case needs the tx to build. Fixed: the factory no longer checks the reserve and the Appendix C 'fee greater than funder amount' case builds; the reserve is enforced by the N4 `UpdateValidator` and at open by `ChannelOpenValidator` (NL-220).
 - **Fix sketch:** Remove the check from the factory; enforce the reserve in the update validator.
 - **Blocks/Blocked-by:** Part of NL-031
 - **Plan ref:** BOLT2 N2-T1
 
 ### NL-202 LightningMoney is a mutable reference type
-- **Status:** open
+- **Status:** open (partial: c1f215f, 0edfa14)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Money/LightningMoney.cs:7,19-25`
-- **Evidence:** A class with a public `MilliSatoshi` setter; shared instances in commitment math can be changed through aliasing.
+- **Evidence:** A class with a public `MilliSatoshi` setter; shared instances in commitment math can be changed through aliasing. Update: the N4 engine does its arithmetic in checked `ulong` msat and never uses `LightningMoney`; the type itself is still mutable.
 - **Fix sketch:** Keep commitment-engine arithmetic in `ulong` msat with `checked`; consider making `LightningMoney` immutable.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** BOLT2 N4-T1
+
+### NL-230 Engine and builder use separate spec, signature and signer-port types; nothing adapts them
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Channels/Commitments/{CommitmentSpec,CommitmentSignatures,Interfaces/ICommitmentSigner,Interfaces/ICommitmentVerifier}.cs`, `src/NLightning.Domain/Channels/{Commitments/CommitmentTxSpec,Interfaces/ICommitmentSigner,Interfaces/ICommitmentVerifier}.cs`, `src/NLightning.Application/Channels/Services/CommitmentSigningService.cs`
+- **Evidence:** The N4 engine's ports take a channel id + `CommitmentSpec` (holder view, `SpecHtlc`) and return `CommitmentSignatures`; `CommitmentSigningService` implements the other pair (channel + `CommitmentTxSpec`, returns `CommitmentTxSignatures`). The lanes were integrated by renaming (f4bf350); no code converts a `CommitmentSpec` into a `CommitmentTxSpec` and nothing implements the engine ports, so the engine cannot sign or verify a real commitment yet.
+- **Fix sketch:** Add the `CommitmentSpec` → `CommitmentTxSpec` adapter (or merge the types) and an engine-port implementation over `CommitmentSigningService`; prove it with the N6-T4 two-node harness (identical txids at every step).
+- **Blocks/Blocked-by:** Blocks NL-031 (N5/N6)
+- **Plan ref:** BOLT2 N5 prerequisite, N6-T1
+
+### NL-231 Two BOLT 3 commitment fee calculators
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Channels/Commitments/CommitmentFees.cs`, `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentFeeCalculator.cs`
+- **Evidence:** The N4 engine (`CommitmentFees`) and the N2 factory (`CommitmentFeeCalculator`) implement the same weights and trimming separately; both are vector-tested today, but a fix to one can silently diverge from the other, and a divergence means our signature over the peer's commitment is invalid.
+- **Fix sketch:** Keep one (the factory's), have the engine call it, and keep both test sets against it.
+- **Blocks/Blocked-by:** Related NL-230
+- **Plan ref:** BOLT2 N5/N6 seam
 
 ---
 
 ## BOLT 4: Onion routing
 
 ### NL-070 [EPIC] Error onions: failure messages, create / wrap / decrypt (ONION M3)
-- **Status:** open
+- **Status:** fixed (ded60a1, ce3cfeb, 9b2e294, 37df603, a657719, 3c1d68a, a42c33b)
 - **Severity:** high
 - **Kind:** gap
-- **Location:** `src/NLightning.Domain/Protocol/Onion/` (no `FailureMessage`, `FailureTlvTypes`, `IFailureOnionService`)
-- **Evidence:** Only failure codes exist; `onion-error-test.json` packets are unused (only per-hop keys are checked). `um`/`ammag` keys are derivable via `SphinxKeyGenerator`. `ammagext` label unconfirmed.
+- **Location:** `src/NLightning.Domain/Protocol/Onion/{Models/FailureMessage,Interfaces/IFailureOnionService,Interpreters/FailureInterpreter}.cs`, `src/NLightning.Infrastructure.Bitcoin/Onion/FailureOnionService.cs`, `src/NLightning.Infrastructure.Serialization/Onion/FailureMessageSerializer.cs`
+- **Evidence:** Only failure codes exist; `onion-error-test.json` packets are unused (only per-hop keys are checked). `um`/`ammag` keys are derivable via `SphinxKeyGenerator`. `ammagext` label unconfirmed. Fixed (ONION M3): `FailureMessage` + `FailureMessageSerializer` for every BOLT 4 code (with legacy 17 and PERM|16 recognised on receipt), `IFailureOnionService`/`FailureOnionService` create/wrap/decrypt (constant max(27, hops) iterations, constant-time HMAC) byte-exact against onion-error-test.json and the inline Returning Errors trace at every hop, malformed conversion (NL-071), `FailureChannelUpdateFactory` and the origin-side `FailureInterpreter`. attribution_data stays open (NL-072, M3b); nothing calls the error onion until N6/N8.
 - **Fix sketch:** M3-T1..T3 per plan: model + serializer, create/wrap/constant-27-iteration decrypt, byte-exact against `onion-error-test.json` and the inline BOLT 4 trace. Sub-issues: NL-071, NL-072.
 - **Blocks/Blocked-by:** Blocks NL-073
 - **Plan ref:** ONION M3
 
 ### NL-071 update_fail_malformed_htlc → update_fail_htlc conversion missing
-- **Status:** open
+- **Status:** fixed (9b2e294, 3c1d68a)
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** — (planned `FailureOnionService.CreateFromMalformed`)
-- **Evidence:** No code path.
+- **Location:** `src/NLightning.Domain/Protocol/Onion/Validators/MalformedHtlcValidator.cs`, `src/NLightning.Infrastructure.Bitcoin/Onion/FailureOnionService.cs`
+- **Evidence:** No code path. Fixed: `FailureMessage.FromMalformed` (BADONION required), `MalformedHtlcValidator` (an all-zero sha256_of_onion is valid, e.g. `invalid_onion_blinding`) and `IFailureOnionService.CreateErrorPacketFromMalformed`; `MalformedFailureConversionTests` against BOLT 4 vectors.
 - **Fix sketch:** M3-T3; reject non-BADONION codes (NL-023).
 - **Blocks/Blocked-by:** Part of NL-070
 - **Plan ref:** ONION M3-T3
@@ -1434,14 +1496,34 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-108 MessageService deserializes and runs handlers synchronously under a lock on the read loop
-- **Status:** open
+- **Status:** open (partial: d60a891)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs`
-- **Evidence:** Slow handlers stall reads (and ping handling) for that peer.
+- **Evidence:** Slow handlers stall reads (and ping handling) for that peer. Update: channel messages are now only queued on the read loop and handled by the per-peer inbound loop (d60a891); `MessageService` still deserializes on the read loop and ping/gossip replies still run there.
 - **Fix sketch:** Queue messages to a per-peer consumer.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** BOLT2 N0-T3 (partial)
+
+### NL-228 PeerManager.StopAsync left the TCP listener bound
+- **Status:** fixed (3d8bb07)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`StopAsync`)
+- **Evidence:** `ITcpService.StopListeningAsync` was never called, so a node restarted in the same process (Docker test node, daemon restart) failed with "Address already in use". Found by the full Docker run. Fixed with `Given_Started_When_StopAsync_Then_TcpServiceStopsListening`.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** BOLT2 N0-T8
+
+### NL-229 PeerService could lose channel messages and its disconnect before anyone subscribed
+- **Status:** fixed (d39ca18)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs`
+- **Evidence:** The read loop is live before the constructor returns, so a channel message (e.g. LND's first message after init) or a disconnect that arrived before `PeerManager` subscribed was dropped. Fixed: pending channel messages are kept (up to `MaxPendingChannelMessages`, then disconnect) and replayed in order to the first subscriber; `OnDisconnect` fires once and is replayed to a late subscriber (`PeerServiceLifecycleTests`).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Related NL-033, NL-201
+- **Plan ref:** BOLT2 N0-T3
 
 ---
 
@@ -1496,6 +1578,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Done.
 - **Blocks/Blocked-by:** Related NL-109, NL-111
 - **Plan ref:** —
+
+### NL-226 FeatureSet.GetBytes dropped a highest set bit at a multiple of 8
+- **Status:** fixed (d5a58ef)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Node/FeatureSet.cs` (`GetBytes`)
+- **Evidence:** The byte count was `(lastIndexOfOne + 7) / 8`, so bit 8, 16, …, 48 as the highest set bit was cut off: channel_type zero_fee_commitments (40), payment_metadata compulsory (48), a global set whose only bit is 0. Found by the N1-T4 lane while echoing channel_type (NL-218). Fixed: `lastIndexOfOne / 8 + 1`; `GetSetBits`/`HasSameBits` added; two serializer tests that encoded the truncation were corrected.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Related NL-218
+- **Plan ref:** BOLT2 N1-T4 (prerequisite)
 
 ---
 
@@ -1760,11 +1852,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-136 Shachain / per-commitment secrets are not persisted
-- **Status:** open
+- **Status:** fixed (e3145a5, e7ca51e, 9dfafda)
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Services/SecretStorageService.cs`, `src/NLightning.Infrastructure.Persistence/Entities/`
-- **Evidence:** Received per-commitment secrets live in memory only; after restart revoked states can't be punished and reestablish can't prove state.
+- **Evidence:** Received per-commitment secrets live in memory only; after restart revoked states can't be punished and reestablish can't prove state. Fixed: `RemoteShachainEntity` + `RemoteShachainDbRepository` (migration `AddRemoteShachain`, 3 providers; save idempotent within one unit of work), `SecretStorageService.Export/Load`, and the shachain is the only store of peer secrets (`LastRevealedPerCommitmentSecret` is obsolete, NL-238). Nothing saves or loads it at runtime yet: the revoke_and_ack handler (N6, NL-031) must call `IPerCommitmentSecretVerifier.VerifyAndStore` + `Export` + `SaveAsync` in one transition, and startup must `Load` it.
 - **Fix sketch:** Table + repo for shachain; load in `SecretStorageService` (NL-066).
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
 - **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N3-T4
@@ -1790,11 +1882,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N5-T2
 
 ### NL-191 Channel balances are persisted as whole satoshis
-- **Status:** open
+- **Status:** fixed (2d1fca6, a30fc57)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Channel/ChannelEntity.cs:96,101`, `EntityConfiguration/Channel/ChannelEntityConfiguration.cs:79-80`, `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs:156-157`
-- **Evidence:** `LocalBalanceSatoshis`/`RemoteBalanceSatoshis` (`decimal`, SqlServer `bigint`) are written from `LightningMoney.Satoshi`; the msat part is lost on every restart, so our commitment disagrees with the peer's and signatures fail.
+- **Evidence:** `LocalBalanceSatoshis`/`RemoteBalanceSatoshis` (`decimal`, SqlServer `bigint`) are written from `LightningMoney.Satoshi`; the msat part is lost on every restart, so our commitment disagrees with the peer's and signatures fail. Fixed: `long` `LocalBalanceMsat`/`RemoteBalanceMsat` columns with a ×1000 data step (3 providers); `ChannelRoundTripTests` checks a 1 msat remainder.
 - **Fix sketch:** `LocalBalanceMsat`/`RemoteBalanceMsat` columns with a `sats × 1000` data step (3 migrations).
 - **Blocks/Blocked-by:** Blocks NL-031, NL-035
 - **Plan ref:** BOLT2 N1-T5
@@ -1820,14 +1912,44 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-225 ChannelModel.ShortChannelId is not persisted
-- **Status:** open
+- **Status:** fixed (2d1fca6, a30fc57)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Channel/ChannelEntity.cs`, `ChannelDbRepository.cs`
-- **Evidence:** No SCID column or mapping; a reloaded channel has a default SCID until funding confirmation re-runs (flagged by the persistence follow-up, verified by grep).
+- **Evidence:** No SCID column or mapping; a reloaded channel has a default SCID until funding confirmation re-runs (flagged by the persistence follow-up, verified by grep). Fixed: nullable `Channels.ShortChannelId` (null until funding confirms), mapped both ways; round-trip tested.
 - **Fix sketch:** Add a `ShortChannelId` column (3 migrations) and map it both ways.
 - **Blocks/Blocked-by:** Related NL-103, NL-137
 - **Plan ref:** BOLT2 N1-T5
+
+### NL-232 The remote key set stores one per-commitment point; current and next remote points are not both persisted
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Channels/Models/ChannelKeySetModel.cs` (`CurrentPerCommitmentCompactPoint`), `src/NLightning.Infrastructure.Persistence/Entities/Channel/ChannelKeySetEntity.cs`
+- **Evidence:** channel_ready replaces the peer's first point with its second (NL-051), so the point of the current remote commitment (0) is gone while `RemoteCommitmentNumber` is still 0; the factory now refuses to build a remote commitment with a point that belongs to another number (72a4ac6). The engine keeps `RemoteNextPerCommitmentPoint` in memory only. Plan §3.2 wants the remote current and next points both persisted (reported by the N1-T4 lane).
+- **Fix sketch:** Store remote current and next points (N5-T1 migration) and restore them into the engine.
+- **Blocks/Blocked-by:** Part of NL-031; related NL-051, NL-188
+- **Plan ref:** BOLT2 N5-T1
+
+### NL-237 Postgres and SQL Server migration data steps never ran against existing rows
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Infrastructure.Persistence.{Postgres,SqlServer}/Migrations/*_{SplitChannelParams,StoreMsatBalancesAndShortChannelId,FlagInferredChannelParams,PersistCommitmentNumbers}.cs`
+- **Evidence:** The hand-written `migrationBuilder.Sql` data steps (CAST, COALESCE, NOT EXISTS against Htlcs) are exercised with rows only on SQLite (`ChannelMigrationDataTests`); the Docker `PostgresTests`/`SqlServerTests` migrate an empty database (reported by the N1-T4/T5 lane).
+- **Fix sketch:** Seed pre-migration rows in the container tests and migrate them forward.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** BOLT2 N1-T5, N5-T1
+
+### NL-238 Obsolete ChannelKeySet LastRevealedPerCommitmentSecret column is still mapped
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Channels/Models/ChannelKeySetModel.cs`, `src/NLightning.Infrastructure.Persistence/Entities/Channel/ChannelKeySetEntity.cs`
+- **Evidence:** Since NL-136 the shachain is the only store of the peer's secrets; `LastRevealedPerCommitmentSecret` is `[Obsolete]`, never written, but still round-trips a legacy column (9dfafda), which tests must suppress warnings for.
+- **Fix sketch:** Drop the property and column in the N5-T1 migration.
+- **Blocks/Blocked-by:** Related NL-136
+- **Plan ref:** BOLT2 N5-T1
 
 ---
 
@@ -1964,11 +2086,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
-- **Status:** open
+- **Status:** open (partial: 5611156)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs`
-- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay.
+- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain.
 - **Fix sketch:** Append commands per the recipe as each epic lands.
 - **Blocks/Blocked-by:** Blocked-by NL-034, NL-114
 - **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
@@ -2004,11 +2126,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-156 DI graph hand-maintained in NodeServiceExtensions and duplicated in Docker tests
-- **Status:** open
+- **Status:** fixed (fe4a551)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs`, `test/NLightning.Integration.Tests/Docker/{AbcNetworkTests,ChannelOpeningFlowTests}.cs`
-- **Evidence:** Layer services (`ChannelFactory`, validators, tx factories, signer) registered only in the daemon; Docker tests rebuild them by hand.
+- **Evidence:** Layer services (`ChannelFactory`, validators, tx factories, signer) registered only in the daemon; Docker tests rebuild them by hand. Fixed: layer registrations live in `AddApplicationServices`/`AddBitcoinInfrastructure`; `AddNltgNodeServices` is the whole node graph, used by the daemon and by the Docker `NLightningTestNode`.
 - **Fix sketch:** Move layer-owned registrations into each `DependencyInjection.cs`; share a test helper.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** ONION_ROUTING_PLAN §9 risk 8; BOLT2 N0-T8
@@ -2252,11 +2374,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT_COVERAGE roadmap step 1
 
 ### NL-176 BOLT 3 vector coverage gaps
-- **Status:** fixed (d69eea3, 82e08d2, 4f9f550)
+- **Status:** fixed (d69eea3, 82e08d2, 4f9f550, a0dfebd, b222896)
 - **Severity:** medium
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs:64-`, `test/NLightning.Tests.Utils/Vectors/Bolt3AppendixCVectors.cs`, `Bolt3AppendixFVectors.cs`
-- **Evidence:** Appendix B funding test body is commented out (passes vacuously); Appendix F (anchors) unused; `ExpectedCommitTx1..15` unreferenced (only signatures asserted); no HTLC second-stage vectors. Appendix B funding tx and every Appendix C commitment tx asserted byte-for-byte; 9-vector Appendix F theory. HTLC second-stage vectors wait for NL-056 (1 skipped test).
+- **Evidence:** Appendix B funding test body is commented out (passes vacuously); Appendix F (anchors) unused; `ExpectedCommitTx1..15` unreferenced (only signatures asserted); no HTLC second-stage vectors. Appendix B funding tx and every Appendix C commitment tx asserted byte-for-byte; 9-vector Appendix F theory. HTLC second-stage vectors wait for NL-056 (1 skipped test). Update: Appendix C/F now load from verbatim spec copies (`BOLT3/Vectors/appendix-c.txt`, `appendix-f.json`) and every commitment is built from its msat balances through `CommitmentTxSpec` and compared as a full signed tx (a0dfebd, b222896).
 - **Fix sketch:** Restore Appendix B, assert full txs, add Appendix C HTLC-tx and Appendix F tests.
 - **Blocks/Blocked-by:** Related NL-061, NL-056
 - **Plan ref:** BOLT_COVERAGE roadmap step 1; BOLT2 N2-T2, N2-T5
@@ -2286,7 +2408,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Daemon/AssemblyInfo.cs:3`, `src/NLightning.Domain/AssemblyInfo.cs`, `src/NLightning.Application/AssemblyInfo.cs`
-- **Evidence:** Daemon lists a stale `NLightning.Bolts.Tests` and not `NLightning.Daemon.Tests`; Domain.Tests/Application.Tests have no internals access.
+- **Evidence:** Daemon lists a stale `NLightning.Bolts.Tests` and not `NLightning.Daemon.Tests`; Domain.Tests/Application.Tests have no internals access. Update: Application lists `NLightning.Application.Tests` (424ae84) and Daemon lists `NLightning.Daemon.Tests`; Daemon still lists the stale `NLightning.Bolts.Tests`, and Domain.Tests still has no internals access (the N4 engine is public instead).
 - **Fix sketch:** Fix the lists.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -2319,6 +2441,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** All three write to `Persistence/bin`, which can race in parallel builds (not reproduced in 3 runs). The EF migration scripts depend on the shared output (ci-build batch).
 - **Fix sketch:** Point `dotnet ef` at each provider's own output, then split the paths.
 - **Blocks/Blocked-by:** Related NL-174
+- **Plan ref:** —
+
+### NL-233 dotnet-ef loads stale Debug provider assemblies when generating migrations
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Persistence/bin/Debug`, `src/NLightning.Infrastructure.Persistence/scripts/add_migration.sh`
+- **Evidence:** During the four-lane integration, `dotnet ef` loaded the provider migration assemblies from the shared `Persistence/bin/Debug`; they were stale until the three provider projects were rebuilt in Debug, and until then both the regeneration and the `HasPendingModelChanges` check gave wrong results.
+- **Fix sketch:** Build the three provider projects in Debug before `migrations add`/`has-pending-model-changes` (script it), and fix the shared output path (NL-223).
+- **Blocks/Blocked-by:** Related NL-223
 - **Plan ref:** —
 
 ---
