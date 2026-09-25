@@ -233,9 +233,7 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     {
         var legacy = htlcRows.FirstOrDefault(h => !HtlcStateTable.IsDefined((HtlcState)h.State));
         if (legacy is not null)
-            throw new InvalidOperationException(
-                $"Channel {channelId} has HTLC {legacy.HtlcId} in legacy state {legacy.State}, written before the "
-              + "commitment state machine existed (NL-025); it cannot be restored");
+            throw new LegacyHtlcStateException(channelId, legacy.HtlcId, legacy.State);
     }
 
     /// <summary>

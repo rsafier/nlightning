@@ -10,10 +10,12 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
+using Domain.Node.Models;
 using Domain.Protocol.Models;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Repositories;
 using Infrastructure.Repositories.Database.Channel;
+using Infrastructure.Repositories.Database.Node;
 using Infrastructure.Repositories.Memory;
 
 /// <summary>
@@ -345,10 +347,99 @@ public class ChannelStateDbRepositoryTests
         }
 
         // Act
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(harness.ReloadChannelAsync);
+        var exception = await Assert.ThrowsAsync<LegacyHtlcStateException>(harness.ReloadChannelAsync);
 
         // Assert
         Assert.Contains("NL-025", exception.Message);
+    }
+
+    [Fact]
+    public async Task Given_LegacyChannelAndGoodChannelOfOnePeer_When_ChannelsAreLoaded_Then_OnlyTheLegacyOneIsRefused()
+    {
+        // Arrange (NL-025): the harness channel is healthy, a second channel of the same peer has a legacy HTLC row
+        await using var harness = await StateHarness.CreateAsync();
+        var legacy = SqliteDbTestContext.CreateChannel(false);
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            await new ChannelDbRepository(context, harness.Db.Sha256).AddAsync(legacy);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+            await context.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "Htlcs" ("ChannelId", "HtlcId", "Direction", "AmountMsat", "PaymentHash", "CltvExpiry",
+                    "State", "OnionRoutingPacket")
+                VALUES ({0}, 0, 1, 1000, {1}, 500, 0, {2})
+                """, [(byte[])legacy.ChannelId, new byte[32], new byte[1366]],
+                TestContext.Current.CancellationToken);
+            await new PeerDbRepository(context).AddOrUpdateAsync(
+                new PeerModel(SqliteDbTestContext.RemoteNodeId, "127.0.0.1", 9735, "IPv4"));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Act
+        using var unitOfWork = harness.CreateUnitOfWork();
+        var peers = await unitOfWork.GetPeersForStartupAsync();
+        var byPeer = (await unitOfWork.ChannelDbRepository.GetByPeerIdAsync(SqliteDbTestContext.RemoteNodeId))
+           .ToList();
+        var all = (await unitOfWork.ChannelDbRepository.GetAllAsync()).ToList();
+
+        // Assert: startup still loads the healthy channel with its snapshot; the legacy one is refused on its own
+        var peer = Assert.Single(peers);
+        var loaded = Assert.Single(peer.Channels!);
+        Assert.Equal(harness.ChannelId, loaded.ChannelId);
+        Assert.NotNull(loaded.Commitments);
+        Assert.Equal(harness.ChannelId, Assert.Single(byPeer)!.ChannelId);
+        Assert.Equal(harness.ChannelId, Assert.Single(all).ChannelId);
+        var refused = await Assert.ThrowsAsync<LegacyHtlcStateException>(() =>
+            unitOfWork.ChannelDbRepository.GetByIdAsync(legacy.ChannelId));
+        Assert.Contains("NL-025", refused.Message);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_FirstSnapshotStaged_When_UpdatedFromAModelWithoutSnapshot_Then_TheSnapshotScalarsAreKept(
+        bool sameUnitOfWork)
+    {
+        // Arrange: a channel saved without a snapshot; its model's legacy scalars (next ids 5/7, 600k/400k sat)
+        // differ from the first snapshot's
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true);
+        var @params = channel.ToCommitmentParams();
+        var driver = new CommitmentDanceDriver(channel.ChannelId, @params, channel.LocalBalance.MilliSatoshi,
+                                               channel.RemoteBalance.MilliSatoshi, seed: 3);
+        driver.TryUsAdd(5_000_000);
+        await using (var context = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(context, db.Sha256).AddAsync(channel);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        Assert.Null(channel.Commitments);
+        Assert.NotEqual(channel.LocalNextHtlcId, driver.Us.LocalNextHtlcId);
+
+        // Act: the first snapshot is staged, then the channel row is updated from the model (invariant I2: the model
+        // gets its snapshot only after the save)
+        await using (var context = db.CreateDbContext())
+        {
+            await new ChannelStateDbRepository(context).InitializeAsync(driver.Us);
+            if (!sameUnitOfWork)
+                await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+
+            channel.ShortChannelId = new Domain.Channels.ValueObjects.ShortChannelId(800_000, 1, 0);
+            await new ChannelDbRepository(context, db.Sha256).UpdateAsync(channel);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert: the channel update went through and the snapshot's scalars were not overwritten
+        await using var readContext = db.CreateDbContext();
+        var row = await readContext.Channels.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(driver.Us.LocalNextHtlcId, row.LocalNextHtlcId);
+        Assert.Equal(driver.Us.RemoteNextHtlcId, row.RemoteNextHtlcId);
+        Assert.Equal((long)driver.Us.LocalBalanceMsat, row.LocalBalanceMsat);
+        var reloaded = await new ChannelDbRepository(readContext, db.Sha256).GetByIdAsync(channel.ChannelId);
+        Assert.Equal(new Domain.Channels.ValueObjects.ShortChannelId(800_000, 1, 0), reloaded!.ShortChannelId);
+        Assert.NotNull(reloaded.Commitments);
+        CommitmentsAssert.Equal(driver.Us, reloaded.Commitments);
     }
 
     /// <summary>
