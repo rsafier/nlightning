@@ -197,8 +197,7 @@ Everything in this section was delivered in M1. The original gap is kept in each
 ### 3.3 Serialization support
 - **Canonical BigSize (M1-T5): done.** `BigSizeTypeSerializer` rejects non-minimal encodings, and the three vectors in `test/NLightning.Infrastructure.Serialization.Tests/Vectors/BigSize.txt` are re-enabled.
 - **Truncated ints (M1-T6): done.**
-  - `src/NLightning.Infrastructure/Converters/TruncatedInt.cs` is the strict decoder/encoder.
-  - `src/NLightning.Domain/Protocol/Onion/Tlv/TruncatedIntEncoder.cs` is an encode-only copy for Domain TLV constructors, because Domain cannot reference Infrastructure.
+  - `src/NLightning.Domain/Protocol/Tlv/TruncatedInt.cs` is the single strict decoder/encoder, used by the Domain TLV constructors and the Infrastructure converters (NL-084 removed the encode-only Domain copy and moved the codec out of Infrastructure).
   - `EndianBitConverter` trim/pad is still non-compliant and is not used for onion fields.
 - **Strict and open TLV streams (M1-T7): done.**
   - `TlvStreamSerializer` serializes through `ITlvConverterFactory.GetConverter(Type)` and writes a raw `BaseTlv` verbatim.
@@ -345,7 +344,7 @@ Verification on `wip/fafo` HEAD (finalizer run):
 | M1-T3 | `src/NLightning.Domain/Crypto/Interfaces/ISecp256K1Math.cs`, `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Secp256K1Math.cs`, `Services/KeyDerivationService.cs`, `DependencyInjection.cs` | `test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Functions/Secp256K1MathTests.cs`, `.../Services/KeyDerivationServiceTests.cs`, BOLT 3 regression in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs` |
 | M1-T4 | — | `test/NLightning.Infrastructure.Bitcoin.Tests/Crypto/Functions/EcdhTests.cs` (hop 0) |
 | M1-T5 | `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs` | `.../ValueObjects/BigSizeTypeSerializerTests.cs`, `Vectors/BigSize.txt` |
-| M1-T6 | `src/NLightning.Infrastructure/Converters/TruncatedInt.cs`, `src/NLightning.Domain/Protocol/Onion/Tlv/TruncatedIntEncoder.cs` | `test/NLightning.Infrastructure.Tests/Converters/TruncatedIntTests.cs` |
+| M1-T6 | `src/NLightning.Domain/Protocol/Tlv/TruncatedInt.cs` (moved from Infrastructure by NL-084) | `test/NLightning.Domain.Tests/Protocol/Tlv/TruncatedIntTests.cs` |
 | M1-T7 | `src/NLightning.Infrastructure.Serialization/Tlv/{TlvStreamSerializer,TlvSerializer}.cs`, `Interfaces/ITlvStreamSerializer.cs`, `ITlvConverterFactory.GetConverter(Type)` | `test/NLightning.Infrastructure.Serialization.Tests/Tlv/{TlvStreamBolt1VectorTests,TlvStreamSerializerTests}.cs` |
 | M1-T8 | `src/NLightning.Domain/Protocol/Onion/{Constants,Enums,Extensions,Tlv,ValueObjects}/*`, `src/NLightning.Domain/Exceptions/OnionException.cs`, `src/NLightning.Infrastructure/Protocol/Tlv/Converters/Onion/*` (registered in `TlvConverterFactory`) | `test/NLightning.Domain.Tests/Protocol/Onion/{OnionPacketTests,OnionTlvTests,FailureCodeTests}.cs`, `test/NLightning.Infrastructure.Tests/Protocol/Tlv/Converters/Onion/*` |
 | M1-T9 | `UpdateAddHtlcPayload.cs`, `UpdateAddHtlcPayloadSerializer.cs`, `UpdateAddHtlcMessageSerializer.cs`, `IMessageFactory`/`MessageFactory` | `test/NLightning.Infrastructure.Serialization.Tests/Messages/UpdateAddHtlcMessageTests.cs`, `BlindedPathTlvConverterTests.cs` |
