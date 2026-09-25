@@ -163,6 +163,74 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public void Given_ScidAliasChannel_When_CreatingUpdate_Then_ItNamesThePeersAliasNotTheRealScid()
+    {
+        // Arrange - BOLT 2: no incoming HTLC may use the real scid of an option_scid_alias channel; BOLT 7: an
+        // unannounced channel's update uses an alias received from the peer (or the real scid)
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, useScidAlias: FeatureSupport.Optional);
+        var peerAlias = new ShortChannelId(16_000_000, 7, 0);
+        channel.RemoteAlias = peerAlias;
+        channel.LocalAliases = [new ShortChannelId(16_000_000, 9, 0)];
+
+        // Act
+        var update = service.CreateChannelUpdate(channel).Payload;
+
+        // Assert
+        Assert.Equal(peerAlias, update.ShortChannelId);
+        Assert.NotEqual(s_shortChannelId, update.ShortChannelId);
+    }
+
+    [Fact]
+    public async Task Given_ScidAliasChannelWithoutPeerAlias_When_SendingUpdate_Then_NothingIsSent()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, useScidAlias: FeatureSupport.Compulsory);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        await service.SendChannelUpdateAsync(channel.ChannelId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(raised);
+        Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+        Assert.Throws<InvalidOperationException>(() => service.CreateChannelUpdate(channel));
+    }
+
+    [Fact]
+    public async Task Given_HtlcMinimumAboveTheCapacity_When_SendingUpdate_Then_NothingIsSent()
+    {
+        // Arrange - the maximum used to be raised to the minimum, above the capacity (BOLT 7: MUST be <= capacity)
+        _nodeOptions.Routing.HtlcMinimumMsat = 300_000_000;
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, capacity: LightningMoney.Satoshis(200_000));
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        await service.SendChannelUpdateAsync(channel.ChannelId, TestContext.Current.CancellationToken);
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(raised);
+        Assert.Throws<InvalidOperationException>(() => service.CreateChannelUpdate(channel));
+    }
+
+    [Fact]
+    public void Given_HtlcMinimumAbovePeersMaxInFlight_When_CreatingUpdate_Then_Throws()
+    {
+        // Arrange - the peer's max_htlc_value_in_flight_msat is 800M msat, below the capacity
+        _nodeOptions.Routing.HtlcMinimumMsat = 900_000_000;
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => service.CreateChannelUpdate(channel));
+    }
+
+    [Fact]
     public async Task Given_ChannelBecomesOpenUnderItsLock_When_Updated_Then_UpdateIsRaisedOnceAfterTheLockIsReleased()
     {
         // Arrange - the handler that opens the channel holds its lock and queues channel_ready after the memory update
@@ -389,6 +457,52 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public void Given_UpdateFarInTheFuture_When_Handled_Then_ItIsIgnoredAndLaterUpdatesStillCount()
+    {
+        // Arrange - one update near uint.MaxValue used to shadow every later real update until a restart
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+        var tooFar = (uint)(s_now + ChannelUpdateService.MaxFutureTimestamp).ToUnixTimeSeconds() + 1;
+        var justInTime = (uint)(s_now + ChannelUpdateService.MaxFutureTimestamp).ToUnixTimeSeconds();
+
+        // Act
+        var farFuture = service.HandleRemoteChannelUpdate(PeerNodeId, CreatePeerUpdate(uint.MaxValue, feeBase: 1));
+        var pastLimit = service.HandleRemoteChannelUpdate(PeerNodeId, CreatePeerUpdate(tooFar, feeBase: 2));
+        var real = service.HandleRemoteChannelUpdate(PeerNodeId,
+                                                     CreatePeerUpdate((uint)s_now.ToUnixTimeSeconds(), feeBase: 3));
+        var atLimit = service.HandleRemoteChannelUpdate(PeerNodeId, CreatePeerUpdate(justInTime, feeBase: 4));
+
+        // Assert
+        Assert.False(farFuture);
+        Assert.False(pastLimit);
+        Assert.True(real);
+        Assert.True(atLimit);
+        Assert.True(service.TryGetRemoteChannelUpdate(channel.ChannelId, out var remote));
+        Assert.Equal(4u, remote!.FeeBaseMsat);
+    }
+
+    [Fact]
+    public void Given_UpdateWithHtlcMaximumAboveTheCapacity_When_Handled_Then_ItIsIgnored()
+    {
+        // Arrange - BOLT 7: SHOULD ignore the channel for routing; it would end up in our route hints
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open, capacity: LightningMoney.Satoshis(500_000));
+
+        // Act
+        var above = service.HandleRemoteChannelUpdate(PeerNodeId,
+                                                      CreatePeerUpdate(timestamp: 100, htlcMaximumMsat: 500_000_001));
+        var atCapacity = service.HandleRemoteChannelUpdate(PeerNodeId,
+                                                           CreatePeerUpdate(timestamp: 101,
+                                                                            htlcMaximumMsat: 500_000_000));
+
+        // Assert
+        Assert.False(above);
+        Assert.True(atCapacity);
+        Assert.True(service.TryGetRemoteChannelUpdate(channel.ChannelId, out var remote));
+        Assert.Equal(500_000_000ul, remote!.HtlcMaximumMsat);
+    }
+
+    [Fact]
     public void Given_UpdateWithBadSignature_When_Handled_Then_ItIsIgnored()
     {
         // Arrange
@@ -479,7 +593,7 @@ public class ChannelUpdateServiceTests
 
     private ChannelUpdateMessage CreatePeerUpdate(uint timestamp, ShortChannelId? scid = null, uint feeBase = 1_000,
                                                   ChainHash? chain = null, bool flipDirection = false,
-                                                  Key? signer = null)
+                                                  Key? signer = null, ulong htlcMaximumMsat = 990_000_000)
     {
         var peerIsNode2 = ((ReadOnlySpan<byte>)PeerNodeId).SequenceCompareTo(OurNodeId) > 0;
         var direction = peerIsNode2 != flipDirection;
@@ -488,12 +602,13 @@ public class ChannelUpdateServiceTests
                                                 ChannelUpdatePayload.MessageFlagMustBeOne
                                               | ChannelUpdatePayload.MessageFlagDontForward,
                                                 direction ? ChannelUpdatePayload.ChannelFlagDirection : (byte)0, 80,
-                                                1_000, feeBase, 1, 990_000_000);
+                                                1_000, feeBase, 1, htlcMaximumMsat);
         var signature = CreateSigner(signer ?? _peerKey).SignNodeMessage(unsigned.GetSignatureHash());
         return new ChannelUpdateMessage(unsigned.WithSignature(signature));
     }
 
-    private ChannelModel AddChannel(ChannelState state, LightningMoney? capacity = null)
+    private ChannelModel AddChannel(ChannelState state, LightningMoney? capacity = null,
+                                    FeatureSupport useScidAlias = FeatureSupport.No)
     {
         var channelIdBytes = new byte[32];
         channelIdBytes[0] = (byte)(_channels.Count + 1);
@@ -501,7 +616,7 @@ public class ChannelUpdateServiceTests
                                                      LightningMoney.MilliSatoshis(5_000),
                                                      LightningMoney.Satoshis(354), 30,
                                                      LightningMoney.MilliSatoshis(800_000_000), 3, false,
-                                                     LightningMoney.Satoshis(354), 144, FeatureSupport.No);
+                                                     LightningMoney.Satoshis(354), 144, useScidAlias);
         var keySet = new ChannelKeySetModel(0, OurNodeId, OurNodeId, OurNodeId, OurNodeId, OurNodeId, OurNodeId);
         var fundingOutput = new FundingOutputInfo(capacity ?? LightningMoney.Satoshis(1_000_000), OurNodeId,
                                                   PeerNodeId);
