@@ -56,7 +56,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `Tx*Validator` serial_id parity check only runs when `isInitiator` is true and rejects odd ids; whether `isInitiator` means local or remote is undocumented, so verify against BOLT 2 before relying on it. `TxAddInputValidator.Validate` is `async void`.
 - `SecretStorageService.GetBasepointPrivateKey` and `LoadFromIndex` throw `NotImplementedException`.
 - `PeerService.HandleMessage` silently drops anything that isn't an IChannelMessage, error or warning (gossip, onion_message, stfu).
-- `Argon2Id.DeriveKeyMemLimit` is `1 << 16` bytes = 64 KiB (the comment says MiB). Changing it breaks existing key files.
+- `Argon2Id` memory limits are in **bytes**: `DefaultMemLimit` = 64 MiB, `LegacyMemLimit` = 64 KiB (v1 key files only); the salt must be exactly 16 bytes. Key files (`Node/Models/KeyFileData.cs`) are versioned: v1 (no `version`, fixed salt, zero nonce, 64 KiB) is still readable and `SecureKeyManager.FromFilePath` rewrites it as v2 (random salt + nonce + Argon2 params stored in the file). Never change the v1 read path.
 - `new Sha256()` allocates state via `ICryptoProvider.MemoryAlloc` (sodium_malloc on the libsodium backend) on every instance. Reuse instances in hot loops.
 
 ## Onion routing (BOLT 4)

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NBitcoin;
@@ -24,11 +25,19 @@ using Node.Models;
 /// </summary>
 public class SecureKeyManager : ISecureKeyManager, IDisposable
 {
-    private static readonly byte[] s_salt =
+    /// <summary>
+    /// Fixed salt used by version 1 key files. Only used to read them; new files get a random per-file salt.
+    /// </summary>
+    private static readonly byte[] s_legacySalt =
     [
         0xFF, 0x1D, 0x3B, 0xF5, 0x24, 0xA2, 0xB7, 0xA9,
         0xC3, 0x1B, 0x1F, 0x58, 0xE9, 0x48, 0xB5, 0x69
     ];
+
+    /// <summary>
+    /// Argon2id passes used by version 1 key files.
+    /// </summary>
+    private const ulong LegacyArgon2OpsLimit = 3;
 
     private readonly string _filePath;
     private readonly object _lastUsedIndexLock = new();
@@ -163,36 +172,65 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
         jsonString = JsonSerializer.Serialize(data);
 
-        await File.WriteAllTextAsync(_filePath, jsonString);
+        await WriteFileAtomicallyAsync(_filePath, jsonString);
     }
 
+    /// <summary>
+    /// Encrypts the master key with <paramref name="password"/> and writes the key file in the current
+    /// (<see cref="KeyFileData.CurrentVersion"/>) format, with a fresh random salt and nonce.
+    /// </summary>
     public void SaveToFile(string password)
     {
+        ArgumentNullException.ThrowIfNull(password);
+
         lock (_lastUsedIndexLock)
         {
-            var extKey = GetMasterKey();
-            var extKeyBytes = Encoding.UTF8.GetBytes(extKey.ToString(_network));
-
+            var extKeyBytes = Encoding.UTF8.GetBytes(GetMasterKey().ToString(_network));
+            var salt = new byte[Argon2Id.SaltLen];
+            var nonce = new byte[CryptoConstants.Xchacha20Poly1305NonceLen];
+            var cipherText = new byte[extKeyBytes.Length + CryptoConstants.Xchacha20Poly1305TagLen];
             Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
-            Span<byte> nonce = stackalloc byte[CryptoConstants.Xchacha20Poly1305NonceLen];
-            Span<byte> cipherText = stackalloc byte[extKeyBytes.Length + CryptoConstants.Xchacha20Poly1305TagLen];
 
-            using var argon2Id = new Argon2Id();
-            argon2Id.DeriveKeyFromPasswordAndSalt(password, s_salt, key);
+            try
+            {
+                using (var cryptoProvider = CryptoFactory.GetCryptoProvider())
+                {
+                    cryptoProvider.RandomBytes(salt);
+                    cryptoProvider.RandomBytes(nonce);
+                }
 
-            using var xChaCha20Poly1305 = new XChaCha20Poly1305();
-            xChaCha20Poly1305.Encrypt(key, nonce, ReadOnlySpan<byte>.Empty, extKeyBytes, cipherText);
+                using (var argon2Id = new Argon2Id())
+                {
+                    argon2Id.DeriveKeyFromPasswordAndSalt(password, salt, key, Argon2Id.DefaultOpsLimit,
+                                                          Argon2Id.DefaultMemLimit);
+                }
+
+                using (var xChaCha20Poly1305 = new XChaCha20Poly1305())
+                {
+                    xChaCha20Poly1305.Encrypt(key, nonce, ReadOnlySpan<byte>.Empty, extKeyBytes, cipherText);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(key);
+                CryptographicOperations.ZeroMemory(extKeyBytes);
+            }
 
             var data = new KeyFileData
             {
+                Version = KeyFileData.CurrentVersion,
                 Network = _network.ToString(),
                 LastUsedIndex = _lastUsedIndex,
                 Descriptor = OutputChannelDescriptor,
                 EncryptedExtKey = Convert.ToBase64String(cipherText),
-                HeightOfBirth = HeightOfBirth
+                HeightOfBirth = HeightOfBirth,
+                Salt = Convert.ToBase64String(salt),
+                Nonce = Convert.ToBase64String(nonce),
+                Argon2MemLimit = Argon2Id.DefaultMemLimit,
+                Argon2OpsLimit = Argon2Id.DefaultOpsLimit
             };
             var json = JsonSerializer.Serialize(data);
-            File.WriteAllText(_filePath, json);
+            WriteFileAtomically(_filePath, json);
         }
     }
 
@@ -219,25 +257,39 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var network = Network.GetNetwork(expectedNetwork)
                    ?? throw new ArgumentException("Invalid network specified.", nameof(expectedNetwork));
 
-        var encryptedExtKey = Convert.FromBase64String(data.EncryptedExtKey);
-        Span<byte> nonce = stackalloc byte[CryptoConstants.Xchacha20Poly1305NonceLen];
-
-        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
-        using var argon2Id = new Argon2Id();
-        argon2Id.DeriveKeyFromPasswordAndSalt(password, s_salt, key);
-
-        Span<byte> extKeyBytes = stackalloc byte[encryptedExtKey.Length - CryptoConstants.Xchacha20Poly1305TagLen];
-        using var xChaCha20Poly1305 = new XChaCha20Poly1305();
-        xChaCha20Poly1305.Decrypt(key, nonce, ReadOnlySpan<byte>.Empty, encryptedExtKey, extKeyBytes);
-
-        var extKeyStr = Encoding.UTF8.GetString(extKeyBytes);
-        var extKey = ExtKey.Parse(extKeyStr, network);
-
-        return new SecureKeyManager(extKey.PrivateKey.ToBytes(), expectedNetwork, filePath, data.HeightOfBirth)
+        var extKeyBytes = DecryptExtKey(data, password);
+        ExtKey extKey;
+        try
         {
-            _lastUsedIndex = data.LastUsedIndex,
-            OutputChannelDescriptor = data.Descriptor
-        };
+            extKey = ExtKey.Parse(Encoding.UTF8.GetString(extKeyBytes), network);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(extKeyBytes);
+        }
+
+        var keyManager =
+            new SecureKeyManager(extKey.PrivateKey.ToBytes(), expectedNetwork, filePath, data.HeightOfBirth)
+            {
+                _lastUsedIndex = data.LastUsedIndex,
+                OutputChannelDescriptor = data.Descriptor
+            };
+
+        if (data.Version < KeyFileData.CurrentVersion)
+        {
+            // Migrate legacy key files (fixed salt, zero nonce, weak Argon2id parameters) to the current format.
+            try
+            {
+                keyManager.SaveToFile(password);
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"Failed to upgrade key file {filePath} to version " +
+                                        $"{KeyFileData.CurrentVersion}: {e.Message}");
+            }
+        }
+
+        return keyManager;
     }
 
     /// <summary>
@@ -246,6 +298,108 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     public static string GetKeyFilePath(string configPath)
     {
         return Path.Combine(configPath, "nltg.key.json");
+    }
+
+    private static byte[] DecryptExtKey(KeyFileData data, string password)
+    {
+        ArgumentNullException.ThrowIfNull(password);
+
+        byte[] salt;
+        byte[] nonce;
+        ulong opsLimit;
+        ulong memLimit;
+        switch (data.Version)
+        {
+            case 0 or KeyFileData.LegacyVersion:
+                salt = s_legacySalt;
+                nonce = new byte[CryptoConstants.Xchacha20Poly1305NonceLen];
+                opsLimit = LegacyArgon2OpsLimit;
+                memLimit = Argon2Id.LegacyMemLimit;
+                break;
+            case KeyFileData.CurrentVersion:
+                salt = DecodeBase64Field(data.Salt, "salt", Argon2Id.SaltLen);
+                nonce = DecodeBase64Field(data.Nonce, "nonce", CryptoConstants.Xchacha20Poly1305NonceLen);
+                opsLimit = data.Argon2OpsLimit;
+                memLimit = data.Argon2MemLimit;
+                if (memLimit < Argon2Id.DefaultMemLimit || memLimit > Argon2Id.MaxMemLimit
+                 || opsLimit < 1 || opsLimit > Argon2Id.MaxOpsLimit)
+                    throw new SerializationException("Invalid key file: unsupported Argon2id parameters");
+                break;
+            default:
+                throw new SerializationException($"Unsupported key file version {data.Version}");
+        }
+
+        byte[] encryptedExtKey;
+        try
+        {
+            encryptedExtKey = Convert.FromBase64String(data.EncryptedExtKey);
+        }
+        catch (FormatException e)
+        {
+            throw new SerializationException("Invalid key file: encryptedExtKey is not valid base64", e);
+        }
+
+        if (encryptedExtKey.Length <= CryptoConstants.Xchacha20Poly1305TagLen)
+            throw new SerializationException("Invalid key file: encryptedExtKey is too short");
+
+        var extKeyBytes = new byte[encryptedExtKey.Length - CryptoConstants.Xchacha20Poly1305TagLen];
+        Span<byte> key = stackalloc byte[CryptoConstants.PrivkeyLen];
+        try
+        {
+            using (var argon2Id = new Argon2Id())
+            {
+                argon2Id.DeriveKeyFromPasswordAndSalt(password, salt, key, opsLimit, memLimit);
+            }
+
+            using var xChaCha20Poly1305 = new XChaCha20Poly1305();
+            xChaCha20Poly1305.Decrypt(key, nonce, ReadOnlySpan<byte>.Empty, encryptedExtKey, extKeyBytes);
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(extKeyBytes);
+            throw;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(key);
+        }
+
+        return extKeyBytes;
+    }
+
+    private static byte[] DecodeBase64Field(string? value, string name, int expectedLength)
+    {
+        if (string.IsNullOrEmpty(value))
+            throw new SerializationException($"Invalid key file: missing {name}");
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(value);
+        }
+        catch (FormatException e)
+        {
+            throw new SerializationException($"Invalid key file: {name} is not valid base64", e);
+        }
+
+        if (bytes.Length != expectedLength)
+            throw new SerializationException($"Invalid key file: {name} must be {expectedLength} bytes");
+
+        return bytes;
+    }
+
+    private static void WriteFileAtomically(string path, string contents)
+    {
+        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        File.WriteAllText(tempPath, contents);
+        File.Move(tempPath, path, true);
+    }
+
+    private static async Task WriteFileAtomicallyAsync(string path, string contents)
+    {
+        var tempPath = $"{path}.{Guid.NewGuid():N}.tmp";
+        await File.WriteAllTextAsync(tempPath, contents);
+        File.Move(tempPath, path, true);
     }
 
     private ExtKey GetMasterKey()
