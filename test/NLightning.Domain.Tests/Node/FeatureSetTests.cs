@@ -529,4 +529,39 @@ public class FeatureSetTests
     }
 
     #endregion
+
+    #region Last bit at a byte boundary
+
+    [Theory]
+    [InlineData(8)]
+    [InlineData(16)]
+    [InlineData(40)]
+    public void Given_HighestSetBitAtAMultipleOf8_When_GetWireBytes_Then_TheBitIsKept(int bit)
+    {
+        // Arrange
+        var featureSet = FeatureSet.DeserializeFromBytes([0x00]);
+        featureSet.SetFeature(bit, true);
+
+        // Act
+        var bytes = featureSet.GetWireBytes()!;
+        var roundTripped = FeatureSet.DeserializeFromBytes(bytes);
+
+        // Assert
+        Assert.Equal(bit / 8 + 1, bytes.Length);
+        Assert.Equal([bit], roundTripped.GetSetBits());
+    }
+
+    [Fact]
+    public void Given_TwoSetsWithTheSameBitsAndDifferentLengths_When_HasSameBits_Then_True()
+    {
+        // Arrange
+        var shortSet = FeatureSet.DeserializeFromBytes([0x10, 0x00]);
+        var longSet = FeatureSet.DeserializeFromBytes([0x00, 0x00, 0x10, 0x00]);
+
+        // Act / Assert
+        Assert.True(shortSet.HasSameBits(longSet));
+        Assert.False(shortSet.HasSameBits(FeatureSet.DeserializeFromBytes([0x30, 0x00])));
+    }
+
+    #endregion
 }
