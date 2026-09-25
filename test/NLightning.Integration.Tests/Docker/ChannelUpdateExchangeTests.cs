@@ -1,6 +1,7 @@
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Integration.Tests.Docker;
 
@@ -12,6 +13,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Node.Options;
 using Fixtures;
 using TestCollections;
 using Utils;
@@ -27,6 +29,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
     private const uint FeeBaseMsat = 1_234;
     private const uint FeePpm = 567;
     private const ushort CltvExpiryDelta = 44;
+    private const uint NewFeeBaseMsat = 4_321;
 
     private const string SendingChannelUpdateLog = "Sending channel_update for channel";
 
@@ -104,18 +107,20 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
         Assert.Equal((ushort)alicePolicy.TimeLockDelta, aliceUpdate.CltvExpiryDelta);
         AssertNoIgnoredUpdate(node);
 
-        // Act: reconnect. The new connection must carry a fresh update (newer timestamp) of the same policy
+        // Act: change our fee while connected (nothing is sent), then reconnect. The new connection must carry an
+        // update with the new policy (LND ignores a same-policy resend younger than 24 h, so only a change shows)
         var sentBefore = node.CountLogLines(SendingChannelUpdateLog);
+        node.Services.GetRequiredService<IOptions<NodeOptions>>().Value.Routing.FeeBaseMsat = NewFeeBaseMsat;
         await ReconnectAsync(node, alice, ct);
 
         // Assert
         var refreshed = await Poll.ForAsync<RoutingPolicy>(async () =>
         {
             var policy = await GetOurPolicyAsync(node, alice, lndChannel.ChanId, ct);
-            return policy is not null && policy.LastUpdate > ourPolicy.LastUpdate ? policy : null;
-        }, s_policyTimeout, "alice has our channel_update sent after the reconnect", ct);
+            return policy is { FeeBaseMsat: NewFeeBaseMsat } ? policy : null;
+        }, s_policyTimeout, "alice has our new policy after the reconnect", ct);
         Assert.True(node.CountLogLines(SendingChannelUpdateLog) > sentBefore);
-        Assert.Equal(FeeBaseMsat, (uint)refreshed.FeeBaseMsat);
+        Assert.True(refreshed.LastUpdate > ourPolicy.LastUpdate);
         Assert.Equal(FeePpm, (uint)refreshed.FeeRateMilliMsat);
         Assert.Equal(CltvExpiryDelta, (ushort)refreshed.TimeLockDelta);
     }

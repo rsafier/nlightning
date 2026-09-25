@@ -35,9 +35,10 @@ using Interfaces;
 /// <c>max_htlc_value_in_flight_msat</c> and <c>Routing.HtlcMaximumMsat</c> (never below the minimum).
 /// </para>
 /// <para>
-/// Resending: each new connection to a peer (after init) gets a fresh update for every <c>Open</c> channel with it
-/// (<see cref="SendChannelUpdatesToPeerAsync"/>, called by the peer manager), so the peer learns our policy again
-/// after a reconnect or a restart and after an update it missed while disconnected.
+/// Resending: each new connection to a peer (after init) gets our update for every <c>Open</c> channel with it
+/// (<see cref="SendChannelUpdatesToPeerAsync"/>, called by the peer manager), so the peer learns a policy that changed
+/// while it was disconnected or we were down. An unchanged policy goes out as the same message (same timestamp), as
+/// LND does on reconnect: LND ignores a same-policy "keep-alive" update younger than 24 h.
 /// </para>
 /// <para>
 /// Everything is in memory: the peer's update is forgotten on restart until it sends a new one.
@@ -80,37 +81,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     /// <inheritdoc/>
     public ChannelUpdateMessage CreateChannelUpdate(ChannelModel channel, bool disabled = false)
     {
-        ArgumentNullException.ThrowIfNull(channel);
-        if (channel.ShortChannelId == default)
-            throw new InvalidOperationException($"Channel {channel.ChannelId} has no short channel id yet");
-
-        var capacityMsat = channel.FundingOutput?.Amount.MilliSatoshi
-                        ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding output");
-
-        var routing = _nodeOptions.Routing;
-        var htlcMinimumMsat = Math.Max(channel.ChannelParams.Remote.HtlcMinimumAmount.MilliSatoshi,
-                                       routing.HtlcMinimumMsat);
-        var htlcMaximumMsat = capacityMsat;
-        var remoteMaxInFlight = channel.ChannelParams.Remote.MaxHtlcValueInFlight.MilliSatoshi;
-        if (remoteMaxInFlight > 0)
-            htlcMaximumMsat = Math.Min(htlcMaximumMsat, remoteMaxInFlight);
-        if (routing.HtlcMaximumMsat is { } configuredMaximum)
-            htlcMaximumMsat = Math.Min(htlcMaximumMsat, configuredMaximum);
-        htlcMaximumMsat = Math.Max(htlcMaximumMsat, htlcMinimumMsat);
-
-        var channelFlags = IsNode2(_secureKeyManager.GetNodePubKey(), channel.RemoteNodeId)
-                               ? ChannelUpdatePayload.ChannelFlagDirection
-                               : (byte)0;
-        if (disabled)
-            channelFlags |= ChannelUpdatePayload.ChannelFlagDisable;
-
-        var unsigned = new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature,
-                                                _nodeOptions.BitcoinNetwork.ChainHash, channel.ShortChannelId,
-                                                NextTimestamp(channel.ChannelId),
-                                                ChannelUpdatePayload.MessageFlagMustBeOne
-                                              | ChannelUpdatePayload.MessageFlagDontForward, channelFlags,
-                                                routing.CltvExpiryDelta, htlcMinimumMsat, routing.FeeBaseMsat,
-                                                routing.FeeProportionalMillionths, htlcMaximumMsat);
+        var unsigned = BuildUnsignedUpdate(channel, disabled, NextTimestamp(channel.ChannelId));
         var signature = _lightningSigner.SignNodeMessage(unsigned.GetSignatureHash());
         var message = new ChannelUpdateMessage(unsigned.WithSignature(signature));
 
@@ -119,7 +90,18 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     }
 
     /// <inheritdoc/>
-    public async Task SendChannelUpdateAsync(ChannelId channelId, CancellationToken cancellationToken = default)
+    public Task SendChannelUpdateAsync(ChannelId channelId, CancellationToken cancellationToken = default)
+    {
+        return SendChannelUpdateAsync(channelId, reuseUnchanged: false, cancellationToken);
+    }
+
+    /// <summary>
+    /// With <paramref name="reuseUnchanged"/>, our last update for the channel is sent again as is when nothing but
+    /// its timestamp would change (as LND does on reconnect): peers ignore a same-policy "keep-alive" update younger
+    /// than a day anyway, and this spends none of their per-channel update rate limit.
+    /// </summary>
+    private async Task SendChannelUpdateAsync(ChannelId channelId, bool reuseUnchanged,
+                                              CancellationToken cancellationToken)
     {
         using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
 
@@ -130,7 +112,10 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             return;
         }
 
-        var message = CreateChannelUpdate(channel);
+        var message = reuseUnchanged && _localUpdates.TryGetValue(channelId, out var last)
+                                     && IsCurrent(channel, last.Payload)
+                          ? last
+                          : CreateChannelUpdate(channel);
         _logger.LogInformation("Sending channel_update for channel {ChannelId} ({ShortChannelId}) to peer {Peer}",
                                channelId, channel.ShortChannelId, channel.RemoteNodeId);
 
@@ -151,7 +136,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         {
             // Opening it now would send it again
             _sentOnOpen.TryAdd(channelId, 0);
-            await SendChannelUpdateAsync(channelId, cancellationToken);
+            await SendChannelUpdateAsync(channelId, reuseUnchanged: true, cancellationToken);
         }
     }
 
@@ -239,6 +224,57 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                 _logger.LogError(e, "Failed to send the channel_update for channel {ChannelId}", channelId);
             }
         });
+    }
+
+    /// <summary>
+    /// Our (unsigned) update for the channel with the current routing options (field rules in the class remarks).
+    /// </summary>
+    private ChannelUpdatePayload BuildUnsignedUpdate(ChannelModel channel, bool disabled, uint timestamp)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.ShortChannelId == default)
+            throw new InvalidOperationException($"Channel {channel.ChannelId} has no short channel id yet");
+
+        var capacityMsat = channel.FundingOutput?.Amount.MilliSatoshi
+                        ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding output");
+
+        var routing = _nodeOptions.Routing;
+        var htlcMinimumMsat = Math.Max(channel.ChannelParams.Remote.HtlcMinimumAmount.MilliSatoshi,
+                                       routing.HtlcMinimumMsat);
+        var htlcMaximumMsat = capacityMsat;
+        var remoteMaxInFlight = channel.ChannelParams.Remote.MaxHtlcValueInFlight.MilliSatoshi;
+        if (remoteMaxInFlight > 0)
+            htlcMaximumMsat = Math.Min(htlcMaximumMsat, remoteMaxInFlight);
+        if (routing.HtlcMaximumMsat is { } configuredMaximum)
+            htlcMaximumMsat = Math.Min(htlcMaximumMsat, configuredMaximum);
+        htlcMaximumMsat = Math.Max(htlcMaximumMsat, htlcMinimumMsat);
+
+        var channelFlags = IsNode2(_secureKeyManager.GetNodePubKey(), channel.RemoteNodeId)
+                               ? ChannelUpdatePayload.ChannelFlagDirection
+                               : (byte)0;
+        if (disabled)
+            channelFlags |= ChannelUpdatePayload.ChannelFlagDisable;
+
+        return new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, _nodeOptions.BitcoinNetwork.ChainHash,
+                                        channel.ShortChannelId, timestamp,
+                                        ChannelUpdatePayload.MessageFlagMustBeOne
+                                      | ChannelUpdatePayload.MessageFlagDontForward, channelFlags,
+                                        routing.CltvExpiryDelta, htlcMinimumMsat, routing.FeeBaseMsat,
+                                        routing.FeeProportionalMillionths, htlcMaximumMsat);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="last"/> still says what a new, enabled update would (all but timestamp and signature).
+    /// </summary>
+    private bool IsCurrent(ChannelModel channel, ChannelUpdatePayload last)
+    {
+        var current = BuildUnsignedUpdate(channel, disabled: false, last.Timestamp);
+        return current.ChainHash == last.ChainHash && current.ShortChannelId == last.ShortChannelId
+            && current.MessageFlags == last.MessageFlags && current.ChannelFlags == last.ChannelFlags
+            && current.CltvExpiryDelta == last.CltvExpiryDelta && current.HtlcMinimumMsat == last.HtlcMinimumMsat
+            && current.FeeBaseMsat == last.FeeBaseMsat
+            && current.FeeProportionalMillionths == last.FeeProportionalMillionths
+            && current.HtlcMaximumMsat == last.HtlcMaximumMsat;
     }
 
     private ChannelModel? FindChannel(CompactPubKey peerPubKey, ShortChannelId shortChannelId)

@@ -241,28 +241,62 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
-    public async Task Given_UpdateSentOnOpen_When_PeerReconnects_Then_ANewerUpdateIsSent()
+    public async Task Given_UnchangedPolicy_When_PeerReconnects_Then_TheSameUpdateIsSentAgain()
     {
-        // Arrange
+        // Arrange - LND ignores a same-policy "keep-alive" update younger than 24 h, and resends its own as is
         var service = CreateService(out _);
         var channel = AddChannel(ChannelState.Open);
         var raised = new List<ChannelUpdateReadyEventArgs>();
-        service.OnChannelUpdateReady += (_, args) =>
-        {
-            lock (raised)
-                raised.Add(args);
-        };
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
         await service.SendChannelUpdateAsync(channel.ChannelId, TestContext.Current.CancellationToken);
 
         // Act
         await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
 
         // Assert
-        lock (raised)
-        {
-            Assert.Equal(2, raised.Count);
-            Assert.True(raised[1].Message.Payload.Timestamp > raised[0].Message.Payload.Timestamp);
-        }
+        Assert.Equal(2, raised.Count);
+        Assert.Same(raised[0].Message, raised[1].Message);
+    }
+
+    [Fact]
+    public async Task Given_PolicyChangedSinceLastUpdate_When_PeerReconnects_Then_ANewerUpdateWithTheNewPolicyIsSent()
+    {
+        // Arrange
+        var service = CreateService(out var ourSigner);
+        var channel = AddChannel(ChannelState.Open);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+        await service.SendChannelUpdateAsync(channel.ChannelId, TestContext.Current.CancellationToken);
+        _nodeOptions.Routing.FeeBaseMsat = 9_999;
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2, raised.Count);
+        var resent = raised[1].Message.Payload;
+        Assert.True(resent.Timestamp > raised[0].Message.Payload.Timestamp);
+        Assert.Equal(9_999u, resent.FeeBaseMsat);
+        Assert.True(ourSigner.VerifyNodeMessage(resent.GetSignatureHash(), resent.Signature, OurNodeId));
+    }
+
+    [Fact]
+    public async Task Given_LastUpdateDisabled_When_PeerReconnects_Then_AnEnabledUpdateIsSent()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+        var disabled = service.CreateChannelUpdate(channel, disabled: true);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, TestContext.Current.CancellationToken);
+
+        // Assert
+        var args = Assert.Single(raised);
+        Assert.False(args.Message.Payload.IsDisabled);
+        Assert.True(args.Message.Payload.Timestamp > disabled.Payload.Timestamp);
     }
 
     [Fact]
