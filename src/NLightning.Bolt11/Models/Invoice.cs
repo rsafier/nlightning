@@ -311,21 +311,22 @@ public partial class Invoice
     /// The min final cltv expiry of the invoice
     /// </summary>
     /// <remarks>
-    /// The min final cltv expiry is the minimum final cltv expiry the payer should use
+    /// The min final cltv expiry is the minimum final cltv expiry delta the payer should use.
+    /// When the invoice has no <c>c</c> field, BOLT 11 requires a default of
+    /// <see cref="InvoiceConstants.DefaultMinFinalCltvExpiryDelta"/> (18).
     /// </remarks>
-    [DisallowNull]
-    public ushort? MinFinalCltvExpiry
+    public ushort MinFinalCltvExpiry
     {
         get
         {
             return _taggedFields.TryGet<MinFinalCltvExpiryTaggedField>(TaggedFieldTypes.MinFinalCltvExpiry,
                                                                        out var minFinalCltvExpiry)
                        ? minFinalCltvExpiry.Value
-                       : null;
+                       : InvoiceConstants.DefaultMinFinalCltvExpiryDelta;
         }
         set
         {
-            _taggedFields.Add(new MinFinalCltvExpiryTaggedField(value.Value));
+            _taggedFields.Add(new MinFinalCltvExpiryTaggedField(value));
         }
     }
 

@@ -34,8 +34,10 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
     /// <inheritdoc/>
     public void WriteToBitWriter(BitWriter bitWriter)
     {
-        // Write data
-        bitWriter.WriteUInt16AsBits(Value, Length * 5);
+        // Write data as big-endian 5-bit groups; a u16 can need 4 groups (20 bits), which is wider than the
+        // 16 bits WriteUInt16AsBits accepts
+        for (var i = Length - 1; i >= 0; i--)
+            bitWriter.WriteByteAsBits((byte)((Value >> (i * 5)) & 0x1F), 5);
     }
 
     /// <inheritdoc/>
@@ -58,9 +60,17 @@ internal sealed class MinFinalCltvExpiryTaggedField : ITaggedField
                 $"Invalid length for {nameof(MinFinalCltvExpiryTaggedField)}. Length must be greater than 0",
                 nameof(length));
 
-        // Read the data from the BitReader
-        var value = bitReader.ReadUInt16FromBits(length * 5);
+        // Read the data from the BitReader as big-endian 5-bit groups
+        ulong value = 0;
+        for (var i = 0; i < length; i++)
+        {
+            value = (value << 5) | bitReader.ReadByteFromBits(5);
+            if (value > ushort.MaxValue)
+                throw new ArgumentException(
+                    $"Invalid value for {nameof(MinFinalCltvExpiryTaggedField)}. Value must fit in 16 bits",
+                    nameof(length));
+        }
 
-        return new MinFinalCltvExpiryTaggedField(value);
+        return new MinFinalCltvExpiryTaggedField((ushort)value);
     }
 }

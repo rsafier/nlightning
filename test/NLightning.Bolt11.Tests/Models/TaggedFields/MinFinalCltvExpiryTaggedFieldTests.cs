@@ -72,4 +72,35 @@ public class MinFinalCltvExpiryTaggedFieldTests
         // Act & Assert
         Assert.Throws<ArgumentException>(() => MetadataTaggedField.FromBitReader(bitReader, 0));
     }
+
+    [Theory]
+    [InlineData(32768, 4)]
+    [InlineData(65535, 4)]
+    public void Given_ValueNeedingFourGroups_When_RoundTripping_Then_ValueIsPreserved(ushort expiry,
+                                                                                     short expectedLength)
+    {
+        // Arrange
+        var taggedField = new MinFinalCltvExpiryTaggedField(expiry);
+        var bitWriter = new BitWriter(taggedField.Length * 5);
+
+        // Act
+        taggedField.WriteToBitWriter(bitWriter);
+        var parsed = MinFinalCltvExpiryTaggedField.FromBitReader(new BitReader(bitWriter.ToArray()),
+                                                                 taggedField.Length);
+
+        // Assert
+        Assert.Equal(expectedLength, taggedField.Length);
+        Assert.Equal(expiry, parsed.Value);
+    }
+
+    [Fact]
+    public void Given_ValueWiderThan16Bits_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        // 4 groups: 0b10000 00000 00000 00000 = 2^19
+        var bitReader = new BitReader([0x80, 0x00, 0x00]);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => MinFinalCltvExpiryTaggedField.FromBitReader(bitReader, 4));
+    }
 }

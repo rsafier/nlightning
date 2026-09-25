@@ -265,5 +265,20 @@ public class InvoiceTests
         Assert.Equal(2000000000U, invoice.Amount.MilliSatoshi);
     }
 
+    [Fact]
+    public void Given_InvoiceWithoutCField_When_Decoded_Then_MinFinalCltvExpiryDefaultsTo18()
+    {
+        // Arrange
+        // BOLT 11 vector (P2SH fallback) with no `c` field
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+
+        // Act
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal((ushort)18, invoice.MinFinalCltvExpiry);
+    }
+
     #endregion
 }

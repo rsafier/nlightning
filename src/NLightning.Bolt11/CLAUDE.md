@@ -53,7 +53,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 - Only ONE `r` field is kept. BOLT 11 allows several; later ones are silently dropped (`TaggedFieldList.Add` uniqueness).
 - Decode errors inside fields are swallowed (Debug.WriteLine in `TaggedFieldList.FromBitReader`). If a declared length is bigger than the remaining bits, the loop `continue`s without skipping those bits.
 - Feature-bit validation is a TODO (`Invoice.cs:553`). Unknown even features are NOT rejected, and the writer does not force the payment_secret or var_onion_optin bits.
-- `MinFinalCltvExpiry` returns null when `c` is absent. It does not apply the spec default of 18.
+- `MinFinalCltvExpiry` is a non-nullable `ushort` that returns the spec default 18 (`InvoiceConstants.DefaultMinFinalCltvExpiryDelta`) when `c` is absent, so it cannot tell you whether `c` was present.
 - `FallbackAddressTaggedField` has no taproot (witness v1) support. Unknown versions are skipped.
 - `Encode()` never runs `InvoiceValidationService`. `ToString()` with no cached string and no `ISecureKeyManager` throws NullReferenceException (explicitly, from `Encode()`); use `ToString(Key)` or `Encode(Key)`.
 - If assembly names change, update the InternalsVisibleTo lists in `src/NLightning.Infrastructure.Bitcoin/AssemblyInfo.cs` (Bech32Encoder) and `./AssemblyInfo.cs`.
@@ -62,7 +62,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 This project has no onion code. A future Application-layer payment service would take its sender inputs from here:
 - `PaymentHash` becomes `update_add_htlc.payment_hash`.
 - `PaymentSecret` + `Amount` become the final-hop `payment_data` TLV (type 8).
-- `MinFinalCltvExpiry` sets the final `outgoing_cltv_value`. Default it to 18 yourself.
+- `MinFinalCltvExpiry` sets the final `outgoing_cltv_value` (already defaults to 18 when `c` is absent).
 - `RoutingInfos` supply the last private hops (scid, fees, cltv_delta).
 - `PayeePubKey` is the final hop's node id for the Sphinx ECDH.
 - `Metadata` becomes the `payment_metadata` TLV (type 16).
