@@ -1,0 +1,243 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace NLightning.Application.Channels.Services;
+
+using Domain.Channels.Commitments;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Payments.ValueObjects;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.ValueObjects;
+using Domain.Protocol.Tlv;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Crypto.Hashes;
+using Interfaces;
+
+/// <summary>
+/// The send side of the BOLT 2 normal operation (plan N6-T2, §3.10): our <c>update_add_htlc</c>,
+/// <c>update_fulfill_htlc</c>, <c>update_fail_htlc</c>, <c>update_fail_malformed_htlc</c> and <c>update_fee</c>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Singleton. Each operation takes the channel's lock, checks the preconditions, runs the commitment engine, persists
+/// the transition in one save (<see cref="ChannelStateTransitionService.CommitAsync"/>: I1, I2), enqueues the wire
+/// message through <see cref="IChannelMessagePublisher"/> while still holding the lock, then asks the
+/// <see cref="ICommitScheduler"/> to sign once the lock is released.
+/// </para>
+/// <para>
+/// Preconditions: HTLCs enabled (<see cref="NodeOptions.HtlcsEnabled"/>), channel <see cref="ChannelState.Open"/>
+/// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules. Only
+/// <see cref="OfferHtlcAsync"/> also needs a connected peer: a removal or a fee update of a channel whose peer is away
+/// is persisted and waits for channel_reestablish (it must never be lost: a fulfill carries a preimage). There is no
+/// channel_reestablish yet (N7), so "reestablished" is not checked. A failed precondition throws
+/// <see cref="CommitmentRefusedException"/> with nothing persisted or sent; an unknown channel throws
+/// <see cref="KeyNotFoundException"/>.
+/// </para>
+/// <para>
+/// The <see cref="HtlcOrigin"/> of an offer is validated but not stored yet: the payment and circuit tables (ABCD W1-C)
+/// and the switch that reads them (W2-B) own that.
+/// </para>
+/// </remarks>
+public sealed class ChannelOperationsService : IChannelOperations
+{
+    private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IChannelLockProvider _channelLockProvider;
+    private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly IChannelMessagePublisher _channelMessagePublisher;
+    private readonly ICommitScheduler _commitScheduler;
+    private readonly ILogger<ChannelOperationsService> _logger;
+    private readonly NodeOptions _nodeOptions;
+    private readonly IPeerLivenessProbe _peerLivenessProbe;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
+
+    public ChannelOperationsService(IChannelLockProvider channelLockProvider,
+                                    IChannelMemoryRepository channelMemoryRepository,
+                                    IChannelMessagePublisher channelMessagePublisher, ICommitScheduler commitScheduler,
+                                    ILogger<ChannelOperationsService> logger, IOptions<NodeOptions> nodeOptions,
+                                    IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
+                                    IBlockchainMonitor? blockchainMonitor = null)
+    {
+        _blockchainMonitor = blockchainMonitor;
+        _channelLockProvider = channelLockProvider;
+        _channelMemoryRepository = channelMemoryRepository;
+        _channelMessagePublisher = channelMessagePublisher;
+        _commitScheduler = commitScheduler;
+        _logger = logger;
+        _nodeOptions = nodeOptions.Value;
+        _peerLivenessProbe = peerLivenessProbe;
+        _serviceScopeFactory = serviceScopeFactory;
+    }
+
+    /// <inheritdoc />
+    public async Task<ulong> OfferHtlcAsync(ChannelId channelId, LightningMoney amount, Hash paymentHash,
+                                            uint cltvExpiry, OnionPacket onion, BlindedPathTlv? pathKey,
+                                            HtlcOrigin origin, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(amount);
+        if (!origin.IsValid)
+            throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
+        if (onion.Length == 0)
+            throw new ArgumentException("The onion is empty", nameof(onion));
+
+        var height = _blockchainMonitor?.LastProcessedBlockHeight;
+        var result = await RunAsync(channelId, "update_add_htlc", true,
+                                    c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),
+                                                   pathKey?.PathKey, height is > 0 ? height : null),
+                                    cancellationToken);
+        var htlcId = result.Outbound.OfType<OutboundAddHtlc>().Single().Htlc.Id;
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Offered HTLC {HtlcId} of {Amount} on channel {ChannelId} ({Origin})", htlcId, amount,
+                             channelId, origin.Kind);
+
+        return htlcId;
+    }
+
+    /// <inheritdoc />
+    public async Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                                       CancellationToken cancellationToken = default)
+    {
+        await RunAsync(channelId, "update_fulfill_htlc", false, c =>
+        {
+            using var sha256 = new Sha256();
+            return c.SendFulfill(htlcId, paymentPreimage, sha256);
+        }, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task FailHtlcAsync(ChannelId channelId, ulong htlcId, ReadOnlyMemory<byte> reason,
+                                    CancellationToken cancellationToken = default)
+    {
+        await RunAsync(channelId, "update_fail_htlc", false, c => c.SendFail(htlcId, reason.ToArray()),
+                       cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task FailMalformedHtlcAsync(ChannelId channelId, ulong htlcId, FailureCode failureCode,
+                                             Hash sha256OfOnion, CancellationToken cancellationToken = default)
+    {
+        await RunAsync(channelId, "update_fail_malformed_htlc", false,
+                       c => c.SendFailMalformed(htlcId, (ushort)failureCode, (byte[])sha256OfOnion),
+                       cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task UpdateFeeAsync(ChannelId channelId, uint feeratePerKw,
+                                     CancellationToken cancellationToken = default)
+    {
+        await RunAsync(channelId, "update_fee", false, c => c.SendFee(feeratePerKw), cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Idempotent: storing the same secret again only rewrites it.</remarks>
+    public async Task RecordOnionSecretAsync(ChannelId channelId, ulong htlcId, Secret sharedSecret,
+                                             CancellationToken cancellationToken = default)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+            throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+        var htlcKey = new HtlcKey(HtlcDirection.Incoming, htlcId);
+        if (channel.Commitments?.GetHtlc(HtlcDirection.Incoming, htlcId) is null)
+            throw new CommitmentRefusedException("B2-DEL-00", $"No HTLC {htlcId} offered by the peer");
+
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await unitOfWork.ChannelStateDbRepository.SetOnionSharedSecretAsync(channelId, htlcKey, sharedSecret);
+        await unitOfWork.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// One update: lock, preconditions, engine, persist, enqueue; then (outside the lock) schedule the signature and
+    /// hand the transition's events to the switch.
+    /// </summary>
+    private async Task<CommitmentsResult> RunAsync(ChannelId channelId, string operationName,
+                                                   bool requiresConnectedPeer,
+                                                   Func<ChannelCommitments, CommitmentsResult> operation,
+                                                   CancellationToken cancellationToken)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        CommitmentsResult result;
+        using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
+        {
+            var channel = GetOperableChannel(channelId, operationName);
+            if (requiresConnectedPeer
+             && !await _peerLivenessProbe.IsAliveAsync(channel.RemoteNodeId, cancellationToken))
+                throw new CommitmentRefusedException("B2-NO-02",
+                                                     $"{operationName} refused: the peer of channel {channelId} is not connected");
+
+            // The engine throws CommitmentRefusedException for a broken sender rule; nothing is persisted then
+            result = operation(channel.Commitments!);
+
+            var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
+            await transitions.CommitAsync(channel, result);
+            _channelMessagePublisher.Publish(channel.RemoteNodeId,
+                                             result.Outbound.Select(o => transitions.ToWireMessage(channel, o))
+                                                   .ToList());
+        }
+
+        _commitScheduler.Schedule(channelId);
+        await RaiseDomainEventsAsync(scope);
+        return result;
+    }
+
+    /// <summary>The channel an operation may change (see the class remarks).</summary>
+    private ChannelModel GetOperableChannel(ChannelId channelId, string operationName)
+    {
+        if (!_nodeOptions.HtlcsEnabled)
+            throw new CommitmentRefusedException("B2-NO-02", $"{operationName} refused: HTLCs are disabled on this node");
+
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+            throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+
+        if (channel.State == ChannelState.Failed)
+            throw new CommitmentRefusedException("B2-NO-02", $"{operationName} refused: channel {channelId} failed");
+
+        if (channel.State != ChannelState.Open)
+            throw new CommitmentRefusedException("B2-NO-02",
+                                                 $"{operationName} refused: channel {channelId} is {Enum.GetName(channel.State)}");
+
+        if (channel.DataLossDetected)
+            throw new CommitmentRefusedException("B2-RE-DL",
+                                                 $"{operationName} refused: channel {channelId} lost data");
+
+        if (channel.Commitments is null)
+            throw new CommitmentRefusedException("B2-NO-02",
+                                                 $"{operationName} refused: channel {channelId} has no commitment state");
+
+        return channel;
+    }
+
+    /// <summary>
+    /// Sends are not expected to raise events, but anything a transition raised goes to the switch like after a peer
+    /// message: outside the lock, logged on failure (re-derived on startup).
+    /// </summary>
+    private async Task RaiseDomainEventsAsync(IServiceScope scope)
+    {
+        var events = scope.ServiceProvider.GetRequiredService<ChannelDomainEventQueue>().Drain();
+        if (events.Count == 0 || scope.ServiceProvider.GetService<IHtlcSwitch>() is not { } htlcSwitch)
+            return;
+
+        foreach (var channelEvent in events)
+        {
+            try
+            {
+                await htlcSwitch.HandleAsync(channelEvent, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "HTLC switch failed on {Event} for HTLC {HtlcId} of channel {ChannelId}",
+                                 channelEvent.GetType().Name, channelEvent.HtlcId, channelEvent.ChannelId);
+            }
+        }
+    }
+}
