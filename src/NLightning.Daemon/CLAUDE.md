@@ -36,7 +36,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
 - `NLightning.Daemon.Contracts` and `NLightning.Daemon.Plugins` target **net9.0** and must stay consumable from net9.0.
 
 ## Tests
-- `test/NLightning.Daemon.Tests` (xUnit v3 + Moq, `Given_X_When_Y_Then_Z`). **`dotnet test` discovers 0 tests** because the csproj lacks `xunit.runner.visualstudio`, so CI never runs these tests. Run them with:
+- `test/NLightning.Daemon.Tests` (xUnit v3 + Moq, `Given_X_When_Y_Then_Z`). `dotnet test` runs them (CI included, since NL-167 added `xunit.runner.visualstudio`). The xunit v3 runner also works:
   - `dotnet run --project test/NLightning.Daemon.Tests` (all 23 tests)
   - `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'`, or `-class <FQN>`
 - InternalsVisibleTo (`AssemblyInfo.cs`) lists the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`, but not `NLightning.Daemon.Tests`. That is why the internal IPC stack (router, framing, auth, handlers) has no unit tests.

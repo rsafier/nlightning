@@ -43,8 +43,8 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - New abstractions belong in Domain as interfaces (as `ISphinxService`/`IOnionReplayCache` already do). Their implementations go in Infrastructure(.Bitcoin).
 
 ## Tests
-- `dotnet test` finds **0 tests** here ("No test is available") because the csproj lacks xunit.runner.visualstudio, which the other test projects reference; CI's `dotnet test` therefore silently skips them. Run the tests with:
-  `dotnet run --project test/NLightning.Application.Tests` (24 tests), or
+- `dotnet test test/NLightning.Application.Tests` runs the 24 tests (CI included, since NL-167 added xunit.runner.visualstudio). The xunit v3 runner also works:
+  `dotnet run --project test/NLightning.Application.Tests`, or
   `test/NLightning.Application.Tests/bin/Debug/net10.0/NLightning.Application.Tests -class NLightning.Application.Tests.Node.Managers.PeerManagerTests`
 - Existing coverage: OpenChannel1, FundingCreated and PeerManager. Nothing covers AcceptChannel1, FundingSigned, FundingConfirmed, ChannelReady, ChannelManager or MessageFactory.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`.

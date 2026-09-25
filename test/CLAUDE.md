@@ -33,17 +33,16 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 ## Dependency rules
 - Test projects may reference src projects and `NLightning.Tests.Utils`. Nothing in src/ may reference test projects.
 - Tests.Utils references only Domain, Infrastructure and Infrastructure.Bitcoin. It transitively brings in LNUnit and Docker.DotNet. Serialization.Tests and Daemon.Tests do not reference it.
-- `src/Directory.Build.props` does NOT apply here. Each test csproj declares net10.0 and Nullable itself; all but Daemon.Tests also set `IsTestProject`. New test projects need `xunit.runner.visualstudio` (3.1.5) or `dotnet test` discovers nothing.
+- `src/Directory.Build.props` does NOT apply here. Each test csproj declares net10.0 and Nullable itself; all also set `IsTestProject`. New test projects need `xunit.runner.visualstudio` (3.1.5) or `dotnet test` discovers nothing.
 
 ## Commands (repo root)
 - All tests, as CI runs them (`.github/workflows/dotnet.yml`, minus logger/coverage flags): `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121 && dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'`
 - One class: `dotnet test test/NLightning.Domain.Tests/NLightning.Domain.Tests.csproj --filter "FullyQualifiedName~NLightning.Domain.Tests.ValueObjects.BigSizeTests"`
-- Application.Tests and Daemon.Tests: `dotnet test` finds 0 tests because xunit.runner.visualstudio is missing. Run `dotnet run --project test/NLightning.Application.Tests -- -class <FQN>` (or `-method '*Name*'`).
+- Application.Tests and Daemon.Tests run under `dotnet test` like the rest. The xunit v3 runner also works: `dotnet run --project test/NLightning.Application.Tests -- -class <FQN>` (or `-method '*Name*'`).
 - Native crypto: repeat with `-c Release.Native`. Formatting gate: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Docker tests (need the Docker daemon and internet on first build): `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"`. The inbound test uses `HOST_ADDRESS`.
 
 ## Gotchas
-- CI silently skips all 47 tests in Application.Tests and Daemon.Tests. Run them manually whenever you touch Application or Daemon code.
 - `!~Docker` is a substring filter, so keep Docker tests in `NLightning.Integration.Tests.Docker` and don't put "Docker" in other test names.
 - `PeerAddressTests.Given_HttpAddress_...` needs live DNS and fails offline. That is an environment issue, not a regression.
 - The Docker fixtures force-remove containers named miner/alice/bob/carol, build `../../../../Docker/custom_lnd` relative to bin, and share one regtest network across the `regtest` collection, so state carries over between tests. Always `PortPoolUtil.ReleasePort` in Dispose.

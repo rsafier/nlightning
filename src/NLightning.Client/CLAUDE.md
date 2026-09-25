@@ -33,7 +33,7 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 - Build: `dotnet build src/NLightning.Client -p:MSBuildWarningsAsMessages=MSB4121`
 - Run: `dotnet run --project src/NLightning.Client -- --network regtest listpeers` (use the space form; see Gotchas). This needs a running daemon and `~/.nltg/<network>/nltg.cookie`.
 - Format: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` (repo root).
-- Tests: there is no Client test project. If you add IPC/client tests, `test/NLightning.Daemon.Tests` (xunit.v3, references Daemon) is the closest home. Its csproj lacks `xunit.runner.visualstudio`, so `dotnet test` may discover 0 tests; running the xunit.v3 exe directly (`dotnet run --project test/NLightning.Daemon.Tests -- -method '*X*'`) is the fallback. Not verified by running.
+- Tests: there is no Client test project. If you add IPC/client tests, `test/NLightning.Daemon.Tests` (xunit.v3, references Daemon) is the closest home. `dotnet test` discovers its tests; `dotnet run --project test/NLightning.Daemon.Tests -- -method '*X*'` also works.
 
 ## Gotchas
 - `CommandLineHelper` (in Daemon.Contracts, shared with the daemon) has bugs. `--cookie <path>`/`-c <path>` assigns the flag itself instead of the path, so only `--cookie=<path>` works. `GetCommand` always skips the next argument after an option, even for the `--network=regtest` form, so `--network=regtest listpeers` silently runs `node-info`. `-?` is advertised but not recognized. `NLTG_COOKIE` is only consulted when `NLTG_NETWORK` is unset.

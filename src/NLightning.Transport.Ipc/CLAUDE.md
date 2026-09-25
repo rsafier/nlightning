@@ -29,7 +29,7 @@ This is the wire contract for local IPC between the CLI (`src/NLightning.Client`
 - Must NOT reference Application, Infrastructure.*, Daemon, Client, NBitcoin or EF. This project is consumed by both Client and Daemon, so a reference to either one creates a cycle.
 
 ## Tests
-There are none; nothing under `test/` covers this project. The natural home for new tests is `test/NLightning.Daemon.Tests`. That project lacks `xunit.runner.visualstudio`, so run it with `dotnet run --project test/NLightning.Daemon.Tests -- -class <FQN>` rather than `dotnet test`. Write round-trip tests with `MessagePackSerializer.Serialize/Deserialize(x, NLightningMessagePackOptions.Options)`.
+There are none; nothing under `test/` covers this project. The natural home for new tests is `test/NLightning.Daemon.Tests`. Run it with `dotnet test test/NLightning.Daemon.Tests` or `dotnet run --project test/NLightning.Daemon.Tests -- -class <FQN>`. Write round-trip tests with `MessagePackSerializer.Serialize/Deserialize(x, NLightningMessagePackOptions.Options)`.
 - Build: `dotnet build src/NLightning.Transport.Ipc -p:MSBuildWarningsAsMessages=MSB4121`
 - Format gate (CI): `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`
 
