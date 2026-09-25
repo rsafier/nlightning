@@ -174,6 +174,21 @@ public sealed class ChannelMigrationDataTests : IAsyncDisposable
             TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task Given_RowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
+    {
+        // Arrange
+        await _connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(_connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert (NL-237: the same rows and assertions as the Docker Postgres/SQL Server tests)
+        await LegacyChannelMigrationRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _connection.DisposeAsync();

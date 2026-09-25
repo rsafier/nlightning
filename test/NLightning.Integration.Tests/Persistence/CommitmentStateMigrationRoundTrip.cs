@@ -1,4 +1,3 @@
-using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -187,7 +186,7 @@ internal static class CommitmentStateMigrationRoundTrip
     private static async Task SeedAsync(NLightningDbContext context, DatabaseType databaseType,
                                         CancellationToken cancellationToken)
     {
-        var sql = new SqlDialect(databaseType);
+        var sql = new MigrationSqlDialect(databaseType);
         var remoteNodeId = new byte[33];
         remoteNodeId[0] = 0x02;
         remoteNodeId[32] = 0x01;
@@ -264,40 +263,5 @@ internal static class CommitmentStateMigrationRoundTrip
                        ("PaymentHash", "{1}"), ("CltvExpiry", "501"), ("State", "1"),
                        ("ObscuredCommitmentNumber", "43"), ("AddMessageBytes", "{2}")),
             [s_readyChannelId, new byte[32], new byte[] { 0x00, 0x80, 0x01 }], cancellationToken);
-    }
-
-    /// <summary>Table/column naming and literals of each provider (Postgres uses snake_case); names are quoted so a
-    /// keyword column such as <c>Index</c> works everywhere.</summary>
-    private sealed class SqlDialect(DatabaseType databaseType)
-    {
-        public string Bool(bool value) =>
-            databaseType == DatabaseType.PostgreSql ? (value ? "TRUE" : "FALSE") : (value ? "1" : "0");
-
-        public string Insert(string table, params (string Column, string Value)[] values) =>
-            $"INSERT INTO {Name(table)} ({string.Join(", ", values.Select(v => Name(v.Column)))}) " +
-            $"VALUES ({string.Join(", ", values.Select(v => v.Value))})";
-
-        private string Name(string pascalCase) => databaseType switch
-        {
-            DatabaseType.PostgreSql => $"\"{SnakeCase(pascalCase)}\"",
-            DatabaseType.MicrosoftSql => $"[{pascalCase}]",
-            _ => $"\"{pascalCase}\""
-        };
-
-        /// <summary>EFCore.NamingConventions: an underscore before an upper-case letter that follows a lower-case
-        /// one (so <c>Sha256OfOnion</c> becomes <c>sha256of_onion</c>).</summary>
-        private static string SnakeCase(string pascalCase)
-        {
-            var builder = new StringBuilder();
-            for (var i = 0; i < pascalCase.Length; i++)
-            {
-                var c = pascalCase[i];
-                if (char.IsUpper(c) && i > 0 && char.IsLower(pascalCase[i - 1]))
-                    builder.Append('_');
-                builder.Append(char.ToLowerInvariant(c));
-            }
-
-            return builder.ToString();
-        }
     }
 }
