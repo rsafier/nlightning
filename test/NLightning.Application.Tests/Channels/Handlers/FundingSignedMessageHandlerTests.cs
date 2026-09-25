@@ -96,9 +96,9 @@ public class FundingSignedMessageHandlerTests
            .Returns(true);
 
         var commitmentTransactionModel =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Zero, fundingOutputInfo);
+            new CommitmentTransactionModel(commitmentNumber, 0, LightningMoney.Zero, fundingOutputInfo);
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local))
+           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local, 0UL))
            .Returns(commitmentTransactionModel);
         mockCommitmentTransactionBuilder
            .Setup(x => x.Build(commitmentTransactionModel))

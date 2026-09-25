@@ -181,7 +181,6 @@ public class ChannelManagerTests
         var channel = CreateChannel(ChannelState.ReadyForUs, false, 1, 100);
         _channels.Add(channel);
         SetupCompletedWatchedTransaction(channel, 100);
-        var commitmentNumberBefore = channel.CommitmentNumber!.Value;
         var channelManager = CreateChannelManager();
         var sentMessages = 0;
         channelManager.OnResponseMessageReady += (_, _) => sentMessages++;
@@ -192,7 +191,7 @@ public class ChannelManagerTests
 
         // Assert
         Assert.Equal(ChannelState.ReadyForUs, channel.State);
-        Assert.Equal(commitmentNumberBefore, channel.CommitmentNumber.Value);
+        Assert.Equal(0UL, channel.LocalCommitmentNumber);
         Assert.Equal(0, sentMessages);
     }
 
@@ -203,7 +202,6 @@ public class ChannelManagerTests
         var channel = CreateChannel(ChannelState.ReadyForThem, false, 1, 100);
         _channels.Add(channel);
         SetupCompletedWatchedTransaction(channel, 100);
-        var commitmentNumberBefore = channel.CommitmentNumber!.Value;
         var channelManager = CreateChannelManager();
         var sentMessages = 0;
         channelManager.OnResponseMessageReady += (_, _) => sentMessages++;
@@ -215,7 +213,8 @@ public class ChannelManagerTests
 
         // Assert
         Assert.Equal(ChannelState.Open, channel.State);
-        Assert.Equal(commitmentNumberBefore + 1, channel.CommitmentNumber.Value);
+        Assert.Equal(0UL, channel.LocalCommitmentNumber);
+        Assert.Equal(0UL, channel.RemoteCommitmentNumber);
         Assert.Equal(1, sentMessages);
     }
 

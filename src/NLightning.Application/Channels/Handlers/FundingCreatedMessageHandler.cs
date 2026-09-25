@@ -83,9 +83,11 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
 
         // Generate the base commitment transactions
         var localCommitmentTransaction =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                                channel.LocalCommitmentNumber);
         var remoteCommitmentTransaction =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote);
+            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
+                                                                                channel.RemoteCommitmentNumber);
 
         // Build the output and the transactions
         var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);

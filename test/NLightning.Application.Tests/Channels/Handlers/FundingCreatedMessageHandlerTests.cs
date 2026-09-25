@@ -118,16 +118,17 @@ public class FundingCreatedMessageHandlerTests
 
         // Setup mock commitment transactions
         var mockLocalCommitmentTx =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Zero, fundingOutputInfo);
+            new CommitmentTransactionModel(commitmentNumber, 0, LightningMoney.Zero, fundingOutputInfo);
         var mockRemoteCommitmentTx =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Zero, fundingOutputInfo);
+            new CommitmentTransactionModel(commitmentNumber, 0, LightningMoney.Zero, fundingOutputInfo);
 
+        // Both first commitments are commitment number 0 (NL-188)
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local))
+           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local, 0UL))
            .Returns(mockLocalCommitmentTx);
 
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote))
+           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote, 0UL))
            .Returns(mockRemoteCommitmentTx);
 
         // Setup mock transactions

@@ -31,13 +31,23 @@ public interface ILightningSigner
     CompactPubKey GetNodePublicKey();
 
     /// <summary>
-    /// Generate a per-commitment point for a specific commitment number
+    /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
+    /// <param name="channelKeyIndex">The channel key index.</param>
+    /// <param name="commitmentNumber">
+    /// The commitment number (0 for the first commitment), <b>not</b> a BOLT 3 index: the signer derives the secret at
+    /// index <c>2^48 - 1 - commitmentNumber</c> (<see cref="Protocol.Models.PerCommitmentIndex"/>).
+    /// </param>
     CompactPubKey GetPerCommitmentPoint(uint channelKeyIndex, ulong commitmentNumber);
 
     /// <summary>
-    /// Generate a per-commitment point for a specific commitment number
+    /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="commitmentNumber">
+    /// The commitment number (0 for the first commitment), <b>not</b> a BOLT 3 index: the signer derives the secret at
+    /// index <c>2^48 - 1 - commitmentNumber</c> (<see cref="Protocol.Models.PerCommitmentIndex"/>).
+    /// </param>
     CompactPubKey GetPerCommitmentPoint(ChannelId channelId, ulong commitmentNumber);
 
     /// <summary>
@@ -46,13 +56,19 @@ public interface ILightningSigner
     void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo);
 
     /// <summary>
-    /// Release (reveal) a per-commitment secret for revocation
+    /// Release (reveal) the per-commitment secret of one of our commitment transactions, for revocation.
     /// </summary>
+    /// <param name="channelKeyIndex">The channel key index.</param>
+    /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index), see
+    /// <see cref="GetPerCommitmentPoint(uint, ulong)"/>.</param>
     Secret ReleasePerCommitmentSecret(uint channelKeyIndex, ulong commitmentNumber);
 
     /// <summary>
-    /// Release (reveal) a per-commitment secret for revocation
+    /// Release (reveal) the per-commitment secret of one of our commitment transactions, for revocation.
     /// </summary>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index), see
+    /// <see cref="GetPerCommitmentPoint(ChannelId, ulong)"/>.</param>
     Secret ReleasePerCommitmentSecret(ChannelId channelId, ulong commitmentNumber);
 
     /// <summary>

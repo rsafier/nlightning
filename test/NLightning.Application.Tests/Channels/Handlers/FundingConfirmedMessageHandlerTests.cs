@@ -171,7 +171,6 @@ public class FundingConfirmedMessageHandlerTests
     {
         // Arrange
         var channel = CreateChannel(state);
-        var commitmentNumberBefore = channel.CommitmentNumber!.Value;
         var messagesSent = 0;
         _handler.OnMessageReady += (_, _) => messagesSent++;
 
@@ -180,7 +179,8 @@ public class FundingConfirmedMessageHandlerTests
 
         // Assert
         Assert.Equal(state, channel.State);
-        Assert.Equal(commitmentNumberBefore, channel.CommitmentNumber.Value);
+        Assert.Equal(0UL, channel.LocalCommitmentNumber);
+        Assert.Equal(0UL, channel.RemoteCommitmentNumber);
         Assert.Equal(0, messagesSent);
         _mockLightningSigner.Verify(s => s.GetPerCommitmentPoint(It.IsAny<ChannelId>(), It.IsAny<ulong>()),
                                     Times.Never);
@@ -192,7 +192,6 @@ public class FundingConfirmedMessageHandlerTests
     {
         // Arrange
         var channel = CreateChannel(ChannelState.V1FundingSigned);
-        var commitmentNumberBefore = channel.CommitmentNumber!.Value;
         var messagesSent = 0;
         _handler.OnMessageReady += (_, _) => messagesSent++;
 
@@ -201,8 +200,40 @@ public class FundingConfirmedMessageHandlerTests
 
         // Assert
         Assert.Equal(ChannelState.ReadyForUs, channel.State);
-        Assert.Equal(commitmentNumberBefore + 1, channel.CommitmentNumber.Value);
+        // BOLT 2: the commitment numbers never move at funding confirmation (NL-188)
+        Assert.Equal(0UL, channel.LocalCommitmentNumber);
+        Assert.Equal(0UL, channel.RemoteCommitmentNumber);
         Assert.Equal(1, messagesSent);
+    }
+
+    [Fact]
+    public async Task Given_FundingSignedChannel_When_HandleAsync_Then_ChannelReadyCarriesPointOfCommitmentNumber1()
+    {
+        // Arrange - regression (NL-187): channel_ready.second_per_commitment_point is the point of commitment
+        // number 1 (index 2^48-2); the signer takes numbers, so the handler must ask for number 1
+        var channel = CreateChannel(ChannelState.V1FundingSigned);
+        var localPointBefore = channel.LocalKeySet.CurrentPerCommitmentCompactPoint;
+        var localIndexBefore = channel.LocalKeySet.CurrentPerCommitmentIndex;
+        CompactPubKey secondPoint = Convert.FromHexString(
+            "025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486");
+        _mockLightningSigner.Setup(s => s.GetPerCommitmentPoint(channel.ChannelId, 1UL)).Returns(secondPoint);
+        CompactPubKey? sentPoint = null;
+        _mockMessageFactory
+           .Setup(f => f.CreateChannelReadyMessage(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                                   It.IsAny<ShortChannelId?>()))
+           .Callback<ChannelId, CompactPubKey, ShortChannelId?>((_, point, _) => sentPoint = point);
+
+        // Act
+        await _handler.HandleAsync(channel);
+
+        // Assert
+        Assert.Equal(secondPoint, sentPoint);
+        _mockLightningSigner.Verify(s => s.GetPerCommitmentPoint(channel.ChannelId, 1UL), Times.Once);
+        _mockLightningSigner.Verify(s => s.GetPerCommitmentPoint(It.IsAny<ChannelId>(), It.Is<ulong>(n => n != 1)),
+                                    Times.Never);
+        // Our current commitment is still number 0, so its point and index stay put
+        Assert.Equal(localPointBefore, channel.LocalKeySet.CurrentPerCommitmentCompactPoint);
+        Assert.Equal(localIndexBefore, channel.LocalKeySet.CurrentPerCommitmentIndex);
     }
 
     private static ChannelModel CreateChannel(ChannelState state)

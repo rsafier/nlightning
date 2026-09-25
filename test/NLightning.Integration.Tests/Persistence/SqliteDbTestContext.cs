@@ -96,7 +96,8 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              ICollection<Htlc>? remoteOld = null,
                                              WalletAddressModel? changeAddress = null,
                                              ChannelState state = ChannelState.Open,
-                                             FeatureSupport useScidAlias = FeatureSupport.No)
+                                             FeatureSupport useScidAlias = FeatureSupport.No,
+                                             ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0)
     {
         var sha256 = new Sha256();
         var config = new ChannelConfig(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
@@ -112,8 +113,8 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
 
         // BOLT 3: the obscuring factor is SHA256(opener payment_basepoint || accepter payment_basepoint)
         var commitmentNumber = isInitiator
-                                   ? new CommitmentNumber(LocalPaymentBasepoint, RemotePaymentBasepoint, sha256, 1)
-                                   : new CommitmentNumber(RemotePaymentBasepoint, LocalPaymentBasepoint, sha256, 1);
+                                   ? new CommitmentNumber(LocalPaymentBasepoint, RemotePaymentBasepoint, sha256)
+                                   : new CommitmentNumber(RemotePaymentBasepoint, LocalPaymentBasepoint, sha256);
 
         var fundingTxId = new byte[32];
         fundingTxId[0] = 0xAB;
@@ -124,11 +125,14 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
         channelIdBytes[31] = isInitiator ? (byte)1 : (byte)2;
         var channelId = new ChannelId(channelIdBytes);
 
+        // In steady state a side's current commitment number equals the number of commitments it has revoked
         return new ChannelModel(config, channelId, commitmentNumber, fundingOutput, isInitiator, null, null,
-                                LightningMoney.Satoshis(600_000), localKeySet, 5, 0,
-                                LightningMoney.Satoshis(400_000), remoteKeySet, 7, RemoteNodeId, 0,
-                                state, ChannelVersion.V1, localOffered, localFulfilled, localOld, null,
-                                remoteOffered, remoteFulfilled, remoteOld)
+                                LightningMoney.Satoshis(600_000), localKeySet, 5, localCommitmentNumber,
+                                LightningMoney.Satoshis(400_000), remoteKeySet, 7, RemoteNodeId,
+                                remoteCommitmentNumber, state, ChannelVersion.V1, localOffered, localFulfilled,
+                                localOld, null, remoteOffered, remoteFulfilled, remoteOld,
+                                localCommitmentNumber: localCommitmentNumber,
+                                remoteCommitmentNumber: remoteCommitmentNumber)
         {
             ChangeAddress = changeAddress
         };

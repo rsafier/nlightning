@@ -113,6 +113,36 @@ public class ChannelDbRepositoryTests
     }
 
     [Fact]
+    public async Task Given_NewChannel_When_Reloaded_Then_BothCommitmentNumbersAreZero()
+    {
+        // Arrange - regression (NL-188): the reload used to rebuild one shared number as LocalRevocationNumber + 1
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.Equal(0UL, reloaded.LocalCommitmentNumber);
+        Assert.Equal(0UL, reloaded.RemoteCommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_DifferentLocalAndRemoteCommitmentNumbers_When_Reloaded_Then_EachSideKeepsItsNumber()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(false, localCommitmentNumber: 3, remoteCommitmentNumber: 5);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.Equal(3UL, reloaded.LocalCommitmentNumber);
+        Assert.Equal(5UL, reloaded.RemoteCommitmentNumber);
+    }
+
+    [Fact]
     public async Task Given_ChannelWithChangeAddress_When_Reloaded_Then_ChangeAddressIsRestored()
     {
         // Arrange

@@ -30,8 +30,7 @@ public class CommitmentTransactionBuilderTests
 
         var commitmentNumber = new CommitmentNumber(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
                                                     Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                    sha256Mock.Object,
-                                                    Bolt3AppendixCVectors.CommitmentNumber);
+                                                    sha256Mock.Object);
         var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
                                                       Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
                                                       Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes())
@@ -47,8 +46,9 @@ public class CommitmentTransactionBuilderTests
         var remoteOutput = new ToRemoteOutputInfo(Bolt3AppendixCVectors.ExpectedCommitTx0ToRemoteAmount,
                                                   Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes());
         var commitmentTransactionModel =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Satoshis(15000), fundingOutputInfo, null,
-                                           null, localOutput, remoteOutput);
+            new CommitmentTransactionModel(commitmentNumber, Bolt3AppendixCVectors.CommitmentNumber,
+                                           LightningMoney.Satoshis(15000), fundingOutputInfo, null, null, localOutput,
+                                           remoteOutput);
 
         // When
         var unsignedTx = builder.Build(commitmentTransactionModel);

@@ -46,8 +46,7 @@ public class Bolt3IntegrationTests
 
     private readonly CommitmentNumber _commitmentNumber = new(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
                                                               Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                              s_sha256,
-                                                              Bolt3AppendixCVectors.CommitmentNumber);
+                                                              s_sha256);
 
     private readonly FundingOutputInfo _fundingOutputInfo = new(Bolt3AppendixBVectors.FundingSatoshis,
                                                                 Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
@@ -133,7 +132,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(15_000), false);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -166,7 +166,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Zero, true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -199,7 +200,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(647), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -233,7 +235,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(648), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -267,7 +270,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_069), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -301,7 +305,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_070), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -335,7 +340,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_194), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -369,7 +375,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(2_195), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -403,7 +410,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(3_702), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -437,7 +445,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(3_703), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -471,7 +480,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(4_914), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -505,7 +515,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(4_915), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -539,7 +550,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_180), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -573,7 +585,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_181), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -607,7 +620,8 @@ public class Bolt3IntegrationTests
                                                   testLightningSigner);
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(9_651_936), true);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -644,7 +658,8 @@ public class Bolt3IntegrationTests
         var channel = GetTestChannelModel(nodeOptions, LightningMoney.Satoshis(253), true, offeredHtlcs,
                                           receivedHtlcs);
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var commitmentTransactionBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
 
         // When
@@ -722,7 +737,8 @@ public class Bolt3IntegrationTests
                                 Bolt3AppendixCVectors.Tx0ToLocalMsat - receivedHtlcsAmount, localKeySet, 1, 0,
                                 Bolt3AppendixCVectors.ToRemoteMsat + receivedHtlcsAmount, remoteKeySet, 1,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs,
+                                localCommitmentNumber: Bolt3AppendixCVectors.CommitmentNumber);
     }
 
     #endregion
@@ -787,7 +803,8 @@ public class Bolt3IntegrationTests
 
         // Act
         var commitmentTransactionModel =
-            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                              channel.LocalCommitmentNumber);
         var unsignedTransaction = commitmentTransactionBuilder.Build(commitmentTransactionModel);
         var exception = Record.Exception(() => testLightningSigner.ValidateSignature(
                                              ChannelId.Zero, remoteSignature.ToCompact(), unsignedTransaction));
@@ -835,7 +852,8 @@ public class Bolt3IntegrationTests
         return new ChannelModel(channelConfig, ChannelId.Zero, _commitmentNumber, _fundingOutputInfo, true, null, null,
                                 localBalance, localKeySet, 1, 0, remoteBalance, remoteKeySet, 1,
                                 Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
-                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs);
+                                ChannelVersion.V1, offeredHtlcs, null, null, null, receivedHtlcs,
+                                localCommitmentNumber: Bolt3AppendixCVectors.CommitmentNumber);
     }
 
     #endregion

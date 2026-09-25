@@ -12,11 +12,11 @@ using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
-using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Models;
 
 public class LocalLightningSigner : ILightningSigner
 {
@@ -76,9 +76,9 @@ public class LocalLightningSigner : ILightningSigner
             localHtlcSecret.PubKey.ToBytes()
         );
 
-        // Generate the first per-commitment point
+        // Generate the first per-commitment point (commitment number 0)
         var firstPerCommitmentSecretBytes = _keyDerivationService
-           .GeneratePerCommitmentSecret(perCommitmentSeed.ToBytes(), CryptoConstants.FirstPerCommitmentIndex);
+           .GeneratePerCommitmentSecret(perCommitmentSeed.ToBytes(), PerCommitmentIndex.From(0));
         using var firstPerCommitmentSecret = new Key(firstPerCommitmentSecretBytes);
         firstPerCommitmentPoint = firstPerCommitmentSecret.PubKey.ToBytes();
 
@@ -135,8 +135,10 @@ public class LocalLightningSigner : ILightningSigner
         var channelKey = ExtKey.CreateFromBytes(channelExtKey);
         using var perCommitmentSeed = channelKey.Derive(PerCommitmentSeedDerivationIndex, true).PrivateKey;
 
+        // BOLT 3: commitment n uses the per-commitment secret at index 2^48-1-n (NL-187)
         var perCommitmentSecret =
-            _keyDerivationService.GeneratePerCommitmentSecret(perCommitmentSeed.ToBytes(), commitmentNumber);
+            _keyDerivationService.GeneratePerCommitmentSecret(perCommitmentSeed.ToBytes(),
+                                                              PerCommitmentIndex.From(commitmentNumber));
 
         var perCommitmentPoint = new Key(perCommitmentSecret).PubKey;
         return perCommitmentPoint.ToBytes();
@@ -171,8 +173,9 @@ public class LocalLightningSigner : ILightningSigner
         var channelKey = ExtKey.CreateFromBytes(channelExtKey);
         using var perCommitmentSeed = channelKey.Derive(PerCommitmentSeedDerivationIndex, true).PrivateKey;
 
+        // BOLT 3: commitment n uses the per-commitment secret at index 2^48-1-n (NL-187)
         return _keyDerivationService.GeneratePerCommitmentSecret(
-            perCommitmentSeed.ToBytes(), commitmentNumber);
+            perCommitmentSeed.ToBytes(), PerCommitmentIndex.From(commitmentNumber));
     }
 
     /// <inheritdoc />

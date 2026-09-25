@@ -5,14 +5,19 @@ using Crypto.Hashes;
 using Crypto.ValueObjects;
 
 /// <summary>
-/// Manages Lightning Network commitment numbers and their obscuring as defined in BOLT3.
+/// Obscures Lightning Network commitment numbers as defined in BOLT 3.
 /// </summary>
+/// <remarks>
+/// This is an immutable per-channel helper: it only holds the obscuring factor. The commitment numbers themselves live
+/// on the channel (<c>ChannelModel.LocalCommitmentNumber</c> and <c>RemoteCommitmentNumber</c>), because the local and
+/// the remote commitments advance independently. Both commitments of a channel use the same obscuring factor.
+/// </remarks>
 public class CommitmentNumber
 {
     /// <summary>
-    /// Gets the commitment number value.
+    /// Commitment numbers are 48-bit values.
     /// </summary>
-    public ulong Value { get; }
+    public const ulong MaxValue = PerCommitmentIndex.MaxCommitmentNumber;
 
     /// <summary>
     /// Gets the obscuring factor derived from payment basepoints.
@@ -20,59 +25,51 @@ public class CommitmentNumber
     public ulong ObscuringFactor { get; }
 
     /// <summary>
-    /// Gets the obscured commitment number (value XOR obscuring factor).
-    /// </summary>
-    public ulong ObscuredValue => Value ^ ObscuringFactor;
-
-    /// <summary>
-    /// Represents a commitment number in the Lightning Network.
+    /// Creates the obscuring helper of a channel.
     /// </summary>
     /// <param name="openerPaymentBasepoint">The payment basepoint of the channel opener (funder).</param>
     /// <param name="accepterPaymentBasepoint">The payment basepoint of the channel accepter (fundee).</param>
     /// <param name="sha256">The SHA256 hash function instance.</param>
-    /// <param name="initialValue">The commitment number value.</param>
     /// <remarks>
     /// BOLT 3 obscures the commitment number with SHA256(opener payment_basepoint || accepter payment_basepoint),
     /// so the order depends on who opened the channel, not on which side is local.
     /// </remarks>
     public CommitmentNumber(CompactPubKey openerPaymentBasepoint, CompactPubKey accepterPaymentBasepoint,
-                            ISha256 sha256, ulong initialValue = 0)
+                            ISha256 sha256)
     {
-        Value = initialValue;
         ObscuringFactor = CalculateObscuringFactor(openerPaymentBasepoint, accepterPaymentBasepoint, sha256);
     }
 
-    private CommitmentNumber(ulong value, ulong obscuringFactor)
+    /// <summary>
+    /// Returns the obscured commitment number (number XOR obscuring factor).
+    /// </summary>
+    /// <param name="commitmentNumber">The 48-bit commitment number.</param>
+    /// <exception cref="ArgumentOutOfRangeException">The number does not fit in 48 bits.</exception>
+    public ulong Obscure(ulong commitmentNumber)
     {
-        Value = value;
-        ObscuringFactor = obscuringFactor;
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(commitmentNumber, MaxValue);
+
+        return commitmentNumber ^ ObscuringFactor;
     }
 
     /// <summary>
-    /// Returns the next commitment number. This instance is not changed.
+    /// Calculates the commitment transaction locktime: upper 8 bits 0x20, lower 24 bits the lower 24 bits of the
+    /// obscured commitment number.
     /// </summary>
-    /// <returns>A new instance with the value incremented by one and the same obscuring factor.</returns>
-    public CommitmentNumber Increment()
+    /// <param name="commitmentNumber">The 48-bit commitment number.</param>
+    public BitcoinLockTime LockTime(ulong commitmentNumber)
     {
-        return new CommitmentNumber(Value + 1, ObscuringFactor);
+        return new BitcoinLockTime((0x20 << 24) | (uint)(Obscure(commitmentNumber) & 0xFFFFFF));
     }
 
     /// <summary>
-    /// Calculates the transaction locktime value using the obscured commitment number.
+    /// Calculates the commitment transaction input sequence: upper 8 bits 0x80, lower 24 bits the upper 24 bits of
+    /// the obscured commitment number.
     /// </summary>
-    /// <returns>The transaction locktime.</returns>
-    public BitcoinLockTime CalculateLockTime()
+    /// <param name="commitmentNumber">The 48-bit commitment number.</param>
+    public BitcoinSequence Sequence(ulong commitmentNumber)
     {
-        return new BitcoinLockTime((0x20 << 24) | (uint)(ObscuredValue & 0xFFFFFF));
-    }
-
-    /// <summary>
-    /// Calculates the transaction sequence value using the obscured commitment number.
-    /// </summary>
-    /// <returns>The transaction sequence.</returns>
-    public BitcoinSequence CalculateSequence()
-    {
-        return new BitcoinSequence((uint)((0x80UL << 24) | ((ObscuredValue >> 24) & 0xFFFFFF)));
+        return new BitcoinSequence((uint)((0x80UL << 24) | ((Obscure(commitmentNumber) >> 24) & 0xFFFFFF)));
     }
 
     /// <summary>

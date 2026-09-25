@@ -318,8 +318,14 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var (openerPaymentBasepoint, accepterPaymentBasepoint) = channelEntity.IsInitiator
             ? (localKeySet.PaymentCompactBasepoint, remoteKeySet.PaymentCompactBasepoint)
             : (remoteKeySet.PaymentCompactBasepoint, localKeySet.PaymentCompactBasepoint);
-        var commitmentNumber = new CommitmentNumber(openerPaymentBasepoint, accepterPaymentBasepoint, sha256,
-                                                    channelEntity.LocalRevocationNumber + 1);
+        var commitmentNumber = new CommitmentNumber(openerPaymentBasepoint, accepterPaymentBasepoint, sha256);
+
+        // There are no commitment-number columns yet (migration SplitChannelParamsAndMsatBalances, BOLT2 plan N1-T5).
+        // Until then the numbers come from the revocation numbers: once a commitment is revoked the next one is
+        // current, so the current commitment number equals the number of revocations of that side. Nothing advances
+        // either number yet, so this reload is exact (NL-188).
+        var localCommitmentNumber = channelEntity.LocalRevocationNumber;
+        var remoteCommitmentNumber = channelEntity.RemoteRevocationNumber;
 
         var remoteNodeId = channelEntity.RemoteNodeId;
 
@@ -339,7 +345,9 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 channelEntity.RemoteNextHtlcId, remoteNodeId, channelEntity.RemoteRevocationNumber,
                                 (ChannelState)channelEntity.State, (ChannelVersion)channelEntity.Version,
                                 localOfferedHtlcs, localFulfilledHtlcs, localOldHtlcs, null, remoteOfferedHtlcs,
-                                remoteFulfilledHtlcs, remoteOldHtlcs)
+                                remoteFulfilledHtlcs, remoteOldHtlcs,
+                                localCommitmentNumber: localCommitmentNumber,
+                                remoteCommitmentNumber: remoteCommitmentNumber)
         {
             FundingCreatedAtBlockHeight = channelEntity.FundingCreatedAtBlockHeight,
             LocalAliases = channelEntity.LocalAliases is { Count: > 0 }

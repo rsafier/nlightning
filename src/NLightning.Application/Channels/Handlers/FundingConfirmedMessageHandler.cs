@@ -57,11 +57,10 @@ public class FundingConfirmedMessageHandler
 
             var mustUseScidAlias = channel.ChannelConfig.UseScidAlias > FeatureSupport.No;
 
-            // Create our new per-commitment point
-            channel.UpdateCommitmentNumber(channel.CommitmentNumber.Increment());
-            var newPerCommitmentPoint =
-                _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, channel.CommitmentNumber.Value);
-            channel.LocalKeySet.UpdatePerCommitmentPoint(newPerCommitmentPoint);
+            // channel_ready carries the per-commitment point of our NEXT commitment (number 1 after the open). Our
+            // current commitment and its number do not change at confirmation (NL-187, NL-188).
+            var secondPerCommitmentPoint =
+                _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, channel.LocalCommitmentNumber + 1);
 
             // Handle ScidAlias. Aliases already sent to the peer must stay valid (BOLT 2 channel_ready: always
             // recognize them for incoming HTLCs), so they are reused instead of regenerated on a re-confirmation.
@@ -112,7 +111,7 @@ public class FundingConfirmedMessageHandler
                 foreach (var alias in channel.LocalAliases)
                 {
                     var channelReadyMessage =
-                        _messageFactory.CreateChannelReadyMessage(channel.ChannelId, newPerCommitmentPoint, alias);
+                        _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint, alias);
 
                     // Raise the event with the message
                     OnMessageReady?.Invoke(this, channelReadyMessage);
@@ -121,7 +120,7 @@ public class FundingConfirmedMessageHandler
             else
             {
                 var channelReadyMessage =
-                    _messageFactory.CreateChannelReadyMessage(channel.ChannelId, newPerCommitmentPoint,
+                    _messageFactory.CreateChannelReadyMessage(channel.ChannelId, secondPerCommitmentPoint,
                                                               channel.ShortChannelId);
 
                 // Raise the event with the message

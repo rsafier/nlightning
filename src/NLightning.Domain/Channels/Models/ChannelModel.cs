@@ -16,6 +16,11 @@ public class ChannelModel
     public ChannelConfig ChannelConfig { get; private set; }
     public ChannelId ChannelId { get; private set; }
     public ShortChannelId ShortChannelId { get; set; }
+    /// <summary>
+    /// The immutable obscuring helper shared by both commitments (built from the opener and accepter payment
+    /// basepoints). The commitment numbers themselves are <see cref="LocalCommitmentNumber"/> and
+    /// <see cref="RemoteCommitmentNumber"/>.
+    /// </summary>
     public CommitmentNumber? CommitmentNumber { get; private set; }
     public uint FundingCreatedAtBlockHeight { get; set; }
     public FundingOutputInfo? FundingOutput { get; private set; }
@@ -37,6 +42,14 @@ public class ChannelModel
     #region Local Information
 
     public ICollection<ShortChannelId>? LocalAliases { get; set; }
+
+    /// <summary>
+    /// The number of our current commitment transaction (0 after funding_signed). Our per-commitment point for it is
+    /// <c>ILightningSigner.GetPerCommitmentPoint(channelId, LocalCommitmentNumber)</c>; the point we announce next
+    /// (channel_ready, revoke_and_ack) is the one of <c>LocalCommitmentNumber + 1</c>. It never changes at funding
+    /// confirmation (NL-188).
+    /// </summary>
+    public ulong LocalCommitmentNumber { get; }
     /// <summary>
     /// Our gross balance: it still includes the amounts of our pending offered HTLCs (<see cref="LocalOfferedHtlcs"/>).
     /// The commitment transaction factory takes each HTLC out of the balance of the side that offered it, so an HTLC
@@ -56,6 +69,12 @@ public class ChannelModel
     #region Remote Information
 
     public ShortChannelId? RemoteAlias { get; set; }
+
+    /// <summary>
+    /// The number of the peer's current commitment transaction (0 after funding_created/funding_signed). It advances
+    /// independently of <see cref="LocalCommitmentNumber"/> during the commitment dance (NL-188).
+    /// </summary>
+    public ulong RemoteCommitmentNumber { get; }
     /// <summary>
     /// The remote's gross balance: it still includes the amounts of the remote's pending offered HTLCs
     /// (<see cref="RemoteOfferedHtlcs"/>). See <see cref="LocalBalance"/> for the convention.
@@ -81,8 +100,12 @@ public class ChannelModel
                         ICollection<Htlc>? localFulfilledHtlcs = null, ICollection<Htlc>? localOldHtlcs = null,
                         BitcoinScript? localUpfrontShutdownScript = null, ICollection<Htlc>? remoteOfferedHtlcs = null,
                         ICollection<Htlc>? remoteFulfilledHtlcs = null, ICollection<Htlc>? remoteOldHtlcs = null,
-                        BitcoinScript? remoteUpfrontShutdownScript = null)
+                        BitcoinScript? remoteUpfrontShutdownScript = null, ulong localCommitmentNumber = 0,
+                        ulong remoteCommitmentNumber = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(localCommitmentNumber, CommitmentNumber.MaxValue);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(remoteCommitmentNumber, CommitmentNumber.MaxValue);
+
         ChannelConfig = channelConfig;
         ChannelId = channelId;
         CommitmentNumber = commitmentNumber;
@@ -109,6 +132,8 @@ public class ChannelModel
         RemoteOldHtlcs = remoteOldHtlcs ?? new List<Htlc>();
         LocalUpfrontShutdownScript = localUpfrontShutdownScript;
         RemoteUpfrontShutdownScript = remoteUpfrontShutdownScript;
+        LocalCommitmentNumber = localCommitmentNumber;
+        RemoteCommitmentNumber = remoteCommitmentNumber;
     }
 
     public void UpdateState(ChannelState newState)
@@ -148,20 +173,6 @@ public class ChannelModel
     {
         if (CommitmentNumber is not null)
             throw new InvalidOperationException("Commitment number already set");
-
-        CommitmentNumber = commitmentNumber;
-    }
-
-    public void UpdateCommitmentNumber(CommitmentNumber commitmentNumber)
-    {
-        if (CommitmentNumber is null)
-            throw new InvalidOperationException("Commitment number not set");
-
-        if (commitmentNumber.ObscuringFactor != CommitmentNumber.ObscuringFactor)
-            throw new InvalidOperationException("Commitment number belongs to a different channel");
-
-        if (commitmentNumber.Value < CommitmentNumber.Value)
-            throw new InvalidOperationException("Commitment number cannot go backwards");
 
         CommitmentNumber = commitmentNumber;
     }

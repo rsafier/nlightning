@@ -19,9 +19,14 @@ public class CommitmentTransactionModel
     public FundingOutputInfo FundingOutput { get; }
 
     /// <summary>
-    /// Gets the commitment number for this transaction.
+    /// Gets the channel's commitment number obscuring helper.
     /// </summary>
     public CommitmentNumber CommitmentNumber { get; }
+
+    /// <summary>
+    /// Gets the commitment number of this transaction (the holder's commitment number, not an index).
+    /// </summary>
+    public ulong Number { get; }
 
     /// <summary>
     /// Gets or sets the transaction ID after the transaction is constructed.
@@ -66,7 +71,17 @@ public class CommitmentTransactionModel
     /// <summary>
     /// Creates a new instance of CommitmentTransactionModel.
     /// </summary>
-    public CommitmentTransactionModel(CommitmentNumber commitmentNumber, LightningMoney fee,
+    /// <param name="commitmentNumber">The channel's obscuring helper.</param>
+    /// <param name="number">The commitment number of this transaction.</param>
+    /// <param name="fee">The commitment transaction fee.</param>
+    /// <param name="fundingOutput">The funding output spent by the commitment transaction.</param>
+    /// <param name="localAnchorOutput">The local anchor output, if any.</param>
+    /// <param name="remoteAnchorOutput">The remote anchor output, if any.</param>
+    /// <param name="toLocalOutput">The to_local output, if any.</param>
+    /// <param name="toRemoteOutput">The to_remote output, if any.</param>
+    /// <param name="offeredHtlcOutputs">The offered HTLC outputs.</param>
+    /// <param name="receivedHtlcOutputs">The received HTLC outputs.</param>
+    public CommitmentTransactionModel(CommitmentNumber commitmentNumber, ulong number, LightningMoney fee,
                                       FundingOutputInfo fundingOutput, AnchorOutputInfo? localAnchorOutput = null,
                                       AnchorOutputInfo? remoteAnchorOutput = null,
                                       ToLocalOutputInfo? toLocalOutput = null,
@@ -78,7 +93,10 @@ public class CommitmentTransactionModel
             throw new ArgumentException("Funding output must have a valid transaction ID.", nameof(fundingOutput));
 
         FundingOutput = fundingOutput;
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, CommitmentNumber.MaxValue);
+
         CommitmentNumber = commitmentNumber;
+        Number = number;
         Fee = fee;
         ToLocalOutput = toLocalOutput;
         ToRemoteOutput = toRemoteOutput;
@@ -91,12 +109,12 @@ public class CommitmentTransactionModel
     /// <summary>
     /// Gets the Bitcoin locktime for this commitment transaction, derived from the commitment number.
     /// </summary>
-    public BitcoinLockTime GetLockTime() => CommitmentNumber.CalculateLockTime();
+    public BitcoinLockTime GetLockTime() => CommitmentNumber.LockTime(Number);
 
     /// <summary>
     /// Gets the Bitcoin sequence for this commitment transaction, derived from the commitment number.
     /// </summary>
-    public BitcoinSequence GetSequence() => CommitmentNumber.CalculateSequence();
+    public BitcoinSequence GetSequence() => CommitmentNumber.Sequence(Number);
 
     /// <summary>
     /// Gets all outputs of this commitment transaction.

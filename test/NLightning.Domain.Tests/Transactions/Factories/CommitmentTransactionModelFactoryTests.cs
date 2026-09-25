@@ -56,8 +56,7 @@ public class CommitmentTransactionModelFactoryTests
         };
         var commitmentNumber = new CommitmentNumber(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
                                                     Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                    sha256Mock.Object,
-                                                    Bolt3AppendixCVectors.CommitmentNumber);
+                                                    sha256Mock.Object);
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
                                                  Bolt3AppendixCVectors.NodeARevocationPubkey.ToBytes(),
                                                  Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
@@ -70,13 +69,15 @@ public class CommitmentTransactionModelFactoryTests
         var channel = new ChannelModel(channelConfig, ChannelId.Zero, commitmentNumber, fundingOutputInfo, true, null,
                                        null, Bolt3AppendixCVectors.Tx0ToLocalMsat, localKeySet, 1, 0,
                                        Bolt3AppendixCVectors.ToRemoteMsat, remoteKeySet, 1, emptyCompactPubKey, 0,
-                                       ChannelState.V1Opening, ChannelVersion.V1);
+                                       ChannelState.V1Opening, ChannelVersion.V1,
+                                       localCommitmentNumber: Bolt3AppendixCVectors.CommitmentNumber);
 
         var factory =
             new CommitmentTransactionModelFactory(commitmentKeyDerivationService.Object, lightningSigner.Object);
 
         // When
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Then
         Assert.NotNull(transactionModel);
@@ -99,7 +100,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Assert
         Assert.Single(transactionModel.ReceivedHtlcOutputs);
@@ -121,7 +123,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Assert
         Assert.Single(transactionModel.OfferedHtlcOutputs);
@@ -140,7 +143,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Assert
         Assert.NotNull(transactionModel.ToRemoteOutput);
@@ -156,7 +160,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Assert
         Assert.Null(transactionModel.ToRemoteOutput);
@@ -173,7 +178,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
 
         // Assert
         Assert.Equal(LightningMoney.Satoshis(284), transactionModel.Fee);
@@ -192,7 +198,8 @@ public class CommitmentTransactionModelFactoryTests
         var factory = CreateFactory();
 
         // Act
-        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote);
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
+                                                                       channel.RemoteCommitmentNumber);
 
         // Assert
         Assert.NotNull(transactionModel.LocalAnchorOutput);
@@ -207,6 +214,83 @@ public class CommitmentTransactionModelFactoryTests
         Assert.Equal(LightningMoney.Satoshis(7_000_000 - 660), transactionModel.ToRemoteOutput.Amount);
     }
 
+    [Fact]
+    public void Given_LocalCommitmentNumber_When_CreatingLocalCommitment_Then_KeysAreDerivedFromThatNumber()
+    {
+        // Arrange - regression (NL-187): the factory used to pass LocalKeySet.CurrentPerCommitmentIndex (an index)
+        // where the key derivation expects a commitment number
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000),
+                                    localCommitmentNumber: 5);
+        var keyDerivationService = new Mock<ICommitmentKeyDerivationService>();
+        var factory = new CommitmentTransactionModelFactory(keyDerivationService.Object,
+                                                            new Mock<ILightningSigner>().Object);
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       channel.LocalCommitmentNumber);
+
+        // Assert
+        Assert.Equal(5UL, transactionModel.Number);
+        keyDerivationService.Verify(x => x.DeriveLocalCommitmentKeys(channel.LocalKeySet.KeyIndex,
+                                                                     It.IsAny<ChannelBasepoints>(),
+                                                                     It.IsAny<ChannelBasepoints>(), 5UL),
+                                    Times.Once);
+    }
+
+    [Fact]
+    public void Given_DifferentLocalAndRemoteNumbers_When_CreatingBothSides_Then_EachUsesItsOwnObscuredNumber()
+    {
+        // Arrange - regression (NL-188): one shared number gave one of the two commitments the wrong locktime
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000),
+                                    localCommitmentNumber: 3, remoteCommitmentNumber: 4);
+        var factory = CreateFactory();
+        const ulong obscuringFactor = 0x2bb038521914UL; // BOLT 3 Appendix C
+
+        // Act
+        var local = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                            channel.LocalCommitmentNumber);
+        var remote = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
+                                                             channel.RemoteCommitmentNumber);
+
+        // Assert
+        Assert.Equal(obscuringFactor, channel.CommitmentNumber!.ObscuringFactor);
+        Assert.Equal((0x20U << 24) | (uint)((3 ^ obscuringFactor) & 0xFFFFFF), local.GetLockTime().ValueOrHeight);
+        Assert.Equal((0x20U << 24) | (uint)((4 ^ obscuringFactor) & 0xFFFFFF), remote.GetLockTime().ValueOrHeight);
+        Assert.Equal((0x80U << 24) | (uint)((obscuringFactor >> 24) & 0xFFFFFF), local.GetSequence().Value);
+    }
+
+    [Fact]
+    public void Given_Bolt3CommitmentNumber_When_CreatingLocalCommitment_Then_LockTimeAndSequenceMatchAppendixC()
+    {
+        // Arrange
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000));
+        var factory = CreateFactory();
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                       Bolt3AppendixCVectors.CommitmentNumber);
+
+        // Assert - every Appendix C commitment tx has nLocktime 0x2052193e and nSequence 0x802bb038
+        Assert.Equal(0x2052193eU, transactionModel.GetLockTime().ValueOrHeight);
+        Assert.Equal(0x802bb038U, transactionModel.GetSequence().Value);
+    }
+
+    [Fact]
+    public void Given_NumberAbove48Bits_When_CreatingCommitment_Then_Throws()
+    {
+        // Arrange
+        var channel = CreateChannel(false, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000));
+        var factory = CreateFactory();
+
+        // Act / Assert
+        Assert.Throws<ArgumentOutOfRangeException>(() => factory.CreateCommitmentTransactionModel(
+                                                       channel, CommitmentSide.Local, 1UL << 48));
+    }
+
     private static CommitmentTransactionModelFactory CreateFactory()
     {
         return new CommitmentTransactionModelFactory(new Mock<ICommitmentKeyDerivationService>().Object,
@@ -217,7 +301,9 @@ public class CommitmentTransactionModelFactoryTests
                                               LightningMoney remoteDustLimit, LightningMoney localBalance,
                                               LightningMoney remoteBalance, LightningMoney? feeRatePerKw = null,
                                               List<Htlc>? localOfferedHtlcs = null,
-                                              List<Htlc>? remoteOfferedHtlcs = null)
+                                              List<Htlc>? remoteOfferedHtlcs = null,
+                                              ulong localCommitmentNumber = Bolt3AppendixCVectors.CommitmentNumber,
+                                              ulong remoteCommitmentNumber = 0)
     {
         var channelConfig = new ChannelConfig(LightningMoney.Zero, feeRatePerKw ?? LightningMoney.Zero,
                                               LightningMoney.Zero, localDustLimit, 0, LightningMoney.Zero, 0,
@@ -232,7 +318,7 @@ public class CommitmentTransactionModelFactoryTests
         };
         var commitmentNumber = new CommitmentNumber(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
                                                     Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
-                                                    new FakeSha256(), Bolt3AppendixCVectors.CommitmentNumber);
+                                                    new FakeSha256());
         var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
                                                  s_emptyCompactPubKey,
                                                  Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
@@ -245,6 +331,7 @@ public class CommitmentTransactionModelFactoryTests
         return new ChannelModel(channelConfig, ChannelId.Zero, commitmentNumber, fundingOutputInfo, true, null, null,
                                 localBalance, localKeySet, 1, 0, remoteBalance, remoteKeySet, 1, s_emptyCompactPubKey,
                                 0, ChannelState.V1Opening, ChannelVersion.V1, localOfferedHtlcs,
-                                remoteOfferedHtlcs: remoteOfferedHtlcs);
+                                remoteOfferedHtlcs: remoteOfferedHtlcs, localCommitmentNumber: localCommitmentNumber,
+                                remoteCommitmentNumber: remoteCommitmentNumber);
     }
 }

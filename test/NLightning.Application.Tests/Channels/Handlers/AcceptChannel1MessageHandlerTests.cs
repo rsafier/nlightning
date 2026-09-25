@@ -90,9 +90,10 @@ public class AcceptChannel1MessageHandlerTests
 
         var mockCommitmentTransactionModelFactory = new Mock<ICommitmentTransactionModelFactory>();
         mockCommitmentTransactionModelFactory
-           .Setup(f => f.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote))
-           .Returns((ChannelModel c, CommitmentSide _) =>
-                        new CommitmentTransactionModel(c.CommitmentNumber!, LightningMoney.Zero, c.FundingOutput!));
+           .Setup(f => f.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote, 0UL))
+           .Returns((ChannelModel c, CommitmentSide _, ulong n) =>
+                        new CommitmentTransactionModel(c.CommitmentNumber!, n, LightningMoney.Zero,
+                                                       c.FundingOutput!));
         _mockCommitmentTransactionBuilder.Setup(b => b.Build(It.IsAny<CommitmentTransactionModel>()))
                                          .Returns(new SignedTransaction(TxId.Zero, [0x01]));
 
