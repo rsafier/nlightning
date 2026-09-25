@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Serialization.Tests.Messages;
 
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Exceptions;
 using Helpers;
 using Serialization.Messages.Types;
 
@@ -26,9 +27,9 @@ public class UpdateFailMalformedHtlcMessageTests
         var expectedChannelId = ChannelId.Zero;
         var expectedId = 0UL;
         var expectedSha256OfOnion = new byte[32];
-        ushort expectedFailureCode = 1;
+        ushort expectedFailureCode = 0xC005; // invalid_onion_hmac (BADONION | PERM | 5)
         var stream = new MemoryStream(Convert.FromHexString(
-                                          "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"));
+                                          "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000C005"));
 
         // Act
         var message = await _updateFailMalformedHtlcMessageTypeSerializer.DeserializeAsync(stream);
@@ -39,6 +40,20 @@ public class UpdateFailMalformedHtlcMessageTests
         Assert.Equal(expectedSha256OfOnion, message.Payload.Sha256OfOnion);
         Assert.Equal(expectedFailureCode, message.Payload.FailureCode);
         Assert.Null(message.Extension);
+    }
+
+    [Theory]
+    [InlineData("0001")]
+    [InlineData("4005")] // PERM | 5 without BADONION
+    public async Task Given_FailureCodeWithoutBadOnion_When_DeserializeAsync_Then_ThrowsMessageSerializationException(
+        string failureCodeHex)
+    {
+        // Arrange (BOLT 2: the receiver MUST fail the channel if BADONION is not set)
+        var stream = new MemoryStream(Convert.FromHexString(new string('0', 144) + failureCodeHex));
+
+        // Act & Assert
+        await Assert.ThrowsAsync<MessageSerializationException>(() =>
+            _updateFailMalformedHtlcMessageTypeSerializer.DeserializeAsync(stream));
     }
 
     #endregion

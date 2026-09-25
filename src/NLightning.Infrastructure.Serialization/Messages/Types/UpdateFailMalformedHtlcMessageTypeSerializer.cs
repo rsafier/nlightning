@@ -5,6 +5,7 @@ using NLightning.Domain.Serialization.Interfaces;
 namespace NLightning.Infrastructure.Serialization.Messages.Types;
 
 using Domain.Protocol.Messages;
+using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Payloads;
 using Exceptions;
 
@@ -33,6 +34,7 @@ public class UpdateFailMalformedHtlcMessageTypeSerializer : IMessageTypeSerializ
     /// </summary>
     /// <param name="stream">The stream to deserialize from.</param>
     /// <returns>The deserialized UpdateFailMalformedHtlcMessage.</returns>
+    /// <remarks>A <c>failure_code</c> without the BADONION bit is rejected (BOLT 2).</remarks>
     /// <exception cref="MessageSerializationException">Error deserializing UpdateFailMalformedHtlcMessage</exception>
     public async Task<UpdateFailMalformedHtlcMessage> DeserializeAsync(Stream stream)
     {
@@ -43,6 +45,11 @@ public class UpdateFailMalformedHtlcMessageTypeSerializer : IMessageTypeSerializ
                                  ?? throw new SerializationException("No serializer found for payload type");
             var payload = await payloadSerializer.DeserializeAsync(stream)
                        ?? throw new SerializationException("Error serializing payload");
+
+            // BOLT 2: if the BADONION bit is not set the receiver MUST fail the channel (or warn and disconnect).
+            if ((payload.FailureCode & (ushort)FailureCodeFlags.BadOnion) == 0)
+                throw new SerializationException(
+                    $"failure_code 0x{payload.FailureCode:x4} does not have the BADONION bit set");
 
             return new UpdateFailMalformedHtlcMessage(payload);
         }
