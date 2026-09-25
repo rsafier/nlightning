@@ -43,7 +43,7 @@ public class InvoiceNodeEncodingTests
         var keyManager = new Mock<ISecureKeyManager>();
         keyManager.Setup(x => x.GetNodeKeyPair()).Returns(() =>
         {
-            // Like the real key managers, hand out a fresh copy every call
+            // Hand out a new array every call so tests can inspect exactly what Encode received
             var copy = s_nodePrivKey.ToArray();
             handedOutKeys.Add(copy);
             return new CryptoKeyPair(new PrivKey(copy), new CompactPubKey(s_nodePubKey.ToBytes()));
@@ -89,18 +89,73 @@ public class InvoiceNodeEncodingTests
     }
 
     [Fact]
-    public void Given_NodeKeyManager_When_Encoded_Then_TheHandedOutPrivateKeyCopyIsZeroed()
+    public void Given_KeyManagerReturningItsOwnBuffer_When_Encoded_Then_TheNodeKeyIsNotWiped()
     {
-        // Arrange
-        var handedOutKeys = new List<byte[]>();
-        var invoice = CreateNodeInvoice(CreateKeyManager(handedOutKeys).Object);
+        // Arrange: a key manager that caches its key pair and hands out the same internal buffer every call
+        var internalKey = s_nodePrivKey.ToArray();
+        var keyPair = new CryptoKeyPair(new PrivKey(internalKey), new CompactPubKey(s_nodePubKey.ToBytes()));
+        var keyManager = new Mock<ISecureKeyManager>();
+        keyManager.Setup(x => x.GetNodeKeyPair()).Returns(keyPair);
+        var invoice = CreateNodeInvoice(keyManager.Object);
 
         // Act
-        _ = invoice.Encode();
+        var first = invoice.Encode();
+        var second = CreateNodeInvoice(keyManager.Object).Encode();
 
         // Assert
-        var copy = Assert.Single(handedOutKeys);
-        Assert.All(copy, b => Assert.Equal(0, b));
+        Assert.Equal(s_nodePrivKey, internalKey);
+        Assert.Equal(s_nodePubKey, Invoice.Decode(first, BitcoinNetwork.Regtest).PayeePubKey);
+        Assert.Equal(s_nodePubKey, Invoice.Decode(second, BitcoinNetwork.Regtest).PayeePubKey);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithUnknownEvenFeatureBit_When_Encoded_Then_ItIsRejected()
+    {
+        // Arrange: bit 100 has no Feature pair, so every BOLT 11 reader must refuse the invoice
+        var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+        features.SetFeature(100, true);
+        var invoice = CreateNodeInvoice();
+        invoice.Features = features;
+
+        // Act
+        var exception = Assert.Throws<InvoiceSerializationException>(() => invoice.Encode(new Key(s_nodePrivKey)));
+
+        // Assert
+        Assert.Contains("Feature bit 100 is an unknown compulsory feature", exception.InnerException?.Message);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithUnknownOddFeatureBit_When_Encoded_Then_ItIsAcceptedAndDecodes()
+    {
+        // Arrange: unknown odd (optional) bits are ignored by readers
+        var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+        features.SetFeature(101, true);
+        var invoice = CreateNodeInvoice();
+        invoice.Features = features;
+
+        // Act
+        var encoded = invoice.Encode(new Key(s_nodePrivKey));
+        var decoded = Invoice.Decode(encoded, BitcoinNetwork.Regtest);
+
+        // Assert
+        Assert.True(decoded.Features!.IsFeatureSet(101, false));
+    }
+
+    [Fact]
+    public void Given_InvoiceWithBothBitsOfAFeatureSet_When_Encoded_Then_ItIsRejected()
+    {
+        // Arrange: basic_mpp set as both compulsory (16) and optional (17)
+        var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+        features.SetFeature(16, true);
+        features.SetFeature(17, true);
+        var invoice = CreateNodeInvoice();
+        invoice.Features = features;
+
+        // Act
+        var exception = Assert.Throws<InvoiceSerializationException>(() => invoice.Encode(new Key(s_nodePrivKey)));
+
+        // Assert
+        Assert.Contains("BasicMpp sets both optional and compulsory bits", exception.InnerException?.Message);
     }
 
     [Fact]
