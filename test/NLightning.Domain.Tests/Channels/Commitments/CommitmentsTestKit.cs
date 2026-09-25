@@ -5,6 +5,7 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -95,7 +96,7 @@ internal sealed class FakeCommitmentSigner(ulong remoteDustSat, bool anchors) : 
                                                      CompactPubKey remotePerCommitmentPoint)
     {
         Calls.Add((number, spec, remotePerCommitmentPoint));
-        var count = CommitmentFees.UntrimmedHtlcCount(spec, remoteDustSat, anchors);
+        var count = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors);
         return new CommitmentSignatures(CommitmentsTestKit.Signature((byte)number),
                                         Enumerable.Range(0, count)
                                                   .Select(i => CommitmentsTestKit.Signature((byte)(i + 1)))
