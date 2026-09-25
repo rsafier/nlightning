@@ -1,7 +1,8 @@
+using Docker.DotNet;
+using Docker.DotNet.Models;
 using Google.Protobuf;
 using Lnrpc;
 using LNUnit.LND;
-using LNUnit.Setup;
 using Microsoft.Extensions.DependencyInjection;
 using Routerrpc;
 
@@ -72,20 +73,28 @@ public class ReestablishFlowTests : IAsyncLifetime
         await AssertSettledAtTwoTwoAsync(alice, channel, ct);
     }
 
-    /// <summary>Proof N7 (b): LND restarts (<c>RestartByAlias("alice")</c>) and we reconnect with backoff.</summary>
-    [Fact]
+    /// <summary>Proof N7 (b): LND restarts (the alice container) and we reconnect with backoff.</summary>
+    /// <remarks>
+    /// Explicit: restarting the shared alice can change its container address (another test's container may take the
+    /// released IP), which breaks every later test of the collection that talks to alice. Run it on its own:
+    /// <c>dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker.ReestablishFlowTests" --
+    /// xUnit.Explicit=on</c>.
+    /// </remarks>
+    [Fact(Explicit = true)]
     public async Task Given_LndRestarts_When_Reconnected_Then_ReestablishedAndHtlcsFlowAgain()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var (channel, _) = await OpenChannelAndWaitUntilActiveAsync(GetAlice(), ct);
 
-        // Act
-        Assert.NotNull(_fixture.Builder);
-        await _fixture.Builder.RestartByAlias("alice", 1, true, false);
-        await _fixture.Builder.WaitUntilAliasIsServerReady("alice");
-        var alice = GetAlice();
-        await LNUnitBuilder.WaitUntilSyncedToChain(alice);
+        // Act - a plain container restart (same container, network and data; LNUnit's RestartByAlias can leave the
+        // shared alice unreachable for the tests that follow when it runs into its timeouts)
+        using (var docker = new DockerClientConfiguration().CreateClient())
+            await docker.Containers.RestartContainerAsync("alice", new ContainerRestartParameters
+            {
+                WaitBeforeKillSeconds = 1
+            }, ct);
+        var alice = await WaitUntilLndSyncedAsync(ct);
         await WaitUntilReestablishedAsync(alice, channel, ct);
 
         // Assert
@@ -177,6 +186,29 @@ public class ReestablishFlowTests : IAsyncLifetime
             await Node.MineBlocksAsync(1, ct);
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
+    }
+
+    /// <summary>
+    /// A bounded wait for the restarted alice to answer and be synced to the chain (LNUnit's own readiness wait can
+    /// block without a deadline).
+    /// </summary>
+    private async Task<LNDNodeConnection> WaitUntilLndSyncedAsync(CancellationToken ct)
+    {
+        return await Poll.ForAsync(async () =>
+        {
+            try
+            {
+                var alice = GetAlice();
+                var info = await alice.LightningClient.GetInfoAsync(new GetInfoRequest(),
+                                                                    deadline: DateTime.UtcNow.AddSeconds(5),
+                                                                    cancellationToken: ct);
+                return info.SyncedToChain ? alice : null;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                return null;
+            }
+        }, s_activeTimeout, "alice did not come back synced after its restart", ct);
     }
 
     /// <summary>
