@@ -318,10 +318,12 @@ public class FeatureSet
     {
         try
         {
+            // Work on a copy so the caller's buffer is never mutated
+            var bytes = (byte[])data.Clone();
             if (BitConverter.IsLittleEndian)
-                Array.Reverse(data);
+                Array.Reverse(bytes);
 
-            var bitArray = new BitArray(data);
+            var bitArray = new BitArray(bytes);
             return new FeatureSet { FeatureFlags = bitArray };
         }
         catch (Exception e)

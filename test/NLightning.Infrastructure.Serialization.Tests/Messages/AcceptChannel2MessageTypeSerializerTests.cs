@@ -203,7 +203,7 @@ public class AcceptChannel2MessageTypeSerializerTests
         var firstPerCommitmentCompactPoint =
             Convert.FromHexString("0326550f5ae41511e767afe0a9c7e20a73174875a6d1ee4e9e128cbb1fb0099f61");
         var upfrontShutdownScriptTlv = new UpfrontShutdownScriptTlv(scriptPubKey);
-        var channelTypeTlv = new ChannelTypeTlv([0x02, 0x01]);
+        var channelTypeTlv = new ChannelTypeTlv([0x01, 0x02]);
         var requireConfirmedInputsTlv = new RequireConfirmedInputsTlv();
 
         var message = new AcceptChannel2Message(
