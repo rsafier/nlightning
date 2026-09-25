@@ -48,27 +48,36 @@ internal class PingPongService : IPingPongService
         // Send the first ping message
         while (!cancellationToken.IsCancellationRequested)
         {
+            var pongReceivedTask = _pongReceivedTaskSource.Task;
             OnPingMessageReady?.Invoke(this, _pingMessage);
 
-            using var pongTimeoutTokenSource = CancellationTokenSource
-               .CreateLinkedTokenSource(cancellationToken,
-                                        new CancellationTokenSource(_nodeOptions.NetworkTimeout).Token);
-
-            var task = await Task.WhenAny(_pongReceivedTaskSource.Task, Task.Delay(-1, pongTimeoutTokenSource.Token));
-            if (task.IsFaulted)
+            // Wait for the pong or the network timeout. The timeout task is linked to the shutdown token, so check
+            // for shutdown first: only a timeout that is not a shutdown means the peer is unresponsive.
+            using (var timeoutTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                DisconnectEvent?
-                   .Invoke(this, new ConnectionException("Pong message not received within network timeout."));
+                var timeoutTask = Task.Delay(_nodeOptions.NetworkTimeout, timeoutTokenSource.Token);
+                var completedTask = await Task.WhenAny(pongReceivedTask, timeoutTask);
+                await timeoutTokenSource.CancelAsync();
+
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                if (completedTask != pongReceivedTask)
+                {
+                    DisconnectEvent?
+                       .Invoke(this, new ConnectionException("Pong message not received within network timeout."));
+                    return;
+                }
+            }
+
+            try
+            {
+                await Task.Delay(_random.Next(30_000, 300_000), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
                 return;
             }
-
-            if (task.IsCanceled)
-            {
-                continue;
-            }
-
-            // ReSharper disable once PossiblyMistakenUseOfCancellationToken
-            await Task.Delay(_random.Next(30_000, 300_000), cancellationToken);
 
             _pongReceivedTaskSource = new TaskCompletionSource<bool>();
             _pingMessage = _messageFactory.CreatePingMessage();

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Infrastructure.Tests.Node.Services;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Node;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -64,6 +65,30 @@ public class PeerCommunicationServiceTests
         _messageServiceMock.Verify(
             x => x.SendMessageAsync(It.IsAny<PongMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PingPongServiceRaisesDisconnect_When_PongTimesOut_Then_PeerIsDisconnected()
+    {
+        // Arrange
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, _pingPongServiceMock.Object,
+                                                   _serviceProviderMock.Object);
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+        RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
+        var disconnectTcs = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.DisconnectEvent += (_, e) => disconnectTcs.TrySetResult(e);
+        var timeoutException = new ConnectionException("Pong message not received within network timeout.");
+
+        // Act
+        _pingPongServiceMock.Raise(x => x.DisconnectEvent += null, _pingPongServiceMock.Object, timeoutException);
+        var completed = await Task.WhenAny(disconnectTcs.Task,
+                                           Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Same(disconnectTcs.Task, completed);
+        Assert.Same(timeoutException, await disconnectTcs.Task);
     }
 
     [Fact]
