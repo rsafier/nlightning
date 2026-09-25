@@ -53,7 +53,7 @@ This project is the NBitcoin-backed implementation of the Domain's Bitcoin and c
 
 ## Onion-routing (BOLT 4) hooks
 - `Ecdh.SecP256K1Dh` already computes the Sphinx per-hop shared secret, SHA256(compressed(k*P)).
-- Ephemeral-key blinding needs `MultiplyPubKey`/`MultiplyPrivateKey`. These exist only as PRIVATE helpers in `Services/KeyDerivationService.cs` (on `NLightningCryptoContext`). Extract them into a shared EC-ops service rather than duplicating them. Sphinx code that needs EC math belongs here (or behind a Domain interface implemented here).
+- EC math for ephemeral-key blinding lives behind the Domain port `ISecp256K1Math` (`MultiplyPubKey`, `MultiplyPrivKey`, `AddPubKeys`, `AddPrivKeys`), implemented by `Crypto/Functions/Secp256K1Math.cs` (on `NLightningCryptoContext`, registered as a singleton in `AddBitcoinInfrastructure`). `KeyDerivationService` consumes it; do not reintroduce private EC helpers. Sphinx code that needs EC math should depend on `ISecp256K1Math`.
 - Peeling needs the node private key. `ISecureKeyManager.GetNodeKeyPair()` has it, but `ILightningSigner` only exposes `GetNodePublicKey`, so add an ECDH-with-node-key method.
 - Fix the short_channel_id index bug before implementing forwarding, since hop payloads route by scid.
 - HTLC on-chain resolution (HTLC-success/timeout txs, HTLC signatures) is missing. The offered/received HTLC scripts and commitment building with HTLCs are complete and vector-tested.
