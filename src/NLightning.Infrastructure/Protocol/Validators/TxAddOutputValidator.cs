@@ -6,11 +6,13 @@ using Domain.Protocol.Payloads;
 
 public static class TxAddOutputValidator
 {
-    public static void Validate(bool isInitiator, TxAddOutputPayload output, int currentOutputCount,
+    /// <param name="isSenderInitiator">Whether the node that sent the message is the negotiation initiator.</param>
+    public static void Validate(bool isSenderInitiator, TxAddOutputPayload output, int currentOutputCount,
                                 Func<ulong, bool> isSerialIdUnique, Func<byte[], bool> isStandardScript,
                                 LightningMoney dustLimit)
     {
-        if (isInitiator && (output.SerialId & 1) != 0) // Ensure even serial_id for initiator
+        // BOLT 2: the initiator sends even serial_ids, the non-initiator sends odd ones
+        if ((output.SerialId & 1) != (isSenderInitiator ? 0UL : 1UL))
         {
             throw new InvalidOperationException("SerialId has the wrong parity.");
         }
