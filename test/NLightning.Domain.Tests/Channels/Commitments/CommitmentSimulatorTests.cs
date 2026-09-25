@@ -31,6 +31,8 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
         Assert.True(stats.RetransmittedCommitments > 200 && stats.RetransmittedRevocations > 150, stats.ToString());
         Assert.True(stats.RetransmittedUpdates > 2_500 && stats.GateRefusals > 200, stats.ToString());
         Assert.True(stats.MaxOpenHtlcs > 30, stats.ToString());
+        Assert.True(stats.LockedInEvents > 4_000 && stats.SettledEvents > 4_000, stats.ToString());
+        Assert.True(stats.FulfilledEvents > 2_000 && stats.FailedEvents > 1_000, stats.ToString());
     }
 
     [Fact(Explicit = true)]

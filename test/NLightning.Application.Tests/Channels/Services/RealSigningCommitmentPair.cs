@@ -13,6 +13,7 @@ using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -49,6 +50,16 @@ internal sealed class RealSigningNode : IDisposable
     public uint KeyIndex { get; }
     public ChannelModel Channel { get; set; } = null!;
     public ChannelCommitments State { get; set; } = null!;
+
+    /// <summary>Every domain event this node's engine raised, with the step that raised it (N4-T4).</summary>
+    public List<(string Step, IChannelDomainEvent Event)> Events { get; } = [];
+
+    /// <summary>Records the events of <paramref name="result"/> and swaps in its snapshot.</summary>
+    public void Apply(string step, CommitmentsResult result)
+    {
+        Events.AddRange(result.Events.Select(e => (step, e)));
+        State = result.Next;
+    }
 
     public RealSigningNode(string name, byte seedTag)
     {
@@ -153,10 +164,10 @@ internal sealed class RealSigningCommitmentPair : IDisposable
     {
         var to = PeerOf(from);
         var result = from.State.SendAdd(amountMsat, Hash(preimage), cltvExpiry, s_onion);
-        from.State = result.Next;
+        from.Apply("add", result);
         var add = Assert.IsType<OutboundAddHtlc>(Assert.Single(result.Outbound)).Htlc;
-        to.State = to.State.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket)
-                     .Next;
+        to.Apply("receive add",
+                 to.State.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket));
         return add.Id;
     }
 
@@ -164,8 +175,8 @@ internal sealed class RealSigningCommitmentPair : IDisposable
     public void Fulfill(RealSigningNode from, ulong id, Secret preimage)
     {
         var to = PeerOf(from);
-        from.State = from.State.SendFulfill(id, preimage, new Sha256()).Next;
-        to.State = to.State.ReceiveFulfill(id, preimage, new Sha256()).Next;
+        from.Apply("fulfill", from.State.SendFulfill(id, preimage, new Sha256()));
+        to.Apply("receive fulfill", to.State.ReceiveFulfill(id, preimage, new Sha256()));
     }
 
     /// <summary><paramref name="from"/> fails the peer's HTLC <paramref name="id"/>.</summary>
@@ -173,15 +184,15 @@ internal sealed class RealSigningCommitmentPair : IDisposable
     {
         var to = PeerOf(from);
         var reason = new byte[292];
-        from.State = from.State.SendFail(id, reason).Next;
-        to.State = to.State.ReceiveFail(id, reason).Next;
+        from.Apply("fail", from.State.SendFail(id, reason));
+        to.Apply("receive fail", to.State.ReceiveFail(id, reason));
     }
 
     /// <summary>The funder (Alice) changes the feerate.</summary>
     public void UpdateFee(uint feeratePerKw)
     {
-        Alice.State = Alice.State.SendFee(feeratePerKw).Next;
-        Bob.State = Bob.State.ReceiveFee(feeratePerKw, 253, 100_000).Next;
+        Alice.Apply("fee", Alice.State.SendFee(feeratePerKw));
+        Bob.Apply("receive fee", Bob.State.ReceiveFee(feeratePerKw, 253, 100_000));
     }
 
     /// <summary>
@@ -194,7 +205,7 @@ internal sealed class RealSigningCommitmentPair : IDisposable
 
         // commitment_signed
         var sent = from.State.SendCommit(from.CommitmentSigner);
-        from.State = sent.Next;
+        from.Apply("commit", sent);
         var commitmentSigned = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(sent.Outbound));
         var signedCommit = from.State.RemoteNextCommit!.Commit;
         var signedTxId = from.SigningService
@@ -203,7 +214,7 @@ internal sealed class RealSigningCommitmentPair : IDisposable
                              .CommitmentTxId;
 
         var received = to.State.ReceiveCommit(commitmentSigned.Signatures, to.CommitmentVerifier);
-        to.State = received.Next;
+        to.Apply("receive commit", received);
         var verifiedTxId = to.SigningService
                              .VerifyLocalCommitment(to.Channel, CommitmentTxSpec.FromCommitmentSpec(to.State.LocalCommit.Spec),
                                                     to.State.LocalCommit.Number, commitmentSigned.Signatures.Signature,
@@ -216,7 +227,7 @@ internal sealed class RealSigningCommitmentPair : IDisposable
         to.Signer.AdvanceLocalCommitment(ChannelId, to.State.LocalCommit.Number);
         var secret = to.Signer.RevealPerCommitmentSecret(ChannelId, revoke.RevokedCommitmentNumber);
         var nextPoint = to.Signer.GetPerCommitmentPoint(ChannelId, revoke.NextCommitmentNumber);
-        from.State = from.State.ReceiveRevoke(secret, nextPoint, from.RevocationVerifier).Next;
+        from.Apply("receive revoke", from.State.ReceiveRevoke(secret, nextPoint, from.RevocationVerifier));
     }
 
     /// <summary>
