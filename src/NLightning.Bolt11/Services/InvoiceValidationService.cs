@@ -4,6 +4,7 @@ using Domain.Enums;
 using Domain.Node;
 using Interfaces;
 using Models;
+using Models.TaggedFields;
 
 public class InvoiceValidationService : IInvoiceValidationService
 {
@@ -85,6 +86,21 @@ public class InvoiceValidationService : IInvoiceValidationService
         // BOLT 9: a feature MUST NOT be set without the features it depends on
         foreach (var (feature, dependency) in features.GetMissingDependencies())
             errors.Add($"{feature} requires {dependency}");
+
+        // BOLT 11: a reader MUST fail on unknown even bits, so never sign an invoice that sets one
+        foreach (var bit in FeaturesTaggedField.GetUnknownRequiredBits(features))
+            errors.Add($"Feature bit {bit} is an unknown compulsory feature");
+
+        // BOLT 9: the origin node MUST NOT set both the optional and mandatory bits
+        var setBits = features.GetSetBits();
+        foreach (var bit in setBits)
+        {
+            if (bit % 2 != 0 || !setBits.Contains(bit + 1))
+                continue;
+
+            var name = Enum.IsDefined((Feature)(bit + 1)) ? ((Feature)(bit + 1)).ToString() : $"Feature bits {bit}/{bit + 1}";
+            errors.Add($"{name} sets both optional and compulsory bits");
+        }
 
         // BOLT 9: the origin node MUST NOT set feature bits in fields not specified by the table
         foreach (var feature in s_knownFeatures)

@@ -697,8 +697,9 @@ public partial class Invoice
             throw new InvalidOperationException(
                 "Secure key manager is not set, please use Encode(Key nodeKey) or ToString(Key nodeKey) instead");
 
-        // The key manager hands out a fresh copy of the node key: zero it once the invoice is signed
-        var nodeKeyBytes = _secureKeyManager.GetNodeKeyPair().PrivKey.Value;
+        // Copy the node key before use: ISecureKeyManager does not promise the returned buffer is a fresh copy,
+        // so only our own copy is zeroed once the invoice is signed
+        var nodeKeyBytes = _secureKeyManager.GetNodeKeyPair().PrivKey.Value.ToArray();
         try
         {
             using var nodeKey = new Key(nodeKeyBytes);
