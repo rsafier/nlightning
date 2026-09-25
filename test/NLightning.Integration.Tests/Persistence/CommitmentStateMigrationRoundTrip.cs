@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -28,6 +30,11 @@ internal static class CommitmentStateMigrationRoundTrip
 
     /// <summary>The 1366-byte onion inside the seeded update_add_htlc.</summary>
     private static readonly byte[] s_onion = Enumerable.Range(0, 1366).Select(i => (byte)(i * 7)).ToArray();
+
+    private const string SeededAddress = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+
+    private static readonly byte[] s_utxoTxId = Enumerable.Repeat((byte)0x5A, 32).ToArray();
+    private static readonly byte[] s_spendingTxId = Enumerable.Repeat((byte)0x5B, 32).ToArray();
 
     /// <summary>The peer's second per-commitment point, stored by channel_ready on the remote key set.</summary>
     private static readonly byte[] s_remoteSecondPoint = [0x03, .. Enumerable.Repeat((byte)0x2B, 32)];
@@ -82,6 +89,34 @@ internal static class CommitmentStateMigrationRoundTrip
             Assert.Null(opening.RemoteNextPerCommitmentPoint);
             Assert.Empty(await context.Commitments.ToListAsync(cancellationToken));
             Assert.Empty(await context.FeeUpdates.ToListAsync(cancellationToken));
+
+            // Rows the migration does not touch survive it
+            var keySets = await context.ChannelKeySets.AsNoTracking().ToListAsync(cancellationToken);
+            Assert.Equal(4, keySets.Count);
+            var remoteReady = keySets.Single(k => k.ChannelId == readyId && !k.IsLocal);
+            Assert.Equal(FirstIndex - 1, remoteReady.CurrentPerCommitmentIndex);
+            Assert.Equal(s_remoteSecondPoint, remoteReady.CurrentPerCommitmentPoint);
+
+            var address = await context.WalletAddresses.AsNoTracking().SingleAsync(cancellationToken);
+            Assert.Equal(SeededAddress, address.Address);
+            Assert.Equal(AddressType.P2Wpkh, address.AddressType);
+            var utxos = (await context.Utxos.AsNoTracking().ToListAsync(cancellationToken)).OrderBy(u => u.Index)
+                                                                                         .ToList();
+            Assert.Equal(2, utxos.Count);
+            Assert.All(utxos, u =>
+            {
+                Assert.Equal(new TxId(s_utxoTxId), u.TransactionId);
+                Assert.Equal(AddressType.P2Wpkh, u.AddressType);
+                Assert.Equal(7u, u.AddressIndex);
+                Assert.False(u.IsAddressChange);
+            });
+            Assert.Equal(1_500_000, utxos[0].AmountSats);
+            Assert.Equal(90u, utxos[0].BlockHeight);
+            Assert.Equal(readyId, utxos[0].LockedToChannelId);
+            Assert.Null(utxos[0].UsedInTransactionId);
+            Assert.Equal(2_500, utxos[1].AmountSats);
+            Assert.Null(utxos[1].LockedToChannelId);
+            Assert.Equal(new TxId(s_spendingTxId), utxos[1].UsedInTransactionId);
 
             // NL-025: the legacy HTLC rows keep the old state and the channel is refused
             var anyParams = new CommitmentParams(true, 1_000_000, false, new CommitmentParty(546, 0, 1, 30, 0),
@@ -190,6 +225,25 @@ internal static class CommitmentStateMigrationRoundTrip
             }
         }
 
+        // Wallet rows: one UTXO locked to the ready channel's funding, one already spent
+        await context.Database.ExecuteSqlRawAsync(
+            sql.Insert("WalletAddresses",
+                       ("Index", "7"), ("IsChange", sql.Bool(false)), ("AddressType", $"{(byte)AddressType.P2Wpkh}"),
+                       ("Address", "{0}")),
+            [SeededAddress], cancellationToken);
+        await context.Database.ExecuteSqlRawAsync(
+            sql.Insert("Utxos",
+                       ("TransactionId", "{0}"), ("Index", "0"), ("AmountSats", "1500000"), ("BlockHeight", "90"),
+                       ("AddressIndex", "7"), ("IsAddressChange", sql.Bool(false)),
+                       ("AddressType", $"{(byte)AddressType.P2Wpkh}"), ("LockedToChannelId", "{1}")),
+            [s_utxoTxId, s_readyChannelId], cancellationToken);
+        await context.Database.ExecuteSqlRawAsync(
+            sql.Insert("Utxos",
+                       ("TransactionId", "{0}"), ("Index", "1"), ("AmountSats", "2500"), ("BlockHeight", "91"),
+                       ("AddressIndex", "7"), ("IsAddressChange", sql.Bool(false)),
+                       ("AddressType", $"{(byte)AddressType.P2Wpkh}"), ("UsedInTransactionId", "{1}")),
+            [s_utxoTxId, s_spendingTxId], cancellationToken);
+
         // A serialized update_add_htlc as the old HtlcDbRepository stored it: type (2) + channel_id (32) + id (8) +
         // amount_msat (8) + payment_hash (32) + cltv_expiry (4) + onion (1366) + an extension TLV
         byte[] addMessage = [0x00, 0x80, .. s_readyChannelId, .. new byte[8], .. new byte[8], .. new byte[32],
@@ -212,7 +266,8 @@ internal static class CommitmentStateMigrationRoundTrip
             [s_readyChannelId, new byte[32], new byte[] { 0x00, 0x80, 0x01 }], cancellationToken);
     }
 
-    /// <summary>Table/column naming and literals of each provider (Postgres uses snake_case).</summary>
+    /// <summary>Table/column naming and literals of each provider (Postgres uses snake_case); names are quoted so a
+    /// keyword column such as <c>Index</c> works everywhere.</summary>
     private sealed class SqlDialect(DatabaseType databaseType)
     {
         public string Bool(bool value) =>
@@ -224,7 +279,7 @@ internal static class CommitmentStateMigrationRoundTrip
 
         private string Name(string pascalCase) => databaseType switch
         {
-            DatabaseType.PostgreSql => SnakeCase(pascalCase),
+            DatabaseType.PostgreSql => $"\"{SnakeCase(pascalCase)}\"",
             DatabaseType.MicrosoftSql => $"[{pascalCase}]",
             _ => $"\"{pascalCase}\""
         };
