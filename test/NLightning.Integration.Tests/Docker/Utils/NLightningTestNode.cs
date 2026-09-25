@@ -230,6 +230,18 @@ public sealed class NLightningTestNode : IAsyncDisposable
     }
 
     /// <summary>
+    /// Lists the node's channels through the daemon's <c>ListChannels</c> client handler.
+    /// </summary>
+    public async Task<ListChannelsClientResponse> ListChannelsAsync(CancellationToken cancellationToken)
+    {
+        using var scope = Services.CreateScope();
+        var handler = scope.ServiceProvider
+                           .GetRequiredService<IClientCommandHandler<ListChannelsClientRequest,
+                                ListChannelsClientResponse>>();
+        return await handler.HandleAsync(new ListChannelsClientRequest(), cancellationToken);
+    }
+
+    /// <summary>
     /// Deletes the node's SQLite file (with its WAL/SHM side files) and fee cache. Call after <see cref="StopAsync"/>.
     /// </summary>
     public void DeleteFiles()

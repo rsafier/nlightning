@@ -7,6 +7,7 @@ namespace NLightning.Client.Ipc;
 
 using Domain.Bitcoin.Enums;
 using Domain.Client.Enums;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
 using Transport.Ipc;
@@ -90,6 +91,31 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         var respEnv = await SendAsync(env, ct);
         if (respEnv.Kind != IpcEnvelopeKind.Error)
             return MessagePackSerializer.Deserialize<ListPeersIpcResponse>(respEnv.Payload, cancellationToken: ct);
+
+        var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
+        throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
+    }
+
+    public async Task<ListChannelsIpcResponse> ListChannelsAsync(string? peerId, CancellationToken ct = default)
+    {
+        var req = new ListChannelsIpcRequest
+        {
+            PeerId = string.IsNullOrWhiteSpace(peerId) ? null : new CompactPubKey(Convert.FromHexString(peerId))
+        };
+        var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
+        var env = new IpcEnvelope
+        {
+            Version = 1,
+            Command = ClientCommand.ListChannels,
+            CorrelationId = Guid.NewGuid(),
+            AuthToken = await GetAuthTokenAsync(ct),
+            Payload = payload,
+            Kind = IpcEnvelopeKind.Request
+        };
+
+        var respEnv = await SendAsync(env, ct);
+        if (respEnv.Kind != IpcEnvelopeKind.Error)
+            return MessagePackSerializer.Deserialize<ListChannelsIpcResponse>(respEnv.Payload, cancellationToken: ct);
 
         var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
         throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");

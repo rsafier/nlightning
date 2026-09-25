@@ -17,6 +17,7 @@ public static class ClientUtils
         Console.WriteLine("  info                         Get node information via IPC");
         Console.WriteLine("  connect <node>               Connect to a peer node");
         Console.WriteLine("  listpeers                    List all connected peers");
+        Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
         Console.WriteLine("  openchannel <node> <sats>    Open a channel to peer");

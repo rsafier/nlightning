@@ -95,6 +95,8 @@ public static class NodeServiceExtensions
            .AddScoped<IClientCommandHandler<OpenChannelClientSubscriptionRequest,
                     OpenChannelClientSubscriptionResponse>,
                 OpenChannelClientSubscriptionHandler>();
+        services.AddScoped<IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>,
+            ListChannelsClientHandler>();
 
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
@@ -107,6 +109,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, GetWalletBalanceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, OpenChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, OpenChannelSubscriptionIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListChannelsIpcHandler>();
 
         // Add HttpClient for FeeService with configuration
         services.AddHttpClient<IFeeService, FeeService>(client =>
