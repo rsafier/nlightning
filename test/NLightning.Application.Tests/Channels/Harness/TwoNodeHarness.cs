@@ -202,6 +202,25 @@ internal sealed class TwoNodeHarness : IDisposable
         await ReconnectAsync();
     }
 
+    /// <summary>
+    /// Restarts <paramref name="node"/> from an old copy of its store (an operator restoring a backup), link down.
+    /// </summary>
+    /// <returns>The restarted node (also set as <see cref="Alice"/>/<see cref="Bob"/>).</returns>
+    public async Task<HarnessNode> RestartFromBackupAsync(HarnessNode node, InMemoryChannelStateStore.Backup backup)
+    {
+        await DisconnectAsync();
+        node.Store.RestoreBackup(backup);
+        var restarted = await RestartAsync(node);
+        if (node == Alice)
+            Alice = restarted;
+        else
+            Bob = restarted;
+
+        Alice.Peer = Bob;
+        Bob.Peer = Alice;
+        return restarted;
+    }
+
     private async Task<HarnessNode> RestartAsync(HarnessNode crashed)
     {
         Restarts++;
@@ -637,6 +656,22 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     public int Saves { get; private set; }
 
     public void Seed(ChannelCommitments commitments) => Committed = commitments;
+
+    /// <summary>A copy of what is saved now.</summary>
+    public sealed record Backup(ChannelCommitments? Committed, ReadOnlyMemory<byte>? SentCommitDiff,
+                                LastSentCommitmentMessage LastSent, IReadOnlyList<ShachainEntry> Shachain);
+
+    public Backup TakeBackup() => new(Committed, CommittedSentCommitDiff, CommittedLastSent, CommittedShachain);
+
+    /// <summary>Replaces everything saved with <paramref name="backup"/> (the settled archive is dropped).</summary>
+    public void RestoreBackup(Backup backup)
+    {
+        Committed = backup.Committed;
+        CommittedSentCommitDiff = backup.SentCommitDiff;
+        CommittedLastSent = backup.LastSent;
+        CommittedShachain = backup.Shachain;
+        _settled.Clear();
+    }
 
     /// <summary>A new process on this store: what was staged is gone, saving works again.</summary>
     public void Restart()

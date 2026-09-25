@@ -185,6 +185,62 @@ public class ReestablishHarnessTests
         AssertConverged(harness, aliceOffered: 1, bobOffered: 0);
     }
 
+    [Fact]
+    public async Task Given_UnackedAdd_When_Reconnect_Then_SameIdAcceptedOnce()
+    {
+        // Arrange (B2-RE-04, B2-ADD-R06): Bob got Alice's update_add_htlc but not her commitment_signed
+        using var harness = new TwoNodeHarness(localOnlySwitch: true);
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.Alice.Scheduler.WhenIdleAsync();
+        harness.DeliveryBudget = 1;
+        await harness.PumpAsync();
+        Assert.Equal(1UL, harness.Bob.State.RemoteNextHtlcId);
+
+        // Act 1 - the drop reverts Bob's copy of the unsigned add
+        await harness.DisconnectAsync();
+
+        // Assert 1
+        Assert.Equal(0UL, harness.Bob.State.RemoteNextHtlcId);
+        Assert.Empty(harness.Bob.State.Htlcs);
+
+        // Act 2 - Alice re-sends it with the same id after the reestablish
+        harness.DeliveryBudget = null;
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert 2 - one HTLC with id 0, locked in once and failed back
+        Assert.Equal(2, harness.Bob.Received.OfType<UpdateAddHtlcMessage>().Count(m => m.Payload.Id == 0));
+        Assert.Single(harness.Bob.Events.OfType<IncomingHtlcLockedIn>());
+        AssertConverged(harness, aliceOffered: 1, bobOffered: 0);
+    }
+
+    [Fact]
+    public async Task Given_ANodeRestoredFromAnOldBackup_When_Reconnected_Then_ItDetectsDataLossAndNeverSignsAgain()
+    {
+        // Arrange - Alice keeps a backup of the fresh channel, then the dance moves both commitments to 2
+        using var harness = new TwoNodeHarness(localOnlySwitch: true);
+        var backup = harness.Alice.Store.TakeBackup();
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.PumpAsync();
+        Assert.Equal(2UL, harness.Bob.State.RemoteCommit.Number);
+
+        // Act - Alice comes back on the old state; Bob's channel_reestablish proves she is behind (B2-RE-23)
+        var alice = await harness.RestartFromBackupAsync(harness.Alice, backup);
+        await harness.ReconnectAsync();
+        var failure = await Assert.ThrowsAsync<ChannelFailedException>(() => harness.Bob.DeliverNextAsync());
+
+        // Assert - Alice keeps the flag and the failed state, asks for no broadcast, and refuses to sign or offer
+        Assert.Equal("B2-RE-23", failure.RequirementId);
+        Assert.False(failure.MustBroadcast);
+        Assert.True(alice.Channel.DataLossDetected);
+        Assert.Equal(ChannelState.Failed, alice.Channel.State);
+        Assert.False(alice.Tracker.IsReestablished(TwoNodeHarness.ChannelId));
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => OfferAsync(alice, AliceAmountMsat, 3));
+        var signedBefore = alice.Signed.Count;
+        await alice.Scheduler.SignNowAsync(TwoNodeHarness.ChannelId, TestContext.Current.CancellationToken);
+        Assert.Equal(signedBefore, alice.Signed.Count);
+    }
+
     /// <summary>Runs the two-offer dance without failures: how many messages and saves it takes.</summary>
     private static async Task<(int Messages, int AliceSaves, int BobSaves)> MeasureAsync()
     {
