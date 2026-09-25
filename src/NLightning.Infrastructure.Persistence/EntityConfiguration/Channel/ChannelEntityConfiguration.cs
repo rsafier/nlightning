@@ -28,6 +28,8 @@ public static class ChannelEntityConfiguration
             entity.Property(e => e.RemoteNextHtlcId).IsRequired();
             entity.Property(e => e.LocalRevocationNumber).IsRequired();
             entity.Property(e => e.RemoteRevocationNumber).IsRequired();
+            entity.Property(e => e.LocalCommitmentNumber).IsRequired();
+            entity.Property(e => e.RemoteCommitmentNumber).IsRequired();
             entity.Property(e => e.State).IsRequired();
             entity.Property(e => e.Version).IsRequired();
             entity.Property(e => e.LocalBalanceSatoshis).IsRequired();

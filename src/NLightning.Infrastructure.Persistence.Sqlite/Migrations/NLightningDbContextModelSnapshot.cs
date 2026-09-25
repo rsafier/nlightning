@@ -222,6 +222,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<decimal>("LocalBalanceSatoshis")
                         .HasColumnType("TEXT");
 
+                    b.Property<ulong>("LocalCommitmentNumber")
+                        .HasColumnType("INTEGER");
+
                     b.Property<ulong>("LocalNextHtlcId")
                         .HasColumnType("INTEGER");
 
@@ -236,6 +239,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<decimal>("RemoteBalanceSatoshis")
                         .HasColumnType("TEXT");
+
+                    b.Property<ulong>("RemoteCommitmentNumber")
+                        .HasColumnType("INTEGER");
 
                     b.Property<ulong>("RemoteNextHtlcId")
                         .HasColumnType("INTEGER");

@@ -70,6 +70,20 @@ public class ChannelEntity
     public required ulong RemoteRevocationNumber { get; set; }
 
     /// <summary>
+    /// The number of our current commitment (the one the peer signed for us).
+    /// </summary>
+    /// <remarks>
+    /// Persisted on its own: it runs one ahead of <see cref="LocalRevocationNumber"/> between receiving a
+    /// commitment_signed and sending the revoke_and_ack for the previous commitment.
+    /// </remarks>
+    public required ulong LocalCommitmentNumber { get; set; }
+
+    /// <summary>
+    /// The number of the peer's current commitment (the one we signed for them).
+    /// </summary>
+    public required ulong RemoteCommitmentNumber { get; set; }
+
+    /// <summary>
     /// The last signature sent to the remote node, stored as a byte array.
     /// </summary>
     public byte[]? LastSentSignature { get; set; }
