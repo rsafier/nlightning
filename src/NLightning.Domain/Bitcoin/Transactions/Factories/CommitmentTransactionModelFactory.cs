@@ -10,6 +10,7 @@ using NLightning.Domain.Channels.ValueObjects;
 using NLightning.Domain.Exceptions;
 using NLightning.Domain.Money;
 using NLightning.Domain.Protocol.Interfaces;
+using NLightning.Domain.Protocol.Models;
 
 namespace NLightning.Domain.Bitcoin.Transactions.Factories;
 
@@ -25,8 +26,13 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         _lightningSigner = lightningSigner;
     }
 
-    public CommitmentTransactionModel CreateCommitmentTransactionModel(ChannelModel channel, CommitmentSide side)
+    public CommitmentTransactionModel CreateCommitmentTransactionModel(ChannelModel channel, CommitmentSide side,
+                                                                       ulong commitmentNumber)
     {
+        if (commitmentNumber > CommitmentNumber.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(commitmentNumber), commitmentNumber,
+                                                  "Commitment numbers are 48-bit values");
+
         // Guarantee we have a RemoteKeySet
         if (channel.RemoteKeySet is null)
             throw new InvalidOperationException(
@@ -66,9 +72,9 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         // Derive the commitment keys from the appropriate perspective
         var commitmentKeys = side switch
         {
+            // Our per-commitment point comes from the signer for this commitment number (never an index, NL-187)
             CommitmentSide.Local => _commitmentKeyDerivationService.DeriveLocalCommitmentKeys(
-                channel.LocalKeySet.KeyIndex, localBasepoints, remoteBasepoints,
-                channel.LocalKeySet.CurrentPerCommitmentIndex),
+                channel.LocalKeySet.KeyIndex, localBasepoints, remoteBasepoints, commitmentNumber),
 
             CommitmentSide.Remote => _commitmentKeyDerivationService.DeriveRemoteCommitmentKeys(
                 localBasepoints, remoteBasepoints, channel.RemoteKeySet.CurrentPerCommitmentCompactPoint),
@@ -213,7 +219,7 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         }
 
         // Create and return the commitment transaction model
-        return new CommitmentTransactionModel(channel.CommitmentNumber!, fee, channel.FundingOutput!,
+        return new CommitmentTransactionModel(channel.CommitmentNumber!, commitmentNumber, fee, channel.FundingOutput!,
                                               localAnchorOutput, remoteAnchorOutput, toLocalOutput, toRemoteOutput,
                                               offeredHtlcOutputs, receivedHtlcOutputs);
     }

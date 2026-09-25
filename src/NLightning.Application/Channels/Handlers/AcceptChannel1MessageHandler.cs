@@ -196,7 +196,8 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
 
             // Generate the base commitment transactions
             var remoteCommitmentTransaction =
-                _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(tempChannel, CommitmentSide.Remote);
+                _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
+                    tempChannel, CommitmentSide.Remote, tempChannel.RemoteCommitmentNumber);
 
             // Build the output and the transactions
             var remoteUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(remoteCommitmentTransaction);
