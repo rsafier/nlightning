@@ -184,6 +184,146 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_Start_Then_RegisteredBeforeConnect()
+    {
+        // Arrange: two peers, each registration completes asynchronously
+        var peerManager = CreatePeerManager();
+        var channelA = CreateChannel(ChannelState.Open, 1);
+        var channelB = CreateChannel(ChannelState.Open, 2);
+        var otherPubKey = new PubKey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").ToBytes();
+        var peerA = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType) { Channels = [channelA] };
+        var peerB = new PeerModel(otherPubKey, ExpectedHost, ExpectedPort, ExpectedType) { Channels = [channelB] };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peerA, peerB]);
+
+        var registered = 0;
+        _mockChannelManager.Setup(cm => cm.RegisterExistingChannelAsync(It.IsAny<ChannelModel>()))
+                           .Returns(async () =>
+                            {
+                                await Task.Delay(20);
+                                Interlocked.Increment(ref registered);
+                            });
+
+        var registeredAtFirstConnect = -1;
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .Callback(() => Interlocked.CompareExchange(ref registeredAtFirstConnect,
+                                                                   Volatile.Read(ref registered), -1))
+                       .ThrowsAsync(new ConnectionException("Failed to connect to peer"));
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+
+        // Assert: both channels were fully registered before the first connection attempt
+        Assert.Equal(2, registeredAtFirstConnect);
+        await peerManager.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_RegistrationFails_When_Start_Then_OtherChannelsRegisteredAndPeerConnected()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        var failingChannel = CreateChannel(ChannelState.Open, 1);
+        var channel = CreateChannel(ChannelState.ReadyForUs, 2);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            Channels = [failingChannel, channel]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+        _mockChannelManager.Setup(cm => cm.RegisterExistingChannelAsync(failingChannel))
+                           .ThrowsAsync(new InvalidOperationException("signer failure"));
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                       new Mock<TcpClient>().Object));
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockChannelManager.Verify(cm => cm.RegisterExistingChannelAsync(channel), Times.Once);
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+    }
+
+    [Fact]
+    public async Task Given_PeerUnreachable_When_Start_Then_RetriesWithBackoffUntilConnected()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        peerManager.ReconnectMaxDelay = TimeSpan.FromMilliseconds(40);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            Channels = [CreateChannel(ChannelState.Open, 1)]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+
+        var attempts = 0;
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .Returns(() => Interlocked.Increment(ref attempts) <= 3
+                                          ? Task.FromException<ConnectedPeer>(
+                                              new ConnectionException("Failed to connect to peer"))
+                                          : Task.FromResult(new ConnectedPeer(_compactPubKey, ExpectedHost,
+                                                                ExpectedPort, new Mock<TcpClient>().Object)));
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
+
+        // Assert: the startup attempt, two failed retries, then the successful one; no more after that
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        Assert.Equal(4, Volatile.Read(ref attempts));
+    }
+
+    [Fact]
+    public async Task Given_PeerWithoutActiveChannelsUnreachable_When_Start_Then_NoRetry()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            Channels = [CreateChannel(ChannelState.Closed, 1)]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ThrowsAsync(new ConnectionException("Failed to connect to peer"));
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockTcpService.Verify(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_Retrying_When_StopAsync_Then_RetriesStop()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        peerManager.ReconnectMaxDelay = TimeSpan.FromMilliseconds(10);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            Channels = [CreateChannel(ChannelState.Open, 1)]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+        var attempts = 0;
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .Callback(() => Interlocked.Increment(ref attempts))
+                       .ThrowsAsync(new ConnectionException("Failed to connect to peer"));
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        await WaitUntilAsync(() => Volatile.Read(ref attempts) >= 3);
+
+        // Act
+        await peerManager.StopAsync();
+        var attemptsAtStop = Volatile.Read(ref attempts);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(attemptsAtStop, Volatile.Read(ref attempts));
+    }
+
+    [Fact]
     public async Task Given_StartAsync_When_Called_Then_TcpServiceStartsListening()
     {
         // Given

@@ -47,9 +47,12 @@ public class ChannelManager : IChannelManager
         blockchainMonitor.OnTransactionConfirmed += HandleFundingConfirmationAsync;
     }
 
-    public Task RegisterExistingChannelAsync(ChannelModel channel)
+    public async Task RegisterExistingChannelAsync(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
+
+        // Under the channel's lock, like every other channel mutation (a block event may already run for it)
+        using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
 
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
@@ -74,8 +77,6 @@ public class ChannelManager : IChannelManager
             _logger.LogWarning("We don't know how to deal with {channelState} for channel {ChannelId}",
                                Enum.GetName(channel.State), channel.ChannelId);
         }
-
-        return Task.CompletedTask;
     }
 
     /// <inheritdoc />
