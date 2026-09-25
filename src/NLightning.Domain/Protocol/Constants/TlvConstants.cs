@@ -88,7 +88,7 @@ public static class TlvConstants
     /// Next Funding TLV Type
     /// </summary>
     /// <remarks>
-    /// The "Next Funding" is used in the ChannelReestablishMessage
+    /// The "Next Funding" is used in the ChannelReestablishMessage (BOLT 2 <c>channel_reestablish_tlvs</c> type 1)
     /// </remarks>
-    public static readonly BigSize NextFunding = 0;
+    public static readonly BigSize NextFunding = 1;
 }
