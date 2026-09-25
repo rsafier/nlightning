@@ -79,7 +79,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         if (channel.ChannelConfig.MinimumDepth == 0)
             channelTypeFeatureSet.SetFeature(Feature.OptionZeroconf, true);
 
-        var featureSetBytes = channelTypeFeatureSet.GetBytes() ?? throw new ChannelErrorException("The channel type is not supported", payload.ChannelId,
+        var featureSetBytes = channelTypeFeatureSet.GetWireBytes() ?? throw new ChannelErrorException("The channel type is not supported", payload.ChannelId,
                                             "Sorry, we had an internal error");
         var channelTypeTlv = new ChannelTypeTlv(featureSetBytes);
 

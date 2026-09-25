@@ -466,5 +466,40 @@ public class FeatureSetTests
         Assert.True(tlv.Features.IsFeatureSet(Feature.OptionAnchors, true));
     }
 
+    [Fact]
+    public void Given_BasicChannelType_When_CreatingChannelTypeTlvFromFeatureSet_Then_ValueIsBigEndian()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        byte[] expected = [0x10, 0x00];
+
+        // Act
+        var tlv = new ChannelTypeTlv(channelType);
+
+        // Assert
+        Assert.Equal(expected, channelType.GetWireBytes());
+        Assert.Equal(expected, tlv.Value);
+        Assert.True(tlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.False(tlv.Features.HasFeature(Feature.OptionUpfrontShutdownScript));
+    }
+
+    [Fact]
+    public void Given_AnchorsChannelType_When_GettingWireBytes_Then_RoundTripsThroughDeserialize()
+    {
+        // Arrange
+        var channelType = FeatureSet.NewBasicChannelType();
+        channelType.SetFeature(Feature.OptionAnchors, true);
+        byte[] expected = [0x40, 0x10, 0x00];
+
+        // Act
+        var wireBytes = channelType.GetWireBytes();
+        var roundTripped = FeatureSet.DeserializeFromBytes(wireBytes!);
+
+        // Assert
+        Assert.Equal(expected, wireBytes);
+        Assert.True(roundTripped.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.True(roundTripped.IsFeatureSet(Feature.OptionAnchors, true));
+    }
+
     #endregion
 }
