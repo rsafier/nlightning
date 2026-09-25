@@ -4,9 +4,11 @@ using Domain.Protocol.Payloads;
 
 public static class TxRemoveInputValidator
 {
-    public static void Validate(bool isInitiator, TxRemoveInputPayload input, Func<ulong, bool> isSerialIdPresent)
+    /// <param name="isSenderInitiator">Whether the node that sent the message is the negotiation initiator.</param>
+    public static void Validate(bool isSenderInitiator, TxRemoveInputPayload input, Func<ulong, bool> isSerialIdPresent)
     {
-        if (isInitiator && (input.SerialId & 1) != 0) // Ensure even serial_id for initiator
+        // BOLT 2: the initiator sends even serial_ids, the non-initiator sends odd ones
+        if ((input.SerialId & 1) != (isSenderInitiator ? 0UL : 1UL))
         {
             throw new InvalidOperationException("SerialId has the wrong parity.");
         }

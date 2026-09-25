@@ -12,6 +12,11 @@ public class InteractiveTransactionService : IInteractiveTransactionService
     private readonly Dictionary<ulong, TxAddInputPayload> _inputs = [];
     private readonly Dictionary<ulong, TxAddOutputPayload> _outputs = [];
 
+    // Every message handled here comes from the peer, so the sender is the initiator only when we are not.
+    private bool IsPeerInitiator => !_isInitiator;
+
+    /// <param name="dustLimitAmount">The dust limit applied to outputs added by the peer.</param>
+    /// <param name="isInitiator">Whether the local node is the negotiation initiator.</param>
     public InteractiveTransactionService(LightningMoney dustLimitAmount, bool isInitiator)
     {
         _dustLimitAmount = dustLimitAmount;
@@ -20,26 +25,26 @@ public class InteractiveTransactionService : IInteractiveTransactionService
 
     public async Task AddInputAsync(TxAddInputPayload input)
     {
-        await TxAddInputValidator.ValidateAsync(_isInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
+        await TxAddInputValidator.ValidateAsync(IsPeerInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
         _inputs.Add(input.SerialId, input);
     }
 
     public void AddOutput(TxAddOutputPayload output)
     {
-        TxAddOutputValidator.Validate(_isInitiator, output, _outputs.Count, IsSerialIdUnique, IsStandardScript,
+        TxAddOutputValidator.Validate(IsPeerInitiator, output, _outputs.Count, IsSerialIdUnique, IsStandardScript,
                                       _dustLimitAmount);
         _outputs.Add(output.SerialId, output);
     }
 
     public void RemoveInput(TxRemoveInputPayload input)
     {
-        TxRemoveInputValidator.Validate(_isInitiator, input, IsSerialIdPresent);
+        TxRemoveInputValidator.Validate(IsPeerInitiator, input, IsSerialIdPresent);
         _inputs.Remove(input.SerialId);
     }
 
     public void RemoveOutput(TxRemoveOutputPayload output)
     {
-        TxRemoveOutputValidator.Validate(_isInitiator, output, IsSerialIdPresent);
+        TxRemoveOutputValidator.Validate(IsPeerInitiator, output, IsSerialIdPresent);
         _outputs.Remove(output.SerialId);
     }
 
