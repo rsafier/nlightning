@@ -6,8 +6,10 @@ namespace NLightning.Bolt11.Tests.Models;
 using Bolt11.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Constants;
+using Domain.Enums;
 using Domain.Models;
 using Domain.Money;
+using Domain.Node;
 using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 using Exceptions;
@@ -269,6 +271,44 @@ public class InvoiceTests
 
         // Then
         Assert.False(string.IsNullOrWhiteSpace(encoded));
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutFeatures_When_Encoded_Then_VarOnionOptinAndPaymentSecretAreRequired()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "no features", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.NotNull(decoded.Features);
+        Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
+    }
+
+    [Fact]
+    public void Given_InvoiceWithOnlyBasicMpp_When_Encoded_Then_RequiredFeaturesAreAdded()
+    {
+        // Arrange
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(Feature.BasicMpp, false);
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "mpp", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet)
+        {
+            Features = features
+        };
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.NotNull(decoded.Features);
+        Assert.True(decoded.Features.IsFeatureSet(Feature.BasicMpp, false));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
     }
 
     [Fact]

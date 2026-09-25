@@ -571,9 +571,8 @@ public partial class Invoice
 
             // The data part is everything between the separator and the signature (104 groups) + checksum (6)
             var dataGroups = invoiceString.Length - (hrp.Length + 1) - 104 - 6;
+            // Throws on malformed known fields and on unknown even feature bits in `9`
             var taggedFields = TaggedFieldList.FromBitReader(bitReader, network, dataGroups * 5 - 35);
-
-            // TODO: Check feature bits
 
             var invoice = new Invoice(invoiceString, hrp, network, amount, timestamp, taggedFields,
                                       new CompactSignature(signature[^1], signature[..^1]));
@@ -607,6 +606,8 @@ public partial class Invoice
     {
         try
         {
+            EnsureRequiredFeatures();
+
             // Calculate the size needed for the buffer
             var sizeInBits = 35 + (_taggedFields.CalculateSizeInBits() * 5) + (_taggedFields.Count * 15);
 
@@ -854,6 +855,30 @@ public partial class Invoice
             throw new ArgumentException("Unsupported prefix in invoice", nameof(invoiceString));
 
         return network;
+    }
+
+    /// <summary>
+    /// Makes sure the <c>9</c> field advertises <c>var_onion_optin</c> and <c>payment_secret</c>
+    /// </summary>
+    /// <remarks>
+    /// Both are ASSUMED in BOLT 9, but every BOLT 11 example sets them (as compulsory) and older payers rely on them.
+    /// A bit already set as optional is kept as is.
+    /// </remarks>
+    private void EnsureRequiredFeatures()
+    {
+        var features = Features;
+        if (features is null)
+        {
+            // var_onion_optin (8) and payment_secret (14) as compulsory
+            Features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+            return;
+        }
+
+        if (!features.IsFeatureSet(Feature.VarOnionOptin))
+            features.SetFeature(Feature.VarOnionOptin, true);
+
+        if (!features.IsFeatureSet(Feature.PaymentSecret))
+            features.SetFeature(Feature.PaymentSecret, true);
     }
 
     private void OnTaggedFieldsChanged(object? sender, EventArgs args)

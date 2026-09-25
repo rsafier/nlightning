@@ -80,6 +80,10 @@ public class InvoiceIntegrationTests
                         Assert.NotNull(expectedFeatures);
                         Assert.NotNull(invoice.Features);
                         Assert.True(expectedFeatures.IsCompatible(invoice.Features, out _));
+                        var maxBit = Math.Max(expectedFeatures.SizeInBits, invoice.Features.SizeInBits);
+                        for (var bit = 0; bit <= maxBit; bit++)
+                            Assert.Equal(expectedFeatures.IsFeatureSet(bit, false),
+                                         invoice.Features.IsFeatureSet(bit, false));
                         break;
                     case TaggedFieldTypes.Metadata:
                         Assert.Equal(taggedField.Value, invoice.Metadata);
@@ -114,6 +118,9 @@ public class InvoiceIntegrationTests
                 "lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x")]
     [InlineData("dangling bits after the last tagged field",
                 "lnbc16lta047pp5h6lta047h6lta047h6lta047h6lta047h6lta047h6lta047h6lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqh6lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqh6lqqqqqqqqqqqqqqqqqqqt703rz")]
+    // BOLT 11 "Same, but adding invalid unknown feature 100"
+    [InlineData("Invoice requires unknown feature bit(s): 100",
+                "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372")]
     // BOLT 11 "Missing required `s` field."
     [InlineData("PaymentSecret is required",
                 "lnbc20m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqhp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qrsgq7ea976txfraylvgzuxs8kgcw23ezlrszfnh8r6qtfpr6cxga50aj6txm9rxrydzd06dfeawfk6swupvz4erwnyutnjq7x39ymw6j38gp49qdkj")]

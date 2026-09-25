@@ -52,7 +52,7 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 - Property setters call `Add`, so setting Features, RoutingInfos, ExpiryDate, PayeePubKey or MinFinalCltvExpiry twice throws. There is no replace.
 - Several `r` fields are allowed. `RoutingInfos` is only the first (most preferred) one; read all of them with `RouteHints` and append with `AddRouteHint`.
 - `TaggedFieldList.FromBitReader` gives each field parser its own `BitReader` over exactly `data_length*5` bits, skips unknown types, `f` fields with an unknown version and invalid-point `n` fields (parser returns null), keeps the first of a duplicated non-repeatable field, and throws on everything else: truncated fields, malformed known fields (wrong `p`/`h`/`s`/`n` length, bad `r` length), `d`+`h`, and dangling groups. `Invoice.Decode` passes the exact field-bit count, computed from the string length. The spec example "fields which must be ignored" is therefore rejected (bolts#1243 made wrong fixed lengths a MUST-fail).
-- Feature-bit validation is a TODO (`Invoice.cs:553`). Unknown even features are NOT rejected, and the writer does not force the payment_secret or var_onion_optin bits.
+- `9` field: decode rejects unknown even bits (unknown = no `Domain.Enums.Feature` pair) and ignores unknown odd bits; `Encode` adds var_onion_optin (8) and payment_secret (14) as compulsory when neither bit of the pair is set (it mutates the caller's `FeatureSet`). Transitive dependencies (e.g. basic_mpp -> payment_secret) are not checked, because `FeatureSet`'s dependency table lacks them. `FeaturesTaggedField` reads/writes without the old `shouldPad` shift, which read 15-bit fields (`9qrsgq`) one bit too high (8/14 as 9/15).
 - `MinFinalCltvExpiry` is a non-nullable `ushort` that returns the spec default 18 (`InvoiceConstants.DefaultMinFinalCltvExpiryDelta`) when `c` is absent, so it cannot tell you whether `c` was present.
 - `FallbackAddressTaggedField` has no taproot (witness v1) support. Unknown versions are skipped.
 - `Encode()` never runs `InvoiceValidationService`. `ToString()` with no cached string and no `ISecureKeyManager` throws NullReferenceException (explicitly, from `Encode()`); use `ToString(Key)` or `Encode(Key)`.
@@ -66,6 +66,6 @@ This project has no onion code. A future Application-layer payment service would
 - `RoutingInfos` supply the last private hops (scid, fees, cltv_delta).
 - `PayeePubKey` is the final hop's node id for the Sphinx ECDH.
 - `Metadata` becomes the `payment_metadata` TLV (type 16).
-- `Features` must be checked for var_onion_optin, payment_secret and basic_mpp. Fix the TODO at `Invoice.cs:553` first.
+- `Features` must be checked for basic_mpp before splitting a payment (unknown required bits are already rejected on decode).
 
 On the receive side, the node must persist (payment_hash, payment_secret, amount, min_final_cltv) so it can validate final-hop payloads. There is no invoice table yet.
