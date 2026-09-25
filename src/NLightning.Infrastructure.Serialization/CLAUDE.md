@@ -44,7 +44,6 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - `TlvConstants` numbers collide across messages (0 and 1 reused), so always use the semantically correct constant (e.g. `UpdateAddHtlcMessageSerializer.cs` uses `TlvConstants.BlindedPath`).
 - `RemoteAddressTlv` type 5 (DNS hostname) conversion is broken: Domain length is `3 + len` (spec: `4 + len`) and the converter overwrites a hostname byte. IPv4/IPv6/Tor v3 are fine.
 - Most message TLV extensions still use the open `DeserializeAsync`, which does NOT reject unknown even types (BOLT 1 violation). Only `UpdateAddHtlcMessageTypeSerializer` uses `DeserializeStrictAsync` with its known set (`{0}`); migrate the others as they are touched. `BigSizeTypeSerializer` is canonical (throws `ArgumentException(NonCanonicalErrorMessage)`). `TlvSerializer` rejects length > remaining bytes before allocating.
-- `PingPayloadSerializer`/`PongPayloadSerializer` check but don't consume the ignored bytes.
 - `OpenChannel1MessageTypeSerializer` requires a `channel_type` TLV.
 - BOLT 7 gossip (256-259, 261-265) is registered but NOT parsed: `GossipMessageTypeSerializer<TMessage>` + `GossipPayloadSerializer` keep every remaining byte as `GossipPayload.Data` (so even gossip types no longer kill the peer). Replace with real payload serializers when gossip is implemented.
 - Warning reuses `ErrorPayload` (`PayloadSerializerFactory` maps `MessageTypes.Warning`).
