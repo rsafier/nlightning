@@ -21,7 +21,10 @@ public interface ICommitmentTransactionModelFactory
     /// <see cref="CommitmentSide.Local"/> and <see cref="ChannelModel.RemoteCommitmentNumber"/> (or the next one while
     /// signing) for <see cref="CommitmentSide.Remote"/>. It sets the obscured locktime/sequence and, for the local side,
     /// selects our per-commitment point. For the remote side the per-commitment point is taken from
-    /// <c>RemoteKeySet.CurrentPerCommitmentCompactPoint</c>. The balances and HTLCs come from
+    /// <c>RemoteKeySet.CurrentPerCommitmentCompactPoint</c>, which is valid only for the commitment its
+    /// <c>CurrentPerCommitmentIndex</c> names (0 during funding, 1 once channel_ready stored the second point); any
+    /// other remote number throws <see cref="InvalidOperationException"/>, so use the <see cref="CommitmentTxSpec"/>
+    /// overload with an explicit point for it. The balances and HTLCs come from
     /// <see cref="CommitmentTxSpec.FromChannel"/> (gross channel balances made net).
     /// </param>
     /// <returns>A domain model of the commitment transaction.</returns>

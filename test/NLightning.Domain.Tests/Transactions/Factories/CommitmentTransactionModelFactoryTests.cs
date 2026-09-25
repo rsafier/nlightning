@@ -252,14 +252,52 @@ public class CommitmentTransactionModelFactoryTests
         // Act
         var local = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
                                                             channel.LocalCommitmentNumber);
-        var remote = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
-                                                             channel.RemoteCommitmentNumber);
+        var remote = factory.CreateCommitmentTransactionModel(channel, CommitmentTxSpec.FromChannel(channel),
+                                                             CommitmentSide.Remote, channel.RemoteCommitmentNumber,
+                                                             s_emptyCompactPubKey);
 
         // Assert
         Assert.Equal(obscuringFactor, channel.CommitmentNumber!.ObscuringFactor);
         Assert.Equal((0x20U << 24) | (uint)((3 ^ obscuringFactor) & 0xFFFFFF), local.GetLockTime().ValueOrHeight);
         Assert.Equal((0x20U << 24) | (uint)((4 ^ obscuringFactor) & 0xFFFFFF), remote.GetLockTime().ValueOrHeight);
         Assert.Equal((0x80U << 24) | (uint)((obscuringFactor >> 24) & 0xFFFFFF), local.GetSequence().Value);
+    }
+
+    [Fact]
+    public void Given_RemotePointAdvancedByChannelReady_When_BuildingRemoteCommitmentZero_Then_Throws()
+    {
+        // Arrange - regression: after channel_ready the stored remote point is the second one (commitment 1) while
+        // RemoteCommitmentNumber is still 0, so the convenience overload built commitment 0 with commitment 1's keys
+        var channel = CreateChannel(true, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000));
+        channel.RemoteKeySet!.UpdatePerCommitmentPoint(Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes());
+        var factory = CreateFactory();
+
+        // Act / Assert
+        Assert.Throws<InvalidOperationException>(() => factory.CreateCommitmentTransactionModel(
+                                                     channel, CommitmentSide.Remote, channel.RemoteCommitmentNumber));
+    }
+
+    [Fact]
+    public void Given_RemotePointAdvancedByChannelReady_When_BuildingRemoteCommitmentOne_Then_UsesTheStoredPoint()
+    {
+        // Arrange
+        var channel = CreateChannel(true, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000));
+        CompactPubKey secondPoint = Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes();
+        channel.RemoteKeySet!.UpdatePerCommitmentPoint(secondPoint);
+        var keyDerivationService = new Mock<ICommitmentKeyDerivationService>();
+        var factory = new CommitmentTransactionModelFactory(keyDerivationService.Object,
+                                                            new Mock<ILightningSigner>().Object);
+
+        // Act
+        var transactionModel = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote, 1);
+
+        // Assert
+        Assert.Equal(1UL, transactionModel.Number);
+        keyDerivationService.Verify(x => x.DeriveRemoteCommitmentKeys(It.IsAny<ChannelBasepoints>(),
+                                                                      It.IsAny<ChannelBasepoints>(), secondPoint),
+                                    Times.Once);
     }
 
     [Fact]

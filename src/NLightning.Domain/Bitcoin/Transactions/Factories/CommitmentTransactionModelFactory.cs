@@ -32,9 +32,21 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
     {
         ArgumentNullException.ThrowIfNull(channel);
 
-        var remotePerCommitmentPoint = side == CommitmentSide.Remote
-                                           ? channel.RemoteKeySet?.CurrentPerCommitmentCompactPoint
-                                           : null;
+        CompactPubKey? remotePerCommitmentPoint = null;
+        if (side == CommitmentSide.Remote && channel.RemoteKeySet is not null)
+        {
+            // The stored remote point belongs to one commitment only (first_per_commitment_point until channel_ready
+            // replaces it with the second one). Building another number with it gives the wrong keys, so any other
+            // remote commitment needs the explicit (number, point) overload.
+            if (commitmentNumber <= CommitmentNumber.MaxValue
+             && channel.RemoteKeySet.CurrentPerCommitmentIndex != PerCommitmentIndex.From(commitmentNumber))
+                throw new InvalidOperationException(
+                    $"The stored remote per-commitment point is for commitment "
+                  + $"{PerCommitmentIndex.ToCommitmentNumber(channel.RemoteKeySet.CurrentPerCommitmentIndex)}, "
+                  + $"not {commitmentNumber}; pass the point for that commitment explicitly");
+
+            remotePerCommitmentPoint = channel.RemoteKeySet.CurrentPerCommitmentCompactPoint;
+        }
 
         return CreateCommitmentTransactionModel(channel, CommitmentTxSpec.FromChannel(channel), side, commitmentNumber,
                                                 remotePerCommitmentPoint);
