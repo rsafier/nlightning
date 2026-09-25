@@ -44,6 +44,8 @@
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence.Sqlite\NLightning.Infrastructure.Persistence.Sqlite.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 
