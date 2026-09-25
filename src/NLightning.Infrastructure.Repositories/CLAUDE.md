@@ -39,8 +39,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 ## Known bugs / gotchas (verify before relying on these paths)
 - `ChannelDbRepository.MapEntityToDomain` (L201, L204, L210, L213, L223) compares `byte` `State`/`Direction` against enums with `.Equals(...)`. In memory that is `byte.Equals(object)` with a boxed enum, which is always false: Offered/Fulfilled HTLCs are not reloaded, and Expired/Failed ones all land in the remote list. `HtlcDbRepository.GetByChannelIdAndStateAsync` (L63) and `GetByChannelIdAndDirectionAsync` (L70) use the same pattern inside EF queries; how EF translates it is unverified. Compare `== (byte)HtlcState.X` instead.
 - `ChannelDbRepository` L230-231 builds `FundingOutputInfo` with the local funding pubkey twice, so the remote key is lost on reload. `CommitmentNumber` is always built as (local, remote) payment basepoints, which is wrong for non-initiator channels: `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs` L123 passes the remote (opener) basepoint first.
-- `UtxoDbRepository.GetByIdAsync` (L50) passes an anonymous object `new { txId, index }`. `PrimaryKeyHelper` needs `(txId, index)` and will throw.
-- `HtlcDbRepository` never writes `Signature`. The Utxo mapper ignores `LockedToChannelId`/`UsedInTransactionId`. `ChannelModel.ChangeAddress` is never mapped.
+- `HtlcDbRepository` never writes `Signature`. `ChannelModel.ChangeAddress` is never mapped.
 - `UnitOfWork.AddUtxo`/`TrySpendUtxo` roll back memory only on immediate exceptions and swallow them. A failure at SaveChanges time leaves memory and the DB out of sync.
 - `ChannelMemoryRepository.TryGetChannel` returns the shared mutable model. Call `UpdateChannel` afterwards so that `OnChannelUpdated` fires.
 - Do not inject `IUnitOfWork` into singletons. `UnitOfWork.Dispose` disposes the DbContext.
