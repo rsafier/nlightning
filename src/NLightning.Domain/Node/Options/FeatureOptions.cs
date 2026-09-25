@@ -119,11 +119,71 @@ public class FeatureOptions
     /// <summary>
     /// Get Features set for the node.
     /// </summary>
-    /// <returns>The features set for the node.</returns>
+    /// <param name="context">The context the features will be presented in (defaults to <c>init</c>).</param>
+    /// <returns>The features set for the node, filtered to the features allowed in <paramref name="context"/>.</returns>
+    public FeatureSet GetNodeFeatures(FeatureContext context = FeatureContext.Init)
+    {
+        return BuildFeatureSet().FilterByContext(context);
+    }
+
+    /// <summary>
+    /// Validates the configured features.
+    /// </summary>
+    /// <returns>A list of human-readable errors; empty when the configuration is valid.</returns>
     /// <remarks>
-    /// All features set as Optional.
+    /// BOLT 9 requires every advertised feature to have its dependencies set. <see cref="FeatureSet.SetFeature(Feature, bool, bool)"/>
+    /// would silently turn on a dependency that was configured as <see cref="FeatureSupport.No"/>, so reject that
+    /// combination up front instead.
     /// </remarks>
-    public FeatureSet GetNodeFeatures()
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        var configured = GetConfiguredFeatures();
+        foreach (var (feature, support) in configured)
+        {
+            if (support == FeatureSupport.No)
+                continue;
+
+            foreach (var dependency in FeatureSet.GetDependencies(feature))
+            {
+                if (configured.TryGetValue(dependency, out var dependencySupport)
+                 && dependencySupport == FeatureSupport.No)
+                {
+                    errors.Add($"Feature {feature} requires {dependency}, which is disabled");
+                }
+            }
+        }
+
+        return errors;
+    }
+
+    private Dictionary<Feature, FeatureSupport> GetConfiguredFeatures() => new()
+    {
+        { Feature.OptionDataLossProtect, OptionDataLossProtect },
+        { Feature.OptionUpfrontShutdownScript, UpfrontShutdownScript },
+        { Feature.GossipQueries, GossipQueries },
+        { Feature.VarOnionOptin, VarOnionOptIn },
+        { Feature.GossipQueriesEx, ExpandedGossipQueries },
+        { Feature.OptionStaticRemoteKey, OptionStaticRemoteKey },
+        { Feature.PaymentSecret, PaymentSecret },
+        { Feature.BasicMpp, BasicMpp },
+        { Feature.OptionSupportLargeChannel, LargeChannels },
+        { Feature.OptionAnchors, OptionAnchors },
+        { Feature.OptionRouteBlinding, OptionRouteBlinding },
+        { Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown },
+        { Feature.OptionDualFund, DualFund },
+        { Feature.OptionQuiesce, OptionQuiesce },
+        { Feature.OptionAttributionData, OptionAttributionData },
+        { Feature.OptionOnionMessages, OptionOnionMessages },
+        { Feature.OptionProvideStorage, OptionProvideStorage },
+        { Feature.OptionChannelType, OptionChannelType },
+        { Feature.OptionScidAlias, ScidAlias },
+        { Feature.OptionPaymentMetadata, PaymentMetadata },
+        { Feature.OptionZeroconf, ZeroConf },
+        { Feature.OptionSimpleClose, OptionSimpleClose },
+    };
+
+    private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();
 
