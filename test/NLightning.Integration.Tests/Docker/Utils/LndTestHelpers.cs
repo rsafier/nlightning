@@ -226,6 +226,17 @@ public static class LndTestHelpers
     }
 
     /// <summary>
+    /// Makes <paramref name="node"/> drop its connection to <paramref name="peerIdHex"/> (LND does not refuse this for
+    /// a channel peer). A channel peer of ours reconnects by itself.
+    /// </summary>
+    public static async Task DisconnectPeerAsync(LNDNodeConnection node, string peerIdHex,
+                                                 CancellationToken cancellationToken)
+    {
+        await node.LightningClient.DisconnectPeerAsync(
+            new DisconnectPeerRequest { PubKey = peerIdHex.ToLowerInvariant() }, cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
     /// The LND version string (<c>0.20.0-beta commit=...</c>), for the test log.
     /// </summary>
     public static async Task<string> GetVersionAsync(LNDNodeConnection node, CancellationToken cancellationToken)
