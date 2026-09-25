@@ -37,6 +37,11 @@ public class ChannelModel
     #region Local Information
 
     public ICollection<ShortChannelId>? LocalAliases { get; set; }
+    /// <summary>
+    /// Our gross balance: it still includes the amounts of our pending offered HTLCs (<see cref="LocalOfferedHtlcs"/>).
+    /// The commitment transaction factory takes each HTLC out of the balance of the side that offered it, so an HTLC
+    /// update flow must not deduct an offered HTLC from this balance when it is added, only when it is settled.
+    /// </summary>
     public LightningMoney LocalBalance { get; }
     public ChannelKeySetModel LocalKeySet { get; }
     public ulong LocalNextHtlcId { get; }
@@ -51,6 +56,10 @@ public class ChannelModel
     #region Remote Information
 
     public ShortChannelId? RemoteAlias { get; set; }
+    /// <summary>
+    /// The remote's gross balance: it still includes the amounts of the remote's pending offered HTLCs
+    /// (<see cref="RemoteOfferedHtlcs"/>). See <see cref="LocalBalance"/> for the convention.
+    /// </summary>
     public LightningMoney RemoteBalance { get; }
     public ChannelKeySetModel? RemoteKeySet { get; private set; }
     public ulong RemoteNextHtlcId { get; }
