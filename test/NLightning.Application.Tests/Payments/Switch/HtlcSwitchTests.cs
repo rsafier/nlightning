@@ -250,7 +250,7 @@ public class HtlcSwitchTests
         return ForwardCircuitModel.Restore(TestChannelId, incomingHtlcId, LightningMoney.MilliSatoshis(30_000_000),
                                            640, HashOf(SecretOf(9)), SecretOf(0x5E), new ShortChannelId(1, 2, 3),
                                            LightningMoney.MilliSatoshis(29_000_000), 600, now, status,
-                                           status == ForwardCircuitStatus.Pending ? null : s_otherChannelId,
+                                           status == ForwardCircuitStatus.Pending ? (ChannelId?)null : s_otherChannelId,
                                            status == ForwardCircuitStatus.Pending ? null : 4UL,
                                            status is ForwardCircuitStatus.Fulfilled or ForwardCircuitStatus.Failed
                                                ? now
