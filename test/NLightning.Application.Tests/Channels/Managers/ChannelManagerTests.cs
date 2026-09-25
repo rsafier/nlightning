@@ -312,9 +312,10 @@ public class ChannelManagerTests
     public async Task Given_NotImplementedChannelMessage_When_Handled_Then_ChannelScopedWarningIsRaised(
         MessageTypes messageType)
     {
-        // Arrange (interim until BOLT2 plan N6/N7/N10: never fail the channel, or all channels, for these)
+        // Arrange (interim until BOLT2 plan N6/N7/N10: never fail a known channel, or all channels, for these)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x44);
+        MarkChannelKnownInMemory(channelId);
         var payloadMock = new Mock<IChannelMessagePayload>();
         payloadMock.SetupGet(p => p.ChannelId).Returns(channelId);
         var messageMock = new Mock<IChannelMessage>();
@@ -334,22 +335,25 @@ public class ChannelManagerTests
     [Theory]
     [InlineData((ushort)0x0001)]
     [InlineData((ushort)0x4005)]
-    public async Task Given_UpdateFailMalformedHtlcWithoutBadOnion_When_Handled_Then_ChannelIsFailedWithItsId(
+    public async Task Given_UpdateFailMalformedHtlcWithoutBadOnion_When_Handled_Then_WarnsAndClosesTheConnection(
         ushort failureCode)
     {
-        // Arrange (BOLT 2: the receiver MUST fail the channel if the BADONION bit is not set)
+        // Arrange (BOLT 2: fail the channel, or send a `warning` and close the connection. We can't fail a channel
+        // locally yet, and BOLT 1 requires the sender of an `error` to fail it, so we warn and close.)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x45);
+        MarkChannelKnownInMemory(channelId);
         var message = new UpdateFailMalformedHtlcMessage(
             new UpdateFailMalformedHtlcPayload(channelId, failureCode, 0, new byte[32]));
 
         // Act
-        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
                             () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
                                                                            s_emptyPubKey));
 
         // Assert
         Assert.Equal(channelId, exception.ChannelId);
+        Assert.True(exception.CloseConnection);
         Assert.Contains("BADONION", exception.PeerMessage);
     }
 
@@ -359,6 +363,7 @@ public class ChannelManagerTests
         // Arrange (a valid one is not processed yet: interim warning, the channel is not failed)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x46);
+        MarkChannelKnownInMemory(channelId);
         var message = new UpdateFailMalformedHtlcMessage(
             new UpdateFailMalformedHtlcPayload(channelId, 0xC005, 0, new byte[32]));
 
@@ -369,6 +374,86 @@ public class ChannelManagerTests
 
         // Assert
         Assert.Equal(channelId, exception.ChannelId);
+        Assert.False(exception.CloseConnection);
+    }
+
+    [Theory]
+    [InlineData(MessageTypes.ChannelReestablish)]
+    [InlineData(MessageTypes.UpdateAddHtlc)]
+    [InlineData(MessageTypes.UpdateFailMalformedHtlc)]
+    [InlineData(MessageTypes.Shutdown)]
+    public async Task Given_MessageForUnknownChannel_When_Handled_Then_ErrorIsScopedToTheUnknownChannel(
+        MessageTypes messageType)
+    {
+        // Arrange (BOLT 1: SHOULD send `error` with the unknown channel_id, so a peer holding a channel we lost fails
+        // it instead of waiting forever)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x47);
+        var messageMock = CreateChannelMessageMock(messageType, channelId);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelManager.HandleChannelMessageAsync(messageMock.Object, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.Equal("unknown channel", exception.PeerMessage);
+    }
+
+    [Fact]
+    public async Task Given_MessageForChannelOnlyInDatabase_When_Handled_Then_OnlyAWarningIsRaised()
+    {
+        // Arrange (not every channel is in memory, e.g. stale ones: a channel in the DB is known, never failed)
+        var channel = CreateChannel(ChannelState.Stale, false, 0x48, 100);
+        _channels.Add(channel);
+        var channelManager = CreateChannelManager();
+        var messageMock = CreateChannelMessageMock(MessageTypes.ChannelReestablish, channel.ChannelId);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
+                            () => channelManager.HandleChannelMessageAsync(messageMock.Object, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channel.ChannelId, exception.ChannelId);
+    }
+
+    [Fact]
+    public async Task Given_MessageForTemporaryChannelOfThisPeer_When_Handled_Then_OnlyAWarningIsRaised()
+    {
+        // Arrange (a channel being opened with this peer is known under its temporary id)
+        var channelManager = CreateChannelManager();
+        var temporaryChannelId = CreateChannelId(0x49);
+        _mockChannelMemoryRepository
+           .Setup(r => r.TryGetTemporaryChannelState(s_emptyPubKey, temporaryChannelId,
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Returns(true);
+        var messageMock = CreateChannelMessageMock(MessageTypes.TxAddInput, temporaryChannelId);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
+                            () => channelManager.HandleChannelMessageAsync(messageMock.Object, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(temporaryChannelId, exception.ChannelId);
+    }
+
+    private static Mock<IChannelMessage> CreateChannelMessageMock(MessageTypes messageType, ChannelId channelId)
+    {
+        var payloadMock = new Mock<IChannelMessagePayload>();
+        payloadMock.SetupGet(p => p.ChannelId).Returns(channelId);
+        var messageMock = new Mock<IChannelMessage>();
+        messageMock.SetupGet(m => m.Type).Returns(messageType);
+        messageMock.SetupGet(m => m.Payload).Returns(payloadMock.Object);
+        return messageMock;
+    }
+
+    private void MarkChannelKnownInMemory(ChannelId channelId)
+    {
+        _mockChannelMemoryRepository.Setup(r => r.TryGetChannelState(channelId, out It.Ref<ChannelState>.IsAny))
+                                    .Returns(true);
     }
 
     private static ChannelId CreateChannelId(byte fill)

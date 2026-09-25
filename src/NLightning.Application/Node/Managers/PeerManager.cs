@@ -326,7 +326,8 @@ public sealed class PeerManager : IPeerManager
     /// always carries <paramref name="channelId"/>:
     /// - <see cref="ChannelErrorException"/>: `error` for the channel, then disconnect.
     /// - <see cref="ChannelWarningException"/> (includes the messages we don't implement yet): `warning` for the
-    ///   channel, and the connection stays up.
+    ///   channel, and the connection stays up, unless <see cref="ChannelWarningException.CloseConnection"/> is set
+    ///   (then the warning is sent and the peer disconnected).
     /// - Any other exception (an internal failure): `warning` for the channel, then disconnect, so the channel is not
     ///   failed because of our own bug.
     /// </remarks>
@@ -368,7 +369,17 @@ public sealed class PeerManager : IPeerManager
                         : cwe.Message);
 
                 if (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
-                    cwe = new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage);
+                    cwe = new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage)
+                    {
+                        CloseConnection = cwe.CloseConnection
+                    };
+
+                if (cwe.CloseConnection)
+                {
+                    // "Send a `warning` and close the connection": Disconnect sends the warning first
+                    DisconnectPeer(peerService, cwe);
+                    return;
+                }
 
                 _ = peerService.SendWarningAsync(cwe)
                                .ContinueWith(warningTask =>

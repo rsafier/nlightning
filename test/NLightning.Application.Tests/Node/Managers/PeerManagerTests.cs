@@ -480,6 +480,38 @@ public class PeerManagerTests
     }
 
     [Fact]
+    public async Task Given_ChannelWarningThatClosesConnection_When_Processing_Then_WarningIsSentByDisconnect()
+    {
+        // Arrange (BOLT 2 "send a `warning` and close the connection", e.g. update_fail_malformed_htlc without
+        // BADONION: never an `error`, since we can't fail the channel on our side yet)
+        var peerManager = CreatePeerManagerWithPeer();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x45, 32).ToArray());
+        SetupChannelMessage(MessageTypes.UpdateFailMalformedHtlc, channelId);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .ThrowsAsync(new ChannelWarningException("no BADONION", "BADONION must be set")
+           {
+               CloseConnection = true
+           });
+        var disconnectTcs = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                        .Callback((Exception? e) => disconnectTcs.TrySetResult(e));
+
+        // Act
+        InvokeHandlePeerChannelMessage(peerManager);
+        var exception = await disconnectTcs.Task.WaitAsync(TimeSpan.FromSeconds(5),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        var warning = Assert.IsType<ChannelWarningException>(exception);
+        Assert.Equal(channelId, warning.ChannelId);
+        Assert.True(warning.CloseConnection);
+        Assert.Equal("BADONION must be set", warning.PeerMessage);
+        _mockPeerService.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_UnexpectedException_When_ProcessingChannelMessage_Then_ChannelScopedWarningAndDisconnect()
     {
         // Arrange (our own bug must not fail the channel: warn for the channel, never an error, then disconnect)
