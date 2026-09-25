@@ -10,6 +10,13 @@ using Contracts.Constants;
 
 public partial class DaemonUtils
 {
+    private const string DashDashDaemon = "--daemon";
+
+    private static readonly HashSet<string> s_bareFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        DashDashDaemon, "--daemon-child", "--stop", "--status", "--help"
+    };
+
     public static void ShowUsage()
     {
         Console.WriteLine("NLTG - NLightning Daemon");
@@ -21,7 +28,7 @@ public partial class DaemonUtils
         Console.WriteLine("Options:");
         Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest) [default: mainnet]");
         Console.WriteLine("  --config, -c <path>        Path to custom configuration file");
-        Console.WriteLine("  --daemon <true|false>      Run as a daemon [default: false]");
+        Console.WriteLine("  --daemon [true|false]      Run as a daemon [default: false]");
         Console.WriteLine("  --password-file <path>     Read the key encryption password from a file");
         Console.WriteLine("  --password-stdin           Read the key encryption password from stdin");
         Console.WriteLine("  --password <password>      Key encryption password (insecure: visible in the process list)");
@@ -44,6 +51,77 @@ public partial class DaemonUtils
         Console.WriteLine("  }");
         Console.WriteLine();
         Console.WriteLine("PID file location: ~/.nltg/{network}/nltg.pid");
+    }
+
+    /// <summary>
+    /// Rewrites the command line so the configuration provider reads it as intended.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><c>-n</c> and <c>-c</c> become <c>--network</c> and <c>--config</c>.</item>
+    /// <item>Bare flags become <c>--flag=true</c>, so they don't swallow the next argument as their value.
+    /// <c>--daemon true|false</c> is kept as a pair.</item>
+    /// <item>Password options are dropped: they are not configuration and must not end up in it.</item>
+    /// </list>
+    /// </remarks>
+    public static string[] NormalizeArgs(string[] args)
+    {
+        var normalized = new List<string>(args.Length);
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            var passwordOptionLength = PasswordUtils.GetPasswordOptionLength(arg);
+            if (passwordOptionLength > 0)
+            {
+                i += passwordOptionLength - 1;
+                continue;
+            }
+
+            if (arg == "-n")
+                arg = "--network";
+            else if (arg == "-c")
+                arg = "--config";
+
+            var hasNext = i + 1 < args.Length;
+            if (arg.Equals(DashDashDaemon, StringComparison.OrdinalIgnoreCase)
+             && hasNext && bool.TryParse(args[i + 1], out var daemonValue))
+            {
+                normalized.Add($"{DashDashDaemon}={daemonValue.ToString().ToLowerInvariant()}");
+                i++;
+                continue;
+            }
+
+            if (arg.StartsWith("--") && !arg.Contains('=')
+             && (s_bareFlags.Contains(arg) || !hasNext || args[i + 1].StartsWith('-')))
+            {
+                normalized.Add($"{arg}=true");
+                continue;
+            }
+
+            normalized.Add(arg);
+        }
+
+        return normalized.ToArray();
+    }
+
+    /// <summary>
+    /// Checks the command line for <c>--daemon</c>, <c>--daemon=&lt;bool&gt;</c> or <c>--daemon &lt;bool&gt;</c>.
+    /// </summary>
+    /// <returns>The requested value, or null when the command line doesn't say.</returns>
+    public static bool? GetDaemonArgument(string[] args)
+    {
+        bool? isDaemonRequested = null;
+        foreach (var arg in NormalizeArgs(args))
+        {
+            if (!arg.StartsWith(DashDashDaemon + "=", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (bool.TryParse(arg[(DashDashDaemon.Length + 1)..], out var value))
+                isDaemonRequested = value;
+        }
+
+        return isDaemonRequested;
     }
 
     public static bool IsStopRequested(string[] args)
@@ -75,25 +153,9 @@ public partial class DaemonUtils
             return false; // Continue execution as a daemon child
         }
 
-        // Check command line args (the highest priority)
-        var isDaemonRequested = Array.Exists(args, arg =>
-                                                 arg.Equals("--daemon", StringComparison.OrdinalIgnoreCase) ||
-                                                 arg.Equals("--daemon=true", StringComparison.OrdinalIgnoreCase));
-
-        // Check environment variable (middle priority)
-        if (!isDaemonRequested)
-        {
-            var envDaemon = Environment.GetEnvironmentVariable("NLTG_DAEMON");
-            isDaemonRequested = !string.IsNullOrEmpty(envDaemon) &&
-                                (envDaemon.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-                                 envDaemon.Equals("1", StringComparison.OrdinalIgnoreCase));
-        }
-
-        // Check configuration file (lowest priority)
-        if (!isDaemonRequested)
-        {
-            isDaemonRequested = configuration.GetValue<bool>("Node:Daemon");
-        }
+        // Check command line args (the highest priority), then the environment variable, then the config file
+        var isDaemonRequested = GetDaemonArgument(args) ?? GetDaemonEnvironmentVariable()
+                             ?? configuration.GetValue<bool>("Node:Daemon");
 
         if (!isDaemonRequested)
         {
@@ -109,6 +171,15 @@ public partial class DaemonUtils
                        ? StartMacOsDaemon(args, pidFilePath,
                                           logger) // Special implementation for macOS to avoid fork() issues
                        : StartUnixDaemon(pidFilePath, logger); // Linux and other Unix systems
+    }
+
+    private static bool? GetDaemonEnvironmentVariable()
+    {
+        var envDaemon = Environment.GetEnvironmentVariable("NLTG_DAEMON");
+        if (string.IsNullOrEmpty(envDaemon))
+            return null;
+
+        return envDaemon.Equals("true", StringComparison.OrdinalIgnoreCase) || envDaemon.Equals("1");
     }
 
     private static bool StartWindowsDaemon(string[] args, string pidFilePath, ILogger logger)

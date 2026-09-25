@@ -29,6 +29,13 @@ try
         Log.Logger.Error("An unhandled exception occurred: {exception}", exception);
     };
 
+    // Check if help is requested (before reading the config, which creates the config dir)
+    if (CommandLineHelper.IsHelpRequested(args))
+    {
+        DaemonUtils.ShowUsage();
+        return 0;
+    }
+
     // Read the configuration file to check for daemon setting
     var (initialConfig, network, configPath) = NodeConfigurationExtensions.ReadInitialConfiguration(args);
 
@@ -46,13 +53,6 @@ try
     if (DaemonUtils.IsStatusRequested(args))
     {
         ReportDaemonStatus(pidFilePath);
-        return 0;
-    }
-
-    // Check if help is requested
-    if (CommandLineHelper.IsHelpRequested(args))
-    {
-        DaemonUtils.ShowUsage();
         return 0;
     }
 
@@ -130,7 +130,7 @@ try
     Log.Information("Starting NLTG...");
 
     // Create and run host
-    var host = Host.CreateDefaultBuilder(args)
+    var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(initialConfig)
                    .ConfigureNltgServices(keyManager, configPath)
                    .Build();

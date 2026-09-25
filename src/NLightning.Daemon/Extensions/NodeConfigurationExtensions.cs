@@ -5,9 +5,12 @@ using Serilog;
 namespace NLightning.Daemon.Extensions;
 
 using Helpers;
+using Utilities;
 
 public static class NodeConfigurationExtensions
 {
+    public const string DefaultNetwork = "mainnet";
+
     /// <summary>
     /// Configures the host builder with NLTG configuration and Serilog
     /// </summary>
@@ -52,15 +55,18 @@ public static class NodeConfigurationExtensions
 
     public static (IConfiguration, string, string) ReadInitialConfiguration(string[] args)
     {
+        // Map -n/-c and turn bare flags into --flag=true, so they don't swallow the next argument
+        args = DaemonUtils.NormalizeArgs(args);
+
         // Get network from the command line or environment variable first
         var initialConfig = new ConfigurationBuilder()
                            .AddCommandLine(args)
                            .AddEnvironmentVariables("NLTG_")
                            .Build();
-        var network = initialConfig["network"] ?? initialConfig["n"] ?? "mainnet";
+        var network = initialConfig["network"] ?? DefaultNetwork;
 
         // Check for a custom config path first
-        var configPath = initialConfig["config"] ?? initialConfig["c"];
+        var configPath = initialConfig["config"];
         var configFile = configPath;
         var usingCustomConfig = !string.IsNullOrEmpty(configPath);
 
@@ -82,7 +88,7 @@ public static class NodeConfigurationExtensions
                            .AddJsonFile(configFile!, optional: false, reloadOnChange: false)
                            .Build();
 
-            network = initialConfig["Node:Network"] ?? "mainnet";
+            network = initialConfig["Node:Network"] ?? DefaultNetwork;
         }
 
         // If no custom path, use default ~/.nltg/{network}/appsettings.json
@@ -97,7 +103,7 @@ public static class NodeConfigurationExtensions
 
             // Create default config if none exists
             if (!File.Exists(configFile))
-                File.WriteAllText(configFile, CreateDefaultConfigJson());
+                File.WriteAllText(configFile, CreateDefaultConfigJson(network));
         }
 
         // Log startup info using bootstrap logger
@@ -107,8 +113,13 @@ public static class NodeConfigurationExtensions
         var config = new ConfigurationBuilder();
         config.Sources.Clear();
 
+        config.AddJsonFile(configFile!, optional: false, reloadOnChange: false);
+
+        // The default config dir is chosen by network, so the file must not contradict it
+        if (!usingCustomConfig)
+            config.AddInMemoryCollection(new Dictionary<string, string?> { ["Node:Network"] = network });
+
         var configuration = config
-                           .AddJsonFile(configFile!, optional: false, reloadOnChange: false)
                            .AddEnvironmentVariables("NLTG_")
                            .AddCommandLine(args)
                            .Build();
@@ -119,7 +130,7 @@ public static class NodeConfigurationExtensions
     /// <summary>
     /// Creates default configuration JSON
     /// </summary>
-    private static string CreateDefaultConfigJson()
+    internal static string CreateDefaultConfigJson(string network)
     {
         return """
                {
@@ -152,7 +163,7 @@ public static class NodeConfigurationExtensions
                    "Enrich": [ "FromLogContext", "WithMachineName", "WithThreadId", "ClassName" ]
                  },
                  "Node": {
-                   "Network": "regtest",
+                   "Network": "{{NETWORK}}",
                    "Daemon": false,
                    "DnsSeedServers": [
                      "nlseed.nlightn.ing",
@@ -189,6 +200,6 @@ public static class NodeConfigurationExtensions
                    "ZmqTxPort": 8335
                  }
                }
-               """;
+               """.Replace("{{NETWORK}}", network);
     }
 }
