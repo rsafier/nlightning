@@ -24,7 +24,7 @@ New value object: implement `IValueObjectTypeSerializer<T>` in `ValueObjects/`, 
 ## Conventions
 - File-scoped namespace `NLightning.Infrastructure.Serialization.<Folder>`, relative `using Domain...;` after the namespace line; `System`/`NLightning.*` fully-qualified usings above it.
 - Implement the non-generic interface explicitly, delegating to the generic method. Non-generic `SerializeAsync` type-checks and throws `SerializationException` on mismatch.
-- Payload deserializers wrap errors in `PayloadSerializationException`; message-type deserializers rethrow `SerializationException` as `MessageSerializationException` (both in `src/NLightning.Infrastructure/Exceptions`, both derive Domain `ErrorException`, NOT `SerializationException` — payload errors escape the message catch unwrapped).
+- Payload deserializers wrap errors in `PayloadSerializationException`; message-type deserializers rethrow `SerializationException` as `MessageSerializationException` (both in `src/NLightning.Infrastructure/Exceptions`, both derive Domain `ErrorException`, NOT `SerializationException` — payload errors escape the message catch unwrapped). `MessageService.ReceiveMessage` answers a `MessageSerializationException` with a `warning` (channel_id zero), never an all-zero `error`, which would make the peer fail every channel with us (BOLT 1).
 - Return `ArrayPool` buffers in `finally`; slice rented buffers to exact length (`[..32]`) before passing to fixed-length value-object ctors.
 - `dotnet format` is a CI gate (`_camelCase` fields, no unused usings — see root `.editorconfig`).
 

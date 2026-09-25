@@ -124,7 +124,10 @@ internal sealed class MessageService : IMessageService
             }
 
             _logger.LogError(mse, "Failed to deserialize message: {Message}", message);
-            SendMessageAsync(new ErrorMessage(new ErrorPayload(message))).GetAwaiter().GetResult();
+            // BOLT 1: an all-zero channel_id in an `error` makes the peer fail every channel with us, and BOLT 2 only
+            // allows "send a `warning` and close the connection" or "send an `error` and fail the channel" here. The
+            // offending channel is not known at this layer, so send a connection-level warning instead.
+            SendMessageAsync(new WarningMessage(new ErrorPayload(message))).GetAwaiter().GetResult();
             RaiseException(this, mse);
         }
         catch (Exception e)

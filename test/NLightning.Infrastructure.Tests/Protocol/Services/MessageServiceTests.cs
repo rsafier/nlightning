@@ -2,10 +2,14 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Tests.Protocol.Services;
 
+using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
 using Domain.Transport;
+using Infrastructure.Exceptions;
 using Infrastructure.Protocol.Services;
 
 public class MessageServiceTests
@@ -62,6 +66,34 @@ public class MessageServiceTests
 
         Assert.NotNull(receivedMessage.Arguments);
         Assert.Same(messageMock.Object, receivedMessage.Arguments);
+    }
+
+    [Fact]
+    public void Given_MalformedMessage_When_ReceiveMessageAsync_IsInvoked_Then_SendsWarningInsteadOfAllZeroError()
+    {
+        // Arrange
+        var loggerMock = new Mock<ILogger<MessageService>>();
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException("bad message"));
+        IMessage? sentMessage = null;
+        transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+                            .Callback<IMessage, CancellationToken>((m, _) => sentMessage = m)
+                            .Returns(Task.CompletedTask);
+        var messageService =
+            new MessageService(loggerMock.Object, _messageSerializerMock.Object, transportServiceMock.Object);
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
+
+        // Assert
+        var warning = Assert.IsType<WarningMessage>(sentMessage);
+        Assert.Equal(MessageTypes.Warning, warning.Type);
+        Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
+        Assert.NotNull(raisedException);
     }
 
     [Fact]
