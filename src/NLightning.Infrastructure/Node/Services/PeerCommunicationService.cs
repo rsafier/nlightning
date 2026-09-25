@@ -180,7 +180,10 @@ public class PeerCommunicationService : IPeerCommunicationService
 
             // Actually close the connection now that the error/warning is out, even if nobody disposes us (e.g. the
             // peer is still being set up and has no disconnect subscriber yet). Disposing twice is harmless.
-            _messageService.Dispose();
+            // Dispose on another thread: Disconnect often runs on the transport read loop (e.g. an init rejection
+            // raised from MessageService.ReceiveMessage), and TransportService.Dispose waits for that loop to end, so
+            // disposing inline would block this thread (and MessageService's dispose lock) for its 5 s timeout.
+            _ = Task.Run(_messageService.Dispose);
         }
         finally
         {
