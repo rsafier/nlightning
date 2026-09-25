@@ -43,9 +43,9 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
         {
             bitWriter.WriteBits(routingInfo.CompactPubKey, 264);
             bitWriter.WriteBits(routingInfo.ShortChannelId, 64);
-            bitWriter.WriteInt32AsBits(routingInfo.FeeBaseMsat, 32);
-            bitWriter.WriteInt32AsBits(routingInfo.FeeProportionalMillionths, 32);
-            bitWriter.WriteInt16AsBits(routingInfo.CltvExpiryDelta, 16);
+            bitWriter.WriteInt32AsBits(unchecked((int)routingInfo.FeeBaseMsat), 32);
+            bitWriter.WriteInt32AsBits(unchecked((int)routingInfo.FeeProportionalMillionths), 32);
+            bitWriter.WriteUInt16AsBits(routingInfo.CltvExpiryDelta, 16);
         }
 
         for (var i = 0; i < Value.Count * 2; i++)
@@ -55,18 +55,7 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
     /// <inheritdoc/>
     public bool IsValid()
     {
-        foreach (var routingInfo in Value)
-        {
-            if (routingInfo.FeeBaseMsat < 0)
-                return false;
-
-            if (routingInfo.FeeProportionalMillionths < 0)
-                return false;
-
-            if (routingInfo.CltvExpiryDelta < 0)
-                return false;
-        }
-
+        // All numeric fields are unsigned (u32/u16) and every value is valid
         return true;
     }
 
@@ -98,20 +87,20 @@ internal sealed class RoutingInfoTaggedField : ITaggedField
                 var shortChannelBytes = new byte[9];
                 bitsReadAcc += bitReader.ReadBits(shortChannelBytes, 64);
 
-                var feeBaseMsat = bitReader.ReadInt32FromBits(32);
+                var feeBaseMsat = unchecked((uint)bitReader.ReadInt32FromBits(32));
                 bitsReadAcc += 32;
 
-                var feeProportionalMillionths = bitReader.ReadInt32FromBits(32);
+                var feeProportionalMillionths = unchecked((uint)bitReader.ReadInt32FromBits(32));
                 bitsReadAcc += 32;
 
-                var minFinalCltvExpiry = bitReader.ReadInt16FromBits(16);
+                var cltvExpiryDelta = bitReader.ReadUInt16FromBits(16);
                 bitsReadAcc += 16;
 
                 routingInfos.Add(new RoutingInfo(new CompactPubKey(pubkeyBytes[..^1]),
                                                  new ShortChannelId(shortChannelBytes[..^1]),
                                                  feeBaseMsat,
                                                  feeProportionalMillionths,
-                                                 minFinalCltvExpiry));
+                                                 cltvExpiryDelta));
             }
         }
 

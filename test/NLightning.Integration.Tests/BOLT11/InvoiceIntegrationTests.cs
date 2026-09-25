@@ -364,9 +364,9 @@ public class InvoiceIntegrationTests
 
                     var pubKey = Convert.FromHexString(routingInfoParts[0]);
                     var shortChannelId = ShortChannelId.Parse(routingInfoParts[1]);
-                    var feeBaseMsat = int.Parse(routingInfoParts[2]);
-                    var feeProportionalMillionths = int.Parse(routingInfoParts[3]);
-                    var cltvExpiryDelta = short.Parse(routingInfoParts[4]);
+                    var feeBaseMsat = uint.Parse(routingInfoParts[2]);
+                    var feeProportionalMillionths = uint.Parse(routingInfoParts[3]);
+                    var cltvExpiryDelta = ushort.Parse(routingInfoParts[4]);
 
                     routingInfo.Add(new RoutingInfo(pubKey, shortChannelId, feeBaseMsat, feeProportionalMillionths,
                                                     cltvExpiryDelta));

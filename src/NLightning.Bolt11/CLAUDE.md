@@ -54,7 +54,6 @@ Standalone BOLT 11 invoice library: model, encode, sign, decode and validate Lig
 - Decode errors inside fields are swallowed (Debug.WriteLine in `TaggedFieldList.FromBitReader`). If a declared length is bigger than the remaining bits, the loop `continue`s without skipping those bits.
 - Feature-bit validation is a TODO (`Invoice.cs:553`). Unknown even features are NOT rejected, and the writer does not force the payment_secret or var_onion_optin bits.
 - `MinFinalCltvExpiry` returns null when `c` is absent. It does not apply the spec default of 18.
-- `RoutingInfo` stores the u32/u16 spec fields as signed int/short, and negatives fail `IsValid`, so fee_base > 2^31-1 or cltv_delta > 32767 invalidates the field.
 - `FallbackAddressTaggedField` has no taproot (witness v1) support. Unknown versions are skipped.
 - `Encode()` never runs `InvoiceValidationService`. `ToString()` with no cached string and no `ISecureKeyManager` throws NullReferenceException (explicitly, from `Encode()`); use `ToString(Key)` or `Encode(Key)`.
 - If assembly names change, update the InternalsVisibleTo lists in `src/NLightning.Infrastructure.Bitcoin/AssemblyInfo.cs` (Bech32Encoder) and `./AssemblyInfo.cs`.

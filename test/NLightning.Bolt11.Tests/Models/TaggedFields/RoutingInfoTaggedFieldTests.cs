@@ -22,9 +22,9 @@ public class RoutingInfoTaggedFieldTests
 
         var scid = ShortChannelId.Parse("539268x845x1");
 
-        const int feeBaseMsat = 1000;
-        const int feeProportionalMillionths = 250;
-        const short cltvDelta = 40;
+        const uint feeBaseMsat = 1000;
+        const uint feeProportionalMillionths = 250;
+        const ushort cltvDelta = 40;
 
         return new RoutingInfo(pubkey, scid, feeBaseMsat, feeProportionalMillionths, cltvDelta);
     }
@@ -40,9 +40,9 @@ public class RoutingInfoTaggedFieldTests
                                                 (ushort)(baseRi.ShortChannelId.OutputIndex + i));
             col.Add(new RoutingInfo(baseRi.CompactPubKey,
                                     variedScid,
-                                    baseRi.FeeBaseMsat + i,
-                                    baseRi.FeeProportionalMillionths + i,
-                                    (short)(baseRi.CltvExpiryDelta + i)));
+                                    baseRi.FeeBaseMsat + (uint)i,
+                                    baseRi.FeeProportionalMillionths + (uint)i,
+                                    (ushort)(baseRi.CltvExpiryDelta + i)));
         }
 
         return col;
@@ -125,5 +125,32 @@ public class RoutingInfoTaggedFieldTests
 
         // Assert
         Assert.Null(parsed);
+    }
+
+    [Fact]
+    public void Given_MaxUnsignedValues_When_RoundTripping_Then_FieldIsValidAndValuesArePreserved()
+    {
+        // Arrange
+        // fee_base_msat and fee_proportional_millionths are u32, cltv_expiry_delta is u16 (BOLT 11)
+        var baseRi = BuildKnownRoutingInfo();
+        var collection = new RoutingInfoCollection
+        {
+            new RoutingInfo(baseRi.CompactPubKey, baseRi.ShortChannelId, uint.MaxValue, 0x8000_0000u,
+                            ushort.MaxValue)
+        };
+        var field = new RoutingInfoTaggedField(collection);
+        var writer = new BitWriter(field.Length * 5);
+
+        // Act
+        field.WriteToBitWriter(writer);
+        var parsed = RoutingInfoTaggedField.FromBitReader(new BitReader(writer.ToArray()), field.Length);
+
+        // Assert
+        Assert.True(field.IsValid());
+        Assert.NotNull(parsed);
+        Assert.True(parsed.IsValid());
+        Assert.Equal(uint.MaxValue, parsed.Value[0].FeeBaseMsat);
+        Assert.Equal(0x8000_0000u, parsed.Value[0].FeeProportionalMillionths);
+        Assert.Equal(ushort.MaxValue, parsed.Value[0].CltvExpiryDelta);
     }
 }
