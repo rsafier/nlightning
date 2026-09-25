@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Services;
@@ -85,14 +86,28 @@ public class KeyDerivationService : IKeyDerivationService
         ComputeSha256(revocationBasepoint, perCommitmentPoint, hash1);
         ComputeSha256(perCommitmentPoint, revocationBasepoint, hash2);
 
-        // Calculate revocation_basepoint_secret * SHA256(revocation_basepoint || per_commitment_point)
-        var term1 = _secp256K1Math.MultiplyPrivKey(revocationBasepointSecretPriv, hash1);
+        // Both terms are secret: either one, together with public data, reveals the corresponding base secret.
+        byte[]? term1 = null;
+        byte[]? term2 = null;
+        try
+        {
+            // Calculate revocation_basepoint_secret * SHA256(revocation_basepoint || per_commitment_point)
+            term1 = _secp256K1Math.MultiplyPrivKey(revocationBasepointSecretPriv, hash1);
 
-        // Calculate per_commitment_secret * SHA256(per_commitment_point || revocation_basepoint)
-        var term2 = _secp256K1Math.MultiplyPrivKey(perCommitmentSecretPriv, hash2);
+            // Calculate per_commitment_secret * SHA256(per_commitment_point || revocation_basepoint)
+            term2 = _secp256K1Math.MultiplyPrivKey(perCommitmentSecretPriv, hash2);
 
-        // Add the two terms
-        return _secp256K1Math.AddPrivKeys(term1, term2);
+            // Add the two terms
+            return _secp256K1Math.AddPrivKeys(term1, term2);
+        }
+        finally
+        {
+            if (term1 is not null)
+                CryptographicOperations.ZeroMemory(term1);
+
+            if (term2 is not null)
+                CryptographicOperations.ZeroMemory(term2);
+        }
     }
 
     /// <summary>

@@ -178,15 +178,15 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
             return 0;
 
         var keyBytes = key.ToArray();
+        var inputBytes = input.ToArray();
+        byte[]? response = null;
         try
         {
-            var response = LibsodiumJsWrapper.crypto_stream_chacha20_ietf_xor(input.ToArray(), nonce.ToArray(),
-                                                                              keyBytes);
+            response = LibsodiumJsWrapper.crypto_stream_chacha20_ietf_xor(inputBytes, nonce.ToArray(), keyBytes);
             if (response.Length != output.Length)
                 return -1;
 
             response.CopyTo(output);
-            CryptographicOperations.ZeroMemory(response);
 
             return 0;
         }
@@ -198,6 +198,9 @@ internal sealed class SodiumJsCryptoProvider : ICryptoProvider
         finally
         {
             CryptographicOperations.ZeroMemory(keyBytes);
+            CryptographicOperations.ZeroMemory(inputBytes);
+            if (response is not null)
+                CryptographicOperations.ZeroMemory(response);
         }
     }
 
