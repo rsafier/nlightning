@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Bitcoin;
 using Builders;
 using Builders.Interfaces;
 using Crypto.Functions;
+using Domain.Crypto.Interfaces;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Crypto.Interfaces;
 using Protocol.Factories;
@@ -33,6 +34,7 @@ public static class DependencyInjection
         services.AddSingleton<IFundingOutputBuilder, FundingOutputBuilder>();
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();
+        services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ITlvConverterFactory, TlvConverterFactory>();
 
         // Register Scoped Services

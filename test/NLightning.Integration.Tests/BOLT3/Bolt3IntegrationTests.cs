@@ -18,6 +18,7 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Models;
 using Infrastructure.Bitcoin.Builders;
+using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Signers;
 using Infrastructure.Crypto.Hashes;
@@ -677,7 +678,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeed0FinalNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.Seed0FinalNode,
@@ -691,7 +692,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFFinalNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfFinalNode,
@@ -705,7 +706,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFAlternateBits1_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfAlternateBits1,
@@ -719,7 +720,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeedFFAlternateBits2_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.SeedFfAlternateBits2,
@@ -733,7 +734,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_GeneratingFromSeed01LastNonTrivialNode_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
 
         // When
         var result = keyDerivationService.GeneratePerCommitmentSecret(Bolt3AppendixDVectors.Seed01LastNonTrivialNode,
@@ -1061,7 +1062,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_StoringAndDeriving48Secrets_Then_ShouldWorkCorrectly()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         using var storage = new SecretStorageService();
 
         // Insert secrets with different number of trailing zeros
@@ -1098,7 +1099,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingPubKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var basepoint = Convert.FromHexString("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2");
         var perCommitmentPoint =
             Convert.FromHexString("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486");
@@ -1116,7 +1117,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingPrivateKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var baseSecretBytes = Convert.FromHexString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         // var basepointSecret = new Key(baseSecretBytes);
         var perCommitmentPoint =
@@ -1135,7 +1136,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingRevocationPubKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var revocationBasepoint =
             Convert.FromHexString("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2");
         var perCommitmentPoint =
@@ -1154,7 +1155,7 @@ public class Bolt3IntegrationTests
     public void Given_Bolt3Specifications_When_DerivingRevocationPrivKey_Then_ShouldBeEqualToTestVector()
     {
         // Given
-        var keyDerivationService = new KeyDerivationService();
+        var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var baseSecretBytes = Convert.FromHexString("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
         // var revocationBasepointSecret = new Key(baseSecretBytes);
         var perCommitmentSecretBytes = Convert
