@@ -20,6 +20,7 @@ public interface IUnitOfWork : IDisposable
     IChannelDbRepository ChannelDbRepository { get; }
     IChannelKeySetDbRepository ChannelKeySetDbRepository { get; }
     IHtlcDbRepository HtlcDbRepository { get; }
+    IRemoteShachainDbRepository RemoteShachainDbRepository { get; }
 
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }

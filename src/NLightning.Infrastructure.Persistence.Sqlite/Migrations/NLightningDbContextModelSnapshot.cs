@@ -366,6 +366,26 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("Htlcs");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Bucket")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("Index")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Secret")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("ChannelId", "Bucket");
+
+                    b.ToTable("RemoteShachains");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
@@ -454,6 +474,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
                         .WithMany("Htlcs")
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
                         .HasForeignKey("ChannelId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

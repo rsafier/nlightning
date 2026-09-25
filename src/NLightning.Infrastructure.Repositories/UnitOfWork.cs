@@ -38,6 +38,7 @@ public class UnitOfWork : IUnitOfWork
     private ChannelDbRepository? _channelDbRepository;
     private ChannelKeySetDbRepository? _channelKeySetDbRepository;
     private HtlcDbRepository? _htlcDbRepository;
+    private RemoteShachainDbRepository? _remoteShachainDbRepository;
 
     // Node repositories
     private PeerDbRepository? _peerDbRepository;
@@ -64,6 +65,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IHtlcDbRepository HtlcDbRepository =>
         _htlcDbRepository ??= new HtlcDbRepository(_context, _messageSerializer);
+
+    public IRemoteShachainDbRepository RemoteShachainDbRepository =>
+        _remoteShachainDbRepository ??= new RemoteShachainDbRepository(_context);
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
