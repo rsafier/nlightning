@@ -97,20 +97,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
     public async Task<GetAddressIpcResponse> GetAddressAsync(string? addressTypeString, CancellationToken ct = default)
     {
-        var addressType = AddressType.P2Tr;
-        if (!string.IsNullOrWhiteSpace(addressTypeString))
-        {
-            addressType = addressTypeString.ToLowerInvariant() switch
-            {
-                "p2tr" => AddressType.P2Tr,
-                "p2wpkh" => AddressType.P2Wpkh,
-                "all" => AddressType.P2Tr | AddressType.P2Wpkh,
-                _ => throw new ArgumentOutOfRangeException(nameof(addressTypeString), addressTypeString,
-                                                           "Address has to be `p2tr`, `p2wpkh`, or `all`.")
-            };
-        }
-
-        var req = new GetAddressIpcRequest { AddressType = addressType };
+        var req = new GetAddressIpcRequest { AddressType = ParseAddressType(addressTypeString) };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
         {
@@ -204,6 +191,24 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
         var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
         throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
+    }
+
+    /// <summary>
+    /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
+    /// </summary>
+    internal static AddressType ParseAddressType(string? addressTypeString)
+    {
+        if (string.IsNullOrWhiteSpace(addressTypeString))
+            return new GetAddressIpcRequest().AddressType;
+
+        return addressTypeString.ToLowerInvariant() switch
+        {
+            "p2tr" => AddressType.P2Tr,
+            "p2wpkh" => AddressType.P2Wpkh,
+            "all" => AddressType.P2Tr | AddressType.P2Wpkh,
+            _ => throw new ArgumentOutOfRangeException(nameof(addressTypeString), addressTypeString,
+                                                       "Address has to be `p2tr`, `p2wpkh`, or `all`.")
+        };
     }
 
     private async Task<IpcEnvelope> SendAsync(IpcEnvelope envelope, CancellationToken ct)

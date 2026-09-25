@@ -38,7 +38,6 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 
 ## Gotchas
 - `CommandLineHelper` (in Daemon.Contracts) accepts `--network x`, `--network=x`, `-n x`, `--cookie x`, `--cookie=x` and `-c x`; only the separate-value forms consume the next argument when finding the command. Cookie dir precedence: `--cookie` arg, `--network` arg, `NLTG_COOKIE`, `NLTG_NETWORK`, then `~/.nltg/mainnet`.
-- `GetAddressIpcResponse.AddressP2Wsh` actually holds a P2WPKH address, and the printer labels it P2WSH. The client defaults the address type to P2Tr.
 - Frames are MessagePack with LZ4BlockArray compression, and `Hash`/`TxId` are written as raw bytes with no header. Non-.NET clients cannot decode them without matching this format.
 - The daemon returns `ClientException.Message` as the error *code* for OpenChannel errors, so error codes shown to the user may be free text.
 - The protocol has no server push. Progress is reported by the client repeating the request (a long-poll).
