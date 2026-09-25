@@ -99,6 +99,12 @@ public class CommitmentTransactionModel
     public CompactPubKey? RevocationPubKey { get; init; }
 
     /// <summary>
+    /// Gets the holder's per-commitment point for this commitment: every HTLC key of the commitment and of its HTLC
+    /// transactions is derived from it. Null only for models built without the factory.
+    /// </summary>
+    public CompactPubKey? PerCommitmentPoint { get; init; }
+
+    /// <summary>
     /// Creates a new instance of CommitmentTransactionModel.
     /// </summary>
     /// <param name="commitmentNumber">The channel's obscuring helper.</param>

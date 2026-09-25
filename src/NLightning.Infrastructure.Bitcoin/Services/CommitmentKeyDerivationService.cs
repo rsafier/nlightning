@@ -20,11 +20,9 @@ public class CommitmentKeyDerivationService : ICommitmentKeyDerivationService
     public CommitmentKeys DeriveLocalCommitmentKeys(uint localChannelKeyIndex, ChannelBasepoints localBasepoints,
                                                     ChannelBasepoints remoteBasepoints, ulong commitmentNumber)
     {
-        // Get our per-commitment point for this commitment number from the signer
+        // Get our per-commitment point for this commitment number from the signer. Every key is derived from the point:
+        // the secret of a live commitment must never leave the signer (NL-189).
         var perCommitmentPoint = _lightningSigner.GetPerCommitmentPoint(localChannelKeyIndex, commitmentNumber);
-
-        // Get our per-commitment secret from the signer
-        var perCommitmentSecret = _lightningSigner.ReleasePerCommitmentSecret(localChannelKeyIndex, commitmentNumber);
 
         // For our local commitment transaction:
         // - localpubkey = our payment_basepoint + SHA256(our_per_commitment_point || our_payment_basepoint) * G
@@ -52,8 +50,7 @@ public class CommitmentKeyDerivationService : ICommitmentKeyDerivationService
             revocationPubKey, // revocationpubkey (allows them to revoke our commitment)
             localHtlcPubKey, // local_htlcpubkey (for our HTLC outputs)
             remoteHtlcPubKey, // remote_htlcpubkey (for their HTLC outputs)
-            perCommitmentPoint, // our per_commitment_point
-            perCommitmentSecret // our per_commitment_secret
+            perCommitmentPoint // our per_commitment_point
         );
     }
 
@@ -93,8 +90,7 @@ public class CommitmentKeyDerivationService : ICommitmentKeyDerivationService
             revocationPubKey, // revocationpubkey (allows us to revoke their commitment)
             theirHtlcPubKey, // local_htlcpubkey (from their perspective)
             ourHtlcPubKey, // remote_htlcpubkey (from their perspective)
-            remotePerCommitmentPoint, // their per_commitment_point
-            null // We don't have their secret
+            remotePerCommitmentPoint // their per_commitment_point
         );
     }
 }

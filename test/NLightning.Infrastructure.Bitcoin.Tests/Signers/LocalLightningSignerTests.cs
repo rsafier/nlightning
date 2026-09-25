@@ -151,22 +151,148 @@ public class LocalLightningSignerTests
     }
 
     [Fact]
-    public void Given_Number1_When_ReleasePerCommitmentSecret_Then_SecretAtIndexFirstMinus1MatchesPoint()
+    public void Given_Commitment1Revoked_When_RevealPerCommitmentSecret_Then_SecretAtIndexFirstMinus1MatchesPoint()
     {
         // Given
         var keyDerivationService = new KeyDerivationService(new Secp256K1Math());
         var localSigner = CreateSignerWithChannelKey(keyDerivationService);
+        var channelId = RegisterChannel(localSigner, 0);
+        localSigner.AdvanceLocalCommitment(channelId, 2);
         using var seed = s_channelKey.Derive(5, true).PrivateKey;
         var expectedSecret =
             keyDerivationService.GeneratePerCommitmentSecret(seed.ToBytes(), CryptoConstants.FirstPerCommitmentIndex - 1);
 
         // When
-        var secret = localSigner.ReleasePerCommitmentSecret(ChannelKeyIndex, 1);
+        var secret = localSigner.RevealPerCommitmentSecret(channelId, 1);
 
         // Then
         Assert.Equal(expectedSecret, secret);
         using var secretKey = new Key(secret);
-        Assert.Equal(localSigner.GetPerCommitmentPoint(ChannelKeyIndex, 1), (CompactPubKey)secretKey.PubKey.ToBytes());
+        Assert.Equal(localSigner.GetPerCommitmentPoint(channelId, 1), (CompactPubKey)secretKey.PubKey.ToBytes());
+    }
+
+    [Fact]
+    public void Given_UnrevokedCommitment_When_Reveal_Then_Throws()
+    {
+        // Given - regression (NL-189): nothing stopped a caller from revealing the secret of the current commitment
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When / Then - commitment 0 is current: its secret (and every later one) stays in the signer
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 0));
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 1));
+    }
+
+    [Fact]
+    public void Given_LocalCommitmentAdvanced_When_Reveal_Then_OnlyOlderCommitmentsAreRevealed()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When
+        localSigner.AdvanceLocalCommitment(channelId, 1);
+
+        // Then
+        var exception = Record.Exception(() => localSigner.RevealPerCommitmentSecret(channelId, 0));
+        Assert.Null(exception);
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 1));
+    }
+
+    [Fact]
+    public void Given_ChannelRegisteredAtLocalNumber5_When_Reveal_Then_Number4IsRevealedAnd5Refused()
+    {
+        // Given - a channel reloaded from the database carries its current local commitment number
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 5);
+
+        // When
+        var exception = Record.Exception(() => localSigner.RevealPerCommitmentSecret(channelId, 4));
+
+        // Then
+        Assert.Null(exception);
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 5));
+    }
+
+    [Fact]
+    public void Given_ChannelRegisteredAgainWithLowerNumber_When_Reveal_Then_GuardDoesNotMoveBack()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+        localSigner.AdvanceLocalCommitment(channelId, 3);
+
+        // When
+        RegisterChannel(localSigner, 1);
+
+        // Then
+        var exception = Record.Exception(() => localSigner.RevealPerCommitmentSecret(channelId, 2));
+        Assert.Null(exception);
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(channelId, 3));
+    }
+
+    [Fact]
+    public void Given_LowerNumber_When_AdvanceLocalCommitment_Then_Throws()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+        localSigner.AdvanceLocalCommitment(channelId, 2);
+
+        // When / Then
+        Assert.Throws<SignerException>(() => localSigner.AdvanceLocalCommitment(channelId, 1));
+        var sameNumber = Record.Exception(() => localSigner.AdvanceLocalCommitment(channelId, 2));
+        Assert.Null(sameNumber);
+    }
+
+    [Fact]
+    public void Given_NumberAbove48Bits_When_AdvanceLocalCommitment_Then_Throws()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When / Then
+        Assert.Throws<ArgumentOutOfRangeException>(() => localSigner.AdvanceLocalCommitment(channelId, 1UL << 48));
+    }
+
+    [Fact]
+    public void Given_UnregisteredChannel_When_RevealOrAdvance_Then_Throws()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+
+        // When / Then
+        Assert.Throws<SignerException>(() => localSigner.RevealPerCommitmentSecret(ChannelId.Zero, 0));
+        Assert.Throws<SignerException>(() => localSigner.AdvanceLocalCommitment(ChannelId.Zero, 1));
+    }
+
+    [Fact]
+    public void Given_SignatureCountMismatch_When_ValidateLocalHtlcSignatures_Then_Throws()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When / Then - one signature, no HTLC transaction
+        Assert.Throws<SignerException>(() => localSigner.ValidateLocalHtlcSignatures(
+                                           channelId, [], [Bolt3AppendixCVectors.NodeBSignature0.ToCompact()]));
+    }
+
+    [Fact]
+    public void Given_NoHtlcs_When_SigningAndValidatingHtlcTransactions_Then_NothingToDo()
+    {
+        // Given
+        var localSigner = CreateSignerWithChannelKey(new KeyDerivationService(new Secp256K1Math()));
+        var channelId = RegisterChannel(localSigner, 0);
+
+        // When
+        var signatures = localSigner.SignRemoteHtlcTransactions(channelId, []);
+        var exception = Record.Exception(() => localSigner.ValidateLocalHtlcSignatures(channelId, [], []));
+
+        // Then
+        Assert.Empty(signatures);
+        Assert.Null(exception);
     }
 
     [Fact]
@@ -177,6 +303,20 @@ public class LocalLightningSignerTests
 
         // When / Then
         Assert.Throws<ArgumentOutOfRangeException>(() => localSigner.GetPerCommitmentPoint(ChannelKeyIndex, 1UL << 48));
+    }
+
+    private static ChannelId RegisterChannel(LocalLightningSigner localSigner, ulong localCommitmentNumber)
+    {
+        var channelId = ChannelId.Zero;
+        localSigner.RegisterChannel(channelId,
+                                    new ChannelSigningInfo(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(), 0,
+                                                           Bolt3AppendixBVectors.FundingSatoshis,
+                                                           Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
+                                                           Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
+                                                           ChannelKeyIndex,
+                                                           Bolt3AppendixCVectors.NodeBHtlcBasepoint.ToBytes(),
+                                                           localCommitmentNumber));
+        return channelId;
     }
 
     private static LocalLightningSigner CreateSignerWithChannelKey(IKeyDerivationService keyDerivationService)

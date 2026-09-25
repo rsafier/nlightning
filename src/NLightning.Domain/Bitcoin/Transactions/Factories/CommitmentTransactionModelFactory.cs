@@ -201,7 +201,8 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
             HasAnchors = hasAnchors,
             ToSelfDelay = toSelfDelay,
             LocalDelayedPubKey = commitmentKeys.LocalDelayedPubKey,
-            RevocationPubKey = commitmentKeys.RevocationPubKey
+            RevocationPubKey = commitmentKeys.RevocationPubKey,
+            PerCommitmentPoint = commitmentKeys.PerCommitmentPoint
         };
     }
 
