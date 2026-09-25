@@ -120,7 +120,7 @@ public class PeerServiceLifecycleTests
         _communicationMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Once);
     }
 
-    [Fact(Skip = "NL-002: init disconnects when any remote chain is unknown instead of only when none is shared")]
+    [Fact]
     public void Given_UninitializedPeer_When_ReceivingInitWithASharedChain_Then_DoesNotDisconnect()
     {
         // Arrange - BOLT 1: only disconnect if the peer and we share no chain in `networks`

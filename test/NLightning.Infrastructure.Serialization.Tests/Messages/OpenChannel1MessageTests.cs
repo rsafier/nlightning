@@ -38,12 +38,8 @@ public class OpenChannel1MessageTests
     private const string ShutdownScriptHex = "00140102030405060708090A0B0C0D0E0F1011121314";
     private const string UpfrontShutdownScriptTlvHex = "0016" + ShutdownScriptHex;
 
-    // TLV type 1 (channel_type). The multi-byte rows are real spec channel types; they are skipped because
-    // FeatureSet.DeserializeFromBytes reverses the ChannelTypeTlv's backing array in place (NL-112), which flips the
-    // channel_type bytes on both the read and the write path. A single-byte channel_type is unaffected.
+    // TLV type 1 (channel_type): single-byte and multi-byte spec channel types (big-endian on the wire).
     private const string SingleByteChannelTypeHex = "10";
-    private const string Nl112SkipReason =
-        "NL-112: FeatureSet.DeserializeFromBytes reverses the channel_type bytes in place, so a multi-byte channel_type is read and written reversed";
 
     private const string PayloadHex = ChainHashHex + TemporaryChannelIdHex + FundingSatoshisHex + PushMsatHex
                                     + DustLimitSatoshisHex + MaxHtlcValueInFlightMsatHex + ChannelReserveSatoshisHex
@@ -115,8 +111,8 @@ public class OpenChannel1MessageTests
 
     [Theory]
     [InlineData(SingleByteChannelTypeHex)]
-    [InlineData("1000", Skip = Nl112SkipReason)] // option_static_remotekey (bit 12)
-    [InlineData("401000", Skip = Nl112SkipReason)] // option_anchors (bit 22) + option_static_remotekey
+    [InlineData("1000")] // option_static_remotekey (bit 12)
+    [InlineData("401000")] // option_anchors (bit 22) + option_static_remotekey
     public async Task Given_ChannelTypeTlv_When_DeserializeAsync_Then_ChannelTypeBytesArePreserved(
         string channelTypeHex)
     {
@@ -128,13 +124,13 @@ public class OpenChannel1MessageTests
 
         // Assert
         Assert.Null(message.UpfrontShutdownScriptTlv);
-        Assert.Equal(Convert.FromHexString(channelTypeHex), message.ChannelTypeTlv.ChannelType);
+        Assert.Equal(Convert.FromHexString(channelTypeHex), message.ChannelTypeTlv?.ChannelType);
     }
 
     [Theory]
     [InlineData(SingleByteChannelTypeHex)]
-    [InlineData("1000", Skip = Nl112SkipReason)]
-    [InlineData("401000", Skip = Nl112SkipReason)]
+    [InlineData("1000")]
+    [InlineData("401000")]
     public async Task Given_Message_When_SerializeAsync_Then_WritesSpecShapedBytes(string channelTypeHex)
     {
         // Arrange
@@ -152,7 +148,7 @@ public class OpenChannel1MessageTests
 
     [Theory]
     [InlineData(SingleByteChannelTypeHex)]
-    [InlineData("1000", Skip = Nl112SkipReason)]
+    [InlineData("1000")]
     public async Task Given_Message_When_RoundTripped_Then_BytesAreStable(string channelTypeHex)
     {
         // Arrange
@@ -180,7 +176,7 @@ public class OpenChannel1MessageTests
         await Assert.ThrowsAnyAsync<Exception>(() => _serializer.DeserializeAsync(stream));
     }
 
-    [Fact(Skip = "NL-027: open_channel deserializer requires the channel_type TLV instead of leaving it optional")]
+    [Fact]
     public async Task Given_NoChannelTypeTlv_When_DeserializeAsync_Then_MessageIsDecoded()
     {
         // Arrange

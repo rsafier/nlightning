@@ -131,7 +131,7 @@ public class BaseOutputTests
         Assert.Equal(1, output1.CompareTo(null));
     }
 
-    [Fact(Skip = "NL-059: BaseOutput.Amount setter discards the value")]
+    [Fact]
     public void Given_BaseOutput_When_AmountIsSet_Then_AmountIsUpdated()
     {
         // Arrange & Act
