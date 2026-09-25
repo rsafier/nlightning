@@ -60,8 +60,9 @@ public class FundingConfirmedMessageHandler
                 _lightningSigner.GetPerCommitmentPoint(channel.ChannelId, channel.CommitmentNumber.Value);
             channel.LocalKeySet.UpdatePerCommitmentPoint(newPerCommitmentPoint);
 
-            // Handle ScidAlias
-            if (mustUseScidAlias)
+            // Handle ScidAlias. Aliases already sent to the peer must stay valid (BOLT 2 channel_ready: always
+            // recognize them for incoming HTLCs), so they are reused instead of regenerated on a re-confirmation.
+            if (mustUseScidAlias && channel.LocalAliases is not { Count: > 0 })
             {
                 // Decide how many SCID aliases we need
                 var scidAliasesCount = RandomNumberGenerator.GetInt32(2, 6); // Randomly choose between 2 and 5

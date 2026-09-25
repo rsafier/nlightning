@@ -55,6 +55,7 @@ Only channel establishment is implemented. HTLC, commitment, shutdown and reesta
 - `ConfirmUnconfirmedChannels` re-runs FundingConfirmed on every block for ReadyForUs/ReadyForThem channels. ReadyForThem moves to Open on the first run, but ReadyForUs stays put: the handler only logs the wrong state and doesn't return, so every block it increments CommitmentNumber again and re-sends channel_ready.
 - The catch-block cleanup in `AcceptChannel1MessageHandler` looks inverted, and it doesn't release locked UTXOs. The initiator channel isn't persisted until funding_signed arrives.
 - No per-channel lock: two messages for the same channel can race on the shared ChannelModel. `PeerManager._peers` is a plain Dictionary. Reply continuations are attached with `ContinueWith` and never awaited, so exceptions in them go unobserved.
+- scid aliases (NL-103): `FundingConfirmedMessageHandler` generates `LocalAliases` that avoid every real scid and alias in `IChannelMemoryRepository`, and reuses them if the channel already has some. `LocalAliases` is never persisted, so after a restart old aliases are forgotten: they are no longer recognized for incoming HTLCs and new ones are generated.
 - Handler discovery uses reflection (`Assembly.GetTypes()`), which trimming or AOT may break.
 
 ## Onion-routing (BOLT 4) hooks here
