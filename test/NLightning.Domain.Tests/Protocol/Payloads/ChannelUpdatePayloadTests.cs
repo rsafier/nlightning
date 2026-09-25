@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 namespace NLightning.Domain.Tests.Protocol.Payloads;
 
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Payloads;
 
@@ -105,5 +106,38 @@ public class ChannelUpdatePayloadTests
         Assert.Throws<ArgumentException>(() => new ChannelUpdatePayload(
                                              new byte[63], ChainConstants.Regtest, new ShortChannelId(1, 1, 1), 1, 1,
                                              0, 40, 1, 1, 1, 1));
+    }
+
+    [Fact]
+    public void Given_SignedPayload_When_CallerMutatesPassedSignatureArray_Then_PayloadIsUnchanged()
+    {
+        // Arrange
+        var signatureBytes = Enumerable.Range(1, ChannelUpdatePayload.SignatureLength).Select(b => (byte)b).ToArray();
+        var payload = CreatePayload().WithSignature(new CompactSignature(signatureBytes));
+        var before = payload.GetBytes();
+
+        // Act
+        signatureBytes[0] = 0xFF;
+
+        // Assert
+        Assert.Equal(before, payload.GetBytes());
+        Assert.Equal(before[..ChannelUpdatePayload.SignatureLength], payload.Signature.Value);
+        Assert.Equal(before, payload.WithSignature(payload.Signature).GetBytes());
+    }
+
+    [Fact]
+    public void Given_SignedPayload_When_CallerMutatesReturnedSignature_Then_PayloadIsUnchanged()
+    {
+        // Arrange
+        var signatureBytes = Enumerable.Range(1, ChannelUpdatePayload.SignatureLength).Select(b => (byte)b).ToArray();
+        var payload = CreatePayload().WithSignature(new CompactSignature(signatureBytes));
+        var before = payload.GetBytes();
+
+        // Act
+        payload.Signature.Value[0] = 0xFF;
+
+        // Assert
+        Assert.Equal(before, payload.GetBytes());
+        Assert.Equal((byte)1, payload.Signature.Value[0]);
     }
 }

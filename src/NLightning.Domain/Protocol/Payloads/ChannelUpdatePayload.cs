@@ -67,12 +67,17 @@ public sealed class ChannelUpdatePayload : IMessagePayload
     /// </summary>
     public const byte ChannelFlagDisable = 0b0000_0010;
 
+    private readonly byte[] _signature;
     private readonly byte[] _extraData;
 
     /// <summary>
     /// The origin's signature (64-byte compact r||s) of <see cref="GetSignatureHash"/>, made with its node key.
     /// </summary>
-    public CompactSignature Signature { get; }
+    /// <remarks>
+    /// <see cref="CompactSignature.Value"/> is a mutable array, so the payload keeps its own copy and every read
+    /// returns a fresh one: editing the returned (or the originally passed) signature never changes the payload.
+    /// </remarks>
+    public CompactSignature Signature => new(_signature.ToArray());
 
     /// <summary>
     /// The chain the channel is on.
@@ -174,7 +179,7 @@ public sealed class ChannelUpdatePayload : IMessagePayload
             throw new ArgumentException($"A channel_update signature is {SignatureLength} bytes.",
                                         nameof(signature));
 
-        Signature = signature;
+        _signature = signature.Value.ToArray();
         ChainHash = chainHash;
         ShortChannelId = shortChannelId;
         Timestamp = timestamp;
@@ -224,7 +229,7 @@ public sealed class ChannelUpdatePayload : IMessagePayload
     public byte[] GetBytes()
     {
         var bytes = new byte[MinLength + _extraData.Length];
-        Signature.Value.CopyTo(bytes, 0);
+        _signature.CopyTo(bytes, 0);
         WriteSignedData(bytes.AsSpan(SignatureLength));
         return bytes;
     }

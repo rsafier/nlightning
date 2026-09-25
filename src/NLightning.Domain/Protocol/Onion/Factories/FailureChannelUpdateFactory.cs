@@ -92,6 +92,14 @@ public static class FailureChannelUpdateFactory
     /// Parses the <c>channel_update</c> field of an UPDATE failure into a typed message (with or without the type
     /// prefix). The signature is not checked; verify it with the origin's node id before using the update.
     /// </summary>
+    /// <remarks>
+    /// Known limit (inherited from <see cref="TryGetPayload"/>): a field that starts with <c>0x0102</c> and is long
+    /// enough is always read as <c>u16 258 || payload</c>. A bare payload (no type prefix) whose signature <c>r</c>
+    /// happens to start with <c>0x0102</c> and that carries at least two bytes of unknown trailing fields is therefore
+    /// misread (shifted by two bytes); roughly 1 in 65536 bare-format updates. LND, CLN, Eclair and LDK all send the
+    /// prefix, so this does not occur in practice, and the shifted reading fails signature verification, which callers
+    /// must do anyway.
+    /// </remarks>
     /// <returns><c>false</c> when the field is empty (<c>len = 0</c>) or too short to be a <c>channel_update</c>.</returns>
     public static bool TryGetChannelUpdate(ReadOnlyMemory<byte> field,
                                            [NotNullWhen(true)] out ChannelUpdateMessage? channelUpdate)
