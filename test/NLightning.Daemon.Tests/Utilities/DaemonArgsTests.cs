@@ -92,7 +92,7 @@ public class DaemonArgsTests : IDisposable
     }
 
     [Fact]
-    public void GivenExistingConfigWithOtherNetwork_WhenReadInitialConfiguration_ThenDirectoryNetworkWins()
+    public void GivenExistingConfigWithOtherNetwork_WhenReadInitialConfiguration_ThenThrowsInsteadOfOverriding()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
 
@@ -104,10 +104,86 @@ public class DaemonArgsTests : IDisposable
                           NodeConfigurationExtensions.CreateDefaultConfigJson("regtest"));
 
         // Act
-        var (config, network, _) = NodeConfigurationExtensions.ReadInitialConfiguration([]);
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+                                                                     NodeConfigurationExtensions
+                                                                        .ReadInitialConfiguration([]));
 
         // Assert
-        Assert.Equal("mainnet", network);
-        Assert.Equal("mainnet", config["Node:Network"]);
+        Assert.Contains("'regtest'", exception.Message);
+        Assert.Contains("'mainnet'", exception.Message);
+    }
+
+    [Fact]
+    public void GivenExistingConfigWithoutNetwork_WhenReadInitialConfiguration_ThenDirectoryNetworkIsUsed()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var dir = Path.Combine(_tempHome, ".nltg", "testnet");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "appsettings.json"), """{ "Node": { "Daemon": false } }""");
+
+        // Act
+        var (config, network, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["--network", "testnet"]);
+
+        // Assert
+        Assert.Equal("testnet", network);
+        Assert.Equal("testnet", config["Node:Network"]);
+    }
+
+    [Fact]
+    public void GivenPasswordEnvironmentVariable_WhenReadInitialConfiguration_ThenPasswordIsNotInConfiguration()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+        var originalPassword = Environment.GetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable);
+        Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, "env-secret");
+
+        try
+        {
+            // Act
+            var (config, _, _) = NodeConfigurationExtensions.ReadInitialConfiguration(["-n", "regtest"]);
+
+            // Assert
+            Assert.Null(config["PASSWORD"]);
+            Assert.DoesNotContain(config.AsEnumerable(), pair => pair.Value == "env-secret");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, originalPassword);
+        }
+    }
+
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("-s3cret")]
+    [InlineData("-pw")]
+    public void GivenOptionValueStartingWithDash_WhenNormalizedAndBound_ThenValueAndLaterOptionsAreKept(string value)
+    {
+        // Arrange
+        string[] args = ["--Bitcoin:RpcPassword", value, "--network", "regtest"];
+
+        // Act
+        var config = new ConfigurationBuilder().AddCommandLine(DaemonUtils.NormalizeArgs(args)).Build();
+
+        // Assert
+        Assert.Equal(value, config["Bitcoin:RpcPassword"]);
+        Assert.Equal("regtest", config["network"]);
+    }
+
+    [Theory]
+    [InlineData("--network")]
+    [InlineData("-n")]
+    [InlineData("-c")]
+    public void GivenUnknownFlagFollowedByOption_WhenNormalized_ThenFlagIsBare(string nextOption)
+    {
+        // Act
+        var result = DaemonUtils.NormalizeArgs(["--verbose", nextOption, "x"]);
+
+        // Assert
+        Assert.Equal("--verbose=true", result[0]);
     }
 }
