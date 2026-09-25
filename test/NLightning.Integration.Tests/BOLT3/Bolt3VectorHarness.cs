@@ -67,23 +67,43 @@ internal sealed class Bolt3VectorHarness
     public Bolt3CommitmentVector Vector { get; }
     public bool HasAnchors { get; }
 
-    public Bolt3VectorHarness(Bolt3CommitmentVector vector, bool hasAnchors)
+    /// <summary>
+    /// False: we are node A, the vectors' "local" node (the commitments are our local commitments, number 42).
+    /// True: we are node B, the funder's peer (the commitments are our remote commitments, number 42, and our
+    /// signatures are the vectors' <c>remote_signature</c>/<c>remote_htlc_signature</c>).
+    /// </summary>
+    public bool AsNodeB { get; }
+
+    public Bolt3VectorHarness(Bolt3CommitmentVector vector, bool hasAnchors, bool asNodeB = false)
     {
         Vector = vector;
         HasAnchors = hasAnchors;
+        AsNodeB = asNodeB;
 
         var nodeOptions = new NodeOptions { DustLimitAmount = LightningMoney.Satoshis(vector.DustLimitSatoshis) };
-        Signer = new Bolt3TestLightningSigner(nodeOptions, new Mock<ILogger<LocalLightningSigner>>().Object);
+        Signer = new Bolt3TestLightningSigner(nodeOptions, new Mock<ILogger<LocalLightningSigner>>().Object, asNodeB);
+        var localFundingPubKey = asNodeB
+                                     ? Bolt3AppendixCVectors.NodeBFundingPubkey
+                                     : Bolt3AppendixCVectors.NodeAFundingPubkey;
+        var remoteFundingPubKey = asNodeB
+                                      ? Bolt3AppendixCVectors.NodeAFundingPubkey
+                                      : Bolt3AppendixCVectors.NodeBFundingPubkey;
+        var remoteHtlcBasepoint = asNodeB
+                                      ? Bolt3AppendixCVectors.NodeAHtlcBasepoint
+                                      : Bolt3AppendixCVectors.NodeBHtlcBasepoint;
         Signer.RegisterChannel(ChannelId.Zero,
                                new ChannelSigningInfo(Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
                                                       Bolt3AppendixBVectors.InputIndex,
                                                       Bolt3AppendixBVectors.FundingSatoshis,
-                                                      Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
-                                                      Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(), 0));
+                                                      localFundingPubKey.ToBytes(), remoteFundingPubKey.ToBytes(), 0,
+                                                      remoteHtlcBasepoint.ToBytes(),
+                                                      asNodeB ? 0 : Bolt3AppendixCVectors.CommitmentNumber));
         Factory = new CommitmentTransactionModelFactory(new Bolt3TestCommitmentKeyDerivationService(), Signer);
         CommitmentBuilder = new CommitmentTransactionBuilder(Options.Create(nodeOptions));
         HtlcBuilder = new HtlcTransactionBuilder(Options.Create(nodeOptions));
-        Channel = CreateChannel(nodeOptions.DustLimitAmount, hasAnchors);
+        Channel = asNodeB
+                      ? CreateNodeBChannel(nodeOptions.DustLimitAmount, hasAnchors)
+                      : CreateChannel(nodeOptions.DustLimitAmount, hasAnchors);
     }
 
     public static Htlc GetHtlc(int id)
@@ -93,11 +113,34 @@ internal sealed class Bolt3VectorHarness
                         HtlcState.Offered);
     }
 
+    /// <summary>
+    /// The vector's balances and HTLCs from our point of view (mirrored when we are node B).
+    /// </summary>
     public CommitmentSpec Spec =>
-        new(Vector.ToLocalMsat, Vector.ToRemoteMsat, Vector.FeeRatePerKw, Vector.HtlcIds.Select(GetHtlc));
+        AsNodeB
+            ? new CommitmentSpec(Vector.ToRemoteMsat, Vector.ToLocalMsat, Vector.FeeRatePerKw,
+                                 Vector.HtlcIds.Select(GetMirroredHtlc))
+            : new CommitmentSpec(Vector.ToLocalMsat, Vector.ToRemoteMsat, Vector.FeeRatePerKw,
+                                 Vector.HtlcIds.Select(GetHtlc));
 
+    private static Htlc GetMirroredHtlc(int id)
+    {
+        var (amountMsat, expiry, direction, paymentHash) = s_htlcs[id];
+        var mirrored = direction == HtlcDirection.Incoming ? HtlcDirection.Outgoing : HtlcDirection.Incoming;
+        return new Htlc(LightningMoney.MilliSatoshis(amountMsat), null!, mirrored, expiry, (ulong)id, 0, paymentHash,
+                        HtlcState.Offered);
+    }
+
+    /// <summary>
+    /// Node A's commitment of the vector: our local commitment as node A, our remote commitment as node B.
+    /// </summary>
     public CommitmentTransactionModel CreateCommitmentModel() =>
-        Factory.CreateCommitmentTransactionModel(Channel, Spec, CommitmentSide.Local, Channel.LocalCommitmentNumber);
+        AsNodeB
+            ? Factory.CreateCommitmentTransactionModel(Channel, Spec, CommitmentSide.Remote,
+                                                       Channel.RemoteCommitmentNumber,
+                                                       Bolt3TestCommitmentKeyDerivationService.LocalPerCommitmentPoint)
+            : Factory.CreateCommitmentTransactionModel(Channel, Spec, CommitmentSide.Local,
+                                                       Channel.LocalCommitmentNumber);
 
     /// <summary>
     /// Builds the commitment with its HTLC output map and the HTLC transaction models, in output order.
@@ -157,6 +200,44 @@ internal sealed class Bolt3VectorHarness
             fundingScript.ToBytes()
         });
         return tx;
+    }
+
+    /// <summary>
+    /// Node B's view of the vector channel: node A is the funder, our remote commitment number is 42 and the remote
+    /// per-commitment point is Appendix C's <c>local_per_commitment_point</c>.
+    /// </summary>
+    private static ChannelModel CreateNodeBChannel(LightningMoney dustLimit, bool hasAnchors)
+    {
+        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero, dustLimit,
+                                              0, LightningMoney.Zero, 0, hasAnchors, dustLimit,
+                                              Bolt3AppendixCVectors.LocalDelay, FeatureSupport.No);
+        var localKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
+                                                 s_emptyCompactPubKey,
+                                                 Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
+                                                 s_emptyCompactPubKey,
+                                                 Bolt3AppendixCVectors.NodeBHtlcBasepoint.ToBytes(),
+                                                 s_emptyCompactPubKey);
+        var remoteKeySet = new ChannelKeySetModel(0, Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes(),
+                                                  s_emptyCompactPubKey,
+                                                  Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
+                                                  s_emptyCompactPubKey,
+                                                  Bolt3AppendixCVectors.NodeAHtlcBasepoint.ToBytes(),
+                                                  Bolt3TestCommitmentKeyDerivationService.LocalPerCommitmentPoint);
+        var commitmentNumber = new CommitmentNumber(Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes(),
+                                                    Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes(),
+                                                    new Sha256());
+        var fundingOutputInfo = new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis,
+                                                      Bolt3AppendixCVectors.NodeBFundingPubkey.ToBytes(),
+                                                      Bolt3AppendixCVectors.NodeAFundingPubkey.ToBytes())
+        {
+            TransactionId = Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
+            Index = 0
+        };
+
+        return new ChannelModel(channelConfig, ChannelId.Zero, commitmentNumber, fundingOutputInfo, false, null, null,
+                                LightningMoney.Zero, localKeySet, 0, 0, LightningMoney.Zero, remoteKeySet, 0,
+                                Bolt3AppendixBVectors.RemotePubKey.ToBytes(), 0, ChannelState.V1Opening,
+                                ChannelVersion.V1, remoteCommitmentNumber: Bolt3AppendixCVectors.CommitmentNumber);
     }
 
     private ChannelModel CreateChannel(LightningMoney dustLimit, bool hasAnchors)

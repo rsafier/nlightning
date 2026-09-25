@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Interfaces;
 
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
+using Transactions.Models;
 using ValueObjects;
 
 /// <summary>
@@ -56,20 +57,69 @@ public interface ILightningSigner
     void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo);
 
     /// <summary>
-    /// Release (reveal) the per-commitment secret of one of our commitment transactions, for revocation.
+    /// Reveal the per-commitment secret of one of our commitment transactions, for <c>revoke_and_ack</c> or
+    /// <c>channel_reestablish</c>.
     /// </summary>
-    /// <param name="channelKeyIndex">The channel key index.</param>
-    /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index), see
-    /// <see cref="GetPerCommitmentPoint(uint, ulong)"/>.</param>
-    Secret ReleasePerCommitmentSecret(uint channelKeyIndex, ulong commitmentNumber);
+    /// <remarks>
+    /// Guard (NL-189, BOLT2 plan invariant I3): the secret of commitment <c>n</c> is released only when
+    /// <c>n &lt; LocalCommitmentNumber</c>, i.e. when commitment <c>n</c> has been superseded by a newer local commitment
+    /// that was persisted with the peer's signatures and reported through <see cref="AdvanceLocalCommitment"/>.
+    /// Revealing the secret of our current commitment would let the peer take every output of it.
+    /// </remarks>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index).</param>
+    /// <exception cref="Exceptions.SignerException">
+    /// The channel is not registered, or commitment <paramref name="commitmentNumber"/> is not revoked yet.
+    /// </exception>
+    Secret RevealPerCommitmentSecret(ChannelId channelId, ulong commitmentNumber);
 
     /// <summary>
-    /// Release (reveal) the per-commitment secret of one of our commitment transactions, for revocation.
+    /// Tell the signer that local commitment <paramref name="newLocalCommitmentNumber"/> (with the peer's commitment
+    /// and HTLC signatures) is now persisted, so every older local commitment may be revoked. Call it only
+    /// <b>after</b> the save succeeded.
     /// </summary>
+    /// <exception cref="Exceptions.SignerException">
+    /// The channel is not registered, or the number is lower than the current one (numbers never go back).
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">The number does not fit in 48 bits.</exception>
+    void AdvanceLocalCommitment(ChannelId channelId, ulong newLocalCommitmentNumber);
+
+    /// <summary>
+    /// Sign the counterparty's HTLC transactions for a <c>commitment_signed</c> we send: the HTLC transactions of the
+    /// <b>remote</b> commitment, in commitment output order.
+    /// </summary>
+    /// <remarks>
+    /// Each signature uses our HTLC key for that commitment,
+    /// <c>htlc_basepoint_secret + SHA256(remote_per_commitment_point || htlc_basepoint)</c>, with
+    /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> under option_anchors and <c>SIGHASH_ALL</c> otherwise. Signatures are
+    /// low-S. The returned list has the order of <paramref name="htlcTransactions"/>.
+    /// </remarks>
     /// <param name="channelId">The registered channel.</param>
-    /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index), see
-    /// <see cref="GetPerCommitmentPoint(ChannelId, ulong)"/>.</param>
-    Secret ReleasePerCommitmentSecret(ChannelId channelId, ulong commitmentNumber);
+    /// <param name="htlcTransactions">The remote commitment's HTLC transactions, each with the remote point.</param>
+    IReadOnlyList<CompactSignature> SignRemoteHtlcTransactions(ChannelId channelId,
+                                                               IReadOnlyList<HtlcSigningContext> htlcTransactions);
+
+    /// <summary>
+    /// Verify the HTLC signatures of a received <c>commitment_signed</c>: one per HTLC transaction of our <b>local</b>
+    /// commitment, in the same order.
+    /// </summary>
+    /// <remarks>
+    /// Each signature must be a low-S signature by the peer's HTLC key for that commitment,
+    /// <c>remote_htlc_basepoint + SHA256(local_per_commitment_point || remote_htlc_basepoint) * G</c>, over
+    /// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> under option_anchors and <c>SIGHASH_ALL</c> otherwise.
+    /// </remarks>
+    /// <exception cref="Exceptions.SignerException">
+    /// The counts differ, a signature does not parse, is high-S or does not verify, or the channel is not registered
+    /// or has no remote HTLC basepoint.
+    /// </exception>
+    void ValidateLocalHtlcSignatures(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions,
+                                     IReadOnlyList<CompactSignature> signatures);
+
+    /// <summary>
+    /// Sign one HTLC transaction of our own (local) commitment, for broadcast together with the peer's signature: our
+    /// local HTLC key for that commitment, always <c>SIGHASH_ALL</c>.
+    /// </summary>
+    CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction);
 
     /// <summary>
     /// Sign a general transaction using the wallet signing context

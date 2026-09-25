@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Bitcoin.Signers;
 using Builders;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -32,6 +33,9 @@ public class LocalLightningSigner : ILightningSigner
     private readonly IFundingOutputBuilder _fundingOutputBuilder;
     private readonly IKeyDerivationService _keyDerivationService;
     private readonly ConcurrentDictionary<ChannelId, ChannelSigningInfo> _channelSigningInfo = new();
+
+    // Current local commitment number per channel: the revocation guard of RevealPerCommitmentSecret (NL-189)
+    private readonly ConcurrentDictionary<ChannelId, ulong> _localCommitmentNumbers = new();
     private readonly ILogger<LocalLightningSigner> _logger;
     private readonly Network _network;
 
@@ -159,32 +163,117 @@ public class LocalLightningSigner : ILightningSigner
         _logger.LogTrace("Registering channel {ChannelId} with signing info", channelId);
 
         _channelSigningInfo.TryAdd(channelId, signingInfo);
+
+        // The guard only ever moves forward, also when a channel is registered again (e.g. reloaded from the database)
+        _localCommitmentNumbers.AddOrUpdate(channelId, signingInfo.LocalCommitmentNumber,
+                                            (_, current) => Math.Max(current, signingInfo.LocalCommitmentNumber));
     }
 
     /// <inheritdoc />
-    public Secret ReleasePerCommitmentSecret(uint channelKeyIndex, ulong commitmentNumber)
+    public Secret RevealPerCommitmentSecret(ChannelId channelId, ulong commitmentNumber)
     {
-        _logger.LogTrace(
-            "Releasing per-commitment secret for channel key index {ChannelKeyIndex} and commitment number {CommitmentNumber}",
-            channelKeyIndex, commitmentNumber);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
 
-        // Derive the per-commitment seed from the channel key
-        var channelExtKey = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex);
-        var channelKey = ExtKey.CreateFromBytes(channelExtKey);
-        using var perCommitmentSeed = channelKey.Derive(PerCommitmentSeedDerivationIndex, true).PrivateKey;
+        // NL-189: never reveal the secret of a commitment that has not been superseded by a persisted one
+        var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
+        if (commitmentNumber >= localCommitmentNumber)
+            throw new SignerException(
+                $"Refusing to reveal the per-commitment secret of unrevoked commitment {commitmentNumber} "
+              + $"(current local commitment is {localCommitmentNumber})", channelId, "Internal error");
 
-        // BOLT 3: commitment n uses the per-commitment secret at index 2^48-1-n (NL-187)
-        return _keyDerivationService.GeneratePerCommitmentSecret(
-            perCommitmentSeed.ToBytes(), PerCommitmentIndex.From(commitmentNumber));
+        return DerivePerCommitmentSecret(signingInfo.ChannelKeyIndex, commitmentNumber);
     }
 
     /// <inheritdoc />
-    public Secret ReleasePerCommitmentSecret(ChannelId channelId, ulong commitmentNumber)
+    public void AdvanceLocalCommitment(ChannelId channelId, ulong newLocalCommitmentNumber)
     {
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
-            throw new SignerException($"Channel {channelId} not registered", channelId);
+        if (newLocalCommitmentNumber > CommitmentNumber.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(newLocalCommitmentNumber), newLocalCommitmentNumber,
+                                                  "Commitment numbers are 48-bit values");
 
-        return ReleasePerCommitmentSecret(signingInfo.ChannelKeyIndex, commitmentNumber);
+        _ = GetRegisteredSigningInfo(channelId);
+
+        while (true)
+        {
+            var current = _localCommitmentNumbers.GetValueOrDefault(channelId);
+            if (newLocalCommitmentNumber < current)
+                throw new SignerException(
+                    $"Local commitment number cannot go back from {current} to {newLocalCommitmentNumber}", channelId,
+                    "Internal error");
+
+            if (newLocalCommitmentNumber == current
+             || _localCommitmentNumbers.TryUpdate(channelId, newLocalCommitmentNumber, current))
+                return;
+        }
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<CompactSignature> SignRemoteHtlcTransactions(
+        ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions)
+    {
+        ArgumentNullException.ThrowIfNull(htlcTransactions);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        if (htlcTransactions.Count == 0)
+            return [];
+
+        using var htlcBasepointSecret = GetHtlcBasepointSecret(signingInfo.ChannelKeyIndex);
+        var signatures = new List<CompactSignature>(htlcTransactions.Count);
+        foreach (var context in htlcTransactions)
+        {
+            // We are the counterparty of this HTLC transaction: SINGLE|ANYONECANPAY with anchors (BOLT 3)
+            signatures.Add(SignHtlcTransaction(htlcBasepointSecret, context,
+                                               GetCounterpartyHtlcSigHash(context.HasAnchors)));
+        }
+
+        return signatures;
+    }
+
+    /// <inheritdoc />
+    public void ValidateLocalHtlcSignatures(ChannelId channelId, IReadOnlyList<HtlcSigningContext> htlcTransactions,
+                                            IReadOnlyList<CompactSignature> signatures)
+    {
+        ArgumentNullException.ThrowIfNull(htlcTransactions);
+        ArgumentNullException.ThrowIfNull(signatures);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        // BOLT 2: htlc_signatures holds exactly one signature per HTLC output of the new commitment
+        if (signatures.Count != htlcTransactions.Count)
+            throw new SignerException(
+                $"Expected {htlcTransactions.Count} HTLC signatures but received {signatures.Count}", channelId,
+                "Wrong number of htlc_signatures");
+
+        if (htlcTransactions.Count == 0)
+            return;
+
+        if (signingInfo.RemoteHtlcBasepoint is null)
+            throw new SignerException("The remote htlc_basepoint is not known", channelId, "Internal error");
+
+        for (var i = 0; i < htlcTransactions.Count; i++)
+        {
+            var context = htlcTransactions[i];
+            var signature = ParseLowSSignature(channelId, signatures[i], i);
+
+            // The peer's HTLC key for our commitment: remote_htlc_basepoint tweaked by our per-commitment point
+            var remoteHtlcPubKey = _keyDerivationService.DerivePublicKey(signingInfo.RemoteHtlcBasepoint.Value,
+                                                                         context.PerCommitmentPoint);
+            var sigHash = ComputeHtlcSigHash(context, GetCounterpartyHtlcSigHash(context.HasAnchors));
+
+            if (!new PubKey(remoteHtlcPubKey).Verify(sigHash, signature))
+                throw new SignerException($"HTLC signature {i} is invalid", channelId,
+                                          "Invalid htlc_signature provided");
+        }
+    }
+
+    /// <inheritdoc />
+    public CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(htlcTransaction);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        // The holder's own signature on its HTLC transaction is always SIGHASH_ALL
+        using var htlcBasepointSecret = GetHtlcBasepointSecret(signingInfo.ChannelKeyIndex);
+        return SignHtlcTransaction(htlcBasepointSecret, htlcTransaction, SigHash.All);
     }
 
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction)
@@ -516,6 +605,80 @@ public class LocalLightningSigner : ILightningSigner
         var channelKey = ExtKey.CreateFromBytes(channelExtKey);
 
         return GenerateFundingPrivateKey(channelKey);
+    }
+
+    /// <summary>
+    /// The channel's <c>htlc_basepoint_secret</c> (m/4' of the channel key).
+    /// </summary>
+    protected virtual Key GetHtlcBasepointSecret(uint channelKeyIndex)
+    {
+        var channelExtKey = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex);
+        var channelKey = ExtKey.CreateFromBytes(channelExtKey);
+
+        return channelKey.Derive(HtlcDerivationIndex, true).PrivateKey;
+    }
+
+    /// <summary>
+    /// The per-commitment secret of commitment <paramref name="commitmentNumber"/>. Private on purpose: the only way
+    /// out of the signer is <see cref="RevealPerCommitmentSecret"/>, which enforces the revocation guard (NL-189).
+    /// </summary>
+    private Secret DerivePerCommitmentSecret(uint channelKeyIndex, ulong commitmentNumber)
+    {
+        // Derive the per-commitment seed from the channel key
+        var channelExtKey = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex);
+        var channelKey = ExtKey.CreateFromBytes(channelExtKey);
+        using var perCommitmentSeed = channelKey.Derive(PerCommitmentSeedDerivationIndex, true).PrivateKey;
+
+        // BOLT 3: commitment n uses the per-commitment secret at index 2^48-1-n (NL-187)
+        return _keyDerivationService.GeneratePerCommitmentSecret(
+            perCommitmentSeed.ToBytes(), PerCommitmentIndex.From(commitmentNumber));
+    }
+
+    private ChannelSigningInfo GetRegisteredSigningInfo(ChannelId channelId)
+    {
+        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+            throw new SignerException($"Channel {channelId} not registered with signer", channelId, "Internal error");
+
+        return signingInfo;
+    }
+
+    private static SigHash GetCounterpartyHtlcSigHash(bool hasAnchors) =>
+        hasAnchors ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
+
+    private CompactSignature SignHtlcTransaction(Key htlcBasepointSecret, HtlcSigningContext context, SigHash sigHash)
+    {
+        // BOLT 3: htlcprivkey = htlc_basepoint_secret + SHA256(per_commitment_point || htlc_basepoint)
+        var htlcPrivKey = _keyDerivationService.DerivePrivateKey(htlcBasepointSecret.ToBytes(),
+                                                                 context.PerCommitmentPoint);
+        using var htlcKey = new Key(htlcPrivKey);
+
+        // RFC 6979 without low-R grinding, like SignChannelTransaction; the sighash flag is added by the tx builder
+        var signature = htlcKey.Sign(ComputeHtlcSigHash(context, sigHash), new SigningOptions(sigHash, false));
+        return signature.Signature.MakeCanonical().ToCompact();
+    }
+
+    private uint256 ComputeHtlcSigHash(HtlcSigningContext context, SigHash sigHash)
+    {
+        var built = context.HtlcTransaction;
+        var tx = Transaction.Load(built.Transaction.RawTxBytes, _network);
+        if (tx.Inputs.Count != 1)
+            throw new ArgumentException("An HTLC transaction has exactly one input", nameof(context));
+
+        var witnessScript = new Script((byte[])built.SpentWitnessScript);
+        var spentOutput = new TxOut(Money.Satoshis(built.SpentAmount.Satoshi), witnessScript.WitHash.ScriptPubKey);
+        return tx.GetSignatureHash(witnessScript, 0, sigHash, spentOutput, HashVersion.WitnessV0);
+    }
+
+    private static ECDSASignature ParseLowSSignature(ChannelId channelId, CompactSignature signature, int index)
+    {
+        if (!ECDSASignature.TryParseFromCompact(signature, out var ecdsaSignature))
+            throw new SignerException($"HTLC signature {index} is not a valid compact signature", channelId,
+                                      "Signature format error");
+
+        if (!ecdsaSignature.IsLowS)
+            throw new SignerException($"HTLC signature {index} is not low S", channelId, "Signature is malleable");
+
+        return ecdsaSignature;
     }
 
     private static Key GenerateFundingPrivateKey(ExtKey extKey)
