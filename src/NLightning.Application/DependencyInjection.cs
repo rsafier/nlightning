@@ -7,6 +7,7 @@ namespace NLightning.Application;
 
 using Channels.Handlers;
 using Channels.Handlers.Interfaces;
+using Channels.Interfaces;
 using Channels.Managers;
 using Channels.Services;
 using Domain.Bitcoin.Interfaces;
@@ -62,7 +63,7 @@ public static class DependencyInjection
 
         // Singleton services (one instance throughout the application)
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
-        services.AddSingleton<IChannelManager>(sp =>
+        services.AddSingleton(sp =>
         {
             var blockchainMonitor = sp.GetRequiredService<IBlockchainMonitor>();
             var channelLockProvider = sp.GetRequiredService<IChannelLockProvider>();
@@ -72,9 +73,12 @@ public static class DependencyInjection
             return new ChannelManager(blockchainMonitor, channelLockProvider, channelMemoryRepository,
                                       loggerFactory.CreateLogger<ChannelManager>(), lightningSigner, sp);
         });
+        services.AddSingleton<IChannelManager>(sp => sp.GetRequiredService<ChannelManager>());
+        services.AddSingleton<IChannelMessagePublisher>(sp => sp.GetRequiredService<ChannelManager>());
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddCommitmentEngineServices();
         services.AddChannelStateTransitionServices();
+        services.AddChannelOperationsServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers

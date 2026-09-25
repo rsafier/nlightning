@@ -269,6 +269,85 @@ public class ChannelManagerNormalOperationTests
     }
 
     [Fact]
+    public async Task Given_ReloadedChannelWithPendingEvents_When_Registered_Then_TheyAreReplayedToTheSwitchOutsideTheLock()
+    {
+        // Arrange - I8: a crash after the revoke_and_ack that locked an HTLC in (event not handled yet), and a settled
+        // HTLC whose archive was not pruned yet
+        var lockedIn = _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(1));
+        var settled = new HtlcRecord(HtlcDirection.Outgoing, 7, 10_000_000, HashOf(SecretOf(2)), 600,
+                                     HtlcState.RcvdRemoveAckRevocation, HtlcRemoval.Fail(new byte[292]));
+        _context.ChannelStateDbRepository
+                .Setup(r => r.LoadAsync(TestChannelId, It.IsAny<CommitmentParams>()))
+                .ReturnsAsync(new PersistedChannelState(_context.State, [settled], null,
+                                                        LastSentCommitmentMessage.None, []));
+        var replayed = new List<IChannelDomainEvent>();
+        var lockWasFree = true;
+        _htlcSwitch.Setup(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()))
+                   .Returns(async (IChannelDomainEvent channelEvent, CancellationToken _) =>
+                    {
+                        replayed.Add(channelEvent);
+                        using var cts = new CancellationTokenSource(s_timeout);
+                        try
+                        {
+                            using var channelLock = await _lockProvider.AcquireAsync(TestChannelId, cts.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            lockWasFree = false;
+                        }
+                    });
+        _services.AddSingleton(_htlcSwitch.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        await channelManager.RegisterExistingChannelAsync(_context.Channel);
+
+        // Assert
+        Assert.True(lockWasFree);
+        Assert.Collection(replayed,
+                          e => Assert.Equal(lockedIn.Id, Assert.IsType<IncomingHtlcLockedIn>(e).HtlcId),
+                          e => Assert.Equal(7UL, Assert.IsType<OutgoingHtlcFailed>(e).HtlcId),
+                          e => Assert.Equal(7UL, Assert.IsType<OutgoingHtlcSettled>(e).HtlcId));
+    }
+
+    [Fact]
+    public async Task Given_TheStateCannotBeRead_When_Registered_Then_TheChannelIsStillRegistered()
+    {
+        // Arrange - one unreadable channel must not stop the startup
+        _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(1));
+        _context.ChannelStateDbRepository
+                .Setup(r => r.LoadAsync(TestChannelId, It.IsAny<CommitmentParams>()))
+                .ThrowsAsync(new InvalidOperationException("legacy HTLC rows"));
+        _services.AddSingleton(_htlcSwitch.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        await channelManager.RegisterExistingChannelAsync(_context.Channel);
+
+        // Assert
+        _context.ChannelMemoryRepository.Verify(r => r.AddChannel(_context.Channel), Times.Once);
+        _htlcSwitch.Verify(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    [Fact]
+    public void Given_Messages_When_Published_Then_TheyAreRaisedInOrder()
+    {
+        // Arrange - the send side (IChannelOperations, commit scheduler) publishes through the channel manager
+        var channelManager = CreateChannelManager();
+        var raised = new List<(CompactPubKey Peer, IChannelMessage Message)>();
+        channelManager.OnResponseMessageReady += (_, args) => raised.Add((args.PeerPubKey, args.ResponseMessage));
+        var first = _context.MessageFactory.CreateUpdateFeeMessage(TestChannelId, 1);
+        var second = _context.MessageFactory.CreateUpdateFeeMessage(TestChannelId, 2);
+
+        // Act
+        channelManager.Publish(PeerNodeId, [first, second]);
+
+        // Assert
+        Assert.Equal([(PeerNodeId, (IChannelMessage)first), (PeerNodeId, second)], raised);
+    }
+
+    [Fact]
     public async Task Given_FailedChannel_When_Registered_Then_ItIsLoadedIntoMemory()
     {
         // Arrange - a failed channel stays known, so its updates are refused and its error can be re-sent

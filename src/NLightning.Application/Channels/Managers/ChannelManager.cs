@@ -5,6 +5,7 @@ namespace NLightning.Application.Channels.Managers;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Constants;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
@@ -22,9 +23,10 @@ using Domain.Serialization.Interfaces;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Interfaces;
 using Services;
 
-public class ChannelManager : IChannelManager
+public class ChannelManager : IChannelManager, IChannelMessagePublisher
 {
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -48,12 +50,34 @@ public class ChannelManager : IChannelManager
         blockchainMonitor.OnTransactionConfirmed += HandleFundingConfirmationAsync;
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// After the registration (and outside the channel's lock) the channel's pending domain events are re-derived from
+    /// the persisted HTLC states and handed to the HTLC switch (invariant I8): an HTLC locked in before a crash is
+    /// resolved, and a settled HTLC is pruned. The switch is idempotent.
+    /// </remarks>
     public async Task RegisterExistingChannelAsync(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
-        // Under the channel's lock, like every other channel mutation (a block event may already run for it)
-        using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
+        using var scope = _serviceProvider.CreateScope();
+        using (await _channelLockProvider.AcquireAsync(channel.ChannelId))
+            await RegisterExistingChannelLockedAsync(scope, channel);
+
+        await RaiseDomainEventsAsync(scope);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Raises <see cref="OnResponseMessageReady"/> for each message; call it while holding the channel's lock.
+    /// </remarks>
+    public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages)
+    {
+        ArgumentNullException.ThrowIfNull(messages);
+        RaiseResponseMessages(peerPubKey, messages);
+    }
+
+    private async Task RegisterExistingChannelLockedAsync(IServiceScope scope, ChannelModel channel)
+    {
 
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
@@ -66,7 +90,10 @@ public class ChannelManager : IChannelManager
         // The repository attaches the commitment snapshot. The peer is not connected yet, so its unsigned updates are
         // reverted now and that is persisted before any channel_reestablish (BOLT 2 retransmission, plan §3.11)
         if (channel.Commitments is not null)
+        {
             await RevertUncommittedAsync(channel);
+            await QueuePendingDomainEventsAsync(scope, channel);
+        }
 
         switch (channel.State)
         {
@@ -124,6 +151,35 @@ public class ChannelManager : IChannelManager
         {
             _logger.LogError(e, "Failed to revert the uncommitted peer updates of channel {ChannelId}",
                              channel.ChannelId);
+        }
+    }
+
+    /// <summary>
+    /// Queues the events still pending in a reloaded channel (<see cref="ChannelDomainEvents.DerivePending(Domain.Channels.Commitments.ChannelCommitments, IEnumerable{Domain.Channels.Commitments.HtlcRecord})"/>
+    /// over its open HTLCs and the settled ones not pruned yet) for the switch. A channel whose records can't be read
+    /// or derived (legacy states) is logged and skipped: it must not stop the other channels.
+    /// </summary>
+    private async Task QueuePendingDomainEventsAsync(IServiceScope scope, ChannelModel channel)
+    {
+        if (channel.State != ChannelState.Open)
+            return;
+
+        try
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channel.ChannelId,
+                                                                                channel.Commitments!.Params);
+            var events = ChannelDomainEvents.DerivePending(channel.Commitments, persisted?.SettledHtlcs);
+            if (events.Count == 0)
+                return;
+
+            scope.ServiceProvider.GetRequiredService<ChannelDomainEventQueue>().Enqueue(events);
+            _logger.LogInformation("Replaying {Count} pending HTLC event(s) of channel {ChannelId}", events.Count,
+                                   channel.ChannelId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not derive the pending HTLC events of channel {ChannelId}", channel.ChannelId);
         }
     }
 

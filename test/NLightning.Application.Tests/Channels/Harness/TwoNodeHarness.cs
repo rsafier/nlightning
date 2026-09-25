@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -9,8 +10,10 @@ namespace NLightning.Application.Tests.Channels.Harness;
 
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
+using Application.Channels.Interfaces;
 using Application.Channels.Managers;
 using Application.Channels.Services;
+using Application.Channels.Switch;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
@@ -33,6 +36,10 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Onion.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -46,9 +53,10 @@ using Infrastructure.Crypto.Hashes;
 /// every commitment a node verifies is recorded with its txid (invariant I7).
 /// </summary>
 /// <remarks>
-/// The send side (N6-T2's <c>IChannelOperations</c> and commit scheduler) does not exist yet, so
-/// <see cref="HarnessNode.SendAsync"/> plays it: under the channel's lock, apply one engine operation, persist it, queue
-/// its wire message, and sign at once when changes are pending.
+/// Each node's send side is the production <see cref="ChannelOperationsService"/> and <see cref="CommitScheduler"/>
+/// (N6-T2, no debounce), publishing through its <see cref="ChannelManager"/>. The HTLC switch records every event and,
+/// with <c>localOnlySwitch</c>, hands it to the production <see cref="LocalOnlyHtlcSwitch"/> (with a fake Sphinx peel
+/// and a fake error onion, since this project has no serializer for failure messages).
 /// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class TwoNodeHarness : IDisposable
@@ -56,6 +64,7 @@ internal sealed class TwoNodeHarness : IDisposable
     public const ulong FundingSatoshis = 2_000_000;
     public const ulong PushSatoshis = 800_000;
     public const uint InitialFeeratePerKw = 2_500;
+    public const uint BlockHeight = 500;
 
     public static readonly ChannelId ChannelId = new(Enumerable.Repeat((byte)0x6B, 32).ToArray());
     public static readonly byte[] Onion = new byte[1366];
@@ -63,10 +72,10 @@ internal sealed class TwoNodeHarness : IDisposable
     public HarnessNode Alice { get; }
     public HarnessNode Bob { get; }
 
-    public TwoNodeHarness(bool hasAnchors = false)
+    public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false)
     {
-        Alice = new HarnessNode("Alice", 0xA1);
-        Bob = new HarnessNode("Bob", 0xB0);
+        Alice = new HarnessNode("Alice", 0xA1, localOnlySwitch);
+        Bob = new HarnessNode("Bob", 0xB0, localOnlySwitch);
         Alice.Peer = Bob;
         Bob.Peer = Alice;
 
@@ -87,20 +96,31 @@ internal sealed class TwoNodeHarness : IDisposable
 
     /// <summary>
     /// Delivers queued messages, one per side in turn (so messages cross like on a real link), until both outboxes are
-    /// empty.
+    /// empty and neither commit scheduler has a signature waiting.
     /// </summary>
     public async Task PumpAsync()
     {
         for (var steps = 0; steps < 10_000; steps++)
         {
+            await Alice.Scheduler.WhenIdleAsync();
+            await Bob.Scheduler.WhenIdleAsync();
             var aliceSent = await Alice.DeliverNextAsync();
             var bobSent = await Bob.DeliverNextAsync();
-            if (!aliceSent && !bobSent)
+            if (aliceSent || bobSent)
+                continue;
+
+            await Alice.Scheduler.WhenIdleAsync();
+            await Bob.Scheduler.WhenIdleAsync();
+            if (Alice.OutboxIsEmpty && Bob.OutboxIsEmpty)
                 return;
         }
 
         throw new InvalidOperationException("The message exchange did not converge");
     }
+
+    /// <summary>The <c>reason</c> the fake error onion returns: a marker, the failure code and its data.</summary>
+    public static byte[] FakeErrorPacket(FailureMessage message) =>
+        [0xEE, (byte)((ushort)message.Code >> 8), (byte)message.Code, .. message.Data.ToArray()];
 
     public static Secret Preimage(int tag)
     {
@@ -155,7 +175,7 @@ internal sealed class HarnessNode : IDisposable
 {
     private readonly ServiceProvider _provider;
     private readonly InMemoryChannelRepository _channels = new();
-    private readonly Queue<IChannelMessage> _outbox = new();
+    private readonly ConcurrentQueue<IChannelMessage> _outbox = new();
     private readonly ChannelLockProvider _lockProvider = new();
 
     public string Name { get; }
@@ -164,7 +184,14 @@ internal sealed class HarnessNode : IDisposable
     public ChannelBasepoints Basepoints { get; }
     public ILightningSigner Signer { get; }
     public ChannelManager ChannelManager { get; }
+    public IChannelOperations Operations { get; }
+    public ICommitScheduler Scheduler { get; }
     public InMemoryChannelStateStore Store { get; } = new();
+
+    /// <summary>What the liveness probe answers for the peer (the peer is "connected").</summary>
+    public bool PeerAlive { get; set; } = true;
+
+    public bool OutboxIsEmpty => _outbox.IsEmpty;
     public HarnessNode Peer { get; set; } = null!;
 
     /// <summary>Remote commitments this node signed: (number, txid).</summary>
@@ -185,7 +212,7 @@ internal sealed class HarnessNode : IDisposable
 
     public ChannelCommitments State => Channel.Commitments!;
 
-    public HarnessNode(string name, byte seedTag)
+    public HarnessNode(string name, byte seedTag, bool localOnlySwitch = false)
     {
         Name = name;
         KeyIndex = seedTag;
@@ -211,10 +238,13 @@ internal sealed class HarnessNode : IDisposable
                                                                                 (byte)message.Type]))
                   .Returns(Task.CompletedTask);
 
-        var htlcSwitch = new Mock<IHtlcSwitch>();
-        htlcSwitch.Setup(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()))
-                  .Callback((IChannelDomainEvent channelEvent, CancellationToken _) => Events.Add(channelEvent))
-                  .Returns(Task.CompletedTask);
+        var blockchainMonitor = new Mock<IBlockchainMonitor>();
+        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(TwoNodeHarness.BlockHeight);
+
+        // A final-hop peel with a per-node secret; the error onion only marks the failure it was given
+        var failureOnion = new Mock<IFailureOnionService>();
+        failureOnion.Setup(f => f.CreateErrorPacket(It.IsAny<Secret>(), It.IsAny<FailureMessage>(), It.IsAny<int>()))
+                    .Returns((Secret _, FailureMessage message, int _) => TwoNodeHarness.FakeErrorPacket(message));
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
@@ -234,7 +264,18 @@ internal sealed class HarnessNode : IDisposable
                                                        Verified));
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddSingleton(serializer.Object);
-        services.AddSingleton(htlcSwitch.Object);
+        services.AddSingleton(blockchainMonitor.Object);
+        services.AddSingleton<ISphinxService>(new FinalHopSphinx(new Secret(Enumerable.Repeat(seedTag, 32).ToArray())));
+        services.AddSingleton(failureOnion.Object);
+        services.AddSingleton<IChannelLockProvider>(_lockProvider);
+        services.AddSingleton<IChannelMessagePublisher>(new LazyPublisher(this));
+        services.AddSingleton<IPeerLivenessProbe>(new FlagProbe(this));
+        services.AddChannelOperationsServices();
+        services.Configure<CommitSchedulerOptions>(o => o.Debounce = TimeSpan.Zero);
+        services.AddSingleton<LocalOnlyHtlcSwitch>();
+        services.AddSingleton<IHtlcSwitch>(sp => new RecordingSwitch(
+                                               Events,
+                                               localOnlySwitch ? sp.GetRequiredService<LocalOnlyHtlcSwitch>() : null));
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IChannelMessageHandler<UpdateAddHtlcMessage>, UpdateAddHtlcMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFulfillHtlcMessage>, UpdateFulfillHtlcMessageHandler>();
@@ -252,6 +293,8 @@ internal sealed class HarnessNode : IDisposable
         ChannelManager = new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider, _channels,
                                             NullLogger<ChannelManager>.Instance, Signer, _provider);
         ChannelManager.OnResponseMessageReady += (_, args) => _outbox.Enqueue(args.ResponseMessage);
+        Operations = _provider.GetRequiredService<IChannelOperations>();
+        Scheduler = _provider.GetRequiredService<ICommitScheduler>();
     }
 
     public CompactPubKey Point(ulong commitmentNumber) => Signer.GetPerCommitmentPoint(KeyIndex, commitmentNumber);
@@ -264,36 +307,6 @@ internal sealed class HarnessNode : IDisposable
                                                                                          Peer.Point(1)));
         _channels.AddChannel(channel);
         Store.Seed(channel.Commitments!);
-    }
-
-    /// <summary>
-    /// Plays the (not yet existing) channel operations: one engine operation under the channel's lock, persisted, its
-    /// wire message queued, then a commitment_signed if something is pending.
-    /// </summary>
-    public async Task SendAsync(Func<ChannelCommitments, CommitmentsResult> operation, bool sign = true)
-    {
-        using var channelLock = await _lockProvider.AcquireAsync(TwoNodeHarness.ChannelId);
-        using var scope = _provider.CreateScope();
-        var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
-        var channel = Channel;
-
-        var result = operation(channel.Commitments!);
-        await transitions.CommitAsync(channel, result);
-        foreach (var outbound in result.Outbound)
-            _outbox.Enqueue(transitions.ToWireMessage(channel, outbound));
-
-        if (sign && await transitions.SignIfPendingAsync(channel) is { } commitmentSigned)
-            _outbox.Enqueue(commitmentSigned);
-    }
-
-    /// <summary>Signs now if something is pending (a commit scheduler tick).</summary>
-    public async Task SignAsync()
-    {
-        using var channelLock = await _lockProvider.AcquireAsync(TwoNodeHarness.ChannelId);
-        using var scope = _provider.CreateScope();
-        var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
-        if (await transitions.SignIfPendingAsync(Channel) is { } commitmentSigned)
-            _outbox.Enqueue(commitmentSigned);
     }
 
     /// <summary>Hands the oldest queued message to the peer's channel manager.</summary>
@@ -309,6 +322,57 @@ internal sealed class HarnessNode : IDisposable
     }
 
     public void Dispose() => _provider.Dispose();
+
+    /// <summary>Publishes through the node's channel manager, which is built after the provider.</summary>
+    private sealed class LazyPublisher(HarnessNode node) : IChannelMessagePublisher
+    {
+        public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages) =>
+            node.ChannelManager.Publish(peerPubKey, messages);
+    }
+
+    /// <summary>"Ping before commit" answered by <see cref="PeerAlive"/>.</summary>
+    private sealed class FlagProbe(HarnessNode node) : IPeerLivenessProbe
+    {
+        public Task<bool> IsAliveAsync(CompactPubKey peerPubKey, CancellationToken cancellationToken = default) =>
+            Task.FromResult(node.PeerAlive);
+    }
+
+    /// <summary>Records every event, then hands it to the production switch when there is one.</summary>
+    private sealed class RecordingSwitch(List<IChannelDomainEvent> events, IHtlcSwitch? inner) : IHtlcSwitch
+    {
+        public async Task HandleAsync(IChannelDomainEvent channelEvent, CancellationToken cancellationToken)
+        {
+            lock (events)
+                events.Add(channelEvent);
+            if (inner is not null)
+                await inner.HandleAsync(channelEvent, cancellationToken);
+        }
+    }
+
+    /// <summary>Every onion peels as a final hop with this node's fixed shared secret (Moq can't mock span arguments).
+    /// </summary>
+    private sealed class FinalHopSphinx(Secret sharedSecret) : ISphinxService
+    {
+        public OnionPacket Construct(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
+                                     ReadOnlySpan<byte> associatedData, int hopPayloadsLength,
+                                     OnionPacketKind packetKind) => throw new NotSupportedException();
+
+        public ConstructedOnion ConstructWithSharedSecrets(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
+                                                           ReadOnlySpan<byte> associatedData, int hopPayloadsLength,
+                                                           OnionPacketKind packetKind) =>
+            throw new NotSupportedException();
+
+        public IReadOnlyList<Secret> ComputeSharedSecrets(IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey) =>
+            throw new NotSupportedException();
+
+        public PeeledOnion PeelAsLocalNode(OnionPacket packet, ReadOnlySpan<byte> associatedData,
+                                           CompactPubKey? pathKey, OnionPacketKind packetKind) =>
+            new(new byte[] { 2, 0 }, sharedSecret, null);
+
+        public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
+                                CompactPubKey? pathKey, OnionPacketKind packetKind) =>
+            throw new NotSupportedException();
+    }
 
     /// <summary>The production signer port, recording the txid of every commitment it signs.</summary>
     private sealed class RecordingSigner(CommitmentSigningService service, IChannelMemoryRepository channels,
@@ -359,7 +423,13 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private ChannelCommitments? _staged;
     private IReadOnlyList<ShachainEntry>? _stagedShachain;
 
+    private readonly Dictionary<HtlcKey, Secret> _onionSecrets = [];
+    private readonly List<HtlcKey> _stagedPrunes = [];
+
     public ChannelCommitments? Committed { get; private set; }
+
+    /// <summary>The archived HTLCs whose pruning was saved.</summary>
+    public List<HtlcKey> Pruned { get; } = [];
     public IReadOnlyList<ShachainEntry> CommittedShachain { get; private set; } = [];
     public int Saves { get; private set; }
 
@@ -373,6 +443,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
             CommittedShachain = _stagedShachain;
         _staged = null;
         _stagedShachain = null;
+        Pruned.AddRange(_stagedPrunes);
+        _stagedPrunes.Clear();
         Saves++;
     }
 
@@ -393,14 +465,20 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params) =>
         throw new NotSupportedException();
 
-    public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret) =>
-        throw new NotSupportedException();
+    public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret)
+    {
+        _onionSecrets[htlc] = sharedSecret;
+        return Task.CompletedTask;
+    }
 
     public Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc) =>
-        throw new NotSupportedException();
+        Task.FromResult(_onionSecrets.TryGetValue(htlc, out var secret) ? secret : (Secret?)null);
 
-    public Task PruneSettledHtlcsAsync(ChannelId channelId, IEnumerable<HtlcKey> htlcs) =>
-        throw new NotSupportedException();
+    public Task PruneSettledHtlcsAsync(ChannelId channelId, IEnumerable<HtlcKey> htlcs)
+    {
+        _stagedPrunes.AddRange(htlcs);
+        return Task.CompletedTask;
+    }
 
     public Task<IReadOnlyList<ShachainEntry>> GetByChannelIdAsync(ChannelId channelId) =>
         Task.FromResult(CommittedShachain);

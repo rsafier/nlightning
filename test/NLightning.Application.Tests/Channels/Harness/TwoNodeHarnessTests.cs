@@ -1,18 +1,28 @@
 namespace NLightning.Application.Tests.Channels.Harness;
 
+using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
+using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Payments.ValueObjects;
 using Domain.Protocol.Messages;
-using Infrastructure.Crypto.Hashes;
+using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Onion.ValueObjects;
 
 /// <summary>
 /// BOLT2 plan N6-T4: two in-process nodes run the whole commitment dance through their real channel managers,
-/// normal-operation handlers, engine ports and signers: 30 HTLCs each way, then fulfills and fails, then a fee
-/// update. Every commitment one side signed was verified by the other with the same txid (invariant I7).
+/// normal-operation handlers, engine ports and signers, and (N6-T2) their real channel operations and commit
+/// schedulers: 30 HTLCs each way, then fulfills and fails, then a fee update. Every commitment one side signed was
+/// verified by the other with the same txid (invariant I7).
 /// </summary>
 public class TwoNodeHarnessTests
 {
     private const int HtlcsPerSide = 30;
+    private const uint CltvExpiry = 700;
+
+    private static readonly OnionPacket s_onion = new(TwoNodeHarness.Onion);
 
     [Theory]
     [InlineData(false)]
@@ -32,8 +42,8 @@ public class TwoNodeHarnessTests
         {
             var amountMsat = AmountMsat(i);
             aliceAmounts.Add(amountMsat);
-            await alice.SendAsync(c => c.SendAdd(amountMsat, TwoNodeHarness.Hash(TwoNodeHarness.Preimage(i)), 700,
-                                                 TwoNodeHarness.Onion));
+            var id = await OfferAsync(alice, amountMsat, TwoNodeHarness.Preimage(i));
+            Assert.Equal((ulong)i, id);
         }
 
         await harness.PumpAsync();
@@ -44,8 +54,7 @@ public class TwoNodeHarnessTests
         {
             var amountMsat = AmountMsat(i + 7);
             bobAmounts.Add(amountMsat);
-            var preimage = TwoNodeHarness.Preimage(1_000 + i);
-            await bob.SendAsync(c => c.SendAdd(amountMsat, TwoNodeHarness.Hash(preimage), 700, TwoNodeHarness.Onion));
+            await OfferAsync(bob, amountMsat, TwoNodeHarness.Preimage(1_000 + i));
 
             // Interleave: Alice's side runs a few messages while Bob keeps adding
             if (i % 10 == 9)
@@ -63,23 +72,23 @@ public class TwoNodeHarnessTests
                    h => Assert.True(h.State is HtlcState.SentAddAckRevocation or HtlcState.RcvdAddAckRevocation));
 
         // Act 2 - each side fulfills the even and fails the odd HTLCs it received, interleaved
+        var ct = TestContext.Current.CancellationToken;
         for (ulong id = 0; id < HtlcsPerSide; id++)
         {
-            var htlcId = id;
-            var alicePreimage = TwoNodeHarness.Preimage((int)id);
-            var bobPreimage = TwoNodeHarness.Preimage(1_000 + (int)id);
-            if (htlcId % 2 == 0)
+            if (id % 2 == 0)
             {
-                await bob.SendAsync(c => c.SendFulfill(htlcId, alicePreimage, new Sha256()));
-                await alice.SendAsync(c => c.SendFulfill(htlcId, bobPreimage, new Sha256()));
+                await bob.Operations.FulfillHtlcAsync(TwoNodeHarness.ChannelId, id,
+                                                      TwoNodeHarness.Preimage((int)id), ct);
+                await alice.Operations.FulfillHtlcAsync(TwoNodeHarness.ChannelId, id,
+                                                        TwoNodeHarness.Preimage(1_000 + (int)id), ct);
             }
             else
             {
-                await bob.SendAsync(c => c.SendFail(htlcId, new byte[292]));
-                await alice.SendAsync(c => c.SendFail(htlcId, new byte[292]));
+                await bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292], ct);
+                await alice.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292], ct);
             }
 
-            if (htlcId % 7 == 6)
+            if (id % 7 == 6)
                 await harness.PumpAsync();
         }
 
@@ -87,7 +96,7 @@ public class TwoNodeHarnessTests
         AssertAgreement(harness);
 
         // Act 3 - the funder doubles the feerate
-        await alice.SendAsync(c => c.SendFee(TwoNodeHarness.InitialFeeratePerKw * 2));
+        await alice.Operations.UpdateFeeAsync(TwoNodeHarness.ChannelId, TwoNodeHarness.InitialFeeratePerKw * 2, ct);
         await harness.PumpAsync();
         AssertAgreement(harness);
 
@@ -110,7 +119,7 @@ public class TwoNodeHarnessTests
         Assert.NotEmpty(alice.Store.CommittedShachain);
         Assert.NotEmpty(bob.Store.CommittedShachain);
 
-        // The dance ran through every message type, and no revoke_and_ack went out without a commitment first
+        // The dance ran through every message type
         Assert.Contains(bob.Received, m => m is UpdateFeeMessage);
         Assert.Contains(alice.Received, m => m is UpdateFulfillHtlcMessage);
         Assert.Contains(alice.Received, m => m is UpdateFailHtlcMessage);
@@ -124,16 +133,100 @@ public class TwoNodeHarnessTests
         using var harness = new TwoNodeHarness();
 
         // Act
-        await harness.Alice.SendAsync(c => c.SendAdd(50_000_000, TwoNodeHarness.Hash(TwoNodeHarness.Preimage(1)), 700,
-                                                     TwoNodeHarness.Onion));
-        await harness.Bob.SendAsync(c => c.SendAdd(40_000_000, TwoNodeHarness.Hash(TwoNodeHarness.Preimage(2)), 700,
-                                                   TwoNodeHarness.Onion));
+        await OfferAsync(harness.Alice, 50_000_000, TwoNodeHarness.Preimage(1));
+        await OfferAsync(harness.Bob, 40_000_000, TwoNodeHarness.Preimage(2));
+        await harness.Alice.Scheduler.WhenIdleAsync();
+        await harness.Bob.Scheduler.WhenIdleAsync();
         await harness.PumpAsync();
 
         // Assert
         AssertAgreement(harness);
         Assert.Single(harness.Alice.Events.OfType<IncomingHtlcLockedIn>());
         Assert.Single(harness.Bob.Events.OfType<IncomingHtlcLockedIn>());
+    }
+
+    [Fact]
+    public async Task Given_LocalOnlySwitches_When_AnHtlcIsOffered_Then_ItIsFailedBackAndBothCommitmentNumbersReachTwo()
+    {
+        // Arrange - the N6-T5 flow in process: Bob can neither receive nor forward, so he fails the HTLC back with
+        // incorrect_or_unknown_payment_details, encrypted with the onion's shared secret
+        using var harness = new TwoNodeHarness(localOnlySwitch: true);
+        var alice = harness.Alice;
+        var bob = harness.Bob;
+        const ulong amountMsat = 25_000_000;
+
+        // Act
+        var id = await OfferAsync(alice, amountMsat, TwoNodeHarness.Preimage(7));
+        await harness.PumpAsync();
+
+        // Assert - Alice learnt the irrevocable failure with Bob's reason; nothing is left and balances are back
+        var failed = Assert.Single(alice.Events.OfType<OutgoingHtlcFailed>());
+        Assert.Equal(id, failed.HtlcId);
+        var expectedReason = TwoNodeHarness.FakeErrorPacket(
+            FailureMessage.IncorrectOrUnknownPaymentDetails(LightningMoney.MilliSatoshis(amountMsat),
+                                                            TwoNodeHarness.BlockHeight));
+        Assert.Equal(expectedReason, failed.Removal.Reason.ToArray());
+        Assert.Single(bob.Events.OfType<IncomingHtlcLockedIn>());
+        Assert.Contains(alice.Received, m => m is UpdateFailHtlcMessage);
+
+        Assert.Empty(alice.State.Htlcs);
+        Assert.Empty(bob.State.Htlcs);
+        Assert.Equal(TwoNodeHarness.FundingSatoshis * 1_000 - TwoNodeHarness.PushSatoshis * 1_000,
+                     alice.State.LocalBalanceMsat);
+        AssertAgreement(harness);
+        Assert.Equal(2UL, alice.State.LocalCommit.Number);
+        Assert.Equal(2UL, alice.State.RemoteCommit.Number);
+        Assert.Equal(2UL, bob.State.LocalCommit.Number);
+        Assert.Equal(2UL, bob.State.RemoteCommit.Number);
+
+        // Bob stored the onion secret with the HTLC; Alice's switch pruned the settled HTLC's archive (NL-243)
+        Assert.Equal(new Secret(Enumerable.Repeat((byte)0xB0, 32).ToArray()),
+                     await bob.Store.GetOnionSharedSecretAsync(TwoNodeHarness.ChannelId,
+                                                               new HtlcKey(HtlcDirection.Incoming, id)));
+        Assert.Equal([new HtlcKey(HtlcDirection.Outgoing, id)], alice.Store.Pruned);
+    }
+
+    [Fact]
+    public async Task Given_PeerNotAlive_When_Operating_Then_OfferIsRefusedAndAFailWaitsUnsignedForThePeer()
+    {
+        // Arrange - an HTLC from Alice locked in at Bob, then Bob's peer goes away
+        using var harness = new TwoNodeHarness();
+        var alice = harness.Alice;
+        var bob = harness.Bob;
+        var id = await OfferAsync(alice, 30_000_000, TwoNodeHarness.Preimage(3));
+        await harness.PumpAsync();
+        bob.PeerAlive = false;
+        var signedBefore = bob.Signed.Count;
+
+        // Act
+        var offer = OfferAsync(bob, 10_000_000, TwoNodeHarness.Preimage(4));
+        await bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292],
+                                           TestContext.Current.CancellationToken);
+        await bob.Scheduler.WhenIdleAsync();
+
+        // Assert - the offer is refused before anything is persisted; the fail is persisted but not signed
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
+        Assert.Equal(0UL, bob.State.LocalNextHtlcId);
+        Assert.Equal(HtlcState.SentRemoveHtlc, bob.State.GetHtlc(HtlcDirection.Incoming, id)!.State);
+        Assert.Same(bob.State, bob.Store.Committed);
+        Assert.Equal(signedBefore, bob.Signed.Count);
+
+        // Act 2 - the peer is back: the next scheduler run signs the pending fail
+        bob.PeerAlive = true;
+        Assert.True(await bob.Scheduler.SignNowAsync(TwoNodeHarness.ChannelId, TestContext.Current.CancellationToken));
+        await harness.PumpAsync();
+
+        // Assert 2
+        AssertAgreement(harness);
+        Assert.Single(alice.Events.OfType<OutgoingHtlcFailed>());
+    }
+
+    private static Task<ulong> OfferAsync(HarnessNode node, ulong amountMsat, Secret preimage)
+    {
+        var hash = TwoNodeHarness.Hash(preimage);
+        return node.Operations.OfferHtlcAsync(TwoNodeHarness.ChannelId, LightningMoney.MilliSatoshis(amountMsat), hash,
+                                              CltvExpiry, s_onion, null, HtlcOrigin.Local(hash),
+                                              TestContext.Current.CancellationToken);
     }
 
     /// <summary>
