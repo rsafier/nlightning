@@ -36,7 +36,7 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - `dotnet test test/NLightning.Infrastructure.Serialization.Tests/NLightning.Infrastructure.Serialization.Tests.csproj --no-build` (145 pass)
 - One test: add `--filter "FullyQualifiedName~PingMessageTests"`
 - BOLT 1 BigSize vectors: `test/.../Vectors/BigSize.txt` (all 18 vectors active, including the 3 non-canonical-encoding failures).
-- No serializer tests for OpenChannel1/AcceptChannel1/FundingCreated/FundingSigned yet.
+- No serializer tests for FundingCreated/FundingSigned yet (OpenChannel1/AcceptChannel1 are covered by `Messages/OpenChannel1MessageTests.cs` and `MessageExtensionStrictnessTests.cs`).
 
 ## Gotchas
 - Deserializers use `stream.Position/Length` for optional TLVs and the onion: they need a seekable, one-message `MemoryStream`, never a `NetworkStream`.
@@ -45,7 +45,7 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 - `RemoteAddressTlv` type 5 (DNS hostname) conversion is broken: Domain length is `3 + len` (spec: `4 + len`) and the converter overwrites a hostname byte. IPv4/IPv6/Tor v3 are fine.
 - Every message-type serializer that reads a TLV extension uses `DeserializeStrictAsync` with its own `s_knownExtensionTypes` set (unknown even types fail, BOLT 1). A new message with a TLV extension must do the same; the open `DeserializeAsync` is for streams whose namespace is not known. `DeserializeStrictAsync` returns an empty stream (never `null`), so test with `extension.Any()`. `BigSizeTypeSerializer` is canonical (throws `ArgumentException(NonCanonicalErrorMessage)`). `TlvSerializer` rejects length > remaining bytes before allocating.
 - `PingPayloadSerializer`/`PongPayloadSerializer` check but don't consume the ignored bytes.
-- `OpenChannel1MessageTypeSerializer` requires a `channel_type` TLV.
+- `OpenChannel1MessageTypeSerializer`/`AcceptChannel1MessageTypeSerializer` treat `channel_type` as optional on the wire (`ChannelTypeTlv` is nullable); BOLT 2's "fail the channel" for a missing one is enforced by `ChannelOpenValidator.PerformMandatoryChecks`.
 - Warning reuses `ErrorPayload` (`PayloadSerializerFactory` maps `MessageTypes.Warning`).
 - File names differ from class names (`*MessageTypeSerializer` / `*PayloadSerializer`): `Messages/Types/UpdateAddHtlcMessageSerializer.cs`, `UpdateFailHtlcMessageSerializer.cs`, `UpdateFufillHtlcMessageSerializer.cs` (typo), `FundingCreatedTypeSerializer.cs`, `FundingSignedTypeSerializer.cs`; `Payloads/UpdateFufillHtlcSerializer.cs` (class `UpdateFulfillHtlcPayloadSerializer`).
 - `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage` bytes in the DB — changing that wire format affects persisted rows.

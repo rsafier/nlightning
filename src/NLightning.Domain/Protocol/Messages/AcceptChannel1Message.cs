@@ -29,7 +29,7 @@ public sealed class AcceptChannel1Message : BaseChannelMessage
     /// </summary>
     public ChannelTypeTlv? ChannelTypeTlv { get; }
 
-    public AcceptChannel1Message(AcceptChannel1Payload payload, ChannelTypeTlv channelTypeTlv,
+    public AcceptChannel1Message(AcceptChannel1Payload payload, ChannelTypeTlv? channelTypeTlv,
                                  UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null)
         : base(MessageTypes.AcceptChannel, payload)
     {
