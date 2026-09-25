@@ -25,6 +25,12 @@ using Infrastructure.Crypto.Interfaces;
 /// </remarks>
 internal sealed class OnionPeeler
 {
+    /// <summary>
+    /// ECDH with the processing node's private key: writes <c>SHA256(compressed(node_key * publicKey))</c> into
+    /// <paramref name="sharedSecret"/>. Lets the node key stay inside its owner (e.g. the secure key manager).
+    /// </summary>
+    public delegate void NodeEcdh(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret);
+
     private readonly IEcdh _ecdh;
     private readonly ISecp256K1Math _secp256K1Math;
 
@@ -37,20 +43,34 @@ internal sealed class OnionPeeler
     /// <summary>
     /// Peels one layer of <paramref name="packet"/> with <paramref name="nodeKey"/>.
     /// </summary>
+    /// <inheritdoc cref="Peel(OnionPacket, ReadOnlySpan{byte}, NodeEcdh, CompactPubKey?, int, bool)"/>
+    public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
+                            CompactPubKey? pathKey, int minPayloadLength, bool reportAsBlinding)
+    {
+        return Peel(packet, associatedData,
+                    (publicKey, sharedSecret) => _ecdh.SecP256K1Dh(nodeKey, publicKey, sharedSecret), pathKey,
+                    minPayloadLength, reportAsBlinding);
+    }
+
+    /// <summary>
+    /// Peels one layer of <paramref name="packet"/>, doing every node-key operation through
+    /// <paramref name="nodeEcdh"/>.
+    /// </summary>
     /// <param name="minPayloadLength">The minimum payload length (2 for payments, 0 for onion messages).</param>
     /// <param name="reportAsBlinding">
     /// Whether every failure must be reported as <c>invalid_onion_blinding</c> (a payment with a path_key).
     /// </param>
     /// <exception cref="OnionException">On any failure, with the BOLT 4 failure code to report.</exception>
-    public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
+    public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, NodeEcdh nodeEcdh,
                             CompactPubKey? pathKey, int minPayloadLength, bool reportAsBlinding)
     {
+        ArgumentNullException.ThrowIfNull(nodeEcdh);
         ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
 
         using var keyGenerator = new SphinxKeyGenerator();
         try
         {
-            return Peel(keyGenerator, packet, associatedData, nodeKey, pathKey, minPayloadLength);
+            return Peel(keyGenerator, packet, associatedData, nodeEcdh, pathKey, minPayloadLength);
         }
         catch (OnionException e) when (reportAsBlinding && e.FailureCode != FailureCode.InvalidOnionBlinding)
         {
@@ -66,7 +86,7 @@ internal sealed class OnionPeeler
     }
 
     private PeeledOnion Peel(SphinxKeyGenerator keyGenerator, OnionPacket packet, ReadOnlySpan<byte> associatedData,
-                             PrivKey nodeKey, CompactPubKey? pathKey, int minPayloadLength)
+                             NodeEcdh nodeEcdh, CompactPubKey? pathKey, int minPayloadLength)
     {
         // 1. Version
         if (packet.Version != OnionConstants.Version)
@@ -84,23 +104,23 @@ internal sealed class OnionPeeler
         var unwrapped = new byte[2 * hopPayloadsLength];
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> computedHmac = stackalloc byte[OnionConstants.HmacLength];
-        byte[]? blindedNodeKey = null;
         byte[]? pathKeySharedSecret = null;
         var succeeded = false;
 
         try
         {
-            // 3. Route blinding: tweak the node key by HMAC("blinded_node_id", ECDH(path_key, node_key))
-            var effectiveNodeKey = nodeKey;
+            // 3. Route blinding: the blinded node key is node_key * HMAC("blinded_node_id", ECDH(path_key, node_key)).
+            // ECDH(node_key * tweak, E) = ECDH(node_key, E * tweak), so tweak E instead and never materialize the key.
+            var ecdhPubKey = ephemeralPubKey;
             if (pathKey.HasValue)
             {
                 pathKeySharedSecret = new byte[CryptoConstants.SecretLen];
-                blindedNodeKey = BlindNodeKey(keyGenerator, packet, nodeKey, pathKey.Value, pathKeySharedSecret);
-                effectiveNodeKey = blindedNodeKey;
+                ecdhPubKey = TweakEphemeralKeyForBlinding(keyGenerator, packet, nodeEcdh, ephemeralPubKey,
+                                                          pathKey.Value, pathKeySharedSecret);
             }
 
             // 4. Shared secret and HMAC check
-            _ecdh.SecP256K1Dh(effectiveNodeKey, ephemeralPubKey, sharedSecret);
+            nodeEcdh(ecdhPubKey, sharedSecret);
 
             keyGenerator.DeriveKey(OnionConstants.Mu, sharedSecret, key);
             keyGenerator.ComputeHmac(key, hopPayloads, associatedData, computedHmac);
@@ -158,13 +178,12 @@ internal sealed class OnionPeeler
             CryptographicOperations.ZeroMemory(key);
             CryptographicOperations.ZeroMemory(computedHmac);
             CryptographicOperations.ZeroMemory(unwrapped);
-            if (blindedNodeKey is not null)
-                CryptographicOperations.ZeroMemory(blindedNodeKey);
         }
     }
 
-    private byte[] BlindNodeKey(SphinxKeyGenerator keyGenerator, OnionPacket packet, PrivKey nodeKey,
-                                CompactPubKey pathKey, byte[] blindingSharedSecret)
+    private byte[] TweakEphemeralKeyForBlinding(SphinxKeyGenerator keyGenerator, OnionPacket packet,
+                                                NodeEcdh nodeEcdh, ReadOnlySpan<byte> ephemeralPubKey,
+                                                CompactPubKey pathKey, byte[] blindingSharedSecret)
     {
         if (!SphinxKeyGenerator.IsValidPublicKey(pathKey))
             throw BadOnion(keyGenerator, packet, FailureCode.InvalidOnionBlinding, "Invalid path key.");
@@ -172,9 +191,9 @@ internal sealed class OnionPeeler
         Span<byte> tweak = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
         {
-            _ecdh.SecP256K1Dh(nodeKey, pathKey, blindingSharedSecret);
+            nodeEcdh(pathKey, blindingSharedSecret);
             keyGenerator.DeriveKey(OnionConstants.BlindedNodeId, blindingSharedSecret, tweak);
-            return _secp256K1Math.MultiplyPrivKey(nodeKey, tweak);
+            return _secp256K1Math.MultiplyPubKey(new CompactPubKey(ephemeralPubKey.ToArray()), tweak);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException)
         {

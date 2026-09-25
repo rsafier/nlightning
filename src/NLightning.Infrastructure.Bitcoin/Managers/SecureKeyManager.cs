@@ -1,11 +1,13 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Managers;
 
+using Crypto.Functions;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Crypto.Constants;
@@ -29,6 +31,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         0xFF, 0x1D, 0x3B, 0xF5, 0x24, 0xA2, 0xB7, 0xA9,
         0xC3, 0x1B, 0x1F, 0x58, 0xE9, 0x48, 0xB5, 0x69
     ];
+
+    private static readonly Ecdh s_ecdh = new();
 
     private readonly string _filePath;
     private readonly object _lastUsedIndexLock = new();
@@ -148,6 +152,21 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     {
         var masterKey = GetMasterKey();
         return masterKey.PrivateKey.PubKey.ToBytes();
+    }
+
+    /// <inheritdoc/>
+    public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
+    {
+        // The node key is the master private key; copy it out of locked memory only for the ECDH, then wipe it
+        var privateKey = GetPrivateKeyBytes();
+        try
+        {
+            s_ecdh.SecP256K1Dh(privateKey, publicKey, sharedSecret);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+        }
     }
 
     public async Task UpdateLastUsedChannelIndexOnFile()

@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-
 namespace NLightning.Infrastructure.Bitcoin.Onion;
 
 using Domain.Crypto.Interfaces;
@@ -16,9 +14,9 @@ using Infrastructure.Crypto.Interfaces;
 /// BOLT 4 Sphinx facade over <see cref="OnionBuilder"/> and <see cref="OnionPeeler"/>.
 /// </summary>
 /// <remarks>
-/// Stateless and thread-safe: every call allocates its own hash and stream state. The node key for
-/// <see cref="PeelAsLocalNode"/> comes from <see cref="ISecureKeyManager"/>, which
-/// is optional so the service can be resolved where no key manager is registered.
+/// Stateless and thread-safe: every call allocates its own hash and stream state. <see cref="PeelAsLocalNode"/> does
+/// its node-key ECDH through <see cref="ISecureKeyManager.ComputeNodeSharedSecret"/>; the key manager is optional so the
+/// service can be resolved where none is registered.
 /// </remarks>
 internal sealed class SphinxService : ISphinxService
 {
@@ -71,17 +69,10 @@ internal sealed class SphinxService : ISphinxService
         if (_secureKeyManager is null)
             throw new InvalidOperationException("No secure key manager is available to peel with the node key.");
 
-        // GetNodeKeyPair returns a fresh copy of the node key; wipe it so each HTLC does not leave one on the heap.
-        var nodeKey = _secureKeyManager.GetNodeKeyPair().PrivKey;
-        try
-        {
-            return Peel(packet, associatedData, nodeKey, pathKey, packetKind);
-        }
-        finally
-        {
-            if (nodeKey.Value is not null)
-                CryptographicOperations.ZeroMemory(nodeKey.Value);
-        }
+        // Every node-key operation is an ECDH done inside the key manager, so the node key is never copied out
+        // (nor its public key re-derived) per HTLC. Route blinding tweaks the ephemeral key instead of the node key.
+        return _peeler.Peel(packet, associatedData, _secureKeyManager.ComputeNodeSharedSecret, pathKey,
+                            GetMinPayloadLength(packetKind), IsBlindedPayment(pathKey, packetKind));
     }
 
     /// <inheritdoc/>
@@ -89,7 +80,12 @@ internal sealed class SphinxService : ISphinxService
                             CompactPubKey? pathKey = null, OnionPacketKind packetKind = OnionPacketKind.Payment)
     {
         return _peeler.Peel(packet, associatedData, nodeKey, pathKey, GetMinPayloadLength(packetKind),
-                            packetKind == OnionPacketKind.Payment && pathKey.HasValue);
+                            IsBlindedPayment(pathKey, packetKind));
+    }
+
+    private static bool IsBlindedPayment(CompactPubKey? pathKey, OnionPacketKind packetKind)
+    {
+        return packetKind == OnionPacketKind.Payment && pathKey.HasValue;
     }
 
     private static int GetMinPayloadLength(OnionPacketKind packetKind)
