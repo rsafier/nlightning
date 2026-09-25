@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
+
 /// <summary>
 /// A commitment content with signed balances, used while validating updates: a negative balance means the offerer
 /// cannot even cover its HTLCs.

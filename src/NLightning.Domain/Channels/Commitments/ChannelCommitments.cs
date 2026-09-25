@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
 using Crypto.Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;

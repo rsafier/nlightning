@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Exceptions;

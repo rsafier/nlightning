@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
+
 /// <summary>
 /// The content of one commitment transaction before BOLT 3 fees, trimming and anchors: what both sides must agree on.
 /// </summary>

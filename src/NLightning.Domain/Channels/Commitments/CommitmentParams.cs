@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
+
 /// <summary>
 /// The static inputs of the commitment state machine.
 /// </summary>

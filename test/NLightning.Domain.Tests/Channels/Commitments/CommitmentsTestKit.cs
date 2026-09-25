@@ -4,6 +4,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;

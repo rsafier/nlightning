@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.Transactions.Enums;
 using Crypto.ValueObjects;
 using Enums;
 

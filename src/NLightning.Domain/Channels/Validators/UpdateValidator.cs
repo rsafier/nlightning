@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Validators;
 
+using Bitcoin.Transactions.Enums;
 using Commitments;
 using Enums;
 using Exceptions;
