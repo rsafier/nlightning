@@ -76,6 +76,7 @@ public class PayeePubKeyTaggedFieldTests
         var taggedField = PayeePubKeyTaggedField.FromBitReader(reader, TaggedFieldConstants.PayeePubkeyLength);
 
         // Assert
+        Assert.NotNull(taggedField);
         Assert.Equal(expected, taggedField.Value.ToHex());
     }
 }
