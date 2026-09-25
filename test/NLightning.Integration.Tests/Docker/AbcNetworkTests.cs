@@ -92,11 +92,12 @@ public class AbcNetworkTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Verify_Alice_Bob_Carol_Setup()
+    public async Task Verify_Alice_Bob_Carol_David_Setup()
     {
         var readyNodes = _lightningRegtestNetworkFixture.Builder!.LNDNodePool!.ReadyNodes.ToImmutableList();
         var nodeCount = readyNodes.Count;
-        Assert.Equal(3, nodeCount);
+        Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Count, nodeCount);
+        Assert.Equal(LightningRegtestNetworkFixture.LndAliases.Order(), readyNodes.Select(n => n.LocalAlias).Order());
         $"LND Nodes in Ready State: {nodeCount}".Print();
         foreach (var node in readyNodes)
         {

@@ -41,7 +41,7 @@ The executable Lightning node, and the DI **composition root** for the whole sta
   - `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'`, or `-class <FQN>`
 - InternalsVisibleTo (`AssemblyInfo.cs`) lists `NLightning.Daemon.Tests` (plus the stale `NLightning.Bolts.Tests` and `NLightning.Integration.Tests`). Moq cannot proxy `ILogger<InternalType>` (strong-named Logging.Abstractions), so use `NullLogger<T>.Instance` for internal handlers.
 - `Extensions/NodeServiceExtensionsTests` resolves the composed graph (with bitcoind mocked) and the layer-only graph, so a missing registration fails in CI.
-- Docker end-to-end tests build their node with `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`, which calls `AddNltgNodeServices` and then overrides only the fee endpoint (fixed answer), the listen port and the regtest features. CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
+- Docker end-to-end tests build their node with `test/NLightning.Integration.Tests/Docker/Utils/NLightningTestNode.cs`, which calls `AddNltgNodeServices` and then overrides only the fee endpoint (fixed answer), the listen port and the regtest features, and wraps `ITcpService` in a test decorator (`CrashableTcpService`, for `CrashAsync`). CI excludes them with `--filter 'FullyQualifiedName!~Docker'`.
 - Build: `dotnet build NLightning.sln -p:MSBuildWarningsAsMessages=MSB4121`. Format gate: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Run the node: `dotnet run --project src/NLightning.Daemon -- --network regtest`. The first run writes `~/.nltg/regtest/appsettings.json`; set the Bitcoin RPC/ZMQ settings and `Database:RunMigrations=true` there.
 
