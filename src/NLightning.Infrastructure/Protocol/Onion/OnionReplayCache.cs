@@ -13,6 +13,11 @@ using Domain.Protocol.Onion.Interfaces;
 /// payment_hash and expiry) is needed before relying on it for funds.
 /// </para>
 /// <para>
+/// FIFO eviction is only safe if every entry is authenticated: callers must record an HMAC only after the peel
+/// verified it (see <see cref="IOnionReplayCache"/>). Even then an entry can be evicted before its HTLC could expire;
+/// the M4 HTLC switch should key or expire entries by the HTLC's <c>cltv_expiry</c> instead.
+/// </para>
+/// <para>
 /// HMACs are keyed as hex strings, whose hash codes are randomized per process, so a peer cannot craft colliding
 /// HMACs to degrade lookups.
 /// </para>
