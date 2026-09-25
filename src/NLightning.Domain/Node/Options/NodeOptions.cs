@@ -57,4 +57,55 @@ public class NodeOptions
     public uint AllowUpToPercentageOfChannelFundsInFlight { get; set; } = 80;
     public uint MinimumDepth { get; set; } = 3;
     public LightningMoney MinimumChannelSize { get; set; } = LightningMoney.Satoshis(20_000);
+
+    /// <summary>
+    /// Allows HTLCs (payments and forwarding) on our channels. Unset (the default) means "on for regtest only":
+    /// until the node can fail a channel on chain (BOLT2 plan N9-T4) and sweep it (BOLT 5, NL-094), real funds must
+    /// not sit in HTLCs. Set it explicitly to override; read the effective value from <see cref="HtlcsEnabled"/>.
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:EnableHtlcs</c>.</remarks>
+    public bool? EnableHtlcs { get; set; }
+
+    /// <summary>
+    /// The effective HTLC switch: <see cref="EnableHtlcs"/> when it is set, otherwise true only on regtest. It is
+    /// computed on every read, so it follows a <see cref="BitcoinNetwork"/> set after binding (the daemon's
+    /// <c>PostConfigure</c>).
+    /// </summary>
+    public bool HtlcsEnabled =>
+        EnableHtlcs ?? string.Equals(BitcoinNetwork.Name, NetworkConstants.Regtest, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Wait before the first reconnection attempt to a peer with active channels that dropped or could not be reached
+    /// at startup. It doubles after every failed attempt, up to <see cref="ReconnectMaxDelay"/>.
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:ReconnectInitialDelay</c> (a <see cref="TimeSpan"/>, e.g. <c>"00:00:01"</c>).
+    /// Tests use a short value.</remarks>
+    public TimeSpan ReconnectInitialDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// The longest wait between two reconnection attempts.
+    /// </summary>
+    public TimeSpan ReconnectMaxDelay { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Our forwarding policy and invoice defaults.
+    /// </summary>
+    /// <see cref="RoutingOptions"/>
+    public RoutingOptions Routing { get; set; } = new();
+
+    /// <summary>
+    /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/> and the
+    /// reconnect delays); empty when valid. Feature errors are reported by <see cref="FeatureOptions.GetValidationErrors"/>.
+    /// </summary>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        if (ReconnectInitialDelay <= TimeSpan.Zero)
+            errors.Add($"{nameof(ReconnectInitialDelay)} must be positive.");
+        if (ReconnectMaxDelay < ReconnectInitialDelay)
+            errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
+
+        errors.AddRange(Routing.GetValidationErrors());
+        return errors;
+    }
 }
