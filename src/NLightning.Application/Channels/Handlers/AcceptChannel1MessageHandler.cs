@@ -214,10 +214,6 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
                                                             fundingOutput.Index.Value, ourSignature);
 
-            // Persist the channel before sending funding_created, so a crash before funding_signed doesn't lose it
-            await _unitOfWork.ChannelDbRepository.AddAsync(tempChannel);
-            await _unitOfWork.SaveChangesAsync();
-
             // Upgrade the channel in the dictionary
             _channelMemoryRepository.UpgradeChannel(oldChannelId, tempChannel);
 
