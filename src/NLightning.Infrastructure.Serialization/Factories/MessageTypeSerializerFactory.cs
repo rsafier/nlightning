@@ -111,16 +111,24 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                          new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(WarningMessage), new WarningMessageTypeSerializer(_payloadSerializerFactory));
 
-        // BOLT 7 gossip is kept as raw bytes until gossip is implemented
+        // BOLT 7 gossip queries are parsed so the node can answer them
+        _serializers.Add(typeof(QueryShortChannelIdsMessage),
+                         new QueryShortChannelIdsMessageTypeSerializer(_payloadSerializerFactory,
+                                                                       _tlvStreamSerializer));
+        _serializers.Add(typeof(ReplyShortChannelIdsEndMessage),
+                         new ReplyShortChannelIdsEndMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(QueryChannelRangeMessage),
+                         new QueryChannelRangeMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(ReplyChannelRangeMessage),
+                         new ReplyChannelRangeMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(GossipTimestampFilterMessage),
+                         new GossipTimestampFilterMessageTypeSerializer(_payloadSerializerFactory));
+
+        // The other BOLT 7 gossip messages are kept as raw bytes until gossip is implemented
         RegisterGossipSerializer(p => new ChannelAnnouncementMessage(p));
         RegisterGossipSerializer(p => new NodeAnnouncementMessage(p));
         RegisterGossipSerializer(p => new ChannelUpdateMessage(p));
         RegisterGossipSerializer(p => new AnnouncementSignaturesMessage(p));
-        RegisterGossipSerializer(p => new QueryShortChannelIdsMessage(p));
-        RegisterGossipSerializer(p => new ReplyShortChannelIdsEndMessage(p));
-        RegisterGossipSerializer(p => new QueryChannelRangeMessage(p));
-        RegisterGossipSerializer(p => new ReplyChannelRangeMessage(p));
-        RegisterGossipSerializer(p => new GossipTimestampFilterMessage(p));
     }
 
     private void RegisterGossipSerializer<TMessage>(Func<GossipPayload, TMessage> messageFactory)

@@ -91,4 +91,37 @@ public static class TlvConstants
     /// The "Next Funding" is used in the ChannelReestablishMessage (BOLT 2 <c>channel_reestablish_tlvs</c> type 1)
     /// </remarks>
     public static readonly BigSize NextFunding = 1;
+
+    /// <summary>
+    /// Query Flags TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>query_short_channel_ids_tlvs</c> type 1 (<c>query_flags</c>): encoding type byte followed by one
+    /// bigsize flag per short_channel_id.
+    /// </remarks>
+    public static readonly BigSize QueryFlags = 1;
+
+    /// <summary>
+    /// Query Option TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>query_channel_range_tlvs</c> type 1 (<c>query_option</c>): a bigsize bitfield.
+    /// </remarks>
+    public static readonly BigSize QueryOption = 1;
+
+    /// <summary>
+    /// Timestamps TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>reply_channel_range_tlvs</c> type 1 (<c>timestamps_tlv</c>).
+    /// </remarks>
+    public static readonly BigSize ReplyChannelRangeTimestamps = 1;
+
+    /// <summary>
+    /// Checksums TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>reply_channel_range_tlvs</c> type 3 (<c>checksums_tlv</c>).
+    /// </remarks>
+    public static readonly BigSize ReplyChannelRangeChecksums = 3;
 }

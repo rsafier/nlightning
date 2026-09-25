@@ -126,4 +126,90 @@ public class PeerServiceTests
             x => x.Disconnect(It.Is<ChannelWarningException>(e => e.ChannelId == channelId)), Times.Once);
         _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<ErrorException>()), Times.Never);
     }
+
+    [Fact]
+    public void Given_InitializedPeer_When_QueryChannelRangeReceived_Then_FinalEmptyReplyChannelRangeIsSent()
+    {
+        // Arrange
+        _ = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        var query = new QueryChannelRangeMessage(new QueryChannelRangePayload(ChainConstants.Regtest, 600000, 2016));
+
+        // Act
+        RaiseMessage(query);
+
+        // Assert
+        // BOLT 7: one reply that covers the whole requested range, sync_complete set, no short_channel_ids (encoding 0)
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendMessageAsync(It.Is<ReplyChannelRangeMessage>(m => m.Payload.ChainHash == ChainConstants.Regtest
+                                                                      && m.Payload.FirstBlocknum == 600000
+                                                                      && m.Payload.NumberOfBlocks == 2016
+                                                                      && m.Payload.SyncComplete
+                                                                      && m.Payload.EncodedShortIds.ToArray()
+                                                                              .SequenceEqual(new byte[] { 0 })),
+                                    It.IsAny<CancellationToken>()), Times.Once);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitializedPeer_When_QueryShortChannelIdsReceived_Then_ReplyEndWithoutFullInformationIsSent()
+    {
+        // Arrange
+        _ = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        var encodedShortIds = Convert.FromHexString("00" + "0AAE60" + "000001" + "0000");
+        var query = new QueryShortChannelIdsMessage(new QueryShortChannelIdsPayload(ChainConstants.Regtest,
+                                                        encodedShortIds));
+
+        // Act
+        RaiseMessage(query);
+
+        // Assert
+        // BOLT 7: we don't maintain channel information, so full_information MUST be 0
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendMessageAsync(It.Is<ReplyShortChannelIdsEndMessage>(m => m.Payload.ChainHash
+                                                                            == ChainConstants.Regtest
+                                                                            && !m.Payload.FullInformation),
+                                    It.IsAny<CancellationToken>()), Times.Once);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitializedPeer_When_QueryShortChannelIdsHasUnknownEncoding_Then_WarningIsSentAndNoReply()
+    {
+        // Arrange
+        _ = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        var query = new QueryShortChannelIdsMessage(new QueryShortChannelIdsPayload(ChainConstants.Regtest,
+                                                        new byte[] { 0x01, 0x78, 0x9C }));
+
+        // Act
+        RaiseMessage(query);
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendWarningAsync(It.IsAny<WarningException>(), It.IsAny<CancellationToken>()), Times.Once);
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitializedPeer_When_GossipTimestampFilterReceived_Then_ItIsIgnored()
+    {
+        // Arrange
+        _ = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+
+        // Act
+        RaiseMessage(new GossipTimestampFilterMessage(
+                         new GossipTimestampFilterPayload(ChainConstants.Regtest, 0, uint.MaxValue)));
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()), Times.Never);
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendWarningAsync(It.IsAny<WarningException>(), It.IsAny<CancellationToken>()), Times.Never);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
 }
