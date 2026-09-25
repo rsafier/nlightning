@@ -61,7 +61,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                          new ClosingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                 _tlvStreamSerializer));
         _serializers.Add(typeof(CommitmentSignedMessage),
-                         new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory));
+                         new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                   _tlvStreamSerializer));
         _serializers.Add(typeof(ErrorMessage), new ErrorMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(FundingCreatedMessage),
                          new FundingCreatedMessageTypeSerializer(_payloadSerializerFactory));

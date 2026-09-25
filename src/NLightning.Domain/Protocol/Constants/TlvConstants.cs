@@ -93,6 +93,14 @@ public static class TlvConstants
     public static readonly BigSize NextFunding = 1;
 
     /// <summary>
+    /// Funding TxId TLV Type
+    /// </summary>
+    /// <remarks>
+    /// The "Funding TxId" is used in the CommitmentSignedMessage (BOLT 2 <c>commitment_signed_tlvs</c> type 1)
+    /// </remarks>
+    public static readonly BigSize FundingTxId = 1;
+
+    /// <summary>
     /// Query Flags TLV Type
     /// </summary>
     /// <remarks>

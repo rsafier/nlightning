@@ -102,7 +102,8 @@ public interface IMessageFactory
     UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason);
 
     CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId, CompactSignature signature,
-                                                          IEnumerable<CompactSignature> htlcSignatures);
+                                                          IEnumerable<CompactSignature> htlcSignatures,
+                                                          TxId fundingTxId);
 
     RevokeAndAckMessage CreateRevokeAndAckMessage(ChannelId channelId, ReadOnlyMemory<byte> perCommitmentSecret,
                                                   CompactPubKey nextPerCommitmentPoint);
