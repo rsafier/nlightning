@@ -74,6 +74,52 @@ public class ReceiveAddTests
         AssertViolation("B2-ADD-R02", () => Receive(c, 0, 1_000 * Sat));
     }
 
+    [Theory]
+    [InlineData(HtlcState.SentAddHtlc)] // unsigned
+    [InlineData(HtlcState.SentAddCommit)] // signed, commitment_signed maybe not received yet
+    [InlineData(HtlcState.RcvdAddRevocation)] // acked, but the funder may have offered before it received them
+    public void Given_OwnAddsNotYetSignedByFunder_When_FunderAddReceived_Then_FeeCountsOnlyWhatFunderSaw(
+        HtlcState ownAddsState)
+    {
+        // Arrange (simulator seeds 1795, 76293: both sides offered at once): the funder holds 20000 sat at feerate
+        // 10000. Our three 100000-sat adds, which the funder may not have seen when it offered, would raise its fee to
+        // (724 + 4 * 172) * 10 = 14120 sat; without them its 10000-sat HTLC costs (724 + 172) * 10 = 8960 sat and fits
+        // in the 10000 sat it keeps. Only once the funder signs a commitment with our adds (which it sends before any
+        // later update_add_htlc) do they count.
+        var party = Party(reserveSat: 0);
+        var c = Create(900_000, 20_000, feeratePerKw: 10_000, localIsFunder: false, local: party, remote: party,
+                       selfTag: BobTag);
+        for (byte i = 1; i <= 3; i++)
+            c = c.Add(100_000 * Sat, i).Next;
+        if (ownAddsState != HtlcState.SentAddHtlc)
+            c = c.SendCommit(new FakeCommitmentSigner(party.DustLimitSatoshis, false)).Next;
+        if (ownAddsState == HtlcState.RcvdAddRevocation)
+            c = c.ReceiveRevoke(SecretFor(AliceTag, 0), Point(AliceTag, 2), new FakeRevocationVerifier()).Next;
+        Assert.Equal(ownAddsState, c.GetHtlc(HtlcDirection.Outgoing, 0)!.State);
+
+        // Act
+        var result = Receive(c, 0, 10_000 * Sat, 9);
+
+        // Assert
+        Assert.Equal(HtlcState.RcvdAddHtlc, result.Next.GetHtlc(HtlcDirection.Incoming, 0)!.State);
+        AssertViolation("B2-ADD-R02", () => Receive(c, 0, 12_000 * Sat, 9)); // 8000 sat left < 8960 sat fee
+    }
+
+    [Fact]
+    public void Given_OwnAddsSignedByFunder_When_FunderAddReceived_Then_FeeCountsThem()
+    {
+        // Arrange: the funder signed our adds (they are in our commitment), so it knew them when it offered.
+        var party = Party(reserveSat: 0);
+        var pair = new CommitmentPair(20_000, 900_000, 10_000, aliceParty: party, bobParty: party);
+        for (byte i = 1; i <= 3; i++)
+            pair.BobAdd(100_000 * Sat, i);
+        pair.BobFullRound();
+
+        // Act / Assert: 20000 - 8000 = 12000 sat left < (724 + 4 * 172) * 10 = 14120 sat with this HTLC
+        var exception = Assert.Throws<CommitmentViolationException>(() => Receive(pair.Bob, 0, 8_000 * Sat, 9));
+        Assert.Equal("B2-ADD-R02", exception.RequirementId);
+    }
+
     [Fact]
     public void Given_OwnMaxAcceptedExceeded_When_Received_Then_Violation()
     {

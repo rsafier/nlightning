@@ -95,7 +95,9 @@ internal static class UpdateValidator
         if (htlc.CltvExpiry >= ChannelCommitments.MaxCltvExpiry)
             throw Violation(commitments, "B2-ADD-R04", $"cltv_expiry {htlc.CltvExpiry} is not below 500000000");
 
-        var localView = commitments.BuildProspectiveView(CommitmentSide.Local, htlc);
+        // BOLT 2 judges what the sender can afford, so our adds the peer has not signed yet are left out: it may have
+        // offered this HTLC before it received them (crossed adds; found by the two-engine simulator).
+        var localView = commitments.BuildProspectiveView(CommitmentSide.Local, htlc, peerView: true);
         var offered = localView.Htlcs.Where(h => h.Direction == HtlcDirection.Incoming).ToList();
         if (offered.Count > p.Local.MaxAcceptedHtlcs)
             throw Violation(commitments, "B2-ADD-R03", $"More than our max_accepted_htlcs {p.Local.MaxAcceptedHtlcs}");
