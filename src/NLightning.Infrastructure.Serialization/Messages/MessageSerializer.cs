@@ -43,7 +43,15 @@ public class MessageSerializer : IMessageSerializer
         // Try to get the serializer for the message type
         var messageTypeSerializer = _messageTypeSerializerFactory.GetSerializer<TMessage>();
         if (messageTypeSerializer is not null)
+        {
+            // The wire type must be the one registered for TMessage, otherwise the bytes belong to another message.
+            if (!ReferenceEquals(_messageTypeSerializerFactory.GetSerializer((MessageTypes)type),
+                                 messageTypeSerializer))
+                throw new InvalidMessageException(
+                    $"Message type {type} does not match the expected message {typeof(TMessage).Name}");
+
             return await messageTypeSerializer.DeserializeAsync(stream);
+        }
 
         // If the type is unknown and even, throw an exception
         if (type % 2 == 0)

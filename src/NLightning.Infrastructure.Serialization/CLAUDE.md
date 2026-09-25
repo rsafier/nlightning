@@ -40,7 +40,7 @@ References only `NLightning.Domain` and `NLightning.Infrastructure` (csproj). Mu
 
 ## Gotchas
 - Deserializers use `stream.Position/Length` for optional TLVs and the onion: they need a seekable, one-message `MemoryStream`, never a `NetworkStream`.
-- `DeserializeMessageAsync<TMessage>` reads the wire type but ignores it (uses TMessage's serializer).
+- `DeserializeMessageAsync<TMessage>` throws `InvalidMessageException` when the wire type is not the one registered for `TMessage` (it compares the factory's serializer for the wire type with TMessage's).
 - `TlvConstants` numbers collide across messages (0 and 1 reused), so always use the semantically correct constant (e.g. `UpdateAddHtlcMessageSerializer.cs` uses `TlvConstants.BlindedPath`).
 - `RemoteAddressTlv` type 5 (DNS hostname) conversion is broken: Domain length is `3 + len` (spec: `4 + len`) and the converter overwrites a hostname byte. IPv4/IPv6/Tor v3 are fine.
 - Every message-type serializer that reads a TLV extension uses `DeserializeStrictAsync` with its own `s_knownExtensionTypes` set (unknown even types fail, BOLT 1). A new message with a TLV extension must do the same; the open `DeserializeAsync` is for streams whose namespace is not known. `DeserializeStrictAsync` returns an empty stream (never `null`), so test with `extension.Any()`. `BigSizeTypeSerializer` is canonical (throws `ArgumentException(NonCanonicalErrorMessage)`). `TlvSerializer` rejects length > remaining bytes before allocating.
