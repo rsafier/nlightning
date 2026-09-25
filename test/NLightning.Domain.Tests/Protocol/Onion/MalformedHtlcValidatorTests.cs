@@ -50,4 +50,27 @@ public class MalformedHtlcValidatorTests
         // Assert
         Assert.Equal(MalformedHtlcCheckResult.Sha256OfOnionMismatch, result);
     }
+
+    [Theory]
+    [InlineData((ushort)FailureCode.InvalidOnionBlinding)]
+    [InlineData((ushort)FailureCode.InvalidOnionHmac)]
+    public void Given_BadOnionCodeAndAllZeroHash_When_Validating_Then_Valid(ushort failureCode)
+    {
+        // Act: BOLT 2 only allows the alternate path for a mismatching hash that is not all zero
+        var result = MalformedHtlcValidator.Validate(failureCode, new byte[32], s_sentOnionSha256);
+
+        // Assert
+        Assert.Equal(MalformedHtlcCheckResult.Valid, result);
+    }
+
+    [Fact]
+    public void Given_CodeWithoutBadOnionBitAndAllZeroHash_When_Validating_Then_BadOnionBitNotSet()
+    {
+        // Act
+        var result = MalformedHtlcValidator.Validate((ushort)FailureCode.TemporaryNodeFailure, new byte[32],
+                                                     s_sentOnionSha256);
+
+        // Assert
+        Assert.Equal(MalformedHtlcCheckResult.BadOnionBitNotSet, result);
+    }
 }
