@@ -15,6 +15,14 @@ using Interfaces;
 /// The wait is bounded by <see cref="PayInvoiceClientRequest.TimeoutSeconds"/> (default
 /// <see cref="DefaultTimeoutSeconds"/>, at most <see cref="MaxTimeoutSeconds"/>). When it ends first, the response
 /// carries the payment still <c>InFlight</c>: its HTLC stays offered and resolves later (see <c>ListPayments</c>).
+/// The cap is kept short because the call holds one IPC pipe instance for the whole wait (see
+/// <c>NamedPipeIpcService.MaxServerInstances</c>); for a longer wait, poll <c>ListPayments</c>.
+/// <para>Only the exceptions <see cref="IPaymentService.PayInvoiceAsync"/> documents as "nothing persisted" become
+/// <see cref="ErrorCodes.InvalidOperation"/>: <see cref="ArgumentException"/> and a plain
+/// <see cref="InvalidOperationException"/> (duplicate hash). Its subclasses (for example
+/// <see cref="ObjectDisposedException"/> at shutdown) and every other exception are not guaranteed to happen before
+/// the HTLC was offered, so they become <see cref="ErrorCodes.ServerError"/> with a hint to check <c>ListPayments</c>.
+/// </para>
 /// </remarks>
 public sealed class PayInvoiceClientHandler
     : IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>
@@ -27,7 +35,7 @@ public sealed class PayInvoiceClientHandler
     /// <summary>
     /// The longest wait a request may ask for.
     /// </summary>
-    public const uint MaxTimeoutSeconds = 3_600;
+    public const uint MaxTimeoutSeconds = 300;
 
     private readonly IPaymentService _paymentService;
 
@@ -42,7 +50,9 @@ public sealed class PayInvoiceClientHandler
     /// <inheritdoc/>
     /// <exception cref="ClientException">The request is invalid, the invoice was rejected (malformed, expired, other
     /// network, amount missing or inconsistent) or a payment for it is already in flight or succeeded
-    /// (<see cref="ErrorCodes.InvalidOperation"/>). Nothing was sent in those cases.</exception>
+    /// (<see cref="ErrorCodes.InvalidOperation"/>). Nothing was sent in those cases. Any other failure of the payment
+    /// service is <see cref="ErrorCodes.ServerError"/>: the payment may be stored <c>InFlight</c> with its HTLC offered,
+    /// so the message asks the user to check <c>ListPayments</c>.</exception>
     public async Task<PayInvoiceClientResponse> HandleAsync(PayInvoiceClientRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -66,9 +76,16 @@ public sealed class PayInvoiceClientHandler
         {
             throw new ClientException(ErrorCodes.InvalidOperation, $"Invalid invoice: {e.Message}", e);
         }
-        catch (InvalidOperationException e)
+        catch (InvalidOperationException e) when (e.GetType() == typeof(InvalidOperationException))
         {
+            // The contract's "already in flight or succeeded" refusal; nothing was persisted or sent
             throw new ClientException(ErrorCodes.InvalidOperation, e.Message, e);
+        }
+        catch (Exception e) when (e is not OperationCanceledException and not ClientException)
+        {
+            throw new ClientException(ErrorCodes.ServerError,
+                                      $"The payment failed with an unexpected error: {e.Message}. It may still be "
+                                    + "in flight: check listpayments before paying again.", e);
         }
     }
 }

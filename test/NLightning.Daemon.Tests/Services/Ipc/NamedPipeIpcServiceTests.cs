@@ -1,3 +1,4 @@
+using System.IO.Pipes;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Services.Ipc;
@@ -108,6 +109,55 @@ public class NamedPipeIpcServiceTests : IDisposable
 
         // Assert
         Assert.False(File.Exists(cookiePath));
+    }
+
+    [Fact]
+    public async Task Given_MoreThanTenClientsHeld_When_AnotherClientConnects_Then_ItIsStillServed()
+    {
+        // Arrange: every connection is held open inside the framing read, like a PayInvoice waiting for its outcome.
+        // The old cap of 10 pipe instances made the 11th client wait until one of them finished.
+        const int clients = 15;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var served = 0;
+        var framingMock = new Mock<IIpcFraming>();
+        framingMock.Setup(x => x.ReadAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
+                   .Returns(async (Stream _, CancellationToken _) =>
+                    {
+                        Interlocked.Increment(ref served);
+                        await release.Task;
+                        throw new IOException("client gone");
+                    });
+        var service = new NamedPipeIpcService(new Mock<IIpcAuthenticator>().Object, _configPath, framingMock.Object,
+                                              NullLogger<NamedPipeIpcService>.Instance,
+                                              new Mock<IIpcRequestRouter>().Object);
+        await service.StartAsync(CancellationToken.None);
+        var pipePath = NodeUtils.GetNamedPipeFilePath(_configPath);
+        var connections = new List<NamedPipeClientStream>();
+
+        try
+        {
+            // Act
+            for (var i = 0; i < clients; i++)
+            {
+                var client = new NamedPipeClientStream(".", pipePath, PipeDirection.InOut, PipeOptions.Asynchronous);
+                connections.Add(client);
+                await client.ConnectAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            }
+
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (Volatile.Read(ref served) < clients && DateTime.UtcNow < deadline)
+                await Task.Delay(50, TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal(clients, Volatile.Read(ref served));
+        }
+        finally
+        {
+            release.TrySetResult();
+            foreach (var connection in connections)
+                await connection.DisposeAsync();
+            await service.StopAsync();
+        }
     }
 
     private NamedPipeIpcService CreateService()

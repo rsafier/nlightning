@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Ipc.Handlers;
 
+using Daemon.Extensions;
 using Daemon.Handlers;
 using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
@@ -190,10 +191,10 @@ public class PaymentsIpcHandlerTests
     [Fact]
     public async Task Given_NodeWithoutPaymentServices_When_HandleAsync_Then_NotAvailableIsReturned()
     {
-        // Arrange: the client handler is registered but IPaymentService is not (payments not wired yet)
+        // Arrange: the client handler is registered like the node does it, but IPaymentService is not
         var services = new ServiceCollection();
-        services.AddScoped<IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>,
-            PayInvoiceClientHandler>();
+        services.AddScoped<IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>>(sp =>
+            new PayInvoiceClientHandler(NodeServiceExtensions.GetPaymentLayerService<IPaymentService>(sp)));
         var handler = new PayInvoiceIpcHandler(NullLogger<PayInvoiceIpcHandler>.Instance,
                                                services.BuildServiceProvider());
         var envelope = CreateEnvelope(ClientCommand.PayInvoice, new PayInvoiceIpcRequest { Bolt11 = "lnbcrt1pay" });
@@ -204,7 +205,67 @@ public class PaymentsIpcHandlerTests
         // Assert
         var error = AssertError(envelope, response);
         Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+        Assert.Contains("not available", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(nameof(IPaymentService), error.Message);
+    }
+
+    [Fact]
+    public async Task Given_NoClientHandlerRegistered_When_HandleAsync_Then_NotAvailableIsReturned()
+    {
+        // Arrange
+        var handler = new ListPaymentsIpcHandler(NullLogger<ListPaymentsIpcHandler>.Instance,
+                                                 new ServiceCollection().BuildServiceProvider());
+        var envelope = CreateEnvelope(ClientCommand.ListPayments, new ListPaymentsIpcRequest());
+
+        // Act
+        var response = await handler.HandleAsync(envelope, TestContext.Current.CancellationToken);
+
+        // Assert
+        var error = AssertError(envelope, response);
+        Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
         Assert.Contains("not available", error.Message);
+    }
+
+    [Fact]
+    public async Task Given_ClientHandlerConstructionFails_When_HandleAsync_Then_ServerErrorIsReturned()
+    {
+        // Arrange: a wiring bug deeper in the graph (e.g. a misconfigured DbContext) must not read as "not available"
+        var services = new ServiceCollection();
+        services.AddScoped<IClientCommandHandler<ListPaymentsClientRequest, ListPaymentsClientResponse>>(_ =>
+            throw new InvalidOperationException("No database provider has been configured"));
+        var handler = new ListPaymentsIpcHandler(NullLogger<ListPaymentsIpcHandler>.Instance,
+                                                 services.BuildServiceProvider());
+        var envelope = CreateEnvelope(ClientCommand.ListPayments, new ListPaymentsIpcRequest());
+
+        // Act
+        var response = await handler.HandleAsync(envelope, TestContext.Current.CancellationToken);
+
+        // Assert
+        var error = AssertError(envelope, response);
+        Assert.Equal(ErrorCodes.ServerError, error.Code);
+        Assert.Contains("No database provider", error.Message);
+        Assert.DoesNotContain("not available", error.Message);
+    }
+
+    [Fact]
+    public async Task Given_ClientHandlerDependencyMissing_When_HandleAsync_Then_ServerErrorIsReturned()
+    {
+        // Arrange: a type-registered handler whose unrelated dependency is missing is a wiring bug, not "not available"
+        var services = new ServiceCollection();
+        services.AddScoped<IClientCommandHandler<ListInvoicesClientRequest, ListInvoicesClientResponse>,
+            ListInvoicesClientHandler>();
+        services.AddSingleton(_invoiceServiceMock.Object);
+        var handler = new ListInvoicesIpcHandler(NullLogger<ListInvoicesIpcHandler>.Instance,
+                                                 services.BuildServiceProvider());
+        var envelope = CreateEnvelope(ClientCommand.ListInvoices, new ListInvoicesIpcRequest());
+
+        // Act
+        var response = await handler.HandleAsync(envelope, TestContext.Current.CancellationToken);
+
+        // Assert
+        var error = AssertError(envelope, response);
+        Assert.Equal(ErrorCodes.ServerError, error.Code);
+        Assert.Contains(nameof(TimeProvider), error.Message);
     }
 
     [Fact]

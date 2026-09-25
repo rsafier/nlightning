@@ -46,6 +46,11 @@ public class ClientAppTests
     [InlineData("listinvoices", "0")]
     [InlineData("listpayments", "ten")]
     [InlineData("list-payments", "10", "-1")]
+    [InlineData("listinvoices", "1001")]
+    [InlineData("list-payments", "5000", "0")]
+    [InlineData("createinvoice", "0")]
+    [InlineData("pay", "lnbcrt1", "0")]
+    [InlineData("payinvoice", "lnbcrt1", "any", "301")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -84,6 +89,8 @@ public class ClientAppTests
     [InlineData("payinvoice", "lnbcrt1")]
     [InlineData("pay", "lnbcrt1", "any", "30")]
     [InlineData("pay-invoice", "lnbcrt1", "1000")]
+    [InlineData("listinvoices", "1000")]
+    [InlineData("pay", "lnbcrt1", "any", "300")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
         params string[] commandArgs)
     {
@@ -97,7 +104,6 @@ public class ClientAppTests
     [Theory]
     [InlineData("any", null)]
     [InlineData("ANY", null)]
-    [InlineData("0", null)]
     [InlineData("50000123", 50_000_123UL)]
     public void GivenAmountArgument_WhenTryParseInvoiceAmount_ThenMsatOrAny(string value, ulong? expectedMsat)
     {
@@ -107,6 +113,20 @@ public class ClientAppTests
         // Assert
         Assert.True(parsed);
         Assert.Equal(expectedMsat, amount?.MilliSatoshi);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("12abc")]
+    public void GivenZeroOrInvalidAmount_WhenTryParseInvoiceAmount_ThenRejected(string value)
+    {
+        // Act
+        var parsed = ClientApp.TryParseInvoiceAmount(value, out var amount);
+
+        // Assert: "0" is not a silent any-amount invoice; the user must write "any"
+        Assert.False(parsed);
+        Assert.Null(amount);
     }
 
     [Theory]
