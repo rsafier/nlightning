@@ -4,7 +4,8 @@ namespace NLightning.Domain.Protocol.Onion.Enums;
 /// BOLT 4 failure codes ("Returning Errors" / "Failure Messages").
 /// </summary>
 /// <remarks>
-/// Each value is the combination of its <see cref="FailureCodeFlags"/> and the low-order code number.
+/// Each value is the combination of its <see cref="FailureCodeFlags"/> and the low-order code number. The legacy
+/// codes PERM|16 and 17, which BOLT 4 still describes in a note, are included so they are understood when received.
 /// </remarks>
 public enum FailureCode : ushort
 {
@@ -88,6 +89,19 @@ public enum FailureCode : ushort
     /// expiry is too close. Data: u64 htlc_msat || u32 height.
     /// </summary>
     IncorrectOrUnknownPaymentDetails = (ushort)FailureCodeFlags.Perm | 15,
+
+    /// <summary>
+    /// PERM|16: legacy <c>incorrect_payment_amount</c>, no data. Deprecated by BOLT 4 in favour of
+    /// <see cref="IncorrectOrUnknownPaymentDetails"/>; never sent, only recognised when received from older peers.
+    /// </summary>
+    IncorrectPaymentAmount = (ushort)FailureCodeFlags.Perm | 16,
+
+    /// <summary>
+    /// 17: legacy <c>final_expiry_too_soon</c>, no data. Deprecated by BOLT 4 in favour of
+    /// <see cref="IncorrectOrUnknownPaymentDetails"/>; never sent, only recognised when received from older peers.
+    /// BOLT 4 notes it is non-permanent (the block height may have changed since sending), so the origin MAY retry.
+    /// </summary>
+    FinalExpiryTooSoon = 17,
 
     /// <summary>
     /// 18: the CLTV expiry in the HTLC is less than the value in the onion. Data: u32 cltv_expiry.

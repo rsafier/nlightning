@@ -81,6 +81,36 @@ public class FailureInterpreterTests
     }
 
     [Fact]
+    public void Given_FinalNodeLegacyFinalExpiryTooSoon_When_Interpreting_Then_MayRetry()
+    {
+        // Arrange: BOLT 4 "Receiving Failure Codes": final_expiry_too_soon (17) can occur if the block height changed
+        var failure = Decrypted(RouteLength - 1, FailureMessage.FinalExpiryTooSoon());
+
+        // Act
+        var result = FailureInterpreter.Interpret(failure, RouteLength);
+
+        // Assert
+        Assert.True(result.IsFinalNode);
+        Assert.False(result.IsPermanent);
+        Assert.True(result.ShouldRetry);
+        Assert.Equal(FailureCode.FinalExpiryTooSoon, result.Code);
+    }
+
+    [Fact]
+    public void Given_FinalNodeLegacyIncorrectPaymentAmount_When_Interpreting_Then_PaymentFails()
+    {
+        // Arrange
+        var failure = Decrypted(RouteLength - 1, FailureMessage.IncorrectPaymentAmount());
+
+        // Act
+        var result = FailureInterpreter.Interpret(failure, RouteLength);
+
+        // Assert
+        Assert.True(result.IsPermanent);
+        Assert.False(result.ShouldRetry);
+    }
+
+    [Fact]
     public void Given_FinalNodeUnknownTransientCode_When_Interpreting_Then_PaymentFails()
     {
         // Arrange: not understood, so the MAY-retry clause does not apply

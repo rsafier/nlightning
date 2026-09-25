@@ -244,6 +244,8 @@ public sealed class FailureMessage
             case FailureCode.UnknownNextPeer:
             case FailureCode.ExpiryTooFar:
             case FailureCode.MppTimeout:
+            case FailureCode.IncorrectPaymentAmount:
+            case FailureCode.FinalExpiryTooSoon:
                 length = 0;
                 return true;
             case FailureCode.InvalidOnionVersion:
@@ -276,7 +278,8 @@ public sealed class FailureMessage
     }
 
     /// <summary>
-    /// True when <paramref name="code"/> is one of the failure codes defined in BOLT 4.
+    /// True when <paramref name="code"/> is one of the failure codes defined in BOLT 4 (including the legacy codes
+    /// PERM|16 and 17).
     /// </summary>
     public static bool IsKnown(FailureCode code) => Enum.IsDefined(code);
 
@@ -370,6 +373,12 @@ public sealed class FailureMessage
     /// <summary>PERM|22 <c>invalid_onion_payload</c>: the offending TLV <c>type</c> and its <c>offset</c>.</summary>
     public static FailureMessage InvalidOnionPayload(BigSize type, ushort offset) =>
         new(FailureCode.InvalidOnionPayload, InvalidOnionPayloadFailureFactory.EncodeData(type, offset));
+
+    /// <summary>PERM|16 legacy <c>incorrect_payment_amount</c>, no data. Only for tests and received failures.</summary>
+    public static FailureMessage IncorrectPaymentAmount() => WithoutData(FailureCode.IncorrectPaymentAmount);
+
+    /// <summary>17 legacy <c>final_expiry_too_soon</c>, no data. Only for tests and received failures.</summary>
+    public static FailureMessage FinalExpiryTooSoon() => WithoutData(FailureCode.FinalExpiryTooSoon);
 
     /// <summary>23 <c>mpp_timeout</c>.</summary>
     public static FailureMessage MppTimeout() => WithoutData(FailureCode.MppTimeout);
