@@ -105,7 +105,7 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
         Assert.Equal((uint)alicePolicy.FeeBaseMsat, aliceUpdate.FeeBaseMsat);
         Assert.Equal((uint)alicePolicy.FeeRateMilliMsat, aliceUpdate.FeeProportionalMillionths);
         Assert.Equal((ushort)alicePolicy.TimeLockDelta, aliceUpdate.CltvExpiryDelta);
-        AssertNoIgnoredUpdate(node);
+        AssertNoIgnoredUpdate(node, aliceUpdate.ShortChannelId);
 
         // Act: change our fee while connected (nothing is sent), then reconnect. The new connection must carry an
         // update with the new policy (LND ignores a same-policy resend younger than 24 h, so only a change shows)
@@ -170,9 +170,11 @@ public class ChannelUpdateExchangeTests : IAsyncLifetime
                               "alice connected again", ct);
     }
 
-    private static void AssertNoIgnoredUpdate(NLightningTestNode node)
+    private static void AssertNoIgnoredUpdate(NLightningTestNode node, ShortChannelId shortChannelId)
     {
-        Assert.Equal(0, node.CountLogLines("Ignoring channel_update"));
+        // Only our channel's updates count: alice is shared by the Docker tests, so she also relays the updates of
+        // channels other tests opened, which we rightly ignore ("we have no such channel with that peer")
+        Assert.Equal(0, node.CountLogLines($"Ignoring channel_update for {shortChannelId} from"));
     }
 
     private static async Task<(OpenChannelClientSubscriptionResponse Channel, Channel LndChannel)>
