@@ -33,6 +33,7 @@ public static class DependencyInjection
         services.AddSingleton<ICommitmentTransactionBuilder, CommitmentTransactionBuilder>();
         services.AddSingleton<IDustService, DustService>(); // needs IFeeService, registered by the host
         services.AddSingleton<IEcdh, Ecdh>();
+        services.AddSingleton<IFailureOnionService, FailureOnionService>(); // needs IFailureMessageSerializer (Serialization)
         services.AddSingleton<IFundingOutputBuilder, FundingOutputBuilder>();
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
         services.AddSingleton<IKeyDerivationService, KeyDerivationService>();

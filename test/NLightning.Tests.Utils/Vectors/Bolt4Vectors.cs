@@ -60,6 +60,46 @@ public sealed record Bolt4OnionErrorTestVector(
     byte[] ErrorPacket);
 
 /// <summary>
+/// One return-forwarding step of the inline BOLT 4 "Test Vector &gt; Returning Errors" trace.
+/// </summary>
+/// <param name="Node">The index of the node in the route (4 = erring node, 0 = first hop)</param>
+/// <param name="SharedSecret"><c>shared_secret</c></param>
+/// <param name="AmmagKey"><c>ammag_key</c></param>
+/// <param name="Stream">The <c>ammag</c> ChaCha20 stream (<c>stream</c>), as long as the packet</param>
+/// <param name="ErrorPacket">The packet after this node's obfuscation (<c>error packet for node N</c>)</param>
+/// <param name="AttributionData">The attribution data after this node (<c>attribution data for node N</c>, M3b)</param>
+[ExcludeFromCodeCoverage]
+public sealed record Bolt4ReturningErrorsTraceHop(
+    int Node,
+    byte[] SharedSecret,
+    byte[] AmmagKey,
+    byte[] Stream,
+    byte[] ErrorPacket,
+    byte[] AttributionData);
+
+/// <summary>
+/// The inline BOLT 4 "Test Vector &gt; Returning Errors" trace, transcribed to <c>returning-errors-trace.json</c>.
+/// </summary>
+/// <param name="ErringNode">The index of the erring node (4)</param>
+/// <param name="FailureMessage">The bare <c>failuremsg</c> (<c>failure_len</c> bytes)</param>
+/// <param name="ErringSharedSecret">The erring node's shared secret</param>
+/// <param name="Payload">
+/// The plaintext return-packet body <c>failure_len || failuremsg || pad_len || pad</c> (<c>payload</c>)
+/// </param>
+/// <param name="UmKey">The erring node's <c>um_key</c></param>
+/// <param name="RawErrorPacket"><c>hmac || payload</c> before any obfuscation (<c>raw_error_packet</c>)</param>
+/// <param name="Hops">The obfuscation steps in return order: the erring node first, the first hop last</param>
+[ExcludeFromCodeCoverage]
+public sealed record Bolt4ReturningErrorsTraceVector(
+    int ErringNode,
+    byte[] FailureMessage,
+    byte[] ErringSharedSecret,
+    byte[] Payload,
+    byte[] UmKey,
+    byte[] RawErrorPacket,
+    IReadOnlyList<Bolt4ReturningErrorsTraceHop> Hops);
+
+/// <summary>
 /// Loader and shared constants for the official BOLT 4 JSON test vectors.
 /// </summary>
 /// <remarks>
@@ -74,6 +114,12 @@ public static class Bolt4Vectors
     public const string RouteBlindingTestPath = "BOLT4/Vectors/route-blinding-test.json";
     public const string BlindedPaymentOnionTestPath = "BOLT4/Vectors/blinded-payment-onion-test.json";
     public const string BlindedOnionMessageOnionTestPath = "BOLT4/Vectors/blinded-onion-message-onion-test.json";
+
+    /// <summary>
+    /// The inline BOLT 4 "Test Vector &gt; Returning Errors" trace (not a spec JSON file; transcribed from
+    /// <c>04-onion-routing.md</c>).
+    /// </summary>
+    public const string ReturningErrorsTracePath = "BOLT4/Vectors/returning-errors-trace.json";
 
     /// <summary>
     /// The session key used by <c>onion-test.json</c> and <c>onion-error-test.json</c> (0x41 repeated 32 times).
@@ -123,6 +169,30 @@ public static class Bolt4Vectors
 
         return new Bolt4OnionErrorTestVector(GetHex(generate, "session_key"), GetHex(generate, "failure_message"),
                                              hops, GetHex(root, "errorpacket"));
+    }
+
+    public static Bolt4ReturningErrorsTraceVector LoadReturningErrorsTrace(string path = ReturningErrorsTracePath)
+    {
+        using var document = LoadDocument(path);
+        var root = document.RootElement;
+
+        var hops = GetRequired(root, "hops")
+                  .EnumerateArray()
+                  .Select(hop => new Bolt4ReturningErrorsTraceHop(GetRequired(hop, "node").GetInt32(),
+                                                                  GetHex(hop, "shared_secret"),
+                                                                  GetHex(hop, "ammag_key"),
+                                                                  GetHex(hop, "stream"),
+                                                                  GetHex(hop, "error_packet"),
+                                                                  GetHex(hop, "attribution_data")))
+                  .ToList();
+
+        return new Bolt4ReturningErrorsTraceVector(GetRequired(root, "erring_node").GetInt32(),
+                                                   GetHex(root, "failure_message"),
+                                                   GetHex(root, "erring_shared_secret"),
+                                                   GetHex(root, "payload"),
+                                                   GetHex(root, "um_key"),
+                                                   GetHex(root, "raw_error_packet"),
+                                                   hops);
     }
 
     /// <summary>

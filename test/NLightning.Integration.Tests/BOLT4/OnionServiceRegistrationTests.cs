@@ -7,6 +7,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Serialization.Interfaces;
 using Infrastructure;
 using Infrastructure.Bitcoin;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Protocol.Onion;
 using Infrastructure.Serialization;
 using Infrastructure.Serialization.Interfaces;
@@ -33,6 +34,8 @@ public class OnionServiceRegistrationTests
         var hopPayloadSerializer = provider.GetRequiredService<IHopPayloadSerializer>();
         var replayCache = provider.GetRequiredService<IOnionReplayCache>();
         var sphinxService = provider.GetRequiredService<ISphinxService>();
+        var failureMessageSerializer = provider.GetRequiredService<IFailureMessageSerializer>();
+        var failureOnionService = provider.GetRequiredService<IFailureOnionService>();
 
         // Assert
         Assert.IsType<HopPayloadSerializer>(hopPayloadSerializer);
@@ -40,6 +43,9 @@ public class OnionServiceRegistrationTests
         Assert.Same(hopPayloadSerializer, provider.GetRequiredService<IHopPayloadSerializer>());
         Assert.Same(replayCache, provider.GetRequiredService<IOnionReplayCache>());
         Assert.Same(sphinxService, provider.GetRequiredService<ISphinxService>());
+        Assert.IsType<FailureMessageSerializer>(failureMessageSerializer);
+        Assert.IsType<FailureOnionService>(failureOnionService);
+        Assert.Same(failureOnionService, provider.GetRequiredService<IFailureOnionService>());
         Assert.Equal(OnionReplayCache.DefaultCapacity, ((OnionReplayCache)replayCache).Capacity);
     }
 
