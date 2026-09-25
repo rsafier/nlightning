@@ -37,10 +37,14 @@ public class PingPayloadSerializer : IPayloadSerializer<PingPayload>
                 throw new SerializationException(
                     $"Invalid Ignored data for PingPayload. Expected {bytesLength} bytes.");
 
+            var ignored = new byte[bytesLength];
+            await stream.ReadExactlyAsync(ignored);
+
             return new PingPayload
             {
                 NumPongBytes = numPongBytes,
-                BytesLength = bytesLength
+                BytesLength = bytesLength,
+                Ignored = ignored
             };
         }
         catch (Exception e)

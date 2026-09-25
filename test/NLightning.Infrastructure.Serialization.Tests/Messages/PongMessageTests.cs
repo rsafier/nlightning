@@ -31,6 +31,20 @@ public class PongMessageTests
     }
 
     [Fact]
+    public async Task Given_PongWithIgnoredBytes_When_DeserializeAsync_Then_IgnoredBytesAreConsumed()
+    {
+        // Arrange
+        var stream = new MemoryStream(Convert.FromHexString("0002aabb"));
+
+        // Act
+        var pongMessage = await _pongMessageTypeSerializer.DeserializeAsync(stream);
+
+        // Assert
+        Assert.Equal(stream.Length, stream.Position);
+        Assert.Equal(Convert.FromHexString("aabb"), pongMessage.Payload.Ignored);
+    }
+
+    [Fact]
     public async Task Given_ValidPayload_When_SerializeAsync_Then_WritesCorrectDataToStream()
     {
         // Arrange
