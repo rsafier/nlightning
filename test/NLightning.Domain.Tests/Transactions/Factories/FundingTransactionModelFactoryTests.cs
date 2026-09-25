@@ -1,9 +1,8 @@
-using NLightning.Domain.Bitcoin.Transactions.Factories;
-using NLightning.Domain.Bitcoin.Transactions.Outputs;
-
 namespace NLightning.Domain.Tests.Transactions.Factories;
 
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Transactions.Factories;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
