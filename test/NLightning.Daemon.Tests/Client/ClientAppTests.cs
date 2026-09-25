@@ -32,6 +32,9 @@ public class ClientAppTests
     [InlineData("connect-peer")]
     [InlineData("openchannel")]
     [InlineData("open-channel", "peer@host")]
+    [InlineData("openchannel", "-n", "regtest")]
+    [InlineData("openchannel", "--network", "regtest")]
+    [InlineData("openchannel", "peer@host", "--cookie=/tmp/nltg.cookie")]
     [InlineData("unknown-command")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)

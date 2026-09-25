@@ -37,7 +37,7 @@ A console exe that sends **one IPC request per call** to a running `NLightning.D
 - Tests: there is no Client test project. Client tests live in `test/NLightning.Daemon.Tests/Client/` (internals are visible via `AssemblyInfo.cs`). Run them with `dotnet run --project test/NLightning.Daemon.Tests -- -namespace NLightning.Daemon.Tests.Client`.
 
 ## Gotchas
-- `CommandLineHelper` (in Daemon.Contracts) accepts `--network x`, `--network=x`, `-n x`, `--cookie x`, `--cookie=x` and `-c x`; only the separate-value forms consume the next argument when finding the command. Cookie dir precedence: `--cookie` arg, `--network` arg, `NLTG_COOKIE`, `NLTG_NETWORK`, then `~/.nltg/mainnet`.
+- `CommandLineHelper` (in Daemon.Contracts) accepts `--network x`, `--network=x`, `-n x`, `--cookie x`, `--cookie=x` and `-c x`; only the separate-value forms consume the next argument. These options are skipped anywhere, including after the command, so they are never command arguments. Cookie dir precedence: `--cookie` arg, `--network` arg, `NLTG_COOKIE`, `NLTG_NETWORK`, then `~/.nltg/mainnet`.
 - Frames are MessagePack with LZ4BlockArray compression (`Hash`/`TxId` are standard `bin 8` values).
 - The protocol has no server push. Progress is reported by the client repeating the request (a long-poll).
 
