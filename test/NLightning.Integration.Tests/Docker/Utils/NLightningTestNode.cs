@@ -13,6 +13,7 @@ using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
+using Application.Gossip;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Bitcoin.Enums;
@@ -594,6 +595,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
         // The daemon's composition
         services.AddNltgNodeServices(configuration, SecureKeyManager);
+
+        // The direct channel_update exchange (W1-E). Idempotent, so it stays harmless once AddApplicationServices
+        // registers it too (integrator: then drop this line)
+        services.AddGossipServices();
 
         // Test-only overrides: a fixed fee estimate, our own port and network, and a TCP service CrashAsync can reset
         services.AddHttpClient<IFeeService, Infrastructure.Bitcoin.Services.FeeService>()

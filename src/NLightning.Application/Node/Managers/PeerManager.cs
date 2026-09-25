@@ -23,6 +23,9 @@ using Domain.Node.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Gossip.Events;
+using Gossip.Interfaces;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -42,6 +45,8 @@ using Services;
 /// A new connection from a peer we are already connected to replaces the old one (as LND and CLN do), except for a
 /// simultaneous connect, where both ends keep the connection initiated by the node with the lower pubkey (LND's rule).
 /// A peer with active channels that drops is reconnected with backoff unless we disconnected it on purpose.
+/// With an <see cref="IChannelUpdateService"/>, our <c>channel_update</c>s go out through the peer's outbox and the
+/// peer's are handed to that service (BOLT 7 direct exchange, W1-E).
 /// </remarks>
 /// <seealso cref="IPeerManager" />
 public sealed class PeerManager : IPeerManager
@@ -61,6 +66,7 @@ public sealed class PeerManager : IPeerManager
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly ITcpService _tcpService;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IChannelUpdateService? _channelUpdateService;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
 
@@ -106,7 +112,8 @@ public sealed class PeerManager : IPeerManager
     public PeerManager(IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                        ILogger<PeerManager> logger, IPeerServiceFactory peerServiceFactory,
                        ISecureKeyManager secureKeyManager, ITcpService tcpService, IServiceProvider serviceProvider,
-                       IOptions<NodeOptions>? nodeOptions = null)
+                       IOptions<NodeOptions>? nodeOptions = null,
+                       IChannelUpdateService? channelUpdateService = null)
     {
         if (nodeOptions is not null)
         {
@@ -124,6 +131,10 @@ public sealed class PeerManager : IPeerManager
 
         // Subscribed here (not in StartAsync) so no message raised by the channel manager can miss the outbox
         _channelManager.OnResponseMessageReady += HandleResponseMessageReady;
+
+        _channelUpdateService = channelUpdateService;
+        if (_channelUpdateService is not null)
+            _channelUpdateService.OnChannelUpdateReady += HandleChannelUpdateReady;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -546,6 +557,12 @@ public sealed class PeerManager : IPeerManager
         peerService.OnChannelMessageReceived += session.ChannelMessageHandler;
         peerService.OnDisconnect += session.DisconnectHandler;
 
+        if (_channelUpdateService is not null)
+        {
+            session.ChannelUpdateHandler = (_, message) => HandleRemoteChannelUpdate(session, message);
+            peerService.OnChannelUpdateReceived += session.ChannelUpdateHandler;
+        }
+
         return session;
     }
 
@@ -652,6 +669,8 @@ public sealed class PeerManager : IPeerManager
             peerService.OnChannelMessageReceived -= session.ChannelMessageHandler;
         if (session.DisconnectHandler is not null)
             peerService.OnDisconnect -= session.DisconnectHandler;
+        if (session.ChannelUpdateHandler is not null)
+            peerService.OnChannelUpdateReceived -= session.ChannelUpdateHandler;
         peerService.Dispose();
 
         if (removed)
@@ -827,6 +846,43 @@ public sealed class PeerManager : IPeerManager
     }
 
     /// <summary>
+    /// Enqueues our <c>channel_update</c> for the peer's current connection. Runs while the channel's lock is held, so
+    /// it must never block or throw. A peer that is not connected does not get it (nothing resends it yet; the
+    /// reestablish flow should call <see cref="IChannelUpdateService.SendChannelUpdateAsync"/>).
+    /// </summary>
+    private void HandleChannelUpdateReady(object? sender, ChannelUpdateReadyEventArgs args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+
+        if (!_peers.TryGetValue(args.PeerPubKey, out var session))
+        {
+            _logger.LogInformation("Peer {Peer} not connected, not sending channel_update for {ShortChannelId}",
+                                   args.PeerPubKey, args.Message.Payload.ShortChannelId);
+            return;
+        }
+
+        if (!session.Outbox.TryEnqueueGossip(args.Message))
+            _logger.LogWarning("Peer {Peer} is disconnecting, dropping channel_update for {ShortChannelId}",
+                               args.PeerPubKey, args.Message.Payload.ShortChannelId);
+    }
+
+    /// <summary>
+    /// Hands a <c>channel_update</c> from the peer to the channel update service. Runs on the transport read loop.
+    /// </summary>
+    private void HandleRemoteChannelUpdate(PeerSession session, ChannelUpdateMessage message)
+    {
+        try
+        {
+            _channelUpdateService?.HandleRemoteChannelUpdate(session.Peer.NodeId, message);
+        }
+        catch (Exception e)
+        {
+            // Gossip is never worth a connection
+            _logger.LogWarning(e, "Error handling channel_update from peer {Peer}", session.Peer.NodeId);
+        }
+    }
+
+    /// <summary>
     /// One connection to a peer: its model, its service, its ordered inbound queue and loop, and its outbox.
     /// </summary>
     private sealed class PeerSession
@@ -854,6 +910,7 @@ public sealed class PeerManager : IPeerManager
         public Task InboundLoop { get; private set; } = Task.CompletedTask;
         public EventHandler<ChannelMessageEventArgs>? ChannelMessageHandler { get; set; }
         public EventHandler<PeerDisconnectedEventArgs>? DisconnectHandler { get; set; }
+        public EventHandler<ChannelUpdateMessage>? ChannelUpdateHandler { get; set; }
         public bool IsDisconnected => Volatile.Read(ref _disconnected) != 0;
         public bool ReconnectSuppressed => _reconnectSuppressed;
 

@@ -32,11 +32,19 @@ public sealed class PeerService : IPeerService
     /// </summary>
     internal const int MaxPendingChannelMessages = 1024;
 
+    /// <summary>
+    /// <c>channel_update</c>s kept while nobody is subscribed to <see cref="OnChannelUpdateReceived"/>; later ones
+    /// are dropped (gossip is not critical, and the peer sends a fresh one when its policy changes).
+    /// </summary>
+    internal const int MaxPendingChannelUpdates = 64;
+
     private readonly IPeerCommunicationService _peerCommunicationService;
     private readonly ILogger<PeerService> _logger;
     private readonly Lock _channelMessageLock = new();
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
     private readonly Lock _disconnectLock = new();
+    private readonly Lock _channelUpdateLock = new();
+    private readonly Queue<ChannelUpdateMessage> _pendingChannelUpdates = new();
 
     /// <summary>
     /// Completes when the peer's init is accepted; fails when the connection closes before that.
@@ -46,6 +54,7 @@ public sealed class PeerService : IPeerService
     private volatile bool _isInitialized;
     private EventHandler<ChannelMessageEventArgs>? _onChannelMessageReceived;
     private EventHandler<PeerDisconnectedEventArgs>? _onDisconnect;
+    private EventHandler<ChannelUpdateMessage>? _onChannelUpdateReceived;
     private PeerDisconnectedEventArgs? _disconnectedArgs;
 
     /// <inheritdoc/>
@@ -100,6 +109,28 @@ public sealed class PeerService : IPeerService
 
     /// <inheritdoc/>
     public event EventHandler<AttentionMessageEventArgs>? OnAttentionMessageReceived;
+
+    /// <inheritdoc/>
+    public event EventHandler<ChannelUpdateMessage>? OnChannelUpdateReceived
+    {
+        add
+        {
+            lock (_channelUpdateLock)
+            {
+                _onChannelUpdateReceived += value;
+                if (value is null)
+                    return;
+
+                while (_pendingChannelUpdates.TryDequeue(out var update))
+                    value(this, update);
+            }
+        }
+        remove
+        {
+            lock (_channelUpdateLock)
+                _onChannelUpdateReceived -= value;
+        }
+    }
 
     /// <inheritdoc/>
     public event EventHandler<Exception>? OnExceptionRaised;
@@ -175,6 +206,17 @@ public sealed class PeerService : IPeerService
     public Task SendWarningAsync(WarningException we)
     {
         return _peerCommunicationService.SendWarningAsync(we);
+    }
+
+    /// <inheritdoc/>
+    public Task SendGossipMessageAsync(IMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Type is < MessageTypes.ChannelAnnouncement or > MessageTypes.GossipTimestampFilter)
+            throw new ArgumentException($"{Enum.GetName(message.Type) ?? message.Type.ToString()} is not a gossip message",
+                                        nameof(message));
+
+        return _peerCommunicationService.SendMessageAsync(message);
     }
 
     /// <summary>
@@ -281,6 +323,13 @@ public sealed class PeerService : IPeerService
                 _ = _peerCommunicationService.SendWarningAsync(we);
             }
         }
+        else if (message is ChannelUpdateMessage channelUpdateMessage)
+        {
+            // BOLT 7: checked (chain, channel, signature) and stored by the subscriber
+            _logger.LogDebug("Received channel_update for {shortChannelId} from peer {peer}",
+                             channelUpdateMessage.Payload.ShortChannelId, PeerPubKey);
+            RaiseChannelUpdate(channelUpdateMessage);
+        }
         else if (message is GossipTimestampFilterMessage)
         {
             // We never relay gossip (and generate none yet), so there is nothing to filter: accept and ignore
@@ -319,6 +368,30 @@ public sealed class PeerService : IPeerService
         _logger.LogWarning("Too many channel messages from peer {peer} before we were ready, disconnecting",
                            PeerPubKey);
         Disconnect(new ConnectionException("Too many channel messages before the peer was ready"));
+    }
+
+    /// <summary>
+    /// Hands a channel_update to the subscribers, or keeps it (up to <see cref="MaxPendingChannelUpdates"/>) until the
+    /// first one subscribes.
+    /// </summary>
+    private void RaiseChannelUpdate(ChannelUpdateMessage message)
+    {
+        lock (_channelUpdateLock)
+        {
+            if (_onChannelUpdateReceived is not null)
+            {
+                _onChannelUpdateReceived(this, message);
+                return;
+            }
+
+            if (_pendingChannelUpdates.Count < MaxPendingChannelUpdates)
+            {
+                _pendingChannelUpdates.Enqueue(message);
+                return;
+            }
+        }
+
+        _logger.LogDebug("Dropping channel_update from peer {peer}: too many before anyone listened", PeerPubKey);
     }
 
     private async Task SendGossipReplyAsync(IMessage reply)

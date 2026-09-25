@@ -11,8 +11,9 @@ using Domain.Protocol.Interfaces;
 /// The single, ordered send path for one peer's channel messages (BOLT2 plan D2, §3.7; NL-193).
 /// </summary>
 /// <remarks>
-/// Handler replies, messages raised through <c>IChannelManager.OnResponseMessageReady</c>, channel warnings and the
-/// final error/warning of a disconnect all go through one FIFO queue, drained by one loop that awaits each send before
+/// Handler replies, messages raised through <c>IChannelManager.OnResponseMessageReady</c>, channel warnings, our own
+/// <c>channel_update</c>s (after the channel_ready they follow) and the final error/warning of a disconnect all go
+/// through one FIFO queue, drained by one loop that awaits each send before
 /// starting the next. Enqueueing never blocks, so it is safe while holding a channel lock: whatever is enqueued under
 /// the lock reaches the wire in that order. A disconnect is terminal: it is sent after everything queued before it,
 /// and anything enqueued after it is dropped.
@@ -52,6 +53,16 @@ public sealed class PeerOutbox
     }
 
     /// <summary>
+    /// Queues a BOLT 7 gossip message (e.g. our <c>channel_update</c> for a channel with this peer). Returns false when
+    /// the outbox is closed.
+    /// </summary>
+    public bool TryEnqueueGossip(IMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return _queue.Writer.TryWrite(new OutboxItem(OutboxItemKind.Gossip, message, null));
+    }
+
+    /// <summary>
     /// Queues a `warning`; the connection stays up.
     /// </summary>
     public bool TryEnqueueWarning(WarningException warning)
@@ -88,7 +99,10 @@ public sealed class PeerOutbox
                 switch (item.Kind)
                 {
                     case OutboxItemKind.Message:
-                        await _peerService.SendMessageAsync(item.Message!).ConfigureAwait(false);
+                        await _peerService.SendMessageAsync((IChannelMessage)item.Message!).ConfigureAwait(false);
+                        break;
+                    case OutboxItemKind.Gossip:
+                        await _peerService.SendGossipMessageAsync(item.Message!).ConfigureAwait(false);
                         break;
                     case OutboxItemKind.Warning:
                         await _peerService.SendWarningAsync((WarningException)item.Reason!).ConfigureAwait(false);
@@ -109,9 +123,10 @@ public sealed class PeerOutbox
     private enum OutboxItemKind
     {
         Message,
+        Gossip,
         Warning,
         Disconnect
     }
 
-    private sealed record OutboxItem(OutboxItemKind Kind, IChannelMessage? Message, Exception? Reason);
+    private sealed record OutboxItem(OutboxItemKind Kind, IMessage? Message, Exception? Reason);
 }

@@ -91,6 +91,97 @@ public class PeerServiceTests
     }
 
     [Fact]
+    public void Given_Subscriber_When_ChannelUpdateReceived_Then_ItIsRaisedWithThePeerServiceAsSender()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        object? sender = null;
+        ChannelUpdateMessage? received = null;
+        peerService.OnChannelUpdateReceived += (s, m) => (sender, received) = (s, m);
+        var channelUpdate = CreateChannelUpdate(1_700_000_000);
+
+        // Act
+        RaiseMessage(channelUpdate);
+
+        // Assert
+        Assert.Same(peerService, sender);
+        Assert.Same(channelUpdate, received);
+    }
+
+    [Fact]
+    public void Given_NoSubscriberYet_When_ChannelUpdatesArrive_Then_TheFirstSubscriberGetsThemInOrder()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        var first = CreateChannelUpdate(1);
+        var second = CreateChannelUpdate(2);
+        RaiseMessage(first);
+        RaiseMessage(second);
+        var received = new List<ChannelUpdateMessage>();
+
+        // Act
+        peerService.OnChannelUpdateReceived += (_, m) => received.Add(m);
+
+        // Assert
+        Assert.Equal([first, second], received);
+    }
+
+    [Fact]
+    public void Given_TooManyChannelUpdatesBeforeSubscribing_When_Subscribing_Then_TheExtraOnesAreDroppedAndPeerStays()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        for (var i = 0; i < PeerService.MaxPendingChannelUpdates + 5; i++)
+            RaiseMessage(CreateChannelUpdate((uint)i));
+        var received = 0;
+
+        // Act
+        peerService.OnChannelUpdateReceived += (_, _) => received++;
+
+        // Assert
+        Assert.Equal(PeerService.MaxPendingChannelUpdates, received);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_GossipMessage_When_SendingGossip_Then_ItIsSentToThePeer()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+        var channelUpdate = CreateChannelUpdate(1);
+
+        // Act
+        await peerService.SendGossipMessageAsync(channelUpdate);
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(x => x.SendMessageAsync(channelUpdate, It.IsAny<CancellationToken>()),
+                                             Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_NonGossipMessage_When_SendingGossip_Then_Throws()
+    {
+        // Arrange
+        var peerService = CreatePeerService();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => peerService.SendGossipMessageAsync(new WarningMessage(new ErrorPayload("not gossip"))));
+    }
+
+    private static ChannelUpdateMessage CreateChannelUpdate(uint timestamp)
+    {
+        return new ChannelUpdateMessage(
+            new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest,
+                                     new ShortChannelId(103, 1, 0), timestamp,
+                                     ChannelUpdatePayload.MessageFlagMustBeOne, 0, 40, 1_000, 1_000, 1,
+                                     990_000_000));
+    }
+
+    [Fact]
     public void Given_InitWithOurChainAmongOthers_When_InitReceived_Then_PeerIsNotDisconnected()
     {
         // Arrange
