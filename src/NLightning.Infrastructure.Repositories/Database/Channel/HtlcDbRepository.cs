@@ -60,14 +60,14 @@ public class HtlcDbRepository : BaseDbRepository<HtlcEntity>, IHtlcDbRepository
 
     public async Task<IEnumerable<Htlc>> GetByChannelIdAndStateAsync(ChannelId channelId, HtlcState state)
     {
-        var htlcEntities = Get(h => h.ChannelId.Equals(channelId) && h.State.Equals(state)).ToList();
+        var htlcEntities = Get(h => h.ChannelId.Equals(channelId) && h.State == (byte)state).ToList();
 
         return await Task.WhenAll(htlcEntities.Select(h => MapEntityToDomainAsync(h, _messageSerializer)));
     }
 
     public async Task<IEnumerable<Htlc>> GetByChannelIdAndDirectionAsync(ChannelId channelId, HtlcDirection direction)
     {
-        var htlcEntities = Get(h => h.ChannelId.Equals(channelId) && h.Direction.Equals(direction)).ToList();
+        var htlcEntities = Get(h => h.ChannelId.Equals(channelId) && h.Direction == (byte)direction).ToList();
 
         return await Task.WhenAll(htlcEntities.Select(h => MapEntityToDomainAsync(h, _messageSerializer)));
     }
@@ -89,7 +89,8 @@ public class HtlcDbRepository : BaseDbRepository<HtlcEntity>, IHtlcDbRepository
             Direction = (byte)htlc.Direction,
             ObscuredCommitmentNumber = htlc.ObscuredCommitmentNumber,
             AddMessageBytes = stream.ToArray(),
-            PaymentPreimage = htlc.PaymentPreimage
+            PaymentPreimage = htlc.PaymentPreimage,
+            Signature = htlc.Signature?.Value
         };
     }
 
