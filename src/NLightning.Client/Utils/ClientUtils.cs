@@ -21,6 +21,14 @@ public static class ClientUtils
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
         Console.WriteLine("  openchannel <node> <sats>    Open a channel to peer");
+        Console.WriteLine("  createinvoice <msat|any> [description] [expiry_seconds]");
+        Console.WriteLine("                               Create an invoice (alias: addinvoice)");
+        Console.WriteLine("  payinvoice <bolt11> [msat] [timeout_seconds]");
+        Console.WriteLine("                               Pay an invoice and wait for the outcome (alias: pay); the");
+        Console.WriteLine("                               amount is only for invoices without one; exit code 1 if it");
+        Console.WriteLine("                               failed");
+        Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [default count: 100]");
+        Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [default count: 100]");
         Console.WriteLine();
         Console.WriteLine("Environment Variables:");
         Console.WriteLine("  NLTG_NETWORK               Network to use");

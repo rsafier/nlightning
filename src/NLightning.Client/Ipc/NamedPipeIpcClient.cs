@@ -220,6 +220,63 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Creates an invoice (ClientCommand 9).
+    /// </summary>
+    /// <param name="amount">The requested amount, or null for an any-amount invoice.</param>
+    /// <param name="description">BOLT 11 <c>d</c>; may be empty.</param>
+    /// <param name="expirySeconds">BOLT 11 <c>x</c>, or null for the node default.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<CreateInvoiceIpcResponse> CreateInvoiceAsync(LightningMoney? amount, string description,
+                                                             uint? expirySeconds, CancellationToken ct = default)
+    {
+        var req = new CreateInvoiceIpcRequest
+        {
+            Amount = amount,
+            Description = description,
+            ExpirySeconds = expirySeconds
+        };
+        return SendRequestAsync<CreateInvoiceIpcRequest, CreateInvoiceIpcResponse>(ClientCommand.CreateInvoice, req,
+                                                                                    ct);
+    }
+
+    /// <summary>
+    /// Pays a BOLT 11 invoice and waits for the outcome (ClientCommand 10).
+    /// </summary>
+    /// <param name="bolt11">The invoice.</param>
+    /// <param name="amount">The amount when the invoice has none.</param>
+    /// <param name="timeoutSeconds">How long the daemon waits for the outcome, or null for its default.</param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
+                                                       CancellationToken ct = default)
+    {
+        var req = new PayInvoiceIpcRequest
+        {
+            Bolt11 = bolt11,
+            Amount = amount,
+            TimeoutSeconds = timeoutSeconds
+        };
+        return SendRequestAsync<PayInvoiceIpcRequest, PayInvoiceIpcResponse>(ClientCommand.PayInvoice, req, ct);
+    }
+
+    /// <summary>
+    /// Lists a page of our invoices, newest first (ClientCommand 11).
+    /// </summary>
+    public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)
+    {
+        var req = new ListInvoicesIpcRequest { Skip = skip, Take = take };
+        return SendRequestAsync<ListInvoicesIpcRequest, ListInvoicesIpcResponse>(ClientCommand.ListInvoices, req, ct);
+    }
+
+    /// <summary>
+    /// Lists a page of our outgoing payments, newest first (ClientCommand 12).
+    /// </summary>
+    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default)
+    {
+        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take };
+        return SendRequestAsync<ListPaymentsIpcRequest, ListPaymentsIpcResponse>(ClientCommand.ListPayments, req, ct);
+    }
+
+    /// <summary>
     /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
     /// </summary>
     internal static AddressType ParseAddressType(string? addressTypeString)
@@ -235,6 +292,27 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             _ => throw new ArgumentOutOfRangeException(nameof(addressTypeString), addressTypeString,
                                                        "Address has to be `p2tr`, `p2wpkh`, or `all`.")
         };
+    }
+
+    private async Task<TResponse> SendRequestAsync<TRequest, TResponse>(ClientCommand command, TRequest request,
+                                                                       CancellationToken ct)
+    {
+        var env = new IpcEnvelope
+        {
+            Version = 1,
+            Command = command,
+            CorrelationId = Guid.NewGuid(),
+            AuthToken = await GetAuthTokenAsync(ct),
+            Payload = MessagePackSerializer.Serialize(request, cancellationToken: ct),
+            Kind = IpcEnvelopeKind.Request
+        };
+
+        var respEnv = await SendAsync(env, ct);
+        if (respEnv.Kind != IpcEnvelopeKind.Error)
+            return MessagePackSerializer.Deserialize<TResponse>(respEnv.Payload, cancellationToken: ct);
+
+        var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
+        throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
     }
 
     private async Task<IpcEnvelope> SendAsync(IpcEnvelope envelope, CancellationToken ct)
