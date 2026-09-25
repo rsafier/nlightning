@@ -51,7 +51,8 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `TransportService.WriteMessageAsync` encrypts BEFORE taking the write semaphore. Concurrent senders can reorder nonces.
 - `TransportService.ReadResponseAsync` uses `ReadAsync`, not `ReadExactlyAsync`, so a partial TCP read kills the connection.
 - `MessageService.ReceiveMessage` deserializes synchronously under a lock on the read loop.
-- `PingPongService.StartPingAsync`: the pong-timeout disconnect path is dead. A timeout makes `Task.Delay` Canceled (not Faulted), so the loop `continue`s and re-pings instead of raising `DisconnectEvent`.
+- `PingPongService.StartPingAsync` raises `DisconnectEvent` (ConnectionException) when no pong arrives within `NodeOptions.NetworkTimeout`, and returns quietly on shutdown. `PeerCommunicationService.HandlePingPongDisconnect` disconnects on a separate task, because `Disconnect` waits (up to 5 s) for the ping loop that raised the event. Note `ConnectionException` derives from `ErrorException`, so `RaiseException` disconnects on it too (but sends no error message).
+- Incoming pings with `num_pong_bytes >= 65532` are ignored (no pong), per BOLT 1.
 - `RemoteAddressTlvConverter`: Tor v3 decode reads 36 address bytes (`Value[1..37]`) instead of 35; type 5 (DNS) encode overwrites `customAddressBytes[1]` and decode expects length+3 instead of length+4. No tests exist. (`TlvStreamSerializer` now finds converters by runtime type, so it no longer throws for `RemoteAddressTlv`.)
 - `Tx*Validator` serial_id parity check only runs when `isInitiator` is true and rejects odd ids; whether `isInitiator` means local or remote is undocumented, so verify against BOLT 2 before relying on it. `TxAddInputValidator.Validate` is `async void`.
 - `SecretStorageService.GetBasepointPrivateKey` and `LoadFromIndex` throw `NotImplementedException`.

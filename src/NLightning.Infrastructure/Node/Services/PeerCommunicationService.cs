@@ -71,7 +71,7 @@ public class PeerCommunicationService : IPeerCommunicationService
 
         _messageService.OnMessageReceived += HandleMessageReceived;
         _messageService.OnExceptionRaised += HandleExceptionRaised;
-        _pingPongService.DisconnectEvent += HandleExceptionRaised;
+        _pingPongService.DisconnectEvent += HandlePingPongDisconnect;
     }
 
     /// <inheritdoc />
@@ -252,6 +252,20 @@ public class PeerCommunicationService : IPeerCommunicationService
         RaiseException(e);
     }
 
+    private void HandlePingPongDisconnect(object? sender, Exception e)
+    {
+        // Pong timeout or mismatched pong: forward the reason and close the connection (BOLT 1 allows it, and the
+        // channels must not be failed). Disconnect on another thread, because it waits for the ping loop, which is
+        // the one raising this event.
+        ExceptionRaised?.Invoke(this, e);
+
+        if (_cts.IsCancellationRequested)
+            return;
+
+        _logger.LogWarning(e, "Disconnecting peer {peer} because of a ping/pong failure", PeerCompactPubKey);
+        _ = Task.Run(() => Disconnect(e));
+    }
+
     private Task SendExceptionMessage(Exception? exception)
     {
         switch (exception)
@@ -325,7 +339,7 @@ public class PeerCommunicationService : IPeerCommunicationService
         // Unsubscribe from events
         _messageService.OnMessageReceived -= HandleMessageReceived;
         _messageService.OnExceptionRaised -= HandleExceptionRaised;
-        _pingPongService.DisconnectEvent -= HandleExceptionRaised;
+        _pingPongService.DisconnectEvent -= HandlePingPongDisconnect;
 
         _cts.Dispose();
         _messageService.Dispose();
