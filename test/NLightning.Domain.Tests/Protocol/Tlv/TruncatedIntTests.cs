@@ -1,6 +1,6 @@
-namespace NLightning.Infrastructure.Tests.Converters;
+namespace NLightning.Domain.Tests.Protocol.Tlv;
 
-using Infrastructure.Converters;
+using Domain.Protocol.Tlv;
 
 public class TruncatedIntTests
 {

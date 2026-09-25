@@ -18,7 +18,7 @@ public class TotalAmountMsatTlv : BaseTlv
     {
         TotalAmount = totalAmount;
 
-        Value = TruncatedIntEncoder.Encode(totalAmount.MilliSatoshi);
+        Value = TruncatedInt.EncodeTu64(totalAmount.MilliSatoshi);
         Length = Value.Length;
     }
 }

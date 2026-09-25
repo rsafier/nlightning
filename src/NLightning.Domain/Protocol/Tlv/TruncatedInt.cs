@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
 using System.Numerics;
 
-namespace NLightning.Infrastructure.Converters;
+namespace NLightning.Domain.Protocol.Tlv;
 
 /// <summary>
 /// BOLT 1 truncated unsigned integers (<c>tu16</c>, <c>tu32</c>, <c>tu64</c>).

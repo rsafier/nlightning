@@ -9,7 +9,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
-using Infrastructure.Converters;
 
 public class PaymentDataTlvConverter : ITlvConverter<PaymentDataTlv>
 {

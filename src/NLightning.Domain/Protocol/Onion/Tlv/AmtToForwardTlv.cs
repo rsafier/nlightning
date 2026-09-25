@@ -18,7 +18,7 @@ public class AmtToForwardTlv : BaseTlv
     {
         AmountToForward = amountToForward;
 
-        Value = TruncatedIntEncoder.Encode(amountToForward.MilliSatoshi);
+        Value = TruncatedInt.EncodeTu64(amountToForward.MilliSatoshi);
         Length = Value.Length;
     }
 }
