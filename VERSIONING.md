@@ -19,40 +19,21 @@ MAJOR.MINOR.PATCH
 
 ## Packages
 
-The repository contains multiple packages, managed as follows:
+Each published project under `src/` is versioned on its own. Its `.csproj` carries `<Version>` (plus `<AssemblyVersion>`/`<FileVersion>` and `PackageReleaseNotes` where present), and its changes are recorded in that project's `CHANGELOG.md` (e.g. `src/NLightning.Domain/CHANGELOG.md`, `src/NLightning.Bolt11/CHANGELOG.md`). Bump these together.
 
-### Global Version (Common and Bolts Packages)
-
-- Scope: Applies to all shared functionality and base components (NLightning.Common, NLightning.Bolts, etc.).
-- Versioning: These packages share a unified version to maintain consistency across core components. Any change
-(bug fix, feature, or breaking change) in any of these packages may result in a version increment applicable to all.
-
-### BOLT11 Package
-
-- Scope: Specific to Bitcoin Lightning Invoice processing and operations.
-- Versioning: This package follows its own versioning timeline to address the specific evolution of BOLT11 features and
-improvements independent of the core components.
+- **Core libraries** (`NLightning.Domain`, `NLightning.Application`, `NLightning.Infrastructure*`): versioned independently; a breaking change in one (for example a changed public type or conversion) bumps that package's MAJOR version and is listed under "Breaking" in its changelog.
+- **`NLightning.Bolt11`**: the standalone BOLT 11 invoice library, on its own timeline.
+- **`NLightning.Daemon` / `NLightning.Client`**: the node and its CLI. They talk over IPC and must come from the same build; an IPC wire change is a breaking change for both.
 
 ## Versioning Triggers
 
-### Global Version
-
-1. Major Update: Changes that cause backward-incompatible modifications or removal of existing functionalities. 
-2. Minor Update: Introduction of new features that are backward-compatible. 
-3. Patch Update: Backward-compatible bug fixes, performance enhancements, and minor improvements.
-
-### BOLT11 Package
-
-1. Major Update: Significant changes that redefine or remove existing APIs specific to BOLT11. 
-2. Minor Update: Backward-compatible enhancements or new features specific to BOLT11 processing. 
-3. Patch Update: Minor bug fixes and improvements within the BOLT11 context.
+1. Major update: backward-incompatible changes to public APIs, persisted formats (key files, database schema without a migration) or the IPC wire format.
+2. Minor update: backward-compatible features.
+3. Patch update: backward-compatible bug fixes, performance improvements and minor changes.
 
 ## Tagging and Release
 
-Each release is tagged in the repository with the version number. Tags are created as follows:
-
-- Global tags are prefixed with global-v, e.g., global-v1.0.0.
-- BOLT11 tags are prefixed with bolt11-v, e.g., bolt11-v1.0.0.
+Tag a release with its version number (for example `v2.0.0`) and list the per-package versions in the release notes.
 
 ## Contributing
 

@@ -15,8 +15,8 @@ This plan is for agents that will implement BOLT 4 (Sphinx onion routing) in thi
    - `dotnet build -c Release.Native -p:MSBuildWarningsAsMessages=MSB4121` passes (this is required for any crypto change),
    - `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` passes, because the `.editorconfig` IDE and naming rules are errors,
    - the new tests pass under both configurations, run with `dotnet test --no-build -c <cfg> --filter 'FullyQualifiedName!~Docker'`.
-3. Put new tests in test projects that `dotnet test` actually discovers. **Do not** put them in `test/NLightning.Application.Tests` or `test/NLightning.Daemon.Tests` until those projects get a `xunit.runner.visualstudio` package reference. They have none today, so CI discovers 0 tests there. Use `dotnet run --project <proj>` to run them locally.
-4. Known environmental failure: `PeerAddressTests.Given_HttpAddress_...` in `test/NLightning.Infrastructure.Tests/Protocol/Models/PeerAddressTests.cs` needs live DNS. Ignore it.
+3. Every test project is discovered by `dotnet test`, including `test/NLightning.Application.Tests` and `test/NLightning.Daemon.Tests` (NL-167); `scripts/check-sln-configs.py` fails CI if one loses its runner.
+4. There are no known environmental failures: `PeerAddressTests` is hermetic (NL-168). The non-Docker run has one intentional skip (the NL-056 HTLC second-stage test).
 5. The WASM build (`Release.Wasm`) only works on linux-x64 (CI). `src/NLightning.Infrastructure/Crypto/Providers/JS/package.json` pins linux-x64 esbuild/rollup. On macOS, write the JS provider code and let CI verify it.
 
 ---
@@ -172,7 +172,7 @@ Always fetch them from the canonical URLs above and commit them under the test p
 | TLV wire | `TlvSerializer`, `TlvStreamSerializer` | `src/NLightning.Infrastructure.Serialization/Tlv/` | `SerializeAsync` has a **closed** pattern switch (unknown TLV class → `SerializationException`). Deserialize reads to `stream.Length` |
 | Route-blinding TLV on update_add_htlc | `BlindedPathTlv` (type 0, `CompactPubKey PathKey`) + converter | `src/NLightning.Domain/Protocol/Tlv/BlindedPathTlv.cs`, `src/NLightning.Infrastructure/Protocol/Tlv/Converters/BlindedPathTlvConverter.cs` | Used in M5 |
 | Value objects | `PrivKey`, `CompactPubKey`, `Secret`, `Hash`, `CryptoKeyPair`, `ShortChannelId`, `LightningMoney` | `src/NLightning.Domain/Crypto/ValueObjects/`, `src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs`, `src/NLightning.Domain/Money/LightningMoney.cs` | See gotchas in §7 (ShortChannelId ulong-ctor mask bug) and §9 (`LightningMoney` implicit conversions = msat) |
-| Feature bits | `VarOnionOptin=9`, `OptionRouteBlinding=25`, `OptionAttributionData=37`, `OptionOnionMessages=39` | `src/NLightning.Domain/Enums/Feature.cs` | `FeatureOptions` advertises RouteBlinding and AttributionData as Optional by default even though neither is implemented (`src/NLightning.Domain/Node/Options/FeatureOptions.cs:55` `OptionRouteBlinding`, `:69` `OptionAttributionData`) |
+| Feature bits | `VarOnionOptin=9`, `OptionRouteBlinding=25`, `OptionAttributionData=37`, `OptionOnionMessages=39` | `src/NLightning.Domain/Enums/Feature.cs` | RouteBlinding and AttributionData default to No and are in `FeatureOptions.ExperimentalFeatures`, so they are refused unless `Features:AllowExperimentalFeatures=true` (NL-074, NL-206) |
 | Wire messages | `UpdateAddHtlcMessage/Payload`, `UpdateFailHtlcPayload` (opaque `Reason`), `UpdateFailMalformedHtlcPayload` (`Sha256OfOnion`, `ushort FailureCode`) + serializers + `IMessageFactory.Create*` | `src/NLightning.Domain/Protocol/{Messages,Payloads}/`, `src/NLightning.Infrastructure.Serialization/Payloads/`, `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` | Onion is `ReadOnlyMemory<byte>? OnionRoutingPacket` (`UpdateAddHtlcPayload.cs:54`) |
 
 ## 3. Missing primitives and types (status after M1)
@@ -388,16 +388,16 @@ Verification on `wip/fafo` HEAD (finalizer run):
   - Onion-message payload length 0 is valid.
 
 **Open follow-ups going into M3/M4** (not done in M1/M2):
-- **Feature defaults:** `FeatureOptions` still defaults `OptionRouteBlinding` and `OptionAttributionData` to Optional (§9 risk 7). Set them to No until M5/M3b.
+- **Feature defaults:** done. `OptionRouteBlinding` and `OptionAttributionData` default to No and are experimental-gated (NL-074, NL-206); take each out of `FeatureOptions.ExperimentalFeatures` when M5/M3b lands.
 - **M3:** failure message model/serializer, error-packet create/wrap/decrypt (27 constant iterations), malformed conversion, and `onion-error-test.json` packet checks. The `um`/`ammag` keys are already derivable through `SphinxKeyGenerator`.
 - **`current_path_key` (TLV 12):** it is still only length/prefix-checked. M5 must curve-validate it and map failures to `invalid_onion_blinding`.
 - **M4 prerequisites:**
   - The replay cache must become cltv-keyed and persistent.
   - The per-HTLC shared secret must be persisted.
-  - The `ShortChannelId(ulong)` mask bug and the SCID tx-index bug must be fixed. The onion TLV uses the byte[] constructor, which is correct.
-  - Application.Tests must get `xunit.runner.visualstudio`.
-  - `IHopPayloadSerializer` is declared in `Infrastructure.Serialization/Interfaces`, which Application must not reference. Move it to `src/NLightning.Domain/Serialization/Interfaces/` before the HTLC switch uses it.
-- **Unused vectors:** `route-blinding-test.json` (M5) and `blinded-onion-message-onion-test.json` (M6) are committed but not yet used.
+  - Done: the `ShortChannelId(ulong)` masks (NL-101) and the SCID tx index (NL-102) are fixed; scid aliases are persisted (NL-103, NL-209). The real SCID is not persisted yet (NL-225).
+  - Done: Application.Tests runs under `dotnet test` (NL-167).
+  - Done: `IHopPayloadSerializer` lives in Domain and the serialization DI is self-sufficient (NL-075, NL-076).
+- **Unused vectors:** only `route-blinding-test.json` (M5), apart from the loader test. `blinded-onion-message-onion-test.json` is used by `OnionVectorTests.Given_BlindedOnionMessageVector_When_PeelingChain_Then_EachNextPacketMatches` (NL-183).
 - **CI checks:** the JS/WASM ChaCha20 path is verified only in CI `Release.Wasm`. The Docker DI (`AbcNetworkTests`, `ChannelOpeningFlowTests`) calls `AddInfrastructureServices`, `AddSerializationInfrastructureServices` and `AddBitcoinInfrastructure`, so it already gets the new singletons. Mirror any M4 hand registrations there.
 
 ### M3: Failure messages (legacy error onion)
@@ -433,7 +433,7 @@ Verification on `wip/fafo` HEAD (finalizer run):
   - `MessageFactory.CreateUpdateAddHtlcMessage` needs a `BlindedPathTlv?` parameter; it has none today.
   - The error rules: `invalid_onion_blinding`; the introduction point converts via `update_fail_htlc`; nodes inside the path use malformed.
   - `PeeledOnion.PathKeySharedSecret` is `ECDH(path_key, node_key)`: use it for `rho` (decrypting `encrypted_recipient_data`) and the next path_key, instead of redoing the ECDH. At the introduction point (current_path_key in the payload, no update_add_htlc path_key) compute that ECDH from current_path_key separately.
-- **Until M5 ships:** set the `OptionRouteBlinding` default to No in `FeatureOptions`.
+- **Until M5 ships:** keep `OptionRouteBlinding` at No and in `FeatureOptions.ExperimentalFeatures` (done: NL-074, NL-206).
 
 ### M6 (optional): Onion messages
 - **Wire message:**
@@ -499,13 +499,13 @@ M1–M3 and M5 (crypto and vectors) can proceed now. M4 is blocked on the follow
 | ChannelModel HTLC mutators (add/settle/fail, next id, balances, revocation numbers) | `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (get-only collections/balances) | M4-T1..T5 |
 | Richer `HtlcState` (commitment-dance stages, forwarded) | `src/NLightning.Domain/Channels/Enums/HtlcState.cs` (Offered/Fulfilled/Failed/Expired only) | peel-after-lock-in |
 | HTLC signatures (htlc_signatures in commitment_signed; SIGHASH_SINGLE\|ANYONECANPAY for anchors) | `ILightningSigner` (`src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`) has no HTLC-tx signing; HTLC tx classes in `src/NLightning.Infrastructure.Bitcoin/Transactions/` are commented out; `HtlcResolutionOutput` has swapped key args | commitment_signed |
-| HTLC reload bug | `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs:201,204,210,213,223` uses `byte.Equals(enum)`, which is always false because `HtlcEntity.State`/`Direction` are `byte` (`src/NLightning.Infrastructure.Persistence/Entities/Channel/HtlcEntity.cs:28,72`). Affected: the State filters at 201 (Offered) and 210 (Fulfilled), which match nothing, and every Direction check at 204, 213 and 223, which sends every HTLC to the remote lists. The `oldStates` branch (219-220) casts to `byte` explicitly and is correct. Fix all five lines | restart safety |
-| ShortChannelId(ulong) masks | `src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs:56-57` uses `0xFFFF`/`0xFF` (should be `0xFFFFFF`/`0xFFFF`) | hop payload scid (u64) → channel lookup |
-| SCID tx index | `BlockchainMonitorService.CheckBlockForWatchedTransactions` records the index among watched txs, not the block position: `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs:473` `ushort index = 0`, `continue` for unwatched txs at :479, `SetHeightAndIndex(blockHeight, index)` at :486, `index++` in `finally` at :498 (reached only for watched txs) | correct scid in forwards/invoices |
-| Per-channel ordering / concurrency | `ChannelManager` handles messages concurrently with no per-channel lock; `TransportService.WriteMessageAsync` encrypts before taking the write semaphore (`src/NLightning.Infrastructure/Transport/Services/TransportService.cs`) | cross-peer forwarding |
-| Transport partial reads | `TransportService.ReadResponseAsync` uses `ReadAsync` rather than `ReadExactlyAsync` (`src/NLightning.Infrastructure/Transport/Services/TransportService.cs:267` header, `:291` body). Also, the send path encrypts at `:203` before taking `_networkWriteSemaphore` at `:209`, so concurrent sends may reach the wire out of encryption-nonce order (inferred from the ordering; not reproduced) | reliable 1366-byte+ messages |
-| BOLT 7 (channel_update, graph) | `MessageTypes` has 256–259 enum values only; even gossip types throw in `MessageSerializer` | channel_update in failures (optional; len 0 allowed), pathfinding beyond direct channels / route hints |
-| BOLT 11 in the node | `src/NLightning.Bolt11` isn't referenced by any `src` project; `MinFinalCltvExpiry` returns null rather than the default 18; only one `r` field is kept | final hop and send |
+| HTLC reload bug | **Fixed** (NL-125, NL-126, NL-127, NL-128: fd41d73, 1e8c803); `ChannelDbRepository.UpdateAsync` also upserts HTLC rows (NL-192) | HTLC persistence |
+| ShortChannelId(ulong) masks | **Fixed** (NL-101, 83d529d) | hop payload scid (u64) → channel lookup |
+| SCID tx index | **Fixed** (NL-102, 7df8f2d): block position, 24-bit, migration `WidenWatchedTransactionIndex` | correct scid |
+| Per-channel ordering / concurrency | `ChannelManager` handles messages concurrently with no per-channel lock; the transport write ordering is fixed (NL-105); the per-channel lock is BOLT2 N0-T3 (NL-033) | cross-peer forwarding |
+| Transport partial reads | **Fixed** (NL-104 d0e0bbb, NL-105 d865a7e): `ReadExactlyAsync`, lock held across encrypt + write | 1366-byte onions |
+| BOLT 7 (channel_update, graph) | 256–259 parse as raw `GossipMessage` and are dropped (NL-100); queries get empty replies (NL-205); no channel_update model or graph (NL-099) | channel_update in failures (optional; len 0 allowed), pathfinding beyond direct channels / route hints |
+| BOLT 11 in the node | `src/NLightning.Bolt11` isn't referenced by any `src` project; the library fixes (default `c` = 18, every `r` field kept: NL-115, NL-116) are done | final hop and send |
 | Invoice / preimage / payment stores | none exist in Persistence | M4-T3, M4-T6 |
 
 ---
@@ -531,7 +531,7 @@ Namespaces must not contain `Docker` unless the test really needs Docker, becaus
 4. **Non-canonical encodings accepted:** until M1-T5, M1-T6 and M1-T7 land, peeling could accept malleable payloads.
 5. **Timing leaks:** use `FixedTimeEquals` for HMACs, and keep the origin error decrypt at a constant 27 iterations.
 6. **Performance:** each `new Sha256()` allocates provider memory through `ICryptoProvider.MemoryAlloc` (`src/NLightning.Infrastructure/Crypto/Hashes/Sha256.cs:21`): `sodium_malloc` (guarded, mlocked pages) under `CRYPTO_LIBSODIUM` (`Providers/Libsodium/SodiumCryptoProvider.cs:102-105`), `Marshal.AllocHGlobal` under `CRYPTO_NATIVE` (`Providers/Native/NativeCryptoProvider.cs:80-83`). Reuse instances per packet and avoid per-hop allocations in hot paths.
-7. **Feature advertisement:** RouteBlinding and AttributionData are advertised as Optional without being implemented. Peers may send blinded HTLCs or attribution TLVs. Default them to No until M5/M3b.
+7. **Feature advertisement:** resolved. RouteBlinding and AttributionData default to No and cannot be enabled without `Features:AllowExperimentalFeatures=true` (NL-074, NL-206). Remove each from `ExperimentalFeatures` only when M5/M3b ships.
 8. **DI divergence:** registrations in `NodeServiceExtensions` are not picked up by the hand-built DI in the Docker integration tests, and vice versa.
 9. **Schema churn:** every persistence change needs 3 migrations and running DB containers. `HtlcEntity.AddMessageBytes` stores the wire format, so changing the `update_add_htlc` encoding affects stored rows.
 10. **Blocked integration:** M4 depends on the large BOLT 2 normal-operation work (§7). Don't wire half an HTLC path that disconnects peers or loses funds. Keep the Sphinx library standalone until then.

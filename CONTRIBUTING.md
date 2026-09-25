@@ -13,7 +13,7 @@ Our project leverages GitHub for hosting code, issue tracking, feature requests,
 To maintain codebase integrity and facilitate review processes, all code changes must be made through pull requests
 following the GitHub Flow. We encourage your pull requests under the following guidelines:
 
-1. Fork the repository and create your branch from master.
+1. Fork the repository and create your branch from `main`.
 2. For added code, ensure corresponding tests are added and pass.
 3. Update documentation to reflect any changes to APIs.
 4. Verify that the test suite passes.
@@ -22,7 +22,7 @@ following the GitHub Flow. We encourage your pull requests under the following g
 
 ## Branching Strategy for Pull Requests
 
-Please initiate pull requests from branches other than master. This approach facilitates working on multiple issues
+Please initiate pull requests from branches other than `main`. This approach facilitates working on multiple issues
 simultaneously without conflict. We recommend naming branches with a prefix that indicates the type of contribution,
 such as feature/, bugfix/, followed by a short description of the contribution.
 

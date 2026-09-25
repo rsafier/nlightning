@@ -1,6 +1,6 @@
 # NLightning Repository Map (for agents)
 
-> Status: generated 2026-09-25 against `main` @ `e330fcf` (release v2.0.0 merge).
+> Status: generated 2026-09-25 against `main` @ `e330fcf` (release v2.0.0 merge); refreshed 2026-09-25 on `wip/fafo` @ `1a38360` after the fix swarm (§1, §3-§5, §6.4, §8-§11). Bug status lives in [`ISSUES.md`](ISSUES.md), not here.
 > Every path is repo-relative. Claims marked **(verified)** were spot-checked directly against the source when this map was written. Everything else comes from per-area research passes that cite file/line. If a claim matters for a change you are about to make, re-check the cited line first, because line numbers drift.
 
 NLightning is a C# / .NET 10 Lightning Network node and library set. It uses a clean-architecture layering (Domain -> Application / Infrastructure.* -> Daemon / Client), though not strictly (see [Layering reality](#23-layering-reality)). Today the node can: speak BOLT 8, exchange BOLT 1 init/ping/error/warning, open single-funded (v1) channels end to end against LND (open_channel -> funding -> channel_ready), manage an on-chain wallet via bitcoind RPC+ZMQ, and encode/decode BOLT 11 invoices. It has a standalone BOLT 4 onion library (Sphinx construct/peel, hop payloads, replay cache; M1+M2) that nothing calls yet. It **cannot** yet move HTLCs, close channels, reestablish, gossip, or forward/fail onions.
@@ -32,20 +32,19 @@ NLightning is a C# / .NET 10 Lightning Network node and library set. It uses a c
 | Format gate (hard CI gate) | `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"` |
 | Tests (CI-equivalent) | `dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'` |
 | One VSTest test | `dotnet test test/<Proj>/<Proj>.csproj -c Release --no-build --filter "FullyQualifiedName~<Class>"` (keep `-c Release`: the build above is Release-only, and stale `bin/Debug` output would otherwise be tested silently) |
-| Application / Daemon tests | `dotnet run --project test/NLightning.Application.Tests` (and `...Daemon.Tests`). Selectors: `-- -class <FQN>` or `-- -method '*Name*'` |
+| Application / Daemon tests | Found by `dotnet test` like the others (NL-167). The xunit v3 exe also works: `dotnet run --project test/NLightning.Application.Tests -- -class <FQN>` (or `-method '*Name*'`) |
 | Run node | `dotnet run --project src/NLightning.Daemon -- --network regtest` (first run writes `~/.nltg/regtest/appsettings.json`) |
 | Run CLI | `dotnet run --project src/NLightning.Client -- --network regtest info` |
 
-Baseline observed on macOS arm64 with SDK 10.0.103:
-- Debug and Release build with 0 errors. Release.Native is also OK.
-- About 592 warnings, nearly all NuGet NU1902/NU1903 advisories. Only about 20 are real `warning CS86xx`.
+Baseline observed on macOS arm64 with SDK 10.0.103 (`wip/fafo` @ `1a38360`):
+- Debug, Release and Release.Native build with 0 errors.
+- 8 code warnings, all nullability `CS86xx` (NL-171), plus 2 MSB4121 solution-config warnings unless `-p:MSBuildWarningsAsMessages=MSB4121` is passed. NuGet advisories are fixed or pinned (NL-170).
 - Format check passes.
-- The CI-style test run gives **883 pass / 1 fail**. The failure is environmental: `PeerAddressTests.Given_HttpAddress_...` does live DNS on `dnstest.nlightn.ing`.
-- Application.Tests 24/24 and Daemon.Tests 23/23 pass when run through the xunit v3 exe.
+- The CI-style test run gives **2146 tests: 2145 pass, 1 skipped** (the NL-056 HTLC second-stage vector), in both Release and Release.Native. It is hermetic (NL-168).
+- Docker LND e2e: 10/10 pass locally (not in CI).
 - `Release.Wasm` fails on macOS because `src/NLightning.Infrastructure/Crypto/Providers/JS/package.json` pins linux-x64 esbuild/rollup. It builds only on linux-x64, which is what CI uses.
 
 **Traps to know before editing anything:**
-- `dotnet test` silently finds **0 tests** in `test/NLightning.Application.Tests` and `test/NLightning.Daemon.Tests` because their csproj lacks `xunit.runner.visualstudio` **(verified)**. A green CI run says nothing about those 47 tests.
 - Crypto code is compiled three times (`CRYPTO_LIBSODIUM`, `CRYPTO_NATIVE`, `CRYPTO_JS`). Build `Release` **and** `Release.Native` after touching `src/NLightning.Infrastructure/Crypto`.
 - `.editorconfig` sets many IDE and naming rules to `error`, but `EnforceCodeStyleInBuild` is off. So the build can be green while `dotnet format` fails. Run the format command before finishing.
 - Namespace style: file-scoped namespace **first**, then `using Domain.X;` directives written relative to `NLightning` and placed **after** it. System/Microsoft usings go above. Private fields are `_camel`, private static fields `s_camel`.
@@ -164,8 +163,8 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 
 | Folder | Contents / key types |
 |---|---|
-| `Protocol/Constants` | `MessageTypes` (ushort enum). `TlvConstants` (flat class; values **collide across messages**: 0 = UpfrontShutdownScript/BlindedPath/NextFunding/FundingOutputContribution, 1 = Networks/ChannelType/FeeRange/ShortChannelId). `ChainConstants` (main/testnet/regtest; **no signet/testnet4**). `InteractiveTransactionConstants`, `NetworkConstants` |
-| `Protocol/Messages` | `BaseMessage`, `BaseChannelMessage`, plus 32 sealed messages (Init, Error, Warning, Ping, Pong, Stfu, OpenChannel1/2, AcceptChannel1/2, FundingCreated/Signed, ChannelReady, Shutdown, ClosingSigned, Tx*, UpdateAddHtlc, UpdateFulfill/Fail/FailMalformedHtlc, CommitmentSigned, RevokeAndAck, UpdateFee, ChannelReestablish) |
+| `Protocol/Constants` | `MessageTypes` (ushort enum). `TlvConstants` (flat class; values **collide across messages**: 0 = UpfrontShutdownScript/BlindedPath/FundingOutputContribution, 1 = Networks/ChannelType/FeeRange/ShortChannelId/NextFunding/QueryFlags/QueryOption/ReplyChannelRangeTimestamps, 2 = RequireConfirmedInputs, 3 = RemoteAddress/ReplyChannelRangeChecksums). `ChainConstants` (main/testnet/regtest; **no signet/testnet4**, NL-012). `InteractiveTransactionConstants`, `NetworkConstants` |
+| `Protocol/Messages` | `BaseMessage`, `BaseChannelMessage`, plus sealed messages for BOLT 1 (Init, Error, Warning, Ping, Pong), BOLT 2 (Stfu, OpenChannel1/2, AcceptChannel1/2, FundingCreated/Signed, ChannelReady, Shutdown, ClosingSigned, Tx*, UpdateAddHtlc, UpdateFulfill/Fail/FailMalformedHtlc, CommitmentSigned, RevokeAndAck, UpdateFee, ChannelReestablish) and BOLT 7 (`GossipMessage` base with raw-payload ChannelAnnouncement/NodeAnnouncement/ChannelUpdate/AnnouncementSignatures; typed QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd, GossipTimestampFilter) |
 | `Protocol/Payloads` | One `*Payload` per message. `ErrorPayload` is shared with Warning. `PlaceholderPayload` is internal and its `ChannelId` throws |
 | `Protocol/Tlv` | `BaseTlv` plus `BlindedPathTlv`, `ChannelTypeTlv`, `FeeRangeTlv`, `FundingOutputContributionTlv`, `NetworksTlv` (file `NetworksTLV.cs`), `NextFundingTlv`, `RemoteAddressTlv`, `RequireConfirmedInputsTlv` (file `RequireConfirmedInputsTLV.cs`), `ShortChannelIdTlv`, `UpfrontShutdownScriptTlv` |
 | `Protocol/Models` | `TlvStream` (file `TLVStream.cs`; SortedDictionary, rejects duplicates, no even/odd rule). `CommitmentNumber` (BOLT 3 obscuring, locktime/sequence) |
@@ -195,14 +194,14 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 
 | Area | Key files |
 |---|---|
-| Crypto backends | `Crypto/Interfaces/ICryptoProvider.cs` (internal: SHA256, AEAD ChaCha20-Poly1305 IETF/X, secure memory, Argon2, RandomBytes; **no raw ChaCha20 stream, no HMAC**). `Crypto/Factories/CryptoFactory.cs` selects the backend at compile time. `Providers/Libsodium/*` (default), `Providers/Native/*` (BouncyCastle/BCL, AOT), `Providers/JS/*` (libsodium.js via JSImport and a Vite bundle) |
+| Crypto backends | `Crypto/Interfaces/ICryptoProvider.cs` (internal: SHA256, AEAD ChaCha20-Poly1305 IETF/X, raw ChaCha20 IETF keystream `StreamChaCha20IetfXor`, secure memory, Argon2 (password bytes), RandomBytes; HMAC is `Crypto/Functions/HmacSha256.cs`). `Crypto/Factories/CryptoFactory.cs` selects the backend at compile time. `Providers/Libsodium/*` (default), `Providers/Native/*` (BouncyCastle/BCL, AOT), `Providers/JS/*` (libsodium.js via JSImport and a Vite bundle) |
 | Crypto wrappers | `Crypto/Hashes/Sha256.cs` (implements `ISha256`), `Crypto/Hashes/Argon2Id.cs`, `Crypto/Ciphers/ChaCha20Poly1305.cs`, `Crypto/Ciphers/XChaCha20Poly1305.cs`, `Crypto/Functions/Hkdf.cs` (internal; its HMAC is private and asserts a 32-byte key), `Crypto/Primitives/SecureMemory.cs`, `Crypto/Interfaces/IEcdh.cs` (the port; the implementation is in Bitcoin) |
 | BOLT 8 | `Transport/Handshake/States/{HandshakeState,SymmetricState,CipherState}.cs`, `Transport/Handshake/MessagePatterns/*`, `Transport/Encryption/Transport.cs` (framing, rekey handled in CipherState at 1000 nonces), `Transport/Services/{HandshakeService,TransportService,TcpService}.cs`, `Transport/Factories/TransportServiceFactory.cs` |
-| Per-peer | `Node/Factories/PeerServiceFactory.cs`, `Node/Services/PeerCommunicationService.cs` (init send, ping/pong, error/warning emission), `Node/Services/PeerService.cs` (init validation, dispatch; TODO to move it to Application), `Node/ValueObjects/ConnectedPeer.cs`, `Node/Models/KeyFileData.cs` |
+| Per-peer | `Node/Factories/PeerServiceFactory.cs`, `Node/Services/PeerCommunicationService.cs` (init send, ping/pong, error/warning emission), `Node/Services/PeerService.cs` (init validation, dispatch incl. gossip and stfu; TODO to move it to Application), `Node/Services/GossipQueryResponder.cs` (empty BOLT 7 query replies), `Node/ValueObjects/ConnectedPeer.cs`, `Node/Models/KeyFileData.cs` |
 | Protocol | `Protocol/Services/MessageService.cs` (transport bytes to `IMessage`), `PingPongService.cs`, `SecretStorageService.cs` (BOLT 3 shachain), `DnsSeedClient.cs` (fully commented out). `Protocol/Factories/{ChannelIdFactory,MessageServiceFactory,TlvConverterFactory}.cs`. `Protocol/Tlv/Converters/*` (10 converters). `Protocol/Validators/Tx*Validator.cs` (interactive-tx, partly stubbed). `Protocol/Models/PeerAddress.cs`. `Protocol/Constants/ProtocolConstants.cs` |
 | Misc | `Converters/EndianBitConverter.cs` (LE trim/pad semantics are suspect; prefer `BinaryPrimitives`), `Exceptions/*` |
 
-**Tests:** `test/NLightning.Infrastructure.Tests` (crypto, transport, TLV converters, MessageService, PeerAddress). BOLT 8 vectors are in `test/NLightning.Integration.Tests/BOLT8`. `test/NLightning.Infrastructure.Tests/Node/Models/PeerTests.cs` is fully commented out, so PeerService, PeerCommunicationService and TcpService have no unit tests.
+**Tests:** `test/NLightning.Infrastructure.Tests` (crypto, transport, TLV converters, MessageService, PeerAddress, `PeerServiceTests`/`PeerServiceLifecycleTests`, `PeerCommunicationServiceTests`/`...LifecycleTests`, gossip query responder, interactive-tx validators). BOLT 8 vectors are in `test/NLightning.Integration.Tests/BOLT8`. TcpService has no unit tests.
 
 ### 3.3 NLightning.Infrastructure.Bitcoin (`src/NLightning.Infrastructure.Bitcoin`)
 
@@ -219,7 +218,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 | Other | `Services/FeeService.cs`, `DustService.cs`, `InteractiveTransactionService.cs` (not wired). `Encoders/Bech32Encoder.cs` (internal, used by Bolt11). `Options/{BitcoinOptions,FeeEstimationOptions}.cs` |
 | Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` (interfaces with no implementations) |
 
-**Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (27 active; several files are commented out). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
+**Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (247 tests: builders, outputs, signer, onion, blockchain monitor, interactive-tx service). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
 
 ### 3.4 NLightning.Infrastructure.Serialization (`src/NLightning.Infrastructure.Serialization`)
 
@@ -227,19 +226,19 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 
 | Area | Key files |
 |---|---|
-| Top level | `Messages/MessageSerializer.cs` (u16 type; unknown odd returns `null`, unknown even throws `InvalidMessageException`; the generic `DeserializeMessageAsync<T>` **ignores the wire type**) |
+| Top level | `Messages/MessageSerializer.cs` (u16 type; unknown odd returns `null`, unknown even throws `InvalidMessageException`; the generic `DeserializeMessageAsync<T>` checks the wire type, NL-011) |
 | Registries | `Factories/MessageTypeSerializerFactory.cs`, `Factories/PayloadSerializerFactory.cs` (two dictionaries each), `Factories/ValueObjectSerializerFactory.cs` |
-| Per-type | `Messages/Types/*` (32), `Payloads/*` (31). File-name oddities: `UpdateAddHtlcMessageSerializer.cs`, `UpdateFufillHtlc*.cs`, `FundingCreatedTypeSerializer.cs` |
-| TLV | `Tlv/TlvSerializer.cs`, `Tlv/TlvStreamSerializer.cs` (a **closed type switch** on serialize; `RemoteAddressTlv` is missing from it; reads to end of stream; no ordering or unknown-even checks) |
-| Value objects | `ValueObjects/{BigSize,ChainHash,ChannelFlag,ChannelId,ShortChannelId,Witness}TypeSerializer.cs` (BigSize decode is **not canonical-checked**) |
+| Per-type | `Messages/Types/*` (38), `Payloads/*` (38). File-name oddities: `UpdateAddHtlcMessageSerializer.cs`, `UpdateFufillHtlc*.cs`, `FundingCreatedTypeSerializer.cs` |
+| TLV | `Tlv/TlvSerializer.cs`, `Tlv/TlvStreamSerializer.cs` (serializes by converter lookup on the runtime type, raw `BaseTlv` verbatim; `DeserializeAsync` enforces increasing types and lengths; `DeserializeStrictAsync(stream, knownTypes)` also rejects unknown even types and is used by every message extension, NL-001) |
+| Value objects | `ValueObjects/{BigSize,ChainHash,ChannelFlag,ChannelId,ShortChannelId,Witness}TypeSerializer.cs` (BigSize decode is canonical) |
 | Node | `Node/FeatureSetSerializer.cs` |
 
-**Tests:** `test/NLightning.Infrastructure.Serialization.Tests` (round trips for 28 message types). There are no serializer tests for OpenChannel1, AcceptChannel1, FundingCreated or FundingSigned. BigSize vectors are in `Vectors/BigSize.txt`, with the non-canonical vectors commented out.
+**Tests:** `test/NLightning.Infrastructure.Serialization.Tests` (352 tests: message round trips including OpenChannel1/AcceptChannel1/FundingCreated/FundingSigned and the gossip queries, strict-TLV rejection, TLV stream, BigSize vectors in `Vectors/BigSize.txt` all active).
 
 ### 3.5 Persistence and Repositories
 
 `src/NLightning.Infrastructure.Persistence`:
-- `Contexts/NLightningDbContext.cs` has 9 DbSets: BlockchainStates, WatchedTransactions, WalletAddresses, Utxos, Channels, ChannelConfigs, ChannelKeySets, Htlcs, Peers.
+- `Contexts/NLightningDbContext.cs` has 10 DbSets: BlockchainStates, WatchedTransactions, WalletAddresses, Utxos, Channels, ChannelConfigs, ChannelKeySets, Htlcs, ChannelLocalAliases, Peers.
 - `Entities/{Bitcoin,Channel,Node}` hold the entities. Their constructors are internal, which is why `InternalsVisibleTo` Repositories exists.
 - `EntityConfiguration/*` contains the per-provider tweaks.
 - `ValueConverters/*`.
@@ -248,7 +247,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 - `scripts/add_migration.sh` generates migrations for **all 3 providers** and needs the docker DBs running.
 - `RevocationWatchEntity` exists but is **not mapped**.
 
-`src/NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}/Migrations` each hold Initial, AddBlockchaisStateAndWatchedTransaction (typo is intentional history) and AddFieldsForChannelOpen. Postgres uses snake_case naming.
+`src/NLightning.Infrastructure.Persistence.{Postgres,Sqlite,SqlServer}/Migrations` each hold Initial, AddBlockchaisStateAndWatchedTransaction (typo is intentional history), AddFieldsForChannelOpen, WidenWatchedTransactionIndex (NL-102) and AddChannelScidAliases (NL-103); SqlServer also has FixRemoteNodeIdLength (NL-129). Postgres uses snake_case naming. `PersistenceConfigurationTests` checks there are no pending model changes and that each Designer matches its predecessor plus that migration.
 
 `src/NLightning.Infrastructure.Repositories`:
 - `UnitOfWork.cs`: lazy repositories, `GetPeersForStartupAsync`, `AddUtxo`/`TrySpendUtxo`.
@@ -257,14 +256,14 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 - `Memory/ChannelMemoryRepository.cs`: live and temporary channels, `UpgradeChannel`, events `OnChannelUpgraded`/`OnChannelUpdated`.
 - `Memory/UtxoMemoryRepository.cs`: coin selection is Branch-and-Bound with a greedy fallback. The confirmation threshold of 3 is hard-coded.
 
-**Tests:** no direct tests. DB coverage comes only from the Docker integration tests. The Sqlite/Postgres/SqlServer smoke tests are commented out.
+**Tests:** `test/NLightning.Integration.Tests/Persistence/` (SQLite `:memory:` with the real migrations: `ChannelDbRepositoryTests`, `HtlcDbRepositoryTests`, `UtxoDbRepositoryTests`, `BaseDbRepositoryTests`, `UnitOfWorkUtxoTests`, `FundingConfirmedAliasPersistenceTests`, `PersistenceConfigurationTests`, `SqlitePersistenceTests`). Docker `PostgresTests`/`SqlServerTests` run the same round trip against containers.
 
 ### 3.6 NLightning.Application (`src/NLightning.Application`)
 
 | File | Role |
 |---|---|
-| `Node/Managers/PeerManager.cs` | Peer table (a plain `Dictionary`, not thread-safe). Startup reconnect. Inbound/outbound connections. Routes `OnChannelMessageReceived` to `ChannelManager`. Sends replies. `ChannelErrorException` means disconnect; `ChannelWarningException` means send a warning |
-| `Channels/Managers/ChannelManager.cs` | Singleton dispatcher. Its switch handles **only** OpenChannel, AcceptChannel, FundingCreated, ChannelReady, FundingSigned; `default` throws `ChannelErrorException("Unknown message type")` **(verified)**. Also handles blockchain events: `HandleFundingConfirmationAsync`, `ForgetStaleChannels`, `ConfirmUnconfirmedChannels` |
+| `Node/Managers/PeerManager.cs` | Peer table (a plain `Dictionary`, not thread-safe, NL-033). Startup registers each peer's channels, then reconnects (registration is not awaited, NL-201). Inbound/outbound connections. Routes `OnChannelMessageReceived` to `ChannelManager`. Sends replies. `ChannelErrorException` means send `error` for that channel and disconnect; `ChannelWarningException` means send a warning (and disconnect if `CloseConnection`) |
+| `Channels/Managers/ChannelManager.cs` | Singleton dispatcher. Its switch handles OpenChannel, AcceptChannel, FundingCreated, ChannelReady, FundingSigned; update_fail_malformed_htlc without BADONION gets warning + close; `default` throws a channel-scoped `ChannelWarningException` (the peer stays connected), and a message for an unknown channel gets an `error` for that id (`ThrowIfUnknownChannelAsync`). Also handles blockchain events: `HandleFundingConfirmationAsync`, `ForgetStaleChannels` (unconfirmed opening states only), `ConfirmUnconfirmedChannels` |
 | `Channels/Handlers/Interfaces/IChannelMessageHandler.cs` | `Task<IChannelMessage?> HandleAsync(msg, currentState, negotiatedFeatures, peerPubKey)` |
 | `Channels/Handlers/OpenChannel1MessageHandler.cs` | Non-initiator: open_channel -> accept_channel |
 | `Channels/Handlers/AcceptChannel1MessageHandler.cs` | Initiator: accept_channel -> funding_created |
@@ -274,7 +273,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 | `Channels/Handlers/ChannelReadyMessageHandler.cs` | Peer's channel_ready -> Open |
 | `Protocol/Factories/MessageFactory.cs` | `IMessageFactory`; a `Create*` method for every message (no validation) |
 
-**Tests:** `test/NLightning.Application.Tests` covers OpenChannel1, FundingCreated and PeerManager only. It is **invisible to `dotnet test`**.
+**Tests:** `test/NLightning.Application.Tests` (78: the five open handlers, ChannelReady, FundingConfirmed, ChannelManager, PeerManager).
 
 ### 3.7 NLightning.Daemon / Daemon.Contracts / Daemon.Plugins
 
@@ -290,7 +289,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 - `src/NLightning.Daemon.Contracts`: `NodeConstants` (nltg.key.json, nltg.pid, nltg.ipc, nltg.cookie), `NodeUtils`, `CommandLineHelper` (shared with the client; has bugs, see §10).
 - `src/NLightning.Daemon.Plugins`: API only.
 
-**Tests:** `test/NLightning.Daemon.Tests` (open-channel client handlers, FeeService). It is **invisible to `dotnet test`**. The IPC stack has no tests.
+**Tests:** `test/NLightning.Daemon.Tests` (109: open-channel client/IPC handlers, FeeService, CLI and daemon argument parsing, password handling, IPC formatters and `NamedPipeIpcService`).
 
 ### 3.8 NLightning.Client and NLightning.Transport.Ipc
 
@@ -299,8 +298,8 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 - `Handlers/OpenChannelMessageHandler.cs` long-polls the subscription.
 - `Printers/*` write the output.
 - `src/NLightning.Transport.Ipc/IpcEnvelope.cs` (MessagePack keys 0-5), `Requests/*`, `Responses/*`, `MessagePack/{NLightningMessagePackOptions,NLightningFormatterResolver}.cs`, `MessagePack/Formatters/*`.
-- Wire format: a 4-byte host-endian length, then a MessagePack envelope with LZ4BlockArray compression, and a cookie token in `AuthToken`. The pipe is `<dataDir>/nltg.ipc`, which is a Unix socket on Unix.
-- **Tests:** none.
+- Wire format: a 4-byte host-endian length, then a MessagePack envelope with LZ4BlockArray compression, and a cookie token in `AuthToken`. The pipe is `<dataDir>/nltg.ipc`, which is a Unix socket on Unix. MessagePack is 3.1.10 and Hash/TxId are written as `bin`, so client and daemon must come from the same build (NL-146, NL-210).
+- **Tests:** in `test/NLightning.Daemon.Tests` (`Client/ClientAppTests`, `Client/GetAddressTests`, `Ipc/Formatters/FormatterTests`, `Contracts/Helpers/CommandLineHelperTests`).
 
 ### 3.9 NLightning.Bolt11 (`src/NLightning.Bolt11`)
 
@@ -334,7 +333,7 @@ Outbound (IPC `connect`, or open-channel with an unknown peer):
 3. `PeerServiceFactory.CreateConnectedPeerAsync(pubkey, tcpClient)` (`src/NLightning.Infrastructure/Node/Factories/PeerServiceFactory.cs`) creates `TransportService(isInitiator: true)` via `TransportServiceFactory`, then calls `InitializeAsync`.
 4. `TransportService` (`src/NLightning.Infrastructure/Transport/Services/TransportService.cs`) drives `HandshakeService` -> `HandshakeState` (`Transport/Handshake/States/HandshakeState.cs`): write Act 1 (50 B), read Act 2 (50 B), write Act 3 (66 B). ECDH goes through `IEcdh` -> `src/NLightning.Infrastructure.Bitcoin/Crypto/Functions/Ecdh.cs`. The key schedule uses `SymmetricState`/`Hkdf`. The static key is `ISecureKeyManager.GetNodeKeyPair()`.
 5. `HandshakeState.Split()` produces `Encryption.Transport` (`Transport/Encryption/Transport.cs`) with two `CipherState`s (rekey every 1000 nonces).
-6. `TransportService` starts the `ReadResponseAsync` loop. It reads the 18-byte header and then the body with `ReadAsync`, not `ReadExactlyAsync`, which is a known bug **(verified, lines 267/291)**. It raises `MessageReceived(MemoryStream)`.
+6. `TransportService` starts the `ReadResponseAsync` loop. It reads the 18-byte header and then the body with `ReadExactlyAsync` (NL-104) and raises `MessageReceived(MemoryStream)`. Sends hold the write lock across encrypt + write (NL-105).
 
 Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.HandleNewPeerConnected` -> `PeerServiceFactory.CreateConnectingPeerAsync` -> `TransportService(isInitiator: false)`: read Act 1, write Act 2, read Act 3. `RemoteStaticPublicKey` is the authenticated node id.
 
@@ -343,8 +342,8 @@ Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.Handle
 1. `PeerServiceFactory` builds `MessageServiceFactory.CreateMessageService(transport)` -> `MessageService` (`src/NLightning.Infrastructure/Protocol/Services/MessageService.cs`), plus a transient `PingPongService`, `PeerCommunicationService` and `PeerService`.
 2. The `PeerService` constructor synchronously runs `PeerCommunicationService.InitializeAsync`. That sends `init`, built from `IMessageFactory.CreateInitMessage` with `FeatureOptions.GetNodeFeatures()` plus the networks TLV, and arms the init-receive timeout (`NodeOptions.NetworkTimeout`).
 3. Receive path: `TransportService.MessageReceived` -> `MessageService.ReceiveMessage` -> `IMessageSerializer.DeserializeMessageAsync` (`src/NLightning.Infrastructure.Serialization/Messages/MessageSerializer.cs`, `InitMessageTypeSerializer`, `FeatureSetSerializer`) -> `PeerCommunicationService.HandleMessageReceived` -> `PeerService.HandleMessage` (`src/NLightning.Infrastructure/Node/Services/PeerService.cs`).
-4. `PeerService` requires init first. It checks `FeatureSet.IsCompatible` (`src/NLightning.Domain/Node/FeatureSet.cs`), the networks TLV chain hashes (stricter than the spec: **any** unknown chain rejects), and the remote_addr TLV. On failure it disconnects without sending an error.
-5. After init, ping/pong keepalive starts (`src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs`: random 30-300 s). `IChannelMessage`s go to `OnChannelMessageReceived`, and error/warning to `OnAttentionMessageReceived`. **Everything else (gossip, stfu) is dropped.**
+4. `PeerService` requires init first. It checks `FeatureSet.IsCompatible` (`src/NLightning.Domain/Node/FeatureSet.cs`), the networks TLV chain hashes (rejects only when no chain is shared, NL-002), and the remote_addr TLV. On failure it sends a `warning` and disconnects; a first message that is not init disconnects without sending anything (NL-003).
+5. Once both inits are exchanged, ping/pong keepalive starts (`src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs`: random 30-300 s; NL-006). `IChannelMessage`s go to `OnChannelMessageReceived`, and error/warning to `OnAttentionMessageReceived`. Gossip 256-259 and replies are dropped, queries 261/263 get empty replies (`GossipQueryResponder`), `stfu` gets a channel `warning` + disconnect; anything else is dropped.
 
 ### 4.4 open_channel / accept_channel
 
@@ -371,7 +370,7 @@ Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.Handle
 ### 4.5 Funding
 
 **Funder (inside AcceptChannel1MessageHandler):**
-1. `IFundingTransactionModelFactory.Create` (`src/NLightning.Domain/Bitcoin/Transactions/Factories/FundingTransactionModelFactory.cs`: fee and change) -> `FundingTransactionBuilder.Build` (`src/NLightning.Infrastructure.Bitcoin/Builders/FundingTransactionBuilder.cs`; the funding output is at index 0; `FundingOutputBuilder` builds the 2-of-2 P2WSH).
+1. `IFundingTransactionModelFactory.Create` (`src/NLightning.Domain/Bitcoin/Transactions/Factories/FundingTransactionModelFactory.cs`: fee and change) -> `FundingTransactionBuilder.Build` (`src/NLightning.Infrastructure.Bitcoin/Builders/FundingTransactionBuilder.cs`; inputs and outputs BIP 69-sorted, returns the funding output index; `FundingOutputBuilder` builds the 2-of-2 P2WSH; NL-064).
 2. `ICommitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, Remote)` (`src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs`) -> `CommitmentTransactionBuilder.Build` (`src/NLightning.Infrastructure.Bitcoin/Builders/CommitmentTransactionBuilder.cs`) -> `LocalLightningSigner.SignChannelTransaction` (`src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs`).
 
 **Fundee receives funding_created:** `FundingCreatedMessageHandler`:
@@ -386,15 +385,15 @@ Inbound: `TcpService` accept loop -> `OnNewPeerConnected` -> `PeerManager.Handle
 ### 4.6 channel_ready
 
 1. `BlockchainMonitorService` (ZMQ `rawblock`) -> `ProcessBlock` -> `CheckBlockForWatchedTransactions` -> `CheckWatchedTransactionsDepth` -> `OnTransactionConfirmed`.
-2. `ChannelManager.HandleFundingConfirmationAsync` sets `FundingCreatedAtBlockHeight` and `ShortChannelId(height, txIndex, vout)`. **The txIndex is wrong**; see §10.
-3. It runs the scoped `FundingConfirmedMessageHandler` (`src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs`). That increments `CommitmentNumber`, derives the next per-commitment point, and creates optional SCID aliases (2-5). It moves `V1FundingSigned` to `ReadyForUs`, or `ReadyForThem` to `Open`, then persists.
+2. `ChannelManager.HandleFundingConfirmationAsync` sets `FundingCreatedAtBlockHeight` and `ShortChannelId(height, txIndex, vout)`. The tx index is the block position (NL-101, NL-102). The SCID itself is not persisted yet (NL-225).
+3. It runs the scoped `FundingConfirmedMessageHandler` (`src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs`). That increments `CommitmentNumber`, derives the next per-commitment point, and creates optional SCID aliases (2-5), reusing persisted ones and avoiding collisions (NL-103). It moves `V1FundingSigned` to `ReadyForUs`, or `ReadyForThem` to `Open`, then persists.
 4. Its `OnMessageReady(channel_ready)` goes to `ChannelManager.OnResponseMessageReady` -> `PeerManager.HandleResponseMessageReady` -> `peerService.SendMessageAsync`. One message is sent per alias.
 5. The peer's `channel_ready` goes to `ChannelReadyMessageHandler` (`src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs`), which stores their second per-commitment point and moves `V1FundingSigned` to `ReadyForThem`, or `ReadyForUs` to `Open`.
 6. The daemon's `OpenChannelClientSubscriptionHandler` completes when it sees `ReadyForUs`/`ReadyForThem`. The CLI stops polling.
 
 ### 4.7 What happens next (not implemented)
 
-An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`, `channel_reestablish` and so on reaches `ChannelManager`'s `default` branch -> `ChannelErrorException` -> `PeerManager` **disconnects the peer**.
+An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`, `channel_reestablish` and so on reaches `ChannelManager`'s `default` branch -> channel-scoped `ChannelWarningException`: the message is ignored, the peer gets a `warning` for that channel and stays connected (for an unknown channel it gets an `error` for that id). See `BOLT2_NORMAL_OPERATION_PLAN.md`.
 
 ---
 
@@ -404,16 +403,16 @@ An inbound `update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `shutdown`,
 
 | BOLT | Status | Where / notes |
 |---|---|---|
-| 1 messaging | Mostly done | init/error/warning/ping/pong (`Domain/Protocol/Messages`, `Infrastructure/Node/Services/*`). Gaps: BigSize canonical check, TLV ordering and unknown-even checks, pong >= 65532 rule, remote_addr TLV not sent (`FeatureOptions.cs:241`), no peer_storage |
-| 2 peer protocol | Partial | v1 open -> channel_ready works E2E against LND (`test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs`). Wire model and serializers exist for v2/interactive-tx, shutdown/closing_signed, HTLC updates, commitment_signed, revoke_and_ack, update_fee, reestablish and stfu, but **there are no handlers**. option_simple_close and splicing are missing |
-| 3 transactions | Mostly done | Funding and commitment builders, scripts, key derivation and shachain are vector-tested (non-anchor only). Missing: HTLC-success/timeout second-stage txs, closing tx, HTLC signatures. The anchor fee path is suspect (1116 vs 1124 weight; only one anchor deducted) |
+| 1 messaging | Mostly done | init/error/warning/ping/pong (`Domain/Protocol/Messages`, `Infrastructure/Node/Services/*`). Canonical BigSize, strict TLV streams on every message. Gaps: remote_addr TLV not sent and its converter is buggy (NL-008, NL-009), no ping rate limit (NL-005), no peer_storage (NL-010) |
+| 2 peer protocol | Partial | v1 open -> channel_ready works E2E against LND (`test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs`). Wire model and serializers exist for v2/interactive-tx, shutdown/closing_signed, HTLC updates, commitment_signed, revoke_and_ack, update_fee, reestablish and stfu, but **there are no handlers** (they get a channel-scoped warning). option_simple_close and splicing are missing |
+| 3 transactions | Mostly done | Funding and commitment builders, scripts, key derivation and shachain are vector-tested, commitment txs byte-exact for Appendix C and F (anchors). Missing: HTLC-success/timeout second-stage txs (NL-056), closing tx, HTLC signatures |
 | 4 onion | **Partial (M1+M2)** | Sphinx construct/peel (`src/NLightning.Infrastructure.Bitcoin/Onion/`), hop payload model/serializer/validator, failure codes, in-memory replay cache. No error onions, forwarding or HTLC wiring. See §6 and `ONION_ROUTING_PLAN.md` |
 | 5 on-chain | Missing / stub | `PenaltyTransactionModel` empty. `IRevocationWatchDbRepository` empty. Revocation watch commented out in `BlockchainMonitorService.cs` |
-| 7 gossip | Missing | Only enum values 256-259. Incoming 256/258 (even) **throw** `InvalidMessageException`. Gossip feature bits are advertised anyway |
-| 8 transport | Done | Vector-tested. Read-loop partial-read bug and send-ordering race (§10) |
-| 9 features | Mostly done | `FeatureSet`, `FeatureOptions`. Dependency table is incomplete. `OptionRouteBlinding`/`OptionAttributionData` are advertised as Optional (`FeatureOptions.cs:55,69`) without an implementation |
+| 7 gossip | Stub | 256-259 parse as raw `GossipMessage` and are dropped; 261/263 get empty replies, 265 is ignored. No announcements, channel_update or graph (NL-099) |
+| 8 transport | Done | Vector-tested. `ReadExactlyAsync` reads and lock-across-encrypt writes (NL-104, NL-105) |
+| 9 features | Mostly done | `FeatureSet`, `FeatureOptions`. BOLT 9 dependency table and per-context filtering (NL-110, NL-111). Unimplemented features default to No and are refused unless `Features:AllowExperimentalFeatures=true` |
 | 10 DNS seed | Stub | `DnsSeedClient.cs` commented out |
-| 11 invoices | Library done | `src/NLightning.Bolt11`, not wired into the node. Gaps: feature-bit check TODO (`Invoice.cs:553`), only one `r` field kept, no taproot fallback |
+| 11 invoices | Library done | `src/NLightning.Bolt11`, not wired into the node (NL-114). Gaps: no taproot fallback (NL-118), non-minimal field lengths accepted (NL-222) |
 | 12 offers | Missing | — |
 
 ---
@@ -479,9 +478,7 @@ The onion code was re-implemented from the spec; the legacy LNBolt code was only
 
 ### 6.4 Prerequisites and blockers to fix first
 
-- The SCID `TransactionIndex` bug in `BlockchainMonitorService.CheckBlockForWatchedTransactions` (~L473-499) and the `ShortChannelId(ulong)` mask bug (`src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs:54-58` **verified**: 0xFFFF / 0xFF should be 0xFFFFFF / 0xFFFF). Hop payloads carry the SCID as a u64.
-- The `TransportService` partial-read bug (a 1366-byte onion can span TCP segments), and the encrypt-before-lock ordering race on send.
-- The HTLC reload bug (`ChannelDbRepository.MapEntityToDomain`, `byte.Equals(enum)` at ~L201-222 **verified**). Offered and Fulfilled HTLCs are never restored (`h.State.Equals(HtlcState.X)` at :201/:210 is always false). Expired/Failed are restored via a working `byte[]` `Contains` (:219-220), but `htlc.Direction.Equals(HtlcDirection.Outgoing)` (:204/:213/:222) is the same bug, so every restored HTLC lands in the remote lists.
+- Fixed by the swarm (2026-09-25): the SCID tx index and `ShortChannelId(ulong)` masks (NL-101, NL-102), transport partial reads and send ordering (NL-104, NL-105), and the HTLC reload bugs (NL-125..NL-128).
 - The BOLT 2 update/commit/revoke state machine, which is a prerequisite for any forwarding.
 
 ### 6.5 Test vectors to add
@@ -541,23 +538,22 @@ Prefer the layer's `DependencyInjection.cs` (`AddApplicationServices`, `AddSeria
 
 | Project | Covers | Active tests* | Runner |
 |---|---|---|---|
-| `test/NLightning.Domain.Tests` | Money, FeatureSet, TLV stream, CommitmentNumber, value objects, BitReader/Writer, commitment model factory | 140 attrs / 227 cases | VSTest |
-| `test/NLightning.Infrastructure.Tests` | Crypto providers (`#if` per backend), SHA256 NIST vectors, transport, TLV converters (not RemoteAddress), MessageService, PeerAddress (1 DNS test fails offline) | 132 / 127 | VSTest |
-| `test/NLightning.Infrastructure.Bitcoin.Tests` | Commitment builder, comparer, ECDH, ToLocal output, signer, blockchain monitor | 27 | VSTest |
-| `test/NLightning.Infrastructure.Serialization.Tests` | Message round trips, TLV, BigSize vectors, FeatureSet | 111 / 145 | VSTest |
-| `test/NLightning.Bolt11.Tests` | Invoice, tagged fields, validation | 108 / 202 | VSTest |
-| `test/NLightning.Integration.Tests` | BOLT 3 (App. B-E), BOLT 8 (App. A), BOLT 11 vectors; `Docker/` E2E with bitcoind + 3 LND | 131 (8 Docker) / 156 non-Docker | VSTest; Docker tests excluded by filter |
-| `test/NLightning.Application.Tests` | OpenChannel1, FundingCreated handlers, PeerManager | 24 | **xunit exe only** |
-| `test/NLightning.Daemon.Tests` | Open-channel client handlers, FeeService | 23 | **xunit exe only** |
-| `test/NLightning.Tests.Utils` | Shared fakes (`FakeFixedKeyDh`, `FakeSha256` (returns zeros!), `FakeServiceProvider`, ...), `PortPoolUtil` (49100-49149), vectors (`Bolt3Appendix*`, AEAD, BOLT 8 keys) | library | — |
+| `test/NLightning.Domain.Tests` | Money, FeatureSet/FeatureOptions, TLV stream, CommitmentNumber, value objects, BitReader/Writer, commitment model factory, channel factory/validator, onion model | 545 | VSTest |
+| `test/NLightning.Infrastructure.Tests` | Crypto providers (`#if` per backend), SHA256 NIST vectors, transport, TLV converters, MessageService, PeerService/PeerCommunicationService, gossip query responder, PeerAddress (hermetic) | 308 | VSTest |
+| `test/NLightning.Infrastructure.Bitcoin.Tests` | Builders, outputs, comparer, ECDH, signer, key manager, onion, blockchain monitor, interactive-tx service | 247 | VSTest |
+| `test/NLightning.Infrastructure.Serialization.Tests` | Message round trips (incl. v1 open and gossip queries), strict TLV, BigSize vectors, FeatureSet, hop payloads | 352 | VSTest |
+| `test/NLightning.Bolt11.Tests` | Invoice, tagged fields, validation | 252 | VSTest |
+| `test/NLightning.Integration.Tests` | BOLT 3 (App. B-F), BOLT 4, BOLT 8 (App. A), BOLT 11 vectors; `Persistence/` (SQLite in-memory); `Docker/` E2E with bitcoind + 3 LND and Postgres/SqlServer containers | 255 non-Docker (1 skipped) + 10 Docker | VSTest; Docker tests excluded by filter |
+| `test/NLightning.Application.Tests` | Open handlers, FundingConfirmed, ChannelManager, PeerManager | 78 | VSTest (xunit exe also works) |
+| `test/NLightning.Daemon.Tests` | Open-channel client handlers, FeeService, CLI/config parsing, IPC | 109 | VSTest (xunit exe also works) |
+| `test/NLightning.Tests.Utils` | Shared fakes (`FakeFixedKeyDh`, `FakeSha256` (real hash by default), `FakeServiceProvider`, ...), `PortPoolUtil` (49100-49149), vectors (`Bolt3Appendix*`, `Bolt4Vectors`, AEAD, BOLT 8 keys) | library | — |
 | `test/BlazorTests/*` | WASM crypto + Bolt11 via Playwright on :8085 | 6 | Release.Wasm only (linux) |
-| `test/NLightning.Node.Tests` | **Orphan**: 3-byte BOM-only csproj, not in sln **(verified)** | 0 | — |
 
-*Active counts are `[Fact]`/`[Theory]` attributes / executed test cases where known.
+*Counts are executed test cases from `dotnet test` on `wip/fafo` @ `1a38360` (2146 non-Docker in total).
 
 Docker E2E: `test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs` builds the image from `test/Docker/custom_lnd` (lnd v0.20.0-beta) and starts containers named miner/alice/bob/carol, **force-removing any existing containers with those names**. Run with `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"`. Inbound tests use `HOST_ADDRESS` (default `host.docker.internal`).
 
-Missing entirely: BOLT 4/5/7/12 tests, IPC and formatter tests, persistence round trips, anchor (Appendix F) and HTLC second-stage vectors.
+Missing entirely: BOLT 5/12 tests, BOLT 7 beyond gossip parsing/queries, and HTLC second-stage vector assertions (skipped until NL-056).
 
 ---
 
@@ -565,112 +561,32 @@ Missing entirely: BOLT 4/5/7/12 tests, IPC and formatter tests, persistence roun
 
 - **Configurations and crypto backends** (`src/NLightning.Infrastructure/NLightning.Infrastructure.csproj`): Debug/Release use `CRYPTO_LIBSODIUM` (libsodium 1.0.21). `*.Native` or PublishAot uses `CRYPTO_NATIVE` (Portable.BouncyCastle 1.8.6.7 + Konscious Argon2). `*.Wasm` uses `CRYPTO_JS` (Microsoft.JSInterop 8.0.8 + npm/Vite bundle; assembly renamed `*.Blazor`). `src/NLightning.Bolt11` also renames itself for Wasm.
 - **Workflows** (`.github/workflows/`): `dotnet.yml`/`pr.yml` (Release), `dotnet.native.yml`/`pr.native.yml` (Release.Native), `dotnet.wasm.yml`/`pr.wasm.yml` (Blazor), `combined-report.yml`/`pr.combined-report.yml` (merged coverage), `gh-pages.yml` (DocFX from `.docfx/docfx.json`). All run on ubuntu-latest with .NET 10.0.x. No pack/publish workflow, and no Docker tests in CI.
-- **Sln mapping bugs:** `NLightning.Infrastructure.Serialization` maps Release.Native to Release.Wasm (`NLightning.sln` ~L283). Newer projects (Repositories, Contracts, Client, Plugins, Transport.Ipc, Application.Tests, Daemon.Tests) map every custom configuration to Debug. Edit mappings by hand when adding projects.
-- **Versioning:** SemVer per package. Bump `<Version>`/`<AssemblyVersion>`/`<FileVersion>`, `PackageReleaseNotes` and `src/*/CHANGELOG.md` together. `VERSIONING.md` is stale.
-- **Git:** GitHub Flow; `feature/`, `bugfix/`, `release/vX.Y.Z` branches; free-form lowercase commit subjects. `CONTRIBUTING.md` says "master" but the default branch is `main`.
-- **Stale tooling:** `scripts/testwithcoverage.sh` lists nonexistent projects and exits on the first one. `.vscode/launch.json` points at `src/NLightning.NLTG/.../net8.0`.
+- **Sln mappings** are hand-maintained; `python3 scripts/check-sln-configs.py` (a CI step in `dotnet.yml`/`pr.yml`) fails on wrong or missing mappings and on test projects without `IsTestProject`/`xunit.runner.visualstudio` (NL-167, NL-172).
+- **Versioning:** SemVer per package. Bump `<Version>`/`<AssemblyVersion>`/`<FileVersion>`, `PackageReleaseNotes` and `src/*/CHANGELOG.md` together. See `VERSIONING.md`.
+- **Git:** GitHub Flow; `feature/`, `bugfix/`, `release/vX.Y.Z` branches; free-form lowercase commit subjects. The default branch is `main`.
+- **Tooling:** `scripts/testwithcoverage.sh` and `.vscode/launch.json` are current (NL-174); the VS Code prelaunch task builds only the daemon, serially, because the three Persistence provider projects share `Persistence/bin` (NL-223).
 
 ---
 
 ## 10. Consolidated TODO / gap / bug table
 
-Severity: **H** = blocks correctness or planned onion work; **M** = real bug or missing feature; **L** = hygiene. "Verified" means checked directly while writing this map.
-
-### 10.1 Correctness bugs
-
-| Sev | File (line) | Issue |
-|---|---|---|
-| H | `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (~473-499) | Tx index counts only *watched* txs, so every derived SCID is wrong (`ChannelManager.cs` ~317-320) |
-| H | `src/NLightning.Domain/Channels/ValueObjects/ShortChannelId.cs:54-58` | `ulong` constructor masks tx index with 0xFFFF and output with 0xFF **(verified)** |
-| H | `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs` ~201-222 | `byte.Equals(enum)` is always false (`HtlcEntity.State`/`Direction` are `byte`): Offered and Fulfilled HTLCs are never restored; Expired/Failed are restored but always classified as remote (Direction.Equals bug) **(verified)**. Same pattern in `HtlcDbRepository.cs:63,70` |
-| H | `ChannelDbRepository.cs` ~231 | Remote funding pubkey is replaced with the local one on reload |
-| H | `ChannelDbRepository.cs` ~237-239 | `CommitmentNumber` is rebuilt as (local, remote) regardless of initiator, giving the wrong obscuring factor for non-initiator channels |
-| H | `src/NLightning.Application/Channels/Managers/ChannelManager.cs:198` | `ForgetStaleChannels` has no state filter, and the default `FundingCreatedAtBlockHeight`=0 marks unconfirmed or long-open channels Stale **(verified line)** |
-| H | `src/NLightning.Infrastructure/Transport/Services/TransportService.cs:267,291` | `ReadAsync` instead of `ReadExactlyAsync`: a short read kills the connection **(verified)** |
-| H | `TransportService.cs` ~201-209 | Encrypts before taking the write semaphore, so concurrent sends can desync nonces |
-| M | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` ~231-267 + `FundingConfirmedMessageHandler.cs` ~43-47 | Re-fires confirmation every block: repeated commitment-number increments and repeated channel_ready |
-| M | `src/NLightning.Application/Channels/Handlers/AcceptChannel1MessageHandler.cs` ~226-242 | Error cleanup is inverted and does not release UTXOs. Lines ~118-120 reject a missing upfront_shutdown_script TLV whenever the feature is negotiated or a channel_type TLV is present (in practice almost always, including against LND) |
-| M | `src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs:62` | `CurrentPerCommitmentIndex == 0` check likely never true (the index counts down from 2^48-1) |
-| M | `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs:104` | Push-amount check is off by 1000x. Anchor weight selection is inverted here (~108-110) and in `ChannelFactory.cs:183-185` |
-| M | `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs` | Anchor weight 1116 vs spec 1124; only one anchor deducted; to_remote dust uses the wrong party's limit; all HTLCs subtracted from to_local (unverified) |
-| M | `src/NLightning.Infrastructure.Bitcoin/Outputs/HtlcResolutionOutput.cs:14 vs :21` | Revocation and delayed keys swapped |
-| M | `src/NLightning.Infrastructure.Bitcoin/Outputs/BaseOutput.cs:24` | `Amount` setter is a no-op |
-| M | `src/NLightning.Infrastructure/Protocol/Tlv/Converters/RemoteAddressTlvConverter.cs` | Tor v3 decode offsets and DNS (type 5) encode are broken; untested |
-| M | `src/NLightning.Infrastructure/Protocol/Services/PingPongService.cs` | Pong timeout path takes `IsCanceled -> continue`, so it never disconnects |
-| M | `src/NLightning.Infrastructure/Protocol/Validators/Tx*Validator.cs` | Parity check appears inverted; `TxAddInputValidator.Validate` is `async void` |
-| M | `src/NLightning.Infrastructure.Bitcoin/Services/InteractiveTransactionService.cs` ~57-65 | Output serial-id checks look in `_inputs` |
-| M | `src/NLightning.Infrastructure.Repositories/Database/Bitcoin/UtxoDbRepository.cs:50` | Anonymous-object composite key throws. Mapping also drops `LockedToChannelId`/`UsedInTransactionId` |
-| M | `src/NLightning.Infrastructure.Persistence/EntityConfiguration/Channel/ChannelEntityConfiguration.cs:83` | SQL Server `RemoteNodeId` is varbinary(32) for a 33-byte key |
-| M | `src/NLightning.Infrastructure.Serialization/Payloads/PingPayloadSerializer.cs` / `PongPayloadSerializer.cs` | Ignored bytes are not consumed |
-| M | `src/NLightning.Daemon.Contracts/Helpers/CommandLineHelper.cs` ~29-33, ~94-98 | ~29-33: `--network=x` swallows the command (`GetCommand` skips the next arg for every option); ~95: `--cookie <path>` stores the flag itself as the path |
-| M | `src/NLightning.Daemon/Ipc/Handlers/OpenChannelIpcHandler.cs:66`, `OpenChannelSubscriptionIpcHandler.cs:71` | Error code is set to the message text |
-| M | `src/NLightning.Transport.Ipc/MessagePack/Formatters/SignedTransactionFormatter.cs:13` | TxId serialize/deserialize mismatch; no null check |
-| M | `src/NLightning.Domain/Money/LightningMoney.cs:197` | `Bits()` == `Cents()` (the tests assert this) |
-| M | `src/NLightning.Domain/Utils/BitWriter.cs:130, 26-37, 217` | `1 >> bits` mask typo (:130); `Array.Resize` on the rented buffer (26-37) means a non-pooled array is returned to ArrayPool (:217) |
-| L | `src/NLightning.Infrastructure.Serialization/Messages/Types/UpdateAddHtlcMessageSerializer.cs:67-68` | Uses `TlvConstants.UpfrontShutdownScript` for the blinded path |
-| L | `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` 27-31, 177, 223, 253 | Fixed Argon2 salt, zero XChaCha nonce, non-standard BIP32 master from mnemonic. Changing any of these breaks existing key files |
-
-### 10.2 Missing features / stubs
-
-| Sev | File (line) | Gap |
-|---|---|---|
-| H | `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (switch, `default` ~L133) | No handlers for HTLC add/fulfill/fail/malformed, commitment_signed, revoke_and_ack, update_fee, shutdown, closing_signed, reestablish, v2/interactive-tx, stfu |
-| H | `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (~40-61) | No HTLC or balance mutators; `HtlcState` has only 4 states |
-| H | BOLT 4 (everywhere) | Sphinx, hop payloads and failure codes exist (M1+M2); no error onions, forwarding, HTLC wiring or invoice store (see §6) |
-| H | `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs` (52, 189, 391) | Channel info is memory-only; `SignWalletTransaction` NotImplemented; no HTLC signatures |
-| M | `src/NLightning.Application/Channels/Managers/ChannelManager.cs:62,70` | TODO: reestablish on startup; Closing/Stale handling |
-| M | `src/NLightning.Application/Node/Managers/PeerManager.cs:72` | TODO: failed startup reconnect skips channel registration |
-| M | `src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs:79`, `ChannelReadyMessageHandler.cs:104-106` | TODO: notify app / update routing tables |
-| M | `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs:101,235` | TODO: generate the local upfront shutdown script |
-| M | `src/NLightning.Infrastructure/Protocol/Services/SecretStorageService.cs:160,166` | `GetBasepointPrivateKey`, `LoadFromIndex` throw NotImplemented |
-| M | `src/NLightning.Infrastructure.Bitcoin/Transactions/*` | HTLC-success/timeout, closing, penalty txs commented out or empty |
-| M | `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs:189-198, 248, 400` | Revocation watch and mempool (rawtx) monitoring commented out |
-| M | `src/NLightning.Infrastructure.Persistence/Entities/Bitcoin/RevocationWatchEntity.cs` | Not mapped; `RevocationWatchDbRepository` and its interface are empty |
-| M | `src/NLightning.Infrastructure.Serialization/ValueObjects/BigSizeTypeSerializer.cs` ~56 | No canonical-encoding check |
-| M | `src/NLightning.Infrastructure.Serialization/Tlv/TlvStreamSerializer.cs` 27-83 | Closed type switch (missing `RemoteAddressTlv`); no ordering or unknown-even rules |
-| M | `src/NLightning.Infrastructure.Serialization/ValueObjects/WitnessTypeSerializer.cs:46` | Max-length check commented out |
-| M | `src/NLightning.Infrastructure/Protocol/Validators/TxAddInputValidator.cs:49,57`; `InteractiveTransactionService.cs:48,69` | prevTx / script validation TODOs |
-| M | `src/NLightning.Domain/Node/Options/FeatureOptions.cs:241,378` | TODO BOLT 7: remote_addr TLV, network |
-| M | `src/NLightning.Domain/Node/FeatureSet.cs:18` | Dependency table has only 2 entries |
-| M | `src/NLightning.Domain/Protocol/Constants/ChainConstants.cs` | No Signet/testnet4 chain hash |
-| M | `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs` | Gossip 256-259 enum-only (even types throw on receive); 261-265, 513, 40/41, splice types absent |
-| M | `src/NLightning.Bolt11/Models/Invoice.cs:553` | TODO: feature-bit check. `TaggedFieldList.cs:32` keeps only one `r` field; `:170` swallows errors |
-| M | `src/NLightning.Infrastructure/Protocol/Services/DnsSeedClient.cs` | BOLT 10 fully commented out |
-| M | `src/NLightning.Infrastructure/Crypto/Providers/JS/SodiumJsCryptoProvider.cs:165` | Argon2 NotImplemented in WASM; `RandomBytes` swallows errors |
-| M | `src/NLightning.Infrastructure/Crypto/Providers/Native/NativeCryptoProvider.cs:92,105` | mlock/munlock are no-ops off Windows |
-| M | `src/NLightning.Domain/Client/Enums/ClientCommand.cs` | No close/list-channels/invoice/pay/disconnect commands |
-| L | `src/NLightning.Infrastructure/Node/Services/PeerService.cs:17` | TODO: move to Application |
-| L | `src/NLightning.Daemon/Services/PluginLoaderService.cs`, `src/NLightning.Daemon.Contracts/IControlClient.cs`, `src/NLightning.Domain/Node/Interfaces/IPeerFactory.cs`, `ISecretStorageServiceFactory.cs`, `IChannelKeySetFactory.cs`, `ISignatureValidator.cs`, `Adapters/OutputAdapters/*`, `Daemon/Helpers/AesGcmHelper.cs` | Dead or unwired code |
-
-### 10.3 Test / tooling gaps
-
-| Sev | File | Gap |
-|---|---|---|
-| H | `test/NLightning.Application.Tests/*.csproj`, `test/NLightning.Daemon.Tests/*.csproj` | Missing `xunit.runner.visualstudio`, so CI runs 0 of 47 tests **(verified)** |
-| M | `test/NLightning.Node.Tests/NLightning.Node.Tests.csproj` | 3-byte orphan **(verified)** |
-| M | `scripts/testwithcoverage.sh` | Stale project list |
-| M | `NLightning.sln` ~283 + newer projects | Wrong configuration mappings |
-| M | `test/NLightning.Infrastructure.Bitcoin.Tests/{Outputs,Transactions}/*`, `test/NLightning.Infrastructure.Tests/Node/Models/PeerTests.cs`, `test/NLightning.Integration.Tests/Docker/{Sqlite,Postgres,SqlServer}Tests.cs`, `BOLT10/DNSBootstrapTests.cs` | Fully commented out |
-| M | `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs:64` | Appendix B test body commented out (passes vacuously). `Bolt3AppendixFVectors` unused |
-| L | `src/NLightning.Daemon.Contracts`, `src/NLightning.Daemon.Plugins` | net9.0 and older package versions |
-| L | `src/NLightning.Daemon/AssemblyInfo.cs:3` | IVT to nonexistent `NLightning.Bolts.Tests`; `Daemon.Tests` not granted |
-| L | `.vscode/launch.json`, `VERSIONING.md`, `CONTRIBUTING.md`, `test/NLightning.Integration.Tests/README.md` | Stale docs/config |
+Retired. The per-file bug and gap tables that used to live here duplicated the issue ledger and went stale as soon as bugs were fixed (NL-182). Use [`ISSUES.md`](ISSUES.md): every bug, gap, test/tooling problem and tech-debt item has an `NL-###` entry with location, evidence, status and the fixing commit. For BOLT 2 work in order, use the gates and milestones in [`BOLT2_NORMAL_OPERATION_PLAN.md`](BOLT2_NORMAL_OPERATION_PLAN.md); for BOLT 4, [`ONION_ROUTING_PLAN.md`](ONION_ROUTING_PLAN.md).
 
 ---
 
 ## 11. Cross-cutting gotchas
 
-- **Units:** `LightningMoney` stores msat. `LightningMoney x = 1000` is **1 sat**. Always use `LightningMoney.Satoshis(...)` / `.MilliSatoshis(...)`. It is a **mutable reference type** placed inside `readonly record struct`s, and subtraction throws on underflow.
-- **Feature enum** values are the *odd* bit; the compulsory bit is value-1. `new FeatureSet()` always sets 5 compulsory bits.
+- **Units:** `LightningMoney` stores msat. `LightningMoney x = 1000` is **1 sat**. Always use `LightningMoney.Satoshis(...)` / `.MilliSatoshis(...)`. It is a **mutable reference type** placed inside `readonly record struct`s (NL-202), and subtraction throws on underflow.
+- **Feature enum** values are the *odd* bit; the compulsory bit is value-1. `new FeatureSet()` always sets 5 compulsory bits. `FeatureSet.GetBytes()` is little-endian; wire encodings use `GetWireBytes()` (NL-112).
 - **`ChannelModel.UpdateState`** only allows strictly increasing numeric states. Number any new state accordingly.
 - **Two commitment counters:** `CommitmentNumber.Value` counts **up** from 0, while `ChannelKeySetModel.CurrentPerCommitmentIndex` counts **down** from 2^48-1. `CommitmentNumber`'s constructor takes the *funder's* basepoint first.
-- **Temp vs real channel ids:** funding_created carries the temp id. `ChannelManager`'s `currentState` lookup only searches real channels. Only the initiator gets `OnChannelUpgraded`. The initiator is not persisted until funding_signed.
-- **Threading:** there is no per-channel lock, `PeerManager._peers` is a plain `Dictionary`, `MessageService` deserializes and runs handlers synchronously under a lock on the read loop, and several sync-over-async calls block.
+- **Temp vs real channel ids:** funding_created carries the temp id. `ChannelManager`'s `currentState` lookup only searches real channels. Only the initiator gets `OnChannelUpgraded`. The initiator is not persisted until funding_signed, on purpose (BOLT 2: a funder SHOULD NOT remember an unbroadcast channel; NL-048).
+- **Threading:** there is no per-channel lock, `PeerManager._peers` is a plain `Dictionary` (NL-033), `MessageService` deserializes and runs handlers synchronously under a lock on the read loop (NL-108), and several sync-over-async calls block. `PeerCommunicationService.Disconnect` is idempotent and disposes `MessageService` off the read loop.
 - **Lifetimes:** managers are singletons that open a scope per message. Handlers and `IUnitOfWork` are scoped. Never inject `IUnitOfWork` into a singleton, and call `SaveChanges(Async)` explicitly.
 - **Serialization streams** use `Position`/`Length` to find optional trailing TLVs and the onion. Give them a seekable, single-message `MemoryStream`.
 - **Stored wire bytes:** `HtlcDbRepository` stores serialized `UpdateAddHtlcMessage`s, so changing the update_add_htlc wire format changes the meaning of stored rows.
-- **Value-object equality:** `PrivKey`/`CompactSignature` use reference equality on `byte[]`. `default(TxId/Hash/Secret/...)` has null internals and throws in `GetHashCode`. `BaseTlv`/`ChainHash` hash codes are inconsistent with `Equals`.
+- **Value-object equality:** crypto value objects compare content and hash null-safely (NL-165). `CompactPubKey` converts implicitly from `ReadOnlySpan<byte>` (a copy) instead of `byte[]`, so a `null` literal no longer binds to it (NL-166).
 - **Typed TLV `Value`** is not the wire bytes for FeeRange/RemoteAddress/FundingOutputContribution. Always go through the converter.
 - **File/type name mismatches:** `TLVStream.cs`, `NetworksTLV.cs`, `RequireConfirmedInputsTLV.cs`, `UpfronfShutdownScriptTlvConverter.cs`, `UpdateFufillHtlc*`. Search by type name, not file name.
-- **Config gotchas:** single-dash `-n`/`-c` do not work in the daemon config reader. Without `--config`, the default network is mainnet while the generated JSON says regtest. `--password` shows up in the process list.
-- **Docker fixtures** force-remove containers named miner/alice/bob/carol (`test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs`). `PostgresFixture`/`SqlServerFixture` also remove `postgres`/`sqlserver` containers, but the only tests that use them are commented out.
+- **Config:** `-n`/`-c` work in both the daemon and the client (NL-147, NL-139). A config whose `Node:Network` differs from its directory refuses to start. Prefer `NLTG_PASSWORD` to `--password`; it is removed from `IConfiguration` (NL-148). The daemon re-execs instead of forking (NL-149).
+- **Docker fixtures** force-remove containers named miner/alice/bob/carol (`test/NLightning.Integration.Tests/Fixtures/LightningRegtestNetworkFixture.cs`). `PostgresFixture`/`SqlServerFixture` also remove `postgres`/`sqlserver` containers; they back `Docker/PostgresTests` and `Docker/SqlServerTests`.
