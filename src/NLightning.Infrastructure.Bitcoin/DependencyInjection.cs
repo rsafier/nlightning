@@ -32,6 +32,7 @@ public static class DependencyInjection
         services.AddSingleton<IBlockchainMonitor, BlockchainMonitorService>();
         services.AddSingleton<ICommitmentKeyDerivationService, CommitmentKeyDerivationService>();
         services.AddSingleton<ICommitmentTransactionBuilder, CommitmentTransactionBuilder>();
+        services.AddSingleton<IDustService, DustService>(); // needs IFeeService, registered by the host
         services.AddSingleton<IEcdh, Ecdh>();
         services.AddSingleton<IFundingOutputBuilder, FundingOutputBuilder>();
         services.AddSingleton<IFundingTransactionBuilder, FundingTransactionBuilder>();
