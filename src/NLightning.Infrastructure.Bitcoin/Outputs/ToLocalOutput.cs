@@ -10,14 +10,12 @@ using Exceptions;
 /// </summary>
 public class ToLocalOutput : BaseOutput
 {
-    public override ScriptType ScriptType => ScriptType.P2WSH;
-
     public PubKey LocalDelayedPubKey { get; }
     public PubKey RevocationPubKey { get; }
     public uint ToSelfDelay { get; }
 
     public ToLocalOutput(LightningMoney amount, PubKey localDelayedPubKey, PubKey revocationPubKey, uint toSelfDelay)
-        : base(amount, GenerateToLocalScript(localDelayedPubKey, revocationPubKey, toSelfDelay))
+        : base(amount, GenerateToLocalScript(localDelayedPubKey, revocationPubKey, toSelfDelay), ScriptType.P2WSH)
     {
         ArgumentNullException.ThrowIfNull(localDelayedPubKey);
         ArgumentNullException.ThrowIfNull(revocationPubKey);

@@ -54,9 +54,12 @@ public abstract class BaseOutput : IOutput
     /// <inheritdoc />
     public uint Index { get; set; }
 
-    public abstract ScriptType ScriptType { get; }
+    /// <summary>
+    /// Gets the script type of this output. It is fixed at construction, so the base ctor never needs a virtual call.
+    /// </summary>
+    public ScriptType ScriptType { get; }
 
-    protected BaseOutput(LightningMoney amount, Script redeemScript, Script scriptPubKey)
+    protected BaseOutput(LightningMoney amount, Script redeemScript, Script scriptPubKey, ScriptType scriptType)
     {
         ArgumentNullException.ThrowIfNull(redeemScript);
         ArgumentNullException.ThrowIfNull(scriptPubKey);
@@ -65,17 +68,19 @@ public abstract class BaseOutput : IOutput
         NBitcoinAmount = Money.Satoshis(amount.Satoshi);
         RedeemScript = redeemScript;
         ScriptPubKey = scriptPubKey;
+        ScriptType = scriptType;
         TxIdHash = uint256.Zero;
     }
 
-    protected BaseOutput(LightningMoney amount, Script redeemScript)
+    protected BaseOutput(LightningMoney amount, Script redeemScript, ScriptType scriptType)
     {
         ArgumentNullException.ThrowIfNull(redeemScript);
         ArgumentNullException.ThrowIfNull(amount);
 
         NBitcoinAmount = Money.Satoshis(amount.Satoshi);
         RedeemScript = redeemScript;
-        ScriptPubKey = ScriptType switch
+        ScriptType = scriptType;
+        ScriptPubKey = scriptType switch
         {
             ScriptType.P2WPKH
              or ScriptType.P2WSH
