@@ -438,4 +438,58 @@ public class BlockchainMonitorServiceTests
         Assert.Equal(500u, watchedTx.FirstSeenAtHeight);
         Assert.Equal(2u, watchedTx.TransactionIndex);
     }
+
+    [Fact]
+    public async Task Given_BlockProcessingThrows_When_ProcessingQueue_Then_RoundHaltsAndLaterRoundResumes()
+    {
+        // Arrange
+        var state = new BlockchainState(100, new byte[32], DateTime.UtcNow);
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync()).ReturnsAsync(state);
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
+        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync()).ReturnsAsync(102u);
+        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
+                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+
+        var failing = true;
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s =>
+                                       {
+                                           if (failing)
+                                               throw new InvalidOperationException("db down");
+
+                                           processedHeights.Add(s.LastProcessedHeight);
+                                       });
+
+        _service.MaxBlockProcessingAttempts = 3;
+        _service.BlockRetryBaseDelay = TimeSpan.FromMilliseconds(1);
+
+        // Act
+        // Before NL-097 the failing block was retried in a tight loop forever, so bound the call.
+        await Task.Run(() => _service.StartAsync(0, TestContext.Current.CancellationToken),
+                       TestContext.Current.CancellationToken)
+                  .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        // Block 100 (re-queued on start) was tried exactly MaxBlockProcessingAttempts times and 101 was never tried
+        _mockBlockchainStateRepository.Verify(x => x.Update(It.IsAny<BlockchainState>()), Times.Exactly(3));
+        Assert.Equal(100u, _service.LastProcessedBlockHeight);
+        Assert.Empty(processedHeights);
+
+        // Arrange: the failure clears and a new block arrives
+        failing = false;
+        var processNewBlockMethod = typeof(BlockchainMonitorService).GetMethod("ProcessNewBlock",
+                                        System.Reflection.BindingFlags.NonPublic |
+                                        System.Reflection.BindingFlags.Instance)
+                                 ?? throw new InvalidCastException("Can't find ProcessNewBlock method");
+
+        // Act
+        await (processNewBlockMethod.Invoke(_service, [Consensus.RegTest.ConsensusFactory.CreateBlock(), 103u]) as Task
+            ?? throw new InvalidCastException("Can't box ProcessNewBlock method as Task"));
+        await _service.StopAsync();
+
+        // Assert: the queue resumes from the failed block, in order, without skipping any
+        Assert.Equal([100u, 101u, 102u, 103u], processedHeights);
+        Assert.Equal(103u, _service.LastProcessedBlockHeight);
+    }
 }
