@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 namespace NLightning.Domain.Channels.Commitments;
 
 using Bitcoin.Transactions.Enums;
+using Bitcoin.Transactions.Factories;
 using Crypto.Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;
@@ -558,7 +559,8 @@ public sealed record ChannelCommitments
         var spec = advanced.BuildSpec(CommitmentSide.Remote);
         var number = checked(RemoteCommit.Number + 1);
         var signatures = signer.SignRemoteCommitment(ChannelId, number, spec, point);
-        var expected = CommitmentFees.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.OptionAnchors);
+        var expected =
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
             throw new InvalidOperationException(
                 $"Signer returned {signatures.HtlcSignatures.Count} HTLC signatures, expected {expected}");
@@ -590,7 +592,8 @@ public sealed record ChannelCommitments
         var spec = committed.BuildSpec(CommitmentSide.Local);
         UpdateValidator.ValidateReceivedCommitFee(this, spec);
         var number = checked(LocalCommit.Number + 1);
-        var expected = CommitmentFees.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
+        var expected =
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
             throw Violation("B2-CS-R02", $"num_htlcs {signatures.HtlcSignatures.Count}, expected {expected}");
         if (!verifier.VerifyLocalCommitment(ChannelId, number, spec, signatures))

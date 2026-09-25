@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 namespace NLightning.Domain.Tests.Channels.Commitments;
 
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -64,8 +65,7 @@ internal sealed record SimulatorConfig(
         var feeratePerKw = (uint)rng.Next(253, 15_000);
 
         // BOLT 2 open_channel: the funder must afford the full fee (and anchors) of the initial commitment.
-        var openingCostMsat = checked((CommitmentFees.BaseCommitmentFee(feeratePerKw, 0, anchors)
-                                     + (anchors ? 2 * CommitmentFees.AnchorOutputSatoshis : 0)) * 1_000);
+        var openingCostMsat = checked(CommitmentFeeCalculator.FunderCostSatoshis(feeratePerKw, anchors, 0) * 1_000);
         bobMsat = Math.Min(bobMsat, fundingSat * 1_000 - openingCostMsat);
         return new SimulatorConfig(fundingSat * 1_000 - bobMsat, bobMsat, feeratePerKw, anchors,
                                    PartyFor(), PartyFor(),
@@ -903,8 +903,8 @@ internal sealed class CommitmentPairSimulator
             if (!state.Params.LocalIsFunder)
             {
                 var localSpec = state.LocalCommit.Spec;
-                var funderCost = CommitmentFees.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
-                                                               state.Params.OptionAnchors);
+                var funderCost = CommitmentFeeCalculator.FunderCostMsat(localSpec, state.Params.Local.DustLimitSatoshis,
+                                                                        state.Params.OptionAnchors);
                 Check(localSpec.RemoteMsat >= funderCost,
                       $"{node.Name} holds local commitment {state.LocalCommit.Number} whose funder has {localSpec.RemoteMsat} msat for a {funderCost} msat fee");
             }
@@ -1160,8 +1160,7 @@ internal static class CommitmentDigest
         }
 
         var digest = SHA256.HashData(buffer);
-        var untrimmed = htlcs.Where(h => !CommitmentFees.IsTrimmed(h.AmountMsat, h.IsOfferedBy(spec.Holder),
-                                                                     holderDustSat, spec.FeeratePerKw, anchors))
+        var untrimmed = htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, holderDustSat, anchors))
                              .Select((h, i) => ToSignature(SHA256.HashData([.. digest, (byte)i, .. BitConverter.GetBytes(h.Id)])))
                              .ToList();
         return new CommitmentSignatures(ToSignature(digest), untrimmed);
