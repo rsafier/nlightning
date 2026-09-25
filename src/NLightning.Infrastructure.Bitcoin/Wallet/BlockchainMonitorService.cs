@@ -38,6 +38,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private CancellationTokenSource? _cts;
     private Task? _monitoringTask;
     private uint _lastProcessedBlockHeight;
+    private uint _catchUpHeight;
     private SubscriberSocket? _blockSocket;
     // private SubscriberSocket? _transactionSocket;
 
@@ -48,6 +49,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
 
     /// <summary>
+    /// True while the last processing round halted on a block that kept failing (NL-097). Chain events (funding
+    /// confirmations, deposits, spends) are not being seen while this is set.
+    /// </summary>
+    public bool IsChainProcessingHalted { get; private set; }
+
+    /// <summary>
     /// How many times a block is tried in one processing round before the round halts (NL-097).
     /// </summary>
     internal int MaxBlockProcessingAttempts { get; set; } = 3;
@@ -56,6 +63,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// Delay before the first retry of a failed block; it doubles on every further retry within the round.
     /// </summary>
     internal TimeSpan BlockRetryBaseDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Most blocks held in the processing queue at once. Blocks past this are not kept in memory; they are refetched
+    /// from bitcoind once the queue drains, so a halted queue does not grow with every new block.
+    /// </summary>
+    internal int MaxQueuedBlocks { get; set; } = 144;
 
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
@@ -348,20 +361,31 @@ public class BlockchainMonitorService : IBlockchainMonitor
         await _blockBacklogSemaphore.WaitAsync(cancellationToken);
         try
         {
-            while (_blocksToProcess.Count > 0)
+            while (true)
             {
+                if (_blocksToProcess.Count == 0)
+                {
+                    // Refill from bitcoind the blocks that were left out because the queue was full
+                    await FillQueueFromChainAsync();
+                    if (_blocksToProcess.Count == 0)
+                        break;
+                }
+
                 var (height, block) = _blocksToProcess.First();
                 if (height <= _lastProcessedBlockHeight)
                     _logger.LogWarning("Possible reorg detected: Block {Height} is already processed.", height);
 
                 if (!await TryProcessBlockWithRetriesAsync(block, height, uow, cancellationToken))
                 {
+                    IsChainProcessingHalted = true;
                     _logger.LogCritical(
                         "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
                         height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
                     return;
                 }
             }
+
+            IsChainProcessingHalted = false;
         }
         finally
         {
@@ -398,27 +422,38 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
     private async Task AddMissingBlocksToProcessAsync(uint currentHeight)
     {
-        var lastProcessedHeight = _lastProcessedBlockHeight + 1;
-        if (currentHeight > lastProcessedHeight)
-        {
+        if (currentHeight > _catchUpHeight)
+            _catchUpHeight = currentHeight;
+
+        if (currentHeight > _lastProcessedBlockHeight + 1)
             _logger.LogWarning("Processing missed blocks from height {LastProcessedHeight} to {CurrentHeight}",
-                               lastProcessedHeight, currentHeight);
+                               _lastProcessedBlockHeight + 1, currentHeight);
 
-            for (var height = lastProcessedHeight; height < currentHeight; height++)
+        await FillQueueFromChainAsync();
+    }
+
+    /// <summary>
+    /// Fetches the blocks after the last processed one and below <see cref="_catchUpHeight"/> that are not queued yet,
+    /// stopping once the queue holds <see cref="MaxQueuedBlocks"/> blocks.
+    /// </summary>
+    private async Task FillQueueFromChainAsync()
+    {
+        for (var height = _lastProcessedBlockHeight + 1;
+             height < _catchUpHeight && _blocksToProcess.Count < MaxQueuedBlocks;
+             height++)
+        {
+            if (_blocksToProcess.ContainsKey(height))
+                continue;
+
+            // Add the missing block to the process queue
+            var blockAtHeight = await _bitcoinChainService.GetBlockAsync(height);
+            if (blockAtHeight is not null)
             {
-                if (_blocksToProcess.ContainsKey(height))
-                    continue;
-
-                // Add the missing block to the process queue
-                var blockAtHeight = await _bitcoinChainService.GetBlockAsync(height);
-                if (blockAtHeight is not null)
-                {
-                    _blocksToProcess[height] = blockAtHeight;
-                }
-                else
-                {
-                    _logger.LogError("Missing block at height {Height}", height);
-                }
+                _blocksToProcess[height] = blockAtHeight;
+            }
+            else
+            {
+                _logger.LogError("Missing block at height {Height}", height);
             }
         }
     }
@@ -438,8 +473,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
             // Check for missed blocks first
             await AddMissingBlocksToProcessAsync(currentHeight);
 
-            // Store the current block for processing
-            _blocksToProcess[currentHeight] = block;
+            // Store the current block for processing, unless the queue is full. Then it is refetched later.
+            if (_blocksToProcess.Count < MaxQueuedBlocks)
+                _blocksToProcess[currentHeight] = block;
+            else if (currentHeight + 1 > _catchUpHeight)
+                _catchUpHeight = currentHeight + 1;
 
             // Process missing blocks
             await ProcessPendingBlocksAsync(uow);
@@ -577,6 +615,18 @@ public class BlockchainMonitorService : IBlockchainMonitor
                     _logger.LogInformation(
                         "Deposit detected: {amount} to address {destinationAddress} in tx {txId} at block {height}",
                         output.Value, destinationAddress, txId, blockHeight);
+
+                // A block can be processed again (the last processed block is replayed on start, and a failed block is
+                // retried), so a deposit we already track must not be added twice (NL-097).
+                var utxoMemoryRepository = _serviceProvider.GetRequiredService<IUtxoMemoryRepository>();
+                if (utxoMemoryRepository.TryGetUtxo(new TxId(txId.ToBytes()), (uint)i, out _))
+                {
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                        _logger.LogDebug("Utxo {TxId}:{Index} is already known, skipping", txId, i);
+
+                    _watchedAddresses.TryRemove(destinationAddress.ToString(), out _);
+                    continue;
+                }
 
                 // Save Utxo to the database
                 var utxo = new UtxoModel(txId.ToBytes(), (uint)i, LightningMoney.Satoshis(output.Value.Satoshi),

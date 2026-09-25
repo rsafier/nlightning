@@ -8,10 +8,13 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Bitcoin.Wallet;
 using Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Options;
 
@@ -492,4 +495,146 @@ public class BlockchainMonitorServiceTests
         Assert.Equal([100u, 101u, 102u, 103u], processedHeights);
         Assert.Equal(103u, _service.LastProcessedBlockHeight);
     }
+
+    [Fact]
+    public async Task Given_DepositInLastProcessedBlock_When_RestartingWithNewBlocks_Then_NewBlocksAreProcessed()
+    {
+        // Arrange
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+
+        var depositTx = Network.RegTest.CreateTransaction();
+        depositTx.Outputs.Add(Money.Satoshis(50_000), address);
+        var depositBlock = Consensus.RegTest.ConsensusFactory.CreateBlock();
+        depositBlock.Transactions.Add(depositTx);
+
+        // The deposit in block 100 was already processed and saved before the restart
+        var knownUtxo = new UtxoModel(new TxId(depositTx.GetHash().ToBytes()), 0, LightningMoney.Satoshis(50_000),
+                                      100, walletAddress);
+
+        // Mirror UnitOfWork.AddUtxo + UtxoMemoryRepository.Add, which throw on a duplicate outpoint
+        var utxoSet = new Dictionary<(TxId, uint), UtxoModel>();
+        var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        mockUtxoMemoryRepository.Setup(x => x.Load(It.IsAny<List<UtxoModel>>()))
+                                .Callback<List<UtxoModel>>(list => list.ForEach(u => utxoSet[(u.TxId, u.Index)] = u));
+        UtxoModel? found;
+        mockUtxoMemoryRepository
+           .Setup(x => x.TryGetUtxo(It.IsAny<TxId>(), It.IsAny<uint>(), out found))
+           .Returns(new TryGetUtxoCallback((TxId txId, uint index, out UtxoModel? utxo) =>
+                                               utxoSet.TryGetValue((txId, index), out utxo)));
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), mockUtxoMemoryRepository.Object);
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>()))
+                       .Callback<UtxoModel>(u =>
+                        {
+                            if (!utxoSet.TryAdd((u.TxId, u.Index), u))
+                                throw new InvalidOperationException("Cannot add Utxo");
+                        });
+
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([knownUtxo]);
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
+                                      .ReturnsAsync(new BlockchainState(100, new byte[32], DateTime.UtcNow));
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
+        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync()).ReturnsAsync(102u);
+        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(100u)).ReturnsAsync(depositBlock);
+        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(101u))
+                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+
+        var depositEvents = 0;
+        _service.OnWalletMovementDetected += (_, _) => depositEvents++;
+        _service.BlockRetryBaseDelay = TimeSpan.Zero;
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        Assert.Equal(101u, _service.LastProcessedBlockHeight);
+        Assert.False(_service.IsChainProcessingHalted);
+        Assert.Equal(0, depositEvents);
+        _mockUnitOfWork.Verify(x => x.AddUtxo(It.IsAny<UtxoModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_LongBacklogAndSmallQueue_When_Starting_Then_AllMissedBlocksAreProcessedInOrder()
+    {
+        // Arrange
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
+                                      .ReturnsAsync(new BlockchainState(100, new byte[32], DateTime.UtcNow));
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
+        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync()).ReturnsAsync(110u);
+        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
+                                .ReturnsAsync(() => Consensus.RegTest.ConsensusFactory.CreateBlock());
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s => processedHeights.Add(s.LastProcessedHeight));
+        _service.MaxQueuedBlocks = 3;
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        Assert.Equal([100u, 101u, 102u, 103u, 104u, 105u, 106u, 107u, 108u, 109u], processedHeights);
+    }
+
+    [Fact]
+    public async Task Given_HaltedQueue_When_NewBlocksArrive_Then_QueueStaysBoundedAndRecoversWithoutSkipping()
+    {
+        // Arrange
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
+                                      .ReturnsAsync(new BlockchainState(100, new byte[32], DateTime.UtcNow));
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
+        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync()).ReturnsAsync(101u);
+        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
+                                .ReturnsAsync(() => Consensus.RegTest.ConsensusFactory.CreateBlock());
+
+        var failing = true;
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s =>
+                                       {
+                                           if (failing)
+                                               throw new InvalidOperationException("db down");
+
+                                           processedHeights.Add(s.LastProcessedHeight);
+                                       });
+        _service.MaxBlockProcessingAttempts = 1;
+        _service.BlockRetryBaseDelay = TimeSpan.Zero;
+        _service.MaxQueuedBlocks = 4;
+
+        var processNewBlockMethod = typeof(BlockchainMonitorService).GetMethod("ProcessNewBlock",
+                                        System.Reflection.BindingFlags.NonPublic |
+                                        System.Reflection.BindingFlags.Instance)
+                                 ?? throw new InvalidCastException("Can't find ProcessNewBlock method");
+        var queueField = typeof(BlockchainMonitorService).GetField("_blocksToProcess",
+                             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                      ?? throw new InvalidCastException("Can't find _blocksToProcess field");
+        var queue = queueField.GetValue(_service) as OrderedDictionary<uint, Block>
+                 ?? throw new InvalidCastException("Can't get _blocksToProcess field");
+
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        Assert.True(_service.IsChainProcessingHalted);
+
+        // Act: many blocks arrive while halted
+        for (var height = 101u; height <= 120u; height++)
+            await (processNewBlockMethod.Invoke(_service, [Consensus.RegTest.ConsensusFactory.CreateBlock(), height])
+                       as Task ?? throw new InvalidCastException("Can't box ProcessNewBlock method as Task"));
+
+        // Assert
+        Assert.True(queue.Count <= 4, $"Queue grew to {queue.Count} blocks while halted");
+
+        // Act: the failure clears and one more block arrives
+        failing = false;
+        await (processNewBlockMethod.Invoke(_service, [Consensus.RegTest.ConsensusFactory.CreateBlock(), 121u])
+                   as Task ?? throw new InvalidCastException("Can't box ProcessNewBlock method as Task"));
+        await _service.StopAsync();
+
+        // Assert: every block from the halted one onwards is processed in order
+        Assert.False(_service.IsChainProcessingHalted);
+        Assert.Equal(Enumerable.Range(100, 22).Select(h => (uint)h), processedHeights);
+        Assert.Equal(121u, _service.LastProcessedBlockHeight);
+    }
+
+    private delegate bool TryGetUtxoCallback(TxId txId, uint index, out UtxoModel? utxo);
 }
