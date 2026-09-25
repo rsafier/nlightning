@@ -121,7 +121,7 @@ internal static class CommitmentStateMigrationRoundTrip
             // NL-025: the legacy HTLC rows keep the old state and the channel is refused
             var anyParams = new CommitmentParams(true, 1_000_000, false, new CommitmentParty(546, 0, 1, 30, 0),
                                                  new CommitmentParty(546, 0, 1, 30, 0));
-            var refused = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            var refused = await Assert.ThrowsAsync<LegacyHtlcStateException>(() =>
                 new ChannelStateDbRepository(context).LoadAsync(readyId, anyParams));
             Assert.Contains("NL-025", refused.Message);
         }

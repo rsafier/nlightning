@@ -3,6 +3,8 @@ using System.Collections.Immutable;
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NLightning.Domain.Protocol.Models;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
@@ -43,8 +45,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     ];
 
     /// <summary>
-    /// Channel columns that belong to the commitment state once the channel has a snapshot
-    /// (<see cref="ChannelModel.Commitments"/>): <see cref="UpdateAsync"/> then leaves them to
+    /// Channel columns that belong to the commitment state once the channel has a snapshot (stored, staged in this unit
+    /// of work, or held by <see cref="ChannelModel.Commitments"/>): <see cref="UpdateAsync"/> then leaves them to
     /// <see cref="ChannelStateDbRepository"/>, so a stale model can never roll a saved transition back.
     /// </summary>
     private static readonly string[] s_snapshotColumns =
@@ -62,13 +64,15 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     private readonly NLightningDbContext _context;
     private readonly ISha256 _sha256;
     private readonly ChannelStateDbRepository _channelStateDbRepository;
+    private readonly ILogger _logger;
 
-    public ChannelDbRepository(NLightningDbContext context, ISha256 sha256)
+    public ChannelDbRepository(NLightningDbContext context, ISha256 sha256, ILogger? logger = null)
         : base(context)
     {
         _context = context;
         _sha256 = sha256 ?? throw new ArgumentNullException(nameof(sha256));
         _channelStateDbRepository = new ChannelStateDbRepository(context);
+        _logger = logger ?? NullLogger.Instance;
     }
 
     /// <summary>
@@ -108,9 +112,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         channelEntity.KeySets = null;
         channelEntity.LocalAliases = null;
 
-        var keptColumns = channelModel.Commitments is null
-                              ? s_stateOnlyColumns
-                              : s_stateOnlyColumns.Concat(s_snapshotColumns).ToArray();
+        // The model may predate the channel's first snapshot, e.g. when InitializeAsync staged it earlier in this unit
+        // of work (invariant I2 swaps the in-memory snapshot only after the save)
+        var keptColumns = await HasSnapshotAsync(channelModel)
+                              ? s_stateOnlyColumns.Concat(s_snapshotColumns).ToArray()
+                              : s_stateOnlyColumns;
         UpdateExcept(channelEntity, keptColumns);
 
         // Update() may have copied the values onto an already tracked instance
@@ -225,13 +231,42 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         return channelModel;
     }
 
+    /// <summary>
+    /// Maps several channels. A channel refused for legacy HTLC rows (NL-025) is logged and left out, so it does not
+    /// keep the healthy channels (and the node) from loading; <see cref="GetByIdAsync"/> still throws for it.
+    /// </summary>
     private async Task<List<ChannelModel>> MapAllWithStateAsync(IEnumerable<ChannelEntity> channelEntities)
     {
         var channelModels = new List<ChannelModel>();
         foreach (var channelEntity in channelEntities)
-            channelModels.Add(await MapWithStateAsync(channelEntity));
+        {
+            try
+            {
+                channelModels.Add(await MapWithStateAsync(channelEntity));
+            }
+            catch (LegacyHtlcStateException e)
+            {
+                _logger.LogError(e, "Channel {ChannelId} was not loaded", e.ChannelId);
+            }
+        }
 
         return channelModels;
+    }
+
+    /// <summary>
+    /// Whether the channel has a commitment snapshot: held by the model, staged in this unit of work or stored.
+    /// </summary>
+    private async Task<bool> HasSnapshotAsync(ChannelModel channelModel)
+    {
+        if (channelModel.Commitments is not null)
+            return true;
+
+        var channelId = channelModel.ChannelId;
+        if (_context.ChangeTracker.Entries<CommitmentEntity>()
+                    .Any(e => e.State != EntityState.Deleted && e.Entity.ChannelId == channelId))
+            return true;
+
+        return await _context.Commitments.AsNoTracking().AnyAsync(c => c.ChannelId == channelId);
     }
 
     /// <summary>

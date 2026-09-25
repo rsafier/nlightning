@@ -56,7 +56,7 @@ public class UnitOfWork : IUnitOfWork
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);
 
     public IChannelDbRepository ChannelDbRepository =>
-        _channelDbRepository ??= new ChannelDbRepository(_context, _sha256);
+        _channelDbRepository ??= new ChannelDbRepository(_context, _sha256, _logger);
 
     public IChannelKeySetDbRepository ChannelKeySetDbRepository =>
         _channelKeySetDbRepository ??= new ChannelKeySetDbRepository(_context);
