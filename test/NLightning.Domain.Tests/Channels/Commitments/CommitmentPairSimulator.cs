@@ -7,6 +7,7 @@ namespace NLightning.Domain.Tests.Channels.Commitments;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
@@ -98,6 +99,10 @@ internal sealed class SimulatorStats
     public int GateRefusals;
     public int MaxOpenHtlcs;
     public int FeeOnlyCommitments;
+    public int LockedInEvents;
+    public int FulfilledEvents;
+    public int FailedEvents;
+    public int SettledEvents;
 
     /// <summary>Runs that ended with the non-funder failing the channel because the funder's update crossed its adds
     /// (see <see cref="CommitmentPairSimulator"/>).</summary>
@@ -126,6 +131,10 @@ internal sealed class SimulatorStats
         GateRefusals += other.GateRefusals;
         MaxOpenHtlcs = Math.Max(MaxOpenHtlcs, other.MaxOpenHtlcs);
         FeeOnlyCommitments += other.FeeOnlyCommitments;
+        LockedInEvents += other.LockedInEvents;
+        FulfilledEvents += other.FulfilledEvents;
+        FailedEvents += other.FailedEvents;
+        SettledEvents += other.SettledEvents;
         CrossedFeeFailures += other.CrossedFeeFailures;
         foreach (var (id, n) in other.Refusals)
             Refusals[id] = Refusals.GetValueOrDefault(id) + n;
@@ -137,7 +146,8 @@ internal sealed class SimulatorStats
       + $"fee-only {FeeOnlyCommitments}), RAA {Revocations}, disconnects {Disconnects} (dropped {DroppedOnDisconnect}, "
       + $"re-sent CS {RetransmittedCommitments}, RAA {RetransmittedRevocations}, updates {RetransmittedUpdates}), "
       + $"gate refusals {GateRefusals}, max open HTLCs {MaxOpenHtlcs}, crossed-fee channel failures "
-      + $"{CrossedFeeFailures}; refusals: "
+      + $"{CrossedFeeFailures}; events: locked-in {LockedInEvents}, fulfilled {FulfilledEvents}, failed "
+      + $"{FailedEvents}, settled {SettledEvents}; refusals: "
       + string.Join(", ", Refusals.Select(r => $"{r.Key} {r.Value}"));
 }
 
@@ -415,6 +425,8 @@ internal sealed class CommitmentPairSimulator
         {
             var result = Remove(node.State, htlc, kind);
             Check(lockedIn, $"{node.Name} removed HTLC {htlc.Id} in {htlc.State}, before lock-in (I8)");
+            Check(node.LockedInEvents.Contains(htlc.Id),
+                  $"{node.Name} removed HTLC {htlc.Id} without an IncomingHtlcLockedIn event (I8)");
             Apply(node, result, $"{node.Name} {kind} #{htlc.Id} ({htlc.AmountMsat} msat)");
             node.Journal.Add(new JournalEntry(JournalKind.Remove, htlc.Id));
             if (kind == HtlcRemovalKind.Fulfill)
@@ -672,6 +684,88 @@ internal sealed class CommitmentPairSimulator
         foreach (var dropped in result.Transition.DroppedHtlcs)
             Check(dropped is { Direction: HtlcDirection.Incoming, State: HtlcState.RcvdAddHtlc },
                   $"{node.Name} dropped HTLC {dropped.Key} in {dropped.State}");
+
+        CheckEvents(node, result);
+    }
+
+    /// <summary>
+    /// N4-T4 / I8: every event is raised at the right time and exactly once, and can be re-derived from what the
+    /// transition asks to persist (the startup replay after a crash between the save and the delivery).
+    /// </summary>
+    private void CheckEvents(SimNode node, CommitmentsResult result)
+    {
+        var settledOutgoing = result.Transition.SettledHtlcs.Where(h => h.Direction == HtlcDirection.Outgoing)
+                                    .ToDictionary(h => h.Id);
+        foreach (var domainEvent in result.Events)
+        {
+            Check(domainEvent.ChannelId.Equals(CommitmentsTestKit.ChannelId),
+                  $"{node.Name} raised {domainEvent} for another channel");
+            switch (domainEvent)
+            {
+                case IncomingHtlcLockedIn lockedIn:
+                    var incoming = result.Next.GetHtlc(HtlcDirection.Incoming, lockedIn.HtlcId);
+                    Check(incoming?.State == HtlcState.RcvdAddAckRevocation,
+                          $"{node.Name} raised IncomingHtlcLockedIn #{lockedIn.HtlcId} in {incoming?.State} (I8)");
+                    Check(node.LockedInEvents.Add(lockedIn.HtlcId),
+                          $"{node.Name} raised IncomingHtlcLockedIn #{lockedIn.HtlcId} twice");
+                    Stats.LockedInEvents++;
+                    break;
+                case OutgoingHtlcFulfilled fulfilled:
+                    Check(CommitmentsTestKit.HashOf(fulfilled.PaymentPreimage).Equals(fulfilled.PaymentHash),
+                          $"{node.Name} raised OutgoingHtlcFulfilled #{fulfilled.HtlcId} with a wrong preimage");
+                    Check(node.FulfilledEvents.Add(fulfilled.HtlcId),
+                          $"{node.Name} raised OutgoingHtlcFulfilled #{fulfilled.HtlcId} twice");
+                    Stats.FulfilledEvents++;
+                    break;
+                case OutgoingHtlcFailed failed:
+                    // B2-FWD-02: only once the removal is irrevocably committed.
+                    Check(settledOutgoing.TryGetValue(failed.HtlcId, out var failedHtlc)
+                       && failedHtlc is { State: HtlcState.RcvdRemoveAckRevocation, Removal.IsFulfill: false },
+                          $"{node.Name} raised OutgoingHtlcFailed #{failed.HtlcId} before the fail was irrevocable (I8)");
+                    Check(node.FailedEvents.Add(failed.HtlcId),
+                          $"{node.Name} raised OutgoingHtlcFailed #{failed.HtlcId} twice");
+                    Stats.FailedEvents++;
+                    break;
+                case OutgoingHtlcSettled settled:
+                    Check(settledOutgoing.TryGetValue(settled.HtlcId, out var settledHtlc)
+                       && settledHtlc.Removal!.Kind == settled.Kind,
+                          $"{node.Name} raised OutgoingHtlcSettled #{settled.HtlcId} for an HTLC that did not settle");
+                    Check(settled.Kind != HtlcRemovalKind.Fulfill || node.FulfilledEvents.Contains(settled.HtlcId),
+                          $"{node.Name} settled fulfilled HTLC #{settled.HtlcId} without OutgoingHtlcFulfilled");
+                    Check(settled.Kind == HtlcRemovalKind.Fulfill || node.FailedEvents.Contains(settled.HtlcId),
+                          $"{node.Name} settled failed HTLC #{settled.HtlcId} without OutgoingHtlcFailed first");
+                    Check(node.SettledEvents.Add(settled.HtlcId),
+                          $"{node.Name} raised OutgoingHtlcSettled #{settled.HtlcId} twice");
+                    Stats.SettledEvents++;
+                    break;
+                default:
+                    throw Fail($"{node.Name} raised unknown event {domainEvent}");
+            }
+        }
+
+        // Every outgoing HTLC that settled raised its settle event now.
+        foreach (var id in settledOutgoing.Keys)
+            Check(node.SettledEvents.Contains(id), $"{node.Name} settled HTLC #{id} without OutgoingHtlcSettled");
+
+        // Completeness: every locked-in incoming HTLC and every known preimage has had its event.
+        foreach (var htlc in result.Next.Htlcs.Values)
+        {
+            if (htlc.Direction == HtlcDirection.Incoming)
+                Check(!HtlcStateTable.IsAddIrrevocablyCommitted(htlc.State) || node.LockedInEvents.Contains(htlc.Id),
+                      $"{node.Name} HTLC {htlc.Key} is locked in ({htlc.State}) but no event was raised");
+            else
+                Check(htlc.KnownPreimage is null || node.FulfilledEvents.Contains(htlc.Id),
+                      $"{node.Name} knows the preimage of HTLC {htlc.Key} but raised no OutgoingHtlcFulfilled");
+        }
+
+        // I8 replay: what the transition persists re-derives every event just raised.
+        if (result.Events.Count == 0)
+            return;
+        var pending = ChannelDomainEvents.DerivePending(result.Next, result.Transition.SettledHtlcs)
+                                         .Select(e => (e.GetType(), e.HtlcId)).ToHashSet();
+        foreach (var domainEvent in result.Events)
+            Check(pending.Contains((domainEvent.GetType(), domainEvent.HtlcId)),
+                  $"{node.Name} raised {domainEvent.GetType().Name} #{domainEvent.HtlcId} but it cannot be re-derived from the persisted state (I8)");
     }
 
     #endregion
@@ -824,6 +918,8 @@ internal sealed class CommitmentPairSimulator
             {
                 foreach (var htlc in node.State.Htlcs.Values.Where(h => h.State == HtlcState.RcvdAddAckRevocation))
                 {
+                    Check(node.LockedInEvents.Contains(htlc.Id),
+                          $"{node.Name} settles HTLC {htlc.Id} without an IncomingHtlcLockedIn event (I8)");
                     var kind = _rng.Next(3) == 0 ? HtlcRemovalKind.Fail : HtlcRemovalKind.Fulfill;
                     Apply(node, Remove(node.State, htlc, kind), $"{node.Name} settles #{htlc.Id} with {kind}");
                     node.Journal.Add(new JournalEntry(JournalKind.Remove, htlc.Id));
@@ -852,6 +948,14 @@ internal sealed class CommitmentPairSimulator
             Check(!node.State.HasPendingChangesForRemote && !node.State.HasPendingChangesForLocal,
                   $"{node.Name} still has pending changes");
             Check(node.State.FeeUpdates.Count == 1, $"{node.Name} has {node.State.FeeUpdates.Count} fee updates");
+
+            // N4-T4: every HTLC the node offered was locked in by the peer once and settled here once, fulfilled or
+            // failed (never both).
+            Check(node.SettledEvents.SetEquals(Peer(node).LockedInEvents),
+                  $"{node.Name} settled {node.SettledEvents.Count} HTLCs, the peer locked in {Peer(node).LockedInEvents.Count}");
+            Check(!node.FulfilledEvents.Overlaps(node.FailedEvents)
+               && node.SettledEvents.SetEquals(node.FulfilledEvents.Union(node.FailedEvents)),
+                  $"{node.Name} settled HTLCs do not match its fulfilled/failed events");
         }
 
         Check(Alice.State.LocalBalanceMsat == (ulong)_expectedAliceMsat,
@@ -1065,6 +1169,12 @@ internal sealed class SimNode(string name, byte tag, byte peerTag, ChannelCommit
     public ulong RevokedByPeer { get; set; }
 
     public HashSet<HtlcKey> Settled { get; } = [];
+
+    /// <summary>Ids of the HTLCs each event was raised for (each at most once).</summary>
+    public HashSet<ulong> LockedInEvents { get; } = [];
+    public HashSet<ulong> FulfilledEvents { get; } = [];
+    public HashSet<ulong> FailedEvents { get; } = [];
+    public HashSet<ulong> SettledEvents { get; } = [];
 
     /// <summary>The last local commitment whose signatures were checked (they are checked once per commitment).</summary>
     public LocalCommit? Verified { get; set; }

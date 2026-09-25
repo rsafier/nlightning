@@ -8,6 +8,7 @@ using Crypto.Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;
 using Enums;
+using Events;
 using Exceptions;
 using Interfaces;
 using Validators;
@@ -25,6 +26,11 @@ using ValueObjects;
 /// signatures go through <see cref="ICommitmentSigner"/>/<see cref="ICommitmentVerifier"/>, revocation secrets through
 /// <see cref="IRevocationVerifier"/>, and the <c>revoke_and_ack</c> secret is left to the caller
 /// (<see cref="OutboundRevokeAndAck"/>).
+/// </para>
+/// <para>
+/// Each result also carries the domain events of the operation (N4-T4, <see cref="ChannelDomainEvents"/>):
+/// <see cref="IncomingHtlcLockedIn"/> and the irrevocable <see cref="OutgoingHtlcFailed"/>/<see cref="OutgoingHtlcSettled"/>
+/// come from <see cref="ReceiveRevoke"/>, <see cref="OutgoingHtlcFulfilled"/> from <see cref="ReceiveFulfill"/>.
 /// </para>
 /// <para>
 /// Amounts are <c>ulong</c> msat with checked arithmetic (plan §3.2); balances are "settled" balances: HTLCs are kept
@@ -405,6 +411,8 @@ public sealed record ChannelCommitments
     }
 
     /// <summary>Applies the peer's <c>update_fulfill_htlc</c> for an HTLC we offered.</summary>
+    /// <remarks>Raises <see cref="OutgoingHtlcFulfilled"/> at once (B2-FWD-05) unless the preimage was already known
+    /// (a fulfill re-sent after a reconnection).</remarks>
     /// <exception cref="CommitmentViolationException">Unknown id or HTLC not in our current commitment (B2-DEL-R01),
     /// already removed (B2-DEL-R07) or wrong preimage (B2-DEL-R02).</exception>
     public CommitmentsResult ReceiveFulfill(ulong id, Secret paymentPreimage, ISha256 sha256)
@@ -609,7 +617,10 @@ public sealed record ChannelCommitments
     /// Applies the peer's <c>revoke_and_ack</c>: checks the secret of its current commitment, then rotates to the
     /// commitment we signed last.
     /// </summary>
-    /// <remarks>The caller stores the secret in the remote shachain (B2-RAA-R04) in the same save.</remarks>
+    /// <remarks>The caller stores the secret in the remote shachain (B2-RAA-R04) in the same save. Raises
+    /// <see cref="IncomingHtlcLockedIn"/> for every incoming HTLC this locks in, and <see cref="OutgoingHtlcFailed"/>
+    /// (failures only) then <see cref="OutgoingHtlcSettled"/> for every outgoing HTLC whose removal becomes irrevocable.
+    /// </remarks>
     /// <exception cref="CommitmentViolationException">No <c>commitment_signed</c> outstanding (B2-RAA-R03) or a wrong
     /// secret (B2-RAA-R01, must fail the channel).</exception>
     public CommitmentsResult ReceiveRevoke(Secret perCommitmentSecret, CompactPubKey nextPerCommitmentPoint,
@@ -741,7 +752,8 @@ public sealed record ChannelCommitments
             ScalarsChanged: LocalBalanceMsat != next.LocalBalanceMsat || RemoteBalanceMsat != next.RemoteBalanceMsat
                          || LocalNextHtlcId != next.LocalNextHtlcId || RemoteNextHtlcId != next.RemoteNextHtlcId
                          || !Nullable.Equals(RemoteNextPerCommitmentPoint, next.RemoteNextPerCommitmentPoint));
-        return new CommitmentsResult(next, outbound, transition);
+        var events = ChannelDomainEvents.FromChange(ChannelId, Htlcs, next.Htlcs, transition.SettledHtlcs);
+        return new CommitmentsResult(next, outbound, transition, events);
     }
 
     private CommitmentViolationException Violation(string requirementId, string message) =>

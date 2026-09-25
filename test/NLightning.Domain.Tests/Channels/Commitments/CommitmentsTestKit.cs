@@ -7,6 +7,7 @@ namespace NLightning.Domain.Tests.Channels.Commitments;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
@@ -141,6 +142,12 @@ internal sealed class CommitmentPair
     public ChannelCommitments Alice { get; private set; }
     public ChannelCommitments Bob { get; private set; }
 
+    /// <summary>Every domain event Alice's engine raised, with the step that raised it (N4-T4).</summary>
+    public List<(string Step, IChannelDomainEvent Event)> AliceEvents { get; } = [];
+
+    /// <summary>Every domain event Bob's engine raised, with the step that raised it (N4-T4).</summary>
+    public List<(string Step, IChannelDomainEvent Event)> BobEvents { get; } = [];
+
     public CommitmentPair(ulong aliceSat, ulong bobSat, uint feeratePerKw = 1_000, bool anchors = false,
                           CommitmentParty? aliceParty = null, CommitmentParty? bobParty = null)
     {
@@ -156,8 +163,9 @@ internal sealed class CommitmentPair
     {
         var result = Alice.Add(amountMsat, preimageTag, cltv);
         var add = Assert.IsType<OutboundAddHtlc>(Assert.Single(result.Outbound)).Htlc;
-        Alice = result.Next;
-        Bob = Bob.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket).Next;
+        Alice = Track(AliceEvents, "add", result);
+        Bob = Track(BobEvents, "receive add",
+                    Bob.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket));
         return add.Id;
     }
 
@@ -165,43 +173,49 @@ internal sealed class CommitmentPair
     {
         var result = Bob.Add(amountMsat, preimageTag, cltv);
         var add = Assert.IsType<OutboundAddHtlc>(Assert.Single(result.Outbound)).Htlc;
-        Bob = result.Next;
-        Alice = Alice.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry, add.OnionRoutingPacket)
-                     .Next;
+        Bob = Track(BobEvents, "add", result);
+        Alice = Track(AliceEvents, "receive add",
+                      Alice.ReceiveAdd(add.Id, add.AmountMsat, add.PaymentHash, add.CltvExpiry,
+                                       add.OnionRoutingPacket));
         return add.Id;
     }
 
     public void AliceFulfill(ulong bobHtlcId, byte preimageTag = 2)
     {
-        Alice = Alice.SendFulfill(bobHtlcId, CommitmentsTestKit.Preimage(preimageTag), CommitmentsTestKit.Sha256)
-                     .Next;
-        Bob = Bob.ReceiveFulfill(bobHtlcId, CommitmentsTestKit.Preimage(preimageTag), CommitmentsTestKit.Sha256)
-                 .Next;
+        Alice = Track(AliceEvents, "fulfill",
+                      Alice.SendFulfill(bobHtlcId, CommitmentsTestKit.Preimage(preimageTag),
+                                        CommitmentsTestKit.Sha256));
+        Bob = Track(BobEvents, "receive fulfill",
+                    Bob.ReceiveFulfill(bobHtlcId, CommitmentsTestKit.Preimage(preimageTag),
+                                       CommitmentsTestKit.Sha256));
     }
 
     public void BobFulfill(ulong aliceHtlcId, byte preimageTag = 1)
     {
-        Bob = Bob.SendFulfill(aliceHtlcId, CommitmentsTestKit.Preimage(preimageTag), CommitmentsTestKit.Sha256).Next;
-        Alice = Alice.ReceiveFulfill(aliceHtlcId, CommitmentsTestKit.Preimage(preimageTag), CommitmentsTestKit.Sha256)
-                     .Next;
+        Bob = Track(BobEvents, "fulfill",
+                    Bob.SendFulfill(aliceHtlcId, CommitmentsTestKit.Preimage(preimageTag),
+                                    CommitmentsTestKit.Sha256));
+        Alice = Track(AliceEvents, "receive fulfill",
+                      Alice.ReceiveFulfill(aliceHtlcId, CommitmentsTestKit.Preimage(preimageTag),
+                                           CommitmentsTestKit.Sha256));
     }
 
     public void AliceFail(ulong bobHtlcId)
     {
-        Alice = Alice.SendFail(bobHtlcId, new byte[] { 4, 5, 6 }).Next;
-        Bob = Bob.ReceiveFail(bobHtlcId, new byte[] { 4, 5, 6 }).Next;
+        Alice = Track(AliceEvents, "fail", Alice.SendFail(bobHtlcId, new byte[] { 4, 5, 6 }));
+        Bob = Track(BobEvents, "receive fail", Bob.ReceiveFail(bobHtlcId, new byte[] { 4, 5, 6 }));
     }
 
     public void BobFail(ulong aliceHtlcId)
     {
-        Bob = Bob.SendFail(aliceHtlcId, new byte[] { 1, 2, 3 }).Next;
-        Alice = Alice.ReceiveFail(aliceHtlcId, new byte[] { 1, 2, 3 }).Next;
+        Bob = Track(BobEvents, "fail", Bob.SendFail(aliceHtlcId, new byte[] { 1, 2, 3 }));
+        Alice = Track(AliceEvents, "receive fail", Alice.ReceiveFail(aliceHtlcId, new byte[] { 1, 2, 3 }));
     }
 
     public void AliceFee(uint feeratePerKw)
     {
-        Alice = Alice.SendFee(feeratePerKw).Next;
-        Bob = Bob.ReceiveFee(feeratePerKw, 253, 100_000).Next;
+        Alice = Track(AliceEvents, "fee", Alice.SendFee(feeratePerKw));
+        Bob = Track(BobEvents, "receive fee", Bob.ReceiveFee(feeratePerKw, 253, 100_000));
     }
 
     /// <summary>Alice signs; Bob applies it and returns the RAA placeholder (not yet delivered).</summary>
@@ -211,14 +225,33 @@ internal sealed class CommitmentPair
     public OutboundRevokeAndAck BobCommits() => Commit(fromAlice: false);
 
     public void DeliverBobRevoke(OutboundRevokeAndAck raa) =>
-        Alice = Alice.ReceiveRevoke(CommitmentsTestKit.SecretFor(CommitmentsTestKit.BobTag, raa.RevokedCommitmentNumber),
-                                    CommitmentsTestKit.Point(CommitmentsTestKit.BobTag, raa.NextCommitmentNumber),
-                                    _revocationVerifier).Next;
+        Alice = Track(AliceEvents, "receive revoke",
+                      Alice.ReceiveRevoke(
+                          CommitmentsTestKit.SecretFor(CommitmentsTestKit.BobTag, raa.RevokedCommitmentNumber),
+                          CommitmentsTestKit.Point(CommitmentsTestKit.BobTag, raa.NextCommitmentNumber),
+                          _revocationVerifier));
 
     public void DeliverAliceRevoke(OutboundRevokeAndAck raa) =>
-        Bob = Bob.ReceiveRevoke(CommitmentsTestKit.SecretFor(CommitmentsTestKit.AliceTag, raa.RevokedCommitmentNumber),
-                                CommitmentsTestKit.Point(CommitmentsTestKit.AliceTag, raa.NextCommitmentNumber),
-                                _revocationVerifier).Next;
+        Bob = Track(BobEvents, "receive revoke",
+                    Bob.ReceiveRevoke(
+                        CommitmentsTestKit.SecretFor(CommitmentsTestKit.AliceTag, raa.RevokedCommitmentNumber),
+                        CommitmentsTestKit.Point(CommitmentsTestKit.AliceTag, raa.NextCommitmentNumber),
+                        _revocationVerifier));
+
+    /// <summary>A disconnect: both sides revert the peer's unsigned updates.</summary>
+    public void Disconnect()
+    {
+        Alice = Track(AliceEvents, "revert", Alice.RevertUncommitted());
+        Bob = Track(BobEvents, "revert", Bob.RevertUncommitted());
+    }
+
+    /// <summary>Records the events of <paramref name="result"/> and returns its snapshot.</summary>
+    private static ChannelCommitments Track(List<(string Step, IChannelDomainEvent Event)> log, string step,
+                                            CommitmentsResult result)
+    {
+        log.AddRange(result.Events.Select(e => (step, e)));
+        return result.Next;
+    }
 
     /// <summary>A full round started by Alice: CS, RAA, CS, RAA.</summary>
     public void AliceFullRound()
@@ -266,13 +299,13 @@ internal sealed class CommitmentPair
 
         if (fromAlice)
         {
-            Alice = sent.Next;
-            Bob = received.Next;
+            Alice = Track(AliceEvents, "commit", sent);
+            Bob = Track(BobEvents, "receive commit", received);
         }
         else
         {
-            Bob = sent.Next;
-            Alice = received.Next;
+            Bob = Track(BobEvents, "commit", sent);
+            Alice = Track(AliceEvents, "receive commit", received);
         }
 
         AssertConserved();

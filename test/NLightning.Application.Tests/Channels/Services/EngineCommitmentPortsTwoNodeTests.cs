@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Channels.Services;
 
 using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -68,6 +69,88 @@ public class EngineCommitmentPortsTwoNodeTests
         Assert.Equal(bob.State.LocalCommit.Number, alice.State.RemoteCommit.Number);
         Assert.Equal(RealSigningCommitmentPair.InitialFeeratePerKw * 2, alice.State.LocalCommit.Spec.FeeratePerKw);
         Assert.Equal(RealSigningCommitmentPair.InitialFeeratePerKw * 2, bob.State.LocalCommit.Spec.FeeratePerKw);
+
+        // N4-T4 events: each lock-in once on revoke_and_ack, the fulfill at once, fails and settles only when final
+        Assert.Equal([(typeof(IncomingHtlcLockedIn), big), (typeof(IncomingHtlcLockedIn), small),
+                      (typeof(OutgoingHtlcFailed), back), (typeof(OutgoingHtlcSettled), back)],
+                     bob.Events.Select(e => (e.Event.GetType(), e.Event.HtlcId)));
+        Assert.Equal([(typeof(IncomingHtlcLockedIn), back), (typeof(OutgoingHtlcFulfilled), big),
+                      (typeof(OutgoingHtlcSettled), big),
+                      (typeof(OutgoingHtlcFailed), small), (typeof(OutgoingHtlcSettled), small)],
+                     alice.Events.Select(e => (e.Event.GetType(), e.Event.HtlcId)));
+        Assert.All(alice.Events.Concat(bob.Events).Where(e => e.Event is not OutgoingHtlcFulfilled),
+                   e => Assert.Equal("receive revoke", e.Step));
+        Assert.Equal("receive fulfill", Assert.Single(alice.Events, e => e.Event is OutgoingHtlcFulfilled).Step);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_IncomingAdd_When_BothRevokedWithRealSignatures_Then_IncomingHtlcLockedInOnce(bool hasAnchors)
+    {
+        // Arrange
+        using var pair = new RealSigningCommitmentPair(hasAnchors);
+        var id = pair.Add(pair.Alice, 50_000 * Sat, RealSigningCommitmentPair.Preimage(1));
+
+        // Act / Assert - Alice signs, Bob revokes: the add is in both commitments, Alice's old one not yet revoked
+        pair.Commit(pair.Alice);
+        Assert.Empty(pair.Bob.Events);
+        Assert.Equal(HtlcState.SentAddRevocation, pair.Bob.State.GetHtlc(HtlcDirection.Incoming, id)!.State);
+
+        // Bob signs, Alice revokes: locked in
+        pair.Commit(pair.Bob);
+        var (step, domainEvent) = Assert.Single(pair.Bob.Events);
+        Assert.Equal("receive revoke", step);
+        var lockedIn = Assert.IsType<IncomingHtlcLockedIn>(domainEvent);
+        Assert.Equal(id, lockedIn.HtlcId);
+        Assert.Equal(RealSigningCommitmentPair.ChannelId, lockedIn.ChannelId);
+        Assert.Equal(RealSigningCommitmentPair.Hash(RealSigningCommitmentPair.Preimage(1)), lockedIn.Htlc.PaymentHash);
+
+        // Later commitments never raise it again, and the replay still has it until Bob resolves the HTLC
+        pair.UpdateFee(RealSigningCommitmentPair.InitialFeeratePerKw * 2);
+        pair.Settle(pair.Alice);
+        Assert.Single(pair.Bob.Events);
+        Assert.Equal(lockedIn.HtlcId,
+                     Assert.IsType<IncomingHtlcLockedIn>(Assert.Single(ChannelDomainEvents.DerivePending(pair.Bob.State)))
+                           .HtlcId);
+        Assert.All(pair.Commitments, c => Assert.Equal(c.Signed, c.Verified));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_DownstreamFailWithRealSignatures_Then_OutgoingHtlcFailedOnlyWhenIrrevocable(bool hasAnchors)
+    {
+        // Arrange - Alice's HTLC is locked in, then Bob fails it
+        using var pair = new RealSigningCommitmentPair(hasAnchors);
+        var id = pair.Add(pair.Alice, 50_000 * Sat, RealSigningCommitmentPair.Preimage(1));
+        pair.Settle(pair.Alice);
+        pair.Fail(pair.Bob, id);
+
+        // Act / Assert - received, then committed and revoked on Alice's side: still revocable on Bob's
+        Assert.Empty(pair.Alice.Events);
+        pair.Commit(pair.Bob);
+        Assert.Empty(pair.Alice.Events);
+        Assert.Equal(HtlcState.SentRemoveRevocation, pair.Alice.State.GetHtlc(HtlcDirection.Outgoing, id)!.State);
+
+        // Alice signs Bob's commitment without it and Bob revokes the old one: irrevocable
+        pair.Commit(pair.Alice);
+
+        Assert.Collection(pair.Alice.Events,
+                          e =>
+                          {
+                              Assert.Equal("receive revoke", e.Step);
+                              var failed = Assert.IsType<OutgoingHtlcFailed>(e.Event);
+                              Assert.Equal(id, failed.HtlcId);
+                              Assert.Equal(HtlcRemovalKind.Fail, failed.Removal.Kind);
+                          },
+                          e =>
+                          {
+                              Assert.Equal("receive revoke", e.Step);
+                              Assert.Equal(id, Assert.IsType<OutgoingHtlcSettled>(e.Event).HtlcId);
+                          });
+        Assert.Empty(pair.Alice.State.Htlcs);
+        Assert.All(pair.Commitments, c => Assert.Equal(c.Signed, c.Verified));
     }
 
     [Fact]
