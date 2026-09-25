@@ -35,8 +35,10 @@ public class UpdateAddHtlcPayloadSerializer : IPayloadSerializer<UpdateAddHtlcPa
         await stream.WriteAsync(EndianBitConverter.GetBytesBigEndian(updateAddHtlcPayload.Amount.MilliSatoshi));
         await stream.WriteAsync(updateAddHtlcPayload.PaymentHash);
         await stream.WriteAsync(EndianBitConverter.GetBytesBigEndian(updateAddHtlcPayload.CltvExpiry));
-        if (updateAddHtlcPayload.OnionRoutingPacket is not null)
-            await stream.WriteAsync(updateAddHtlcPayload.OnionRoutingPacket.Value);
+        if (updateAddHtlcPayload.OnionRoutingPacket.Length != UpdateAddHtlcPayload.OnionPacketLength)
+            throw new SerializationException(
+                $"Onion routing packet must be exactly {UpdateAddHtlcPayload.OnionPacketLength} bytes");
+        await stream.WriteAsync(updateAddHtlcPayload.OnionRoutingPacket);
     }
 
     public async Task<UpdateAddHtlcPayload?> DeserializeAsync(Stream stream)
@@ -63,12 +65,9 @@ public class UpdateAddHtlcPayloadSerializer : IPayloadSerializer<UpdateAddHtlcPa
             await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(uint)]);
             var cltvExpiry = EndianBitConverter.ToUInt32BigEndian(buffer[..sizeof(uint)]);
 
-            byte[]? onionRoutingPacket = null;
-            if (stream.Position + 1366 <= stream.Length)
-            {
-                onionRoutingPacket = new byte[1366];
-                await stream.ReadExactlyAsync(onionRoutingPacket);
-            }
+            // The onion packet is mandatory and fixed-size; a short stream throws EndOfStreamException
+            var onionRoutingPacket = new byte[UpdateAddHtlcPayload.OnionPacketLength];
+            await stream.ReadExactlyAsync(onionRoutingPacket);
 
             return new UpdateAddHtlcPayload(amountMsat, channelId, cltvExpiry, id, paymentHash, onionRoutingPacket);
         }

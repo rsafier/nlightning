@@ -94,7 +94,7 @@ public interface IMessageFactory
 
     UpdateAddHtlcMessage CreateUpdateAddHtlcMessage(ChannelId channelId, ulong id, ulong amountMsat,
                                                     ReadOnlyMemory<byte> paymentHash, uint cltvExpiry,
-                                                    ReadOnlyMemory<byte>? onionRoutingPacket = null);
+                                                    ReadOnlyMemory<byte> onionRoutingPacket);
 
     UpdateFulfillHtlcMessage CreateUpdateFulfillHtlcMessage(ChannelId channelId, ulong id,
                                                             ReadOnlyMemory<byte> preimage);

@@ -672,7 +672,7 @@ public class MessageFactory : IMessageFactory
     /// <seealso cref="UpdateAddHtlcPayload"/>
     public UpdateAddHtlcMessage CreateUpdateAddHtlcMessage(ChannelId channelId, ulong id, ulong amountMsat,
                                                            ReadOnlyMemory<byte> paymentHash, uint cltvExpiry,
-                                                           ReadOnlyMemory<byte>? onionRoutingPacket = null)
+                                                           ReadOnlyMemory<byte> onionRoutingPacket)
     {
         var payload = new UpdateAddHtlcPayload(amountMsat, channelId, cltvExpiry, id, paymentHash, onionRoutingPacket);
 
