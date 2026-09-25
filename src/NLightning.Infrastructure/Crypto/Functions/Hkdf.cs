@@ -3,7 +3,6 @@ using System.Diagnostics;
 namespace NLightning.Infrastructure.Crypto.Functions;
 
 using Domain.Crypto.Constants;
-using Hashes;
 using Primitives;
 
 /// <summary>
@@ -16,7 +15,7 @@ internal sealed class Hkdf : IDisposable
     private static readonly byte[] s_two = [2];
     private static readonly byte[] s_three = [3];
 
-    private readonly Sha256 _sha256 = new();
+    private readonly HmacSha256 _hmacSha256 = new();
 
     private bool _disposed;
 
@@ -76,26 +75,7 @@ internal sealed class Hkdf : IDisposable
         Debug.Assert(key.Length == CryptoConstants.Sha256HashLen);
         Debug.Assert(hmac.Length == CryptoConstants.Sha256HashLen);
 
-        Span<byte> ipad = stackalloc byte[CryptoConstants.Sha256BlockLen];
-        Span<byte> opad = stackalloc byte[CryptoConstants.Sha256BlockLen];
-
-        key.CopyTo(ipad);
-        key.CopyTo(opad);
-
-        for (var i = 0; i < CryptoConstants.Sha256BlockLen; ++i)
-        {
-            ipad[i] ^= 0x36;
-            opad[i] ^= 0x5C;
-        }
-
-        _sha256.AppendData(ipad);
-        _sha256.AppendData(data1);
-        _sha256.AppendData(data2);
-        _sha256.GetHashAndReset(hmac);
-
-        _sha256.AppendData(opad);
-        _sha256.AppendData(hmac);
-        _sha256.GetHashAndReset(hmac);
+        _hmacSha256.ComputeHash(key, data1, data2, hmac);
     }
 
     public void Dispose()
@@ -105,7 +85,7 @@ internal sealed class Hkdf : IDisposable
             return;
         }
 
-        _sha256.Dispose();
+        _hmacSha256.Dispose();
 
         _disposed = true;
     }
