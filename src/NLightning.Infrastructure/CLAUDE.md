@@ -53,7 +53,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `MessageService.ReceiveMessage` deserializes synchronously under a lock on the read loop.
 - `PingPongService.StartPingAsync`: the pong-timeout disconnect path is dead. A timeout makes `Task.Delay` Canceled (not Faulted), so the loop `continue`s and re-pings instead of raising `DisconnectEvent`.
 - `RemoteAddressTlvConverter`: Tor v3 decode reads 36 address bytes (`Value[1..37]`) instead of 35; type 5 (DNS) encode overwrites `customAddressBytes[1]` and decode expects length+3 instead of length+4. No tests exist. (`TlvStreamSerializer` now finds converters by runtime type, so it no longer throws for `RemoteAddressTlv`.)
-- `Tx*Validator` serial_id parity check only runs when `isInitiator` is true and rejects odd ids; whether `isInitiator` means local or remote is undocumented, so verify against BOLT 2 before relying on it. `TxAddInputValidator.Validate` is `async void`.
+- `Tx*Validator`s take `isSenderInitiator` (the role of the node that **sent** the message, not the local node) and enforce BOLT 2 parity both ways: initiator even, non-initiator odd. `TxAddInputValidator.ValidateAsync` returns `Task`; always await it.
 - `SecretStorageService.GetBasepointPrivateKey` and `LoadFromIndex` throw `NotImplementedException`.
 - `PeerService.HandleMessage` silently drops anything that isn't an IChannelMessage, error or warning (gossip, onion_message, stfu).
 - `Argon2Id.DeriveKeyMemLimit` is `1 << 16` bytes = 64 KiB (the comment says MiB). Changing it breaks existing key files.
