@@ -31,7 +31,7 @@ public class PaymentDataTlv : BaseTlv
         PaymentSecret = paymentSecret;
         TotalMsat = totalMsat;
 
-        var total = TruncatedIntEncoder.Encode(totalMsat.MilliSatoshi);
+        var total = TruncatedInt.EncodeTu64(totalMsat.MilliSatoshi);
         var value = new byte[CryptoConstants.SecretLen + total.Length];
         secretBytes.CopyTo(value, 0);
         total.CopyTo(value, CryptoConstants.SecretLen);

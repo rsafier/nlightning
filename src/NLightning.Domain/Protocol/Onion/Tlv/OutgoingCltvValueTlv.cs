@@ -17,7 +17,7 @@ public class OutgoingCltvValueTlv : BaseTlv
     {
         OutgoingCltvValue = outgoingCltvValue;
 
-        Value = TruncatedIntEncoder.Encode(outgoingCltvValue);
+        Value = TruncatedInt.EncodeTu32(outgoingCltvValue);
         Length = Value.Length;
     }
 }
