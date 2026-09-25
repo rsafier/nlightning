@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Tests.Node;
 
 using Domain.Node;
+using Domain.Protocol.Tlv;
 using Enums;
 
 public class FeatureSetTests
@@ -254,6 +255,43 @@ public class FeatureSetTests
         Assert.True(combined.IsFeatureSet(Feature.OptionUpfrontShutdownScript, true));
         Assert.True(combined.IsFeatureSet(Feature.OptionSupportLargeChannel, true));
         Assert.True(combined.IsFeatureSet(Feature.GossipQueries, true));
+    }
+
+    #endregion
+
+    #region DeserializeFromBytes
+
+    [Fact]
+    public void Given_ByteArray_When_DeserializeFromBytes_Then_InputIsNotMutated()
+    {
+        // Arrange
+        byte[] data = [0x40, 0x10, 0x00];
+        byte[] expected = [0x40, 0x10, 0x00];
+
+        // Act
+        var features = FeatureSet.DeserializeFromBytes(data);
+
+        // Assert
+        Assert.Equal(expected, data);
+        Assert.True(features.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.True(features.IsFeatureSet(Feature.OptionAnchors, true));
+    }
+
+    [Fact]
+    public void Given_MultiByteChannelType_When_CreatingChannelTypeTlv_Then_ValueKeepsWireOrder()
+    {
+        // Arrange
+        byte[] channelType = [0x40, 0x10, 0x00];
+        byte[] expected = [0x40, 0x10, 0x00];
+
+        // Act
+        var tlv = new ChannelTypeTlv(channelType);
+
+        // Assert
+        Assert.Equal(expected, tlv.ChannelType);
+        Assert.Equal(expected, tlv.Value);
+        Assert.True(tlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true));
+        Assert.True(tlv.Features.IsFeatureSet(Feature.OptionAnchors, true));
     }
 
     #endregion
