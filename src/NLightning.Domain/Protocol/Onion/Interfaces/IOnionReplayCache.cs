@@ -1,0 +1,19 @@
+namespace NLightning.Domain.Protocol.Onion.Interfaces;
+
+/// <summary>
+/// Remembers the HMACs of onion packets this node has already processed (BOLT 4 replay protection).
+/// </summary>
+/// <remarks>
+/// BOLT 4 reader: "if the onion is for a payment: if <c>hmac</c> has previously been received: if the preimage is
+/// known MAY immediately redeem the HTLC using the preimage, otherwise MUST abort processing the packet and fail."
+/// </remarks>
+public interface IOnionReplayCache
+{
+    /// <summary>
+    /// Records <paramref name="hmac"/> as seen.
+    /// </summary>
+    /// <param name="hmac">The 32-byte packet HMAC of the incoming onion.</param>
+    /// <returns><c>true</c> when the HMAC was not seen before; <c>false</c> when it is a replay.</returns>
+    /// <exception cref="ArgumentException">Thrown when <paramref name="hmac"/> is not 32 bytes long.</exception>
+    bool TryAdd(ReadOnlySpan<byte> hmac);
+}

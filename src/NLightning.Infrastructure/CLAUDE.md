@@ -60,6 +60,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `new Sha256()` allocates state via `ICryptoProvider.MemoryAlloc` (sodium_malloc on the libsodium backend) on every instance. Reuse instances in hot loops.
 
 ## Onion routing (BOLT 4) hooks
+- `Protocol/Onion/OnionReplayCache.cs`: bounded (FIFO-evicting, default 100k), thread-safe, in-memory `IOnionReplayCache` (Domain interface); registered as a singleton in `AddInfrastructureServices`. Not persistent: replays older than the capacity or across restarts are not detected.
 - Missing primitives: a raw ChaCha20 keystream (zero nonce; libsodium `crypto_stream_chacha20_ietf_xor`, BouncyCastle `ChaCha7539Engine`, JS sumo) and a public HMAC-SHA256 that accepts short keys (extract `Hkdf.HmacHash`, which asserts a 32-byte key). Put them in `Crypto/Ciphers` and `Crypto/Functions`. (`Providers/Native/Ciphers/ChaCha20.cs` only exposes the quarter-round, not a keystream.) Use `CryptographicOperations.FixedTimeEquals` for HMAC checks.
 - ECDH: reuse `IEcdh.SecP256K1Dh`, which already computes SHA256(compressed point), the Sphinx shared secret. Blinding (point/scalar multiply) must live in Infrastructure.Bitcoin; point add/multiply exist only as private helpers in `src/NLightning.Infrastructure.Bitcoin/Services/KeyDerivationService.cs`.
 - Hop-payload TLVs (2, 4, 6, 8, 10, 12, 16, 18) collide with existing numbers in `TlvConstants`, so they need their own constants class, plus converters here registered in `TlvConverterFactory`.
