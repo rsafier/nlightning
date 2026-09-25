@@ -70,7 +70,11 @@ public class Bolt3IntegrationTests
     [Fact]
     public void Given_Bolt3Specifications_When_CreatingFundingTransaction_Then_ShouldBeEqualToTestVector()
     {
-        // Given - BOLT 3 Appendix B: 50 BTC P2PKH coinbase input, 10M sat funding, feerate 15000 sat/kw => 13920 sat fee
+        // Given - BOLT 3 Appendix B: 50 BTC P2PKH coinbase input, 10M sat funding, feerate 15000 sat/kw.
+        // The builder is handed the spec fee; the Then block re-derives it from the signed tx weight.
+        // AddressType has no P2PKH member and the builder does not use it, so the UTXO is tagged P2Wpkh. The input is
+        // signed by hand below (legacy sighash, no low-R grinding): the wallet signing path is not covered here.
+        var feeRatePerKw = LightningMoney.Satoshis(15_000);
         var nodeOptions = Options.Create(new NodeOptions());
         var builder = new FundingTransactionBuilder(nodeOptions, new Mock<IServiceProvider>().Object,
                                                     new Mock<ILogger<FundingTransactionBuilder>>().Object);
@@ -99,6 +103,10 @@ public class Bolt3IntegrationTests
             PayToPubkeyHashTemplate.Instance.GenerateScriptSig(inputSignature, inputKey.PubKey);
 
         // Then
+        // fee = feerate_per_kw * weight / 1000, computed as in FundingTransactionModelFactory (msat = weight * sat/kw)
+        var weight = (ulong)(fundingTx.GetSerializedSize(TransactionOptions.None) * 3 + fundingTx.GetSerializedSize());
+        Assert.Equal(928UL, weight);
+        Assert.Equal(LightningMoney.Satoshis(13_920), LightningMoney.MilliSatoshis(weight * (ulong)feeRatePerKw.Satoshi));
         Assert.Equal(LightningMoney.Satoshis(fundingTx.Outputs[1].Value.Satoshi),
                      Bolt3AppendixBVectors.ExpectedChangeSatoshis);
         Assert.Equal(Bolt3AppendixBVectors.ExpectedTx.ToHex(), fundingTx.ToHex());
@@ -740,7 +748,9 @@ public class Bolt3IntegrationTests
     public void
         Given_Bolt3AnchorSpecifications_When_CreatingCommitmentTransactionWith7OutputsUntrimmed_Then_ShouldBeEqualToTestVector()
     {
-        AssertAnchorCommitmentTx(LightningMoney.MilliSatoshis(6_988_000_000), LightningMoney.MilliSatoshis(3_000_000_000),
+        // The spec's to_local_msat 6988000000 is after the 12000 sat of HTLCs; the factory subtracts them itself,
+        // so pass the pre-HTLC balance like the Appendix C tests do (Tx0ToLocalMsat).
+        AssertAnchorCommitmentTx(LightningMoney.MilliSatoshis(7_000_000_000), LightningMoney.MilliSatoshis(3_000_000_000),
                                  546, 644, true, Bolt3AppendixFVectors.ExpectedCommitTx2,
                                  Bolt3AppendixFVectors.NodeBSignature2);
     }
