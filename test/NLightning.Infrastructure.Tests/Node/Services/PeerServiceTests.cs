@@ -92,7 +92,7 @@ public class PeerServiceTests
     }
 
     [Fact]
-    public void Given_FirstMessageIsNotInit_When_MessageReceived_Then_WarningIsSentAndPeerIsDisconnected()
+    public void Given_FirstMessageIsNotInit_When_MessageReceived_Then_PeerIsDisconnectedWithoutSendingAnything()
     {
         // Arrange
         _ = CreatePeerService();
@@ -101,11 +101,13 @@ public class PeerServiceTests
         RaiseMessage(new PingMessage());
 
         // Assert
-        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.Is<WarningException>(e => e != null)), Times.Once);
+        // BOLT 1: nothing may be sent before the peer's init, and ConnectionException is local only (sends nothing)
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<ConnectionException>()), Times.Once);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<WarningException>()), Times.Never);
     }
 
     [Fact]
-    public void Given_InitializedPeer_When_StfuReceived_Then_ChannelWarningIsSentAndPeerStaysConnected()
+    public void Given_InitializedPeer_When_StfuReceived_Then_ChannelWarningIsSentAndPeerIsDisconnected()
     {
         // Arrange
         var channelIdBytes = new byte[32];
@@ -118,9 +120,10 @@ public class PeerServiceTests
         RaiseMessage(new StfuMessage(new StfuPayload(channelId, true)));
 
         // Assert
+        // The peer now considers the channel quiescing; only a disconnection ends that (BOLT 2), so we warn on the
+        // channel and disconnect, without failing the channel
         _peerCommunicationServiceMock.Verify(
-            x => x.SendWarningAsync(It.Is<ChannelWarningException>(e => e.ChannelId == channelId),
-                                    It.IsAny<CancellationToken>()), Times.Once);
-        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+            x => x.Disconnect(It.Is<ChannelWarningException>(e => e.ChannelId == channelId)), Times.Once);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<ErrorException>()), Times.Never);
     }
 }
