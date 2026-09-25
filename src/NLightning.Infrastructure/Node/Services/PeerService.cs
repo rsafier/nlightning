@@ -165,6 +165,17 @@ public sealed class PeerService : IPeerService
             OnAttentionMessageReceived?.Invoke(
                 this, new AttentionMessageEventArgs(warningMessageString, PeerPubKey, channelId));
         }
+        else if (message is StfuMessage stfuMessage)
+        {
+            // Quiescence (BOLT 2, option_quiesce) is not implemented, so we can never reply with our own stfu.
+            // Tell the peer with a channel-scoped warning instead of silently ignoring it; the connection stays up.
+            _logger.LogWarning("Received stfu for channel {channelId} from peer {peer}, but quiescence is not supported",
+                               stfuMessage.Payload.ChannelId, PeerPubKey);
+
+            _ = SendWarningAsync(new ChannelWarningException("Received stfu, but quiescence is not supported",
+                                                             stfuMessage.Payload.ChannelId,
+                                                             "Quiescence (stfu) is not supported"));
+        }
         else if (message is GossipMessage)
         {
             // BOLT 7 gossip is not implemented yet: accept the message so the connection stays up, and drop it

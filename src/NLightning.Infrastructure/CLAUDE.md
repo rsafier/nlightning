@@ -55,7 +55,7 @@ Build `-c Release` and `-c Release.Native`. CI (`.github/workflows/dotnet.wasm.y
 - `RemoteAddressTlvConverter`: Tor v3 decode reads 36 address bytes (`Value[1..37]`) instead of 35; type 5 (DNS) encode overwrites `customAddressBytes[1]` and decode expects length+3 instead of length+4. No tests exist. (`TlvStreamSerializer` now finds converters by runtime type, so it no longer throws for `RemoteAddressTlv`.)
 - `Tx*Validator` serial_id parity check only runs when `isInitiator` is true and rejects odd ids; whether `isInitiator` means local or remote is undocumented, so verify against BOLT 2 before relying on it. `TxAddInputValidator.Validate` is `async void`.
 - `SecretStorageService.GetBasepointPrivateKey` and `LoadFromIndex` throw `NotImplementedException`.
-- `PeerService.HandleMessage` silently drops anything that isn't an IChannelMessage, error or warning (gossip, onion_message, stfu).
+- `PeerService.HandleMessage` dispatches IChannelMessage/error/warning; BOLT 7 `GossipMessage`s (raw, unparsed) are dropped with a debug log; `stfu` gets a channel-scoped `warning` (quiescence unsupported) without disconnecting; anything else (e.g. onion_message) is silently dropped.
 - `Argon2Id.DeriveKeyMemLimit` is `1 << 16` bytes = 64 KiB (the comment says MiB). Changing it breaks existing key files.
 - `new Sha256()` allocates state via `ICryptoProvider.MemoryAlloc` (sodium_malloc on the libsodium backend) on every instance. Reuse instances in hot loops.
 

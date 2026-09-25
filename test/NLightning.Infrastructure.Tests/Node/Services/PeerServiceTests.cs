@@ -2,7 +2,9 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Infrastructure.Tests.Node.Services;
 
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Exceptions;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
@@ -60,6 +62,26 @@ public class PeerServiceTests
         // Assert
         Assert.False(channelMessageRaised);
         Assert.False(attentionMessageRaised);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_InitializedPeer_When_StfuReceived_Then_ChannelWarningIsSentAndPeerStaysConnected()
+    {
+        // Arrange
+        var channelIdBytes = new byte[32];
+        channelIdBytes[31] = 0x01;
+        var channelId = new ChannelId(channelIdBytes);
+        _ = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+
+        // Act
+        RaiseMessage(new StfuMessage(new StfuPayload(channelId, true)));
+
+        // Assert
+        _peerCommunicationServiceMock.Verify(
+            x => x.SendWarningAsync(It.Is<ChannelWarningException>(e => e.ChannelId == channelId),
+                                    It.IsAny<CancellationToken>()), Times.Once);
         _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 }
