@@ -159,6 +159,58 @@ public sealed class FailureMessage
     }
 
     /// <summary>
+    /// True when <see cref="Code"/> carries a <c>u16 len || channel_update</c> field (the UPDATE codes defined in
+    /// BOLT 4: <c>temporary_channel_failure</c>, <c>amount_below_minimum</c>, <c>fee_insufficient</c>,
+    /// <c>incorrect_cltv_expiry</c>, <c>expiry_too_soon</c> and <c>channel_disabled</c>).
+    /// </summary>
+    public bool HasChannelUpdateField => GetChannelUpdatePrefixLength(Code) >= 0;
+
+    /// <summary>
+    /// Returns a copy of this UPDATE failure whose <c>channel_update</c> field is replaced by
+    /// <paramref name="channelUpdate"/> (the fixed fields before it and the TLV extension are kept).
+    /// </summary>
+    /// <remarks>
+    /// Pass the bytes exactly as they go on the wire, e.g. from
+    /// <see cref="Factories.FailureChannelUpdateFactory.Encode"/>. An empty span writes <c>len = 0</c>, which BOLT 4
+    /// now recommends (a <c>channel_update</c> in an onion error is a fingerprinting vector).
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">If <see cref="Code"/> has no channel_update field.</exception>
+    /// <exception cref="ArgumentException">If <paramref name="channelUpdate"/> is longer than 65535 bytes.</exception>
+    public FailureMessage WithChannelUpdate(ReadOnlySpan<byte> channelUpdate)
+    {
+        var prefixLength = GetChannelUpdatePrefixLength(Code);
+        if (prefixLength < 0)
+            throw new InvalidOperationException(
+                $"Failure code 0x{(ushort)Code:x4} ({Code}) does not carry a channel_update.");
+
+        var updated = CreateWithChannelUpdate(Code, Data.Span[..prefixLength], channelUpdate);
+        return new FailureMessage(Code, updated.Data, Extension);
+    }
+
+    /// <summary>
+    /// Builds the failure an upstream node returns (in <c>update_fail_htlc</c>) when its outgoing HTLC was failed with
+    /// <c>update_fail_malformed_htlc</c>: BOLT 2 says to use the <c>failure_code</c> given and set the data to
+    /// <c>sha256_of_onion</c>.
+    /// </summary>
+    /// <param name="failureCode">The <c>failure_code</c> of the <c>update_fail_malformed_htlc</c>.</param>
+    /// <param name="sha256OfOnion">The <c>sha256_of_onion</c> of the <c>update_fail_malformed_htlc</c>.</param>
+    /// <exception cref="ArgumentException">
+    /// If the BADONION bit of <paramref name="failureCode"/> is not set (BOLT 2: the receiver MUST send a
+    /// <c>warning</c> and close the connection, or fail the channel), or <paramref name="sha256OfOnion"/> is not 32
+    /// bytes.
+    /// </exception>
+    public static FailureMessage FromMalformed(FailureCode failureCode, ReadOnlySpan<byte> sha256OfOnion)
+    {
+        if (((ushort)failureCode & (ushort)FailureCodeFlags.BadOnion) == 0)
+            throw new ArgumentException(
+                $"update_fail_malformed_htlc failure_code 0x{(ushort)failureCode:x4} does not have the BADONION bit.",
+                nameof(failureCode));
+
+        // Unknown BADONION codes are carried through too: their data is the sha256_of_onion as well
+        return CreateBadOnion(failureCode, sha256OfOnion);
+    }
+
+    /// <summary>
     /// Gets the length of the code-specific data at the start of <paramref name="dataAndTail"/>, which may be followed
     /// by a TLV stream or other trailing bytes.
     /// </summary>

@@ -198,6 +198,51 @@ public class FailureOnionServiceTests
                                              new byte[OnionConstants.MaxErrorPacketLength - 31]));
     }
 
+    [Fact]
+    public void Given_MalformedFromDownstream_When_Converting_Then_OriginAttributesConvertingHopWithSha256OfOnion()
+    {
+        // Arrange: hop 2 got update_fail_malformed_htlc from hop 3 and converts it with its incoming secret
+        var route = CreateRoute(4);
+        var sha256OfOnion = RandomNumberGenerator.GetBytes(32);
+
+        // Act
+        var packet = _service.CreateErrorPacketFromMalformed(route[2], FailureCode.InvalidOnionHmac, sha256OfOnion);
+        packet = _service.WrapErrorPacket(route[1], packet);
+        packet = _service.WrapErrorPacket(route[0], packet);
+        var decrypted = _service.DecryptErrorPacket(route, packet);
+
+        // Assert
+        Assert.Equal(292, packet.Length);
+        Assert.NotNull(decrypted);
+        Assert.Equal(2, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.InvalidOnionHmac, decrypted.Code);
+        Assert.Equal("c005" + Convert.ToHexStringLower(sha256OfOnion),
+                     Convert.ToHexStringLower(decrypted.RawMessage.Span));
+    }
+
+    [Fact]
+    public void Given_MalformedAndCreate_When_Comparing_Then_PacketsAreIdentical()
+    {
+        // Arrange
+        var secret = CreateRoute(1)[0];
+        var sha256OfOnion = RandomNumberGenerator.GetBytes(32);
+
+        // Act
+        var converted = _service.CreateErrorPacketFromMalformed(secret, FailureCode.InvalidOnionKey, sha256OfOnion);
+        var created = _service.CreateErrorPacket(secret, FailureMessage.InvalidOnionKey(sha256OfOnion));
+
+        // Assert
+        Assert.Equal(created, converted);
+    }
+
+    [Fact]
+    public void Given_MalformedWithoutBadOnionBit_When_Converting_Then_Throws()
+    {
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => _service.CreateErrorPacketFromMalformed(
+                                             CreateRoute(1)[0], FailureCode.PermanentChannelFailure, new byte[32]));
+    }
+
     private static List<Secret> CreateRoute(int length)
     {
         return Enumerable.Range(0, length).Select(_ => new Secret(RandomNumberGenerator.GetBytes(32))).ToList();
