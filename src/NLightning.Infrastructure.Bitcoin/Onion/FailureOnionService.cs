@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Bitcoin.Onion;
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Onion.Constants;
+using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Serialization.Interfaces;
@@ -45,6 +46,15 @@ internal sealed class FailureOnionService : IFailureOnionService
 
         var errorPayload = _failureMessageSerializer.SerializeErrorPayload(message, minFailurePadLength);
         return CreateErrorPacket(sharedSecret, errorPayload);
+    }
+
+    /// <inheritdoc />
+    public byte[] CreateErrorPacketFromMalformed(Secret incomingSharedSecret, FailureCode failureCode,
+                                                 ReadOnlySpan<byte> sha256OfOnion,
+                                                 int minFailurePadLength = OnionConstants.MinFailurePadLength)
+    {
+        return CreateErrorPacket(incomingSharedSecret, FailureMessage.FromMalformed(failureCode, sha256OfOnion),
+                                 minFailurePadLength);
     }
 
     /// <summary>

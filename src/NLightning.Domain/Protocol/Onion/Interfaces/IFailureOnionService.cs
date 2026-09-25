@@ -2,6 +2,7 @@ namespace NLightning.Domain.Protocol.Onion.Interfaces;
 
 using Constants;
 using Crypto.ValueObjects;
+using Enums;
 using Models;
 
 /// <summary>
@@ -30,6 +31,28 @@ public interface IFailureOnionService
     /// </exception>
     byte[] CreateErrorPacket(Secret sharedSecret, FailureMessage message,
                              int minFailurePadLength = OnionConstants.MinFailurePadLength);
+
+    /// <summary>
+    /// Converts an <c>update_fail_malformed_htlc</c> received for an outgoing HTLC into the return packet for the
+    /// <c>update_fail_htlc</c> sent upstream (BOLT 2: use the <c>failure_code</c> given and set the data to
+    /// <c>sha256_of_onion</c>). This node acts as the erring node: the packet is authenticated with its <c>um</c> key
+    /// and obfuscated with its <c>ammag</c> key, both from the incoming HTLC's shared secret.
+    /// </summary>
+    /// <remarks>
+    /// Check the message first with <see cref="Validators.MalformedHtlcValidator"/>.
+    /// </remarks>
+    /// <param name="incomingSharedSecret">The shared secret of the incoming onion this HTLC was forwarded for.</param>
+    /// <param name="failureCode">The <c>failure_code</c> of the <c>update_fail_malformed_htlc</c>.</param>
+    /// <param name="sha256OfOnion">The <c>sha256_of_onion</c> of the <c>update_fail_malformed_htlc</c>.</param>
+    /// <param name="minFailurePadLength">As for <see cref="CreateErrorPacket"/>.</param>
+    /// <returns>The packet to put in <c>update_fail_htlc.reason</c>.</returns>
+    /// <exception cref="ArgumentException">
+    /// If the BADONION bit of <paramref name="failureCode"/> is not set, <paramref name="sha256OfOnion"/> is not 32
+    /// bytes, or as for <see cref="CreateErrorPacket"/>.
+    /// </exception>
+    byte[] CreateErrorPacketFromMalformed(Secret incomingSharedSecret, FailureCode failureCode,
+                                         ReadOnlySpan<byte> sha256OfOnion,
+                                         int minFailurePadLength = OnionConstants.MinFailurePadLength);
 
     /// <summary>
     /// Obfuscates a return packet received from downstream with this hop's <c>ammag</c> key, before return-forwarding
