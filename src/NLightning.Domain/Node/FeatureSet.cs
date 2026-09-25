@@ -240,6 +240,24 @@ public class FeatureSet
     }
 
     /// <summary>
+    /// Gets the positions of every set bit, lowest first.
+    /// </summary>
+    public IReadOnlyList<int> GetSetBits()
+    {
+        var bits = new List<int>();
+        for (var i = 0; i < FeatureFlags.Length; i++)
+            if (FeatureFlags.Get(i))
+                bits.Add(i);
+
+        return bits;
+    }
+
+    /// <summary>
+    /// Checks if both sets have exactly the same bits set, whatever the length of their bitmaps.
+    /// </summary>
+    public bool HasSameBits(FeatureSet other) => GetSetBits().SequenceEqual(other.GetSetBits());
+
+    /// <summary>
     /// Checks if the option_anchors feature is set.
     /// </summary>
     /// <returns>true if one of the features is set, false otherwise.</returns>
@@ -372,8 +390,9 @@ public class FeatureSet
         // Copy bits as bytes
         FeatureFlags.CopyTo(bytes, 0);
 
-        // Calculate last valid byte
-        var lastValidByte = (lastIndexOfOne + 7) / 8;
+        // Number of bytes up to and including the one holding the last set bit ((i + 7) / 8 dropped a last bit at a
+        // multiple of 8, e.g. zero_fee_commitments' bit 40)
+        var lastValidByte = lastIndexOfOne / 8 + 1;
 
         return bytes[..lastValidByte];
     }

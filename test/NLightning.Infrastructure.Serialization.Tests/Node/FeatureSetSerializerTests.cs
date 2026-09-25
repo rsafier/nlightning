@@ -47,7 +47,7 @@ public class FeatureSetSerializerTests
     [InlineData(Feature.OptionSimpleClose, false, 8)]
     [InlineData(Feature.OptionSimpleClose, true, 8)]
     [InlineData(Feature.OptionPaymentMetadata, false, 7)]
-    [InlineData(Feature.OptionPaymentMetadata, true, 6)]
+    [InlineData(Feature.OptionPaymentMetadata, true, 7)] // bit 48 needs a 7th byte
     [InlineData(Feature.OptionScidAlias, false, 6)]
     [InlineData(Feature.OptionScidAlias, true, 6)]
     public async Task Given_Features_When_SerializeWithoutLength_Then_LengthIsKnown(
@@ -140,8 +140,8 @@ public class FeatureSetSerializerTests
         await _featureSetSerializer.SerializeAsync(features, stream, true);
         var bytes = stream.ToArray();
 
-        // Assert
-        Assert.Equal(2, bytes.Length);
+        // Assert: a 1-byte length and bit 0 (the old GetBytes dropped a highest bit at a multiple of 8)
+        Assert.Equal([0, 1, 1], bytes);
     }
 
     #endregion
