@@ -4,7 +4,7 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 
 ## Layout
 - `NLightning.Domain.Tests`: value objects, Money, FeatureSet (BOLT 9), TLV/BigSize models, payloads, CommitmentNumber, CommitmentTransactionModelFactory, BitReader/Writer.
-- `NLightning.Application.Tests`: channel handlers (OpenChannel1, FundingCreated) and PeerManager. Moq-heavy.
+- `NLightning.Application.Tests`: channel handlers (OpenChannel1, AcceptChannel1, FundingCreated, FundingSigned) and PeerManager. Moq-heavy.
 - `NLightning.Infrastructure.Tests`: crypto providers (`#if CRYPTO_LIBSODIUM` / `#if CRYPTO_NATIVE`), transport (BOLT 8 states/services), TLV converters, MessageService, PeerAddress.
 - `NLightning.Infrastructure.Bitcoin.Tests`: builders, output comparer, ECDH, signer, BlockchainMonitor. Fully commented out (0 active tests): `Transactions/FundingTransactionTests.cs`, `Transactions/CommitmentTransactionTests.cs`, `Outputs/{Base,Change,Funding,ToRemote}OutputTests.cs`.
 - `NLightning.Infrastructure.Serialization.Tests`: `Messages/*MessageTests.cs` (most wire messages, not all; e.g. no OpenChannel1/AcceptChannel1/FundingCreated tests, and AcceptChannel2 is `AcceptChannel2MessageTypeSerializerTests.cs`). `Helpers/SerializerHelper.cs` wires the real factories. `Vectors/BigSize.txt` holds the BOLT 1 vectors.
