@@ -105,14 +105,20 @@ public class ChannelEntity
     public required byte Version { get; set; }
 
     /// <summary>
-    /// The current balance of the local node in satoshis.
+    /// The current (gross) balance of the local node in millisatoshis (NL-191: whole satoshis lost the msat part).
     /// </summary>
-    public required decimal LocalBalanceSatoshis { get; set; }
+    public required long LocalBalanceMsat { get; set; }
 
     /// <summary>
-    /// The current balance of the remote node in satoshis.
+    /// The current (gross) balance of the remote node in millisatoshis.
     /// </summary>
-    public required decimal RemoteBalanceSatoshis { get; set; }
+    public required long RemoteBalanceMsat { get; set; }
+
+    /// <summary>
+    /// The real short channel id (block height, tx index, output index of the funding output), once the funding
+    /// transaction is confirmed (NL-225).
+    /// </summary>
+    public ShortChannelId? ShortChannelId { get; set; }
 
     /// <summary>
     /// The scid alias the peer asked us to use for this channel (BOLT 2 channel_ready short_channel_id TLV), if any.

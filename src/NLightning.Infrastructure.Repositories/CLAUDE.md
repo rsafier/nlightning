@@ -28,7 +28,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 
 ## Conventions
 - Most files: System.*/Microsoft.* usings, then the file-scoped namespace, then relative `using Domain.X;` / `using Persistence.X;` below it. Exceptions exist (`Database/Channel/HtlcDbRepository.cs` uses fully qualified `using NLightning.*;` above the namespace); follow the majority style in new files.
-- Channel/HTLC enums (`State`, `Version`, `Direction`) are stored as `byte` on entities; `UtxoEntity.AddressType` is the enum type itself. Money types vary: `FundingAmountSatoshis` and `UtxoEntity.AmountSats` are `long`, `HtlcEntity.AmountMsat` is `ulong`, `ChannelEntity.Local/RemoteBalanceSatoshis` are `decimal`. Check the entity before mapping.
+- Channel/HTLC enums (`State`, `Version`, `Direction`) are stored as `byte` on entities; `UtxoEntity.AddressType` is the enum type itself. Money types vary: `FundingAmountSatoshis` and `UtxoEntity.AmountSats` are `long`, `HtlcEntity.AmountMsat` is `ulong`, `ChannelEntity.Local/RemoteBalanceMsat` are `long` msat (NL-191). `ChannelModel.ShortChannelId` maps to a nullable column: a default (unconfirmed) scid has no bytes and is written as null. Check the entity before mapping.
 - Writes build a fresh detached entity from the Domain model, then call Insert or Update. There are no explicit transactions.
 
 ## Tests
