@@ -48,12 +48,11 @@ dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'         
 ```
 
 - **Run the node / CLI:** `dotnet run --project src/NLightning.Daemon -- --network regtest` and `dotnet run --project src/NLightning.Client -- --network regtest info`. The first daemon run writes `~/.nltg/<network>/appsettings.json` (`src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs`); set the `Bitcoin` RPC/ZMQ settings there, and `Database:RunMigrations=true` (default `false`) to create the schema.
-- The build prints about 590 warnings. Nearly all are NuGet NU1902/NU1903 advisories. For real code warnings, `grep 'warning CS'` (about 20 nullability warnings).
+- The Release build prints about 10 warnings, all nullability (`grep 'warning CS'`). NuGet vulnerability advisories (NU1902/NU1903) are fixed or pinned (NL-170); a new one means a package needs a bump.
 - **Single test (VSTest projects):** `dotnet test test/NLightning.Bolt11.Tests/NLightning.Bolt11.Tests.csproj --no-build --filter "FullyQualifiedName=<Ns.Class.Method>"`. `~` (contains), `!~` and `&` also work.
-- **Application.Tests and Daemon.Tests** have no `xunit.runner.visualstudio`, so `dotnet test` finds **0 tests** and CI silently skips them (47 tests). Run them with the xunit v3 runner:
+- **Application.Tests and Daemon.Tests** run under `dotnet test` like the other test projects (NL-167). The xunit v3 runner also works:
   `dotnet run --project test/NLightning.Application.Tests -- -class NLightning.Application.Tests.Node.Managers.PeerManagerTests`
   `dotnet run --project test/NLightning.Daemon.Tests -- -method '*FeeService*'` (`-namespace` also works). A filter that matches nothing exits quietly with `Total: 0`, so check the count.
-- **Known environmental failure:** `PeerAddressTests.Given_HttpAddress_When_ConstructingPeerAddress_Then_HostAndPortAreCorrectlyResolved` needs live DNS (`dnstest.nlightn.ing`). Exclude it with `--filter "FullyQualifiedName!~Given_HttpAddress_When_ConstructingPeerAddress"`.
 - **Docker tests** (`NLightning.Integration.Tests.Docker.*`: AbcNetworkTests, ChannelOpeningFlowTests) start bitcoind + 3 LND through LNUnit and build `test/Docker/custom_lnd`. Always pass `!~Docker` unless you mean to run them. They force-remove containers named miner/alice/bob/carol.
 - **Wasm** (`Release.Wasm`, used only by `test/BlazorTests/*`) runs `npm install` with linux-x64-pinned esbuild/rollup, so it **fails on macOS** (EBADPLATFORM) and builds only in CI on ubuntu. The Debug/Release sln configs don't build the Blazor projects. CI: `cd test/BlazorTests/NLightning.Blazor.Tests && dotnet build -c Release.Wasm && pwsh bin/Release.Wasm/net10.0/playwright.ps1 install chromium && dotnet test --no-build -c Release.Wasm`.
 - Crypto is chosen at **compile time**: `CRYPTO_LIBSODIUM` (Debug/Release), `CRYPTO_NATIVE` (*.Native / AOT), `CRYPTO_JS` (*.Wasm), all in `src/NLightning.Infrastructure/NLightning.Infrastructure.csproj`. If you touch `src/NLightning.Infrastructure/Crypto`, build both Release and Release.Native.
@@ -111,7 +110,7 @@ Commit the migration, Designer and Snapshot files for all three `NLightning.Infr
 - `ChannelDbRepository.MapEntityToDomain` compares `byte` fields with `.Equals(enum)`, which is always false, so offered/fulfilled HTLCs don't reload. It also rebuilds the funding output with the local funding key twice.
 - `TransportService.WriteMessageAsync` encrypts *before* taking the write lock, so concurrent senders can desync nonces. The read loop uses `ReadAsync`, not `ReadExactlyAsync`, so large messages can drop connections.
 - `ChannelManager.ForgetStaleChannels` has no state filter and relies on `FundingCreatedAtBlockHeight` defaulting to 0. Treat it as suspect.
-- `NLightning.sln` config mappings are maintained by hand. Several newer projects map *.Native/*.Wasm to Debug. `test/NLightning.Node.Tests` is an empty orphan. `scripts/testwithcoverage.sh` and `.vscode/launch.json` are stale.
+- `NLightning.sln` config mappings are maintained by hand. When you add a project or configuration, run `python3 scripts/check-sln-configs.py` (a CI step); it also fails when a `*.Tests` project lacks `IsTestProject` or `xunit.runner.visualstudio`.
 - `MessagePackSerializer.DefaultOptions = NLightningMessagePackOptions.Options` must be set on both IPC ends. Any IPC wire change also needs a new `ClientCommand` value (never renumber existing ones) and an `IIpcCommandHandler` registered in `NodeServiceExtensions`.
 
 ## Status & known gaps
