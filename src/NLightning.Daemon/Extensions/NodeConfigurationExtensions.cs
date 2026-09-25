@@ -205,6 +205,7 @@ public static class NodeConfigurationExtensions
                      "0.0.0.0:9735"
                    ],
                    "Features": {
+                     "AllowExperimentalFeatures": false
                    }
                  },
                  "FeeEstimation": {

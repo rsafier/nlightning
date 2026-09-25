@@ -185,15 +185,66 @@ public class ChannelOpenValidatorTests
         Assert.Contains("too small to cover fees", exception.Message);
     }
 
+    [Theory]
+    [InlineData(FeatureSupport.No)]
+    [InlineData(FeatureSupport.Optional)]
+    public void Given_FundingJustBelowLargeChannelAmount_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        FeatureSupport largeChannels)
+    {
+        // Arrange
+        // BOLT 2: without option_support_large_channel, funding_satoshis MUST be less than 2^24
+        var fundingAmount = LightningMoney.Satoshis(16_777_215);
+        var parameters = CreateParameters(fundingAmount, null, FeatureSupport.No, largeChannels);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_LargeFundingAndWumboNotNegotiated_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange
+        var parameters = CreateParameters(ChannelConstants.LargeChannelAmount, null, FeatureSupport.No,
+                                          FeatureSupport.No);
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("large channels", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.Compulsory)]
+    public void Given_LargeFundingAndWumboNegotiated_When_PerformingMandatoryChecks_Then_DoesNotThrow(
+        FeatureSupport largeChannels)
+    {
+        // Arrange
+        var parameters = CreateParameters(LightningMoney.Satoshis(50_000_000), null, FeatureSupport.No,
+                                          largeChannels);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
     private static ChannelOpenMandatoryValidationParameters CreateParameters(
-        LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors)
+        LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors,
+        FeatureSupport largeChannels = FeatureSupport.Optional)
     {
         return new ChannelOpenMandatoryValidationParameters
         {
             // option_static_remotekey (bit 12) compulsory
             ChannelTypeTlv = new ChannelTypeTlv([0x10, 0x00]),
             CurrentFeeRatePerKw = s_feeRatePerKw,
-            NegotiatedFeatures = new FeatureOptions { OptionAnchors = optionAnchors },
+            NegotiatedFeatures = new FeatureOptions { OptionAnchors = optionAnchors, LargeChannels = largeChannels },
             FundingAmount = fundingAmount,
             PushAmount = pushAmount,
             ToSelfDelay = 144,

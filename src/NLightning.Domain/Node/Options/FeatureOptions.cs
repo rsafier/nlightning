@@ -12,6 +12,36 @@ using Protocol.Tlv;
 public class FeatureOptions
 {
     /// <summary>
+    /// Features this node does not implement yet. They are never advertised (and a configuration that enables them
+    /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    /// <remarks>
+    /// Advertising a feature makes peers act on it: anchors need BOLT 5 CPFP / fee bumping (BOLT 2 plan N11), quiesce
+    /// needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
+    /// attribution_data error attribution (onion M3b), simple_close the closing_complete/closing_sig flow, basic_mpp
+    /// final-hop HTLC sets (onion M4), onion_messages the onion_message handler and provide_storage peer_storage.
+    /// Remove a feature from this set when it is implemented.
+    /// </remarks>
+    public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
+    {
+        Feature.OptionAnchors,
+        Feature.OptionQuiesce,
+        Feature.OptionDualFund,
+        Feature.OptionRouteBlinding,
+        Feature.OptionAttributionData,
+        Feature.OptionSimpleClose,
+        Feature.BasicMpp,
+        Feature.OptionOnionMessages,
+        Feature.OptionProvideStorage
+    };
+
+    /// <summary>
+    /// Allow advertising the <see cref="ExperimentalFeatures"/> (not implemented yet). Off by default; only turn it on
+    /// for development and interop testing, never with real funds.
+    /// </summary>
+    public bool AllowExperimentalFeatures { get; set; }
+
+    /// <summary>
     /// option_data_loss_protect.
     /// </summary>
     /// <remarks>
@@ -36,7 +66,8 @@ public class FeatureOptions
     /// </summary>
     /// <remarks>
     /// Kept Optional even though BOLT 7 gossip is not implemented: without it, peers dump the full gossip map on us
-    /// instead of waiting for a gossip_timestamp_filter. Incoming gossip must be known-and-ignored (NL-100).
+    /// instead of waiting for a gossip_timestamp_filter. Incoming gossip must be known-and-ignored (NL-100), and
+    /// gossip queries are answered with "no channels known" (see PeerService).
     /// </remarks>
     public FeatureSupport GossipQueries { get; set; } = FeatureSupport.Optional;
 
@@ -46,7 +77,8 @@ public class FeatureOptions
     /// Enable expanded gossip queries.
     /// </summary>
     /// <remarks>
-    /// Defaults to No: gossip queries are not answered (BOLT 7 not implemented).
+    /// Defaults to No: we keep no gossip, so query_option / query_flags are parsed but never answered with timestamps
+    /// or checksums.
     /// </remarks>
     public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.No;
 
@@ -70,6 +102,10 @@ public class FeatureOptions
     /// <summary>
     /// Enable zero fee anchor tx.
     /// </summary>
+    /// <remarks>
+    /// Experimental (see <see cref="ExperimentalFeatures"/>): anchor channels are unsafe without BOLT 5 CPFP fee
+    /// bumping (BOLT 2 plan N11).
+    /// </remarks>
     public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.No;
 
     /// <summary>
@@ -183,7 +219,9 @@ public class FeatureOptions
     /// <remarks>
     /// BOLT 9 requires every advertised feature to have its dependencies set. <see cref="FeatureSet.SetFeature(Feature, bool, bool)"/>
     /// would silently turn on a dependency that was configured as <see cref="FeatureSupport.No"/>, so reject that
-    /// combination up front instead.
+    /// combination up front instead. Enabling one of the <see cref="ExperimentalFeatures"/> without
+    /// <see cref="AllowExperimentalFeatures"/> is also an error, so the node refuses to start instead of silently
+    /// dropping the setting.
     /// </remarks>
     public IReadOnlyList<string> GetValidationErrors()
     {
@@ -193,6 +231,12 @@ public class FeatureOptions
         {
             if (support == FeatureSupport.No)
                 continue;
+
+            if (!AllowExperimentalFeatures && ExperimentalFeatures.Contains(feature))
+            {
+                errors.Add($"Feature {feature} is not implemented yet; set {nameof(AllowExperimentalFeatures)} to "
+                         + "advertise it anyway");
+            }
 
             foreach (var dependency in FeatureSet.GetDependencies(feature))
             {
@@ -233,6 +277,17 @@ public class FeatureOptions
         { Feature.OptionSimpleClose, OptionSimpleClose },
     };
 
+    /// <summary>
+    /// Whether a feature configured with <paramref name="support"/> goes into our feature bits: never when it is
+    /// disabled, and never for an <see cref="ExperimentalFeatures">experimental</see> one unless
+    /// <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    private bool IsAdvertised(Feature feature, FeatureSupport support)
+    {
+        return support != FeatureSupport.No
+            && (AllowExperimentalFeatures || !ExperimentalFeatures.Contains(feature));
+    }
+
     private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();
@@ -259,7 +314,7 @@ public class FeatureOptions
             features.SetFeature(Feature.GossipQueriesEx, ExpandedGossipQueries == FeatureSupport.Compulsory);
         }
 
-        if (BasicMpp != FeatureSupport.No)
+        if (IsAdvertised(Feature.BasicMpp, BasicMpp))
         {
             features.SetFeature(Feature.BasicMpp, BasicMpp == FeatureSupport.Compulsory);
         }
@@ -269,12 +324,12 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionSupportLargeChannel, LargeChannels == FeatureSupport.Compulsory);
         }
 
-        if (OptionAnchors != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAnchors, OptionAnchors))
         {
             features.SetFeature(Feature.OptionAnchors, OptionAnchors == FeatureSupport.Compulsory);
         }
 
-        if (OptionRouteBlinding != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionRouteBlinding, OptionRouteBlinding))
         {
             features.SetFeature(Feature.OptionRouteBlinding, OptionRouteBlinding == FeatureSupport.Compulsory);
         }
@@ -284,27 +339,27 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown == FeatureSupport.Compulsory);
         }
 
-        if (DualFund != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionDualFund, DualFund))
         {
             features.SetFeature(Feature.OptionDualFund, DualFund == FeatureSupport.Compulsory);
         }
 
-        if (OptionQuiesce != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionQuiesce, OptionQuiesce))
         {
             features.SetFeature(Feature.OptionQuiesce, OptionQuiesce == FeatureSupport.Compulsory);
         }
 
-        if (OptionAttributionData != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAttributionData, OptionAttributionData))
         {
             features.SetFeature(Feature.OptionAttributionData, OptionAttributionData == FeatureSupport.Compulsory);
         }
 
-        if (OptionOnionMessages != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionOnionMessages, OptionOnionMessages))
         {
             features.SetFeature(Feature.OptionOnionMessages, OptionOnionMessages == FeatureSupport.Compulsory);
         }
 
-        if (OptionProvideStorage != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionProvideStorage, OptionProvideStorage))
         {
             features.SetFeature(Feature.OptionProvideStorage, OptionProvideStorage == FeatureSupport.Compulsory);
         }
@@ -329,7 +384,7 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionZeroconf, ZeroConf == FeatureSupport.Compulsory);
         }
 
-        if (OptionSimpleClose != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionSimpleClose, OptionSimpleClose))
         {
             features.SetFeature(Feature.OptionSimpleClose, OptionSimpleClose == FeatureSupport.Compulsory);
         }
@@ -372,6 +427,8 @@ public class FeatureOptions
     {
         var options = new FeatureOptions
         {
+            // These options describe what was already negotiated, not what we advertise, so nothing is gated here
+            AllowExperimentalFeatures = true,
             OptionDataLossProtect = featureSet.IsFeatureSet(Feature.OptionDataLossProtect, true)
                                         ? FeatureSupport.Compulsory
                                         : featureSet.IsFeatureSet(Feature.OptionDataLossProtect, false)
