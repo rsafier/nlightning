@@ -34,6 +34,14 @@ public class PeerManagerTests
 {
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>Sorts below <see cref="_compactPubKey"/> (02 3d.. &lt; 02 8d..).</summary>
+    private static readonly CompactPubKey s_lowerNodeKey =
+        new PubKey("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").ToBytes();
+
+    /// <summary>Sorts above <see cref="_compactPubKey"/> (03.. &gt; 02..).</summary>
+    private static readonly CompactPubKey s_higherNodeKey =
+        new PubKey("034f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa").ToBytes();
+
     private readonly CompactPubKey _compactPubKey =
         new PubKey("028d7500dd4c12685d1f568b4c2b5048e8534b873319f3a8daa612b469132ec7f7").ToBytes();
 
@@ -47,6 +55,8 @@ public class PeerManagerTests
     private readonly FakeServiceProvider _fakeServiceProvider = new();
     private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
     private readonly Mock<IPeerDbRepository> _mockPeerDbRepository = new();
+    private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
+    private readonly Mock<ISecureKeyManager> _mockSecureKeyManager = new();
 
     private const string ExpectedHost = "127.0.0.1";
     private const int ExpectedPort = 9735;
@@ -80,6 +90,10 @@ public class PeerManagerTests
         _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync(() => []);
         _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>())).Returns(Task.CompletedTask);
         _fakeServiceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
+
+        // No active channels unless a test says so; our node key is lower than the peer's by default
+        _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+        _mockSecureKeyManager.Setup(k => k.GetNodePubKey()).Returns(s_lowerNodeKey);
     }
 
     [Fact]
@@ -849,14 +863,383 @@ public class PeerManagerTests
             Times.Once);
     }
 
+    [Fact]
+    public async Task Given_PeerDisconnects_When_MessagesAreStillQueued_Then_TheyAreDropped()
+    {
+        // Arrange (a connection that is gone must not keep changing channel state)
+        await CreatePeerManagerWithPeerAsync();
+        var firstMessage = CreateInboundMessage();
+        var queuedMessage = CreateInboundMessage();
+        var (firstEntered, gate) = BlockOn(firstMessage);
+
+        // Act
+        RaiseChannelMessage(firstMessage);
+        await firstEntered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        RaiseChannelMessage(queuedMessage);
+        RaiseDisconnect(_mockPeerService);
+        gate.SetResult([]);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockChannelManager.Verify(cm => cm.HandleChannelMessageAsync(queuedMessage, It.IsAny<FeatureOptions>(),
+                                                                      It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PeerReconnects_When_OldConnectionStillHandlesAMessage_Then_NewMessagesWaitForIt()
+    {
+        // Arrange (plan D2: the old connection's last message is handled before anything of the new connection,
+        // e.g. before its channel_reestablish)
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var oldMessage = CreateInboundMessage();
+        var newMessage = CreateInboundMessage();
+        var order = new List<IChannelMessage>();
+        var gate = new TaskCompletionSource<IReadOnlyList<IChannelMessage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var newHandled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(oldMessage, It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .Returns(() =>
+            {
+                lock (order)
+                    order.Add(oldMessage);
+                oldEntered.SetResult();
+                return gate.Task;
+            });
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(newMessage, It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .Returns(() =>
+            {
+                lock (order)
+                    order.Add(newMessage);
+                newHandled.SetResult();
+                return Task.FromResult<IReadOnlyList<IChannelMessage>>([]);
+            });
+        RaiseChannelMessage(oldMessage);
+        await oldEntered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        RaiseDisconnect(_mockPeerService);
+        var newPeerService = CreateMockPeerService();
+        SetupInboundPeerService(newPeerService);
+
+        // Act
+        RaiseInboundConnection();
+        RaiseChannelMessage(newMessage, newPeerService);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        var newStartedEarly = newHandled.Task.IsCompleted;
+        gate.SetResult([]);
+        await newHandled.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+        Assert.False(newStartedEarly);
+        Assert.Equal(new[] { oldMessage, newMessage }, order);
+    }
+
+    [Fact]
+    public async Task Given_OldConnectionReplaced_When_ItsHandlerRaisesAReply_Then_TheReplyIsNotSentOnTheNewConnection()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        RaiseInboundConnection();
+        var oldMessage = CreateInboundMessage();
+        var reply = CreateMessages(1)[0];
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(oldMessage, It.IsAny<FeatureOptions>(),
+                                                     It.IsAny<CompactPubKey>()))
+           .Returns(async () =>
+            {
+                entered.SetResult();
+                await gate.Task;
+                RaiseResponse(reply);
+                handled.SetResult();
+                return (IReadOnlyList<IChannelMessage>)[reply];
+            });
+        RaiseChannelMessage(oldMessage);
+        await entered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        var newPeerService = CreateMockPeerService();
+        SetupInboundPeerService(newPeerService);
+
+        // Act
+        RaiseInboundConnection();
+        gate.SetResult();
+        await handled.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        newPeerService.Verify(p => p.SendMessageAsync(reply), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PeerConnectedInbound_When_ItConnectsAgain_Then_TheNewConnectionReplacesTheOldOne()
+    {
+        // Arrange (LND/CLN behavior: a restarted peer's new connection wins over our half-dead one)
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        RaiseInboundConnection();
+        var newPeerService = CreateMockPeerService();
+        SetupInboundPeerService(newPeerService);
+        var reply = CreateMessages(1)[0];
+
+        // Act
+        RaiseInboundConnection();
+        RaiseResponse(reply);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+        newPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+        Assert.True(peerManager.GetPeer(_compactPubKey)!.TryGetPeerService(out var current));
+        Assert.Same(newPeerService.Object, current);
+        newPeerService.Verify(p => p.SendMessageAsync(reply), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_SimultaneousConnect_When_PeerConnectsInbound_Then_TheLowerPubKeysConnectionIsKept(
+        bool ourKeyIsLower)
+    {
+        // Arrange (LND's tie-break: both ends keep the connection initiated by the node with the lower pubkey)
+        _mockSecureKeyManager.Setup(k => k.GetNodePubKey()).Returns(ourKeyIsLower ? s_lowerNodeKey : s_higherNodeKey);
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        peerManager.SimultaneousConnectWindow = TimeSpan.FromMinutes(1);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var inboundPeerService = CreateMockPeerService();
+        SetupInboundPeerService(inboundPeerService);
+
+        // Act
+        RaiseInboundConnection();
+
+        // Assert
+        Assert.True(peerManager.GetPeer(_compactPubKey)!.TryGetPeerService(out var kept));
+        if (ourKeyIsLower)
+        {
+            Assert.Same(_mockPeerService.Object, kept);
+            inboundPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+            _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+        }
+        else
+        {
+            Assert.Same(inboundPeerService.Object, kept);
+            _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+            inboundPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+        }
+    }
+
+    [Fact]
+    public async Task Given_OldOutboundConnection_When_PeerConnectsInbound_Then_TheNewConnectionReplacesIt()
+    {
+        // Arrange (outside the simultaneous-connect window it is a reconnect, whatever the pubkeys)
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        peerManager.SimultaneousConnectWindow = TimeSpan.FromTicks(-1);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var inboundPeerService = CreateMockPeerService();
+        SetupInboundPeerService(inboundPeerService);
+
+        // Act
+        RaiseInboundConnection();
+
+        // Assert
+        Assert.True(peerManager.GetPeer(_compactPubKey)!.TryGetPeerService(out var kept));
+        Assert.Same(inboundPeerService.Object, kept);
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ChannelMessageDuringInboundDbSave_When_Received_Then_ItIsHandled()
+    {
+        // Arrange (LND sends channel_reestablish right after init; we used to subscribe only after the DB save)
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        var message = CreateInboundMessage();
+        var handled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(message, It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+           .Callback(handled.SetResult)
+           .ReturnsAsync([]);
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback(() => RaiseChannelMessage(message))
+                             .Returns(Task.CompletedTask);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+
+        // Assert
+        await handled.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Given_PeerDropsDuringInboundDbSave_When_ItConnectsAgain_Then_ItIsAccepted()
+    {
+        // Arrange (a disconnection nobody saw used to leave a dead session that refused every reconnect)
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>()))
+                             .Callback(() => RaiseDisconnect(_mockPeerService))
+                             .Returns(Task.CompletedTask);
+        RaiseInboundConnection(RemoteHost);
+        var peerGoneAfterDrop = peerManager.GetPeer(_compactPubKey) is null;
+        _mockPeerDbRepository.Setup(r => r.AddOrUpdateAsync(It.IsAny<PeerModel>())).Returns(Task.CompletedTask);
+        var newPeerService = CreateMockPeerService();
+        SetupInboundPeerService(newPeerService);
+
+        // Act
+        RaiseInboundConnection(RemoteHost);
+
+        // Assert
+        Assert.True(peerGoneAfterDrop);
+        Assert.True(peerManager.GetPeer(_compactPubKey)!.TryGetPeerService(out var current));
+        Assert.Same(newPeerService.Object, current);
+        newPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PeerAlreadyDroppedWhenSubscribing_When_Connecting_Then_ItIsNotKept()
+    {
+        // Arrange (a peer service replays a disconnection that happened before we subscribed)
+        var peerManager = CreatePeerManager();
+        _mockPeerService.SetupAdd(p => p.OnDisconnect += It.IsAny<EventHandler<PeerDisconnectedEventArgs>>())
+                        .Callback((EventHandler<PeerDisconnectedEventArgs> handler) =>
+                                      handler(_mockPeerService.Object, new PeerDisconnectedEventArgs(_compactPubKey)));
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                       new Mock<TcpClient>().Object));
+
+        // Act
+        await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735"));
+
+        // Assert
+        Assert.Null(peerManager.GetPeer(_compactPubKey));
+    }
+
+    [Fact]
+    public async Task Given_PeerWithActiveChannels_When_ItDrops_Then_WeReconnect()
+    {
+        // Arrange
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                    .Returns([CreateChannel(ChannelState.Open, 1)]);
+
+        // Act
+        RaiseDisconnect(_mockPeerService);
+
+        // Assert
+        await WaitUntilAsync(() => peerManager.GetPeer(_compactPubKey) is not null);
+        _mockTcpService.Verify(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Given_PeerWithActiveChannels_When_WeDisconnectItOnPurpose_Then_NoReconnect()
+    {
+        // Arrange
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        peerManager.ReconnectInitialDelay = TimeSpan.FromMilliseconds(10);
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        _mockChannelMemoryRepository.Setup(r => r.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+                                    .Returns([CreateChannel(ChannelState.Open, 1)]);
+
+        // Act
+        peerManager.DisconnectPeer(_compactPubKey);
+        RaiseDisconnect(_mockPeerService);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(peerManager.GetPeer(_compactPubKey));
+        _mockTcpService.Verify(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AMessageIsStillHandled_When_StopAsync_Then_ItWaitsForIt()
+    {
+        // Arrange (no handler may still persist while the host disposes the services)
+        var peerManager = await CreatePeerManagerWithPeerAsync();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                        .Callback(() => RaiseDisconnect(_mockPeerService));
+        var message = CreateInboundMessage();
+        var (entered, gate) = BlockOn(message);
+        RaiseChannelMessage(message);
+        await entered.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Act
+        var stop = peerManager.StopAsync();
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        var stoppedEarly = stop.IsCompleted;
+        gate.SetResult([]);
+        await stop.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(stoppedEarly);
+    }
+
     private int _sendsStarted;
     private int _sendsInFlight;
     private int _maxConcurrentSends;
 
+    private const string RemoteHost = "10.0.0.1";
+
+    private Mock<IPeerService> CreateMockPeerService()
+    {
+        var peerService = new Mock<IPeerService>();
+        peerService.SetupGet(p => p.PeerPubKey).Returns(_compactPubKey);
+        peerService.SetupGet(p => p.Features).Returns(new FeatureOptions());
+        peerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
+        peerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>())).Returns(Task.CompletedTask);
+        return peerService;
+    }
+
+    private void SetupInboundPeerService(Mock<IPeerService> peerService)
+    {
+        _mockPeerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+                               .ReturnsAsync(peerService.Object);
+    }
+
+    private void RaiseInboundConnection(string host = ExpectedHost)
+    {
+        _mockTcpService.Raise(t => t.OnNewPeerConnected += null, _mockTcpService.Object,
+                              new NewPeerConnectedEventArgs(host, ExpectedPort, new Mock<TcpClient>().Object));
+    }
+
+    private void RaiseDisconnect(Mock<IPeerService> peerService)
+    {
+        peerService.Raise(p => p.OnDisconnect += null, peerService.Object,
+                          new PeerDisconnectedEventArgs(_compactPubKey));
+    }
+
+    /// <summary>
+    /// Makes the channel manager hold <paramref name="message"/> until the returned gate is set.
+    /// </summary>
+    private (TaskCompletionSource Entered, TaskCompletionSource<IReadOnlyList<IChannelMessage>> Gate) BlockOn(
+        IChannelMessage message)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new TaskCompletionSource<IReadOnlyList<IChannelMessage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockChannelManager
+           .Setup(cm => cm.HandleChannelMessageAsync(message, It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+           .Returns(() =>
+            {
+                entered.TrySetResult();
+                return gate.Task;
+            });
+        return (entered, gate);
+    }
+
     private PeerManager CreatePeerManager()
     {
-        return new PeerManager(_mockChannelManager.Object, _mockLogger.Object, _mockPeerServiceFactory.Object,
-                               _mockTcpService.Object, _fakeServiceProvider);
+        return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
+                               _mockPeerServiceFactory.Object, _mockSecureKeyManager.Object, _mockTcpService.Object,
+                               _fakeServiceProvider);
     }
 
     /// <summary>
@@ -892,10 +1275,11 @@ public class PeerManagerTests
                                   new ChannelResponseMessageEventArgs(_compactPubKey, message));
     }
 
-    private void RaiseChannelMessage(IChannelMessage message)
+    private void RaiseChannelMessage(IChannelMessage message, Mock<IPeerService>? peerService = null)
     {
-        _mockPeerService.Raise(p => p.OnChannelMessageReceived += null, _mockPeerService.Object,
-                               new ChannelMessageEventArgs(message, _compactPubKey));
+        peerService ??= _mockPeerService;
+        peerService.Raise(p => p.OnChannelMessageReceived += null, peerService.Object,
+                          new ChannelMessageEventArgs(message, _compactPubKey));
     }
 
     /// <summary>
