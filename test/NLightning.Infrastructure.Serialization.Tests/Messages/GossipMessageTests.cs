@@ -28,12 +28,7 @@ public class GossipMessageTests
         { 256, typeof(ChannelAnnouncementMessage) },
         { 257, typeof(NodeAnnouncementMessage) },
         { 258, typeof(ChannelUpdateMessage) },
-        { 259, typeof(AnnouncementSignaturesMessage) },
-        { 261, typeof(QueryShortChannelIdsMessage) },
-        { 262, typeof(ReplyShortChannelIdsEndMessage) },
-        { 263, typeof(QueryChannelRangeMessage) },
-        { 264, typeof(ReplyChannelRangeMessage) },
-        { 265, typeof(GossipTimestampFilterMessage) }
+        { 259, typeof(AnnouncementSignaturesMessage) }
     };
 
     [Theory]

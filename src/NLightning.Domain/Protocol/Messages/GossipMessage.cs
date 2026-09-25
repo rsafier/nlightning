@@ -7,8 +7,9 @@ using Payloads;
 /// Base class for BOLT 7 gossip messages that are recognized but not parsed.
 /// </summary>
 /// <remarks>
-/// The payload is kept as raw bytes. Recognizing these types keeps the even gossip types (256, 258, 262, 264) from
-/// being treated as unknown even messages, which would disconnect the peer.
+/// The payload is kept as raw bytes. Recognizing these types keeps the even gossip types (256, 258) from being treated
+/// as unknown even messages, which would disconnect the peer. The gossip query messages (261-265) are parsed and
+/// have their own payload types.
 /// </remarks>
 public abstract class GossipMessage : BaseMessage
 {

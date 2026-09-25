@@ -177,11 +177,51 @@ public sealed class PeerService : IPeerService
                                                    stfuMessage.Payload.ChannelId,
                                                    "Quiescence (stfu) is not supported"));
         }
-        else if (message is GossipMessage)
+        else if (message is QueryChannelRangeMessage queryChannelRangeMessage)
         {
-            // BOLT 7 gossip is not implemented yet: accept the message so the connection stays up, and drop it
+            // BOLT 7: MUST respond with one or more reply_channel_range. We know no public channels yet.
+            _logger.LogDebug("Answering query_channel_range from peer {peer}", PeerPubKey);
+            _ = SendGossipReplyAsync(GossipQueryResponder.CreateReply(queryChannelRangeMessage));
+        }
+        else if (message is QueryShortChannelIdsMessage queryShortChannelIdsMessage)
+        {
+            // BOLT 7: MUST follow the (here empty) responses with reply_short_channel_ids_end
+            _logger.LogDebug("Answering query_short_channel_ids from peer {peer}", PeerPubKey);
+            try
+            {
+                _ = SendGossipReplyAsync(GossipQueryResponder.CreateReply(queryShortChannelIdsMessage));
+            }
+            catch (WarningException we)
+            {
+                _logger.LogWarning("Invalid query_short_channel_ids from peer {peer}: {message}", PeerPubKey,
+                                   we.Message);
+                _ = _peerCommunicationService.SendWarningAsync(we);
+            }
+        }
+        else if (message is GossipTimestampFilterMessage)
+        {
+            // We never relay gossip (and generate none yet), so there is nothing to filter: accept and ignore
+            _logger.LogDebug("Ignoring gossip_timestamp_filter from peer {peer}", PeerPubKey);
+        }
+        else if (message is GossipMessage or ReplyChannelRangeMessage or ReplyShortChannelIdsEndMessage)
+        {
+            // BOLT 7 gossip is not implemented yet (and we never query): accept the message so the connection stays
+            // up, and drop it
             _logger.LogDebug("Dropping gossip message ({messageType}) from peer {peer}",
                              Enum.GetName(message.Type), PeerPubKey);
+        }
+    }
+
+    private async Task SendGossipReplyAsync(IMessage reply)
+    {
+        try
+        {
+            await _peerCommunicationService.SendMessageAsync(reply);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Failed to send {messageType} to peer {peer}", Enum.GetName(reply.Type),
+                               PeerPubKey);
         }
     }
 

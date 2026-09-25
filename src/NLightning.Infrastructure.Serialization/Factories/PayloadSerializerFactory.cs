@@ -55,11 +55,21 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _serializers.Add(typeof(FundingSignedPayload),
                          new FundingSignedPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(GossipPayload), new GossipPayloadSerializer());
+        _serializers.Add(typeof(GossipTimestampFilterPayload),
+                         new GossipTimestampFilterPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(InitPayload), new InitPayloadSerializer(_featureSetSerializer));
         _serializers.Add(typeof(OpenChannel1Payload), new OpenChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(OpenChannel2Payload), new OpenChannel2PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(PingPayload), new PingPayloadSerializer());
         _serializers.Add(typeof(PongPayload), new PongPayloadSerializer());
+        _serializers.Add(typeof(QueryChannelRangePayload),
+                         new QueryChannelRangePayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(QueryShortChannelIdsPayload),
+                         new QueryShortChannelIdsPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ReplyChannelRangePayload),
+                         new ReplyChannelRangePayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ReplyShortChannelIdsEndPayload),
+                         new ReplyShortChannelIdsEndPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(RevokeAndAckPayload), new RevokeAndAckPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ShutdownPayload), new ShutdownPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(StfuPayload), new StfuPayloadSerializer(_valueObjectSerializerFactory));
@@ -120,15 +130,17 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcPayload));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(ErrorPayload));
 
-        // BOLT 7 gossip is kept as raw bytes until gossip is implemented
+        // BOLT 7 gossip queries are parsed
+        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsPayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndPayload));
+        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(QueryChannelRangePayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(ReplyChannelRangePayload));
+        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipTimestampFilterPayload));
+
+        // The other BOLT 7 gossip messages are kept as raw bytes until gossip is implemented
         _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(GossipPayload));
         _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(GossipPayload));
         _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(GossipPayload));
         _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipPayload));
     }
 }
