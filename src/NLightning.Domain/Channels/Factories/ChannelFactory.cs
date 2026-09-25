@@ -50,7 +50,7 @@ public class ChannelFactory : IChannelFactory
 
         // If dual fund is negotiated fail the channel
         if (negotiatedFeatures.DualFund == FeatureSupport.Compulsory)
-            throw new ChannelErrorException("We can only accept dual fund channels");
+            throw new ChannelErrorException("We can only accept dual fund channels", payload.ChannelId);
 
         // Perform optional checks for the channel
         var ourChannelReserveAmount = GetOurChannelReserveFromFundingAmount(payload.FundingAmount);
@@ -63,10 +63,10 @@ public class ChannelFactory : IChannelFactory
             ChannelOpenMandatoryValidationParameters.FromOpenChannel1Payload(
                 message.ChannelTypeTlv, currentFee, negotiatedFeatures, payload), out var minimumDepth);
 
-        // Check for the upfront shutdown script
-        if (message.UpfrontShutdownScriptTlv is null
-         && (negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No || message.ChannelTypeTlv is not null))
-            throw new ChannelErrorException("Upfront shutdown script is required but not provided");
+        // BOLT 2: upfront_shutdown_script is only required when option_upfront_shutdown_script was negotiated (NL-046);
+        // a channel_type alone doesn't make it mandatory
+        if (message.UpfrontShutdownScriptTlv is null && negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No)
+            throw new ChannelErrorException("Upfront shutdown script is required but not provided", payload.ChannelId);
 
         BitcoinScript? remoteUpfrontShutdownScript = null;
         if (message.UpfrontShutdownScriptTlv is not null && message.UpfrontShutdownScriptTlv.Value.Length > 0)
@@ -135,7 +135,7 @@ public class ChannelFactory : IChannelFactory
         }
         catch (Exception e)
         {
-            throw new ChannelErrorException("Error creating commitment transaction", e);
+            throw new ChannelErrorException("Error creating commitment transaction", payload.ChannelId, e);
         }
     }
 
