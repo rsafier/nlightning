@@ -30,6 +30,33 @@ public static class Poll
         UntilAsync(() => Task.FromResult(condition()), timeout, description, cancellationToken, interval);
 
     /// <summary>
+    /// Evaluates <paramref name="probe"/> until it returns a value, and returns that value.
+    /// </summary>
+    /// <exception cref="TimeoutException">Still null after <paramref name="timeout"/>.</exception>
+    public static async Task<T> ForAsync<T>(Func<Task<T?>> probe, TimeSpan timeout, string description,
+                                            CancellationToken cancellationToken, TimeSpan? interval = null)
+        where T : class
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            if (await probe() is { } value)
+                return value;
+
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException($"Timed out after {timeout} waiting for: {description}");
+
+            await Task.Delay(interval ?? s_defaultInterval, cancellationToken);
+        }
+    }
+
+    /// <inheritdoc cref="ForAsync{T}(Func{Task{T}}, TimeSpan, string, CancellationToken, TimeSpan?)"/>
+    public static Task<T> ForAsync<T>(Func<T?> probe, TimeSpan timeout, string description,
+                                      CancellationToken cancellationToken, TimeSpan? interval = null)
+        where T : class =>
+        ForAsync(() => Task.FromResult(probe()), timeout, description, cancellationToken, interval);
+
+    /// <summary>
     /// Whether <paramref name="condition"/> stays true for the whole of <paramref name="duration"/>: returns
     /// <c>false</c> as soon as it is false (a caller that tolerates a known flake decides what to do with that).
     /// </summary>

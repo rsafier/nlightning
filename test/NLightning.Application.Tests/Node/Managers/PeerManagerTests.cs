@@ -8,6 +8,8 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Node.Managers;
 
+using Application.Gossip.Events;
+using Application.Gossip.Interfaces;
 using Application.Node.Managers;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
@@ -26,6 +28,9 @@ using Domain.Node.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -1298,6 +1303,121 @@ public class PeerManagerTests
 
         // Assert
         Assert.False(installedBeforeInit);
+    }
+
+    [Fact]
+    public async Task Given_ConnectedPeer_When_OurChannelUpdateIsReady_Then_ItIsSentThroughTheOutboxAsGossip()
+    {
+        // Arrange
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        var peerManager = CreatePeerManager(channelUpdateService.Object);
+        await ConnectMockPeerAsync(peerManager);
+        var sent = new TaskCompletionSource<IMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendGossipMessageAsync(It.IsAny<IMessage>()))
+                        .Returns((IMessage m) =>
+                         {
+                             sent.TrySetResult(m);
+                             return Task.CompletedTask;
+                         });
+        var update = CreateChannelUpdate();
+
+        // Act
+        channelUpdateService.Raise(s => s.OnChannelUpdateReady += null, channelUpdateService.Object,
+                                   new ChannelUpdateReadyEventArgs(_compactPubKey, update));
+
+        // Assert
+        Assert.Same(update, await sent.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void Given_PeerNotConnected_When_OurChannelUpdateIsReady_Then_NothingThrows()
+    {
+        // Arrange
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        _ = CreatePeerManager(channelUpdateService.Object);
+
+        // Act
+        var exception = Record.Exception(() => channelUpdateService.Raise(
+                                             s => s.OnChannelUpdateReady += null, channelUpdateService.Object,
+                                             new ChannelUpdateReadyEventArgs(_compactPubKey, CreateChannelUpdate())));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public async Task Given_ConnectedPeer_When_PeerSendsChannelUpdate_Then_ItIsHandedToTheServiceWithThePeerId()
+    {
+        // Arrange
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        var peerManager = CreatePeerManager(channelUpdateService.Object);
+        await ConnectMockPeerAsync(peerManager);
+        var update = CreateChannelUpdate();
+
+        // Act
+        _mockPeerService.Raise(p => p.OnChannelUpdateReceived += null, _mockPeerService.Object, update);
+
+        // Assert
+        channelUpdateService.Verify(s => s.HandleRemoteChannelUpdate(_compactPubKey, update), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ServiceThrows_When_PeerSendsChannelUpdate_Then_PeerStaysConnected()
+    {
+        // Arrange
+        var channelUpdateService = new Mock<IChannelUpdateService>();
+        channelUpdateService.Setup(s => s.HandleRemoteChannelUpdate(It.IsAny<CompactPubKey>(),
+                                                                    It.IsAny<ChannelUpdateMessage>()))
+                            .Throws(new InvalidOperationException("boom"));
+        var peerManager = CreatePeerManager(channelUpdateService.Object);
+        await ConnectMockPeerAsync(peerManager);
+
+        // Act
+        var exception = Record.Exception(() => _mockPeerService.Raise(p => p.OnChannelUpdateReceived += null,
+                                                                      _mockPeerService.Object,
+                                                                      CreateChannelUpdate()));
+
+        // Assert
+        Assert.Null(exception);
+        Assert.NotNull(peerManager.GetPeer(_compactPubKey));
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoChannelUpdateService_When_Connecting_Then_ChannelUpdatesAreNotSubscribed()
+    {
+        // Arrange
+        var peerManager = CreatePeerManager();
+
+        // Act
+        await ConnectMockPeerAsync(peerManager);
+
+        // Assert
+        _mockPeerService.VerifyAdd(p => p.OnChannelUpdateReceived += It.IsAny<EventHandler<ChannelUpdateMessage>>(),
+                                   Times.Never);
+    }
+
+    private PeerManager CreatePeerManager(IChannelUpdateService channelUpdateService)
+    {
+        return new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object, _mockLogger.Object,
+                               _mockPeerServiceFactory.Object, _mockSecureKeyManager.Object, _mockTcpService.Object,
+                               _fakeServiceProvider, null, channelUpdateService);
+    }
+
+    private async Task ConnectMockPeerAsync(PeerManager peerManager)
+    {
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ReturnsAsync(new ConnectedPeer(_compactPubKey, ExpectedHost, ExpectedPort,
+                                                       new Mock<TcpClient>().Object));
+        await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_compactPubKey}@127.0.0.1:9735"));
+    }
+
+    private static ChannelUpdateMessage CreateChannelUpdate()
+    {
+        return new ChannelUpdateMessage(
+            new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, new ChainHash(new byte[32]),
+                                     new ShortChannelId(103, 1, 0), 1, ChannelUpdatePayload.MessageFlagMustBeOne, 0,
+                                     40, 1_000, 1_000, 1, 990_000_000));
     }
 
     private int _sendsStarted;

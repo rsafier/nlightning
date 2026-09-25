@@ -55,6 +55,31 @@ public class PeerOutboxTests
     }
 
     [Fact]
+    public async Task Given_ChannelMessageThenGossip_When_Enqueued_Then_GossipIsSentAfterItAsGossip()
+    {
+        // Arrange - our channel_update must follow the channel_ready queued before it
+        _mockPeerService.Setup(p => p.SendGossipMessageAsync(It.IsAny<IMessage>()))
+                        .Returns((IMessage message) =>
+                         {
+                             Record($"gossip:{message.GetHashCode()}");
+                             return Task.CompletedTask;
+                         });
+        var outbox = new PeerOutbox(_mockPeerService.Object, new Mock<ILogger>().Object);
+        var channelReady = new Mock<IChannelMessage>().Object;
+        var channelUpdate = new Mock<IMessage>().Object;
+
+        // Act
+        Assert.True(outbox.TryEnqueue(channelReady));
+        Assert.True(outbox.TryEnqueueGossip(channelUpdate));
+        outbox.Complete();
+        await outbox.Completion.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new[] { $"message:{channelReady.GetHashCode()}", $"gossip:{channelUpdate.GetHashCode()}" },
+                     _wire);
+    }
+
+    [Fact]
     public async Task Given_DisconnectEnqueued_When_MoreIsEnqueued_Then_ItIsRefusedAndNeverSent()
     {
         // Arrange

@@ -2,6 +2,7 @@ namespace NLightning.Domain.Node.Interfaces;
 
 using Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Events;
 using Exceptions;
 using Options;
@@ -41,6 +42,15 @@ public interface IPeerService : IDisposable
     /// </summary>
     event EventHandler<Exception>? OnExceptionRaised;
 
+    /// <summary>
+    /// Occurs when the peer sends a <c>channel_update</c> (BOLT 7). The sender is this service, so the handler knows
+    /// which peer sent it. Nothing is checked here (signature, chain, channel): that is the subscriber's job.
+    /// </summary>
+    /// <remarks>
+    /// Updates that arrive before anyone subscribed are kept (a few) and handed to the first subscriber.
+    /// </remarks>
+    event EventHandler<ChannelUpdateMessage>? OnChannelUpdateReceived;
+
     public string? PreferredHost { get; }
     public ushort? PreferredPort { get; }
 
@@ -68,6 +78,14 @@ public interface IPeerService : IDisposable
     /// <param name="replyMessage">The message to be sent to the peer.</param>
     /// <returns>A task that represents the asynchronous operation.</returns>
     Task SendMessageAsync(IChannelMessage replyMessage);
+
+    /// <summary>
+    /// Sends a BOLT 7 gossip message (types 256-265, e.g. a <c>channel_update</c> for a channel with this peer).
+    /// </summary>
+    /// <param name="message">The gossip message.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="ArgumentException"><paramref name="message"/> is not a gossip message.</exception>
+    Task SendGossipMessageAsync(IMessage message);
 
     /// <summary>
     /// Sends a warning message to the peer.
