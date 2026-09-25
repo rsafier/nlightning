@@ -30,7 +30,10 @@ using Domain.Payments.Policies;
 /// <para>Candidates, in order: the payee directly; then each hint in invoice order. A hint that contains our own node
 /// is cut after our last entry (our channel is that entry's <c>short_channel_id</c>). A candidate is used when
 /// <c>hasUsableChannelTo(first node)</c> is true and its total CLTV (first HTLC <c>cltv_expiry</c> − height) is within
-/// <see cref="RoutingOptions.MaxCltvExpiryDistance"/>.</para>
+/// <see cref="RoutingOptions.MaxCltvExpiryDistance"/> and its fee (<see cref="PaymentRoute.Fee"/>) is at most the
+/// caller's <c>maxFee</c>. The fee limit is mandatory: the hint's <c>fee_base_msat</c> and
+/// <c>fee_proportional_millionths</c> are chosen by the payee, so without a bound a malicious or misconfigured invoice
+/// could make us pay any fee (up to about 4294 times the amount).</para>
 /// <para>Pure: it never looks at channels itself; the caller passes the predicate and resolves the channel.</para>
 /// </remarks>
 public sealed class HintRouteBuilder
@@ -54,15 +57,19 @@ public sealed class HintRouteBuilder
     /// <param name="target">What to pay.</param>
     /// <param name="amount">What the payee must receive (the invoice amount, or the caller's for an invoice without
     /// one).</param>
+    /// <param name="maxFee">The most the route may cost in fees (<see cref="PaymentRoute.Fee"/>, what our first
+    /// HTLC carries above <paramref name="amount"/>); a candidate that costs more is skipped. Pass
+    /// <see cref="LightningMoney.Zero"/> to allow only fee-free routes.</param>
     /// <param name="currentBlockHeight">Our best block height.</param>
     /// <param name="ourNodeId">Our node id.</param>
     /// <param name="hasUsableChannelTo">True when we have a usable channel to the given peer.</param>
     /// <exception cref="ArgumentException">If the amount is zero or the payee is us.</exception>
     /// <exception cref="InvalidOperationException">If no candidate route is usable (the message says why).</exception>
-    public PaymentRoute Build(PaymentTarget target, LightningMoney amount, uint currentBlockHeight,
-                              CompactPubKey ourNodeId, Func<CompactPubKey, bool> hasUsableChannelTo)
+    public PaymentRoute Build(PaymentTarget target, LightningMoney amount, LightningMoney maxFee,
+                              uint currentBlockHeight, CompactPubKey ourNodeId,
+                              Func<CompactPubKey, bool> hasUsableChannelTo)
     {
-        if (TryBuild(target, amount, currentBlockHeight, ourNodeId, hasUsableChannelTo, out var route,
+        if (TryBuild(target, amount, maxFee, currentBlockHeight, ourNodeId, hasUsableChannelTo, out var route,
                      out var failureReason))
             return route;
 
@@ -74,13 +81,14 @@ public sealed class HintRouteBuilder
     /// <param name="failureReason">Why no route is usable.</param>
     /// <returns>True when a route was found.</returns>
     /// <exception cref="ArgumentException">If the amount is zero or the payee is us.</exception>
-    public bool TryBuild(PaymentTarget target, LightningMoney amount, uint currentBlockHeight, CompactPubKey ourNodeId,
-                         Func<CompactPubKey, bool> hasUsableChannelTo,
+    public bool TryBuild(PaymentTarget target, LightningMoney amount, LightningMoney maxFee, uint currentBlockHeight,
+                         CompactPubKey ourNodeId, Func<CompactPubKey, bool> hasUsableChannelTo,
                          [NotNullWhen(true)] out PaymentRoute? route,
                          [NotNullWhen(false)] out string? failureReason)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(amount);
+        ArgumentNullException.ThrowIfNull(maxFee);
         ArgumentNullException.ThrowIfNull(hasUsableChannelTo);
         if (amount.IsZero)
             throw new ArgumentException("The payment amount must be positive.", nameof(amount));
@@ -90,9 +98,13 @@ public sealed class HintRouteBuilder
         var routing = _nodeOptions.Value.Routing;
         var finalCltv = checked(currentBlockHeight + target.MinFinalCltvExpiryDelta + FinalCltvSafetyOffset);
         var reasons = new List<string>();
+        var hintCandidates = 0;
 
         foreach (var (description, path) in GetCandidates(target, ourNodeId))
         {
+            if (path.Count > 0)
+                hintCandidates++;
+
             var firstNode = path.Count > 0 ? path[0].CompactPubKey : target.PayeeNodeId;
             if (!hasUsableChannelTo(firstNode))
             {
@@ -109,14 +121,23 @@ public sealed class HintRouteBuilder
                 continue;
             }
 
+            if (candidate.Fee > maxFee)
+            {
+                reasons.Add($"{description}: fee {candidate.Fee.MilliSatoshi} msat exceeds the limit of "
+                          + $"{maxFee.MilliSatoshi} msat");
+                continue;
+            }
+
             route = candidate;
             failureReason = null;
             return true;
         }
 
         route = null;
-        failureReason = reasons.Count == 0
-                            ? "No route to the payee: it is not our peer and the invoice has no route hints."
+        // The direct candidate always comes first, so with no hint candidate its reason is the only one
+        failureReason = hintCandidates == 0
+                            ? $"No route to the payee: it is not our peer ({reasons[0]}) and the invoice has no "
+                            + "usable route hints."
                             : "No usable route to the payee: " + string.Join("; ", reasons) + ".";
         return false;
     }
