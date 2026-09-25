@@ -7,13 +7,14 @@ public readonly struct TxId : IEquatable<TxId>
 {
     private readonly byte[] _value;
 
-    public bool IsZero => _value.SequenceEqual(Zero._value);
-    public bool IsOne => _value.SequenceEqual(One._value);
+    public bool IsZero => _value is not null && _value.SequenceEqual(Zero._value);
+    public bool IsOne => _value is not null && _value.SequenceEqual(One._value);
 
     public TxId(byte[] hash)
     {
-        if (hash.Length < CryptoConstants.Sha256HashLen)
-            throw new ArgumentException("TxId cannot be empty.", nameof(hash));
+        ArgumentNullException.ThrowIfNull(hash);
+        if (hash.Length != CryptoConstants.Sha256HashLen)
+            throw new ArgumentException($"TxId must be {CryptoConstants.Sha256HashLen} bytes.", nameof(hash));
 
         _value = hash;
     }

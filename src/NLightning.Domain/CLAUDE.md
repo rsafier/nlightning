@@ -21,7 +21,7 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 
 ## Conventions
 - Namespaces are file-scoped. The prevailing style puts project `using` lines *after* the namespace line, written relative to the enclosing namespace (for example `using Money;` inside `NLightning.Domain.Channels.Models`). System usings go above the namespace line. Some files (e.g. `Protocol/Tlv/RemoteAddressTlv.cs`, `Bitcoin/Transactions/**`) instead use fully qualified `using NLightning.Domain...` above the namespace.
-- Byte-backed value objects are mostly readonly structs or record structs over `byte[]` (`CompactSignature` is a `record` class). They validate length in the constructor and provide implicit conversions to and from byte[]/Span/Memory. `Hash`, `Secret` and `TxId` use `SequenceEqual` for Equals and `GetByteArrayHashCode()` (`Utils/Extensions/ByteArrayExtensions.cs`) for hashing; `ShortChannelId` hashes its parsed fields; `PrivKey`/`CompactSignature` rely on compiler-generated record equality.
+- Byte-backed value objects are mostly readonly structs or record structs over `byte[]` (`CompactSignature` is a `record` class). They validate length in the constructor and provide implicit conversions to and from byte[]/Span/Memory. `Hash`, `TxId`, `ChainHash`, `CompactSignature` and `BaseTlv` compare content with `SequenceEqual`; `Secret` and `PrivKey` compare in constant time (`CryptographicOperations.FixedTimeEquals`). All hash with the null-safe `GetByteArrayHashCode()` (`Utils/Extensions/ByteArrayExtensions.cs`), so `default(...)` values hash to 0; `ShortChannelId` hashes its parsed fields. `Hash`/`Secret`/`TxId`/`PrivKey` require exactly 32 bytes.
 - Models are classes with private setters and `UpdateX`/`AddX` mutators. `AddX` throws if the value is already set.
 - Protocol failures throw `ChannelErrorException` (connection is usually closed) or `ChannelWarningException`. Only the exception's `PeerMessage` property is sent to the peer (see `src/NLightning.Infrastructure/Node/Services/PeerCommunicationService.cs`); the `Message` stays local.
 - Build amounts with `LightningMoney.Satoshis(..)` or `MilliSatoshis(..)`. A raw `ulong`/`long` converts implicitly as **msat**.
@@ -51,7 +51,6 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 - `CommitmentNumber`'s constructor parameters are named (local, remote) payment basepoint, but BOLT 3 obscuring requires SHA256(opener || accepter), so callers must pass them in opener/accepter order. `Increment()` mutates the instance.
 - `FeatureSet.DeserializeFromBytes` reverses the caller's array in place (on little-endian hosts). `new FeatureSet()` sets 5 compulsory bits: data_loss_protect, var_onion_optin, static_remote_key, payment_secret, channel_type.
 - `LightningMoney` is a mutable reference type. `Bits()` returns the same value as `Cents()` (a known bug). The `-` operator throws on underflow.
-- `default(Secret/Hash/TxId)` throws NullReferenceException in GetHashCode. `Hash`/`Secret`/`TxId` accept arrays longer than 32 bytes. `PrivKey`/`CompactSignature` compare by reference.
 - The `protected internal BaseMessage(MessageTypes)` constructor installs `PlaceholderPayload`, whose `ChannelId` throws. `Stfu`, `Error` and `Warning` messages are not `IChannelMessage`.
 
 ## Onion routing (BOLT 4): M1+M2 done

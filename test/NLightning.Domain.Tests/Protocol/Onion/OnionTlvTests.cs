@@ -84,7 +84,7 @@ public class OnionTlvTests
     public void Given_SecretLongerThan32Bytes_When_CreatingPaymentDataTlv_Then_Throws()
     {
         // Act & Assert
-        Assert.Throws<ArgumentException>(() => new PaymentDataTlv(new Secret(new byte[33]), LightningMoney.Zero));
+        Assert.ThrowsAny<ArgumentException>(() => new PaymentDataTlv(new Secret(new byte[33]), LightningMoney.Zero));
     }
 
     [Fact]
