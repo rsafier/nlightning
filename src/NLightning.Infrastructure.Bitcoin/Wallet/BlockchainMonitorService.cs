@@ -47,6 +47,16 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
 
+    /// <summary>
+    /// How many times a block is tried in one processing round before the round halts (NL-097).
+    /// </summary>
+    internal int MaxBlockProcessingAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// Delay before the first retry of a failed block; it doubles on every further retry within the round.
+    /// </summary>
+    internal TimeSpan BlockRetryBaseDelay { get; set; } = TimeSpan.FromSeconds(1);
+
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
                                     IServiceProvider serviceProvider)
@@ -320,25 +330,70 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
+    /// <summary>
+    /// Processes the queued blocks in order.
+    /// </summary>
+    /// <remarks>
+    /// Failure policy (NL-097): a block whose processing throws is retried up to
+    /// <see cref="MaxBlockProcessingAttempts"/> times with exponential backoff. If it still fails, this round halts:
+    /// the failing block and every later block stay queued, nothing is dropped, and the height is not advanced. The
+    /// next round (the next ZMQ block, or a restart, which refetches the blocks from bitcoind) starts over from the
+    /// failing block. Blocks are never skipped, because a skipped block could hide a funding confirmation, a deposit
+    /// or a spend of a watched output.
+    /// </remarks>
     private async Task ProcessPendingBlocksAsync(IUnitOfWork uow)
     {
+        var cancellationToken = _cts?.Token ?? CancellationToken.None;
+
+        await _blockBacklogSemaphore.WaitAsync(cancellationToken);
         try
         {
-            await _blockBacklogSemaphore.WaitAsync();
-
             while (_blocksToProcess.Count > 0)
             {
-                var blockKvp = _blocksToProcess.First();
-                if (blockKvp.Key <= _lastProcessedBlockHeight)
-                    _logger.LogWarning("Possible reorg detected: Block {Height} is already processed.", blockKvp.Key);
+                var (height, block) = _blocksToProcess.First();
+                if (height <= _lastProcessedBlockHeight)
+                    _logger.LogWarning("Possible reorg detected: Block {Height} is already processed.", height);
 
-                ProcessBlock(blockKvp.Value, blockKvp.Key, uow);
+                if (!await TryProcessBlockWithRetriesAsync(block, height, uow, cancellationToken))
+                {
+                    _logger.LogCritical(
+                        "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
+                        height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
+                    return;
+                }
             }
         }
         finally
         {
             _blockBacklogSemaphore.Release();
         }
+    }
+
+    private async Task<bool> TryProcessBlockWithRetriesAsync(Block block, uint height, IUnitOfWork uow,
+                                                             CancellationToken cancellationToken)
+    {
+        var delay = BlockRetryBaseDelay;
+        for (var attempt = 1; attempt <= MaxBlockProcessingAttempts; attempt++)
+        {
+            try
+            {
+                ProcessBlock(block, height, uow);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing block at height {Height} (attempt {Attempt} of {MaxAttempts})",
+                                 height, attempt, MaxBlockProcessingAttempts);
+            }
+
+            if (attempt < MaxBlockProcessingAttempts && delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, cancellationToken);
+                delay *= 2;
+            }
+        }
+
+        return false;
     }
 
     private async Task AddMissingBlocksToProcessAsync(uint currentHeight)
@@ -410,41 +465,37 @@ public class BlockchainMonitorService : IBlockchainMonitor
     //     }
     // }
 
+    /// <summary>
+    /// Processes one block and removes it from the queue. Throws if processing fails, leaving the block queued.
+    /// </summary>
     private void ProcessBlock(Block block, uint height, IUnitOfWork uow)
     {
-        try
-        {
-            var blockHash = block.GetHash();
+        var blockHash = block.GetHash();
 
-            if (_logger.IsEnabled(LogLevel.Debug))
-                _logger.LogDebug("Processing block {Height} with {TxCount} transactions", height,
-                                 block.Transactions.Count);
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Processing block {Height} with {TxCount} transactions", height,
+                             block.Transactions.Count);
 
-            // Notify listeners of the new block
-            OnNewBlockDetected?.Invoke(this, new NewBlockEventArgs(height, blockHash.ToBytes()));
+        // Notify listeners of the new block
+        OnNewBlockDetected?.Invoke(this, new NewBlockEventArgs(height, blockHash.ToBytes()));
 
-            // Check if watched transactions are included in this block
-            CheckBlockForWatchedTransactions(block.Transactions, height, uow);
+        // Check if watched transactions are included in this block
+        CheckBlockForWatchedTransactions(block.Transactions, height, uow);
 
-            // Check for deposits in this block
-            CheckBlockForWalletMovement(block.Transactions, height, uow);
+        // Check for deposits in this block
+        CheckBlockForWalletMovement(block.Transactions, height, uow);
 
-            // Update blockchain state
-            _blockchainState.UpdateState(blockHash.ToBytes(), height);
-            uow.BlockchainStateDbRepository.Update(_blockchainState);
+        // Update blockchain state
+        _blockchainState.UpdateState(blockHash.ToBytes(), height);
+        uow.BlockchainStateDbRepository.Update(_blockchainState);
 
-            _blocksToProcess.Remove(height);
+        _blocksToProcess.Remove(height);
 
-            // Update our internal state
-            _lastProcessedBlockHeight = height;
+        // Update our internal state
+        _lastProcessedBlockHeight = height;
 
-            // Check watched for all transactions' depth
-            CheckWatchedTransactionsDepth(uow);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error processing block at height {Height}", height);
-        }
+        // Check watched for all transactions' depth
+        CheckWatchedTransactionsDepth(uow);
     }
 
     private void ConfirmTransaction(uint blockHeight, IUnitOfWork uow, WatchedTransactionModel watchedTransaction)
