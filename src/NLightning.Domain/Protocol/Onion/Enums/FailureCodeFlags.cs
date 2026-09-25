@@ -24,7 +24,11 @@ public enum FailureCodeFlags : ushort
     Node = 0x2000,
 
     /// <summary>
-    /// New channel update enclosed.
+    /// Channel forwarding parameter was violated (BOLT 4).
     /// </summary>
+    /// <remarks>
+    /// Failures with this flag carry a <c>u16 len || channel_update</c> field, but the <c>channel_update</c> is no
+    /// longer mandatory: nodes not wishing to send one set <c>len</c> to zero, and receivers MUST accept an empty one.
+    /// </remarks>
     Update = 0x1000
 }

@@ -39,7 +39,8 @@ public enum FailureCode : ushort
     InvalidOnionKey = (ushort)FailureCodeFlags.BadOnion | (ushort)FailureCodeFlags.Perm | 6,
 
     /// <summary>
-    /// UPDATE|7: the outgoing channel is temporarily unable to handle this HTLC. Data: u16 len || channel_update.
+    /// UPDATE|7: the outgoing channel is temporarily unable to handle this HTLC.
+    /// Data: u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     TemporaryChannelFailure = (ushort)FailureCodeFlags.Update | 7,
 
@@ -60,24 +61,25 @@ public enum FailureCode : ushort
 
     /// <summary>
     /// UPDATE|11: the HTLC amount was below the outgoing channel's htlc_minimum_msat.
-    /// Data: u64 htlc_msat || u16 len || channel_update.
+    /// Data: u64 htlc_msat || u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     AmountBelowMinimum = (ushort)FailureCodeFlags.Update | 11,
 
     /// <summary>
     /// UPDATE|12: the fee amount was below that required by the outgoing channel.
-    /// Data: u64 htlc_msat || u16 len || channel_update.
+    /// Data: u64 htlc_msat || u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     FeeInsufficient = (ushort)FailureCodeFlags.Update | 12,
 
     /// <summary>
     /// UPDATE|13: the cltv_expiry does not comply with the outgoing channel's cltv_expiry_delta.
-    /// Data: u32 cltv_expiry || u16 len || channel_update.
+    /// Data: u32 cltv_expiry || u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     IncorrectCltvExpiry = (ushort)FailureCodeFlags.Update | 13,
 
     /// <summary>
-    /// UPDATE|14: the CLTV expiry is too close to the current block height. Data: u16 len || channel_update.
+    /// UPDATE|14: the CLTV expiry is too close to the current block height.
+    /// Data: u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     ExpiryTooSoon = (ushort)FailureCodeFlags.Update | 14,
 
@@ -98,7 +100,8 @@ public enum FailureCode : ushort
     FinalIncorrectHtlcAmount = 19,
 
     /// <summary>
-    /// UPDATE|20: the outgoing channel has been disabled. Data: u16 disabled_flags || u16 len || channel_update.
+    /// UPDATE|20: the outgoing channel has been disabled.
+    /// Data: u16 disabled_flags || u16 len || channel_update (may be empty, len = 0).
     /// </summary>
     ChannelDisabled = (ushort)FailureCodeFlags.Update | 20,
 

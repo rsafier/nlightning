@@ -117,4 +117,22 @@ public class FixedLengthOnionTlvConverterTests
         // Act & Assert
         Assert.Throws<InvalidCastException>(() => converter.ConvertFromBase(baseTlv));
     }
+
+    [Fact]
+    public void Given_OffCurvePoint_When_ConvertingCurrentPathKey_Then_IsAcceptedWithoutCurveValidation()
+    {
+        // Arrange: x = 2^256 - 1 >= p, so this is not a point on secp256k1. The converter only checks length and
+        // prefix; curve validation is the peeler's job (ISecp256K1Math), which must map it to invalid_onion_blinding.
+        var value = new byte[33];
+        value[0] = 0x02;
+        Array.Fill(value, (byte)0xff, 1, 32);
+        var baseTlv = new BaseTlv(OnionPayloadTlvTypes.CurrentPathKey, value);
+        var converter = new CurrentPathKeyTlvConverter();
+
+        // Act
+        var tlv = converter.ConvertFromBase(baseTlv);
+
+        // Assert
+        Assert.Equal(value, (byte[])tlv.PathKey);
+    }
 }
