@@ -15,40 +15,45 @@ using Utils.Extensions;
 /// </remarks>
 public readonly struct OnionPacket : IValueObject, IEquatable<OnionPacket>
 {
-    private readonly byte[] _value;
+    private readonly byte[]? _value;
+
+    /// <summary>
+    /// The backing bytes; throws for <c>default(OnionPacket)</c> so an uninitialized packet can never be sliced.
+    /// </summary>
+    private byte[] Value => _value ?? throw new InvalidOperationException("Uninitialized OnionPacket.");
 
     /// <summary>
     /// The packet version byte (not validated).
     /// </summary>
-    public byte Version => _value[0];
+    public byte Version => Value[0];
 
     /// <summary>
     /// The 33 raw bytes of the ephemeral public key (not validated).
     /// </summary>
-    public ReadOnlyMemory<byte> PublicKey => _value.AsMemory(OnionConstants.VersionLength,
+    public ReadOnlyMemory<byte> PublicKey => Value.AsMemory(OnionConstants.VersionLength,
                                                              OnionConstants.PublicKeyLength);
 
     /// <summary>
     /// The obfuscated hop payloads.
     /// </summary>
-    public ReadOnlyMemory<byte> HopPayloads => _value.AsMemory(
+    public ReadOnlyMemory<byte> HopPayloads => Value.AsMemory(
         OnionConstants.VersionLength + OnionConstants.PublicKeyLength, HopPayloadsLength);
 
     /// <summary>
     /// The 32-byte packet HMAC.
     /// </summary>
-    public ReadOnlyMemory<byte> Hmac => _value.AsMemory(_value.Length - OnionConstants.HmacLength,
-                                                        OnionConstants.HmacLength);
+    public ReadOnlyMemory<byte> Hmac => Value.AsMemory(Value.Length - OnionConstants.HmacLength,
+                                                       OnionConstants.HmacLength);
 
     /// <summary>
     /// The length of the hop_payloads field.
     /// </summary>
-    public int HopPayloadsLength => _value.Length - OnionConstants.PacketOverheadLength;
+    public int HopPayloadsLength => Value.Length - OnionConstants.PacketOverheadLength;
 
     /// <summary>
     /// The total serialized length of the packet.
     /// </summary>
-    public int Length => _value.Length;
+    public int Length => Value.Length;
 
     /// <summary>
     /// Parses a packet from its raw bytes.
@@ -94,10 +99,10 @@ public readonly struct OnionPacket : IValueObject, IEquatable<OnionPacket>
     /// <summary>
     /// Returns a copy of the serialized packet.
     /// </summary>
-    public byte[] ToBytes() => (byte[])_value.Clone();
+    public byte[] ToBytes() => (byte[])Value.Clone();
 
-    public static implicit operator ReadOnlySpan<byte>(OnionPacket packet) => packet._value;
-    public static implicit operator ReadOnlyMemory<byte>(OnionPacket packet) => packet._value;
+    public static implicit operator ReadOnlySpan<byte>(OnionPacket packet) => packet.Value;
+    public static implicit operator ReadOnlyMemory<byte>(OnionPacket packet) => packet.Value;
 
     public bool Equals(OnionPacket other)
     {

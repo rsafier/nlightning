@@ -163,4 +163,35 @@ public class OnionPacketTests
         Assert.NotEqual(a, b);
         Assert.True(a != b);
     }
+
+    [Fact]
+    public void Given_DefaultPacket_When_AccessingMembers_Then_ThrowsInvalidOperationException()
+    {
+        // Arrange
+        var packet = default(OnionPacket);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => packet.Version);
+        Assert.Throws<InvalidOperationException>(() => packet.PublicKey);
+        Assert.Throws<InvalidOperationException>(() => packet.HopPayloads);
+        Assert.Throws<InvalidOperationException>(() => packet.Hmac);
+        Assert.Throws<InvalidOperationException>(() => packet.HopPayloadsLength);
+        Assert.Throws<InvalidOperationException>(() => packet.Length);
+        Assert.Throws<InvalidOperationException>(() => packet.ToBytes());
+        Assert.Throws<InvalidOperationException>(() => ((ReadOnlySpan<byte>)packet).Length);
+        Assert.Throws<InvalidOperationException>(() => (ReadOnlyMemory<byte>)packet);
+    }
+
+    [Fact]
+    public void Given_DefaultPackets_When_Comparing_Then_EqualAndDoNotThrow()
+    {
+        // Arrange
+        var a = default(OnionPacket);
+        var b = default(OnionPacket);
+
+        // Act & Assert
+        Assert.True(a == b);
+        Assert.Equal(0, a.GetHashCode());
+        Assert.NotEqual(a, new OnionPacket(CreatePacketBytes()));
+    }
 }
