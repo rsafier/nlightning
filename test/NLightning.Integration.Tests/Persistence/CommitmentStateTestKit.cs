@@ -4,6 +4,7 @@ using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
@@ -313,7 +314,7 @@ internal sealed class CommitmentDanceDriver
     {
         public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
                                                          CompactPubKey remotePerCommitmentPoint) =>
-            Signatures((byte)number, CommitmentFees.UntrimmedHtlcCount(spec, remoteDustSat, anchors));
+            Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors));
     }
 
     private sealed class FakeCommitmentVerifier : ICommitmentVerifier
