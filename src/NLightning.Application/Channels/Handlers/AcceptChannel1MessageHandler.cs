@@ -214,6 +214,10 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
                                                             fundingOutput.Index.Value, ourSignature);
 
+            // Persist the channel before sending funding_created, so a crash before funding_signed doesn't lose it
+            await _unitOfWork.ChannelDbRepository.AddAsync(tempChannel);
+            await _unitOfWork.SaveChangesAsync();
+
             // Upgrade the channel in the dictionary
             _channelMemoryRepository.UpgradeChannel(oldChannelId, tempChannel);
 
@@ -227,15 +231,16 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             if (_logger.IsEnabled(LogLevel.Information))
                 _logger.LogInformation("Forgetting channel {channelId}", tempChannel.ChannelId);
 
+            // The temporary channel is still keyed by its temporary id; if it was already upgraded, remove the real one
+            if (!_channelMemoryRepository.TryRemoveTemporaryChannel(peerPubKey, oldChannelId)
+             && !_channelMemoryRepository.TryRemoveChannel(tempChannel.ChannelId))
+                _logger.LogWarning("Unable to remove channel with id {channelId} for peer {peerPubKey}",
+                                   tempChannel.ChannelId, peerPubKey);
+
+            // Release the utxos we locked for this channel
+            _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(oldChannelId);
             if (tempChannel.ChannelId != oldChannelId)
-            {
-                if (!_channelMemoryRepository.TryRemoveTemporaryChannel(tempChannel.RemoteNodeId,
-                                                                        tempChannel.ChannelId))
-                    _logger.LogWarning("Unable to remove temporary channel with id {channelId} for peer {peerPubKey}",
-                                       tempChannel.ChannelId, peerPubKey);
-                else if (!_channelMemoryRepository.TryRemoveChannel(tempChannel.ChannelId))
-                    _logger.LogWarning("Unable to remove channel with id {channelId}", tempChannel.ChannelId);
-            }
+                _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(tempChannel.ChannelId);
 
             throw new ChannelErrorException("Error creating commitment transaction", e);
         }
