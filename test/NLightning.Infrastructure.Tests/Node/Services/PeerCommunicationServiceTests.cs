@@ -1,9 +1,11 @@
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Infrastructure.Tests.Node.Services;
 
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node;
@@ -207,6 +209,81 @@ public class PeerCommunicationServiceTests
         // Assert
         Assert.Null(exception);
         Assert.False(disconnectRaised);
+    }
+
+    [Fact]
+    public void Given_ChannelErrorWithChannelId_When_Disconnecting_Then_ErrorScopedToTheChannelIsSent()
+    {
+        // Arrange
+        var service = CreateInitializedService();
+        var sentMessages = CaptureSentMessages();
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x07, 32).ToArray());
+
+        // Act
+        service.Disconnect(new ChannelErrorException("internal", channelId, "bad channel"));
+
+        // Assert
+        var error = Assert.IsType<ErrorMessage>(Assert.Single(sentMessages));
+        Assert.Equal(channelId, error.Payload.ChannelId);
+        Assert.Equal("bad channel", Encoding.UTF8.GetString(error.Payload.Data!));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_ChannelErrorWithoutChannelId_When_Disconnecting_Then_WarningIsSentInsteadOfAllZeroError(
+        bool zeroChannelId)
+    {
+        // Arrange (BOLT 1: an all-zero channel_id error makes the peer fail every channel with us)
+        var service = CreateInitializedService();
+        var sentMessages = CaptureSentMessages();
+        var exception = zeroChannelId
+                            ? new ChannelErrorException("internal", ChannelId.Zero, "bad channel")
+                            : new ChannelErrorException("internal", "bad channel");
+
+        // Act
+        service.Disconnect(exception);
+
+        // Assert
+        Assert.DoesNotContain(sentMessages, m => m is ErrorMessage);
+        var warning = Assert.IsType<WarningMessage>(Assert.Single(sentMessages));
+        Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
+        Assert.Equal("bad channel", Encoding.UTF8.GetString(warning.Payload.Data!));
+    }
+
+    [Fact]
+    public void Given_MessageServiceRaisesConnectionException_When_Raised_Then_ConnectionIsClosed()
+    {
+        // Arrange (a malformed message: MessageService already sent the warning, we must close the connection)
+        var service = CreateInitializedService();
+        var sentMessages = CaptureSentMessages();
+        Exception? disconnectException = null;
+        var disconnected = false;
+        service.DisconnectEvent += (_, e) =>
+        {
+            disconnected = true;
+            disconnectException = e;
+        };
+        var connectionException = new ConnectionException("Error received from transportService");
+
+        // Act
+        _messageServiceMock.Raise(x => x.OnExceptionRaised += null, _messageServiceMock.Object, connectionException);
+
+        // Assert
+        Assert.True(disconnected);
+        Assert.Same(connectionException, disconnectException);
+        Assert.Empty(sentMessages);
+        _messageServiceMock.Verify(x => x.Dispose(), Times.Once);
+    }
+
+    private List<IMessage> CaptureSentMessages()
+    {
+        var sentMessages = new List<IMessage>();
+        _messageServiceMock
+           .Setup(x => x.SendMessageAsync(It.IsAny<IMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+           .Callback((IMessage message, bool _, CancellationToken _) => sentMessages.Add(message))
+           .Returns(Task.CompletedTask);
+        return sentMessages;
     }
 
     private void SetupUnitOfWork()
