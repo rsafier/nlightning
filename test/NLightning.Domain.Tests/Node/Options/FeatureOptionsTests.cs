@@ -74,6 +74,7 @@ public class FeatureOptionsTests
     [InlineData(Feature.OptionAttributionData)]
     [InlineData(Feature.OptionProvideStorage)]
     [InlineData(Feature.OptionScidAlias)]
+    [InlineData(Feature.OptionUpfrontShutdownScript)]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_UnimplementedFeatureIsNotAdvertised(Feature feature)
     {
         // Arrange
@@ -127,5 +128,58 @@ public class FeatureOptionsTests
         Assert.True(result);
         Assert.NotNull(negotiated);
         Assert.True(negotiated.IsFeatureSet(Feature.OptionDataLossProtect, false));
+    }
+
+    [Fact]
+    public void Given_PeerAdvertisesOptionalFeatures_When_Negotiating_Then_OnlyFeaturesBothSupportAreNegotiated()
+    {
+        // Arrange
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+        remote.SetFeature(Feature.OptionUpfrontShutdownScript, false);
+        remote.SetFeature(Feature.OptionSupportLargeChannel, false);
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+        var negotiated = FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.No, negotiated.UpfrontShutdownScript);
+        Assert.Equal(FeatureSupport.Optional, negotiated.LargeChannels);
+        Assert.Equal(FeatureSupport.No, negotiated.DualFund);
+    }
+
+    [Fact]
+    public void Given_PeerRequiresFeatureWeSupportOptionally_When_Negotiating_Then_FeatureIsCompulsory()
+    {
+        // Arrange
+        var local = new FeatureOptions { DualFund = FeatureSupport.Optional }.GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+        remote.SetFeature(Feature.OptionDualFund, true);
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+        var negotiated = FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.Compulsory, negotiated.DualFund);
+    }
+
+    [Fact]
+    public void Given_PeerRequiresUpfrontShutdownScript_When_DefaultOptions_Then_IsNotCompatible()
+    {
+        // Arrange
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions().GetNodeFeatures();
+        remote.SetFeature(Feature.OptionUpfrontShutdownScript, true);
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiated);
+
+        // Assert
+        Assert.False(result);
+        Assert.Null(negotiated);
     }
 }
