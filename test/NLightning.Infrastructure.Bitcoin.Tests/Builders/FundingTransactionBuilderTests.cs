@@ -107,4 +107,63 @@ public class FundingTransactionBuilderTests
         Assert.Equal(LightningMoney.Satoshis(101_518), exception.Required);
         Assert.Equal(LightningMoney.Satoshis(100_500), exception.Available);
     }
+
+    [Fact]
+    public void Given_UtxosInDifferentOrder_When_Building_Then_TxIdIsTheSame()
+    {
+        // Arrange
+        var utxos = CreateBip69Utxos();
+        var shuffled = new List<UtxoModel> { utxos[2], utxos[0], utxos[3], utxos[1] };
+        var model = new FundingTransactionModel(utxos, CreateFundingOutputInfo(), s_fee);
+        var shuffledModel = new FundingTransactionModel(shuffled, CreateFundingOutputInfo(), s_fee);
+
+        // Act
+        var result = _builder.Build(model);
+        var shuffledResult = _builder.Build(shuffledModel);
+
+        // Assert
+        Assert.Equal((byte[])result.Transaction.TxId, (byte[])shuffledResult.Transaction.TxId);
+        Assert.Equal(result.Transaction.RawTxBytes, shuffledResult.Transaction.RawTxBytes);
+    }
+
+    [Fact]
+    public void Given_MultipleUtxos_When_Building_Then_InputsAreOrderedPerBip69()
+    {
+        // Arrange
+        var utxos = CreateBip69Utxos();
+        var model = new FundingTransactionModel(new List<UtxoModel> { utxos[3], utxos[1], utxos[2], utxos[0] },
+                                                CreateFundingOutputInfo(), s_fee);
+
+        // Act
+        var result = _builder.Build(model);
+        var tx = Transaction.Load(result.Transaction.RawTxBytes, Network.Main);
+
+        // Assert
+        Assert.Equal(utxos.Count, tx.Inputs.Count);
+        for (var i = 0; i < utxos.Count; i++)
+        {
+            Assert.Equal(new uint256(utxos[i].TxId), tx.Inputs[i].PrevOut.Hash);
+            Assert.Equal(utxos[i].Index, tx.Inputs[i].PrevOut.N);
+        }
+    }
+
+    /// <summary>
+    /// Returns UTXOs already in BIP 69 order. The txid comparison uses the display (reversed) byte order, so a txid
+    /// whose last internal byte is 0x01 sorts after one whose first internal byte is 0xff.
+    /// </summary>
+    private static List<UtxoModel> CreateBip69Utxos()
+    {
+        var lowTxId = new byte[32];
+        lowTxId[0] = 0xff; // display hex "00...ff"
+        var highTxId = new byte[32];
+        highTxId[31] = 0x01; // display hex "01...00"
+
+        return
+        [
+            new UtxoModel(lowTxId, 0, LightningMoney.Satoshis(40_000), 100, 0, false, AddressType.P2Wpkh),
+            new UtxoModel(lowTxId, 2, LightningMoney.Satoshis(40_000), 100, 0, false, AddressType.P2Wpkh),
+            new UtxoModel(highTxId, 0, LightningMoney.Satoshis(40_000), 100, 0, false, AddressType.P2Wpkh),
+            new UtxoModel(highTxId, 1, LightningMoney.Satoshis(40_000), 100, 0, false, AddressType.P2Wpkh)
+        ];
+    }
 }

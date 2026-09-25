@@ -48,8 +48,12 @@ public class FundingTransactionBuilder : IFundingTransactionBuilder
         // Set the transaction version as per BOLT spec
         tx.Version = TransactionConstants.FundingTransactionVersion;
 
-        // Add all inputs from the UTXO set
-        foreach (var coin in coins)
+        // Add all inputs from the UTXO set, ordered per BIP 69 (previous txid in display byte order, then vout), so
+        // rebuilding the transaction from the same UTXOs always yields the same txid regardless of their source order
+        var orderedCoins = coins.OrderBy(c => Enumerable.Reverse((byte[])c.TxId).ToArray(),
+                                         ByteArrayLexicographicComparer.Instance)
+                                .ThenBy(c => c.Index);
+        foreach (var coin in orderedCoins)
             tx.Inputs.Add(new OutPoint(new uint256(coin.TxId), coin.Index));
 
         // Convert and add the funding output
