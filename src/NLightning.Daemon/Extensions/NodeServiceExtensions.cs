@@ -169,6 +169,15 @@ public static class NodeServiceExtensions
 
                          options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];
                      })
+                    .Validate(options =>
+                     {
+                         // BOLT 9: every advertised feature must have its dependencies set
+                         var errors = options.Features.GetValidationErrors();
+                         if (errors.Count > 0)
+                             throw new OptionsValidationException("Node", typeof(NodeOptions), errors);
+
+                         return true;
+                     })
                     .ValidateOnStart();
         });
     }

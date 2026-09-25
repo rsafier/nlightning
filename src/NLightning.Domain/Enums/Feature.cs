@@ -137,6 +137,14 @@ public enum Feature
     OptionOnionMessages = 39,
 
     /// <summary>
+    /// 40 is for the compulsory bit, 41 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Zero-fee commitment and HTLC transactions (not supported; known so dependencies can be validated).
+    /// </remarks>
+    ZeroFeeCommitments = 41,
+
+    /// <summary>
     /// 42 is for the compulsory bit, 43 is for the optional bit.
     /// </summary>
     /// <remarks>
@@ -182,5 +190,21 @@ public enum Feature
     /// <remarks>
     /// This feature is optional and is used to indicate that the node supports simple close.
     /// </remarks>
-    OptionSimpleClose = 61
+    OptionSimpleClose = 61,
+
+    /// <summary>
+    /// 62 is for the compulsory bit, 63 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Channel splicing (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionSplice = 63,
+
+    /// <summary>
+    /// 66 is for the compulsory bit, 67 is for the optional bit.
+    /// </summary>
+    /// <remarks>
+    /// Only accepts onion messages from peers with a channel (not supported; known so dependencies can be validated).
+    /// </remarks>
+    OptionOnionMessagesOnlyChannels = 67
 }

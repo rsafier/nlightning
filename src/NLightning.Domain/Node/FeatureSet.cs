@@ -13,13 +13,60 @@ using Enums;
 public class FeatureSet
 {
     /// <summary>
-    /// Some features are dependent on other features. This dictionary contains the dependencies.
+    /// Some features are dependent on other features. This dictionary contains the dependencies, as listed in the
+    /// Dependencies column of BOLT 9.
     /// </summary>
+    /// <remarks>
+    /// Dependencies on features that BOLT 9 now marks ASSUMED (e.g. anchors -> static_remotekey,
+    /// payment_secret -> var_onion_optin) are intentionally not listed: peers may omit ASSUMED bits, so requiring
+    /// them would disconnect spec-compliant peers. gossip_queries_ex no longer depends on gossip_queries.
+    /// </remarks>
     private static readonly Dictionary<Feature, Feature[]> s_featureDependencies = new()
     {
         // This \/ --- Depends on this \/
-        { Feature.GossipQueriesEx, [Feature.GossipQueries] },
+        { Feature.BasicMpp, [Feature.PaymentSecret] },
+        { Feature.ZeroFeeCommitments, [Feature.OptionChannelType] },
         { Feature.OptionZeroconf, [Feature.OptionScidAlias] },
+        { Feature.OptionSimpleClose, [Feature.OptionShutdownAnySegwit] },
+        { Feature.OptionOnionMessagesOnlyChannels, [Feature.OptionOnionMessages] },
+    };
+
+    private const FeatureContext InitAndNode = FeatureContext.Init | FeatureContext.NodeAnnouncement;
+
+    /// <summary>
+    /// The contexts each known feature may be presented in (the Context column of BOLT 9).
+    /// </summary>
+    /// <remarks>
+    /// ASSUMED features keep the contexts of the last spec revision that defined them, because implementations still
+    /// require some of them (e.g. data_loss_protect) in <c>init</c>.
+    /// </remarks>
+    private static readonly Dictionary<Feature, FeatureContext> s_featureContexts = new()
+    {
+        { Feature.OptionDataLossProtect, InitAndNode },
+        { Feature.OptionUpfrontShutdownScript, InitAndNode },
+        { Feature.GossipQueries, InitAndNode },
+        { Feature.VarOnionOptin, InitAndNode | FeatureContext.Invoice },
+        { Feature.GossipQueriesEx, InitAndNode },
+        { Feature.OptionStaticRemoteKey, InitAndNode | FeatureContext.ChannelType },
+        { Feature.PaymentSecret, InitAndNode | FeatureContext.Invoice },
+        { Feature.BasicMpp, InitAndNode | FeatureContext.Invoice },
+        { Feature.OptionSupportLargeChannel, InitAndNode },
+        { Feature.OptionAnchors, InitAndNode | FeatureContext.ChannelType },
+        { Feature.OptionRouteBlinding, InitAndNode | FeatureContext.Invoice },
+        { Feature.OptionShutdownAnySegwit, InitAndNode },
+        { Feature.OptionDualFund, InitAndNode },
+        { Feature.OptionQuiesce, InitAndNode },
+        { Feature.OptionAttributionData, InitAndNode | FeatureContext.Invoice },
+        { Feature.OptionOnionMessages, InitAndNode },
+        { Feature.ZeroFeeCommitments, InitAndNode },
+        { Feature.OptionProvideStorage, InitAndNode },
+        { Feature.OptionChannelType, InitAndNode },
+        { Feature.OptionScidAlias, InitAndNode | FeatureContext.ChannelType },
+        { Feature.OptionPaymentMetadata, FeatureContext.Invoice },
+        { Feature.OptionZeroconf, InitAndNode | FeatureContext.ChannelType },
+        { Feature.OptionSimpleClose, InitAndNode },
+        { Feature.OptionSplice, InitAndNode },
+        { Feature.OptionOnionMessagesOnlyChannels, InitAndNode },
     };
 
     internal BitArray FeatureFlags;
@@ -67,7 +114,8 @@ public class FeatureSet
     /// <param name="isSet">true to set the feature, false to unset it</param>
     /// <remarks>
     /// If the feature has dependencies, they will be set first.
-    /// The dependencies keep the same isCompulsory value as the feature being set.
+    /// A dependency that is not set yet is set with the same isCompulsory value as the feature being set; one that is
+    /// already set is only ever upgraded to compulsory, never downgraded to optional.
     /// </remarks>
     public void SetFeature(Feature feature, bool isCompulsory, bool isSet = true)
     {
@@ -77,7 +125,10 @@ public class FeatureSet
             if (s_featureDependencies.TryGetValue(feature, out var dependencies))
             {
                 foreach (var dependency in dependencies)
-                    SetFeature(dependency, isCompulsory, isSet);
+                {
+                    if (!HasFeature(dependency) || (isCompulsory && !IsFeatureSet(dependency, true)))
+                        SetFeature(dependency, isCompulsory, isSet);
+                }
             }
         }
         else // If we're unsetting the feature, and it has dependents, unset them first
@@ -190,10 +241,17 @@ public class FeatureSet
     /// <returns>true if the feature sets are compatible, false otherwise.</returns>
     /// <remarks>
     /// The other feature set must support the var_onion_optin feature.
-    /// The other feature set must have all the dependencies set.
+    /// Both this and the other feature set must have all the dependencies set.
     /// </remarks>
     public bool IsCompatible(FeatureSet other, out FeatureSet? negotiatedFeatureSet)
     {
+        // Our own feature set must be well-formed (BOLT 9: MUST set all transitive feature dependencies)
+        if (!AreDependenciesSet())
+        {
+            negotiatedFeatureSet = null;
+            return false;
+        }
+
         // Check if the other node supports var_onion_optin
         if (!other.IsFeatureSet(Feature.VarOnionOptin, false) && !other.IsFeatureSet(Feature.VarOnionOptin, true))
         {
@@ -204,8 +262,8 @@ public class FeatureSet
         // Check which one is bigger and iterate on it
         var maxLength = Math.Max(FeatureFlags.Length, other.FeatureFlags.Length);
 
-        // Create a temporary feature set to store the negotiated features
-        negotiatedFeatureSet = new FeatureSet();
+        // Create an empty feature set to store the negotiated features
+        negotiatedFeatureSet = CreateEmpty(maxLength);
         for (var i = 1; i < maxLength; i += 2)
         {
             var isLocalOptionalSet = IsFeatureSet(i, false);
@@ -242,13 +300,15 @@ public class FeatureSet
                     return false;
                 }
 
+                // Record the negotiated feature: compulsory (even bit) if either side requires it, optional (odd bit)
+                // if both sides support it
                 if (isOtherCompulsorySet || isLocalCompulsorySet)
                 {
-                    negotiatedFeatureSet.SetFeature(i, true);
+                    negotiatedFeatureSet.SetFeature(i - 1, true);
                 }
                 else if (isLocalOptionalSet && isOtherOptionalSet)
                 {
-                    negotiatedFeatureSet.SetFeature(i, false);
+                    negotiatedFeatureSet.SetFeature(i, true);
                 }
             }
         }
@@ -396,30 +456,76 @@ public class FeatureSet
     /// </summary>
     /// <returns>true if all dependencies are set, false otherwise.</returns>
     /// <remarks>
-    /// This method is used to check if all dependencies are set when a feature is set.
+    /// Checking every set feature's direct dependencies also covers transitive dependencies.
     /// </remarks>
-    private bool AreDependenciesSet()
+    public bool AreDependenciesSet() => GetMissingDependencies().Count == 0;
+
+    /// <summary>
+    /// Gets every (feature, dependency) pair where the feature is set but its dependency is not.
+    /// </summary>
+    public IReadOnlyList<(Feature Feature, Feature Dependency)> GetMissingDependencies()
     {
-        // Check if all known (Feature Enum) dependencies are set if the feature is set
-        foreach (var feature in Enum.GetValues<Feature>())
+        var missing = new List<(Feature, Feature)>();
+        foreach (var (feature, dependencies) in s_featureDependencies)
         {
-            if (!IsFeatureSet((int)feature, false) && !IsFeatureSet((int)feature, true))
+            if (!HasFeature(feature))
                 continue;
 
-            if (!s_featureDependencies.TryGetValue(feature, out var dependencies))
-                continue;
-
-            if (dependencies.Any(dependency => !IsFeatureSet(dependency, false) && !IsFeatureSet(dependency, true)))
-                return false;
+            missing.AddRange(dependencies.Where(dependency => !HasFeature(dependency))
+                                         .Select(dependency => (feature, dependency)));
         }
 
-        return true;
+        return missing;
+    }
+
+    /// <summary>
+    /// Gets the contexts a known feature may be presented in.
+    /// </summary>
+    /// <returns>The contexts, or <see cref="FeatureContext.None"/> for unknown features.</returns>
+    public static FeatureContext GetContexts(Feature feature) =>
+        s_featureContexts.GetValueOrDefault(feature, FeatureContext.None);
+
+    /// <summary>
+    /// Gets the dependencies of a known feature.
+    /// </summary>
+    public static IReadOnlyList<Feature> GetDependencies(Feature feature) =>
+        s_featureDependencies.TryGetValue(feature, out var dependencies) ? dependencies : [];
+
+    /// <summary>
+    /// Creates a copy of this feature set that only keeps the known features that may be presented in the given
+    /// context.
+    /// </summary>
+    /// <param name="context">The context(s) the features will be presented in.</param>
+    /// <returns>A new, filtered, feature set.</returns>
+    /// <remarks>
+    /// BOLT 9: the origin node MUST NOT set feature bits in fields not specified by the table, and MUST NOT set
+    /// feature bits it does not support, so unknown bits are dropped too.
+    /// </remarks>
+    public FeatureSet FilterByContext(FeatureContext context)
+    {
+        var filtered = CreateEmpty(FeatureFlags.Length);
+        foreach (var (feature, contexts) in s_featureContexts)
+        {
+            if ((contexts & context) == FeatureContext.None)
+                continue;
+
+            var optionalBit = (int)feature;
+            if (IsFeatureSet(optionalBit))
+                filtered.SetFeature(optionalBit, true);
+
+            if (IsFeatureSet(optionalBit - 1))
+                filtered.SetFeature(optionalBit - 1, true);
+        }
+
+        return filtered;
     }
 
     private void OnChanged()
     {
         Changed?.Invoke(this, EventArgs.Empty);
     }
+
+    private static FeatureSet CreateEmpty(int length) => new() { FeatureFlags = new BitArray(length) };
 
     private static int GetLastIndexOfOne(BitArray bitArray, bool asGlobal = false)
     {
