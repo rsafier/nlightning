@@ -25,6 +25,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 public class ChannelManager : IChannelManager
 {
+    private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<ChannelManager> _logger;
     private readonly ILightningSigner _lightningSigner;
@@ -32,10 +33,11 @@ public class ChannelManager : IChannelManager
 
     public event EventHandler<ChannelResponseMessageEventArgs>? OnResponseMessageReady;
 
-    public ChannelManager(IBlockchainMonitor blockchainMonitor, IChannelMemoryRepository channelMemoryRepository,
-                          ILogger<ChannelManager> logger, ILightningSigner lightningSigner,
-                          IServiceProvider serviceProvider)
+    public ChannelManager(IBlockchainMonitor blockchainMonitor, IChannelLockProvider channelLockProvider,
+                          IChannelMemoryRepository channelMemoryRepository, ILogger<ChannelManager> logger,
+                          ILightningSigner lightningSigner, IServiceProvider serviceProvider)
     {
+        _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
         _serviceProvider = serviceProvider;
         _logger = logger;
@@ -78,20 +80,28 @@ public class ChannelManager : IChannelManager
 
     /// <inheritdoc />
     /// <remarks>
+    /// The channel's lock (keyed by the message's channel id, or temporary_channel_id) is held from before the handler
+    /// runs until its replies have been raised through <see cref="OnResponseMessageReady"/>, so two messages for one
+    /// channel never run concurrently (with each other or with a block event) and their replies keep persist order.
     /// Every <see cref="ChannelErrorException"/> or <see cref="ChannelWarningException"/> leaving this method carries
     /// the channel id (or temporary_channel_id) of <paramref name="message"/>, so the peer gets an `error`/`warning`
     /// scoped to that channel. BOLT 1: an `error` with an all-zero channel_id tells the peer to fail every channel with
     /// us, so a channel-scoped failure must never lose its channel id.
     /// </remarks>
-    public async Task<IChannelMessage?> HandleChannelMessageAsync(IChannelMessage message,
-                                                                  FeatureOptions negotiatedFeatures,
-                                                                  CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleChannelMessageAsync(IChannelMessage message,
+                                                                                FeatureOptions negotiatedFeatures,
+                                                                                CompactPubKey peerPubKey)
     {
         var channelId = message.Payload.ChannelId;
 
         try
         {
-            return await DispatchChannelMessageAsync(message, channelId, negotiatedFeatures, peerPubKey);
+            using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+
+            var replies = await DispatchChannelMessageAsync(message, channelId, negotiatedFeatures, peerPubKey);
+            RaiseResponseMessages(peerPubKey, replies);
+
+            return replies;
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
         {
@@ -107,6 +117,15 @@ public class ChannelManager : IChannelManager
     }
 
     /// <summary>
+    /// Hands <paramref name="messages"/> to the subscribers in order. Call it while holding the channel's lock.
+    /// </summary>
+    private void RaiseResponseMessages(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages)
+    {
+        foreach (var message in messages)
+            OnResponseMessageReady?.Invoke(this, new ChannelResponseMessageEventArgs(peerPubKey, message));
+    }
+
+    /// <summary>
     /// True when <paramref name="channelId"/> names a single channel (it is set and not all-zero).
     /// </summary>
     private static bool IsChannelScoped(ChannelId? channelId)
@@ -114,9 +133,8 @@ public class ChannelManager : IChannelManager
         return channelId is not null && channelId.Value != ChannelId.Zero;
     }
 
-    private async Task<IChannelMessage?> DispatchChannelMessageAsync(IChannelMessage message, ChannelId channelId,
-                                                                     FeatureOptions negotiatedFeatures,
-                                                                     CompactPubKey peerPubKey)
+    private async Task<IReadOnlyList<IChannelMessage>> DispatchChannelMessageAsync(
+        IChannelMessage message, ChannelId channelId, FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
     {
         using var scope = _serviceProvider.CreateScope();
 
@@ -309,7 +327,21 @@ public class ChannelManager : IChannelManager
             heightLimit, staleChannels.Count);
 
         foreach (var staleChannel in staleChannels)
+            _ = ForgetStaleChannelAsync(staleChannel, heightLimit, currentHeight);
+    }
+
+    /// <summary>
+    /// Marks one channel Stale and persists it under the channel's lock, re-checking first: a message or a funding
+    /// confirmation may have moved the channel on since it was selected.
+    /// </summary>
+    private async Task ForgetStaleChannelAsync(ChannelModel staleChannel, int heightLimit, int currentHeight)
+    {
+        try
         {
+            using var channelLock = await _channelLockProvider.AcquireAsync(staleChannel.ChannelId);
+            if (!IsAwaitingFundingAndStale(staleChannel, heightLimit))
+                return;
+
             _logger.LogInformation(
                 "Forgetting stale channel {ChannelId} with funding created at block height {BlockHeight}",
                 staleChannel.ChannelId, staleChannel.FundingCreatedAtBlockHeight);
@@ -319,19 +351,12 @@ public class ChannelManager : IChannelManager
             _channelMemoryRepository.UpdateChannel(staleChannel);
 
             // Persist on Db
-            try
-            {
-                PersistChannelAsync(staleChannel).ContinueWith(task =>
-                {
-                    _logger.LogError(task.Exception, "Error while marking channel {channelId} as stale.",
-                                     staleChannel.ChannelId);
-                }, TaskContinuationOptions.OnlyOnFaulted);
-            }
-            catch (Exception e)
-            {
-                _logger.LogError(e, "Failed to persist stale channel {ChannelId} to database at height {currentHeight}",
-                                 staleChannel.ChannelId, currentHeight);
-            }
+            await PersistChannelAsync(staleChannel);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Failed to persist stale channel {ChannelId} to database at height {currentHeight}",
+                             staleChannel.ChannelId, currentHeight);
         }
     }
 
@@ -349,6 +374,11 @@ public class ChannelManager : IChannelManager
 
         foreach (var channel in channelsWithoutHeight)
         {
+            // Mutate and persist under the channel's lock, re-checking first (it may have moved on meanwhile)
+            using var channelLock = _channelLockProvider.Acquire(channel.ChannelId);
+            if (!IsAwaitingFundingWithoutCreationHeight(channel))
+                continue;
+
             _logger.LogInformation(
                 "Channel {ChannelId} has no funding creation height, starting its unconfirmed timeout at {BlockHeight}",
                 channel.ChannelId, currentHeight);
@@ -359,22 +389,13 @@ public class ChannelManager : IChannelManager
             try
             {
                 uow.ChannelDbRepository.UpdateAsync(channel).GetAwaiter().GetResult();
+                uow.SaveChangesAsync().GetAwaiter().GetResult();
             }
             catch (Exception e)
             {
                 _logger.LogError(e, "Failed to persist funding creation height for channel {ChannelId}",
                                  channel.ChannelId);
             }
-        }
-
-        try
-        {
-            uow.SaveChangesAsync().GetAwaiter().GetResult();
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Failed to persist funding creation heights at block height {BlockHeight}",
-                             currentHeight);
         }
     }
 
@@ -461,54 +482,63 @@ public class ChannelManager : IChannelManager
             return;
         }
 
-        // Create a scope to handle the funding confirmation
-        var scope = _serviceProvider.CreateScope();
+        _ = ConfirmFundingAsync(args.WatchedTransaction.ChannelId, args.WatchedTransaction.FirstSeenAtHeight.Value,
+                                args.WatchedTransaction.TransactionIndex.Value);
+    }
 
-        var channelId = args.WatchedTransaction.ChannelId;
-        // Check if the transaction is a funding transaction for any channel
-        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+    /// <summary>
+    /// Runs the funding confirmation of one channel under its lock, so it can't interleave with that channel's peer
+    /// messages or with another confirmation, and its channel_ready is enqueued before the lock is released.
+    /// </summary>
+    private async Task ConfirmFundingAsync(ChannelId channelId, uint firstSeenAtHeight, uint transactionIndex)
+    {
+        try
         {
-            // Channel isn't found in memory, check the database
-            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            channel = uow.ChannelDbRepository.GetByIdAsync(channelId).GetAwaiter().GetResult();
-            if (channel is null)
+            using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+
+            // Create a scope to handle the funding confirmation
+            using var scope = _serviceProvider.CreateScope();
+
+            // Check if the transaction is a funding transaction for any channel
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
             {
-                _logger.LogError("Funding confirmation for unknown channel {ChannelId}", channelId);
+                // Channel isn't found in memory, check the database
+                var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                channel = await uow.ChannelDbRepository.GetByIdAsync(channelId);
+                if (channel is null)
+                {
+                    _logger.LogError("Funding confirmation for unknown channel {ChannelId}", channelId);
+                    return;
+                }
+
+                _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
+                _channelMemoryRepository.AddChannel(channel);
+            }
+
+            // Funding confirmation is only processed once per channel
+            if (!IsAwaitingOurFundingConfirmation(channel))
+            {
+                _logger.LogDebug("Ignoring funding confirmation for channel {ChannelId} in state {State}", channelId,
+                                 Enum.GetName(channel.State));
                 return;
             }
 
-            _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
-            _channelMemoryRepository.AddChannel(channel);
+            var fundingConfirmedHandler = scope.ServiceProvider.GetRequiredService<FundingConfirmedMessageHandler>();
+
+            // If we get a response, raise it right away (synchronously, while we hold the channel's lock)
+            var remoteNodeId = channel.RemoteNodeId;
+            fundingConfirmedHandler.OnMessageReady += (_, message) => RaiseResponseMessages(remoteNodeId, [message]);
+
+            // Add confirmation information to the channel
+            channel.FundingCreatedAtBlockHeight = firstSeenAtHeight;
+            channel.ShortChannelId = new ShortChannelId(firstSeenAtHeight, transactionIndex,
+                                                        channel.FundingOutput.Index!.Value);
+
+            await fundingConfirmedHandler.HandleAsync(channel);
         }
-
-        // Funding confirmation is only processed once per channel
-        if (!IsAwaitingOurFundingConfirmation(channel))
+        catch (Exception e)
         {
-            _logger.LogDebug("Ignoring funding confirmation for channel {ChannelId} in state {State}", channelId,
-                             Enum.GetName(channel.State));
-            scope.Dispose();
-            return;
+            _logger.LogError(e, "Error while handling funding confirmation for channel {channelId}", channelId);
         }
-
-        var fundingConfirmedHandler = scope.ServiceProvider.GetRequiredService<FundingConfirmedMessageHandler>();
-
-        // If we get a response, raise the event with the message
-        fundingConfirmedHandler.OnMessageReady += (_, message) =>
-            OnResponseMessageReady?.Invoke(this, new ChannelResponseMessageEventArgs(channel.RemoteNodeId, message));
-
-        // Add confirmation information to the channel
-        channel.FundingCreatedAtBlockHeight = args.WatchedTransaction.FirstSeenAtHeight.Value;
-        channel.ShortChannelId = new ShortChannelId(args.WatchedTransaction.FirstSeenAtHeight.Value,
-                                                    args.WatchedTransaction.TransactionIndex.Value,
-                                                    channel.FundingOutput.Index!.Value);
-
-        fundingConfirmedHandler.HandleAsync(channel).ContinueWith(task =>
-        {
-            if (task.IsFaulted)
-                _logger.LogError(task.Exception, "Error while handling funding confirmation for channel {channelId}",
-                                 channel.ChannelId);
-
-            scope.Dispose();
-        });
     }
 }

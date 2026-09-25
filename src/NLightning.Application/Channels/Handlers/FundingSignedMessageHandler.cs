@@ -52,8 +52,9 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         _utxoMemoryRepository = utxoMemoryRepository;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(FundingSignedMessage message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        FundingSignedMessage message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         if (_logger.IsEnabled(LogLevel.Trace))
             _logger.LogTrace("Processing FundingCreatedMessage with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
@@ -114,7 +115,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         // Save to the database
         await PersistChannelAsync(channel);
 
-        return null;
+        return [];
     }
 
     /// <summary>

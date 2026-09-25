@@ -187,7 +187,7 @@ public class FundingCreatedMessageHandlerTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<FundingSignedMessage>(result);
+        Assert.IsType<FundingSignedMessage>(Assert.Single(result));
 
         // Verify transaction ID and output index were set on the channel
         Assert.Equal(_fundingTxId, _channel.FundingOutput?.TransactionId);

@@ -70,8 +70,9 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
         _utxoMemoryRepository = utxoMemoryRepository;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(AcceptChannel1Message message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        AcceptChannel1Message message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         if (_logger.IsEnabled(LogLevel.Trace))
             _logger.LogTrace("Processing AcceptChannel1Message with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
@@ -220,7 +221,7 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             // Update the locked utxos
             _utxoMemoryRepository.UpgradeChannelIdOnLockedUtxos(oldChannelId, tempChannel.ChannelId);
 
-            return fundingCreatedMessage;
+            return [fundingCreatedMessage];
         }
         catch (Exception e)
         {

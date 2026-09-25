@@ -128,7 +128,7 @@ public class OpenChannel1MessageHandlerTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<AcceptChannel1Message>(result);
+        Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
 
         _mockChannelFactory.Verify(
             x => x.CreateChannelV1AsNonInitiatorAsync(_validMessage, _negotiatedFeatures, _peerPubKey),
@@ -209,7 +209,7 @@ public class OpenChannel1MessageHandlerTests
         var result = await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
 
         // Assert
-        Assert.NotNull(result);
+        Assert.Single(result);
 
         _mockMessageFactory.Verify(
             x => x.CreateAcceptChannel1Message(It.IsAny<LightningMoney>(), It.IsAny<ChannelTypeTlv>(),
@@ -278,6 +278,6 @@ public class OpenChannel1MessageHandlerTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<AcceptChannel1Message>(result);
+        Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
     }
 }
