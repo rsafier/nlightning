@@ -22,6 +22,8 @@ public class FailureCodeTests
         (FailureCode.IncorrectCltvExpiry, 0x100D),
         (FailureCode.ExpiryTooSoon, 0x100E),
         (FailureCode.IncorrectOrUnknownPaymentDetails, 0x400F),
+        (FailureCode.IncorrectPaymentAmount, 0x4010),
+        (FailureCode.FinalExpiryTooSoon, 0x0011),
         (FailureCode.FinalIncorrectCltvExpiry, 0x0012),
         (FailureCode.FinalIncorrectHtlcAmount, 0x0013),
         (FailureCode.ChannelDisabled, 0x1014),
@@ -64,7 +66,7 @@ public class FailureCodeTests
         var all = Enum.GetValues<FailureCode>();
 
         // Assert
-        Assert.Equal(22, all.Length);
+        Assert.Equal(24, all.Length);
         Assert.All(all, code => Assert.Contains(code, expected));
     }
 
@@ -105,6 +107,8 @@ public class FailureCodeTests
     [InlineData(FailureCode.InvalidOnionPayload, false, true, false, false)]
     [InlineData(FailureCode.FinalIncorrectCltvExpiry, false, false, false, false)]
     [InlineData(FailureCode.MppTimeout, false, false, false, false)]
+    [InlineData(FailureCode.IncorrectPaymentAmount, false, true, false, false)]
+    [InlineData(FailureCode.FinalExpiryTooSoon, false, false, false, false)]
     public void Given_FailureCode_When_CheckingFlags_Then_FlagsMatchSpec(FailureCode code, bool badOnion, bool perm,
                                                                           bool node, bool update)
     {

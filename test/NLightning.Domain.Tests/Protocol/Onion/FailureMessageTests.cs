@@ -29,6 +29,8 @@ public class FailureMessageTests
         { "incorrect_cltv_expiry", FailureCode.IncorrectCltvExpiry, "000c35000003aabbcc" },
         { "expiry_too_soon", FailureCode.ExpiryTooSoon, "0000" },
         { "incorrect_or_unknown_payment_details", FailureCode.IncorrectOrUnknownPaymentDetails, "0000000000000064000c3500" },
+        { "incorrect_payment_amount", FailureCode.IncorrectPaymentAmount, "" },
+        { "final_expiry_too_soon", FailureCode.FinalExpiryTooSoon, "" },
         { "final_incorrect_cltv_expiry", FailureCode.FinalIncorrectCltvExpiry, "00000090" },
         { "final_incorrect_htlc_amount", FailureCode.FinalIncorrectHtlcAmount, "0000000000002710" },
         { "channel_disabled", FailureCode.ChannelDisabled, "00000003aabbcc" },
@@ -59,6 +61,8 @@ public class FailureMessageTests
             "expiry_too_soon" => FailureMessage.ExpiryTooSoon(),
             "incorrect_or_unknown_payment_details" =>
                 FailureMessage.IncorrectOrUnknownPaymentDetails(LightningMoney.MilliSatoshis(100UL), 800_000),
+            "incorrect_payment_amount" => FailureMessage.IncorrectPaymentAmount(),
+            "final_expiry_too_soon" => FailureMessage.FinalExpiryTooSoon(),
             "final_incorrect_cltv_expiry" => FailureMessage.FinalIncorrectCltvExpiry(144),
             "final_incorrect_htlc_amount" => FailureMessage.FinalIncorrectHtlcAmount(LightningMoney.Satoshis(10UL)),
             "channel_disabled" => FailureMessage.ChannelDisabled(0, s_channelUpdate),

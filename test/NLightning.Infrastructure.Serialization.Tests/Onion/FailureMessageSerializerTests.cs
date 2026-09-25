@@ -39,6 +39,8 @@ public class FailureMessageSerializerTests
         { FailureCode.IncorrectCltvExpiry, "100d" + "000c3500" + "0088" + Hex(s_channelUpdate) },
         { FailureCode.ExpiryTooSoon, "100e" + "0000" },
         { FailureCode.IncorrectOrUnknownPaymentDetails, "400f" + "0000000000000064" + "000c3500" },
+        { FailureCode.IncorrectPaymentAmount, "4010" },
+        { FailureCode.FinalExpiryTooSoon, "0011" },
         { FailureCode.FinalIncorrectCltvExpiry, "0012" + "00000090" },
         { FailureCode.FinalIncorrectHtlcAmount, "0013" + "0000000000002710" },
         { FailureCode.ChannelDisabled, "1014" + "0000" + "0088" + Hex(s_channelUpdate) },
@@ -298,6 +300,8 @@ public class FailureMessageSerializerTests
             FailureCode.ChannelDisabled => FailureMessage.ChannelDisabled(0, s_channelUpdate),
             FailureCode.ExpiryTooFar => FailureMessage.ExpiryTooFar(),
             FailureCode.InvalidOnionPayload => FailureMessage.InvalidOnionPayload(new BigSize(301), 21),
+            FailureCode.IncorrectPaymentAmount => FailureMessage.IncorrectPaymentAmount(),
+            FailureCode.FinalExpiryTooSoon => FailureMessage.FinalExpiryTooSoon(),
             FailureCode.MppTimeout => FailureMessage.MppTimeout(),
             FailureCode.InvalidOnionBlinding => FailureMessage.InvalidOnionBlinding(s_sha256OfOnion),
             _ => throw new ArgumentOutOfRangeException(nameof(code), code, null)
