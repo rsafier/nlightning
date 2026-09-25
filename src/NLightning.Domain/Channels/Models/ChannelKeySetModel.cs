@@ -15,21 +15,11 @@ public class ChannelKeySetModel
     public CompactPubKey CurrentPerCommitmentCompactPoint { get; private set; }
     public ulong CurrentPerCommitmentIndex { get; private set; }
 
-    /// <summary>
-    /// Legacy single-secret store, kept only so the existing <c>ChannelKeySets.LastRevealedPerCommitmentSecret</c>
-    /// column still round-trips. Nothing writes it any more: the peer's revealed secrets live in the shachain
-    /// (<c>ISecretStorageService</c> + <c>IRemoteShachainDbRepository</c>, BOLT2 plan N3-T4 / G19), which is the only
-    /// source for <c>your_last_per_commitment_secret</c> and penalty data.
-    /// </summary>
-    [Obsolete("Use the shachain (ISecretStorageService + IRemoteShachainDbRepository) for the peer's secrets")]
-    public byte[]? LastRevealedPerCommitmentSecret { get; private set; }
-
     public ChannelKeySetModel(uint keyIndex, CompactPubKey fundingCompactPubKey,
                               CompactPubKey revocationCompactBasepoint, CompactPubKey paymentCompactBasepoint,
                               CompactPubKey delayedPaymentCompactBasepoint, CompactPubKey htlcCompactBasepoint,
                               CompactPubKey currentPerCommitmentCompactPoint,
-                              ulong currentPerCommitmentIndex = CryptoConstants.FirstPerCommitmentIndex,
-                              byte[]? lastRevealedPerCommitmentSecret = null)
+                              ulong currentPerCommitmentIndex = CryptoConstants.FirstPerCommitmentIndex)
     {
         KeyIndex = keyIndex;
         FundingCompactPubKey = fundingCompactPubKey;
@@ -39,9 +29,6 @@ public class ChannelKeySetModel
         HtlcCompactBasepoint = htlcCompactBasepoint;
         CurrentPerCommitmentCompactPoint = currentPerCommitmentCompactPoint;
         CurrentPerCommitmentIndex = currentPerCommitmentIndex;
-#pragma warning disable CS0618 // legacy column round-trip only
-        LastRevealedPerCommitmentSecret = lastRevealedPerCommitmentSecret;
-#pragma warning restore CS0618
     }
 
     public void UpdatePerCommitmentPoint(CompactPubKey newPoint)

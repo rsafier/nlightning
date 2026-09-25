@@ -158,6 +158,22 @@ public sealed class ChannelMigrationDataTests : IAsyncDisposable
         Assert.Equal(1UL, channel.RemoteNextHtlcId);
     }
 
+    [Fact]
+    public async Task Given_RowsFromBeforeAddCommitmentState_When_Migrated_Then_DataStepsRunAndCommitmentStateRoundTrips()
+    {
+        // Arrange
+        await _connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(_connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert (N5-T1: legacy HTLC rows keep their onion and are refused, NL-025; channel_ready's point
+        // becomes the remote next point, NL-232)
+        await CommitmentStateMigrationRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _connection.DisposeAsync();

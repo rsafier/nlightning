@@ -54,6 +54,15 @@ public static class ChannelEntityConfiguration
                   .HasConversion<ShortChannelIdConverter>()
                   .IsRequired(false);
 
+            // Commitment state (migration AddCommitmentState)
+            entity.Property(e => e.RemoteNextPerCommitmentPoint)
+                  .HasConversion<CompactPubKeyConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.SentCommitDiff).IsRequired(false);
+            entity.Property(e => e.LastSentOrder).IsRequired();
+            entity.Property(e => e.ErrorSent).IsRequired(false);
+            entity.Property(e => e.DataLossDetected).IsRequired();
+
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
                   .WithOne()
@@ -98,5 +107,9 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.RemoteAlias).HasColumnType($"varbinary({ShortChannelId.Length})");
         entity.Property(e => e.ShortChannelId).HasColumnType($"varbinary({ShortChannelId.Length})");
+        entity.Property(e => e.RemoteNextPerCommitmentPoint)
+              .HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
+        entity.Property(e => e.SentCommitDiff).HasColumnType("varbinary(max)");
+        entity.Property(e => e.ErrorSent).HasColumnType("varbinary(max)");
     }
 }

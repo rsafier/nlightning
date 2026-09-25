@@ -3,8 +3,8 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
-using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.Constants;
+using Domain.Crypto.Constants;
 using Entities.Channel;
 using Enums;
 using ValueConverters;
@@ -24,18 +24,23 @@ public static class HtlcEntityConfiguration
             entity.Property(e => e.AmountMsat).IsRequired();
             entity.Property(e => e.CltvExpiry).IsRequired();
             entity.Property(e => e.State).IsRequired();
-            entity.Property(e => e.ObscuredCommitmentNumber).IsRequired();
 
             // Required byte[] properties
             entity.Property(h => h.ChannelId)
                   .HasConversion<ChannelIdConverter>()
                   .IsRequired();
             entity.Property(h => h.PaymentHash).IsRequired();
-            entity.Property(h => h.AddMessageBytes).IsRequired();
+            entity.Property(h => h.OnionRoutingPacket).IsRequired();
 
-            // Nullable byte[] properties
+            // Nullable properties
+            entity.Property(h => h.PathKey).IsRequired(false);
+            entity.Property(h => h.RemovalKind).IsRequired(false);
             entity.Property(h => h.PaymentPreimage).IsRequired(false);
-            entity.Property(h => h.Signature).IsRequired(false);
+            entity.Property(h => h.FailReason).IsRequired(false);
+            entity.Property(h => h.FailureCode).IsRequired(false);
+            entity.Property(h => h.Sha256OfOnion).IsRequired(false);
+            entity.Property(h => h.KnownPreimage).IsRequired(false);
+            entity.Property(h => h.OnionSharedSecret).IsRequired(false);
 
             if (databaseType == DatabaseType.MicrosoftSql)
             {
@@ -47,8 +52,13 @@ public static class HtlcEntityConfiguration
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<HtlcEntity> entity)
     {
         entity.Property(h => h.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
-        entity.Property(h => h.PaymentHash).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
-        entity.Property(h => h.PaymentPreimage).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
-        entity.Property(h => h.AddMessageBytes).HasColumnType("varbinary(max)");
+        entity.Property(h => h.PaymentHash).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
+        entity.Property(h => h.PaymentPreimage).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
+        entity.Property(h => h.OnionRoutingPacket).HasColumnType("varbinary(max)");
+        entity.Property(h => h.PathKey).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
+        entity.Property(h => h.FailReason).HasColumnType("varbinary(max)");
+        entity.Property(h => h.Sha256OfOnion).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
+        entity.Property(h => h.KnownPreimage).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
+        entity.Property(h => h.OnionSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
     }
 }

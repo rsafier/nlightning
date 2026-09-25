@@ -15,14 +15,12 @@ using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Persistence.Interfaces;
-using Domain.Serialization.Interfaces;
 using Persistence.Contexts;
 
 public class UnitOfWork : IUnitOfWork
 {
     private readonly NLightningDbContext _context;
     private readonly ILogger<UnitOfWork> _logger;
-    private readonly IMessageSerializer _messageSerializer;
     private readonly ISha256 _sha256;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
     private readonly List<(PendingUtxoChange Change, UtxoModel Utxo)> _pendingUtxoChanges = [];
@@ -37,7 +35,7 @@ public class UnitOfWork : IUnitOfWork
     private ChannelConfigDbRepository? _channelConfigDbRepository;
     private ChannelDbRepository? _channelDbRepository;
     private ChannelKeySetDbRepository? _channelKeySetDbRepository;
-    private HtlcDbRepository? _htlcDbRepository;
+    private ChannelStateDbRepository? _channelStateDbRepository;
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
 
     // Node repositories
@@ -58,13 +56,13 @@ public class UnitOfWork : IUnitOfWork
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);
 
     public IChannelDbRepository ChannelDbRepository =>
-        _channelDbRepository ??= new ChannelDbRepository(_context, _messageSerializer, _sha256);
+        _channelDbRepository ??= new ChannelDbRepository(_context, _sha256);
 
     public IChannelKeySetDbRepository ChannelKeySetDbRepository =>
         _channelKeySetDbRepository ??= new ChannelKeySetDbRepository(_context);
 
-    public IHtlcDbRepository HtlcDbRepository =>
-        _htlcDbRepository ??= new HtlcDbRepository(_context, _messageSerializer);
+    public IChannelStateDbRepository ChannelStateDbRepository =>
+        _channelStateDbRepository ??= new ChannelStateDbRepository(_context);
 
     public IRemoteShachainDbRepository RemoteShachainDbRepository =>
         _remoteShachainDbRepository ??= new RemoteShachainDbRepository(_context);
@@ -72,12 +70,11 @@ public class UnitOfWork : IUnitOfWork
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
 
-    public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, IMessageSerializer messageSerializer,
-                      ISha256 sha256, IUtxoMemoryRepository utxoMemoryRepository)
+    public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
+                      IUtxoMemoryRepository utxoMemoryRepository)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger;
-        _messageSerializer = messageSerializer;
         _sha256 = sha256;
         _utxoMemoryRepository = utxoMemoryRepository;
     }

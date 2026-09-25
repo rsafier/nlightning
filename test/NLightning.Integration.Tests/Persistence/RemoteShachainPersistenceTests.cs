@@ -230,7 +230,7 @@ public class RemoteShachainPersistenceTests
         var channel = SqliteDbTestContext.CreateChannel(true);
 
         await using var context = db.CreateDbContext();
-        await new ChannelDbRepository(context, db.MessageSerializer, db.Sha256).AddAsync(channel);
+        await new ChannelDbRepository(context, db.Sha256).AddAsync(channel);
         await context.SaveChangesAsync(TestContext.Current.CancellationToken);
 
         return channel.ChannelId;

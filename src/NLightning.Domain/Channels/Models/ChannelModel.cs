@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.Models;
 
 using Bitcoin.Transactions.Outputs;
 using Bitcoin.ValueObjects;
+using Commitments;
 using Crypto.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Protocol.Models;
@@ -36,6 +37,40 @@ public class ChannelModel
 
     #endregion
 
+    #region Commitment state
+
+    /// <summary>
+    /// The commitment state machine snapshot (plan §3.2), or null for a channel that has none yet (before the wiring
+    /// creates one, or a channel opened before migration <c>AddCommitmentState</c>). Replace it only through
+    /// <see cref="UpdateCommitments"/>, after the transition that produced it is saved (invariant I2).
+    /// </summary>
+    /// <remarks>
+    /// While it is set, <see cref="LocalBalance"/>, <see cref="RemoteBalance"/>, the next HTLC ids and the commitment
+    /// and revocation numbers are read from it, and <c>IChannelDbRepository.UpdateAsync</c> no longer writes them
+    /// (<c>IChannelStateDbRepository</c> does).
+    /// </remarks>
+    public ChannelCommitments? Commitments { get; private set; }
+
+    /// <summary>
+    /// The wire bytes of the updates and <c>commitment_signed</c> we sent last, kept until the peer revokes (decision
+    /// D4); retransmitted verbatim on reestablish.
+    /// </summary>
+    public ReadOnlyMemory<byte>? SentCommitDiff { get; private set; }
+
+    /// <summary>Which of <c>commitment_signed</c>/<c>revoke_and_ack</c> we sent last (reestablish order).</summary>
+    public LastSentCommitmentMessage LastSentCommitmentMessage { get; private set; }
+
+    /// <summary>The <c>error</c> message we sent when we failed the channel, re-sent on every reconnection (N6-T3).</summary>
+    public ReadOnlyMemory<byte>? ErrorSent { get; private set; }
+
+    /// <summary>
+    /// True once <c>channel_reestablish</c> proved that we lost data (plan §3.11 step 2): we must never sign or
+    /// broadcast our commitment again (invariant I12).
+    /// </summary>
+    public bool DataLossDetected { get; private set; }
+
+    #endregion
+
     #region Signatures
 
     public CompactSignature? LastSentSignature { get; private set; }
@@ -53,19 +88,24 @@ public class ChannelModel
     /// (channel_ready, revoke_and_ack) is the one of <c>LocalCommitmentNumber + 1</c>. It never changes at funding
     /// confirmation (NL-188).
     /// </summary>
-    public ulong LocalCommitmentNumber { get; }
+    public ulong LocalCommitmentNumber => Commitments?.LocalCommit.Number ?? _localCommitmentNumber;
     /// <summary>
     /// Our gross balance: it still includes the amounts of our pending offered HTLCs (<see cref="LocalOfferedHtlcs"/>).
     /// The commitment transaction factory takes each HTLC out of the balance of the side that offered it, so an HTLC
     /// update flow must not deduct an offered HTLC from this balance when it is added, only when it is settled.
     /// </summary>
-    public LightningMoney LocalBalance { get; }
+    public LightningMoney LocalBalance =>
+        Commitments is null ? _localBalance : LightningMoney.MilliSatoshis(Commitments.LocalBalanceMsat);
     public ChannelKeySetModel LocalKeySet { get; }
-    public ulong LocalNextHtlcId { get; }
+    public ulong LocalNextHtlcId => Commitments?.LocalNextHtlcId ?? _localNextHtlcId;
     public ICollection<Htlc>? LocalOfferedHtlcs { get; }
     public ICollection<Htlc>? LocalFulfilledHtlcs { get; }
     public ICollection<Htlc>? LocalOldHtlcs { get; }
-    public ulong LocalRevocationNumber { get; }
+    /// <summary>
+    /// How many of our commitments we revoked. With a snapshot it equals the local commitment number, because the
+    /// engine revokes the previous commitment in the same transition that accepts the new one.
+    /// </summary>
+    public ulong LocalRevocationNumber => Commitments?.LocalCommit.Number ?? _localRevocationNumber;
     public BitcoinScript? LocalUpfrontShutdownScript => ChannelParams.Local.UpfrontShutdownScript;
 
     #endregion
@@ -78,21 +118,35 @@ public class ChannelModel
     /// The number of the peer's current commitment transaction (0 after funding_created/funding_signed). It advances
     /// independently of <see cref="LocalCommitmentNumber"/> during the commitment dance (NL-188).
     /// </summary>
-    public ulong RemoteCommitmentNumber { get; }
+    public ulong RemoteCommitmentNumber => Commitments?.RemoteCommit.Number ?? _remoteCommitmentNumber;
     /// <summary>
     /// The remote's gross balance: it still includes the amounts of the remote's pending offered HTLCs
     /// (<see cref="RemoteOfferedHtlcs"/>). See <see cref="LocalBalance"/> for the convention.
     /// </summary>
-    public LightningMoney RemoteBalance { get; }
+    public LightningMoney RemoteBalance =>
+        Commitments is null ? _remoteBalance : LightningMoney.MilliSatoshis(Commitments.RemoteBalanceMsat);
     public ChannelKeySetModel? RemoteKeySet { get; private set; }
-    public ulong RemoteNextHtlcId { get; }
-    public ulong RemoteRevocationNumber { get; }
+    public ulong RemoteNextHtlcId => Commitments?.RemoteNextHtlcId ?? _remoteNextHtlcId;
+    /// <summary>
+    /// How many commitments the peer revoked. With a snapshot it equals the peer's current commitment number (an
+    /// unacked commitment we signed is not counted until its <c>revoke_and_ack</c>).
+    /// </summary>
+    public ulong RemoteRevocationNumber => Commitments?.RemoteCommit.Number ?? _remoteRevocationNumber;
     public ICollection<Htlc>? RemoteFulfilledHtlcs { get; }
     public ICollection<Htlc>? RemoteOfferedHtlcs { get; }
     public ICollection<Htlc>? RemoteOldHtlcs { get; }
     public BitcoinScript? RemoteUpfrontShutdownScript => ChannelParams.Remote.UpfrontShutdownScript;
 
     #endregion
+
+    private readonly LightningMoney _localBalance;
+    private readonly LightningMoney _remoteBalance;
+    private readonly ulong _localNextHtlcId;
+    private readonly ulong _remoteNextHtlcId;
+    private readonly ulong _localCommitmentNumber;
+    private readonly ulong _remoteCommitmentNumber;
+    private readonly ulong _localRevocationNumber;
+    private readonly ulong _remoteRevocationNumber;
 
     public ChannelModel(ChannelParams channelParams, ChannelId channelId, CommitmentNumber? commitmentNumber,
                         FundingOutputInfo? fundingOutput, bool isInitiator, CompactSignature? lastSentSignature,
@@ -116,14 +170,14 @@ public class ChannelModel
         IsInitiator = isInitiator;
         LastSentSignature = lastSentSignature;
         LastReceivedSignature = lastReceivedSignature;
-        LocalBalance = localBalance;
+        _localBalance = localBalance;
         LocalKeySet = localKeySet;
-        LocalNextHtlcId = localNextHtlcId;
-        LocalRevocationNumber = localRevocationNumber;
-        RemoteBalance = remoteBalance;
+        _localNextHtlcId = localNextHtlcId;
+        _localRevocationNumber = localRevocationNumber;
+        _remoteBalance = remoteBalance;
         RemoteKeySet = remoteKeySet;
-        RemoteNextHtlcId = remoteNextHtlcId;
-        RemoteRevocationNumber = remoteRevocationNumber;
+        _remoteNextHtlcId = remoteNextHtlcId;
+        _remoteRevocationNumber = remoteRevocationNumber;
         State = state;
         Version = version;
         RemoteNodeId = remoteNodeId;
@@ -133,8 +187,8 @@ public class ChannelModel
         RemoteOfferedHtlcs = remoteOfferedHtlcs ?? new List<Htlc>();
         RemoteFulfilledHtlcs = remoteFulfilledHtlcs ?? new List<Htlc>();
         RemoteOldHtlcs = remoteOldHtlcs ?? new List<Htlc>();
-        LocalCommitmentNumber = localCommitmentNumber;
-        RemoteCommitmentNumber = remoteCommitmentNumber;
+        _localCommitmentNumber = localCommitmentNumber;
+        _remoteCommitmentNumber = remoteCommitmentNumber;
     }
 
     public void UpdateState(ChannelState newState)
@@ -198,6 +252,63 @@ public class ChannelModel
     public void UpdateLastReceivedSignature(CompactSignature lastReceivedSignature)
     {
         LastReceivedSignature = lastReceivedSignature;
+    }
+
+    /// <summary>
+    /// Swaps in the snapshot produced by a transition, after that transition was saved (invariant I2), together with
+    /// the extras saved with it (same rules as <c>IChannelStateDbRepository.ApplyAsync</c>: a null member is unchanged,
+    /// and the sent diff is cleared once there is no unacked remote commitment).
+    /// </summary>
+    /// <exception cref="ArgumentException">The snapshot belongs to another channel.</exception>
+    public void UpdateCommitments(ChannelCommitments next, ChannelStateExtras? extras = null)
+    {
+        ArgumentNullException.ThrowIfNull(next);
+        if (next.ChannelId != ChannelId)
+            throw new ArgumentException($"The snapshot belongs to channel {next.ChannelId}, not {ChannelId}",
+                                        nameof(next));
+
+        Commitments = next;
+        if (extras?.SentCommitDiff is { } diff)
+            SentCommitDiff = diff.ToArray();
+        if (next.RemoteNextCommit is null)
+            SentCommitDiff = null;
+        if (extras?.LastSent is { } lastSent)
+            LastSentCommitmentMessage = lastSent;
+    }
+
+    /// <summary>
+    /// Records the <c>error</c> we sent when failing the channel (N6-T3), so it can be re-sent on reconnection.
+    /// </summary>
+    public void MarkErrorSent(ReadOnlyMemory<byte> errorMessage)
+    {
+        ErrorSent = errorMessage.ToArray();
+    }
+
+    /// <summary>Records that <c>channel_reestablish</c> proved we lost data (never cleared).</summary>
+    public void MarkDataLossDetected()
+    {
+        DataLossDetected = true;
+    }
+
+    /// <summary>
+    /// The static inputs of the commitment state machine (<see cref="ChannelCommitments"/>) for this channel.
+    /// </summary>
+    /// <param name="maxDustHtlcExposureMsat">Our dust exposure policy (a node setting, not stored with the
+    /// channel).</param>
+    /// <exception cref="InvalidOperationException">The funding output is not known yet.</exception>
+    public CommitmentParams ToCommitmentParams(ulong? maxDustHtlcExposureMsat = null)
+    {
+        var fundingAmount = FundingOutput?.Amount
+                         ?? throw new InvalidOperationException("The funding output is not known yet");
+
+        return new CommitmentParams(IsInitiator, checked((ulong)fundingAmount.Satoshi),
+                                    ChannelParams.OptionAnchorOutputs, ToCommitmentParty(ChannelParams.Local),
+                                    ToCommitmentParty(ChannelParams.Remote), maxDustHtlcExposureMsat);
+
+        static CommitmentParty ToCommitmentParty(ChannelParty party) =>
+            new(checked((ulong)(party.DustLimitAmount?.Satoshi ?? 0)),
+                checked((ulong)(party.ChannelReserveAmount?.Satoshi ?? 0)), party.HtlcMinimumAmount?.MilliSatoshi ?? 0,
+                party.MaxAcceptedHtlcs, party.MaxHtlcValueInFlight?.MilliSatoshi ?? 0);
     }
 
     public ChannelSigningInfo GetSigningInfo()
