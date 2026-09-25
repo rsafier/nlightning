@@ -61,4 +61,21 @@ public sealed class ChannelInfoClientResponse
     /// Always false until reestablish is implemented (BOLT2 plan N7-T4).
     /// </summary>
     public bool DataLossDetected { get; init; }
+
+    /// <summary>
+    /// True when <c>channel_reestablish</c> was exchanged on the current connection, so the channel accepts updates
+    /// (it is usable for HTLCs when it is also <c>Open</c> and the peer is connected). Always false until reestablish
+    /// is implemented (BOLT2 plan N7).
+    /// </summary>
+    public bool IsReestablished { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_base_msat</c> on this channel (what a route hint through us must use).
+    /// </summary>
+    public ulong FeeBaseMsat { get; init; }
+
+    /// <summary>
+    /// Our forwarding <c>fee_proportional_millionths</c> on this channel.
+    /// </summary>
+    public uint FeePpm { get; init; }
 }

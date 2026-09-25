@@ -3,6 +3,10 @@ namespace NLightning.Domain.Client.Enums;
 /// <summary>
 /// Commands sent by a client.
 /// </summary>
+/// <remarks>
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value (e.g.
+/// <c>CloseChannel</c>) is 13.
+/// </remarks>
 public enum ClientCommand
 {
     // Reserve 0 for unknown
@@ -14,5 +18,9 @@ public enum ClientCommand
     WalletBalance = 5,
     OpenChannel = 6,
     OpenChannelSubscription = 7,
-    ListChannels = 8
+    ListChannels = 8,
+    CreateInvoice = 9,
+    PayInvoice = 10,
+    ListInvoices = 11,
+    ListPayments = 12
 }
