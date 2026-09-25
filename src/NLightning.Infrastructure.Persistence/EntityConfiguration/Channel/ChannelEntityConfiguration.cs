@@ -80,7 +80,7 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.RemoteBalanceSatoshis).HasColumnType("bigint");
         entity.Property(e => e.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
         entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
-        entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
+        entity.Property(e => e.RemoteNodeId).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.LastSentSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
         entity.Property(e => e.LastReceivedSignature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
     }
