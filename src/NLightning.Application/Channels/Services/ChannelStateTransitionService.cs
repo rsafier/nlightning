@@ -155,12 +155,21 @@ public sealed class ChannelStateTransitionService
     /// Persists <paramref name="result"/> in one save, then swaps the snapshot in memory and queues its events. Nothing
     /// changes in memory when the save fails.
     /// </summary>
-    public async Task CommitAsync(ChannelModel channel, CommitmentsResult result, ChannelStateExtras? extras = null)
+    /// <param name="channel">The channel the transition belongs to.</param>
+    /// <param name="result">The engine transition.</param>
+    /// <param name="extras">What else the transition writes (sent diff, shachain, ...).</param>
+    /// <param name="stageWithTransition">Stages more writes on the same unit of work after the transition is staged and
+    /// before the one save (for example the <c>HtlcOrigin</c> of an offered HTLC, NL-250), so they commit or fail
+    /// together with it.</param>
+    public async Task CommitAsync(ChannelModel channel, CommitmentsResult result, ChannelStateExtras? extras = null,
+                                  Func<IUnitOfWork, Task>? stageWithTransition = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(result);
 
         await _unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition, extras);
+        if (stageWithTransition is not null)
+            await stageWithTransition(_unitOfWork);
         await _unitOfWork.SaveChangesAsync();
 
         channel.UpdateCommitments(result.Next, extras);

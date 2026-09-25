@@ -45,8 +45,9 @@ using Interfaces;
 /// throws <see cref="KeyNotFoundException"/>.
 /// </para>
 /// <para>
-/// The <see cref="HtlcOrigin"/> of an offer is validated but not stored yet: the payment and circuit tables (ABCD W1-C)
-/// and the switch that reads them (W2-B) own that.
+/// The <see cref="HtlcOrigin"/> of an offer is validated and staged with
+/// <see cref="IChannelStateDbRepository.SetHtlcOriginAsync"/> in the same save as the add (NL-250), so after a restart
+/// the resolution of the outgoing HTLC can always be routed back to its payment or forward circuit.
 /// </para>
 /// </remarks>
 public sealed class ChannelOperationsService : IChannelOperations
@@ -94,8 +95,10 @@ public sealed class ChannelOperationsService : IChannelOperations
         var result = await RunAsync(channelId, "update_add_htlc",
                                     c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),
                                                    pathKey?.PathKey, height is > 0 ? height : null),
-                                    cancellationToken);
-        var htlcId = result.Outbound.OfType<OutboundAddHtlc>().Single().Htlc.Id;
+                                    cancellationToken,
+                                    (unitOfWork, added) => unitOfWork.ChannelStateDbRepository.SetHtlcOriginAsync(
+                                        channelId, AddedHtlcKey(added), origin));
+        var htlcId = AddedHtlcKey(result).Id;
 
         if (_logger.IsEnabled(LogLevel.Debug))
             _logger.LogDebug("Offered HTLC {HtlcId} of {Amount} on channel {ChannelId} ({Origin})", htlcId, amount,
@@ -164,7 +167,8 @@ public sealed class ChannelOperationsService : IChannelOperations
     /// </summary>
     private async Task<CommitmentsResult> RunAsync(ChannelId channelId, string operationName,
                                                    Func<ChannelCommitments, CommitmentsResult> operation,
-                                                   CancellationToken cancellationToken)
+                                                   CancellationToken cancellationToken,
+                                                   Func<IUnitOfWork, CommitmentsResult, Task>? stageWithTransition = null)
     {
         using var scope = _serviceScopeFactory.CreateScope();
         CommitmentsResult result;
@@ -179,7 +183,10 @@ public sealed class ChannelOperationsService : IChannelOperations
             result = operation(channel.Commitments!);
 
             var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
-            await transitions.CommitAsync(channel, result);
+            await transitions.CommitAsync(channel, result, null,
+                                          stageWithTransition is null
+                                              ? null
+                                              : unitOfWork => stageWithTransition(unitOfWork, result));
             _channelMessagePublisher.Publish(channel.RemoteNodeId,
                                              result.Outbound.Select(o => transitions.ToWireMessage(channel, o))
                                                    .ToList());
@@ -189,6 +196,10 @@ public sealed class ChannelOperationsService : IChannelOperations
         await RaiseDomainEventsAsync(scope);
         return result;
     }
+
+    /// <summary>The key of the HTLC an <c>update_add_htlc</c> transition added.</summary>
+    private static HtlcKey AddedHtlcKey(CommitmentsResult result) =>
+        result.Outbound.OfType<OutboundAddHtlc>().Single().Htlc.Key;
 
     /// <summary>The channel an operation may change (see the class remarks).</summary>
     private ChannelModel GetOperableChannel(ChannelId channelId, string operationName)
