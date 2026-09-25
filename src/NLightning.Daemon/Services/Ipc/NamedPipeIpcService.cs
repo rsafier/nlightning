@@ -43,15 +43,16 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
 
         EnsureCookieExists();
 
-        _listenerTask = ListenToIpcClientAsync(cancellationToken);
+        _listenerTask = ListenToIpcClientAsync(_cts.Token);
 
         return Task.CompletedTask;
     }
 
     public async Task StopAsync()
     {
+        // Nothing to stop if StartAsync never ran
         if (_cts is null)
-            throw new InvalidOperationException("Service is not running");
+            return;
 
         await _cts.CancelAsync();
 
