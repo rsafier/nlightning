@@ -1,30 +1,24 @@
 using System.Security.Cryptography;
+using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Onion;
 
 using Domain.Crypto.Constants;
-using Domain.Crypto.Interfaces;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Infrastructure.Crypto.Ciphers;
-using Infrastructure.Crypto.Interfaces;
 
 /// <summary>
 /// BOLT 4 onion packet construction (sender side), including the variable-length filler.
 /// </summary>
+/// <remarks>
+/// The per-hop EC work (ephemeral key, ECDH, ephemeral-key blinding) runs on one parsed private key per hop and hashes
+/// with the operation's <see cref="SphinxKeyGenerator"/>, so a hop costs no hash or key-wrapper allocations.
+/// </remarks>
 internal sealed class OnionBuilder
 {
-    private readonly IEcdh _ecdh;
-    private readonly ISecp256K1Math _secp256K1Math;
-
-    public OnionBuilder(IEcdh ecdh, ISecp256K1Math secp256K1Math)
-    {
-        _ecdh = ecdh;
-        _secp256K1Math = secp256K1Math;
-    }
-
     /// <summary>
     /// Builds the onion packet for <paramref name="hops"/>.
     /// </summary>
@@ -140,16 +134,15 @@ internal sealed class OnionBuilder
     /// <c>e_{i+1} = e_i * SHA256(E_i || ss_i)</c>.
     /// </remarks>
     /// <exception cref="ArgumentException">If the route is empty, or a node id or the session key is invalid.</exception>
-    public (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(IReadOnlyList<CompactPubKey> nodeIds,
-                                                                              PrivKey sessionKey)
+    public static (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(
+        IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey)
     {
         using var keyGenerator = new SphinxKeyGenerator();
         return ComputeHopKeys(keyGenerator, nodeIds, sessionKey);
     }
 
-    private (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(SphinxKeyGenerator keyGenerator,
-                                                                               IReadOnlyList<CompactPubKey> nodeIds,
-                                                                               PrivKey sessionKey)
+    private static (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(
+        SphinxKeyGenerator keyGenerator, IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey)
     {
         ArgumentNullException.ThrowIfNull(nodeIds);
         if (nodeIds.Count == 0)
@@ -160,7 +153,8 @@ internal sealed class OnionBuilder
 
         Span<byte> blindingFactor = stackalloc byte[CryptoConstants.Sha256HashLen];
 
-        var ephemeralKey = sessionKey;
+        var ephemeralKey = SphinxKeyGenerator.CreatePrivateKey(sessionKey.Value, nameof(sessionKey));
+        var succeeded = false;
         try
         {
             for (var i = 0; i < nodeIds.Count; i++)
@@ -169,36 +163,43 @@ internal sealed class OnionBuilder
                 if (!SphinxKeyGenerator.IsValidPublicKey(nodeId))
                     throw new ArgumentException($"Invalid public key for hop {i}.", nameof(nodeIds));
 
-                CompactPubKey ephemeralPubKey;
-                try
-                {
-                    ephemeralPubKey = _ecdh.GenerateKeyPair(ephemeralKey.Value).CompactPubKey;
-                }
-                catch (Exception e) when (e is not ArgumentException)
-                {
-                    throw new ArgumentException("Invalid session key.", nameof(sessionKey), e);
-                }
-
-                ephemeralPubKeys[i] = ephemeralPubKey;
+                ephemeralPubKeys[i] = ephemeralKey.CreatePubKey().ToBytes(true);
                 sharedSecrets[i] = new byte[CryptoConstants.SecretLen];
-                _ecdh.SecP256K1Dh(ephemeralKey, nodeId, sharedSecrets[i]);
+                keyGenerator.ComputeSharedSecret(ephemeralKey, nodeId, sharedSecrets[i]);
 
                 if (i == nodeIds.Count - 1)
                     break;
 
                 keyGenerator.ComputeBlindingFactor(ephemeralPubKeys[i], sharedSecrets[i], blindingFactor);
-                var nextEphemeralKey = _secp256K1Math.MultiplyPrivKey(ephemeralKey, blindingFactor);
-                if (i > 0)
-                    CryptographicOperations.ZeroMemory(ephemeralKey.Value);
+                ECPrivKey nextEphemeralKey;
+                try
+                {
+                    nextEphemeralKey = ephemeralKey.TweakMul(blindingFactor);
+                }
+                catch (ArgumentException e)
+                {
+                    // Only reachable if the blinding factor is 0 or >= n (negligible probability)
+                    throw new InvalidOperationException("Failed to blind the ephemeral private key.", e);
+                }
 
+                ephemeralKey.Dispose();
                 ephemeralKey = nextEphemeralKey;
             }
+
+            succeeded = true;
         }
         finally
         {
             CryptographicOperations.ZeroMemory(blindingFactor);
-            if (!ReferenceEquals(ephemeralKey.Value, sessionKey.Value))
-                CryptographicOperations.ZeroMemory(ephemeralKey.Value);
+            ephemeralKey.Dispose();
+            if (!succeeded)
+            {
+                foreach (var sharedSecret in sharedSecrets)
+                {
+                    if (sharedSecret is not null)
+                        CryptographicOperations.ZeroMemory(sharedSecret);
+                }
+            }
         }
 
         return (ephemeralPubKeys, sharedSecrets);

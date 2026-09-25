@@ -13,7 +13,6 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Crypto.Ciphers;
-using Infrastructure.Crypto.Interfaces;
 
 /// <summary>
 /// BOLT 4 onion packet processing (one layer, reader side).
@@ -31,12 +30,10 @@ internal sealed class OnionPeeler
     /// </summary>
     public delegate void NodeEcdh(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret);
 
-    private readonly IEcdh _ecdh;
     private readonly ISecp256K1Math _secp256K1Math;
 
-    public OnionPeeler(IEcdh ecdh, ISecp256K1Math secp256K1Math)
+    public OnionPeeler(ISecp256K1Math secp256K1Math)
     {
-        _ecdh = ecdh;
         _secp256K1Math = secp256K1Math;
     }
 
@@ -44,12 +41,18 @@ internal sealed class OnionPeeler
     /// Peels one layer of <paramref name="packet"/> with <paramref name="nodeKey"/>.
     /// </summary>
     /// <inheritdoc cref="Peel(OnionPacket, ReadOnlySpan{byte}, NodeEcdh, CompactPubKey?, int, bool)"/>
+    /// <exception cref="ArgumentException">If <paramref name="nodeKey"/> is not a valid private key.</exception>
     public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
                             CompactPubKey? pathKey, int minPayloadLength, bool reportAsBlinding)
     {
-        return Peel(packet, associatedData,
-                    (publicKey, sharedSecret) => _ecdh.SecP256K1Dh(nodeKey, publicKey, sharedSecret), pathKey,
-                    minPayloadLength, reportAsBlinding);
+        ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
+
+        // Parse the node key once per peel and hash with the peel's own generator (no per-ECDH allocations)
+        using var ecNodeKey = SphinxKeyGenerator.CreatePrivateKey(nodeKey.Value, nameof(nodeKey));
+        using var keyGenerator = new SphinxKeyGenerator();
+        return Peel(keyGenerator, packet, associatedData,
+                    (publicKey, sharedSecret) => keyGenerator.ComputeSharedSecret(ecNodeKey, publicKey, sharedSecret),
+                    pathKey, minPayloadLength, reportAsBlinding);
     }
 
     /// <summary>
@@ -68,9 +71,15 @@ internal sealed class OnionPeeler
         ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
 
         using var keyGenerator = new SphinxKeyGenerator();
+        return Peel(keyGenerator, packet, associatedData, nodeEcdh, pathKey, minPayloadLength, reportAsBlinding);
+    }
+
+    private PeeledOnion Peel(SphinxKeyGenerator keyGenerator, OnionPacket packet, ReadOnlySpan<byte> associatedData,
+                             NodeEcdh nodeEcdh, CompactPubKey? pathKey, int minPayloadLength, bool reportAsBlinding)
+    {
         try
         {
-            return Peel(keyGenerator, packet, associatedData, nodeEcdh, pathKey, minPayloadLength);
+            return PeelLayer(keyGenerator, packet, associatedData, nodeEcdh, pathKey, minPayloadLength);
         }
         catch (OnionException e) when (reportAsBlinding && e.FailureCode != FailureCode.InvalidOnionBlinding)
         {
@@ -85,8 +94,9 @@ internal sealed class OnionPeeler
         }
     }
 
-    private PeeledOnion Peel(SphinxKeyGenerator keyGenerator, OnionPacket packet, ReadOnlySpan<byte> associatedData,
-                             NodeEcdh nodeEcdh, CompactPubKey? pathKey, int minPayloadLength)
+    private PeeledOnion PeelLayer(SphinxKeyGenerator keyGenerator, OnionPacket packet,
+                                  ReadOnlySpan<byte> associatedData, NodeEcdh nodeEcdh, CompactPubKey? pathKey,
+                                  int minPayloadLength)
     {
         // 1. Version
         if (packet.Version != OnionConstants.Version)

@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 namespace NLightning.Infrastructure.Bitcoin.Tests.Onion;
 
 using Domain.Protocol.Onion.Constants;
+using Infrastructure.Bitcoin.Crypto.Functions;
 using Infrastructure.Bitcoin.Onion;
 
 public class SphinxKeyGeneratorTests
@@ -108,6 +109,66 @@ public class SphinxKeyGeneratorTests
 
         // Assert
         Assert.Equal(SHA256.HashData(data), hash);
+    }
+
+    [Fact]
+    public void Given_SessionKeyAndHop0NodeId_When_ComputingSharedSecret_Then_MatchesBolt4Vector()
+    {
+        // Arrange: BOLT 4 session key 0x41 * 32
+        using var keyGenerator = new SphinxKeyGenerator();
+        var sessionKey = Enumerable.Repeat((byte)0x41, 32).ToArray();
+        var sharedSecret = new byte[32];
+
+        // Act
+        keyGenerator.ComputeSharedSecret(sessionKey, s_hop0PubKey, sharedSecret);
+
+        // Assert
+        Assert.Equal(s_hop0SharedSecret, sharedSecret);
+    }
+
+    [Fact]
+    public void Given_RandomKeys_When_ComputingSharedSecret_Then_EqualsEcdh()
+    {
+        // Arrange
+        using var keyGenerator = new SphinxKeyGenerator();
+        var ecdh = new Ecdh();
+        var privateKey = ecdh.GenerateKeyPair().PrivKey;
+        var publicKey = ecdh.GenerateKeyPair().CompactPubKey;
+        var expected = new byte[32];
+        ecdh.SecP256K1Dh(privateKey, publicKey, expected);
+        var sharedSecret = new byte[32];
+
+        // Act
+        keyGenerator.ComputeSharedSecret(privateKey.Value, publicKey, sharedSecret);
+
+        // Assert
+        Assert.Equal(expected, sharedSecret);
+    }
+
+    [Theory]
+    [InlineData("0000000000000000000000000000000000000000000000000000000000000000")] // zero
+    [InlineData("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")] // n
+    [InlineData("4141414141414141414141414141414141414141414141414141414141414141ff")] // 33 bytes
+    public void Given_InvalidPrivateKey_When_ComputingSharedSecret_Then_ThrowsArgumentException(string hex)
+    {
+        // Arrange
+        using var keyGenerator = new SphinxKeyGenerator();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => keyGenerator.ComputeSharedSecret(Convert.FromHexString(hex),
+                                                                                 s_hop0PubKey, new byte[32]));
+    }
+
+    [Fact]
+    public void Given_PublicKeyNotOnCurve_When_ComputingSharedSecret_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        using var keyGenerator = new SphinxKeyGenerator();
+        var publicKey = Convert.FromHexString("02ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => keyGenerator.ComputeSharedSecret(
+                                             Enumerable.Repeat((byte)0x41, 32).ToArray(), publicKey, new byte[32]));
     }
 
     [Fact]

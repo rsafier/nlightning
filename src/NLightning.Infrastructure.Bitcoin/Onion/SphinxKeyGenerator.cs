@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Onion;
@@ -96,6 +97,62 @@ internal sealed class SphinxKeyGenerator : IDisposable
         _sha256.AppendData(data);
         _sha256.GetHashAndReset(hash);
         return hash;
+    }
+
+    /// <summary>
+    /// Computes the Sphinx/BOLT 8 ECDH shared secret <c>SHA256(compressed(privateKey * publicKey))</c>.
+    /// </summary>
+    /// <remarks>
+    /// Same result as <c>IEcdh.SecP256K1Dh</c>, but it reuses this generator's hash state and the parsed private key
+    /// instead of allocating a hash and NBitcoin key wrappers per hop.
+    /// </remarks>
+    /// <param name="privateKey">The private key.</param>
+    /// <param name="publicKey">The 33-byte compressed public key.</param>
+    /// <param name="output">The 32-byte destination.</param>
+    /// <exception cref="ArgumentException">If the public key is invalid or <paramref name="output"/> is not 32 bytes.</exception>
+    public void ComputeSharedSecret(ECPrivKey privateKey, ReadOnlySpan<byte> publicKey, Span<byte> output)
+    {
+        ArgumentNullException.ThrowIfNull(privateKey);
+        EnsureLength(output, CryptoConstants.SecretLen, nameof(output));
+        if (publicKey.Length != CryptoConstants.CompactPubkeyLen
+         || !ECPubKey.TryCreate(publicKey, NLightningCryptoContext.Instance, out _, out var ecPubKey)
+         || ecPubKey is null)
+            throw new ArgumentException("Invalid public key.", nameof(publicKey));
+
+        // The shared point is as secret as the shared secret derived from it
+        Span<byte> sharedPoint = stackalloc byte[CryptoConstants.CompactPubkeyLen];
+        try
+        {
+            ecPubKey.GetSharedPubkey(privateKey).WriteToSpan(true, sharedPoint, out _);
+            _sha256.AppendData(sharedPoint);
+            _sha256.GetHashAndReset(output);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sharedPoint);
+        }
+    }
+
+    /// <inheritdoc cref="ComputeSharedSecret(ECPrivKey, ReadOnlySpan{byte}, Span{byte})"/>
+    /// <exception cref="ArgumentException">If a key is invalid or <paramref name="output"/> is not 32 bytes.</exception>
+    public void ComputeSharedSecret(ReadOnlySpan<byte> privateKey, ReadOnlySpan<byte> publicKey, Span<byte> output)
+    {
+        using var ecPrivKey = CreatePrivateKey(privateKey, nameof(privateKey));
+        ComputeSharedSecret(ecPrivKey, publicKey, output);
+    }
+
+    /// <summary>
+    /// Parses a 32-byte private key in [1, n-1]; the caller owns (and disposes) the result.
+    /// </summary>
+    /// <exception cref="ArgumentException">If the key is invalid.</exception>
+    public static ECPrivKey CreatePrivateKey(ReadOnlySpan<byte> privateKey, string paramName)
+    {
+        if (privateKey.Length != CryptoConstants.PrivkeyLen
+         || !NLightningCryptoContext.Instance.TryCreateECPrivKey(privateKey, out var ecPrivKey)
+         || ecPrivKey is null)
+            throw new ArgumentException("Invalid private key.", paramName);
+
+        return ecPrivKey;
     }
 
     /// <summary>
