@@ -113,8 +113,9 @@ public sealed class OpenChannelClientHandler
             var channelFlags = new ChannelFlags(ChannelFlag.None);
 
             // Create the openChannel message
+            // funding_satoshis is the whole channel; the pushed part is only the peer's opening balance
             var openChannel1Message = _messageFactory.CreateOpenChannel1Message(
-                channel.ChannelId, channel.LocalBalance, channel.LocalKeySet.FundingCompactPubKey,
+                channel.ChannelId, request.FundingAmount, channel.LocalKeySet.FundingCompactPubKey,
                 channel.RemoteBalance, channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
                 channel.LocalKeySet.RevocationCompactBasepoint,
                 channel.LocalKeySet.PaymentCompactBasepoint, channel.LocalKeySet.DelayedPaymentCompactBasepoint,

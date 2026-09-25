@@ -186,6 +186,66 @@ public class OpenChannelClientHandlerTests
     }
 
     [Fact]
+    public async Task Given_PushAmount_When_HandleAsync_Then_OpenChannelCarriesTheWholeFundingAmount()
+    {
+        // Arrange
+        var peerId = CreateDummyPubKey();
+        var nodeInfo = $"{peerId}@127.0.0.1:9735";
+        var fundingAmount = LightningMoney.Satoshis(1_000_000);
+        var pushAmount = LightningMoney.Satoshis(300_000);
+        var request = new OpenChannelClientRequest(nodeInfo, fundingAmount) { PushAmount = pushAmount };
+
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(2_000_000));
+
+        // The factory splits the funding into our opening balance and the pushed amount
+        var localKeySet = new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId);
+        var channelModel = new ChannelModel(new ChannelParams(), CreateRandomChannelId(), null, null, true, null, null,
+                                            fundingAmount - pushAmount, localKeySet, 0, 0, pushAmount, null, 0,
+                                            peerId, 0, ChannelState.V1Opening, ChannelVersion.V1);
+        var tempChannelId = channelModel.ChannelId;
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ReturnsAsync(channelModel);
+
+        LightningMoney? sentFunding = null;
+        LightningMoney? sentPush = null;
+        _messageFactoryMock.Setup(x => x.CreateOpenChannel1Message(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<ChannelParty>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<ChannelFlags>(),
+                                                                   It.IsAny<ChannelTypeTlv>(),
+                                                                   It.IsAny<UpfrontShutdownScriptTlv>()))
+                           .Callback(new InvocationAction(invocation =>
+                            {
+                                sentFunding = (LightningMoney)invocation.Arguments[1];
+                                sentPush = (LightningMoney)invocation.Arguments[3];
+                            }))
+                           .Returns(CreateDummyOpenChannel1Message(tempChannelId, fundingAmount, peerId));
+        peerServiceMock.Setup(x => x.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        _channelMemoryRepositoryMock.Raise(x => x.OnChannelUpgraded += null, null!,
+                                           new ChannelUpgradedEventArgs(tempChannelId, CreateRandomChannelId()));
+        await handleTask;
+
+        // Assert: BOLT 2 funding_satoshis is the channel capacity, push_msat is taken out of it
+        Assert.Equal(fundingAmount, sentFunding);
+        Assert.Equal(pushAmount, sentPush);
+    }
+
+    [Fact]
     public async Task GivenPeerNotConnected_WhenHandleAsync_ThenConnectsToPeer()
     {
         // Arrange
