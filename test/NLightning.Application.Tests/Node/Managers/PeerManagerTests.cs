@@ -8,9 +8,14 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Application.Tests.Node.Managers;
 
 using Application.Node.Managers;
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -156,6 +161,34 @@ public class PeerManagerTests
         // Verify no peer was added
         var peers = GetPeersFromManager(peerManager);
         Assert.Empty(peers);
+    }
+
+    [Fact]
+    public async Task Given_UnreachablePeerWithChannels_When_StartAsync_Then_ChannelsAreStillRegistered()
+    {
+        // Arrange
+        var peerManager = new PeerManager(_mockChannelManager.Object, _mockLogger.Object,
+                                          _mockPeerServiceFactory.Object, _mockTcpService.Object, _fakeServiceProvider);
+        var openChannel = CreateChannel(ChannelState.Open, 1);
+        var closedChannel = CreateChannel(ChannelState.Closed, 2);
+        var staleChannel = CreateChannel(ChannelState.Stale, 3);
+        var peer = new PeerModel(_compactPubKey, ExpectedHost, ExpectedPort, ExpectedType)
+        {
+            Channels = [openChannel, closedChannel, staleChannel]
+        };
+        _mockUnitOfWork.Setup(u => u.GetPeersForStartupAsync()).ReturnsAsync([peer]);
+        _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
+                       .ThrowsAsync(new ConnectionException("Failed to connect to peer"));
+
+        // Act
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        _mockChannelManager.Verify(cm => cm.RegisterExistingChannelAsync(openChannel), Times.Once);
+        _mockChannelManager.Verify(cm => cm.RegisterExistingChannelAsync(closedChannel), Times.Never);
+        _mockChannelManager.Verify(cm => cm.RegisterExistingChannelAsync(staleChannel), Times.Never);
+        Assert.Empty(GetPeersFromManager(peerManager));
+        _mockTcpService.Verify(t => t.StartListeningAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -479,6 +512,21 @@ public class PeerManagerTests
                 It.IsAny<Exception>(),
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);
+    }
+
+    private ChannelModel CreateChannel(ChannelState state, byte id)
+    {
+        var channelIdBytes = new byte[32];
+        channelIdBytes[0] = id;
+        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+                                              LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
+                                              LightningMoney.Zero, 144, FeatureSupport.No);
+        var keySet = new ChannelKeySetModel(0, _compactPubKey, _compactPubKey, _compactPubKey, _compactPubKey,
+                                            _compactPubKey, _compactPubKey);
+
+        return new ChannelModel(channelConfig, new ChannelId(channelIdBytes), null, null, false, null, null,
+                                LightningMoney.Zero, keySet, 0, 0, LightningMoney.Zero, keySet, 0, _compactPubKey, 0,
+                                state, ChannelVersion.V1);
     }
 
     /// <summary>
