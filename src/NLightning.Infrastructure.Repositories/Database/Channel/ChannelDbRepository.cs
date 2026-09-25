@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Collections.Immutable;
+using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using NLightning.Domain.Protocol.Models;
@@ -23,6 +25,13 @@ using Persistence.Entities.Channel;
 
 public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRepository
 {
+    /// <summary>
+    /// Compares primary keys given as arrays of key values, element by element.
+    /// </summary>
+    private static readonly IEqualityComparer<object> s_keyComparer =
+        EqualityComparer<object>.Create((x, y) => StructuralComparisons.StructuralEqualityComparer.Equals(x, y),
+                                        x => StructuralComparisons.StructuralEqualityComparer.GetHashCode(x));
+
     private readonly NLightningDbContext _context;
     private readonly IMessageSerializer _messageSerializer;
     private readonly ISha256 _sha256;
@@ -46,11 +55,31 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     public async Task UpdateAsync(ChannelModel channelModel)
     {
         var channelEntity = await MapDomainToEntity(channelModel, _messageSerializer);
+
+        // The children are synchronized one table at a time (NL-192). Pushing the whole graph through
+        // DbSet.Update marks every child Modified, so a new HTLC fails with a concurrency exception and a removed one
+        // is never deleted; on an already tracked channel only the root values used to be copied.
+        var config = channelEntity.Config;
+        var keySets = channelEntity.KeySets;
+        var htlcs = channelEntity.Htlcs;
+        channelEntity.Config = null;
+        channelEntity.KeySets = null;
+        channelEntity.Htlcs = null;
+
         Update(channelEntity);
 
         // Update() may have copied the values onto an already tracked instance
         var trackedEntity = DbSet.Local.FirstOrDefault(c => c.ChannelId == channelEntity.ChannelId) ?? channelEntity;
         SetChangeAddressForeignKey(trackedEntity, channelModel.ChangeAddress);
+
+        var channelId = channelModel.ChannelId;
+        await SyncChildrenAsync<ChannelConfigEntity>(c => c.ChannelId == channelId, config is null ? [] : [config]);
+        await SyncChildrenAsync<ChannelKeySetEntity>(k => k.ChannelId == channelId, keySets ?? []);
+        var removedHtlcs = await SyncChildrenAsync<HtlcEntity>(h => h.ChannelId == channelId, htlcs ?? []);
+
+        // A tracked channel still references the removed children, and change detection must not add them back
+        foreach (var htlc in removedHtlcs)
+            trackedEntity.Htlcs?.Remove(htlc);
     }
 
     public async Task<ChannelModel?> GetByIdAsync(ChannelId channelId)
@@ -309,6 +338,58 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                 };
 
             entry.Property(foreignKey.Properties[i].Name).CurrentValue = value;
+        }
+    }
+
+    /// <summary>
+    /// Makes the tracked rows of one child table of the channel match <paramref name="desiredChildren"/>, matching rows
+    /// by primary key: missing rows are added, existing rows get the new values and rows that are no longer wanted are
+    /// removed. Rows already tracked by this context (including ones added but not saved yet) are taken into account.
+    /// </summary>
+    /// <returns>The removed children.</returns>
+    private async Task<List<TChild>> SyncChildrenAsync<TChild>(Expression<Func<TChild, bool>> belongsToChannel,
+                                                               ICollection<TChild> desiredChildren)
+        where TChild : class
+    {
+        var set = _context.Set<TChild>();
+
+        // A tracking query returns the already tracked instance for rows this context knows about
+        var currentChildren = await set.Where(belongsToChannel).ToListAsync();
+        var isChildOfChannel = belongsToChannel.Compile();
+        var knownChildren = new HashSet<TChild>(currentChildren, ReferenceEqualityComparer.Instance);
+        currentChildren.AddRange(set.Local.Where(isChildOfChannel).Where(knownChildren.Add).ToList());
+
+        var primaryKey = _context.Model.FindEntityType(typeof(TChild))?.FindPrimaryKey()
+                      ?? throw new InvalidOperationException($"Entity {typeof(TChild).Name} has no primary key.");
+        var currentByKey = new Dictionary<object, TChild>(s_keyComparer);
+        foreach (var child in currentChildren)
+            currentByKey[GetKey(child)] = child;
+
+        foreach (var desiredChild in desiredChildren)
+        {
+            if (currentByKey.Remove(GetKey(desiredChild), out var currentChild))
+            {
+                var entry = _context.Entry(currentChild);
+                entry.CurrentValues.SetValues(desiredChild);
+                if (entry.State == EntityState.Deleted)
+                    entry.State = EntityState.Modified;
+            }
+            else
+            {
+                set.Add(desiredChild);
+            }
+        }
+
+        var removedChildren = currentByKey.Values.ToList();
+        foreach (var removedChild in removedChildren)
+            set.Remove(removedChild);
+
+        return removedChildren;
+
+        object GetKey(TChild child)
+        {
+            var entry = _context.Entry(child);
+            return primaryKey.Properties.Select(p => entry.Property(p.Name).CurrentValue).ToArray();
         }
     }
 
