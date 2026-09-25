@@ -6,12 +6,13 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
+using Infrastructure.Converters;
 
 public class OutgoingCltvValueTlvConverter : ITlvConverter<OutgoingCltvValueTlv>
 {
     public BaseTlv ConvertToBase(OutgoingCltvValueTlv tlv)
     {
-        return new BaseTlv(tlv.Type, OnionTruncatedInt.Encode(tlv.OutgoingCltvValue));
+        return new BaseTlv(tlv.Type, TruncatedInt.EncodeTu32(tlv.OutgoingCltvValue));
     }
 
     public OutgoingCltvValueTlv ConvertFromBase(BaseTlv baseTlv)
@@ -20,7 +21,7 @@ public class OutgoingCltvValueTlvConverter : ITlvConverter<OutgoingCltvValueTlv>
             throw new InvalidCastException("Invalid TLV type");
 
         if (baseTlv.Length != (ulong)baseTlv.Value.Length
-         || !OnionTruncatedInt.TryDecodeTu32(baseTlv.Value, out var cltv))
+         || !TruncatedInt.TryDecodeTu32(baseTlv.Value, out var cltv))
             throw new InvalidCastException("Invalid length");
 
         return new OutgoingCltvValueTlv(cltv);

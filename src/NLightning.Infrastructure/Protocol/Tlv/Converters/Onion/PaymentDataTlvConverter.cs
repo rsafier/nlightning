@@ -9,16 +9,17 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
+using Infrastructure.Converters;
 
 public class PaymentDataTlvConverter : ITlvConverter<PaymentDataTlv>
 {
     private const int MinLength = CryptoConstants.SecretLen;
-    private const int MaxLength = CryptoConstants.SecretLen + OnionTruncatedInt.Tu64MaxLength;
+    private const int MaxLength = CryptoConstants.SecretLen + TruncatedInt.MaxTu64Length;
 
     public BaseTlv ConvertToBase(PaymentDataTlv tlv)
     {
         byte[] secret = tlv.PaymentSecret;
-        var total = OnionTruncatedInt.Encode(tlv.TotalMsat.MilliSatoshi);
+        var total = TruncatedInt.EncodeTu64(tlv.TotalMsat.MilliSatoshi);
 
         var value = new byte[CryptoConstants.SecretLen + total.Length];
         secret.AsSpan(0, CryptoConstants.SecretLen).CopyTo(value);
@@ -36,7 +37,7 @@ public class PaymentDataTlvConverter : ITlvConverter<PaymentDataTlv>
         if (baseTlv.Length != (ulong)value.Length || value.Length < MinLength || value.Length > MaxLength)
             throw new InvalidCastException("Invalid length");
 
-        if (!OnionTruncatedInt.TryDecodeTu64(value.AsSpan(CryptoConstants.SecretLen), out var totalMsat))
+        if (!TruncatedInt.TryDecodeTu64(value.AsSpan(CryptoConstants.SecretLen), out var totalMsat))
             throw new InvalidCastException("Invalid total_msat encoding");
 
         return new PaymentDataTlv(new Secret(value[..CryptoConstants.SecretLen]),

@@ -7,12 +7,13 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
+using Infrastructure.Converters;
 
 public class TotalAmountMsatTlvConverter : ITlvConverter<TotalAmountMsatTlv>
 {
     public BaseTlv ConvertToBase(TotalAmountMsatTlv tlv)
     {
-        return new BaseTlv(tlv.Type, OnionTruncatedInt.Encode(tlv.TotalAmount.MilliSatoshi));
+        return new BaseTlv(tlv.Type, TruncatedInt.EncodeTu64(tlv.TotalAmount.MilliSatoshi));
     }
 
     public TotalAmountMsatTlv ConvertFromBase(BaseTlv baseTlv)
@@ -21,7 +22,7 @@ public class TotalAmountMsatTlvConverter : ITlvConverter<TotalAmountMsatTlv>
             throw new InvalidCastException("Invalid TLV type");
 
         if (baseTlv.Length != (ulong)baseTlv.Value.Length
-         || !OnionTruncatedInt.TryDecodeTu64(baseTlv.Value, out var amount))
+         || !TruncatedInt.TryDecodeTu64(baseTlv.Value, out var amount))
             throw new InvalidCastException("Invalid length");
 
         return new TotalAmountMsatTlv(LightningMoney.MilliSatoshis(amount));

@@ -7,12 +7,13 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
+using Infrastructure.Converters;
 
 public class AmtToForwardTlvConverter : ITlvConverter<AmtToForwardTlv>
 {
     public BaseTlv ConvertToBase(AmtToForwardTlv tlv)
     {
-        return new BaseTlv(tlv.Type, OnionTruncatedInt.Encode(tlv.AmountToForward.MilliSatoshi));
+        return new BaseTlv(tlv.Type, TruncatedInt.EncodeTu64(tlv.AmountToForward.MilliSatoshi));
     }
 
     public AmtToForwardTlv ConvertFromBase(BaseTlv baseTlv)
@@ -21,7 +22,7 @@ public class AmtToForwardTlvConverter : ITlvConverter<AmtToForwardTlv>
             throw new InvalidCastException("Invalid TLV type");
 
         if (baseTlv.Length != (ulong)baseTlv.Value.Length
-         || !OnionTruncatedInt.TryDecodeTu64(baseTlv.Value, out var amount))
+         || !TruncatedInt.TryDecodeTu64(baseTlv.Value, out var amount))
             throw new InvalidCastException("Invalid length");
 
         return new AmtToForwardTlv(LightningMoney.MilliSatoshis(amount));
