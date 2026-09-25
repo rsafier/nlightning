@@ -42,6 +42,8 @@ A note on layers. A BOLT 2 message can be complete at the wire layer (Domain mes
 
 ## BOLT 2: Peer protocol for channel management
 
+> Implementation plan for normal operation, reestablish and close (with the requirements traceability matrix): [`BOLT2_NORMAL_OPERATION_PLAN.md`](BOLT2_NORMAL_OPERATION_PLAN.md).
+
 ### Wire layer (Domain message + payload + serializer)
 
 | Messages | Status | Files | Tests | Notes |

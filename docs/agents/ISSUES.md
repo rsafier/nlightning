@@ -11,7 +11,7 @@ Snapshot: 2026-09-25, `wip/fafo`. Sources: `docs/agents/{BOLT_COVERAGE,REPO_MAP,
 - **Never delete an entry.** Mark it `wontfix` (say why) or `duplicate of NL-###`.
 - Keep entries tight: one line of evidence per claim, file:line where possible.
 - Update the summary table below when you add an entry or change a status or severity.
-- Plan milestones (e.g. `ONION M3`) refer to `docs/agents/ONION_ROUTING_PLAN.md`. `BOLT_COVERAGE.md` remains the per-BOLT status matrix; this file is the status source for individual bugs.
+- Plan milestones (e.g. `ONION M3`) refer to `docs/agents/ONION_ROUTING_PLAN.md`; `BOLT2 N#-T#` refers to `docs/agents/BOLT2_NORMAL_OPERATION_PLAN.md`. `BOLT_COVERAGE.md` remains the per-BOLT status matrix; this file is the status source for individual bugs.
 
 ### Status legend
 
@@ -38,12 +38,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 13 | 29 | 63 | 65 | 170 |
+| open | 14 | 37 | 69 | 66 | 186 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 0 | 3 | 9 | 4 | 16 |
 | wontfix | 0 | 0 | 0 | 0 | 0 |
 | duplicate | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **13** | **32** | **72** | **69** | **186** |
+| **Total** | **14** | **40** | **78** | **70** | **202** |
 
 ### Epics
 
@@ -71,7 +71,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Extensions are read with the open `TlvStreamSerializer.DeserializeAsync`, which cannot reject unknown even types. Only update_add_htlc uses `DeserializeStrictAsync`.
 - **Fix sketch:** Give each message serializer its known-type set and call `DeserializeStrictAsync`; add the BOLT 1 Appendix C init case (0xca) as a test.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** ONION_ROUTING_PLAN §5 "M1/M2 as built"; BOLT_COVERAGE roadmap step 4
+- **Plan ref:** ONION_ROUTING_PLAN §5 "M1/M2 as built"; BOLT_COVERAGE roadmap step 4; BOLT2 N0-T6 (touched messages)
 
 ### NL-002 init rejects a peer if any of its chains is unknown
 - **Status:** open
@@ -255,7 +255,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `StfuMessage : BaseMessage`, and `PeerService.HandleMessage` only dispatches `IChannelMessage`/error/warning. `option_quiesce` is advertised Optional, so a peer that starts quiescence waits forever.
 - **Fix sketch:** Make stfu channel-scoped (or add a dispatch branch), and stop advertising `option_quiesce` until NL-042 is done.
 - **Blocks/Blocked-by:** Blocks NL-042
-- **Plan ref:** BOLT_COVERAGE roadmap step 2
+- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T4 (stop advertising quiesce)
 
 ### NL-020 closing_complete / closing_sig (option_simple_close) missing
 - **Status:** open
@@ -265,7 +265,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Types 40/41 absent; `Feature.OptionSimpleClose` exists in the enum only.
 - **Fix sketch:** Add messages and serializers per the recipe in root CLAUDE.md.
 - **Blocks/Blocked-by:** Part of NL-034
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N11-T1
 
 ### NL-021 Splicing and start_batch messages missing
 - **Status:** open
@@ -295,7 +295,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `FailureCode` is a raw ushort; BOLT 2 says the receiver MUST fail the channel if the BADONION bit is not set.
 - **Fix sketch:** Validate in the malformed handler; conversion lives in NL-071.
 - **Blocks/Blocked-by:** Blocked-by NL-031
-- **Plan ref:** ONION M3-T3
+- **Plan ref:** ONION M3-T3; BOLT2 N4-T2
 
 ### NL-024 Witness deserializer max-length check is commented out
 - **Status:** open
@@ -315,7 +315,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Since e7b21f3 the onion is mandatory; rows saved without it throw on reload. Only matters for pre-existing dev databases.
 - **Fix sketch:** Wipe dev DBs or add a data migration before any production release.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** M1-T9 open item
+- **Plan ref:** M1-T9 open item; BOLT2 N5-T1
 
 ### NL-026 MessageFactory.CreateUpdateAddHtlcMessage cannot attach a BlindedPathTlv
 - **Status:** open
@@ -367,6 +367,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** —
 - **Plan ref:** M1 review issues 1-2
 
+### NL-197 channel_reestablish next_funding TLV has the wrong type and shape; TLV 5 missing
+- **Status:** open
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Protocol/Constants/TlvConstants.cs:93`, `src/NLightning.Domain/Protocol/Tlv/NextFundingTlv.cs`
+- **Evidence:** `NextFunding = 0` and the TLV holds only a 32-byte txid; bolts master defines type 1 `next_funding` = `next_funding_txid ‖ retransmit_flags` and type 5 `my_current_funding_locked`. The serializer test fixture encodes type 0.
+- **Fix sketch:** Type 1 with the flags byte, parse-and-ignore TLV 5, strict known set {1,5}; fix `TxChannelReestablishMessageTests`.
+- **Blocks/Blocked-by:** Part of NL-035
+- **Plan ref:** BOLT2 N0-T6
+
+### NL-198 closing_signed deserializer requires the optional fee_range TLV
+- **Status:** open
+- **Severity:** high
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Infrastructure.Serialization/Messages/Types/ClosingSignedMessageTypeSerializer.cs:61-65`, `src/NLightning.Domain/Protocol/Messages/ClosingSignedMessage.cs`
+- **Evidence:** Throws "Required extension is missing" when `fee_range` is absent; the spec makes it optional, so legacy peers' `closing_signed` would be rejected.
+- **Fix sketch:** Nullable `FeeRangeTlv`, strict known set {1}; round-trip tests with and without it.
+- **Blocks/Blocked-by:** Part of NL-034
+- **Plan ref:** BOLT2 N0-T6
+
+### NL-199 commitment_signed has no funding_txid TLV
+- **Status:** open
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Protocol/Messages/CommitmentSignedMessage.cs`, `src/NLightning.Infrastructure.Serialization/Messages/Types/CommitmentSignedMessageTypeSerializer.cs`
+- **Evidence:** No TLV stream at all; bolts master says the sender MUST set TLV 1 `funding_txid` (receiver ignores a CS whose `funding_txid` does not match, outside splicing).
+- **Fix sketch:** `FundingTxIdTlv` + converter, strict known set {1}, set it in `MessageFactory`.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N0-T6
+
 ---
 
 ## BOLT 2: Behaviour layer
@@ -377,9 +407,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:88-133`
 - **Evidence:** The switch handles only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` (L133) throws `ChannelErrorException`, so any update_add_htlc, commitment_signed, update_fee etc. **disconnects the peer**. No handlers exist.
-- **Fix sketch:** Handlers + ChannelManager cases for all 7 messages, commitment dance state machine, per-channel locking, persistence of every state transition. Sub-issues: NL-032, NL-033, NL-057, NL-056, NL-125, NL-051.
+- **Fix sketch:** Handlers + ChannelManager cases for all 7 messages, commitment dance state machine, per-channel locking, persistence of every state transition. Sub-issues: NL-032, NL-033, NL-057, NL-056, NL-125, NL-051, NL-187, NL-188, NL-190, NL-193, NL-194, NL-200.
 - **Blocks/Blocked-by:** Blocks NL-073, NL-034, NL-035, NL-094
-- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 5
+- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 5; BOLT2 N4-N6
 
 ### NL-032 ChannelModel has no HTLC/balance/next-id mutators; HtlcState has 4 values
 - **Status:** open
@@ -389,7 +419,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** HTLC collections, balances, next ids and revocation numbers are get-only. `HtlcState` = Offered/Fulfilled/Failed/Expired, no commitment-dance stages.
 - **Fix sketch:** Add add/settle/fail mutators and per-side commitment states (pending/committed/revoked, lock-in).
 - **Blocks/Blocked-by:** Part of NL-031
-- **Plan ref:** ONION_ROUTING_PLAN §7
+- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT2 N4-T1
 
 ### NL-033 No per-channel ordering lock; PeerManager peer table not thread-safe; unobserved reply continuations
 - **Status:** open
@@ -399,7 +429,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Two messages for one channel can race on the shared `ChannelModel`; `_peers` is a plain `Dictionary`; replies attached with `ContinueWith` are never awaited, so exceptions are lost.
 - **Fix sketch:** Per-channel async lock/queue; `ConcurrentDictionary`; await or log continuations.
 - **Blocks/Blocked-by:** Part of NL-031
-- **Plan ref:** ONION_ROUTING_PLAN §7 "Per-channel ordering"
+- **Plan ref:** ONION_ROUTING_PLAN §7 "Per-channel ordering"; BOLT2 N0-T3
 
 ### NL-034 [EPIC] Channel close (shutdown / closing_signed / option_simple_close)
 - **Status:** open
@@ -409,7 +439,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Nothing moves a channel to Closing; an incoming shutdown disconnects the peer (see NL-031). Funds can only leave a channel via the peer's force close.
 - **Fix sketch:** shutdown/closing_signed handlers with fee_range, closing tx builder (NL-065), then option_simple_close (NL-020). Needs a close IPC command (NL-152).
 - **Blocks/Blocked-by:** Blocked-by NL-031 (must wait for HTLCs to clear)
-- **Plan ref:** BOLT_COVERAGE roadmap step 11
+- **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N10 (legacy), N11 (simple close)
 
 ### NL-035 [EPIC] channel_reestablish / option_data_loss_protect
 - **Status:** open
@@ -419,7 +449,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** TODO only; an incoming channel_reestablish disconnects the peer. `option_data_loss_protect` is advertised **Compulsory** (`FeatureOptions.cs:14`) with no implementation, and state needed for it (NL-136) is not persisted.
 - **Fix sketch:** Reestablish on reconnect with commitment/revocation number sync, retransmission, data-loss detection.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-136, NL-125, NL-126, NL-127
-- **Plan ref:** BOLT_COVERAGE roadmap step 6
+- **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N7
 
 ### NL-036 Closing/Stale channels are not handled on startup
 - **Status:** open
@@ -429,7 +459,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `TODO: Deal with channels that are Closing, Stale, or any other state`.
 - **Fix sketch:** Resume close / watch on-chain for these states.
 - **Blocks/Blocked-by:** Part of NL-034, NL-094
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N7-T5, N10-T3 (partial)
 
 ### NL-037 [EPIC] Dual funding / interactive-tx (v2 open)
 - **Status:** open
@@ -489,7 +519,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No handler or state; `option_quiesce` advertised Optional.
 - **Fix sketch:** Stop advertising until implemented; then stfu handling per BOLT 2.
 - **Blocks/Blocked-by:** Blocked-by NL-019, NL-031
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N0-T4 (advertising only)
 
 ### NL-043 open_channel push_msat check is 1000x too lenient
 - **Status:** open
@@ -509,7 +539,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `OptionAnchors > No ? ...WeightNoAnchor : ...WeightWithAnchor`.
 - **Fix sketch:** Swap the branches; test both.
 - **Blocks/Blocked-by:** Related NL-061
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N2-T1
 
 ### NL-045 Local upfront_shutdown_script is never generated
 - **Status:** open
@@ -519,7 +549,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `TODO: Generate a script from the local key set`; the feature is advertised Optional.
 - **Fix sketch:** Derive a wallet script (or send zero-length) and persist it for close.
 - **Blocks/Blocked-by:** Related NL-034
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N10-T1
 
 ### NL-046 accept_channel rejected when channel_type present and upfront_shutdown_script absent
 - **Status:** open
@@ -549,7 +579,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** A crash between funding_created and funding_signed loses the channel state (funding tx is not yet broadcast, so no direct loss).
 - **Fix sketch:** Persist after funding_created is sent.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N7-T6
 
 ### NL-049 ForgetStaleChannels has no state filter and can mark open channels Stale
 - **Status:** open
@@ -559,7 +589,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Selects `FundingCreatedAtBlockHeight <= height - 2016` for every channel. The field is 0 until confirmation, and old confirmed Open channels also match, so on any chain taller than 2016 blocks live channels are forgotten.
 - **Fix sketch:** Filter to unconfirmed opening states and track the creation height explicitly.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N0-T7
 
 ### NL-050 ConfirmUnconfirmedChannels re-fires every block (commitment number drift, repeated channel_ready)
 - **Status:** open
@@ -569,7 +599,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** A ReadyForUs channel stays ReadyForUs; the handler only logs the wrong state, so every block increments CommitmentNumber and re-sends channel_ready.
 - **Fix sketch:** Return early on wrong state; make confirmation idempotent.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N0-T7, N1-T1
 
 ### NL-051 channel_ready never stores the peer's second per-commitment point
 - **Status:** open
@@ -579,7 +609,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Guard `CurrentPerCommitmentIndex == 0`, but the index counts down from 2^48-1, so the point is likely never updated and the first commitment update would use the wrong point.
 - **Fix sketch:** Compare against the initial index (2^48-1); test.
 - **Blocks/Blocked-by:** Blocks NL-031
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N1-T2
 
 ### NL-052 Failed startup reconnect skips channel registration
 - **Status:** open
@@ -589,7 +619,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `TODO: Handle this case, maybe retry or log more details`; channels for that peer are never loaded/retried.
 - **Fix sketch:** Register channels regardless and retry connection with backoff.
 - **Blocks/Blocked-by:** Related NL-035
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N1-T6
 
 ### NL-053 FundingCreatedMessageHandler flagged "REVIEW FULL FLOW"
 - **Status:** open
@@ -621,6 +651,76 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
+### NL-187 Second local per-commitment point is derived from index 1 instead of 2^48-2
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Handlers/FundingConfirmedMessageHandler.cs:52-54`, `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs:127-139`
+- **Evidence:** The handler passes `CommitmentNumber.Value` (1) to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is passed unchanged to `GeneratePerCommitmentSecret` as the BOLT 3 index. The first point uses `FirstPerCommitmentIndex`, so the second RAA would break the peer's shachain.
+- **Fix sketch:** Signer APIs take commitment numbers and convert with `index = 2^48-1-n`; add a `PerCommitmentIndex` helper; test the point sent in channel_ready.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N1-T1
+
+### NL-188 One CommitmentNumber is shared by the local and remote commitments
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (`CommitmentNumber`), `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:225`
+- **Evidence:** The factory uses `channel.CommitmentNumber` for both sides; local and remote numbers diverge during the commitment dance, so one of the two commitments gets the wrong obscured number. No local/remote commitment numbers are persisted.
+- **Fix sketch:** Separate `LocalCommitmentNumber`/`RemoteCommitmentNumber` (persisted); make `CommitmentNumber` an immutable obscuring helper.
+- **Blocks/Blocked-by:** Part of NL-031; related NL-069, NL-127
+- **Plan ref:** BOLT2 N1-T1
+
+### NL-190 Next HTLC ids start at 1 instead of 0
+- **Status:** open
+- **Severity:** high
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs:133,253`
+- **Evidence:** `ChannelModel` is created with `localNextHtlcId = 1` and `remoteNextHtlcId = 1`; BOLT 2 requires the first id to be 0. `Bolt3IntegrationTests.GetTestChannelModel` also passes 1.
+- **Fix sketch:** Start at 0; unit test.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N1-T3
+
+### NL-193 Channel handlers return one message; out-of-band sends are unordered
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Handlers/Interfaces/IChannelMessageHandler.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs:299-301,364-384`
+- **Evidence:** `HandleAsync` returns `Task<IChannelMessage?>`; receiving `commitment_signed` must emit `revoke_and_ack` then possibly `commitment_signed`, and reestablish needs several ordered messages. `OnResponseMessageReady` sends fire-and-forget, with no ordering relative to replies.
+- **Fix sketch:** Return a list; route replies and events through one per-peer ordered outbox.
+- **Blocks/Blocked-by:** Part of NL-031; related NL-033
+- **Plan ref:** BOLT2 N0-T3
+
+### NL-194 ChannelConfig is one-sided: one set of limits and one to_self_delay for both directions
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/ValueObjects/ChannelConfig.cs`, `ChannelFactory.cs:115-120`, `src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs:88-97`, `AcceptChannel1MessageHandler.cs:137-150`, `CommitmentTransactionModelFactory.cs:200`
+- **Evidence:** Non-initiator copies the opener's reserve/htlc_minimum/max_accepted/max_in_flight/to_self_delay and echoes them back in accept_channel; initiator keeps its own limits but takes the peer's to_self_delay; the factory uses that one delay for both commitments. BOLT 2 add/fee limits can't be evaluated per direction. The Docker open test pushes 0, so the peer's commitment has no to_local output and the mismatch stays invisible (inferred).
+- **Fix sketch:** Split into `ChannelParams { Local, Remote }` with documented direction rules; accept_channel sends our NodeOptions values; the factory uses the holder's delay per side; migration with a data step.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N1-T4
+
+### NL-200 No failed-channel state; ChannelErrorException always just disconnects
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`HandleChannelMessageResponseAsync`), `src/NLightning.Domain/Channels/Enums/ChannelState.cs`
+- **Evidence:** The spec's "send error and fail the channel" can't be expressed: nothing persists a failed state, refuses later updates or re-sends the error on reconnect.
+- **Fix sketch:** `ChannelFailedException`, `ChannelState.Failed = 35`, persisted error bytes, error retransmission; broadcast later via a single ChannelFailureService.
+- **Blocks/Blocked-by:** Part of NL-031; related NL-094
+- **Plan ref:** BOLT2 N6-T3, N9-T4
+
+### NL-201 Startup connects before registering channels, and registration is fire-and-forget
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs:63-84`
+- **Evidence:** `StartAsync` connects to each peer first and only then calls `_ = _channelManager.RegisterExistingChannelAsync(channel)` without awaiting; a peer's immediate `channel_reestablish` (LND sends it after init) can arrive for a channel that isn't registered yet.
+- **Fix sketch:** Load and await registration (incl. signer) for every non-Closed channel before connecting.
+- **Blocks/Blocked-by:** Related NL-052, NL-035
+- **Plan ref:** BOLT2 N1-T6
+
 ---
 
 ## BOLT 3: Transactions and scripts
@@ -633,7 +733,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No builder, no Appendix C HTLC-tx vector tests.
 - **Fix sketch:** Builders + Appendix C/F HTLC vectors.
 - **Blocks/Blocked-by:** Part of NL-031; blocks NL-094
-- **Plan ref:** BOLT_COVERAGE roadmap step 5
+- **Plan ref:** BOLT_COVERAGE roadmap step 5; BOLT2 N2-T4
 
 ### NL-057 ILightningSigner has no HTLC-signature API; channel signing hardcodes input 0 + SIGHASH_ALL
 - **Status:** open
@@ -643,7 +743,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `htlc_signatures` in commitment_signed cannot be produced or verified; anchors need SIGHASH_SINGLE|ANYONECANPAY.
 - **Fix sketch:** Add HTLC tx sign/verify with sighash parameter.
 - **Blocks/Blocked-by:** Part of NL-031; blocked-by NL-056
-- **Plan ref:** ONION_ROUTING_PLAN §7
+- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT2 N3-T1
 
 ### NL-058 HtlcResolutionOutput swaps revocation and delayed keys
 - **Status:** open
@@ -653,7 +753,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Ctor passes `(revocationPubKey, localDelayedPubKey)` into `GenerateHtlcOutputScript(localDelayedPubKey, revocationPubKey, …)`. Not used yet, but any second-stage output built with it would pay the wrong keys.
 - **Fix sketch:** Fix argument order; add Appendix C script test.
 - **Blocks/Blocked-by:** Blocks NL-056
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N2-T4
 
 ### NL-059 BaseOutput.Amount setter is a no-op
 - **Status:** open
@@ -663,7 +763,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `set => Money.Satoshis(value.Satoshi);` discards the result.
 - **Fix sketch:** Assign the backing field (or remove the setter).
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N2-T4
 
 ### NL-060 BaseOutput ctor calls virtual ScriptType before subclass init
 - **Status:** open
@@ -683,7 +783,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `AdjustForAnchorOutputs` subtracts `AnchorOutputAmount` once; spec deducts two 330-sat anchors from the funder and uses base weight 1124. Appendix F vectors (`test/NLightning.Tests.Utils/Vectors/Bolt3AppendixFVectors.cs`) are unused. Anchors default No.
 - **Fix sketch:** Fix weights/deduction; wire Appendix F tests.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N2-T1, N2-T5
 
 ### NL-062 Commitment tx: suspect HTLC subtraction and to_remote dust limit
 - **Status:** open
@@ -693,7 +793,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Every HTLC is subtracted from to_local; to_remote trimming uses the remote dust limit (spec: the commitment holder's). Unverified; Appendix C only has no-HTLC-from-remote cases.
 - **Fix sketch:** Verify against BOLT 3 and Appendix C; fix and add vectors.
 - **Blocks/Blocked-by:** Blocks NL-031
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N2-T1
 
 ### NL-063 Funding tx: no change-dust check; insufficient inputs throw ArithmeticException
 - **Status:** open
@@ -723,7 +823,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No closing tx; `BaseTransaction.cs`/`FundingTransaction.cs` in the same folder are also dead commented code.
 - **Fix sketch:** New builder for closing_signed and closing_complete; delete the dead files.
 - **Blocks/Blocked-by:** Part of NL-034
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N10-T2
 
 ### NL-066 SecretStorageService: GetBasepointPrivateKey and LoadFromIndex throw NotImplementedException
 - **Status:** open
@@ -733,7 +833,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** The shachain can't be reloaded or used to derive basepoint secrets.
 - **Fix sketch:** Implement both, backed by NL-136.
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N3-T4
 
 ### NL-067 LocalLightningSigner: channel info memory-only; SignWalletTransaction not implemented
 - **Status:** open
@@ -743,7 +843,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `TODO: Load channel key data from database`; after a restart channels must be re-registered by hand. `SignWalletTransaction` throws.
 - **Fix sketch:** Load channel key data from the DB on demand; implement wallet signing.
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N1-T6 (re-registration only)
 
 ### NL-068 DustService is not registered in DI
 - **Status:** open
@@ -753,7 +853,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Implemented and unused.
 - **Fix sketch:** Register in `AddBitcoinInfrastructure` when HTLC trimming needs it.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N10-T1
 
 ### NL-069 CommitmentNumber ctor names (local, remote) but needs (opener, accepter); Increment mutates
 - **Status:** open
@@ -763,7 +863,47 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Misleading names caused NL-127.
 - **Fix sketch:** Rename parameters to opener/accepter; consider immutability.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N1-T1
+
+### NL-189 Local commitment key derivation computes the current per-commitment secret; no revocation guard
+- **Status:** open
+- **Severity:** critical
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/CommitmentKeyDerivationService.cs:27`, `src/NLightning.Domain/Bitcoin/Interfaces/ILightningSigner.cs`
+- **Evidence:** `DeriveLocalCommitmentKeys` calls `ReleasePerCommitmentSecret` for the current commitment and returns it in `CommitmentKeys.PerCommitmentSecret`. It is not sent today, but nothing stops a caller from revealing the secret of an unrevoked commitment, which would let the peer take all channel funds.
+- **Fix sketch:** Derive local keys from the point; make secret release internal behind a guard `n < LocalCommitted` advanced only after persistence; remove the secret from `CommitmentKeys`.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N3-T2
+
+### NL-195 option_anchors HTLC trim fee uses 666/706 weights instead of zero
+- **Status:** open
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:105-115`, `src/NLightning.Domain/Bitcoin/Transactions/Constants/WeightConstants.cs:30-33`
+- **Evidence:** With anchors the HTLC-timeout/success fee is 0 (zero-fee HTLC txs), so trimming uses the dust limit alone; the factory uses weights 666/706. Anchors default No.
+- **Fix sketch:** Fee 0 with anchors in a `CommitmentFeeCalculator`; Appendix F vectors.
+- **Blocks/Blocked-by:** Related NL-061
+- **Plan ref:** BOLT2 N2-T1
+
+### NL-196 Commitment factory throws when both outputs are below the channel reserve
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Bitcoin/Transactions/Factories/CommitmentTransactionModelFactory.cs:189-193`
+- **Evidence:** The reserve is an update-validation rule, not a tx-building rule; Appendix C's "fee greater than funder amount" case needs the tx to build.
+- **Fix sketch:** Remove the check from the factory; enforce the reserve in the update validator.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N2-T1
+
+### NL-202 LightningMoney is a mutable reference type
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Money/LightningMoney.cs:7,19-25`
+- **Evidence:** A class with a public `MilliSatoshi` setter; shared instances in commitment math can be changed through aliasing.
+- **Fix sketch:** Keep commitment-engine arithmetic in `ulong` msat with `checked`; consider making `LightningMoney` immutable.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** BOLT2 N4-T1
 
 ---
 
@@ -807,7 +947,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Nothing calls peel → replay → deserialize → validate. No forwarding, no final-hop checks, no sending.
 - **Fix sketch:** M4-T1..T7 per plan. Prereqs: NL-031, NL-075, NL-078, NL-101, NL-102, NL-167, NL-137, NL-114.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-070
-- **Plan ref:** ONION M4
+- **Plan ref:** ONION M4; BOLT2 N6-T1, N8 (direct-channel slice)
 
 ### NL-074 route_blinding and attribution_data advertised Optional without implementation
 - **Status:** open
@@ -817,7 +957,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Peers may send blinded HTLCs or attribution TLVs we cannot process.
 - **Fix sketch:** Default both to No until M5/M3b.
 - **Blocks/Blocked-by:** Related NL-109
-- **Plan ref:** ONION_ROUTING_PLAN §9 risk 7
+- **Plan ref:** ONION_ROUTING_PLAN §9 risk 7; BOLT2 N0-T4
 
 ### NL-075 IHopPayloadSerializer declared in Infrastructure.Serialization (Application can't use it)
 - **Status:** open
@@ -827,7 +967,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Application must not reference Serialization; M4 HtlcSwitch needs the interface.
 - **Fix sketch:** Move to `src/NLightning.Domain/Serialization/Interfaces/`.
 - **Blocks/Blocked-by:** Blocks NL-073
-- **Plan ref:** ONION M4 prerequisites
+- **Plan ref:** ONION M4 prerequisites; BOLT2 N8-T1
 
 ### NL-076 IHopPayloadSerializer resolves only if AddBitcoinInfrastructure registered ITlvConverterFactory
 - **Status:** open
@@ -887,7 +1027,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `BasicMpp` default Optional; no HTLC set handling, no `total_msat` / MPP timeout (0x0017).
 - **Fix sketch:** Implement in FinalHopProcessor (M4-T3); stop advertising until then (NL-109).
 - **Blocks/Blocked-by:** Blocked-by NL-073
-- **Plan ref:** ONION M4-T3
+- **Plan ref:** ONION M4-T3; BOLT2 N0-T4 (stop advertising)
 
 ### NL-082 PeelAsLocalNode does a node-key EC multiplication per call and copies the key
 - **Status:** open
@@ -1021,7 +1161,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished.
 - **Fix sketch:** Watch funding outpoints, classify spends, sweep to_local/to_remote/HTLC outputs, justice txs. Sub-issues: NL-095, NL-096, NL-097, NL-098.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-056, NL-066, NL-136, NL-067
-- **Plan ref:** BOLT_COVERAGE roadmap step 11
+- **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (broadcast only)
 
 ### NL-095 Revocation watch / penalty is a stub
 - **Status:** open
@@ -1031,7 +1171,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Nothing is watched for revoked commitments.
 - **Fix sketch:** Map the entity (key + config + 3 migrations), implement the repo and the watcher.
 - **Blocks/Blocked-by:** Part of NL-094
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N5-T1 (entity mapping)
 
 ### NL-096 BlockchainMonitorService has no reorg handling
 - **Status:** open
@@ -1085,7 +1225,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Unregistered even type → `InvalidMessageException`. `gossip_queries` is advertised, so real peers send these.
 - **Fix sketch:** Register message classes + serializers (both factory dictionaries) and route to a no-op/logging handler; keep gossip_queries advertised meanwhile.
 - **Blocks/Blocked-by:** Part of NL-099
-- **Plan ref:** BOLT_COVERAGE roadmap step 2
+- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T5
 
 ### NL-101 ShortChannelId(ulong) uses wrong masks
 - **Status:** open
@@ -1129,7 +1269,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Header (18 B) and body are read with a single `ReadAsync`; a partial read is treated as failure. A 1366-byte+ update_add_htlc often spans segments.
 - **Fix sketch:** `ReadExactlyAsync` for both.
 - **Blocks/Blocked-by:** Blocks NL-073
-- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 2
+- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 2; BOLT2 N0-T2
 
 ### NL-105 Messages are encrypted before taking the write lock (nonce desync)
 - **Status:** open
@@ -1139,7 +1279,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `_transport.WriteMessage` (nonce increment) runs before `_networkWriteSemaphore.WaitAsync`, so concurrent senders can write ciphertexts out of nonce order and the peer fails decryption (inferred, not reproduced).
 - **Fix sketch:** Hold the semaphore across encrypt + write.
 - **Blocks/Blocked-by:** Blocks NL-073
-- **Plan ref:** BOLT_COVERAGE roadmap step 2
+- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T2
 
 ### NL-106 Outgoing plaintext capped at 65519 bytes instead of 65535
 - **Status:** open
@@ -1169,7 +1309,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Slow handlers stall reads (and ping handling) for that peer.
 - **Fix sketch:** Queue messages to a per-peer consumer.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N0-T3 (partial)
 
 ---
 
@@ -1183,7 +1323,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Defaults advertise `option_data_loss_protect` (Compulsory), `gossip_queries(_ex)`, `basic_mpp`, `option_dual_fund`, `option_quiesce`, `option_provide_storage`, `option_scid_alias` (partial) with no or partial implementation (route_blinding/attribution_data tracked in NL-074). Peers act on them and we disconnect or hang.
 - **Fix sketch:** Default each to No until implemented. Exception: keep gossip_queries until NL-100 is fixed (dropping it makes peers flood gossip). data_loss_protect is required by LND/CLN in practice, so fix NL-035 rather than dropping it.
 - **Blocks/Blocked-by:** Related NL-019, NL-037, NL-081, NL-010
-- **Plan ref:** BOLT_COVERAGE roadmap step 2
+- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T4 (partial)
 
 ### NL-110 Feature dependency table has only 2 entries
 - **Status:** open
@@ -1241,7 +1381,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No invoice/preimage table, no CreateInvoice/PayInvoice IPC, no payment_secret checks.
 - **Fix sketch:** Reference Bolt11 from Application/Daemon, invoice store (NL-137), IPC commands (NL-152), FinalHopProcessor (M4-T3), PaymentManager (M4-T6).
 - **Blocks/Blocked-by:** Blocked-by NL-073
-- **Plan ref:** ONION M4-T3, M4-T6
+- **Plan ref:** ONION M4-T3, M4-T6; BOLT2 N8-T2, N8-T3 (partial)
 
 ### NL-115 MinFinalCltvExpiry returns null instead of the default 18
 - **Status:** open
@@ -1251,7 +1391,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Absent `c` yields null.
 - **Fix sketch:** Return 18 when absent.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N8-T3
 
 ### NL-116 Only the first r (route hint) field is kept
 - **Status:** open
@@ -1291,7 +1431,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `TODO: Check feature bits`; unknown even features accepted; writer doesn't force payment_secret/var_onion_optin.
 - **Fix sketch:** Reject unknown even bits on decode; set required bits on encode.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N8-T2 (encode side)
 
 ### NL-120 Invoice.Encode never runs InvoiceValidationService
 - **Status:** open
@@ -1355,7 +1495,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Offered/Fulfilled HTLCs are never restored; Expired/Failed all land in the remote lists. In-flight HTLCs are lost on restart.
 - **Fix sketch:** Compare `== (byte)HtlcState.X` / `(byte)HtlcDirection.X`; add a Sqlite round-trip test.
 - **Blocks/Blocked-by:** Blocks NL-031, NL-035
-- **Plan ref:** ONION_ROUTING_PLAN §7
+- **Plan ref:** ONION_ROUTING_PLAN §7; BOLT2 N1-T5
 
 ### NL-126 Remote funding pubkey replaced by the local one on reload
 - **Status:** open
@@ -1365,7 +1505,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `new FundingOutputInfo(..., localKeySet.FundingCompactPubKey, localKeySet.FundingCompactPubKey)`; after restart the funding script is wrong, so signatures and close fail.
 - **Fix sketch:** Use `remoteKeySet.FundingCompactPubKey`; test.
 - **Blocks/Blocked-by:** Blocks NL-035
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N1-T5
 
 ### NL-127 CommitmentNumber rebuilt with (local, remote) basepoints regardless of opener
 - **Status:** open
@@ -1375,7 +1515,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Obscuring factor is SHA256(opener || accepter); `ChannelFactory.cs:123` passes the remote (opener) basepoint first for non-initiator channels, but reload always passes local first → wrong obscured commitment numbers after restart.
 - **Fix sketch:** Order by `IsInitiator`; test both roles.
 - **Blocks/Blocked-by:** Blocks NL-035
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N1-T5
 
 ### NL-128 HtlcDbRepository never writes HTLC Signature
 - **Status:** open
@@ -1385,7 +1525,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `Signature` is read (L102-104) but never set, so it's always null after reload.
 - **Fix sketch:** Map it in `MapDomainToEntity`.
 - **Blocks/Blocked-by:** Part of NL-031
-- **Plan ref:** BOLT_COVERAGE roadmap step 3
+- **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N1-T5
 
 ### NL-129 SQL Server maps RemoteNodeId as varbinary(32) for a 33-byte key
 - **Status:** open
@@ -1395,7 +1535,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Uses `TransactionConstants.TxIdLength`; inserts truncate/fail on SQL Server.
 - **Fix sketch:** `CryptoConstants.CompactPubkeyLen` + SqlServer migration.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N1-T5
 
 ### NL-130 UtxoDbRepository.GetByIdAsync uses an anonymous-object key; mapper drops fields
 - **Status:** open
@@ -1465,7 +1605,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Received per-commitment secrets live in memory only; after restart revoked states can't be punished and reestablish can't prove state.
 - **Fix sketch:** Table + repo for shachain; load in `SecretStorageService` (NL-066).
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
-- **Plan ref:** BOLT_COVERAGE roadmap step 6
+- **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N3-T4
 
 ### NL-137 [EPIC] Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map
 - **Status:** open
@@ -1475,7 +1615,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No tables for per-HTLC onion shared secret, forwarding circuit, invoices/preimages, payment attempts, replay entries, SCID/alias→channel, or the channel graph.
 - **Fix sketch:** Entities + 3 migrations each (§4.5 of the onion plan); the shared secret can alternatively be recomputed from `AddMessageBytes`.
 - **Blocks/Blocked-by:** Blocks NL-073, NL-114, NL-078
-- **Plan ref:** ONION M4-T7; ONION_ROUTING_PLAN §4.5
+- **Plan ref:** ONION M4-T7; ONION_ROUTING_PLAN §4.5; BOLT2 N5-T1, N8 (partial)
 
 ### NL-138 ChannelMemoryRepository.TryGetChannel returns the shared mutable model
 - **Status:** open
@@ -1485,7 +1625,27 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Callers must remember `UpdateChannel` for `OnChannelUpdated` to fire.
 - **Fix sketch:** Return copies or make updates go through the repo.
 - **Blocks/Blocked-by:** Related NL-033
-- **Plan ref:** —
+- **Plan ref:** BOLT2 N5-T2
+
+### NL-191 Channel balances are persisted as whole satoshis
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Channel/ChannelEntity.cs:96,101`, `EntityConfiguration/Channel/ChannelEntityConfiguration.cs:79-80`, `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs:156-157`
+- **Evidence:** `LocalBalanceSatoshis`/`RemoteBalanceSatoshis` (`decimal`, SqlServer `bigint`) are written from `LightningMoney.Satoshi`; the msat part is lost on every restart, so our commitment disagrees with the peer's and signatures fail.
+- **Fix sketch:** `LocalBalanceMsat`/`RemoteBalanceMsat` columns with a `sats × 1000` data step (3 migrations).
+- **Blocks/Blocked-by:** Blocks NL-031, NL-035
+- **Plan ref:** BOLT2 N1-T5
+
+### NL-192 Channel UpdateAsync pushes the HTLC child graph through DbSet.Update
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelDbRepository.cs:39-43`, `src/NLightning.Infrastructure.Repositories/Database/BaseDbRepository.cs:103-133`
+- **Evidence:** `UpdateAsync` maps the whole channel (with `Htlcs`) and calls `Update`, which falls back to `DbSet.Update(graph)`; new HTLC rows would be marked Modified and fail with a concurrency exception (inferred, not reproduced).
+- **Fix sketch:** Write HTLCs and commitment rows explicitly (upsert by PK) in a dedicated state repository; stop touching HTLCs in `UpdateAsync`.
+- **Blocks/Blocked-by:** Part of NL-031
+- **Plan ref:** BOLT2 N5-T2
 
 ---
 
@@ -1629,7 +1789,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay.
 - **Fix sketch:** Append commands per the recipe as each epic lands.
 - **Blocks/Blocked-by:** Blocked-by NL-034, NL-114
-- **Plan ref:** ONION M4-T6
+- **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
 
 ### NL-153 BitcoinChainService ctor makes a blocking RPC call; key creation needs bitcoind
 - **Status:** open
@@ -1669,7 +1829,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Layer services (`ChannelFactory`, validators, tx factories, signer) registered only in the daemon; Docker tests rebuild them by hand.
 - **Fix sketch:** Move layer-owned registrations into each `DependencyInjection.cs`; share a test helper.
 - **Blocks/Blocked-by:** —
-- **Plan ref:** ONION_ROUTING_PLAN §9 risk 8
+- **Plan ref:** ONION_ROUTING_PLAN §9 risk 8; BOLT2 N0-T8
 
 ### NL-157 Application references Infrastructure; PeerService lives in Infrastructure
 - **Status:** open
@@ -1787,7 +1947,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `dotnet test` discovers 0 tests; CI silently skips 24 + 23 tests. They pass via `dotnet run`.
 - **Fix sketch:** Add `xunit.runner.visualstudio` 3.1.5 (and `IsTestProject` for Daemon.Tests).
 - **Blocks/Blocked-by:** Blocks NL-073 (M4-T1 tests go here)
-- **Plan ref:** ONION M4-T1; BOLT_COVERAGE roadmap step 1
+- **Plan ref:** ONION M4-T1; BOLT_COVERAGE roadmap step 1; BOLT2 N0-T1
 
 ### NL-168 PeerAddressTests HttpAddress test depends on live DNS
 - **Status:** open
@@ -1877,7 +2037,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Appendix B funding test body is commented out (passes vacuously); Appendix F (anchors) unused; `ExpectedCommitTx1..15` unreferenced (only signatures asserted); no HTLC second-stage vectors.
 - **Fix sketch:** Restore Appendix B, assert full txs, add Appendix C HTLC-tx and Appendix F tests.
 - **Blocks/Blocked-by:** Related NL-061, NL-056
-- **Plan ref:** BOLT_COVERAGE roadmap step 1
+- **Plan ref:** BOLT_COVERAGE roadmap step 1; BOLT2 N2-T2, N2-T5
 
 ### NL-177 Fully commented-out test files
 - **Status:** open
