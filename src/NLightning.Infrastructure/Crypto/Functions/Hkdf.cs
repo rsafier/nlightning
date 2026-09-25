@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace NLightning.Infrastructure.Crypto.Functions;
 
 using Domain.Crypto.Constants;
@@ -29,8 +27,7 @@ internal sealed class Hkdf : IDisposable
     {
         // ExceptionUtils.ThrowIfDisposed(_disposed, nameof(Hkdf));
 
-        Debug.Assert(chainingKey.Length == CryptoConstants.Sha256HashLen);
-        Debug.Assert(output.Length == 2 * CryptoConstants.Sha256HashLen);
+        ValidateLengths(chainingKey.Length, output.Length, 2);
 
         Span<byte> tempKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         HmacHash(chainingKey, tempKey, inputKeyMaterial);
@@ -52,8 +49,7 @@ internal sealed class Hkdf : IDisposable
     {
         // ExceptionUtils.ThrowIfDisposed(_disposed, nameof(Hkdf));
 
-        Debug.Assert(chainingKey.Length == CryptoConstants.Sha256HashLen);
-        Debug.Assert(output.Length == 3 * CryptoConstants.Sha256HashLen);
+        ValidateLengths(chainingKey.Length, output.Length, 3);
 
         Span<byte> tempKey = stackalloc byte[CryptoConstants.Sha256HashLen];
         HmacHash(chainingKey, tempKey, inputKeyMaterial);
@@ -68,12 +64,20 @@ internal sealed class Hkdf : IDisposable
         HmacHash(tempKey, output3, output2, s_three);
     }
 
+    private static void ValidateLengths(int chainingKeyLength, int outputLength, int outputs)
+    {
+        if (chainingKeyLength != CryptoConstants.Sha256HashLen)
+            throw new ArgumentException($"Chaining key must be {CryptoConstants.Sha256HashLen} bytes long.",
+                                        "chainingKey");
+
+        if (outputLength != outputs * CryptoConstants.Sha256HashLen)
+            throw new ArgumentException($"Output must be {outputs * CryptoConstants.Sha256HashLen} bytes long.",
+                                        "output");
+    }
+
     private void HmacHash(ReadOnlySpan<byte> key, Span<byte> hmac, ReadOnlySpan<byte> data1 = default, ReadOnlySpan<byte> data2 = default)
     {
         // ExceptionUtils.ThrowIfDisposed(_disposed, nameof(Hkdf));
-
-        Debug.Assert(key.Length == CryptoConstants.Sha256HashLen);
-        Debug.Assert(hmac.Length == CryptoConstants.Sha256HashLen);
 
         _hmacSha256.ComputeHash(key, data1, data2, hmac);
     }
