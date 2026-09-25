@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Integration.Tests.BOLT4;
@@ -227,6 +228,8 @@ public class OnionVectorTests
                                              NodeKey: Bolt4Vectors.GetHex(h, "node_privkey"),
                                              NextPathKey: Bolt4Vectors.GetOptionalHex(h, "next_path_key")))
                                .ToList();
+        var expectedPayloads = GetBlindedPaymentFullRoute(root).Select(h => h.Payload).ToList();
+        Assert.Equal(hops.Count, expectedPayloads.Count);
 
         CompactPubKey? pathKey = null;
         for (var i = 0; i < hops.Count; i++)
@@ -236,6 +239,8 @@ public class OnionVectorTests
                                              pathKey);
 
             // Assert
+            Assert.Equal(StripLengthPrefix(expectedPayloads[i]), peeled.Payload.ToArray());
+            Assert.Equal(pathKey.HasValue, peeled.PathKeySharedSecret.HasValue);
             if (i < hops.Count - 1)
             {
                 Assert.False(peeled.IsFinal);
@@ -251,6 +256,105 @@ public class OnionVectorTests
             // (cast needed: a bare null would convert to CompactPubKey through its implicit byte[] operator)
             pathKey = hops[i].NextPathKey is null ? (CompactPubKey?)null : new CompactPubKey(hops[i].NextPathKey!);
         }
+    }
+
+    [Fact]
+    public void Given_BlindedPaymentVector_When_Constructing_Then_OnionMatchesExactly()
+    {
+        // Arrange: generate.full_route holds Alice's real node id and the blinded node ids from Carol on
+        using var document = Bolt4Vectors.LoadDocument(Bolt4Vectors.BlindedPaymentOnionTestPath);
+        var generate = Bolt4Vectors.GetRequired(document.RootElement, "generate");
+        var hops = GetBlindedPaymentFullRoute(document.RootElement)
+                  .Select(h => new OnionHop(h.PubKey, StripLengthPrefix(h.Payload)))
+                  .ToList();
+
+        // Act
+        var packet = _sphinxService.Construct(hops, Bolt4Vectors.GetHex(generate, "session_key"),
+                                              Bolt4Vectors.GetHex(generate, "associated_data"));
+
+        // Assert
+        Assert.Equal(Convert.ToHexStringLower(Bolt4Vectors.GetHex(generate, "onion")),
+                     Convert.ToHexStringLower(packet.ToBytes()));
+    }
+
+    [Fact]
+    public void Given_BlindedPaymentIntroductionPoint_When_PeelingWithCurrentPathKey_Then_ThrowsInvalidOnionBlinding()
+    {
+        // Arrange: Bob's onion is encrypted to his real node id; current_path_key (inside his payload) is only for
+        // encrypted_recipient_data, so passing it as the peel path_key must fail
+        using var document = Bolt4Vectors.LoadDocument(Bolt4Vectors.BlindedPaymentOnionTestPath);
+        var root = document.RootElement;
+        var associatedData = Bolt4Vectors.GetHex(Bolt4Vectors.GetRequired(root, "generate"), "associated_data");
+        var bob = Bolt4Vectors.GetRequired(Bolt4Vectors.GetRequired(root, "decrypt"), "hops")[1];
+        var currentPathKey = Bolt4Vectors.GetRequired(Bolt4Vectors.GetRequired(root, "generate"), "full_route")
+                                         .GetProperty("hops")[1].GetProperty("tlvs")
+                                         .GetProperty("current_path_key").GetString()!;
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(
+                                                          new OnionPacket(Bolt4Vectors.GetHex(bob, "onion")),
+                                                          associatedData, Bolt4Vectors.GetHex(bob, "node_privkey"),
+                                                          new CompactPubKey(Convert.FromHexString(currentPathKey))));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionBlinding, exception.FailureCode);
+    }
+
+    [Fact]
+    public void Given_BlindedOnionMessageVector_When_PeelingChain_Then_EachNextPacketMatches()
+    {
+        // Arrange: decrypt.hops[i].onion_message = type(2) || path_key(33) || len(2) || onion_message_packet; every
+        // hop is peeled with the path_key of the onion_message it received and empty associated data
+        using var document = Bolt4Vectors.LoadDocument(Bolt4Vectors.BlindedOnionMessageOnionTestPath);
+        var root = document.RootElement;
+        var hops = Bolt4Vectors.GetRequired(Bolt4Vectors.GetRequired(root, "decrypt"), "hops")
+                               .EnumerateArray()
+                               .Select(h => (Message: ParseOnionMessage(Bolt4Vectors.GetHex(h, "onion_message")),
+                                             NodeKey: Bolt4Vectors.GetHex(h, "privkey")))
+                               .ToList();
+        Assert.Equal(Bolt4Vectors.GetHex(Bolt4Vectors.GetRequired(root, "onionmessage"), "onion_message_packet"),
+                     hops[0].Message.Packet);
+
+        for (var i = 0; i < hops.Count; i++)
+        {
+            // Act
+            var peeled = _sphinxService.Peel(new OnionPacket(hops[i].Message.Packet), [], hops[i].NodeKey,
+                                             new CompactPubKey(hops[i].Message.PathKey),
+                                             OnionPacketKind.OnionMessage);
+
+            // Assert
+            Assert.NotNull(peeled.PathKeySharedSecret);
+            if (i < hops.Count - 1)
+            {
+                Assert.False(peeled.IsFinal);
+                Assert.Equal(Convert.ToHexStringLower(hops[i + 1].Message.Packet),
+                             Convert.ToHexStringLower(peeled.NextPacket!.Value.ToBytes()));
+            }
+            else
+            {
+                // Dave's onionmsg_tlv: unknown_tag_1 ("hello") then encrypted_recipient_data (type 4)
+                Assert.True(peeled.IsFinal);
+                Assert.StartsWith("010568656c6c6f04", Convert.ToHexStringLower(peeled.Payload.ToArray()));
+            }
+        }
+    }
+
+    private static List<(byte[] PubKey, byte[] Payload)> GetBlindedPaymentFullRoute(JsonElement root)
+    {
+        return Bolt4Vectors.GetRequired(Bolt4Vectors.GetRequired(root, "generate"), "full_route")
+                           .GetProperty("hops")
+                           .EnumerateArray()
+                           .Select(h => (Bolt4Vectors.GetHex(h, "pubkey"), Bolt4Vectors.GetHex(h, "payload")))
+                           .ToList();
+    }
+
+    private static (byte[] PathKey, byte[] Packet) ParseOnionMessage(byte[] message)
+    {
+        // type 513 (u16) || point path_key || u16 len || onion_message_packet
+        Assert.Equal(new byte[] { 0x02, 0x01 }, message[..2]);
+        var length = (message[35] << 8) | message[36];
+        Assert.Equal(message.Length, 37 + length);
+        return (message[2..35], message[37..]);
     }
 
     /// <summary>

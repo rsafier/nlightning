@@ -28,12 +28,34 @@ internal sealed class OnionBuilder
     /// <summary>
     /// Builds the onion packet for <paramref name="hops"/>.
     /// </summary>
+    /// <param name="minPayloadLength">The minimum payload length (2 for payments, 0 for onion messages).</param>
     /// <exception cref="ArgumentException">
-    /// If the route is empty, a payload is shorter than 2 bytes, the framed payloads exceed
-    /// <paramref name="hopPayloadsLength"/>, or a key is invalid.
+    /// If the route is empty, a payload is shorter than <paramref name="minPayloadLength"/>, the framed payloads
+    /// exceed <paramref name="hopPayloadsLength"/>, or a key is invalid.
     /// </exception>
     public OnionPacket Build(IReadOnlyList<OnionHop> hops, PrivKey sessionKey, ReadOnlySpan<byte> associatedData,
-                             int hopPayloadsLength)
+                             int hopPayloadsLength, int minPayloadLength)
+    {
+        return Build(hops, sessionKey, associatedData, hopPayloadsLength, minPayloadLength, false).Packet;
+    }
+
+    /// <summary>
+    /// Builds the onion packet for <paramref name="hops"/> and returns the per-hop shared secrets with it.
+    /// </summary>
+    /// <inheritdoc cref="Build(IReadOnlyList{OnionHop}, PrivKey, ReadOnlySpan{byte}, int, int)"/>
+    public ConstructedOnion BuildWithSharedSecrets(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
+                                                   ReadOnlySpan<byte> associatedData, int hopPayloadsLength,
+                                                   int minPayloadLength)
+    {
+        var (packet, sharedSecrets) = Build(hops, sessionKey, associatedData, hopPayloadsLength, minPayloadLength,
+                                            true);
+        return new ConstructedOnion(packet, sharedSecrets!.Select(secret => new Secret(secret)).ToList());
+    }
+
+    private (OnionPacket Packet, byte[][]? SharedSecrets) Build(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
+                                                                ReadOnlySpan<byte> associatedData,
+                                                                int hopPayloadsLength, int minPayloadLength,
+                                                                bool keepSharedSecrets)
     {
         ArgumentNullException.ThrowIfNull(hops);
         if (hops.Count == 0)
@@ -42,20 +64,23 @@ internal sealed class OnionBuilder
         if (hopPayloadsLength <= 0)
             throw new ArgumentException("Hop payloads length must be positive.", nameof(hopPayloadsLength));
 
-        var shiftSizes = ComputeShiftSizes(hops, hopPayloadsLength);
+        ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
+
+        var shiftSizes = ComputeShiftSizes(hops, hopPayloadsLength, minPayloadLength);
         var nodeIds = new CompactPubKey[hops.Count];
         for (var i = 0; i < hops.Count; i++)
             nodeIds[i] = hops[i].NodeId;
 
-        var (ephemeralPubKeys, sharedSecrets) = ComputeHopKeys(nodeIds, sessionKey);
-
         using var keyGenerator = new SphinxKeyGenerator();
         using var chaCha20 = new ChaCha20Stream();
+
+        var (ephemeralPubKeys, sharedSecrets) = ComputeHopKeys(keyGenerator, nodeIds, sessionKey);
 
         var mixHeader = new byte[hopPayloadsLength];
         var filler = Array.Empty<byte>();
         var hmac = new byte[OnionConstants.HmacLength];
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
+        var succeeded = false;
 
         try
         {
@@ -91,14 +116,19 @@ internal sealed class OnionBuilder
                 keyGenerator.ComputeHmac(key, mixHeader, associatedData, hmac);
             }
 
-            return new OnionPacket(OnionConstants.Version, ephemeralPubKeys[0], mixHeader, hmac);
+            succeeded = true;
+            return (new OnionPacket(OnionConstants.Version, ephemeralPubKeys[0], mixHeader, hmac),
+                    keepSharedSecrets ? sharedSecrets : null);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(key);
             CryptographicOperations.ZeroMemory(filler);
-            foreach (var sharedSecret in sharedSecrets)
-                CryptographicOperations.ZeroMemory(sharedSecret);
+            if (!keepSharedSecrets || !succeeded)
+            {
+                foreach (var sharedSecret in sharedSecrets)
+                    CryptographicOperations.ZeroMemory(sharedSecret);
+            }
         }
     }
 
@@ -113,6 +143,14 @@ internal sealed class OnionBuilder
     public (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(IReadOnlyList<CompactPubKey> nodeIds,
                                                                               PrivKey sessionKey)
     {
+        using var keyGenerator = new SphinxKeyGenerator();
+        return ComputeHopKeys(keyGenerator, nodeIds, sessionKey);
+    }
+
+    private (byte[][] EphemeralPubKeys, byte[][] SharedSecrets) ComputeHopKeys(SphinxKeyGenerator keyGenerator,
+                                                                               IReadOnlyList<CompactPubKey> nodeIds,
+                                                                               PrivKey sessionKey)
+    {
         ArgumentNullException.ThrowIfNull(nodeIds);
         if (nodeIds.Count == 0)
             throw new ArgumentException("The route must have at least one hop.", nameof(nodeIds));
@@ -120,7 +158,6 @@ internal sealed class OnionBuilder
         var ephemeralPubKeys = new byte[nodeIds.Count][];
         var sharedSecrets = new byte[nodeIds.Count][];
 
-        using var keyGenerator = new SphinxKeyGenerator();
         Span<byte> blindingFactor = stackalloc byte[CryptoConstants.Sha256HashLen];
 
         var ephemeralKey = sessionKey;
@@ -217,7 +254,7 @@ internal sealed class OnionBuilder
         return filler;
     }
 
-    private static int[] ComputeShiftSizes(IReadOnlyList<OnionHop> hops, int hopPayloadsLength)
+    private static int[] ComputeShiftSizes(IReadOnlyList<OnionHop> hops, int hopPayloadsLength, int minPayloadLength)
     {
         var shiftSizes = new int[hops.Count];
         var total = 0L;
@@ -226,8 +263,9 @@ internal sealed class OnionBuilder
             ArgumentNullException.ThrowIfNull(hops[i], nameof(hops));
 
             var payloadLength = hops[i].Payload.Length;
-            if (payloadLength < 2)
-                throw new ArgumentException($"Payload of hop {i} must be at least 2 bytes.", nameof(hops));
+            if (payloadLength < minPayloadLength)
+                throw new ArgumentException($"Payload of hop {i} must be at least {minPayloadLength} bytes.",
+                                            nameof(hops));
 
             shiftSizes[i] = SphinxBigSize.GetEncodedLength((ulong)payloadLength) + payloadLength
                           + OnionConstants.HmacLength;

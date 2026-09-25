@@ -286,15 +286,69 @@ public class SphinxServiceTests
         var nodeKey = _ecdh.GenerateKeyPair();
         var plaintext = new byte[OnionConstants.HopPayloadsLength];
         Convert.FromHexString(prefixHex).CopyTo(plaintext, 0);
-        var packet = CraftSingleHopPacket(nodeKey.CompactPubKey, plaintext);
+        var packet = CraftSingleHopPacket(nodeKey.CompactPubKey, plaintext, out var expectedSharedSecret);
 
         // Act
         var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(packet, s_associatedData,
                                                                                  nodeKey.PrivKey));
 
-        // Assert
+        // Assert: invalid_onion_payload is not BADONION, so the caller needs the shared secret to encrypt it
         Assert.Equal(FailureCode.InvalidOnionPayload, exception.FailureCode);
         Assert.Equal(new byte[] { 0x00, 0x00, 0x00 }, exception.FailureData?.ToArray());
+        Assert.NotNull(exception.SharedSecret);
+        Assert.Equal(expectedSharedSecret, (byte[])exception.SharedSecret.Value);
+    }
+
+    [Theory]
+    [MemberData(nameof(BadFramings))]
+    public void Given_ValidHmacButBadFramingInsideBlindedRoute_When_Peeling_Then_ThrowsInvalidOnionBlinding(
+        string prefixHex)
+    {
+        // Arrange
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var pathKey = _ecdh.GenerateKeyPair();
+        var plaintext = new byte[OnionConstants.HopPayloadsLength];
+        Convert.FromHexString(prefixHex).CopyTo(plaintext, 0);
+        var packet = CraftSingleHopPacket(BlindNodeId(nodeKey.CompactPubKey, pathKey.PrivKey), plaintext, out _);
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(packet, s_associatedData,
+                                                                                 nodeKey.PrivKey,
+                                                                                 pathKey.CompactPubKey));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionBlinding, exception.FailureCode);
+        Assert.Equal(SHA256.HashData(packet.ToBytes()), exception.FailureData?.ToArray());
+        Assert.Null(exception.SharedSecret);
+    }
+
+    public static TheoryData<string> BadOnionMessageFramings => new()
+    {
+        "fd00fc", // non-canonical bigsize
+        "fd0514", // 1300 > available
+        "fd04f2" // 1266 + 3 + 32 = 1301 > 1300
+    };
+
+    [Theory]
+    [MemberData(nameof(BadOnionMessageFramings))]
+    public void Given_BadFramingInOnionMessageWithPathKey_When_Peeling_Then_ThrowsInvalidOnionPayload(
+        string prefixHex)
+    {
+        // Arrange: onion messages never return errors, so no invalid_onion_blinding remapping is applied
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var pathKey = _ecdh.GenerateKeyPair();
+        var plaintext = new byte[OnionConstants.HopPayloadsLength];
+        Convert.FromHexString(prefixHex).CopyTo(plaintext, 0);
+        var packet = CraftSingleHopPacket(BlindNodeId(nodeKey.CompactPubKey, pathKey.PrivKey), plaintext, out _,
+                                          []);
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(packet, [], nodeKey.PrivKey,
+                                                                                 pathKey.CompactPubKey,
+                                                                                 OnionPacketKind.OnionMessage));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionPayload, exception.FailureCode);
     }
 
     [Fact]
@@ -304,7 +358,7 @@ public class SphinxServiceTests
         var nodeKey = _ecdh.GenerateKeyPair();
         var plaintext = new byte[OnionConstants.HopPayloadsLength];
         Convert.FromHexString("fd04f1").CopyTo(plaintext, 0);
-        var packet = CraftSingleHopPacket(nodeKey.CompactPubKey, plaintext);
+        var packet = CraftSingleHopPacket(nodeKey.CompactPubKey, plaintext, out _);
 
         // Act
         var peeled = _sphinxService.Peel(packet, s_associatedData, nodeKey.PrivKey);
@@ -312,6 +366,7 @@ public class SphinxServiceTests
         // Assert
         Assert.True(peeled.IsFinal);
         Assert.Equal(1265, peeled.Payload.Length);
+        Assert.Null(peeled.PathKeySharedSecret);
     }
 
     [Fact]
@@ -332,9 +387,10 @@ public class SphinxServiceTests
     }
 
     [Fact]
-    public void Given_UnexpectedPathKey_When_Peeling_Then_ThrowsInvalidOnionHmac()
+    public void Given_UnexpectedPathKey_When_Peeling_Then_ThrowsInvalidOnionBlinding()
     {
-        // Arrange
+        // Arrange: BOLT 4 "Returning Errors": with a path_key in update_add_htlc every failure (here a bad HMAC,
+        // since the onion is not encrypted to the blinded key) MUST be reported as invalid_onion_blinding
         var (packet, nodeKeys) = BuildTwoHopPacket();
         var pathKey = _ecdh.GenerateKeyPair().CompactPubKey;
 
@@ -343,7 +399,135 @@ public class SphinxServiceTests
                                                                                  nodeKeys[0].PrivKey, pathKey));
 
         // Assert
+        Assert.Equal(FailureCode.InvalidOnionBlinding, exception.FailureCode);
+        Assert.Equal(SHA256.HashData(packet.ToBytes()), exception.FailureData?.ToArray());
+        var inner = Assert.IsType<OnionException>(exception.InnerException);
+        Assert.Equal(FailureCode.InvalidOnionHmac, inner.FailureCode);
+    }
+
+    [Fact]
+    public void Given_UnknownVersionInsideBlindedRoute_When_Peeling_Then_ThrowsInvalidOnionBlinding()
+    {
+        // Arrange
+        var (packet, nodeKeys) = BuildTwoHopPacket();
+        var bytes = packet.ToBytes();
+        bytes[0] = 0x01;
+        var tampered = new OnionPacket(bytes);
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(tampered, s_associatedData,
+                                                                                 nodeKeys[0].PrivKey,
+                                                                                 _ecdh.GenerateKeyPair()
+                                                                                      .CompactPubKey));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionBlinding, exception.FailureCode);
+        Assert.Equal(SHA256.HashData(bytes), exception.FailureData?.ToArray());
+    }
+
+    [Fact]
+    public void Given_UnexpectedPathKeyOnOnionMessage_When_Peeling_Then_ThrowsInvalidOnionHmac()
+    {
+        // Arrange: the invalid_onion_blinding remapping is payment-only
+        var (packet, nodeKeys) = BuildTwoHopPacket();
+        var pathKey = _ecdh.GenerateKeyPair().CompactPubKey;
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(packet, s_associatedData,
+                                                                                 nodeKeys[0].PrivKey, pathKey,
+                                                                                 OnionPacketKind.OnionMessage));
+
+        // Assert
         Assert.Equal(FailureCode.InvalidOnionHmac, exception.FailureCode);
+    }
+
+    [Fact]
+    public void Given_BlindedHop_When_Peeling_Then_PathKeySharedSecretIsExposed()
+    {
+        // Arrange
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var pathKey = _ecdh.GenerateKeyPair();
+        var hops = new List<OnionHop>
+        {
+            new(BlindNodeId(nodeKey.CompactPubKey, pathKey.PrivKey), Enumerable.Repeat((byte)0x01, 20).ToArray())
+        };
+        var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, s_associatedData);
+        var expected = new byte[32];
+        _ecdh.SecP256K1Dh(pathKey.PrivKey, nodeKey.CompactPubKey, expected);
+
+        // Act
+        var peeled = _sphinxService.Peel(packet, s_associatedData, nodeKey.PrivKey, pathKey.CompactPubKey);
+
+        // Assert
+        Assert.True(peeled.IsFinal);
+        Assert.NotNull(peeled.PathKeySharedSecret);
+        Assert.Equal(expected, (byte[])peeled.PathKeySharedSecret.Value);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Given_OnionMessagePayloadShorterThanTwoBytes_When_ConstructingAndPeeling_Then_Succeeds(int length)
+    {
+        // Arrange: onion messages have no legacy length, so 0 means an empty onionmsg_payload
+        var nodeKeys = new List<CryptoKeyPair> { _ecdh.GenerateKeyPair(), _ecdh.GenerateKeyPair() };
+        var hops = nodeKeys.Select(k => new OnionHop(k.CompactPubKey, new byte[length])).ToList();
+
+        // Act
+        var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, [],
+                                              packetKind: OnionPacketKind.OnionMessage);
+        var first = _sphinxService.Peel(packet, [], nodeKeys[0].PrivKey, packetKind: OnionPacketKind.OnionMessage);
+        var second = _sphinxService.Peel(first.NextPacket!.Value, [], nodeKeys[1].PrivKey,
+                                         packetKind: OnionPacketKind.OnionMessage);
+
+        // Assert
+        Assert.Equal(length, first.Payload.Length);
+        Assert.False(first.IsFinal);
+        Assert.Equal(length, second.Payload.Length);
+        Assert.True(second.IsFinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Given_PaymentOnionWithShortPayload_When_Peeling_Then_ThrowsInvalidOnionPayload(int length)
+    {
+        // Arrange: the same bytes that are a valid onion message are an invalid payment onion
+        var nodeKey = _ecdh.GenerateKeyPair();
+        var hops = new List<OnionHop> { new(nodeKey.CompactPubKey, new byte[length]) };
+        var packet = _sphinxService.Construct(hops, _ecdh.GenerateKeyPair().PrivKey, s_associatedData,
+                                              packetKind: OnionPacketKind.OnionMessage);
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => _sphinxService.Peel(packet, s_associatedData,
+                                                                                 nodeKey.PrivKey));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionPayload, exception.FailureCode);
+    }
+
+    [Fact]
+    public void Given_Route_When_ConstructingWithSharedSecrets_Then_PacketAndSecretsMatchSeparateCalls()
+    {
+        // Arrange
+        var nodeKeys = Enumerable.Range(0, 3).Select(_ => _ecdh.GenerateKeyPair()).ToList();
+        var hops = nodeKeys.Select(k => new OnionHop(k.CompactPubKey, new byte[] { 0x02, 0x01, 0x01 })).ToList();
+        var sessionKey = _ecdh.GenerateKeyPair().PrivKey;
+
+        // Act
+        var constructed = _sphinxService.ConstructWithSharedSecrets(hops, sessionKey, s_associatedData);
+
+        // Assert
+        Assert.Equal(_sphinxService.Construct(hops, sessionKey, s_associatedData), constructed.Packet);
+        Assert.Equal(_sphinxService.ComputeSharedSecrets(nodeKeys.Select(k => k.CompactPubKey).ToList(), sessionKey),
+                     constructed.SharedSecrets);
+        OnionPacket? current = constructed.Packet;
+        for (var i = 0; i < nodeKeys.Count; i++)
+        {
+            var peeled = _sphinxService.Peel(current!.Value, s_associatedData, nodeKeys[i].PrivKey);
+            Assert.Equal(constructed.SharedSecrets[i], peeled.SharedSecret);
+            current = peeled.NextPacket;
+        }
     }
 
     [Fact]
@@ -358,9 +542,10 @@ public class SphinxServiceTests
         // Act
         var peeled = service.PeelAsLocalNode(packet, s_associatedData);
 
-        // Assert
+        // Assert: the key manager hands out a fresh copy of the node key, which is wiped after the peel
         Assert.False(peeled.IsFinal);
         keyManager.Verify(m => m.GetNodeKeyPair(), Times.Once);
+        Assert.All(nodeKeys[0].PrivKey.Value, b => Assert.Equal(0, b));
     }
 
     [Fact]
@@ -387,10 +572,11 @@ public class SphinxServiceTests
     /// Builds a single-hop packet whose decrypted hop_payloads equal <paramref name="plaintext"/>, with a valid HMAC,
     /// so that framing checks can be exercised independently of the builder.
     /// </summary>
-    private OnionPacket CraftSingleHopPacket(CompactPubKey nodeId, byte[] plaintext)
+    private OnionPacket CraftSingleHopPacket(CompactPubKey nodeId, byte[] plaintext, out byte[] sharedSecret,
+                                             byte[]? associatedData = null)
     {
         var sessionKey = _ecdh.GenerateKeyPair();
-        var sharedSecret = new byte[32];
+        sharedSecret = new byte[32];
         _ecdh.SecP256K1Dh(sessionKey.PrivKey, nodeId, sharedSecret);
 
         using var keyGenerator = new SphinxKeyGenerator();
@@ -400,8 +586,20 @@ public class SphinxServiceTests
 
         var hmac = new byte[32];
         keyGenerator.ComputeHmac(keyGenerator.DeriveKey(OnionConstants.Mu, sharedSecret), hopPayloads,
-                                 s_associatedData, hmac);
+                                 associatedData ?? s_associatedData, hmac);
 
         return new OnionPacket(OnionConstants.Version, sessionKey.CompactPubKey, hopPayloads, hmac);
+    }
+
+    /// <summary>
+    /// Computes the blinded node id <c>HMAC("blinded_node_id", ECDH(path_key, node_id)) * node_id</c>.
+    /// </summary>
+    private CompactPubKey BlindNodeId(CompactPubKey nodeId, PrivKey pathKey)
+    {
+        var blindingSharedSecret = new byte[32];
+        _ecdh.SecP256K1Dh(pathKey, nodeId, blindingSharedSecret);
+        using var keyGenerator = new SphinxKeyGenerator();
+        var tweak = keyGenerator.DeriveKey(OnionConstants.BlindedNodeId, blindingSharedSecret);
+        return new Secp256K1Math().MultiplyPubKey(nodeId, tweak);
     }
 }

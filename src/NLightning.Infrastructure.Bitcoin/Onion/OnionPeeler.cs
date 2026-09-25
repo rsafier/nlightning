@@ -20,7 +20,8 @@ using Infrastructure.Crypto.Interfaces;
 /// </summary>
 /// <remarks>
 /// Order of checks, per BOLT 4 "Onion Decryption": version, public key, (route-blinding tweak), HMAC (constant time),
-/// then payload framing. The input packet is never modified.
+/// then payload framing. The input packet is never modified. The replay check belongs to the caller and must record
+/// the HMAC only after this peel succeeded (see <c>IOnionReplayCache</c>).
 /// </remarks>
 internal sealed class OnionPeeler
 {
@@ -36,12 +37,37 @@ internal sealed class OnionPeeler
     /// <summary>
     /// Peels one layer of <paramref name="packet"/> with <paramref name="nodeKey"/>.
     /// </summary>
+    /// <param name="minPayloadLength">The minimum payload length (2 for payments, 0 for onion messages).</param>
+    /// <param name="reportAsBlinding">
+    /// Whether every failure must be reported as <c>invalid_onion_blinding</c> (a payment with a path_key).
+    /// </param>
     /// <exception cref="OnionException">On any failure, with the BOLT 4 failure code to report.</exception>
     public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
-                            CompactPubKey? pathKey)
+                            CompactPubKey? pathKey, int minPayloadLength, bool reportAsBlinding)
     {
-        using var keyGenerator = new SphinxKeyGenerator();
+        ArgumentOutOfRangeException.ThrowIfNegative(minPayloadLength);
 
+        using var keyGenerator = new SphinxKeyGenerator();
+        try
+        {
+            return Peel(keyGenerator, packet, associatedData, nodeKey, pathKey, minPayloadLength);
+        }
+        catch (OnionException e) when (reportAsBlinding && e.FailureCode != FailureCode.InvalidOnionBlinding)
+        {
+            // BOLT 4 "Returning Errors": if path_key is set in the incoming update_add_htlc, the erring node MUST
+            // return invalid_onion_blinding, so that error codes do not reveal which check failed inside the path.
+            // That is a BADONION code, returned unencrypted, so the framing failure's shared secret is not needed.
+            if (e.SharedSecret is { } unusedSharedSecret)
+                CryptographicOperations.ZeroMemory(unusedSharedSecret);
+
+            throw BadOnion(keyGenerator, packet, FailureCode.InvalidOnionBlinding,
+                           $"Onion failure inside a blinded route: {e.Message}", e);
+        }
+    }
+
+    private PeeledOnion Peel(SphinxKeyGenerator keyGenerator, OnionPacket packet, ReadOnlySpan<byte> associatedData,
+                             PrivKey nodeKey, CompactPubKey? pathKey, int minPayloadLength)
+    {
         // 1. Version
         if (packet.Version != OnionConstants.Version)
             throw BadOnion(keyGenerator, packet, FailureCode.InvalidOnionVersion,
@@ -59,6 +85,7 @@ internal sealed class OnionPeeler
         Span<byte> key = stackalloc byte[CryptoConstants.Sha256HashLen];
         Span<byte> computedHmac = stackalloc byte[OnionConstants.HmacLength];
         byte[]? blindedNodeKey = null;
+        byte[]? pathKeySharedSecret = null;
         var succeeded = false;
 
         try
@@ -67,7 +94,8 @@ internal sealed class OnionPeeler
             var effectiveNodeKey = nodeKey;
             if (pathKey.HasValue)
             {
-                blindedNodeKey = BlindNodeKey(keyGenerator, packet, nodeKey, pathKey.Value);
+                pathKeySharedSecret = new byte[CryptoConstants.SecretLen];
+                blindedNodeKey = BlindNodeKey(keyGenerator, packet, nodeKey, pathKey.Value, pathKeySharedSecret);
                 effectiveNodeKey = blindedNodeKey;
             }
 
@@ -87,16 +115,18 @@ internal sealed class OnionPeeler
                 chaCha20.Xor(key, unwrapped, unwrapped);
             }
 
-            // 6. Framing: bigsize(len) || payload(len) || next_hmac(32), and at least hop_payloads left over
+            // 6. Framing: bigsize(len) || payload(len) || next_hmac(32), and at least hop_payloads left over.
+            // From here on the HMAC is verified, so failures carry the shared secret (invalid_onion_payload is not a
+            // BADONION code and must be encrypted in update_fail_htlc).
             if (!SphinxBigSize.TryRead(unwrapped, out var payloadLength, out var lengthSize))
-                throw InvalidPayload("Malformed hop payload length.");
+                throw InvalidPayload("Malformed hop payload length.", sharedSecret);
 
-            if (payloadLength < 2)
-                throw InvalidPayload($"Hop payload length {payloadLength} is too short.");
+            if (payloadLength < (ulong)minPayloadLength)
+                throw InvalidPayload($"Hop payload length {payloadLength} is too short.", sharedSecret);
 
             if (payloadLength > (ulong)hopPayloadsLength
              || lengthSize + (int)payloadLength + OnionConstants.HmacLength > hopPayloadsLength)
-                throw InvalidPayload($"Hop payload length {payloadLength} exceeds the hop payloads.");
+                throw InvalidPayload($"Hop payload length {payloadLength} exceeds the hop payloads.", sharedSecret);
 
             var payloadEnd = lengthSize + (int)payloadLength;
             var shiftSize = payloadEnd + OnionConstants.HmacLength;
@@ -113,12 +143,17 @@ internal sealed class OnionPeeler
             }
 
             succeeded = true;
-            return new PeeledOnion(payload, new Secret(sharedSecret), nextPacket);
+            return new PeeledOnion(payload, new Secret(sharedSecret), nextPacket,
+                                   pathKeySharedSecret is null ? (Secret?)null : new Secret(pathKeySharedSecret));
         }
         finally
         {
             if (!succeeded)
+            {
                 CryptographicOperations.ZeroMemory(sharedSecret);
+                if (pathKeySharedSecret is not null)
+                    CryptographicOperations.ZeroMemory(pathKeySharedSecret);
+            }
 
             CryptographicOperations.ZeroMemory(key);
             CryptographicOperations.ZeroMemory(computedHmac);
@@ -129,12 +164,11 @@ internal sealed class OnionPeeler
     }
 
     private byte[] BlindNodeKey(SphinxKeyGenerator keyGenerator, OnionPacket packet, PrivKey nodeKey,
-                                CompactPubKey pathKey)
+                                CompactPubKey pathKey, byte[] blindingSharedSecret)
     {
         if (!SphinxKeyGenerator.IsValidPublicKey(pathKey))
             throw BadOnion(keyGenerator, packet, FailureCode.InvalidOnionBlinding, "Invalid path key.");
 
-        Span<byte> blindingSharedSecret = stackalloc byte[CryptoConstants.SecretLen];
         Span<byte> tweak = stackalloc byte[CryptoConstants.Sha256HashLen];
         try
         {
@@ -149,7 +183,6 @@ internal sealed class OnionPeeler
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(blindingSharedSecret);
             CryptographicOperations.ZeroMemory(tweak);
         }
     }
@@ -185,9 +218,14 @@ internal sealed class OnionPeeler
                    : new OnionException(code, message, innerException, sha256OfOnion);
     }
 
-    private static OnionException InvalidPayload(string message)
+    private static OnionException InvalidPayload(string message, byte[] sharedSecret)
     {
-        // The framing failure cannot be narrowed down to a TLV: report bigsize type 0 || u16 offset 0.
-        return InvalidOnionPayloadFailureFactory.Create(new BigSize(0), 0, message);
+        // The framing failure cannot be narrowed down to a TLV: report bigsize type 0 || u16 offset 0. The HMAC has
+        // verified, so hand the caller a copy of the shared secret to encrypt the failure with.
+        return new OnionException(FailureCode.InvalidOnionPayload, message,
+                                  InvalidOnionPayloadFailureFactory.EncodeData(new BigSize(0), 0))
+        {
+            SharedSecret = new Secret(sharedSecret.ToArray())
+        };
     }
 }

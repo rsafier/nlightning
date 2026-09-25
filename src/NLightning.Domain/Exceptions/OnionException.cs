@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 
 namespace NLightning.Domain.Exceptions;
 
+using Crypto.ValueObjects;
 using Protocol.Onion.Enums;
 
 /// <summary>
@@ -23,6 +24,15 @@ public class OnionException : ErrorException
     /// The failure-specific data (e.g. sha256_of_onion, or bigsize type || u16 offset), if any.
     /// </summary>
     public ReadOnlyMemory<byte>? FailureData { get; }
+
+    /// <summary>
+    /// The shared secret with the sender, when it was established before the failure (the HMAC verified), so the
+    /// caller can encrypt a non-BADONION failure (e.g. <c>invalid_onion_payload</c>) in an <c>update_fail_htlc</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>null</c> for BADONION failures, which are returned unencrypted in <c>update_fail_malformed_htlc</c>.
+    /// </remarks>
+    public Secret? SharedSecret { get; init; }
 
     public OnionException(FailureCode failureCode, string message, ReadOnlyMemory<byte>? data = null)
         : base(message)
