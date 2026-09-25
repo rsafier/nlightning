@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Channels.Services;
 
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Interfaces;
 
@@ -22,9 +23,9 @@ public sealed class CommitSchedulerOptions
 }
 
 /// <summary>
-/// Signs the peer's next commitment after our own updates (BOLT2 plan N6-T2): debounced per channel, only for a live
-/// peer (<see cref="IPeerLivenessProbe"/>), never while a signed commitment waits for its <c>revoke_and_ack</c> (D7),
-/// persisted with its diff before it is enqueued (D3, D4, through
+/// Signs the peer's next commitment after our own updates (BOLT2 plan N6-T2): debounced per channel, only while the
+/// channel's link is up (<see cref="IPeerLivenessProbe"/>, checked again under the lock), never while a signed
+/// commitment waits for its <c>revoke_and_ack</c> (D7), persisted with its diff before it is enqueued (D3, D4, through
 /// <see cref="ChannelStateTransitionService.SignIfPendingAsync"/>).
 /// </summary>
 /// <remarks>
@@ -82,19 +83,16 @@ public sealed class CommitScheduler : ICommitScheduler
             return false;
 
         // Ping before commit: don't sign for a peer that is gone (the changes stay pending for the reestablish)
-        if (!await _peerLivenessProbe.IsAliveAsync(channel.RemoteNodeId, cancellationToken))
-        {
-            if (_logger.IsEnabled(LogLevel.Debug))
-                _logger.LogDebug("Not signing channel {ChannelId}: peer {Peer} is not connected", channelId,
-                                 channel.RemoteNodeId);
+        if (!await IsLinkUpAsync(channel, cancellationToken))
             return false;
-        }
 
         using var scope = _serviceScopeFactory.CreateScope();
         using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
 
-        // Re-read under the lock: a message may have signed or changed the channel meanwhile
-        if (!_channelMemoryRepository.TryGetChannel(channelId, out channel) || channel.Commitments is null)
+        // Re-read under the lock: a message may have signed or changed the channel meanwhile, and the connection may
+        // have changed (a commitment_signed must not go to a new connection before channel_reestablish)
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out channel) || channel.Commitments is null
+         || !await IsLinkUpAsync(channel, cancellationToken))
             return false;
 
         var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
@@ -111,6 +109,17 @@ public sealed class CommitScheduler : ICommitScheduler
     {
         while (!_inFlight.IsEmpty)
             await Task.WhenAll(_inFlight.Keys.ToArray());
+    }
+
+    private async Task<bool> IsLinkUpAsync(ChannelModel channel, CancellationToken cancellationToken)
+    {
+        if (await _peerLivenessProbe.IsAliveAsync(channel.ChannelId, channel.RemoteNodeId, cancellationToken))
+            return true;
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Not signing channel {ChannelId}: peer {Peer} is not connected on the channel's link",
+                             channel.ChannelId, channel.RemoteNodeId);
+        return false;
     }
 
     private async Task RunScheduledAsync(ChannelId channelId)

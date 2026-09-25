@@ -7,6 +7,7 @@ namespace NLightning.Application.Tests.Channels.Services;
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
 using Domain.Channels.Enums;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -35,7 +36,9 @@ public class CommitSchedulerTests
                            _published.AddRange(messages);
                        }
                    });
-        _probe.Setup(p => p.IsAliveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                          It.IsAny<CancellationToken>()))
+              .ReturnsAsync(true);
     }
 
     [Fact]
@@ -82,7 +85,9 @@ public class CommitSchedulerTests
     {
         // Arrange - ping before commit
         AddPendingOffer();
-        _probe.Setup(p => p.IsAliveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        _probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                          It.IsAny<CancellationToken>()))
+              .ReturnsAsync(false);
         var scheduler = CreateScheduler(TimeSpan.Zero);
 
         // Act
@@ -91,6 +96,28 @@ public class CommitSchedulerTests
         // Assert
         Assert.False(signed);
         Assert.Empty(_context.Calls);
+        Assert.Null(_context.State.RemoteNextCommit);
+    }
+
+    [Fact]
+    public async Task Given_LinkDropsBeforeTheLock_When_SigningNow_Then_NothingIsSigned()
+    {
+        // Arrange - the connection changes between the cheap check and the lock (a reconnection: no
+        // commitment_signed may go to the new connection before channel_reestablish)
+        AddPendingOffer();
+        _probe.SetupSequence(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                                  It.IsAny<CancellationToken>()))
+              .ReturnsAsync(true)
+              .ReturnsAsync(false);
+        var scheduler = CreateScheduler(TimeSpan.Zero);
+
+        // Act
+        var signed = await scheduler.SignNowAsync(TestChannelId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(signed);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
         Assert.Null(_context.State.RemoteNextCommit);
     }
 

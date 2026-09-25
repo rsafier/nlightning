@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.Channels.Managers;
 
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
+using Application.Channels.Interfaces;
 using Application.Channels.Managers;
 using Application.Channels.Services;
 using Domain.Bitcoin.ValueObjects;
@@ -328,6 +329,73 @@ public class ChannelManagerNormalOperationTests
         _context.ChannelMemoryRepository.Verify(r => r.AddChannel(_context.Channel), Times.Once);
         _htlcSwitch.Verify(s => s.HandleAsync(It.IsAny<IChannelDomainEvent>(), It.IsAny<CancellationToken>()),
                            Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ChannelReadyOpensTheChannel_When_Handled_Then_ItsLinkIsPinnedToTheConnection()
+    {
+        // Arrange - the channel turns Open on this connection: its updates may go out on it
+        var state = ChannelState.ReadyForUs;
+        _context.ChannelMemoryRepository.Setup(r => r.TryGetChannelState(TestChannelId, out It.Ref<ChannelState>.IsAny))
+                .Returns(new TryGetStateDelegate((ChannelId _, out ChannelState current) =>
+                 {
+                     current = state;
+                     return true;
+                 }));
+        var handler = new Mock<IChannelMessageHandler<ChannelReadyMessage>>();
+        handler.Setup(h => h.HandleAsync(It.IsAny<ChannelReadyMessage>(), It.IsAny<ChannelState>(),
+                                         It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+               .ReturnsAsync(() =>
+                {
+                    state = ChannelState.Open;
+                    return [];
+                });
+        _services.AddSingleton(handler.Object);
+        var probe = new Mock<IPeerLivenessProbe>();
+        _services.AddSingleton(probe.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        await channelManager.HandleChannelMessageAsync(new ChannelReadyMessage(new ChannelReadyPayload(TestChannelId,
+                                                               Point(0x30))),
+                                                       new FeatureOptions(), PeerNodeId);
+
+        // Assert
+        probe.Verify(p => p.MarkLinkUp(TestChannelId, PeerNodeId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AlreadyOpenChannel_When_AMessageArrives_Then_ItsLinkIsNotPinnedAgain()
+    {
+        // Arrange - a message on a new connection (no channel_reestablish yet, N7) must not make it usable
+        RegisterHandlerReturning(CreateMessage(MessageTypes.UpdateFee), []);
+        var probe = new Mock<IPeerLivenessProbe>();
+        _services.AddSingleton(probe.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        await channelManager.HandleChannelMessageAsync(CreateMessage(MessageTypes.UpdateFee), new FeatureOptions(),
+                                                       PeerNodeId);
+
+        // Assert
+        probe.Verify(p => p.MarkLinkUp(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ReloadedChannel_When_Registered_Then_ItsLinkStaysDownUntilReestablish()
+    {
+        // Arrange - the startup replay must not send a removal before the peer connects and reestablishes
+        _context.LockIn(HtlcDirection.Incoming, 30_000_000, SecretOf(1));
+        var probe = new Mock<IPeerLivenessProbe>();
+        _services.AddSingleton(probe.Object);
+        _services.AddSingleton(_htlcSwitch.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        await channelManager.RegisterExistingChannelAsync(_context.Channel);
+
+        // Assert
+        probe.Verify(p => p.MarkLinkUp(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>()), Times.Never);
     }
 
     [Fact]

@@ -187,9 +187,10 @@ public class TwoNodeHarnessTests
     }
 
     [Fact]
-    public async Task Given_PeerNotAlive_When_Operating_Then_OfferIsRefusedAndAFailWaitsUnsignedForThePeer()
+    public async Task Given_PeerNotAlive_When_Operating_Then_UpdatesAreRefusedAndTheFailGoesOutOnceThePeerIsBack()
     {
-        // Arrange - an HTLC from Alice locked in at Bob, then Bob's peer goes away
+        // Arrange - an HTLC from Alice locked in at Bob, then Bob's peer goes away (Bob's messages are dropped, as
+        // PeerManager drops them, and nothing re-sends them before channel_reestablish, N7)
         using var harness = new TwoNodeHarness();
         var alice = harness.Alice;
         var bob = harness.Bob;
@@ -197,28 +198,36 @@ public class TwoNodeHarnessTests
         await harness.PumpAsync();
         bob.PeerAlive = false;
         var signedBefore = bob.Signed.Count;
+        var committedBefore = bob.Store.Committed;
 
         // Act
         var offer = OfferAsync(bob, 10_000_000, TwoNodeHarness.Preimage(4));
-        await bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292],
-                                           TestContext.Current.CancellationToken);
+        var fail = bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292],
+                                                TestContext.Current.CancellationToken);
+        var fee = bob.Operations.UpdateFeeAsync(TwoNodeHarness.ChannelId, 3_000,
+                                                TestContext.Current.CancellationToken);
         await bob.Scheduler.WhenIdleAsync();
 
-        // Assert - the offer is refused before anything is persisted; the fail is persisted but not signed
+        // Assert - nothing is persisted, so no later commitment_signed can cover an update Alice never got
         await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => fail);
+        await Assert.ThrowsAsync<CommitmentRefusedException>(() => fee);
         Assert.Equal(0UL, bob.State.LocalNextHtlcId);
-        Assert.Equal(HtlcState.SentRemoveHtlc, bob.State.GetHtlc(HtlcDirection.Incoming, id)!.State);
-        Assert.Same(bob.State, bob.Store.Committed);
+        Assert.Equal(HtlcState.RcvdAddAckRevocation, bob.State.GetHtlc(HtlcDirection.Incoming, id)!.State);
+        Assert.Same(committedBefore, bob.Store.Committed);
         Assert.Equal(signedBefore, bob.Signed.Count);
+        Assert.Empty(bob.Dropped);
 
-        // Act 2 - the peer is back: the next scheduler run signs the pending fail
+        // Act 2 - the peer is back (with N7: reestablished); the switch's retry fails the HTLC
         bob.PeerAlive = true;
-        Assert.True(await bob.Scheduler.SignNowAsync(TwoNodeHarness.ChannelId, TestContext.Current.CancellationToken));
+        await bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, id, new byte[292],
+                                           TestContext.Current.CancellationToken);
         await harness.PumpAsync();
 
         // Assert 2
         AssertAgreement(harness);
         Assert.Single(alice.Events.OfType<OutgoingHtlcFailed>());
+        Assert.Contains(alice.Received, m => m is UpdateFailHtlcMessage);
     }
 
     private static Task<ulong> OfferAsync(HarnessNode node, ulong amountMsat, Secret preimage)
