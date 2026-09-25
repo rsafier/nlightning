@@ -60,7 +60,10 @@ public class ListChannelsIpcHandlerTests
                                  RemoteCommitmentNumber = 5,
                                  OfferedHtlcCount = 1,
                                  ReceivedHtlcCount = 2,
-                                 DataLossDetected = true
+                                 DataLossDetected = true,
+                                 IsReestablished = true,
+                                 FeeBaseMsat = 2_000,
+                                 FeePpm = 500
                              }
                          ]));
         var handler = new ListChannelsIpcHandler(NullLogger<ListChannelsIpcHandler>.Instance,
@@ -95,6 +98,9 @@ public class ListChannelsIpcHandlerTests
         Assert.Equal(1, channel.OfferedHtlcCount);
         Assert.Equal(2, channel.ReceivedHtlcCount);
         Assert.True(channel.DataLossDetected);
+        Assert.True(channel.IsReestablished);
+        Assert.Equal(2_000U, channel.FeeBaseMsat);
+        Assert.Equal(500U, channel.FeePpm);
     }
 
     [Fact]

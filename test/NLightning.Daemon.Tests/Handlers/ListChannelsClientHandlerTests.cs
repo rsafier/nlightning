@@ -1,8 +1,12 @@
+using Microsoft.Extensions.Options;
+
 namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
+using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -12,6 +16,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
+using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
@@ -27,6 +32,7 @@ public class ListChannelsClientHandlerTests
     private readonly Mock<IChannelDbRepository> _channelDbRepositoryMock = new();
     private readonly Mock<IPeerManager> _peerManagerMock = new();
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
+    private readonly NodeOptions _nodeOptions = new();
 
     public ListChannelsClientHandlerTests()
     {
@@ -150,8 +156,122 @@ public class ListChannelsClientHandlerTests
         Assert.All(response.Channels, c => Assert.Equal(s_bob, c.PeerId));
     }
 
+    [Fact]
+    public async Task Given_SnapshotWithPendingAndSettledHtlcs_When_HandleAsync_Then_OnlyPendingHtlcsAreCounted()
+    {
+        // Arrange: NL-241. After a reload the legacy collections are empty; the snapshot is the truth
+        var channelId = CreateChannelId(7);
+        var channel = CreateChannel(channelId, s_alice, ChannelState.Open);
+        channel.UpdateCommitments(CreateSnapshot(channelId,
+        [
+            Record(HtlcDirection.Outgoing, 0, HtlcState.SentAddAckRevocation),
+            Record(HtlcDirection.Outgoing, 1, HtlcState.RcvdRemoveAckRevocation,
+                 HtlcRemoval.Fulfill(new Secret(new byte[32]))),
+            Record(HtlcDirection.Outgoing, 2, HtlcState.SentAddHtlc),
+            Record(HtlcDirection.Incoming, 0, HtlcState.RcvdAddAckRevocation),
+            Record(HtlcDirection.Incoming, 1, HtlcState.SentRemoveAckRevocation, HtlcRemoval.Fail(new byte[10])),
+            Record(HtlcDirection.Incoming, 2, HtlcState.SentRemoveHtlc, HtlcRemoval.Fail(new byte[10]))
+        ], localCommitmentNumber: 5, remoteCommitmentNumber: 6));
+        SetupMemory(channel);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        Assert.Equal(2, info.OfferedHtlcCount);
+        Assert.Equal(2, info.ReceivedHtlcCount);
+        Assert.Equal(5UL, info.LocalCommitmentNumber);
+        Assert.Equal(6UL, info.RemoteCommitmentNumber);
+    }
+
+    [Fact]
+    public async Task Given_ReloadedChannelWithSnapshotAndStaleLegacyHtlcs_When_HandleAsync_Then_SnapshotWins()
+    {
+        // Arrange: the legacy collections must not be counted once a snapshot exists (NL-241)
+        var channelId = CreateChannelId(8);
+        var channel = CreateChannel(channelId, s_alice, ChannelState.Open,
+                                    localOfferedHtlcs: [CreateHtlc(channelId, 0, HtlcDirection.Outgoing)],
+                                    remoteOfferedHtlcs: [CreateHtlc(channelId, 0, HtlcDirection.Incoming)]);
+        channel.UpdateCommitments(CreateSnapshot(channelId, []));
+        _channelDbRepositoryMock.Setup(x => x.GetAllAsync()).ReturnsAsync([channel]);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        Assert.Equal(0, info.OfferedHtlcCount);
+        Assert.Equal(0, info.ReceivedHtlcCount);
+    }
+
+    [Fact]
+    public async Task Given_RoutingOptions_When_HandleAsync_Then_FeePolicyIsReportedAndNotReestablished()
+    {
+        // Arrange
+        _nodeOptions.Routing.FeeBaseMsat = 2_000;
+        _nodeOptions.Routing.FeeProportionalMillionths = 500;
+        SetupMemory(CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open));
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        Assert.Equal(2_000U, info.FeeBaseMsat);
+        Assert.Equal(500U, info.FeePpm);
+        Assert.False(info.IsReestablished);
+    }
+
+    [Fact]
+    public async Task Given_ChannelMarkedDataLoss_When_HandleAsync_Then_DataLossIsReported()
+    {
+        // Arrange
+        var channel = CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open);
+        channel.MarkDataLossDetected();
+        SetupMemory(channel);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(Assert.Single(response.Channels).DataLossDetected);
+    }
+
     private ListChannelsClientHandler CreateHandler() =>
-        new(_channelMemoryRepositoryMock.Object, _peerManagerMock.Object, _unitOfWorkMock.Object);
+        new(_channelMemoryRepositoryMock.Object, _peerManagerMock.Object, _unitOfWorkMock.Object,
+            Options.Create(_nodeOptions));
+
+    private static HtlcRecord Record(HtlcDirection direction, ulong id, HtlcState state, HtlcRemoval? removal = null) =>
+        new(direction, id, 10_000, new Hash(Enumerable.Repeat((byte)(id + 1), 32).ToArray()), 500, state, removal);
+
+    private static ChannelCommitments CreateSnapshot(ChannelId channelId, IReadOnlyList<HtlcRecord> htlcs,
+                                                     ulong localCommitmentNumber = 1,
+                                                     ulong remoteCommitmentNumber = 1)
+    {
+        var party = new CommitmentParty(354, 10_000, 1_000, 30, 1_000_000_000);
+        var @params = new CommitmentParams(true, 1_000_000, false, party, party);
+        const ulong localMsat = 700_000_000;
+        const ulong remoteMsat = 300_000_000;
+        var nextOutgoing = htlcs.Where(h => h.Direction == HtlcDirection.Outgoing).Select(h => h.Id + 1).DefaultIfEmpty()
+                                .Max();
+        var nextIncoming = htlcs.Where(h => h.Direction == HtlcDirection.Incoming).Select(h => h.Id + 1).DefaultIfEmpty()
+                                .Max();
+        return ChannelCommitments.Restore(channelId, @params, localMsat, remoteMsat, htlcs,
+                                          [new FeeUpdate(0, 1_000, HtlcState.SentAddAckRevocation)], nextOutgoing,
+                                          nextIncoming,
+                                          new LocalCommit(localCommitmentNumber,
+                                                          new CommitmentSpec(CommitmentSide.Local, 1_000, localMsat,
+                                                                             remoteMsat, []), null),
+                                          new RemoteCommit(remoteCommitmentNumber,
+                                                           new CommitmentSpec(CommitmentSide.Remote, 1_000, localMsat,
+                                                                              remoteMsat, []), CreatePubKey(9)),
+                                          null, CreatePubKey(10));
+    }
 
     private void SetupMemory(params ChannelModel[] channels)
     {
