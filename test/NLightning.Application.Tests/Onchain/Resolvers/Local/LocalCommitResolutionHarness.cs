@@ -56,6 +56,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     private readonly ServiceProvider _provider;
     private readonly Dictionary<uint256, Transaction> _knownTransactions = [];
     private readonly Dictionary<uint, List<Transaction>> _blocks = [];
+    private readonly HashSet<OutPoint> _spentOnChain = [];
 
     public RealSigningCommitmentPair Pair { get; }
     public ChannelModel Channel => Pair.Alice.Channel;
@@ -116,9 +117,11 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <param name="feeInputProvider">The wallet's fee inputs for anchors HTLC transactions (the default registration
     /// when null).</param>
     /// <param name="wrapSigner">Replaces Alice's signer in the resolver's container (e.g. with a decorator).</param>
+    /// <param name="resolverLogger">The resolver's logger (a null logger when null).</param>
     public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null, bool hasAnchors = false,
                                         IAnchorFeeInputProvider? feeInputProvider = null,
-                                        Func<ILightningSigner, ILightningSigner>? wrapSigner = null)
+                                        Func<ILightningSigner, ILightningSigner>? wrapSigner = null,
+                                        ILogger<LocalCommitResolver>? resolverLogger = null)
     {
         Pair = new RealSigningCommitmentPair(hasAnchors);
         setup?.Invoke(Pair);
@@ -140,6 +143,13 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                                                        : ChainServiceFindsBlocks && _blocks.TryGetValue(height, out var txs)
                                                            ? BuildBlock(txs)
                                                            : null);
+        // gettxout without the mempool: an output of a known (confirmed) transaction that no mined one spends
+        chainService.Setup(c => c.GetConfirmedUnspentOutputAsync(It.IsAny<OutPoint>()))
+                    .ReturnsAsync((OutPoint outPoint) =>
+                                      _knownTransactions.TryGetValue(outPoint.Hash, out var parent)
+                                   && outPoint.N < parent.Outputs.Count && !_spentOnChain.Contains(outPoint)
+                                          ? (parent.Outputs[(int)outPoint.N], CloseHeight)
+                                          : ((TxOut Output, uint Height)?)null);
         var destinations = new Mock<ISweepDestinationProvider>();
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
@@ -158,6 +168,8 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         services.AddSingleton(feeService.Object);
         services.AddSingleton(destinations.Object);
         services.AddScoped(_ => CreateUnitOfWork().Object);
+        if (resolverLogger is not null)
+            services.AddSingleton(resolverLogger);
         services.AddLocalCommitResolutionServices();
         _provider = services.BuildServiceProvider();
         Resolver = _provider.GetRequiredService<LocalCommitResolver>();
@@ -208,6 +220,8 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         foreach (var tx in block)
         {
             _knownTransactions[tx.GetHash()] = tx;
+            foreach (var input in tx.Inputs)
+                _spentOnChain.Add(input.PrevOut);
             var txId = new TxId(tx.GetHash().ToBytes());
             if (Broadcasts.TryGetValue(txId, out var broadcast))
                 broadcast.MarkConfirmed(Height, s_blockHash);

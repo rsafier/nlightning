@@ -18,7 +18,8 @@ using Domain.Protocol.Interfaces;
 /// A stand-in for the wallet behind <see cref="IAnchorFeeInputProvider"/> (O7-T1's selector and
 /// <c>SignWalletTransaction</c>): P2WPKH outputs of one key, each in its own funding transaction, reserved by
 /// <see cref="SelectAsync"/> (largest first, until they pay the fee at the asked rate plus a dust-free change) and signed
-/// with <c>SIGHASH_ALL</c> by <see cref="SignAsync"/>.
+/// with <c>SIGHASH_ALL</c> by <see cref="SignAsync"/>. Reservations are keyed by owner and replaced by the owner's next
+/// selection, as the port's contract requires.
 /// </summary>
 internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
 {
@@ -46,15 +47,25 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
     public byte[] ChangeScript { get; } =
         new Key(Enumerable.Repeat((byte)0x5D, 32).ToArray()).PubKey.WitHash.ScriptPubKey.ToBytes();
 
-    public List<(ChannelId ChannelId, long BaseWeight, uint FeeratePerKw)> Selections { get; } = [];
-    public List<AnchorFeeInput> Reserved { get; } = [];
-    public List<AnchorFeeInput> Released { get; } = [];
+    public List<(AnchorFeeInputOwner Owner, long BaseWeight, uint FeeratePerKw)> Selections { get; } = [];
+    public Dictionary<AnchorFeeInputOwner, List<AnchorFeeInput>> Reservations { get; } = [];
+    public IReadOnlyList<AnchorFeeInput> Reserved => Reservations.Values.SelectMany(r => r).ToList();
+    public List<AnchorFeeInputOwner> Released { get; } = [];
     public int SignCount { get; private set; }
 
-    public Task<AnchorFeeInputSelection?> SelectAsync(ChannelId channelId, long baseWeight, uint feeratePerKw,
+    /// <summary>The output was spent by another transaction (the wallet no longer has it).</summary>
+    public void MarkSpent(AnchorFeeInput input) => _available.Remove(input);
+
+    /// <summary>The wallet's output held by <paramref name="index"/>'s funding transaction.</summary>
+    public AnchorFeeInput Output(int index) =>
+        _available.Concat(Reserved).First(i => i.TxId == new TxId(FundingTransactions[index].GetHash().ToBytes()));
+
+    public Task<AnchorFeeInputSelection?> SelectAsync(AnchorFeeInputOwner owner, long baseWeight, uint feeratePerKw,
                                                       CancellationToken cancellationToken)
     {
-        Selections.Add((channelId, baseWeight, feeratePerKw));
+        // The contract: a new selection for the same owner replaces its earlier reservation
+        Reservations.Remove(owner);
+        Selections.Add((owner, baseWeight, feeratePerKw));
         var chosen = new List<AnchorFeeInput>();
         ulong total = 0;
         foreach (var input in _available.Except(Reserved).OrderByDescending(i => i.AmountSat))
@@ -64,7 +75,7 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
             var weight = baseWeight + chosen.Sum(i => i.InputWeight);
             if (total >= (ulong)feeratePerKw * (ulong)weight / 1000 + 294)
             {
-                Reserved.AddRange(chosen);
+                Reservations[owner] = chosen;
                 return Task.FromResult<AnchorFeeInputSelection?>(new AnchorFeeInputSelection(chosen, ChangeScript));
             }
         }
@@ -90,11 +101,10 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
         return Task.FromResult(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()));
     }
 
-    public Task ReleaseAsync(IReadOnlyList<AnchorFeeInput> feeInputs, CancellationToken cancellationToken)
+    public Task ReleaseAsync(AnchorFeeInputOwner owner, CancellationToken cancellationToken)
     {
-        Released.AddRange(feeInputs);
-        foreach (var input in feeInputs)
-            Reserved.Remove(input);
+        Released.Add(owner);
+        Reservations.Remove(owner);
         return Task.CompletedTask;
     }
 }
