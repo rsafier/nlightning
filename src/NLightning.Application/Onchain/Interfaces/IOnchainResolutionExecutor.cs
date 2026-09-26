@@ -39,8 +39,10 @@ public interface IOnchainResolutionExecutor
     /// NL-311: catches up the saved watch of every unresolved output of the channel from its parent's height (or from
     /// the spend the chain monitor recorded on it) up to bitcoind's tip. A crash between a save and
     /// <c>TrackWatchedOutpoint</c> leaves watches the monitor tracks again after the restart, but it never rescans the
-    /// blocks it processed in between. <see cref="RunRoundAsync"/> runs it once per channel and process before the
-    /// channel's first round. Takes the channel's lock itself; the caller must hold none. Idempotent.
+    /// blocks it processed in between. <see cref="RunRoundAsync"/> runs it once per channel and process, after the
+    /// round's resolution of every channel, in one block scan for all channels not caught up yet (a scan stopped by a
+    /// chain read error resumes at the first block it did not scan). Takes the channel's lock itself; the caller must
+    /// hold none. Idempotent.
     /// </summary>
     Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default);
 

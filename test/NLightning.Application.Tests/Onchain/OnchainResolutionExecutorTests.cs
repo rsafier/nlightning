@@ -43,6 +43,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     private readonly FakeResolver _resolver = new();
     private readonly FakeSweepScheduler _sweepScheduler = new();
     private readonly FakeBitcoinChain _chain = new(SpentAt - 1);
+    private readonly ReadingChain _readingChain;
     private readonly List<string> _calls = [];
     private readonly ServiceProvider _provider;
     private readonly ChannelModel _channel;
@@ -54,6 +55,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     {
         _channel = _pair.Alice.Channel;
         _channel.UpdateState(ChannelState.OnchainResolving);
+        _readingChain = new ReadingChain(_chain);
         _memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
                .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
                 {
@@ -84,7 +86,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         services.AddScoped<IOutputResolver>(_ => _resolver);
         services.AddSingleton<ISweepScheduler>(_sweepScheduler);
         services.AddSingleton(_htlcSwitch.Object);
-        services.AddSingleton<IBitcoinChainService>(_chain);
+        services.AddSingleton<IBitcoinChainService>(_readingChain);
         _provider = services.BuildServiceProvider();
 
         // No recorded block: these tests are not about reorgs (OnchainReorgTests are), so the executor does not compare
@@ -459,6 +461,77 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_BlockReadFailsDuringTheSavedWatchScan_When_NextRound_Then_ItResumesAtThatBlock()
+    {
+        // Arrange (NL-311 review): the unscanned spend is 4 blocks above the commitment; bitcoind fails to serve the
+        // second block after the commitment in the first round
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF5, 32).ToArray()), 0, outputs: 1);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend0 = CreateTransaction(commitmentTxId, 0);
+        _chain.Mine(commitment);
+        _chain.Mine();
+        _chain.Mine();
+        _chain.Mine();
+        _chain.Mine(spend0);
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, txId: commitmentTxId);
+        AddWatch(commitmentTxId, 0);
+        var executor = CreateExecutor();
+        _readingChain.FailAt = SpentAt + 2;
+
+        // Act
+        await executor.RunRoundAsync(SpentAt + 4, TestContext.Current.CancellationToken);
+
+        // Assert: nothing found yet, blocks SpentAt and SpentAt + 1 were scanned
+        Assert.Empty(_resolver.Spends);
+        Assert.Equal([SpentAt, SpentAt + 1, SpentAt + 2], _readingChain.Reads);
+
+        // Act: bitcoind serves blocks again
+        _readingChain.FailAt = null;
+        _readingChain.Reads.Clear();
+        await executor.RunRoundAsync(SpentAt + 4, TestContext.Current.CancellationToken);
+
+        // Assert: the scan resumed at the block it could not read, not at the commitment's height
+        Assert.Equal(SpentAt + 2, _readingChain.Reads.Min());
+        Assert.Equal(new uint256(spend0.GetHash()), new uint256(Assert.Single(_resolver.Spends).Spender.TxId));
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 0)].State);
+
+        // Act: the channel is caught up now; a later round scans nothing
+        _readingChain.Reads.Clear();
+        await executor.RunRoundAsync(SpentAt + 4, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_readingChain.Reads);
+    }
+
+    [Fact]
+    public async Task Given_UnscannedSavedWatch_When_FirstRound_Then_TheChannelIsResolvedBeforeTheCatchUpScan()
+    {
+        // Arrange (NL-311 review): the time-critical round of every channel comes before the (possibly long) scan
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF6, 32).ToArray()), 0, outputs: 1);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend0 = CreateTransaction(commitmentTxId, 0);
+        _chain.Mine(commitment);
+        _chain.Mine(spend0);
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, txId: commitmentTxId);
+        AddWatch(commitmentTxId, 0);
+        int? spendsAtFirstResolve = null;
+        _resolver.OnResolve = (_, _, _) =>
+        {
+            spendsAtFirstResolve ??= _resolver.Spends.Count;
+            return [];
+        };
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 2, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, spendsAtFirstResolve);
+        Assert.Single(_resolver.Spends);
+    }
+
+    [Fact]
     public async Task Given_ScheduledRounds_When_Idle_Then_TheLatestHeightRan()
     {
         // Arrange
@@ -590,6 +663,41 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     /// <summary>A resolver whose answers the test sets; it records what it was asked.</summary>
+    /// <summary>The fake chain, recording every block read by height and failing one height on demand.</summary>
+    private sealed class ReadingChain(FakeBitcoinChain inner) : IBitcoinChainService
+    {
+        public List<uint> Reads { get; } = [];
+
+        public uint? FailAt { get; set; }
+
+        public Task<uint256> SendTransactionAsync(Transaction transaction) => inner.SendTransactionAsync(transaction);
+
+        public Task<Transaction?> GetTransactionAsync(uint256 txId) => inner.GetTransactionAsync(txId);
+
+        public Task<uint> GetCurrentBlockHeightAsync() => inner.GetCurrentBlockHeightAsync();
+
+        public Task<Block?> GetBlockAsync(uint height)
+        {
+            Reads.Add(height);
+            return height == FailAt
+                       ? throw new InvalidOperationException($"Block {height} not available")
+                       : inner.GetBlockAsync(height);
+        }
+
+        public Task<uint256> GetBlockHashAsync(uint height) => inner.GetBlockHashAsync(height);
+
+        public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) =>
+            inner.GetTransactionConfirmationsAsync(txId);
+
+        public Task<Block?> GetBlockAsync(uint256 blockHash) => inner.GetBlockAsync(blockHash);
+
+        public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>
+            inner.GetUnspentOutputAsync(outPoint);
+
+        public Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) =>
+            ((IBitcoinChainService)inner).GetConfirmedUnspentOutputAsync(outPoint);
+    }
+
     private sealed class FakeResolver : IOutputResolver
     {
         public HashSet<ChannelCloseKind> Kinds { get; set; } = [ChannelCloseKind.LocalCommitment];
