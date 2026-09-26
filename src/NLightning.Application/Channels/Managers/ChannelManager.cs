@@ -122,17 +122,22 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
 
-        // Register the channel with the signer (its local commitment number comes from the snapshot, if any), with the
-        // S1 mark of a persisted commitment broadcast (NL-297), before the first connection
-        var signingInfo = channel.GetSigningInfo();
-        if (await GetBroadcastSignedCommitmentNumberAsync(scope, channel) is { } broadcastNumber)
+        // A signer with an IChannelSigningInfoSource loads the channel from the database on first use, with its
+        // commitment number and the S1 mark of a persisted commitment broadcast (NL-067, NL-343). One without a source
+        // (in-process tests) is registered here, before the first connection, with the S1 mark (NL-297)
+        if (!SignerLoadsChannels)
         {
-            signingInfo = signingInfo with { BroadcastSignedCommitmentNumber = broadcastNumber };
-            _logger.LogInformation("Channel {ChannelId} has local commitment {Number} signed for broadcast; the signer "
-                                 + "never revokes it", channel.ChannelId, broadcastNumber);
-        }
+            var signingInfo = channel.GetSigningInfo();
+            if (await GetBroadcastSignedCommitmentNumberAsync(scope, channel) is { } broadcastNumber)
+            {
+                signingInfo = signingInfo with { BroadcastSignedCommitmentNumber = broadcastNumber };
+                _logger.LogInformation(
+                    "Channel {ChannelId} has local commitment {Number} signed for broadcast; the signer never "
+                  + "revokes it", channel.ChannelId, broadcastNumber);
+            }
 
-        _lightningSigner.RegisterChannel(channel.ChannelId, signingInfo);
+            _lightningSigner.RegisterChannel(channel.ChannelId, signingInfo);
+        }
 
         _logger.LogInformation("Loaded channel {channelId} from database", channel.ChannelId);
 
@@ -528,6 +533,12 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerPubKey);
 
     private ReestablishTracker? GetTracker() => _serviceProvider.GetService<ReestablishTracker>();
+
+    /// <summary>
+    /// True when the signer loads unknown channels from the database itself (an <see cref="IChannelSigningInfoSource"/>
+    /// is registered, NL-067): then the manager never registers channels with it by hand (NL-343).
+    /// </summary>
+    private bool SignerLoadsChannels => _serviceProvider.GetService<IChannelSigningInfoSource>() is not null;
 
     /// <summary>
     /// After the peer's channel_reestablish was handled without failure: the channel is reestablished on this
@@ -1597,7 +1608,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                     return;
                 }
 
-                _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
+                if (!SignerLoadsChannels)
+                    _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
                 _channelMemoryRepository.AddChannel(channel);
             }
 
@@ -1629,6 +1641,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                                         channel.FundingOutput.Index!.Value);
 
             await fundingConfirmedHandler.HandleAsync(channel);
+
+            // A signer without a source only knows the short channel id it was registered with, and needs the real one
+            // to sign the channel's announcement (NL-343); one with a source reads it from the database
+            if (!SignerLoadsChannels && channel.State is ChannelState.ReadyForUs or ChannelState.Open)
+                _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
             MarkLinkUpIfOpened(channelId, remoteNodeId);
         }
         catch (Exception e)

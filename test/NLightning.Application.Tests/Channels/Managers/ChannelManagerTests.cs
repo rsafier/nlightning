@@ -46,6 +46,7 @@ public class ChannelManagerTests
     private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
     private readonly Mock<IMessageFactory> _mockMessageFactory = new();
+    private readonly Mock<ILightningSigner> _mockSigner = new();
     private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
     private readonly Mock<IWatchedTransactionDbRepository> _mockWatchedTransactionDbRepository = new();
     private readonly List<ChannelModel> _channels = [];
@@ -435,6 +436,32 @@ public class ChannelManagerTests
         announcementService.Verify(s => s.OnPeerConnectionChanged(s_emptyPubKey), Times.Exactly(2));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_FundingConfirmation_When_Handled_Then_OnlyASignerWithoutASourceIsRegisteredWithTheShortChannelId(
+        bool signerHasSource)
+    {
+        // Arrange (NL-343: a signer with an IChannelSigningInfoSource reads the short channel id from the database)
+        var channel = CreateChannel(ChannelState.ReadyForThem, false, 1, 100);
+        _channels.Add(channel);
+        SetupCompletedWatchedTransaction(channel, 100);
+        if (signerHasSource)
+            CreateChannelManager((typeof(IChannelSigningInfoSource), new Mock<IChannelSigningInfoSource>().Object));
+        else
+            CreateChannelManager();
+
+        // Act
+        RaiseNewBlock(103);
+
+        // Assert
+        Assert.Equal(ChannelState.Open, channel.State);
+        _mockSigner.Verify(s => s.RegisterChannel(channel.ChannelId,
+                                                  It.Is<ChannelSigningInfo>(i => i.ShortChannelId ==
+                                                                                 channel.ShortChannelId)),
+                           signerHasSource ? Times.Never() : Times.Once());
+    }
+
     [Fact]
     public async Task Given_UnknownChannel_When_AnnouncementSignaturesReceived_Then_ErrorIsScopedToTheUnknownChannel()
     {
@@ -484,7 +511,7 @@ public class ChannelManagerTests
 
     private ChannelManager CreateChannelManager(params (Type Type, object Service)[] extraServices)
     {
-        var mockSigner = new Mock<ILightningSigner>();
+        var mockSigner = _mockSigner;
         var serviceProvider = new FakeServiceProvider();
         foreach (var (type, service) in extraServices)
             serviceProvider.AddService(type, service);
