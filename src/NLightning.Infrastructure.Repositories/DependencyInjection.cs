@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Infrastructure.Repositories;
 
+using Database.Channel;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Payments.Interfaces;
@@ -29,6 +30,9 @@ public static class DependencyInjection
         services.AddScoped<IPaymentDbRepository>(sp => sp.GetRequiredService<IUnitOfWork>().PaymentDbRepository);
         services.AddScoped<IForwardCircuitDbRepository>(sp =>
             sp.GetRequiredService<IUnitOfWork>().ForwardCircuitDbRepository);
+
+        // The signer loads a channel it has not registered from the database (NL-067)
+        services.AddSingleton<IChannelSigningInfoSource, ChannelSigningInfoSource>();
 
         // Register memory repositories
         services.AddSingleton<IChannelMemoryRepository, ChannelMemoryRepository>();

@@ -67,7 +67,8 @@ public static class DependencyInjection
             var secureKeyManager = sp.GetRequiredService<ISecureKeyManager>();
             var utxoMemoryRepository = sp.GetRequiredService<IUtxoMemoryRepository>();
             return new LocalLightningSigner(fundingOutputBuilder, keyDerivationService, logger, nodeOptions,
-                                            secureKeyManager, utxoMemoryRepository);
+                                            secureKeyManager, utxoMemoryRepository,
+                                            sp.GetService<IChannelSigningInfoSource>());
         });
 
         // Register Scoped Services

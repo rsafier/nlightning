@@ -57,6 +57,29 @@ public interface ILightningSigner
     bool VerifyNodeMessage(Hash messageHash, CompactSignature signature, CompactPubKey nodeId);
 
     /// <summary>
+    /// Sign our half of a public channel's <c>channel_announcement</c> (BOLT 7, for <c>announcement_signatures</c>):
+    /// the node signature with the node key and the bitcoin signature with the channel's funding key, both over the
+    /// double-SHA256 of <paramref name="unsignedAnnouncement"/>.
+    /// </summary>
+    /// <remarks>
+    /// No blind hash signing: the signer parses the announcement and refuses (with a
+    /// <see cref="Exceptions.SignerException"/>) unless it names our chain, <paramref name="shortChannelId"/> (which
+    /// must also be the channel's real short channel id when the signer knows it, and point at the channel's funding
+    /// output index), our node id and the peer's (when known) as <c>node_id_1</c>/<c>node_id_2</c> in ascending order,
+    /// and the channel's funding keys as the matching <c>bitcoin_key_1</c>/<c>bitcoin_key_2</c>. Refused as well after
+    /// data loss. Signatures are RFC 6979, low-S, 64-byte compact.
+    /// </remarks>
+    /// <param name="channelId">The registered (or persisted) channel.</param>
+    /// <param name="unsignedAnnouncement">
+    /// The announcement's signed data: every byte of the <c>channel_announcement</c> payload after the four signatures
+    /// (from <c>len</c>/<c>features</c> to the end, including unknown trailing bytes), i.e. the payload bytes from
+    /// offset 256.
+    /// </param>
+    /// <param name="shortChannelId">The short channel id the caller announces.</param>
+    ChannelAnnouncementSignatures SignChannelAnnouncement(ChannelId channelId, ReadOnlyMemory<byte> unsignedAnnouncement,
+                                                          ShortChannelId shortChannelId);
+
+    /// <summary>
     /// Generate the per-commitment point of one of our commitment transactions.
     /// </summary>
     /// <param name="channelKeyIndex">The channel key index.</param>
@@ -80,8 +103,14 @@ public interface ILightningSigner
     /// Store channel information needed for signing. The revocation guard only moves forward, and the sticky marks
     /// are only ever added: <see cref="ChannelSigningInfo.DataLossDetected"/> applies <see cref="MarkDataLoss"/> and
     /// <see cref="ChannelSigningInfo.BroadcastSignedCommitmentNumber"/> applies <see cref="MarkBroadcastSigned"/>
-    /// (invariant S1 across restarts).
+    /// (invariant S1 across restarts). Registering a channel again refreshes what may have become known since (the
+    /// real short channel id, the peer's node id and htlc_basepoint), but never its keys or funding outpoint.
     /// </summary>
+    /// <remarks>
+    /// Registration is optional for a persisted channel (NL-067): a signer built with an
+    /// <see cref="IChannelSigningInfoSource"/> loads and registers a channel it does not know from the database the
+    /// first time it is asked about it (with its local commitment number, data-loss flag and broadcast mark).
+    /// </remarks>
     void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo);
 
     /// <summary>

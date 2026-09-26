@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
@@ -24,6 +25,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
+using Domain.Protocol.ValueObjects;
 
 public class LocalLightningSigner : ILightningSigner
 {
@@ -56,11 +58,16 @@ public class LocalLightningSigner : ILightningSigner
     private readonly ConcurrentDictionary<ChannelId, Lock> _commitmentLocks = new();
     private readonly ILogger<LocalLightningSigner> _logger;
     private readonly Network _network;
+    private readonly ChainHash _chainHash;
+
+    // Where a channel that is not registered (e.g. after a restart) is loaded from (NL-067); null: registration only
+    private readonly IChannelSigningInfoSource? _signingInfoSource;
 
     public LocalLightningSigner(IFundingOutputBuilder fundingOutputBuilder,
                                 IKeyDerivationService keyDerivationService, ILogger<LocalLightningSigner> logger,
                                 NodeOptions nodeOptions, ISecureKeyManager secureKeyManager,
-                                IUtxoMemoryRepository utxoMemoryRepository)
+                                IUtxoMemoryRepository utxoMemoryRepository,
+                                IChannelSigningInfoSource? signingInfoSource = null)
     {
         _fundingOutputBuilder = fundingOutputBuilder;
         _keyDerivationService = keyDerivationService;
@@ -70,8 +77,8 @@ public class LocalLightningSigner : ILightningSigner
 
         _network = Network.GetNetwork(nodeOptions.BitcoinNetwork) ??
                    throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
-
-        // TODO: Load channel key data from database
+        _chainHash = nodeOptions.BitcoinNetwork.ChainHash;
+        _signingInfoSource = signingInfoSource;
     }
 
     /// <inheritdoc />
@@ -136,7 +143,7 @@ public class LocalLightningSigner : ILightningSigner
     {
         _logger.LogTrace("Retrieving channel basepoints for channel {ChannelId}", channelId);
 
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException($"Channel {channelId} not registered", channelId);
 
         return GetChannelBasepoints(signingInfo.ChannelKeyIndex);
@@ -194,6 +201,86 @@ public class LocalLightningSigner : ILightningSigner
     }
 
     /// <inheritdoc />
+    public ChannelAnnouncementSignatures SignChannelAnnouncement(ChannelId channelId,
+                                                                 ReadOnlyMemory<byte> unsignedAnnouncement,
+                                                                 ShortChannelId shortChannelId)
+    {
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfDataLoss(channelId, "sign a channel announcement");
+
+        var announcement = ParseUnsignedAnnouncement(channelId, unsignedAnnouncement.Span);
+        if (announcement.ChainHash != _chainHash)
+            throw new SignerException("Refusing to sign a channel announcement for another chain", channelId,
+                                      "Internal error");
+
+        if (announcement.ShortChannelId != shortChannelId)
+            throw new SignerException(
+                $"Refusing to sign a channel announcement of {announcement.ShortChannelId}: the caller announces "
+              + $"{shortChannelId}", channelId, "Internal error");
+
+        if (shortChannelId.OutputIndex != signingInfo.FundingOutputIndex)
+            throw new SignerException(
+                $"Refusing to sign a channel announcement of {shortChannelId}: the funding output index is "
+              + $"{signingInfo.FundingOutputIndex}", channelId, "Internal error");
+
+        // The real short channel id as persisted now (the registration may predate the funding confirmation)
+        var knownShortChannelId =
+            GetCurrentShortChannelId(channelId, signingInfo)
+         ?? throw new SignerException("Refusing to sign a channel announcement: the channel's short channel id is "
+                                    + "not known yet", channelId, "Internal error");
+        if (knownShortChannelId != shortChannelId)
+            throw new SignerException(
+                $"Refusing to sign a channel announcement of {shortChannelId}: the channel's short channel id is "
+              + $"{knownShortChannelId}", channelId, "Internal error");
+
+        // BOLT 7: node_id_1 is the lesser of the two node ids, and bitcoin_key_N belongs to node_id_N
+        var ourNodeId = GetNodePublicKey();
+        if (((ReadOnlySpan<byte>)announcement.NodeId1).SequenceCompareTo(announcement.NodeId2) >= 0)
+            throw new SignerException("Refusing to sign a channel announcement whose node ids are not in ascending "
+                                    + "order", channelId, "Internal error");
+
+        bool weAreNode1;
+        if (announcement.NodeId1 == ourNodeId)
+            weAreNode1 = true;
+        else if (announcement.NodeId2 == ourNodeId)
+            weAreNode1 = false;
+        else
+            throw new SignerException("Refusing to sign a channel announcement that does not name our node id",
+                                      channelId, "Internal error");
+
+        var (theirNodeId, ourBitcoinKey, theirBitcoinKey) = weAreNode1
+            ? (announcement.NodeId2, announcement.BitcoinKey1, announcement.BitcoinKey2)
+            : (announcement.NodeId1, announcement.BitcoinKey2, announcement.BitcoinKey1);
+        if (signingInfo.RemoteNodeId is { } remoteNodeId && theirNodeId != remoteNodeId)
+            throw new SignerException("Refusing to sign a channel announcement that names another peer", channelId,
+                                      "Internal error");
+        if (ourBitcoinKey != signingInfo.LocalFundingPubKey)
+            throw new SignerException("Refusing to sign a channel announcement that does not name our funding key",
+                                      channelId, "Internal error");
+        if (theirBitcoinKey != signingInfo.RemoteFundingPubKey)
+            throw new SignerException(
+                "Refusing to sign a channel announcement that does not name the peer's funding key", channelId,
+                "Internal error");
+
+        // BOLT 7: both signatures cover the double-SHA256 of the message from offset 256 (after the signatures)
+        Hash hash = System.Security.Cryptography.SHA256.HashData(
+            System.Security.Cryptography.SHA256.HashData(unsignedAnnouncement.Span));
+        var nodeSignature = SignNodeMessage(hash);
+
+        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+        if (!fundingKey.PubKey.ToBytes().AsSpan().SequenceEqual(signingInfo.LocalFundingPubKey))
+            throw new SignerException("The derived funding key does not match the channel's funding key", channelId,
+                                      "Internal error");
+
+        var bitcoinSignature = SignHash(fundingKey, hash, channelId);
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Signed the channel announcement of {ShortChannelId} for channel {ChannelId}",
+                                   shortChannelId, channelId);
+
+        return new ChannelAnnouncementSignatures(nodeSignature, bitcoinSignature);
+    }
+
+    /// <inheritdoc />
     public CompactPubKey GetPerCommitmentPoint(uint channelKeyIndex, ulong commitmentNumber)
     {
         _logger.LogTrace(
@@ -217,7 +304,7 @@ public class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public CompactPubKey GetPerCommitmentPoint(ChannelId channelId, ulong commitmentNumber)
     {
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException($"Channel {channelId} not registered", channelId);
 
         return GetPerCommitmentPoint(signingInfo.ChannelKeyIndex, commitmentNumber);
@@ -228,7 +315,17 @@ public class LocalLightningSigner : ILightningSigner
     {
         _logger.LogTrace("Registering channel {ChannelId} with signing info", channelId);
 
-        _channelSigningInfo.TryAdd(channelId, signingInfo);
+        // A registration again (e.g. once the funding confirmed) refreshes what may have become known since: the real
+        // short channel id, the peer's node id and htlc_basepoint. It never swaps the keys or the funding outpoint.
+        _channelSigningInfo.AddOrUpdate(channelId, signingInfo, (_, current) =>
+        {
+            if (IsSameChannel(current, signingInfo))
+                return signingInfo;
+
+            _logger.LogError("Channel {ChannelId} is registered with other keys or another funding outpoint; the "
+                           + "first registration is kept", channelId);
+            return current;
+        });
 
         lock (GetCommitmentLock(channelId))
         {
@@ -273,8 +370,12 @@ public class LocalLightningSigner : ILightningSigner
     }
 
     /// <inheritdoc />
-    public bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber) =>
-        _broadcastSignedNumbers.TryGetValue(channelId, out commitmentNumber);
+    public bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber)
+    {
+        // A channel not registered yet is loaded first, so a persisted mark is reported after a restart too (NL-067)
+        _ = TryGetSigningInfo(channelId, out _);
+        return _broadcastSignedNumbers.TryGetValue(channelId, out commitmentNumber);
+    }
 
     /// <inheritdoc />
     public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context)
@@ -551,7 +652,7 @@ public class LocalLightningSigner : ILightningSigner
         _logger.LogTrace("Signing funding transaction for channel {ChannelId} with TxId {TxId}", channelId,
                          unsignedTransaction.TxId);
 
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException($"Channel {channelId} not registered with signer", channelId);
 
         Transaction nBitcoinTx;
@@ -749,7 +850,7 @@ public class LocalLightningSigner : ILightningSigner
             _logger.LogTrace("Signing transaction for channel {ChannelId} with TxId {TxId}", channelId,
                              unsignedTransaction.TxId);
 
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new InvalidOperationException($"Channel {channelId} not registered with signer");
 
         ThrowIfDataLoss(channelId, "sign a commitment");
@@ -766,7 +867,7 @@ public class LocalLightningSigner : ILightningSigner
             _logger.LogTrace("Validating signature for channel {ChannelId} with TxId {TxId}", channelId,
                              unsignedTransaction.TxId);
 
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException("Channel not registered with signer", channelId, "Internal error");
 
         Transaction nBitcoinTx;
@@ -992,9 +1093,110 @@ public class LocalLightningSigner : ILightningSigner
     private Lock GetCommitmentLock(ChannelId channelId) =>
         _commitmentLocks.GetOrAdd(channelId, static _ => new Lock());
 
+    /// <summary>
+    /// The channel's signing info: the registered one, else the persisted one from the
+    /// <see cref="IChannelSigningInfoSource"/>, which is registered then (NL-067: no hand registration after a restart).
+    /// </summary>
+    private bool TryGetSigningInfo(ChannelId channelId, out ChannelSigningInfo signingInfo)
+    {
+        if (_channelSigningInfo.TryGetValue(channelId, out signingInfo))
+            return true;
+
+        if (_signingInfoSource is null || !_signingInfoSource.TryGet(channelId, out var loaded))
+            return false;
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Loaded the signing data of channel {ChannelId} from the database", channelId);
+        RegisterChannel(channelId, loaded);
+        return _channelSigningInfo.TryGetValue(channelId, out signingInfo);
+    }
+
+    /// <summary>
+    /// The channel's real short channel id: read again from the <see cref="IChannelSigningInfoSource"/> when there is
+    /// one (it changes at the funding confirmation and after a reorg), else the registered one.
+    /// </summary>
+    private ShortChannelId? GetCurrentShortChannelId(ChannelId channelId, ChannelSigningInfo registered)
+    {
+        if (_signingInfoSource is not null && _signingInfoSource.TryGet(channelId, out var persisted)
+                                           && IsSameChannel(registered, persisted))
+            return persisted.ShortChannelId;
+
+        return registered.ShortChannelId;
+    }
+
+    private static bool IsSameChannel(ChannelSigningInfo a, ChannelSigningInfo b) =>
+        a.ChannelKeyIndex == b.ChannelKeyIndex && a.FundingTxId == b.FundingTxId
+                                               && a.FundingOutputIndex == b.FundingOutputIndex
+                                               && a.LocalFundingPubKey == b.LocalFundingPubKey
+                                               && a.RemoteFundingPubKey == b.RemoteFundingPubKey;
+
+    /// <summary>
+    /// A deterministic (RFC 6979), low-S compact signature of <paramref name="hash"/> as it is (no further hashing),
+    /// the same scheme as <see cref="SignNodeMessage"/>.
+    /// </summary>
+    private static CompactSignature SignHash(Key key, Hash hash, ChannelId channelId)
+    {
+        var privateKey = key.ToBytes();
+        try
+        {
+            if (!NLightningCryptoContext.Instance.TryCreateECPrivKey(privateKey, out var ecPrivKey)
+             || ecPrivKey is null)
+                throw new SignerException("The funding key is not a valid secp256k1 private key", channelId,
+                                          "Internal error");
+
+            using (ecPrivKey)
+            {
+                if (!ecPrivKey.TrySignECDSA((byte[])hash, out var signature) || signature is null)
+                    throw new SignerException("Failed to sign with the funding key", channelId, "Internal error");
+
+                var compact = new byte[CryptoConstants.MaxSignatureSize];
+                signature.WriteCompactToSpan(compact);
+                return compact;
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+        }
+    }
+
+    /// <summary>
+    /// The fields of an unsigned <c>channel_announcement</c> (the bytes after the four signatures): <c>len</c>,
+    /// <c>features</c>, <c>chain_hash</c>, <c>short_channel_id</c>, the two node ids and the two bitcoin keys; anything
+    /// after them is unknown trailing data, signed as it is.
+    /// </summary>
+    private static (ChainHash ChainHash, ShortChannelId ShortChannelId, CompactPubKey NodeId1, CompactPubKey NodeId2,
+        CompactPubKey BitcoinKey1, CompactPubKey BitcoinKey2) ParseUnsignedAnnouncement(ChannelId channelId,
+        ReadOnlySpan<byte> data)
+    {
+        const int fixedLength = CryptoConstants.Sha256HashLen + ShortChannelId.Length
+                                                              + 4 * CryptoConstants.CompactPubkeyLen;
+        if (data.Length < sizeof(ushort))
+            throw new SignerException("The channel announcement is too short", channelId, "Internal error");
+
+        var featuresLength = BinaryPrimitives.ReadUInt16BigEndian(data);
+        var offset = sizeof(ushort) + featuresLength;
+        if (data.Length < offset + fixedLength)
+            throw new SignerException("The channel announcement is too short", channelId, "Internal error");
+
+        ChainHash chainHash = data.Slice(offset, CryptoConstants.Sha256HashLen).ToArray();
+        offset += CryptoConstants.Sha256HashLen;
+        var shortChannelId = new ShortChannelId(data.Slice(offset, ShortChannelId.Length).ToArray());
+        offset += ShortChannelId.Length;
+
+        var keys = new CompactPubKey[4];
+        for (var i = 0; i < keys.Length; i++)
+        {
+            keys[i] = data.Slice(offset, CryptoConstants.CompactPubkeyLen);
+            offset += CryptoConstants.CompactPubkeyLen;
+        }
+
+        return (chainHash, shortChannelId, keys[0], keys[1], keys[2], keys[3]);
+    }
+
     private ChannelSigningInfo GetRegisteredSigningInfo(ChannelId channelId)
     {
-        if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
+        if (!TryGetSigningInfo(channelId, out var signingInfo))
             throw new SignerException($"Channel {channelId} not registered with signer", channelId, "Internal error");
 
         return signingInfo;
