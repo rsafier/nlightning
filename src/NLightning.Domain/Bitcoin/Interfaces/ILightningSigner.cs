@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Interfaces;
 
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
+using Money;
 using Onchain.Models;
 using Transactions.Models;
 using ValueObjects;
@@ -280,4 +281,27 @@ public interface ILightningSigner
     /// Verify a signature against a transaction
     /// </summary>
     void ValidateSignature(ChannelId channelId, CompactSignature signature, SignedTransaction unsignedTransaction);
+
+    /// <summary>
+    /// Sign the input of <paramref name="unsignedTransaction"/> that spends our anchor output (BOLT 3
+    /// <c>to_local_anchor</c> of our commitment, or the anchor keyed to our funding key on the peer's): BOLT 5 plan
+    /// O7-T2, the CPFP child. <c>SIGHASH_ALL</c>, BIP 143, RFC 6979, low-S, with our <b>funding</b> key over the script
+    /// code <c>&lt;local_funding_pubkey&gt; OP_CHECKSIG OP_IFDUP OP_NOTIF OP_16 OP_CHECKSEQUENCEVERIFY OP_ENDIF</c>.
+    /// </summary>
+    /// <remarks>
+    /// The signer builds the script code itself from the channel's local funding pubkey, so the signature is only valid
+    /// for an anchor input (the sighash commits to that script and to <paramref name="amount"/>), never for the funding
+    /// output. Only the BOLT 3 anchor amount (330 sat) is signed. Not blocked by data loss or by a broadcast mark (S1):
+    /// the anchor only moves 330 sat that are already on chain, and a child fee-bumps a commitment that is already
+    /// published.
+    /// </remarks>
+    /// <param name="channelId">The registered (or persisted) channel.</param>
+    /// <param name="unsignedTransaction">The child transaction (witnesses are ignored).</param>
+    /// <param name="inputIndex">The index of the anchor input.</param>
+    /// <param name="amount">The anchor's value (330 sat).</param>
+    /// <returns>The 64-byte compact signature; the transaction builder appends the sighash byte.</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not registered, the transaction does not parse or
+    /// has no such input, or the amount is not 330 sat.</exception>
+    CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
+                                     LightningMoney amount);
 }

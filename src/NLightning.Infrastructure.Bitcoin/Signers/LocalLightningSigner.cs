@@ -1368,4 +1368,49 @@ public class LocalLightningSigner : ILightningSigner
         // For key path spend, witness is just: <signature>
         tx.Inputs[inputIndex].WitScript = new WitScript(Op.GetPushOp(taprootSignature.ToBytes()));
     }
+
+    #region Anchors (BOLT 5 plan O7-T2)
+
+    /// <inheritdoc />
+    public CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
+                                            Domain.Money.LightningMoney amount)
+    {
+        ArgumentNullException.ThrowIfNull(unsignedTransaction);
+        ArgumentNullException.ThrowIfNull(amount);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        // BOLT 3 fixes every anchor at 330 sat; nothing else is ever signed with the funding key on this path
+        if (amount != Domain.Bitcoin.Transactions.Constants.TransactionConstants.AnchorOutputAmount)
+            throw new SignerException($"An anchor is worth 330 sat, not {amount.Satoshi} sat", channelId,
+                                      "Internal error");
+
+        Transaction tx;
+        try
+        {
+            tx = Transaction.Load(unsignedTransaction.RawTxBytes, _network);
+        }
+        catch (Exception e)
+        {
+            throw new SignerException("Failed to load the anchor child transaction", channelId, e, "Internal error");
+        }
+
+        if (inputIndex < 0 || inputIndex >= tx.Inputs.Count)
+            throw new SignerException($"The anchor child transaction has no input {inputIndex}", channelId,
+                                      "Internal error");
+
+        // The script code is built here from our funding pubkey: the signature can only spend an anchor of ours
+        var anchorScript = new Outputs.ToAnchorOutput(amount, new PubKey(signingInfo.LocalFundingPubKey)).RedeemScript;
+        var spentOutput = new TxOut(Money.Satoshis(amount.Satoshi), anchorScript.WitHash.ScriptPubKey);
+        var sigHash = tx.GetSignatureHash(anchorScript, inputIndex, SigHash.All, spentOutput, HashVersion.WitnessV0);
+
+        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+        if (fundingKey.PubKey != new PubKey(signingInfo.LocalFundingPubKey))
+            throw new SignerException("The derived funding key does not match the channel's funding pubkey", channelId,
+                                      "Internal error");
+
+        var signature = fundingKey.Sign(sigHash, new SigningOptions(SigHash.All, false));
+        return signature.Signature.MakeCanonical().ToCompact();
+    }
+
+    #endregion
 }
