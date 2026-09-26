@@ -1,6 +1,58 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 1 @ `342d22e`).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 2 @ `a5675cb`).
 
 ## Status
+
+### Wave 2: integrated into `wip/fafo` @ `a5675cb` (2026-09-25)
+
+All four lanes are done: W2-A in three steps (base, N7-T5/T6 and the full-suite LND restart, review fixes), W2-B with a review-fix step, W2-C with a review-fix step, and W2-D. 19 lane commits were cherry-picked with `-x` in the order w2b, w2a, w2c, w2d. The only conflicts were doc text in `src/NLightning.Application/CLAUDE.md` and `test/CLAUDE.md`; both sides were kept. No lane touched migrations, and no schema change was needed. Two `integrate:` commits:
+- f2f1ef6: `AddApplicationServices` calls `AddHtlcSwitchServices()` and then `AddPaymentSendServices()`. New `Payments/Send/PaymentOutcomeSwitchHandler` bridges `ILocalPaymentHtlcHandler` to `IPaymentOutcomeHandler`. `ReconcileInFlightPaymentsAsync` runs after `PeerManager.StartAsync` in `NltgDaemonService` and in `NLightningTestNode`. `ListChannelsClientHandler` reads `IsReestablished` from `IReestablishTracker`. The daemon binds `Node:Payments` to `PaymentSendOptions`. Daemon DI (ValidateOnBuild) and listchannels tests were added. A CS8602/CS8629 warning from W2-A was fixed. The harness has a `HarnessStateStore.DropOrigins` switch, so the two W2-C "no origin" tests still test that case now that W2-B stores origins.
+- a5675cb: the N6/N7 Docker probe payments from LND now carry the MPP record on the last hop. The real final hop rejects a payload without `total_msat` as `invalid_onion_payload` (BOLT 4), and LND's BuildRoute won't attach a payment address for a node outside its graph. Test-only change.
+
+Gates at `a5675cb`:
+- Build: Release and Release.Native have 0 errors and the same **5** CS86xx warning sites as wave 1.
+- `dotnet format --verify-no-changes` is clean.
+- Tests: **3934** non-Docker tests pass in both configs with 0 skips (Domain 1236, Application 563, Integration 512, Serialization 466, Infrastructure 342, Infrastructure.Bitcoin 305, Bolt11 275, Daemon 235). The ledger agent re-ran the Release set and got the same counts.
+- The 10k-seed Long simulator passes.
+- Docker on OrbStack: **47/47** after a5675cb. Run 1, before a5675cb, was 43/47; the four failures were the LND probe payments without `payment_data`.
+- The ABCD suite (`Docker/Abcd/`) passed in both full-suite runs and in `scripts/run-abcd.sh 1` (10/10). That is three green runs so far, which meets the §2 wave-3 bar of 3 in a row. Re-confirm with a single `scripts/run-abcd.sh 3` loop.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W2-A Reestablish | done: N7-T1..T6 (T5 for every existing state; ShuttingDown/Negotiating are N10), N6-T3 rest, NL-234; I11 harness and Docker Proof N7 (a)(b)(c) in the full suite | 4620895, 4ec83d3, 1ad14ce, a4e95d7, 77c69a2, 82c4c37, 30c1bb8, 22c29ae | NL-035, NL-200, NL-234, NL-252 fixed; NL-036 partial; NL-048 wontfix pinned by test; new NL-258, NL-259, NL-260, NL-261, NL-262, NL-263, NL-269 |
+| W2-B HTLC switch | done: M4-T2 wiring, T3 atomic accept, T4 forward, T5 propagation, T7 replay; `ThreeNodeHarness` on SQLite | 4ca9b56, ca87313, c4ad8e9, 5a254c2, d1476a4 | NL-250, NL-253, NL-243 fixed; NL-137 partial; new NL-256 (fixed in d1476a4), NL-257 (not reproduced, wontfix), NL-266, NL-267, NL-268 |
+| W2-C Send | done: N8-T3 + M4-T6 `PaymentService` (direct and hinted), origin decrypt, startup reconciliation; invoice route hints | 0870ab1, 6cb279f, 083a726 | NL-245 fixed; NL-114 and NL-073 fixed after integration; new NL-270 |
+| W2-D Docker proofs + ABCD | done: Proof N8 (LND pays our invoice, trimmed, we pay LND, 10 concurrent each way, in-flight restart); ABCD suite (reestablish, happy path, a, b1, b2 stop/crash, c-send, c-receive) and `scripts/run-abcd.sh` | fdc80af, 1980a00, 421f1e5 | NL-099 unchanged (route hints, decision B) |
+| Integration | wiring and Docker probe fix | f2f1ef6, a5675cb | NL-031, NL-073, NL-114 fixed (epics); NL-152 partial; new NL-264, NL-265 |
+
+Ledger note: the integrator's summary listed NL-243 as fixed, and the ledger agrees. The leftover is that existence checks still use `GetByIdAsync`, which is noted but not tracked. NL-031, NL-073 and NL-114 are closed as epics: every remaining item has its own entry (NL-078 replay set, NL-094/N9-T4 broadcast, NL-266..NL-270). NL-257 was proposed by W2-B ("LocalAliases are not persisted") but is refuted: `ChannelLocalAliases` is persisted and reloaded (NL-103).
+
+Deviations accepted in wave 2 (details in the BOLT2 plan "ABCD wave 2 record" and the ONION plan status):
+- The reestablish secret is checked against our secret Y-1 (spec), not L-1 (plan §3.11). Planner tests live in Application.Tests, and the funder rule test is `FunderRememberRuleTests`.
+- `channel_reestablish` is sent at connect for V1FundingSigned/ReadyForThem/ReadyForUs/Open. A peer's reestablish that arrives after channel_ready is answered.
+- The invoice is Settled in the fulfill's own save (Accept and Settle are staged together), not when the removal is irrevocable. This is safe because both commit atomically with the fulfill.
+- Pending events are replayed twice after a reestablish; harmless (NL-264).
+- The LND-restart proof holds the free addresses below alice's with idle containers, because OrbStack gives a restarted container the lowest free address (NL-262).
+- Route hints carry the **peer's** `channel_update` policy (BOLT 11), not ours.
+- Payments use a node-wide fee limit of max(0.5 %, 5000 msat) with no retries (NL-270).
+- Shared-file touches accepted: `IPeerService`/`PeerService`/`PeerOutbox` (W2-A); `IChannelOperations`, `ChannelOperationsService`, `ChannelStateTransitionService` and the Domain `IncomingHtlcSettled` event (W2-B); `test/NLightning.Application.Tests.csproj` references Infrastructure.Repositories and Persistence.Sqlite (W2-B harness); `Daemon.Tests/Ipc/Handlers/PaymentSendIpcTests.cs` (W2-C).
+
+### Carried into wave 3
+
+The ABCD goal test is **green** at `a5675cb`, one wave early. Wave 3 therefore changes from "make ABCD green" to "keep it green and harden":
+- **W3-A ABCD stabilization:** run `scripts/run-abcd.sh 3` (3 in a row, fresh fixture each) and fix any flake. Watch the known flake NL-263 and the reconnect race tolerated in `AbcdReestablishTests`. Resolve the double replay (NL-264), the no-origin handler gap (NL-265) and forward checks at height 0 (NL-267).
+- **W3-B Provider matrix:** the ABCD happy path with Bob on Postgres and Carol on SqlServer; the container tests stay green.
+- **W3-C Hardening:**
+  - Signed `channel_update` for alias scids in UPDATE failures (NL-266). Variant a2 (`fee_insufficient` → LND retries) is not yet authored.
+  - N9-T2 `HtlcExpiryMonitor`: a forwarding node without it can lose funds, so it gates any non-regtest use.
+  - Fee-aware liquidity pre-check (NL-268).
+  - Optional LND-funded channel proof (receive `update_fee`).
+- **Next milestones outside ABCD:**
+  - N9-T4 fail-the-channel broadcast and signer refusal after data loss (NL-094).
+  - N10 close with Closing/Negotiating resumption and shutdown re-send (NL-034, NL-036, B2-RE-28).
+  - Funding tx rebroadcast (NL-258) and UTXO locks of a forgotten funder channel (NL-259).
+  - An unverified LND sync edge on a reconnect before channel_ready (NL-269).
+- **Test infra:** SendErrorAsync unit test (NL-261); LNUnit restart address fix upstream (NL-262).
+- **Carried tech debt:** NL-246, NL-247, NL-249, NL-251, NL-254, NL-138, NL-078 (persistent replay set), NL-260, NL-270, the wave-1 Wasm risk (still unverified on macOS), and the root/`test` CLAUDE.md test counts, which must be refreshed each wave.
 
 ### Wave 1: integrated into `wip/fafo` @ `342d22e` (2026-09-25)
 

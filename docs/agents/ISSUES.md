@@ -12,6 +12,8 @@ Updated 2026-09-25 after ABCD wave 0 (W0-A engine seam + events, W0-B persistenc
 
 Updated 2026-09-25 after ABCD wave 1 (W1-A channel wiring, W1-B payment core, W1-C payment schema, W1-D IPC/CLI, W1-E channel_update exchange and connect fixes) was integrated into `wip/fafo` (at `342d22e`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `4ae2eb3` and `342d22e` are `integrate:` commits), and NL-245..NL-255 record the lanes' new findings and seams.
 
+Updated 2026-09-25 after ABCD wave 2 (W2-A reestablish, W2-B HTLC switch, W2-C send, W2-D N8 and ABCD Docker proofs) was integrated into `wip/fafo` (at `a5675cb`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `f2f1ef6` and `a5675cb` are `integrate:` commits), and NL-256..NL-270 record the lanes' and the integrator's new findings (NL-256 and NL-257 keep the IDs W2-B proposed; NL-257 was not reproduced and is wontfix).
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -46,26 +48,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 5 | 9 | 29 | 45 | 88 |
+| open | 3 | 7 | 26 | 54 | 90 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 9 | 36 | 71 | 48 | 164 |
-| wontfix | 0 | 0 | 1 | 2 | 3 |
+| fixed | 11 | 38 | 77 | 50 | 176 |
+| wontfix | 0 | 0 | 1 | 3 | 4 |
 | duplicate | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **14** | **45** | **101** | **95** | **255** |
+| **Total** | **14** | **45** | **104** | **107** | **270** |
 
 ### Epics
 
-- NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (open, critical; partial: N6 done in ABCD wave 1, local-only fail-back proven against LND; forwarding W2-B, reestablish NL-035)
+- NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (open, critical)
-- NL-035: channel_reestablish / option_data_loss_protect (open, critical)
+- NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 open)
-- NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (open, high; partial: M4-T2/T3/T4/T6 components exist, switch and send are W2-B/W2-C)
+- NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; persistent replay set NL-078 deferred)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done)
-- NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (open, high; invoice service, store, final-hop checks and CreateInvoice/ListInvoices done; pay is W2-C)
-- NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits, invoices, payments and HTLC origins persisted; replay set and SCID map remain)
+- NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
+- NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments and HTLC origins done; replay set and forward failure reasons remain)
 
 ---
 
@@ -430,11 +432,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 2: Behaviour layer
 
 ### NL-031 [EPIC] HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee)
-- **Status:** open (partial: a604dff, f5315c0, a02afa7, a388fc4, aac5f60, e5f7312)
+- **Status:** fixed (a604dff, f5315c0, a02afa7, a388fc4, aac5f60, e5f7312, 4ec83d3, 22c29ae, ca87313)
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:88-133`
-- **Evidence:** The switch handles only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` (L133) throws `ChannelErrorException`, so any update_add_htlc, commitment_signed, update_fee etc. **disconnects the peer**. No handlers exist. Update: `default` now throws a channel-scoped `ChannelWarningException` (the peer stays connected), an unknown channel_id gets an `error` for that id, and malformed-without-BADONION warns and closes (699c67b, 00095cb). Update (four-lane integration, `3c625e1`): the building blocks now exist but nothing is wired: ordered per-peer processing and per-channel lock (NL-033, NL-193), per-side params (NL-194), separate commitment numbers (NL-188), HTLC txs and signatures (NL-056, NL-057), revocation guard (NL-189), remote shachain storage (NL-136), and the pure commitment engine with its two-engine invariant simulator (`Channels/Commitments/`, N4). Still missing: persistence of the engine state (N5), the handlers and `ChannelManager` cases (N6), reestablish (N7). The engine/builder seam is NL-230. Update (ABCD wave 0, `0b7e617`): the engine is now connected to the real signer (NL-230, 2fa8cf4), uses one fee calculator (NL-231, 192e212), raises lock-in/fulfill/irrevocable-fail/settle events with `IHtlcSwitch` as the consumer port (N4-T4, b166ea0), and is persisted with one save per transition (`IChannelStateDbRepository`, N5-T1..T3, 4472a8b, bb2731a); `IChannelOperations`, `ChannelState.Failed` and `ChannelFailedException` contracts exist (2ede2ee). Still missing: the handlers, `ChannelOperationsService`/`CommitScheduler` and `ChannelManager` cases (N6, ABCD W1-A), reestablish (N7, W2-A). Update (ABCD wave 1, `342d22e`): N6 is done. The seven receive handlers (`Application/Channels/Handlers/`, all through the scoped `ChannelStateTransitionService`: `ApplyAsync` + one save, then `UpdateCommitments`, then send; the RAA secret is revealed only after the save) and their `ChannelManager` cases (a604dff); the send side `ChannelOperationsService : IChannelOperations`, the debounced `CommitScheduler` (never signs while `RemoteNextCommit` exists, persists `SentCommitDiff` first) and `LocalOnlyHtlcSwitch`, gated by `NodeOptions.EnableHtlcs`, plus startup replay of `DerivePending` (a02afa7); each channel's link is pinned to the connection it turned Open on and every send-side update and signature needs that link (e5f7312). Proofs: in-process `TwoNodeHarness` (30 HTLCs each way, fulfills, fails, fee round, anchors and not, txids identical at every step, I7; f5315c0) and Docker N6-T5 against LND 0.20 (`NormalOperationFlowTests.Given_LndPaysUs_When_LockedIn_Then_FailedBackAndChannelActive`: fail-back decoded by LND at source index 1, commitment numbers 2/2, channel Active; a388fc4). Remaining: forwarding and final-hop receive (NL-073, ABCD W2-B), reestablish (NL-035, W2-A; until then a channel loaded at startup never sends updates, NL-252), fail-the-channel broadcast (NL-200). Deviation: a normal-operation message on a channel that is not Open gets warning + close rather than an error.
+- **Evidence:** The switch handles only OpenChannel/AcceptChannel/FundingCreated/ChannelReady/FundingSigned; `default` (L133) throws `ChannelErrorException`, so any update_add_htlc, commitment_signed, update_fee etc. **disconnects the peer**. No handlers exist. Update: `default` now throws a channel-scoped `ChannelWarningException` (the peer stays connected), an unknown channel_id gets an `error` for that id, and malformed-without-BADONION warns and closes (699c67b, 00095cb). Update (four-lane integration, `3c625e1`): the building blocks now exist but nothing is wired: ordered per-peer processing and per-channel lock (NL-033, NL-193), per-side params (NL-194), separate commitment numbers (NL-188), HTLC txs and signatures (NL-056, NL-057), revocation guard (NL-189), remote shachain storage (NL-136), and the pure commitment engine with its two-engine invariant simulator (`Channels/Commitments/`, N4). Still missing: persistence of the engine state (N5), the handlers and `ChannelManager` cases (N6), reestablish (N7). The engine/builder seam is NL-230. Update (ABCD wave 0, `0b7e617`): the engine is now connected to the real signer (NL-230, 2fa8cf4), uses one fee calculator (NL-231, 192e212), raises lock-in/fulfill/irrevocable-fail/settle events with `IHtlcSwitch` as the consumer port (N4-T4, b166ea0), and is persisted with one save per transition (`IChannelStateDbRepository`, N5-T1..T3, 4472a8b, bb2731a); `IChannelOperations`, `ChannelState.Failed` and `ChannelFailedException` contracts exist (2ede2ee). Still missing: the handlers, `ChannelOperationsService`/`CommitScheduler` and `ChannelManager` cases (N6, ABCD W1-A), reestablish (N7, W2-A). Update (ABCD wave 1, `342d22e`): N6 is done. The seven receive handlers (`Application/Channels/Handlers/`, all through the scoped `ChannelStateTransitionService`: `ApplyAsync` + one save, then `UpdateCommitments`, then send; the RAA secret is revealed only after the save) and their `ChannelManager` cases (a604dff); the send side `ChannelOperationsService : IChannelOperations`, the debounced `CommitScheduler` (never signs while `RemoteNextCommit` exists, persists `SentCommitDiff` first) and `LocalOnlyHtlcSwitch`, gated by `NodeOptions.EnableHtlcs`, plus startup replay of `DerivePending` (a02afa7); each channel's link is pinned to the connection it turned Open on and every send-side update and signature needs that link (e5f7312). Proofs: in-process `TwoNodeHarness` (30 HTLCs each way, fulfills, fails, fee round, anchors and not, txids identical at every step, I7; f5315c0) and Docker N6-T5 against LND 0.20 (`NormalOperationFlowTests.Given_LndPaysUs_When_LockedIn_Then_FailedBackAndChannelActive`: fail-back decoded by LND at source index 1, commitment numbers 2/2, channel Active; a388fc4). Remaining: forwarding and final-hop receive (NL-073, ABCD W2-B), reestablish (NL-035, W2-A; until then a channel loaded at startup never sends updates, NL-252), fail-the-channel broadcast (NL-200). Deviation: a normal-operation message on a channel that is not Open gets warning + close rather than an error. Update (ABCD wave 2, `a5675cb`): the remaining pieces landed: reestablish (NL-035, 4ec83d3, 22c29ae) and the forwarding/final-hop switch (NL-073, ca87313). Every update message is exercised end to end against LND 0.20 (Docker N6/N7/N8 proofs) and between two NLightning nodes (ABCD suite, green). The fail-the-channel broadcast is N9-T4 and is tracked in NL-094; close is NL-034.
 - **Fix sketch:** Handlers + ChannelManager cases for all 7 messages, commitment dance state machine, per-channel locking, persistence of every state transition. Sub-issues: NL-032, NL-033, NL-057, NL-056, NL-125, NL-051, NL-187, NL-188, NL-190, NL-193, NL-194, NL-200.
 - **Blocks/Blocked-by:** Blocks NL-073, NL-034, NL-035, NL-094
 - **Plan ref:** ONION_ROUTING_PLAN §7; BOLT_COVERAGE roadmap step 5; BOLT2 N4-N6
@@ -470,21 +472,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N10 (legacy), N11 (simple close)
 
 ### NL-035 [EPIC] channel_reestablish / option_data_loss_protect
-- **Status:** open
+- **Status:** fixed (4620895, 4ec83d3, 1ad14ce, a4e95d7, 82c4c37, 30c1bb8, 22c29ae, f2f1ef6)
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:62`
-- **Evidence:** TODO only; an incoming channel_reestablish disconnects the peer. `option_data_loss_protect` is advertised **Compulsory** (`FeatureOptions.cs:14`) with no implementation, and state needed for it (NL-136) is not persisted. Update: an incoming channel_reestablish now gets a channel-scoped `warning` instead of a disconnect (699c67b); `option_data_loss_protect` is advertised Optional (ASSUMED bit), not Compulsory. Update (ABCD wave 1, `342d22e`): W1-A left the reestablish hooks for N7 (W2-A): `ChannelStateTransitionService.LoadRemoteShachainAsync`, `SentCommitDiffCodec`, `CreateRevokeAndAck`, and `IPeerLivenessProbe.MarkLinkUp(channelId, peer)` plus the pending-event replay after reestablish (NL-252). `listchannels` reports `IsReestablished`, always false until N7 (e30a845).
+- **Evidence:** TODO only; an incoming channel_reestablish disconnects the peer. `option_data_loss_protect` is advertised **Compulsory** (`FeatureOptions.cs:14`) with no implementation, and state needed for it (NL-136) is not persisted. Update: an incoming channel_reestablish now gets a channel-scoped `warning` instead of a disconnect (699c67b); `option_data_loss_protect` is advertised Optional (ASSUMED bit), not Compulsory. Update (ABCD wave 1, `342d22e`): W1-A left the reestablish hooks for N7 (W2-A): `ChannelStateTransitionService.LoadRemoteShachainAsync`, `SentCommitDiffCodec`, `CreateRevokeAndAck`, and `IPeerLivenessProbe.MarkLinkUp(channelId, peer)` plus the pending-event replay after reestablish (NL-252). `listchannels` reports `IsReestablished`, always false until N7 (e30a845). Update (ABCD wave 2, `a5675cb`): N7 is done. `Domain/Channels/Reestablish/ReestablishPlanner` is a pure implementation of the BOLT 2 rules, with named cases plus a table of about 4.7k cases checked against a spec-literal oracle (4620895). `IChannelManager.OnPeerConnectedAsync`/`OnPeerDisconnectedAsync`/`OnPeerConnectionChanged` are called by `PeerManager`: revert the peer's unsigned updates, send our `channel_reestablish` at connect for V1FundingSigned/ReadyForThem/ReadyForUs/Open, gate updates with `ReestablishGatedLivenessProbe` until the exchange completes, retransmit the stored `SentCommitDiff` byte-identical and a regenerated revoke_and_ack in `LastSent` order, then unsigned updates with their original ids and channel_ready. Data loss is detected: `DataLossDetected` is persisted, then the channel fails without broadcasting (4ec83d3). A peer's reestablish that arrives after channel_ready is answered, and `Publish` drops normal-operation messages of a channel not reestablished on the current connection (22c29ae). Proofs: I11 harness, with a drop at every message boundary, a crash at every save and an old-backup restore (1ad14ce); Docker `ReestablishFlowTests` (a) our restart, (b) an LND restart through `RestartByAlias("alice")` with address-hold containers (30c1bb8, NL-262), (c) a crash after our commitment_signed is persisted (a4e95d7); the ABCD reestablish test. `listchannels` `IsReestablished` reads `IReestablishTracker` (f2f1ef6). Deviation from plan §3.11 step 3: the secret is checked against our secret Y-1, as the spec says. Left for other milestones: shutdown re-send (N10, B2-RE-28), signer-level broadcast refusal after data loss (N9-T4), Closing/Negotiating resumption (NL-036).
 - **Fix sketch:** Reestablish on reconnect with commitment/revocation number sync, retransmission, data-loss detection.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-136, NL-125, NL-126, NL-127
 - **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N7
 
 ### NL-036 Closing/Stale channels are not handled on startup
-- **Status:** open
+- **Status:** open (partial: 82c4c37)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:70`
-- **Evidence:** `TODO: Deal with channels that are Closing, Stale, or any other state`.
+- **Evidence:** `TODO: Deal with channels that are Closing, Stale, or any other state`. Update (ABCD wave 2, `a5675cb`): `ChannelManager.ResumeStartupStateAsync` handles every stored state (82c4c37). Closed/Stale are skipped. None/V1Opening/V2Opening are never persisted, so they are logged and skipped. V1FundingCreated moves to V1FundingSigned when a watch for the funding txid exists; otherwise it is persisted Stale and not registered (BOLT 2: the funder SHOULD NOT remember). Explicit cases for V1FundingSigned, ReadyFor*, Closing and Failed; Failed re-sends its stored error. Remaining: Closing/Negotiating resumption and close logic (N10), and a Stale funder channel keeps its UTXO locks (NL-259). The funding-tx rebroadcast is NL-258.
 - **Fix sketch:** Resume close / watch on-chain for these states.
 - **Blocks/Blocked-by:** Part of NL-034, NL-094
 - **Plan ref:** BOLT2 N7-T5, N10-T3 (partial)
@@ -604,7 +606,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Application/Channels/Handlers/AcceptChannel1MessageHandler.cs`, `FundingSignedMessageHandler.cs`
-- **Evidence:** A crash between funding_created and funding_signed loses the channel state (funding tx is not yet broadcast, so no direct loss). Spec-wrong: BOLT 2 "Message Retransmission" says a funder that has not broadcast the funding tx SHOULD NOT remember the channel on disconnect. Persisting was tried in eb59385 and reverted in d855f0f; `FundingSignedMessageHandler` persists before publishing.
+- **Evidence:** A crash between funding_created and funding_signed loses the channel state (funding tx is not yet broadcast, so no direct loss). Spec-wrong: BOLT 2 "Message Retransmission" says a funder that has not broadcast the funding tx SHOULD NOT remember the channel on disconnect. Persisting was tried in eb59385 and reverted in d855f0f; `FundingSignedMessageHandler` persists before publishing. Update (ABCD wave 2, `a5675cb`): the wontfix is pinned by a test (82c4c37): `test/NLightning.Application.Tests/Channels/Reestablish/FunderRememberRuleTests.Given_FundingSigned_Then_PersistedBeforeBroadcast` checks the order add V1FundingCreated, save, broadcast, update V1FundingSigned, save; no store or broadcast after a bad signature. The startup rule forgets a V1FundingCreated channel without a watch (NL-036). A failed broadcast leaves V1FundingCreated only with a mocked monitor. The real `BlockchainMonitorService` saves the watch before publishing, so the channel is V1FundingSigned and the tx is never rebroadcast (NL-258).
 - **Fix sketch:** Persist after funding_created is sent.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** BOLT2 N7-T6
@@ -730,11 +732,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N1-T4
 
 ### NL-200 No failed-channel state; ChannelErrorException always just disconnects
-- **Status:** open (partial: 699c67b, 00095cb, 4961ba5, 2ede2ee, 1390027, a604dff, a02afa7)
+- **Status:** fixed (699c67b, 00095cb, 4961ba5, 2ede2ee, 1390027, a604dff, a02afa7, 4ec83d3)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Node/Managers/PeerManager.cs` (`HandleChannelMessageResponseAsync`), `src/NLightning.Domain/Channels/Enums/ChannelState.cs`
-- **Evidence:** The spec's "send error and fail the channel" can't be expressed: nothing persists a failed state, refuses later updates or re-sends the error on reconnect. Partial: errors are now scoped to their channel id (699c67b); `ChannelWarningException.CloseConnection` gives "warning + close" where BOLT allows it (00095cb); `MessageService` dispose moved off the read loop (4961ba5). Remaining: no failed state; other `ChannelErrorException`s on Open channels (e.g. `ChannelReadyMessageHandler`) still make the peer force-close while we keep the channel (BOLT2 plan G21). Update (ABCD wave 0, `0b7e617`): contracts in place: `ChannelState.Failed = 35` (between Closing and Closed), `ChannelFailedException` (FailedChannelId, MustBroadcast, RequirementId; PeerMessage defaults to null so no local text leaks), `Channels.ErrorSent`/`DataLossDetected` columns (4472a8b). Persisting Failed + ErrorSent, sending the error, refusing updates and re-sending on reconnect remain (N6-T3, ABCD W1-A). Update (ABCD wave 1, `342d22e`): a handler's `ChannelFailedException` makes `ChannelManager` persist `ChannelState.Failed` and the serialized error (`MarkErrorSent`) under the lock before `PeerManager` sends it and disconnects; every later message on the channel is answered with the error again, Failed channels stay in memory at startup (a604dff), and every `IChannelOperations` call on a Failed channel is refused with nothing persisted (a02afa7). Remaining: re-send `ErrorSent` when the peer reconnects (B2-RE-05) and error without disconnect (PeerManager, W2-A); the broadcast / fail-the-channel service (N9-T4).
+- **Evidence:** The spec's "send error and fail the channel" can't be expressed: nothing persists a failed state, refuses later updates or re-sends the error on reconnect. Partial: errors are now scoped to their channel id (699c67b); `ChannelWarningException.CloseConnection` gives "warning + close" where BOLT allows it (00095cb); `MessageService` dispose moved off the read loop (4961ba5). Remaining: no failed state; other `ChannelErrorException`s on Open channels (e.g. `ChannelReadyMessageHandler`) still make the peer force-close while we keep the channel (BOLT2 plan G21). Update (ABCD wave 0, `0b7e617`): contracts in place: `ChannelState.Failed = 35` (between Closing and Closed), `ChannelFailedException` (FailedChannelId, MustBroadcast, RequirementId; PeerMessage defaults to null so no local text leaks), `Channels.ErrorSent`/`DataLossDetected` columns (4472a8b). Persisting Failed + ErrorSent, sending the error, refusing updates and re-sending on reconnect remain (N6-T3, ABCD W1-A). Update (ABCD wave 1, `342d22e`): a handler's `ChannelFailedException` makes `ChannelManager` persist `ChannelState.Failed` and the serialized error (`MarkErrorSent`) under the lock before `PeerManager` sends it and disconnects; every later message on the channel is answered with the error again, Failed channels stay in memory at startup (a604dff), and every `IChannelOperations` call on a Failed channel is refused with nothing persisted (a02afa7). Remaining: re-send `ErrorSent` when the peer reconnects (B2-RE-05) and error without disconnect (PeerManager, W2-A); the broadcast / fail-the-channel service (N9-T4). Update (ABCD wave 2, `a5675cb`): a Failed channel's stored error is re-sent on every connection, and any message on it gets the error again without a second persist. `PeerManager` turns every `ChannelFailedException` into an error that keeps the connection, through `PeerOutbox.TryEnqueueError` and `IPeerService.SendErrorAsync` (4ec83d3). Other `ChannelErrorException`s still disconnect. The fail-the-channel broadcast (N9-T4) is tracked in NL-094. `SendErrorAsync` has no unit test (NL-261).
 - **Fix sketch:** `ChannelFailedException`, `ChannelState.Failed = 35`, persisted error bytes, error retransmission; broadcast later via a single ChannelFailureService.
 - **Blocks/Blocked-by:** Part of NL-031; related NL-094
 - **Plan ref:** BOLT2 N6-T3, N9-T4
@@ -820,11 +822,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 Proof N1
 
 ### NL-234 IChannelManager.HandleChannelMessageAsync both sends and returns the replies
-- **Status:** open
+- **Status:** fixed (4ec83d3)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Channels/Interfaces/IChannelManager.cs`, `src/NLightning.Application/Channels/Managers/ChannelManager.cs`
-- **Evidence:** It raises every reply through `OnResponseMessageReady` under the channel lock and also returns them as `Task<IReadOnlyList<IChannelMessage>>`. Documented, but a new caller that sends the returned list would send each reply twice (reported by the N0-T3 lane). Update (ABCD wave 1, `342d22e`): not changed. Replies reach the peer only through `OnResponseMessageReady`; `PeerManager.cs:670` ignores the returned list, so nothing is sent twice today. The signature change belongs to the owner of `IChannelManager` (W2-A); `PeerManager.cs` was owned by W1-A in wave 1, not W1-E.
+- **Evidence:** It raises every reply through `OnResponseMessageReady` under the channel lock and also returns them as `Task<IReadOnlyList<IChannelMessage>>`. Documented, but a new caller that sends the returned list would send each reply twice (reported by the N0-T3 lane). Update (ABCD wave 1, `342d22e`): not changed. Replies reach the peer only through `OnResponseMessageReady`; `PeerManager.cs:670` ignores the returned list, so nothing is sent twice today. The signature change belongs to the owner of `IChannelManager` (W2-A); `PeerManager.cs` was owned by W1-A in wave 1, not W1-E. Update (ABCD wave 2, `a5675cb`): `HandleChannelMessageAsync` returns `Task`; replies go out only through `OnResponseMessageReady` (4ec83d3).
 - **Fix sketch:** Return only a status/count, or stop raising and let the single caller enqueue.
 - **Blocks/Blocked-by:** Related NL-193
 - **Plan ref:** BOLT2 N6-T1
@@ -870,11 +872,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N6-T2
 
 ### NL-252 Reestablish seam: channel links are marked up only at Open, so channels loaded at startup never send updates and pending events are not replayed after reconnect
-- **Status:** open
+- **Status:** fixed (4ec83d3, d1476a4, 22c29ae)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Services/ConnectedPeerLivenessProbe.cs` (`MarkLinkUp`), `Channels/Managers/ChannelManager.cs` (`QueuePendingDomainEventsAsync`, `RaiseDomainEventsAsync`), `ChannelOperationsService.cs`
-- **Evidence:** Since e5f7312 a channel's link is pinned to the connection it turned Open on, and every `IChannelOperations` call and every commitment_signed needs that link, so no signature can cover an update the peer never received. A channel loaded at startup or after a reconnect is never marked, so its startup replay is refused (nothing persisted) and locked-in HTLCs stay unresolved until N7. An unsigned update enqueued just as its connection closes stays `SentRemoveHtlc` (the link stays down for good). A `ReadyForThem` channel loaded from the DB that turns Open on funding confirmation after a reconnect is pinned without reestablish (reported by W1-A).
+- **Evidence:** Since e5f7312 a channel's link is pinned to the connection it turned Open on, and every `IChannelOperations` call and every commitment_signed needs that link, so no signature can cover an update the peer never received. A channel loaded at startup or after a reconnect is never marked, so its startup replay is refused (nothing persisted) and locked-in HTLCs stay unresolved until N7. An unsigned update enqueued just as its connection closes stays `SentRemoveHtlc` (the link stays down for good). A `ReadyForThem` channel loaded from the DB that turns Open on funding confirmation after a reconnect is pinned without reestablish (reported by W1-A). Update (ABCD wave 2, `a5675cb`): after each reestablish, `ChannelManager` calls `MarkLinkUp`, queues the pending events for the switch after the lock, and schedules a commit (4ec83d3). `LinkUpReplayingPeerLivenessProbe` also replays a channel's pending events on every `MarkLinkUp` (d1476a4). Both paths run, which is harmless but redundant (NL-264). Channels past funding_signed send their reestablish at connect (22c29ae).
 - **Fix sketch:** In N7: after channel_reestablish call `IPeerLivenessProbe.MarkLinkUp(channelId, peer)`, retransmit or forget our unsigned updates and the stored `SentCommitDiff` per BOLT 2, then replay pending domain events (`QueuePendingDomainEventsAsync` + `RaiseDomainEventsAsync`).
 - **Blocks/Blocked-by:** Part of NL-035; related NL-031
 - **Plan ref:** BOLT2 N7-T3; ABCD W2-A
@@ -888,6 +890,66 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add a node option (e.g. `Node:MaxDustHtlcExposureMsat`, or feerate-scaled like LND) and pass it to `CommitmentParams.FromChannel` when creating the first snapshot.
 - **Blocks/Blocked-by:** Related NL-242
 - **Plan ref:** BOLT2 N9-T3
+
+### NL-256 The engine raised no event when an incoming HTLC's removal became irrevocable
+- **Status:** fixed (d1476a4)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Commitments/` (`ReceiveCommit`, `ChannelDomainEvents.DerivePending`), `Payments/Switch/HtlcSwitch.cs`
+- **Evidence:** Without it, invoices were marked Settled when the fulfill was persisted rather than when it was irrevocable, and archived incoming rows could not be pruned (reported by W2-B). Fixed: the new Domain event `IncomingHtlcSettled` is raised when our removal is final (state 39) and derived by `DerivePending`. The switch prunes the row; simulator invariants (500 seeds, 10k Long) are green (d1476a4).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Related NL-243, NL-253
+- **Plan ref:** ONION M4-T7; BOLT2 N4-T4
+
+### NL-258 The funder's funding transaction is never rebroadcast
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`PublishAndWatchTransactionAsync`), `Application/Channels/Handlers/FundingSignedMessageHandler.cs`
+- **Evidence:** The watch is saved before `SendTransactionAsync`, so a crash or a failed publish leaves the channel V1FundingSigned, waiting for a tx that never went out. Startup (NL-036) treats the watch as proof of broadcast (reported by W2-A, review F3).
+- **Fix sketch:** Add a publish-only `IBlockchainMonitor` method and rebroadcast unconfirmed funder V1FundingSigned channels at startup (rebuild from the locked UTXOs as `FundingSignedMessageHandler` does), or store the signed raw tx with the watch (migration).
+- **Blocks/Blocked-by:** Related NL-048, NL-036
+- **Plan ref:** BOLT2 N7-T5
+
+### NL-259 A funder channel forgotten at startup keeps its UTXO locks
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`ResumeStartupStateAsync`), `UtxoModel.LockedToChannelId`
+- **Evidence:** A V1FundingCreated channel with no watch is persisted Stale and not registered (82c4c37), but nothing calls `ReturnUtxosNotSpentOnChannel` or persists the unlock, so those wallet UTXOs stay locked (reported by W2-A).
+- **Fix sketch:** Release the channel's UTXO locks in the same save that marks it Stale.
+- **Blocks/Blocked-by:** Related NL-036
+- **Plan ref:** BOLT2 N7-T5
+
+### NL-260 channel_ready retransmitted at reestablish carries only the first local alias
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Reestablish/` (retransmission), `FundingConfirmedMessageHandler.cs`
+- **Evidence:** `FundingConfirmedMessageHandler` sends one channel_ready per alias; the reestablish retransmission sends one with the first local alias (or the real scid) (reported by W2-A). Only matters with option_scid_alias, which defaults to No.
+- **Fix sketch:** Retransmit one channel_ready per local alias.
+- **Blocks/Blocked-by:** Related NL-103
+- **Plan ref:** BOLT2 N7-T3
+
+### NL-264 Pending HTLC events are replayed twice after a reestablish
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`CompleteReestablishAsync`), `Payments/Switch/LinkUpReplayingPeerLivenessProbe.cs`
+- **Evidence:** `CompleteReestablishAsync` queues the pending events itself and also calls `MarkLinkUp`. The W2-B probe decorator turns that call into a second replay. The switch is idempotent, so nothing breaks, but every reconnect does the work twice (reported by the integrator).
+- **Fix sketch:** Keep one path (the probe replay) and drop the manager's own queueing, or have the probe skip channels the manager just replayed.
+- **Blocks/Blocked-by:** Related NL-252
+- **Plan ref:** BOLT2 N7-T2; ABCD W2-A/W2-B
+
+### NL-269 A channel that turned Open on this connection may send an update before LND finishes its reestablish sync (unverified)
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs`, `Reestablish/ReestablishTracker`
+- **Evidence:** A channel opened on this connection counts as reestablished, so an update can go out before LND's link has processed its own channel_reestablish; LND would then see update_add_htlc as its first sync message. Not reproduced; no Docker proof covers a reconnect before channel_ready (reported by W2-A).
+- **Fix sketch:** Add a Docker proof with a reconnect before channel_ready; if LND objects, hold updates until the peer's reestablish arrives.
+- **Blocks/Blocked-by:** Related NL-035
+- **Plan ref:** BOLT2 N7-T2
 
 ---
 
@@ -1138,11 +1200,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3b
 
 ### NL-073 [EPIC] Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4)
-- **Status:** open (partial: 6156173, 234607e, a02afa7)
+- **Status:** fixed (6156173, 234607e, a02afa7, ca87313, c4ad8e9, d1476a4, 6cb279f, 083a726, f2f1ef6)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** planned `src/NLightning.Application/Payments/` (`HtlcSwitch`, `HtlcForwardingPolicy`, `FinalHopProcessor`, `PaymentManager`)
-- **Evidence:** Nothing calls peel → replay → deserialize → validate. No forwarding, no final-hop checks, no sending. Update (ABCD wave 0, `0b7e617`): the engine-side gates exist: `IncomingHtlcLockedIn` fires once at lock-in, `OutgoingHtlcFailed` only when the removal is irrevocable, `OutgoingHtlcFulfilled` at once, all re-derivable at startup with `ChannelDomainEvents.DerivePending` (b166ea0); `IForwardingPolicy`/`ForwardingFee` (BOLT 7 fee formula), `ForwardCircuitModel` and `HtlcOrigin` contracts are in Domain (2ede2ee, 1390027). No processor, policy implementation or switch yet (ABCD W1-B, W2-B). Update (ABCD wave 1, `342d22e`): the payment core exists in `Application/Payments/` (6156173, 234607e): `IncomingOnionProcessor` (peel, replay record after a good peel, payload parse/validate, forward/final/malformed/failed results; route blinding refused), `FinalHopProcessor` (0x0013/0x0012 before the 0x400F invoice checks, read-only), `HtlcForwardingPolicy : IForwardingPolicy` (reads `RoutingOptions` on every call), `HintRouteBuilder` (mandatory fee limit) and `PaymentOnionFactory`. `LocalOnlyHtlcSwitch` peels every locked-in HTLC and fails it back (a02afa7). Nothing in `src/` calls the processor, policy or route builder yet: the forwarding switch (M4-T2 wiring, T4, T5, replay) is W2-B and send is W2-C. The final-hop accept must be atomic (NL-253) and the offered HTLC's origin persisted (NL-250).
+- **Evidence:** Nothing calls peel → replay → deserialize → validate. No forwarding, no final-hop checks, no sending. Update (ABCD wave 0, `0b7e617`): the engine-side gates exist: `IncomingHtlcLockedIn` fires once at lock-in, `OutgoingHtlcFailed` only when the removal is irrevocable, `OutgoingHtlcFulfilled` at once, all re-derivable at startup with `ChannelDomainEvents.DerivePending` (b166ea0); `IForwardingPolicy`/`ForwardingFee` (BOLT 7 fee formula), `ForwardCircuitModel` and `HtlcOrigin` contracts are in Domain (2ede2ee, 1390027). No processor, policy implementation or switch yet (ABCD W1-B, W2-B). Update (ABCD wave 1, `342d22e`): the payment core exists in `Application/Payments/` (6156173, 234607e): `IncomingOnionProcessor` (peel, replay record after a good peel, payload parse/validate, forward/final/malformed/failed results; route blinding refused), `FinalHopProcessor` (0x0013/0x0012 before the 0x400F invoice checks, read-only), `HtlcForwardingPolicy : IForwardingPolicy` (reads `RoutingOptions` on every call), `HintRouteBuilder` (mandatory fee limit) and `PaymentOnionFactory`. `LocalOnlyHtlcSwitch` peels every locked-in HTLC and fails it back (a02afa7). Nothing in `src/` calls the processor, policy or route builder yet: the forwarding switch (M4-T2 wiring, T4, T5, replay) is W2-B and send is W2-C. The final-hop accept must be atomic (NL-253) and the offered HTLC's origin persisted (NL-250). Update (ABCD wave 2, `a5675cb`): M4 is wired. `Application/Payments/Switch/HtlcSwitch` (registered by `AddHtlcSwitchServices`, called from `AddApplicationServices`) handles several cases. It peels locked-in HTLCs, storing the shared secret first. It runs the final hop under a per-payment-hash lock, with the invoice settled in the fulfill's own save (NL-253). It forwards by scid (real, or alias per `option_scid_alias`) with `HtlcForwardingPolicy`, saves the circuit Pending before the offer and marks it Offered after. It fulfills upstream immediately and fails upstream only when the failure is irrevocable, wrapping with the incoming secret and converting malformed. It replays after restart or link-up (`LinkUpEventReplayer`) (ca87313, d1476a4). The send side `Payments/Send/PaymentService` decodes the invoice, routes directly or through the first usable hint and persists the per-hop secrets before `OfferHtlcAsync(HtlcOrigin.Local)`. It decrypts failures with `FailureInterpreter` (6cb279f, 083a726) and is wired to the switch through `PaymentOutcomeSwitchHandler` (f2f1ef6). Proofs: `ThreeNodeSwitchTests` on SQLite with restarts (c4ad8e9), `PaymentHarnessTests`, and the ABCD Docker suite (happy path with exact BOLT 7 fees, variant a decoded at index 3, b1/b2 restarts, c send/receive). Remaining, tracked elsewhere: persistent replay set (NL-078, deferred by roadmap decision 5), attribution_data (NL-072), route blinding (NL-079), alias channel_update in failures (NL-266), forward checks before the first block (NL-267).
 - **Fix sketch:** M4-T1..T7 per plan. Prereqs: NL-031, NL-075, NL-078, NL-101, NL-102, NL-167, NL-137, NL-114.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-070
 - **Plan ref:** ONION M4; BOLT2 N6-T1, N8 (direct-channel slice)
@@ -1192,7 +1254,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Onion/OnionReplayCache.cs`
-- **Evidence:** 100k-entry FIFO; replays older than capacity or across restarts are accepted.
+- **Evidence:** 100k-entry FIFO; replays older than capacity or across restarts are accepted. Update (ABCD wave 2, `a5675cb`): still in memory, by ABCD roadmap decision 5 (regtest only). The switch skips the replay check (`checkReplay: false`) for an HTLC whose shared secret is already stored, so a restart replays persisted HTLCs without tripping the cache (ca87313). A restart still forgets the replay entries of onions that are not stored.
 - **Fix sketch:** Key by HMAC with cltv_expiry eviction; persist (see NL-137).
 - **Blocks/Blocked-by:** Blocks NL-073
 - **Plan ref:** ONION M4-T2/T7; M2 review issue 9 (partial)
@@ -1348,24 +1410,84 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M2 review issues 1, 9, 19
 
 ### NL-250 OfferHtlcAsync does not persist the HtlcOrigin with the add
-- **Status:** open
+- **Status:** fixed (4ca9b56)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Services/ChannelOperationsService.cs` (`OfferHtlcAsync`)
-- **Evidence:** The `IChannelOperations` contract says the origin (Local payment hash or Forwarded incoming HTLC) is saved atomically with the add, so a restart can tie the outgoing HTLC back to its payment or circuit. `OfferHtlcAsync` validates the origin but does not store it (a02afa7); `IChannelStateDbRepository.SetHtlcOriginAsync` exists since 899e36b (reported by W1-A, integrator).
+- **Evidence:** The `IChannelOperations` contract says the origin (Local payment hash or Forwarded incoming HTLC) is saved atomically with the add, so a restart can tie the outgoing HTLC back to its payment or circuit. `OfferHtlcAsync` validates the origin but does not store it (a02afa7); `IChannelStateDbRepository.SetHtlcOriginAsync` exists since 899e36b (reported by W1-A, integrator). Update (ABCD wave 2, `a5675cb`): `OfferHtlcAsync` stages `SetHtlcOriginAsync` after `ApplyAsync` in the same save, through the new optional `stageWithTransition` callback of `ChannelStateTransitionService.CommitAsync` (4ca9b56). Regression tests are in `ChannelOperationsServiceTests`, and `ThreeNodeHarness` covers it on real SQLite.
 - **Fix sketch:** Call `SetHtlcOriginAsync(channelId, key, origin)` after `ApplyAsync` in the same unit of work, together with the payment/circuit rows (W2-B/W2-C).
 - **Blocks/Blocked-by:** Blocks NL-073 (restart mid-forward); related NL-137
 - **Plan ref:** ONION M4-T7; ABCD W2-B, W2-C
 
 ### NL-253 Final-hop invoice accept must be an atomic check-and-mark
-- **Status:** open
+- **Status:** fixed (ca87313, d1476a4)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/FinalHop/FinalHopProcessor.cs` (read-only by design), future `Application/Payments/Switch/HtlcSwitch`
-- **Evidence:** `FinalHopProcessor` never mutates the invoice, so two concurrent HTLCs for the same payment hash can both pass `Evaluate` and both be fulfilled; a second run for an already Accepted invoice fails with 0x400F, so a restart must act on the HTLC's persisted state instead of re-running the final hop (`IncomingOnionProcessor.ProcessAsync(checkReplay: false)` exists for that path) (reported by W1-B).
+- **Evidence:** `FinalHopProcessor` never mutates the invoice, so two concurrent HTLCs for the same payment hash can both pass `Evaluate` and both be fulfilled; a second run for an already Accepted invoice fails with 0x400F, so a restart must act on the HTLC's persisted state instead of re-running the final hop (`IncomingOnionProcessor.ProcessAsync(checkReplay: false)` exists for that path) (reported by W1-B). Update (ABCD wave 2, `a5675cb`): under a per-payment-hash lock, the switch re-reads the invoice and runs `FinalHopProcessor.Evaluate`. It stages Accept, then Settle, then `UpdateAsync` on the fulfill's own unit of work, through the new `IChannelOperations.FulfillHtlcAsync(..., stageWithFulfill, ct)` overload, so the invoice and the fulfill commit in one save. A second HTLC for the hash gets PERM|15 (ca87313, d1476a4). The interleaving is proven deterministically (`HookedUnitOfWork.AfterInvoiceRead`; the test fails when the lock is removed).
 - **Fix sketch:** In the switch, under a per-payment-hash lock and in the same unit of work as the staged fulfill: re-read the invoice, `Evaluate`, `Accept` + `UpdateAsync`, save (or compare-and-set the status); fail the loser with PERM|15.
 - **Blocks/Blocked-by:** Part of NL-073; related NL-114
 - **Plan ref:** ONION M4-T3; ABCD W2-B
+
+### NL-257 Forwarded onions that name a local alias fail after a restart (not reproduced)
+- **Status:** wontfix
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (scid resolution)
+- **Evidence:** W2-B reported that `LocalAliases` are not persisted, so the switch would answer unknown_next_peer after a restart. Not reproduced at `a5675cb`: aliases are persisted in `ChannelLocalAliases` (NL-103) and reloaded (`ChannelDbRepository.cs:426`), and the switch matches `LocalAliases` (`HtlcSwitch.cs:847`). Wontfix: not a bug. Reopen only with a failing test.
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-103
+- **Plan ref:** ONION M4-T4
+
+### NL-265 An outgoing HTLC with no stored origin never reaches the payment handlers
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (origin dispatch)
+- **Evidence:** With no stored origin the switch logs a warning and does not call `ILocalPaymentHtlcHandler`; W2-C asked for "Local or no circuit". Since NL-250 every new add stores its origin, so only HTLCs offered by older builds are affected, and `PaymentService.ReconcileInFlightPaymentsAsync` (startup and re-pay) still resolves them (reported by the integrator).
+- **Fix sketch:** Call the local payment handlers for an outgoing HTLC with neither an origin nor a circuit.
+- **Blocks/Blocked-by:** Related NL-250
+- **Plan ref:** ONION M4-T5
+
+### NL-266 UPDATE-class failures embed our channel_update only when its scid equals the onion's
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `Application/Gossip/ChannelUpdateService.cs`
+- **Evidence:** For option_scid_alias channels `ChannelUpdateService` signs with `RemoteAlias`, so an onion that names one of our `LocalAliases` gets `len=0` (allowed by BOLT 4). Needs an alias-policy decision; moot while ScidAlias=No (reported by W2-B).
+- **Fix sketch:** Sign an update for the scid the onion used (alias or real), or keep one update per alias.
+- **Blocks/Blocked-by:** Related NL-099, NL-236
+- **Plan ref:** ABCD W3-C
+
+### NL-267 Forwarding checks before the first processed block answer temporary_node_failure
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `IBlockchainMonitor.LastProcessedBlockHeight`
+- **Evidence:** Forward CLTV and amount checks read the monitor's height; right after startup it is 0, so an HTLC replayed or received then is failed with temporary_node_failure instead of waiting (reported by W2-B).
+- **Fix sketch:** Defer the switch's lock-in handling until the monitor has a height (the replay reruns), or read the stored tip.
+- **Blocks/Blocked-by:** Related NL-073
+- **Plan ref:** ONION M4-T4
+
+### NL-268 The forward liquidity check ignores commitment fees
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (usable-channel / `AvailableToSend` estimate)
+- **Evidence:** The per-channel usable check and the `AvailableToSend` estimate leave out commitment fees, so the engine's re-check at offer time can still refuse. The forward then fails with temporary_channel_failure after the circuit was saved (handled, but the pre-check is imprecise) (reported by W2-B).
+- **Fix sketch:** Compute spendable balance with `CommitmentFeeCalculator` (fee for one more HTLC plus reserve) before choosing the channel.
+- **Blocks/Blocked-by:** Related NL-073
+- **Plan ref:** ONION M4-T4
+
+### NL-270 Payments have no per-call fee limit and no retries
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Payments/Interfaces/IPaymentService.cs`, `Application/Payments/Send/PaymentSendOptions.cs`
+- **Evidence:** `IPaymentService.PayInvoiceAsync` takes no fee limit, so every payment uses `PaymentSendOptions.GetMaxFee` = max(0.5 %, 5000 msat) (CLN defaults, `Node:Payments`). There are no automatic retries: a Failed hash can be paid again and the new attempt replaces the old one (W0-C policy) (reported by W2-C).
+- **Fix sketch:** Add an optional `maxFeeMsat` to the pay request/IPC (new `ClientCommand` or field) and, later, retries over other hints.
+- **Blocks/Blocked-by:** Related NL-114, NL-152
+- **Plan ref:** ONION M4-T6
 
 ---
 
@@ -1376,7 +1498,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs`, `src/NLightning.Domain/Bitcoin/Transactions/Models/PenaltyTransactionModel.cs` (empty)
-- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished.
+- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists).
 - **Fix sketch:** Watch funding outpoints, classify spends, sweep to_local/to_remote/HTLC outputs, justice txs. Sub-issues: NL-095, NL-096, NL-097, NL-098.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-056, NL-066, NL-136, NL-067
 - **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (broadcast only)
@@ -1712,11 +1834,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 11: Invoices
 
 ### NL-114 [EPIC] Invoices not wired into the node: invoice store, create/pay commands, final-hop checks
-- **Status:** open (partial: 6156173, 234607e, 899e36b, 6cfbcd1, c10a78e, 4ae2eb3)
+- **Status:** fixed (6156173, 234607e, 899e36b, 6cfbcd1, c10a78e, 4ae2eb3, ca87313, d1476a4, 0870ab1, 6cb279f, 083a726, f2f1ef6)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Bolt11` (no `src/` project references it), `src/NLightning.Domain/Client/Enums/ClientCommand.cs`
-- **Evidence:** No invoice/preimage table, no CreateInvoice/PayInvoice IPC, no payment_secret checks. Update (ABCD wave 0, `0b7e617`): `Invoice.Encode` validates first and rejects unknown even and doubled feature bits; the node-key encode path is covered and LND 0.20 invoice fixtures decode (NL-120, 2d8a9fe, 2c9f812, f93d059); `InvoiceModel`, `IInvoiceService`, `IInvoiceDbRepository` and `ClientCommand` 9-12 contracts exist (2ede2ee). No invoice store, service or final-hop processor yet (ABCD W1-B, W1-C). Update (ABCD wave 1, `342d22e`): Application references Bolt11; `InvoiceService : IInvoiceService` creates (CSPRNG preimage/secret), signs with the node key and persists invoices (features 8/14 compulsory, `c` from `Routing.InvoiceMinFinalCltvExpiry`, no route hints, NL-245) and the final-hop checks exist (6156173, 234607e); the invoice table and repository (899e36b); CreateInvoice/ListInvoices/PayInvoice/ListPayments IPC and CLI (6cfbcd1, c10a78e); composition root registration (4ae2eb3). CreateInvoice and ListInvoices work end to end; PayInvoice/ListPayments answer "not available" until `IPaymentService` exists (W2-C). Receive is not wired: the switch still fails every HTLC (W2-B).
+- **Evidence:** No invoice/preimage table, no CreateInvoice/PayInvoice IPC, no payment_secret checks. Update (ABCD wave 0, `0b7e617`): `Invoice.Encode` validates first and rejects unknown even and doubled feature bits; the node-key encode path is covered and LND 0.20 invoice fixtures decode (NL-120, 2d8a9fe, 2c9f812, f93d059); `InvoiceModel`, `IInvoiceService`, `IInvoiceDbRepository` and `ClientCommand` 9-12 contracts exist (2ede2ee). No invoice store, service or final-hop processor yet (ABCD W1-B, W1-C). Update (ABCD wave 1, `342d22e`): Application references Bolt11; `InvoiceService : IInvoiceService` creates (CSPRNG preimage/secret), signs with the node key and persists invoices (features 8/14 compulsory, `c` from `Routing.InvoiceMinFinalCltvExpiry`, no route hints, NL-245) and the final-hop checks exist (6156173, 234607e); the invoice table and repository (899e36b); CreateInvoice/ListInvoices/PayInvoice/ListPayments IPC and CLI (6cfbcd1, c10a78e); composition root registration (4ae2eb3). CreateInvoice and ListInvoices work end to end; PayInvoice/ListPayments answer "not available" until `IPaymentService` exists (W2-C). Receive is not wired: the switch still fails every HTLC (W2-B). Update (ABCD wave 2, `a5675cb`): receive and pay are wired. The switch runs the final hop and settles the invoice in the fulfill's save (ca87313, d1476a4). Invoices carry route hints for private channels (NL-245, 0870ab1). `PaymentService : IPaymentService` backs `payinvoice`/`listpayments` (6cb279f, 083a726). It is registered in `AddApplicationServices`, and in-flight payments are reconciled at startup (f2f1ef6). Docker N8: LND pays our invoice (also a trimmed HTLC), we pay LND's invoice, 10 concurrent payments each way, and a restart with our HTLC in flight. ABCD c-send and c-receive are green. No automatic retries and no per-call fee limit (NL-270).
 - **Fix sketch:** Reference Bolt11 from Application/Daemon, invoice store (NL-137), IPC commands (NL-152), FinalHopProcessor (M4-T3), PaymentManager (M4-T6).
 - **Blocks/Blocked-by:** Blocked-by NL-073
 - **Plan ref:** ONION M4-T3, M4-T6; BOLT2 N8-T2, N8-T3 (partial)
@@ -1842,11 +1964,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-245 Our invoices carry no route hints
-- **Status:** open
+- **Status:** fixed (0870ab1, 083a726)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Invoices/InvoiceService.cs`
-- **Evidence:** `InvoiceService` writes no `r` fields, so a payer that is not our direct peer cannot reach us over private channels. Not needed for ABCD variant (c), where Alice pays Bob directly (reported by W1-B).
+- **Evidence:** `InvoiceService` writes no `r` fields, so a payer that is not our direct peer cannot reach us over private channels. Not needed for ABCD variant (c), where Alice pays Bob directly (reported by W1-B). Update (ABCD wave 2, `a5675cb`): `InvoiceService` adds up to 3 `r` hints for our private channels (largest peer balance first). Each hint carries the **peer's** stored `channel_update` policy (BOLT 11: the policy of the channel from the hint node towards the payee), not ours. It skips disabled updates, peers with no update, down links, and (for an amount) channels the peer can't spend it over. scid_alias channels use `RemoteAlias` (not checked against LND). Tests: `InvoiceRouteHintTests`.
 - **Fix sketch:** Add hints from our peers' stored `channel_update` policies (W1-E `ChannelUpdateService`) for private channels.
 - **Blocks/Blocked-by:** Related NL-114, NL-099
 - **Plan ref:** ONION M4-T6
@@ -1976,11 +2098,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N3-T4
 
 ### NL-137 [EPIC] Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map
-- **Status:** open (partial: 4472a8b, 2ede2ee, 899e36b, 4ae2eb3)
+- **Status:** open (partial: 4472a8b, 2ede2ee, 899e36b, 4ae2eb3, 4ca9b56, ca87313, d1476a4)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Persistence/Entities/Channel/HtlcEntity.cs` (+ new entities)
-- **Evidence:** No tables for per-HTLC onion shared secret, forwarding circuit, invoices/preimages, payment attempts, replay entries, SCID/alias→channel, or the channel graph. Update (ABCD wave 0, `0b7e617`): `HtlcEntity.OnionSharedSecret` with `IChannelStateDbRepository.Set/GetOnionSharedSecretAsync` (4472a8b); Domain models and repository ports for invoices, payments and forward circuits (2ede2ee, 1390027). Remaining: the tables and repositories (ABCD W1-C), replay set, SCID map. Update (ABCD wave 1, `342d22e`): migration `AddInvoicesPaymentsAndCircuits` (all three providers, no data step): `Invoices`, `Payments` + `PaymentHops` (route with each hop's Sphinx shared secret), `ForwardCircuits` (PK incoming channel/HTLC id, indexes on status and outgoing HTLC), `Htlcs.Origin*` (the `HtlcOrigin` of offered HTLCs, indexed for startup replay) and `Channels.MaxDustHtlcExposureMsat`; `InvoiceDbRepository`/`PaymentDbRepository`/`ForwardCircuitDbRepository` hang off `IUnitOfWork`, and `IChannelStateDbRepository.Set/Get/FindHtlcOrigin` (899e36b); the repositories are resolvable from the scope (4ae2eb3). Container round trips on Postgres and SQL Server migrate seeded pre-migration rows. Remaining: a persistent replay set (NL-078), an SCID/alias → ChannelId map, stored failure reasons for forwards, the graph; `OfferHtlcAsync` does not call `SetHtlcOriginAsync` yet (NL-250).
+- **Evidence:** No tables for per-HTLC onion shared secret, forwarding circuit, invoices/preimages, payment attempts, replay entries, SCID/alias→channel, or the channel graph. Update (ABCD wave 0, `0b7e617`): `HtlcEntity.OnionSharedSecret` with `IChannelStateDbRepository.Set/GetOnionSharedSecretAsync` (4472a8b); Domain models and repository ports for invoices, payments and forward circuits (2ede2ee, 1390027). Remaining: the tables and repositories (ABCD W1-C), replay set, SCID map. Update (ABCD wave 1, `342d22e`): migration `AddInvoicesPaymentsAndCircuits` (all three providers, no data step): `Invoices`, `Payments` + `PaymentHops` (route with each hop's Sphinx shared secret), `ForwardCircuits` (PK incoming channel/HTLC id, indexes on status and outgoing HTLC), `Htlcs.Origin*` (the `HtlcOrigin` of offered HTLCs, indexed for startup replay) and `Channels.MaxDustHtlcExposureMsat`; `InvoiceDbRepository`/`PaymentDbRepository`/`ForwardCircuitDbRepository` hang off `IUnitOfWork`, and `IChannelStateDbRepository.Set/Get/FindHtlcOrigin` (899e36b); the repositories are resolvable from the scope (4ae2eb3). Container round trips on Postgres and SQL Server migrate seeded pre-migration rows. Remaining: a persistent replay set (NL-078), an SCID/alias → ChannelId map, stored failure reasons for forwards, the graph; `OfferHtlcAsync` does not call `SetHtlcOriginAsync` yet (NL-250). Update (ABCD wave 2, `a5675cb`): `OfferHtlcAsync` stores the `HtlcOrigin` in the add's save (NL-250, 4ca9b56). The switch uses circuits for replay: a Pending circuit adopts the HTLC `FindHtlcsByOriginAsync` finds or is failed upstream, an Offered one resumes, and a Fulfilled/Failed circuit resolves its upstream HTLC from the live or archived outgoing record (ca87313, d1476a4). Payments store every hop's shared secret (6cb279f). No schema change was needed in wave 2. Remaining: persistent replay set (NL-078), stored failure reasons for forwards, the graph.
 - **Fix sketch:** Entities + 3 migrations each (§4.5 of the onion plan); the shared secret can alternatively be recomputed from `AddMessageBytes`.
 - **Blocks/Blocked-by:** Blocks NL-073, NL-114, NL-078
 - **Plan ref:** ONION M4-T7; ONION_ROUTING_PLAN §4.5; BOLT2 N5-T1, N8 (partial)
@@ -2076,11 +2198,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N9-T3; ABCD W1-A/W2-A
 
 ### NL-243 Settled HTLC rows are never pruned and every channel load reads them all
-- **Status:** open (partial: 899e36b, a02afa7)
+- **Status:** fixed (899e36b, a02afa7, ca87313, d1476a4)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Repositories/Database/Channel/ChannelStateDbRepository.cs` (`PruneSettledHtlcsAsync`), `ChannelDbRepository.GetByIdAsync`
-- **Evidence:** Settled HTLCs stay as an archive with their final state so events can be re-derived after a crash (I8), but nothing calls `PruneSettledHtlcsAsync`; rows grow without limit and `GetByIdAsync` (often used as an existence check) loads them all (reported by the W0-B lane). Update (ABCD wave 1, `342d22e`): `IChannelDbRepository.ExistsAsync` is a cheap existence check (899e36b); `LocalOnlyHtlcSwitch` prunes a settled outgoing HTLC's archived row on `OutgoingHtlcSettled` in one save (a02afa7). Remaining: the W2-B `HtlcSwitch` must keep pruning, in an order that respects payments and circuits (it replaces `LocalOnlyHtlcSwitch`); existence checks still using `GetByIdAsync` should move to `ExistsAsync`.
+- **Evidence:** Settled HTLCs stay as an archive with their final state so events can be re-derived after a crash (I8), but nothing calls `PruneSettledHtlcsAsync`; rows grow without limit and `GetByIdAsync` (often used as an existence check) loads them all (reported by the W0-B lane). Update (ABCD wave 1, `342d22e`): `IChannelDbRepository.ExistsAsync` is a cheap existence check (899e36b); `LocalOnlyHtlcSwitch` prunes a settled outgoing HTLC's archived row on `OutgoingHtlcSettled` in one save (a02afa7). Remaining: the W2-B `HtlcSwitch` must keep pruning, in an order that respects payments and circuits (it replaces `LocalOnlyHtlcSwitch`); existence checks still using `GetByIdAsync` should move to `ExistsAsync`. Update (ABCD wave 2, `a5675cb`): `HtlcSwitch` prunes a settled outgoing row once the upstream is resolved and the circuit or payment is handled. It prunes incoming final rows on the new `IncomingHtlcSettled` event (NL-256), and startup/link-up replay prunes rows left by older builds (ca87313, d1476a4). The ABCD and three-node proofs assert that no settled rows are left. Leftover, not tracked separately: some existence checks still use `GetByIdAsync` instead of `ExistsAsync`.
 - **Fix sketch:** Prune once the switch has consumed an HTLC's settle event (W2-B); optionally add a cheap `ExistsAsync`.
 - **Blocks/Blocked-by:** Related NL-137
 - **Plan ref:** ABCD W1-A/W2-B
@@ -2230,11 +2352,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
-- **Status:** open (partial: 5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b)
+- **Status:** open (partial: 5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs`
-- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C).
+- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C). Update (ABCD wave 2, `a5675cb`): `payinvoice` and `listpayments` work end to end now that `IPaymentService` is registered (f2f1ef6; `PaymentSendIpcTests`, ABCD c-send). The daemon binds `Node:Payments` (`PaymentSendOptions`). Remaining: close and disconnect commands.
 - **Fix sketch:** Append commands per the recipe as each epic lands.
 - **Blocks/Blocked-by:** Blocked-by NL-034, NL-114
 - **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
@@ -2625,6 +2747,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** `GetService` throws `KeyNotFoundException` for unregistered types, which breaks the `IServiceProvider` contract; `ChannelManager` now calls `GetService<IHtlcSwitch>()` and resolves `ChannelDomainEventQueue`, so tests using the fake must register them (reported by W1-A).
 - **Fix sketch:** Return null for unknown types; keep an opt-in strict mode if some tests rely on the throw.
 - **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-261 PeerService.SendErrorAsync has no unit test
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (`SendErrorAsync`), `test/NLightning.Infrastructure.Tests/`
+- **Evidence:** W2-A added `IPeerService.SendErrorAsync` (error without disconnect, NL-200); it is covered only through `PeerManager`/Docker, and Infrastructure.Tests was outside that lane (reported by W2-A).
+- **Fix sketch:** Add a PeerService test that the error is sent and the connection stays open.
+- **Blocks/Blocked-by:** Related NL-200
+- **Plan ref:** BOLT2 N6-T3
+
+### NL-262 A restarted LND container can come back on another address; LNUnit RestartByAlias(isLND: true) then hangs
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs` (`HoldAddressesBelowAsync`), LNUnit 3.0.4
+- **Evidence:** OrbStack/Docker gives a restarted container the lowest free address in the network, so alice moved (.5 → .2) once earlier containers were removed; every later test lost her. LNUnit's `isLND: true` path re-adds the node without removing the stale connection and waits forever in `WaitUntilAliasIsServerReady`. Worked around (30c1bb8): idle `nltg-address-hold-N` containers fill the lower addresses during the restart, and the test asserts her address is unchanged (reported by W2-A).
+- **Fix sketch:** Fix upstream in LNUnit (drop the stale connection, re-resolve the address), or give fixture containers static IPs.
+- **Blocks/Blocked-by:** Related NL-180
+- **Plan ref:** BOLT2 N7 proof
+
+### NL-263 Docker ChannelOpeningFlowTests.GivenSingleP2TRInput flake: "No locked UTXOs found"
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs`
+- **Evidence:** Failed once in a full Docker run and passed in every other full run and in class reruns (reported by W2-A). Not seen in the integrator's runs at `a5675cb`.
+- **Fix sketch:** Capture the wallet/UTXO state on failure; check for a race between funding the wallet and the lock.
+- **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** —
 
 ---
