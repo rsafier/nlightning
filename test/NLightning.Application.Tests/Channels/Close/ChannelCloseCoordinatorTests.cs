@@ -7,9 +7,11 @@ namespace NLightning.Application.Tests.Channels.Close;
 using Application.Channels.Close;
 using Application.Channels.Services;
 using Application.Protocol.Factories;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -168,6 +170,27 @@ public class ChannelCloseCoordinatorTests
         var shutdown = Assert.IsType<ShutdownMessage>(Assert.Single(messages));
         Assert.Equal(ourUpfront, shutdown.Payload.ScriptPubkey);
         Assert.Equal(ourUpfront, channel.LocalShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_NoUpfrontScript_When_GetLocalScript_Then_WalletAddressIsWatchedAgain()
+    {
+        // Arrange: the wallet reuses an address whose deposit was spent; the monitor stopped watching it after that
+        // deposit, so the closing output would never reach the wallet (found by the Docker close proof)
+        var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ToString();
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address);
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(walletAddress);
+        var monitor = new Mock<IBlockchainMonitor>();
+        var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, monitor.Object);
+
+        // Act
+        var script = await provider.GetLocalScriptAsync(CreateChannel(ChannelState.Open));
+
+        // Assert
+        Assert.Equal(key.PubKey.WitHash.ScriptPubKey.ToBytes(), (byte[])script);
+        monitor.Verify(m => m.WatchBitcoinAddress(walletAddress), Times.Once);
     }
 
     [Fact]

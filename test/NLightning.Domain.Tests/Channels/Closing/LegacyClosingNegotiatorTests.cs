@@ -242,17 +242,70 @@ public class LegacyClosingNegotiatorTests
     }
 
     [Fact]
-    public void Given_NoFeeStrictlyBetweenLeft_When_Receive_Then_Fail()
+    public void Given_NoFeeStrictlyBetweenLeft_When_Receive_Then_HoldsLastFee()
     {
-        // Arrange: we are at our max already
-        var state = Funder(100, 900, sendRange: false) with { LastSentFeeSat = 900, LastReceivedFeeSat = 2_000 };
+        // B2-CLS-R09 (SHOULD): we are at our max already, so we re-send it instead of failing the channel
+        // Arrange
+        var state = Funder(100, 900, sendRange: false) with
+        {
+            LastSentFeeSat = 900,
+            LastReceivedFeeSat = 2_000,
+            Rounds = 1
+        };
+
+        // Act
+        var (decision, next) = LegacyClosingNegotiator.Receive(state, 1_500, null, 500);
+
+        // Assert
+        Assert.Equal(ClosingDecisionKind.Propose, decision.Kind);
+        Assert.Equal(900UL, decision.FeeSat);
+        Assert.Equal("B2-CLS-R09", decision.RequirementId);
+        Assert.Equal(900UL, next.LastSentFeeSat);
+    }
+
+    [Fact]
+    public void Given_HeldTooLong_When_Receive_Then_WarnAndCloseConnection()
+    {
+        // Arrange
+        var state = Funder(100, 900, sendRange: false) with
+        {
+            LastSentFeeSat = 900,
+            LastReceivedFeeSat = 2_000,
+            Rounds = LegacyClosingNegotiator.MaxRounds
+        };
 
         // Act
         var (decision, _) = LegacyClosingNegotiator.Receive(state, 1_500, null, 500);
 
         // Assert
-        Assert.Equal(ClosingDecisionKind.Fail, decision.Kind);
+        Assert.Equal(ClosingDecisionKind.Warn, decision.Kind);
+        Assert.True(decision.CloseConnection);
         Assert.Equal("B2-CLS-R09", decision.RequirementId);
+    }
+
+    [Fact]
+    public void Given_PeerLowersByTenPercentEachRound_When_WeHoldOurMax_Then_PeerReachesOurFee()
+    {
+        // The LND pattern seen in the Docker proof: the non-funder starts at 4225 sat and lowers by 10 % per round
+        // while our (funder) limit is 513 sat
+        // Arrange
+        var (_, state) = LegacyClosingNegotiator.Open(Funder(171, 513, sendRange: false), 171);
+        ulong peerFee = 4_225;
+        ClosingDecision? decision = null;
+
+        // Act
+        for (var round = 0; round < 40; round++)
+        {
+            (decision, state) = LegacyClosingNegotiator.Receive(state, peerFee, null, 171);
+            if (decision.Kind != ClosingDecisionKind.Propose)
+                break;
+            peerFee = Math.Max(decision.FeeSat, peerFee - peerFee / 10);
+        }
+
+        // Assert
+        Assert.NotNull(decision);
+        Assert.Equal(ClosingDecisionKind.Agree, decision.Kind);
+        Assert.Equal(513UL, decision.FeeSat);
     }
 
     #endregion

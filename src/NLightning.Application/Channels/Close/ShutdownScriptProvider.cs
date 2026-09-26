@@ -15,17 +15,24 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <c>open_channel</c>/<c>accept_channel</c> when there is one (BOLT 2 MUST), else a fresh P2WPKH address of our
 /// wallet, so the closing output is found as a deposit by the blockchain monitor.
 /// </summary>
-/// <remarks>Scoped: <see cref="IBitcoinWalletService"/> uses the scope's unit of work.</remarks>
+/// <remarks>
+/// Scoped: <see cref="IBitcoinWalletService"/> uses the scope's unit of work. The wallet hands an address out again
+/// once its deposits were spent, while the blockchain monitor stops watching an address after its first deposit, so
+/// the address is watched again here; otherwise the closing output would never reach the wallet.
+/// </remarks>
 public class ShutdownScriptProvider
 {
+    private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly Network _network;
     private readonly IBitcoinWalletService _walletService;
 
-    public ShutdownScriptProvider(IOptions<NodeOptions> nodeOptions, IBitcoinWalletService walletService)
+    public ShutdownScriptProvider(IOptions<NodeOptions> nodeOptions, IBitcoinWalletService walletService,
+                                  IBlockchainMonitor? blockchainMonitor = null)
     {
         _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
                    throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
         _walletService = walletService;
+        _blockchainMonitor = blockchainMonitor;
     }
 
     /// <summary>Our <c>shutdown</c> script for <paramref name="channel"/>.</summary>
@@ -43,6 +50,7 @@ public class ShutdownScriptProvider
         }
 
         var address = await _walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        _blockchainMonitor?.WatchBitcoinAddress(address);
         return BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
     }
 }

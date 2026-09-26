@@ -101,6 +101,12 @@ public sealed record ClosingNegotiation
 public static class LegacyClosingNegotiator
 {
     /// <summary>
+    /// The most <c>closing_signed</c> we receive in one negotiation while holding our last fee (B2-CLS-R09) before we
+    /// give up with a warning and close the connection (the negotiation restarts on the next connection).
+    /// </summary>
+    public const int MaxRounds = 100;
+
+    /// <summary>
     /// The funder's opening <c>closing_signed</c> (B2-CLS-01, B2-CLS-02): its estimate clamped into what it accepts,
     /// with that range as <c>fee_range</c>.
     /// </summary>
@@ -228,8 +234,18 @@ public static class LegacyClosingNegotiator
         {
             proposal = state.Acceptable.Clamp(Midpoint(last, feeSat));
             if (!IsStrictlyBetween(proposal, last, feeSat))
-                return (new ClosingDecision(ClosingDecisionKind.Fail, 0, null, false, "B2-CLS-R09",
-                                            $"no acceptable fee strictly between {last} and {feeSat} sat"), received);
+            {
+                // Our last fee is already our bound. BOLT 2 only says SHOULD move strictly between; a peer that moves
+                // by small steps (LND lowers its fee by 10 % per round) reaches our fee if we hold it, so we re-send it
+                // instead of failing the channel, for at most MaxRounds messages
+                if (received.Rounds > MaxRounds)
+                    return (new ClosingDecision(ClosingDecisionKind.Warn, 0, null, false, "B2-CLS-R09",
+                                                $"no agreement after {received.Rounds} closing_signed; our limit is {last} sat",
+                                                CloseConnection: true), received);
+
+                return Send(received,
+                            new ClosingDecision(ClosingDecisionKind.Propose, last, rangeToSend, true, "B2-CLS-R09"));
+            }
         }
 
         return Send(received,
