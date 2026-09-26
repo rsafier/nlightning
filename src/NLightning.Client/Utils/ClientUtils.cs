@@ -28,6 +28,10 @@ public static class ClientUtils
         Console.WriteLine("                               amount is only for invoices without one; exit code 1 if it");
         Console.WriteLine("                               failed; timeout 1-300 s [default: 60], then it stays in");
         Console.WriteLine("                               flight and listpayments shows the outcome");
+        Console.WriteLine("  closechannel <channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange]");
+        Console.WriteLine("                               Cooperatively close a channel (alias: close-channel) and");
+        Console.WriteLine("                               wait for the closing transaction [wait 0-300 s, default 30];");
+        Console.WriteLine("                               nofeerange negotiates without fee_range");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

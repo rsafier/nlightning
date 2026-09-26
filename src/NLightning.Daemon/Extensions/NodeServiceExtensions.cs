@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Extensions;
 
 using Application;
+using Application.Channels.Close;
 using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
@@ -120,6 +121,10 @@ public static class NodeServiceExtensions
             new ListPaymentsClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
         services.TryAddSingleton(TimeProvider.System);
 
+        // Cooperative close (ClientCommand 13, BOLT2 plan N10); IChannelCloseService comes from AddApplicationServices
+        services.AddScoped<IClientCommandHandler<CloseChannelClientRequest, CloseChannelClientResponse>,
+            CloseChannelClientHandler>();
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -136,6 +141,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, PayInvoiceIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
 
         // Add HttpClient for FeeService with configuration
         services.AddHttpClient<IFeeService, FeeService>(client =>
@@ -157,6 +163,7 @@ public static class NodeServiceExtensions
         // Register options with values from configuration
         services.AddOptions<BitcoinOptions>().BindConfiguration("Bitcoin").ValidateOnStart();
         services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
+        services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>
