@@ -59,9 +59,18 @@ public sealed class AnchorCpfpPolicy
             ? Math.Clamp(_options.NoDeadlineConfTarget, 1, FeePolicy.Options.MaxConfTarget)
             : FeePolicy.GetConfirmationTarget(tipHeight, deadlineHeight);
 
-    /// <summary>The most a child may pay for a commitment carrying <paramref name="stakeSat"/> of ours.</summary>
-    public ulong GetFeeCap(ulong stakeSat) =>
-        Math.Max((ulong)(stakeSat * (decimal)_options.MaxFeePerMilleOfStake / 1000), _options.MinFeeCapSat);
+    /// <summary>
+    /// The most a child may pay for a commitment carrying <paramref name="stakeSat"/> of ours: the
+    /// <see cref="AnchorCpfpOptions.MaxFeePerMilleOfStake"/> share of it, raised to
+    /// <see cref="AnchorCpfpOptions.MinFeeCapSat"/> only when <paramref name="hasDeadline"/> (untrimmed HTLCs that must
+    /// be resolved on chain in time). Without a deadline nothing justifies paying more than the share of what we
+    /// recover.
+    /// </summary>
+    public ulong GetFeeCap(ulong stakeSat, bool hasDeadline)
+    {
+        var share = (ulong)(stakeSat * (decimal)_options.MaxFeePerMilleOfStake / 1000);
+        return hasDeadline ? Math.Max(share, _options.MinFeeCapSat) : share;
+    }
 
     /// <summary>The feerate (sat/kw, rounded down) of a transaction paying <paramref name="feeSat"/> for
     /// <paramref name="weight"/>.</summary>

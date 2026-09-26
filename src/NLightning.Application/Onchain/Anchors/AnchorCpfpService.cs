@@ -7,6 +7,7 @@ namespace NLightning.Application.Onchain.Anchors;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Constants;
+using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Closing;
 using Domain.Channels.Enums;
@@ -30,12 +31,16 @@ using Resolvers.Local;
 /// <remarks>
 /// <para>Rounds: one per new block over every loaded anchor channel (<c>ChannelParams.OptionAnchorOutputs</c>) that is
 /// <c>Failed</c> or <c>OnchainResolving</c>, plus one for a channel right after <c>ChannelFailureService</c> published
-/// its commitment (<see cref="OnCommitmentBroadcastAsync"/>). Each round of a channel runs under the channel's lock and
+/// its commitment (<see cref="ScheduleCommitmentRound"/>, in the background: the fail-the-channel path may run on the
+/// peer's inbound loop and must not wait for a block round). Each round of a channel runs under the channel's lock and
 /// reads its <see cref="BroadcastPurpose.LocalCommitment"/> row and its <see cref="BroadcastPurpose.AnchorCpfp"/> rows;
 /// everything it decides goes into one save, and is published (and the wallet reservation released) after the lock.
 /// Rounds never overlap; a round missed while one runs is coalesced into the next block's.</para>
-/// <para>Pending commitment: the deadline is the earliest HTLC <c>cltv_expiry</c> of the channel's local commitment
-/// (none without HTLCs: <see cref="AnchorCpfpOptions.NoDeadlineConfTarget"/>), the estimate is the fee service's for
+/// <para>Pending commitment: the deadline is the earliest <c>cltv_expiry</c> of the HTLCs that are untrimmed on the
+/// channel's local commitment (a trimmed HTLC has no output to resolve; none:
+/// <see cref="AnchorCpfpOptions.NoDeadlineConfTarget"/>), the stake is our <c>to_local</c> plus those HTLCs, and the
+/// fee cap has its floor only with a deadline (<see cref="AnchorCpfpPolicy.GetFeeCap"/>); a commitment without a
+/// deadline gets no child when nothing of ours is on it or the child's floor fee is above its share of the stake; the estimate is the fee service's for
 /// that target (<c>FeeEstimates</c>, floored). Without a child: none while the commitment alone pays the estimate, else
 /// a child from <see cref="AnchorCpfpPolicy.DecideChild"/>, its wallet inputs reserved through
 /// <see cref="IAnchorFeeInputSource"/> for the channel. With a pending child: once
@@ -50,23 +55,32 @@ using Resolvers.Local;
 /// <para>Stored fee: a child row's <see cref="BroadcastTransactionModel.FeeratePerKw"/> is the child's own feerate over
 /// its signed weight; a replacement takes <c>(rate + 1) * weight / 1000</c> (rounded up) as the old fee, an upper bound
 /// that can only raise the BIP 125 minimum.</para>
-/// <para>End: when the commitment is <c>Confirmed</c>, <c>Abandoned</c> or <c>Replaced</c>, the channel's pending
-/// children are abandoned (never rebroadcast) and its reservation released. A child already in a mempool may still
-/// confirm; the chain monitor then records the wallet spend as for any other transaction.</para>
-/// <para>Anchor sweep: once the commitment has 16 confirmations (the next block can spend with <c>nSequence</c> 16),
-/// both anchors (ours unless a confirmed child spent it, and the peer's) are swept to a wallet address with empty
+/// <para>End: when the commitment is <c>Abandoned</c> or <c>Replaced</c> no child can confirm (its parent conflicts), so
+/// the pending children are abandoned (never rebroadcast) and the reservation released at once. When the commitment
+/// is <c>Confirmed</c> a pending child can still confirm (it spends a confirmed output): it stays pending (rebroadcast,
+/// never bumped) and the reservation is kept, so no other spend (a funding transaction) conflicts with it, until the
+/// chain shows our anchor spent (<see cref="IBitcoinChainService.GetConfirmedUnspentOutputAsync"/>; every child spends
+/// it, so none can confirm any more) and the monitor has processed that block (a child still pending then lost), or
+/// until <see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/> passed. The reservation must be durable
+/// (<see cref="IAnchorFeeInputSource"/>): the service never re-reserves after a restart.</para>
+/// <para>Anchor sweep: once the commitment has 16 confirmations (the next block can spend with <c>nSequence</c> 16)
+/// and no child is pending, the anchors that are still unspent (checked with
+/// <see cref="IBitcoinChainService.GetUnspentOutputAsync"/>, mempool included; without a chain service the peer's,
+/// and ours only when no child was ever made) are swept to a wallet address with empty
 /// signatures when <see cref="AnchorCpfpPolicy.DecideAnchorSweep"/> says it pays for itself, else skipped (logged).
 /// The sweep is published once per commitment and process and never stored: anyone may take those outputs first, and a
 /// refused send is not retried.</para>
 /// <para>Not covered (O7-T3/T4 and later): anchors of the peer's commitment, the fee inputs of our anchor HTLC
 /// transactions, package relay for a commitment below the mempool minimum fee (the child is then refused as an orphan
-/// together with it; both rows stay pending and are rebroadcast every block).</para>
+/// together with it; both rows stay pending and are rebroadcast every block, so B5-FAIL-06 is not met there until the
+/// pair goes through <c>submitpackage</c>).</para>
 /// </remarks>
 public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 {
     private const int MaxSelectionRounds = 4;
 
     private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IBitcoinChainService? _chainService;
     private readonly IAnchorChildTransactionBuilder _builder;
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -83,11 +97,13 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly HashSet<string> _loggedOnce = [];
     private readonly HashSet<TxId> _sweptCommitments = [];
     private readonly HashSet<ChannelId> _released = [];
+    private readonly Dictionary<ChannelId, uint> _anchorSpentSeenAtTip = [];
 
     private CancellationTokenSource _stopping = new();
     private int _started;
     private int _pendingHeight = -1;
     private int _roundRunning;
+    private int _scheduledRounds;
 
     public AnchorCpfpService(IBlockchainMonitor blockchainMonitor, IAnchorChildTransactionBuilder builder,
                              IChannelLockProvider channelLockProvider,
@@ -95,9 +111,11 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
                              ILightningSigner lightningSigner, ILogger<AnchorCpfpService> logger,
                              AnchorCpfpPolicy policy, IServiceScopeFactory serviceScopeFactory,
                              ISweepDestinationProvider sweepDestinationProvider,
-                             IAnchorFeeInputSource? feeInputSource = null, AnchorCpfpOptions? options = null)
+                             IAnchorFeeInputSource? feeInputSource = null, AnchorCpfpOptions? options = null,
+                             IBitcoinChainService? chainService = null)
     {
         _blockchainMonitor = blockchainMonitor;
+        _chainService = chainService;
         _builder = builder;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -137,8 +155,48 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// <summary>Waits until no round runs (tests).</summary>
     public async Task WhenIdleAsync()
     {
-        while (Volatile.Read(ref _roundRunning) != 0 || Volatile.Read(ref _pendingHeight) >= 0)
+        while (Volatile.Read(ref _roundRunning) != 0 || Volatile.Read(ref _pendingHeight) >= 0
+            || Volatile.Read(ref _scheduledRounds) != 0)
             await Task.Delay(10);
+    }
+
+    /// <inheritdoc />
+    public void ScheduleCommitmentRound(ChannelId channelId)
+    {
+        if (!_options.Enabled)
+            return;
+
+        CancellationToken token;
+        try
+        {
+            token = _stopping.Token;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        Interlocked.Increment(ref _scheduledRounds);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await OnCommitmentBroadcastAsync(channelId, token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopping; the block rounds pick the channel up after the next start
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "The anchor CPFP round of channel {ChannelId} failed; retried at the next block",
+                                 channelId);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _scheduledRounds);
+            }
+        }, CancellationToken.None);
     }
 
     /// <inheritdoc />
@@ -240,7 +298,12 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         if (commitment.State != BroadcastState.Pending)
         {
-            // The commitment confirmed (with or without a child) or can no longer confirm: nothing to pay for any more
+            // A child of a confirmed commitment may still confirm: keep it (and its wallet inputs) until it cannot
+            if (commitment.State == BroadcastState.Confirmed && pendingChildren.Count > 0
+                                                             && !await ChildrenSettledAsync(channel, commitment, height))
+                return result;
+
+            // The commitment confirmed and no child can confirm any more, or the commitment can no longer confirm
             var staged = false;
             foreach (var child in pendingChildren)
                 staged |= await repository.MarkAbandonedAsync(child.TransactionId);
@@ -251,7 +314,8 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
             result.Release = true;
 
             if (commitment.State == BroadcastState.Confirmed)
-                result.Sweep = await PlanAnchorSweepAsync(channel, commitment, children, height, cancellationToken);
+                result.Sweep = await PlanAnchorSweepAsync(channel, commitment, children.Count > 0, height,
+                                                          cancellationToken);
 
             return result;
         }
@@ -268,10 +332,21 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
         {
             await unitOfWork.SaveChangesAsync();
         }
-        catch
+        catch (Exception e) when (e is not OperationCanceledException && pending.ReleaseOnFailure
+                                                                      && _feeInputSource is not null)
         {
-            if (pending.ReleaseOnFailure)
-                result.Release = true;
+            // A first child that was not stored is never published: its fresh reservation goes back at once (the
+            // exception ends the round, so RunChannelAsync never gets a result to complete)
+            try
+            {
+                await _feeInputSource.ReleaseAsync(channel.ChannelId, CancellationToken.None);
+            }
+            catch (Exception releaseError)
+            {
+                _logger.LogError(releaseError, "Cannot release the anchor fee inputs of channel {ChannelId} after a "
+                                             + "failed save", channel.ChannelId);
+            }
+
             throw;
         }
 
@@ -355,14 +430,18 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         var commitmentFee = fundingSat - outputsSat;
         var commitmentWeight = GetWeight(commitmentTx);
-        var spec = channel.Commitments?.LocalCommit.Spec;
-        var deadline = AnchorCpfpPolicy.GetDeadline(spec?.Htlcs.Select(h => h.CltvExpiry) ?? []);
+        var (deadline, stakeSat) = GetDeadlineAndStake(channel);
+        if (deadline is null && stakeSat == 0)
+        {
+            LogOnce($"{channelId}:{commitment.TransactionId}:nostake",
+                    "Commitment {TxId} of channel {ChannelId} carries nothing of ours and no HTLC; it is not fee-bumped",
+                    Display(commitment.TransactionId), channelId);
+            return null;
+        }
+
         var target = _policy.GetConfirmationTarget(height, deadline);
         var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
-        var stakeSat = spec is not null
-                           ? (spec.LocalMsat + spec.HtlcTotalMsat) / 1000
-                           : (ulong)channel.LocalBalance.Satoshi;
-        var cap = _policy.GetFeeCap(stakeSat);
+        var cap = _policy.GetFeeCap(stakeSat, deadline is not null);
         var anchor = new AnchorOutpoint(commitment.TransactionId, anchorVout, fundingPubKey);
 
         var latest = pendingChildren.OrderByDescending(b => b.FirstBroadcastHeight)
@@ -453,6 +532,17 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
 
         var (walletInputs, decision) = inputs.Value;
+        if (deadline is null && decision.FeeSat > cap)
+        {
+            // Only the child's floor fee is above the cap: without a deadline it is not worth the wallet's money
+            LogOnce($"{channelId}:{anchor.TxId}:uneconomical",
+                    "The anchor child of commitment {TxId} (channel {ChannelId}) would pay {Fee} sat, above its {Cap} "
+                  + "sat share of our stake, and no HTLC has a deadline; it is not made", Display(anchor.TxId),
+                    channelId, decision.FeeSat, cap);
+            await _feeInputSource.ReleaseAsync(channelId, cancellationToken);
+            return null;
+        }
+
         var signed = SignChild(channelId, anchor, walletInputs, changeScript, decision.FeeSat);
         if (signed is null)
         {
@@ -559,8 +649,8 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     /// <summary>The anchor sweep of a confirmed commitment, once due and economical (and only once per process).</summary>
     private async Task<SignedTransaction?> PlanAnchorSweepAsync(ChannelModel channel,
                                                                 BroadcastTransactionModel commitment,
-                                                                IReadOnlyList<BroadcastTransactionModel> children,
-                                                                uint height, CancellationToken cancellationToken)
+                                                                bool anyChild, uint height,
+                                                                CancellationToken cancellationToken)
     {
         if (!_options.SweepAnchors || commitment.ConfirmedHeight is not { } confirmedHeight
                                    || height + 1 < confirmedHeight + AnchorChildTransactionBuilder.AnchorCsvSequence)
@@ -574,12 +664,41 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         var anchors = new List<AnchorOutpoint>();
         var ours = channel.LocalKeySet.FundingCompactPubKey;
-        var ourAnchorSpent = children.Any(c => c.State == BroadcastState.Confirmed);
-        if (!ourAnchorSpent && _builder.FindAnchorOutput(commitment.RawTransaction, ours) is { } ourVout)
+        if (_builder.FindAnchorOutput(commitment.RawTransaction, ours) is { } ourVout)
             anchors.Add(new AnchorOutpoint(commitment.TransactionId, ourVout, ours));
         if (channel.RemoteKeySet?.FundingCompactPubKey is { } theirs
          && _builder.FindAnchorOutput(commitment.RawTransaction, theirs) is { } theirVout)
             anchors.Add(new AnchorOutpoint(commitment.TransactionId, theirVout, theirs));
+
+        // One spent input invalidates the whole sweep: keep only the anchors nobody spent (a child of ours, also a
+        // replaced one the monitor stopped tracking, or the peer's own CPFP)
+        if (_chainService is null)
+        {
+            if (anyChild)
+                anchors.RemoveAll(a => a.FundingPubKey == ours);
+        }
+        else
+        {
+            try
+            {
+                var unspent = new List<AnchorOutpoint>();
+                foreach (var anchor in anchors)
+                    if (await _chainService.GetUnspentOutputAsync(ToOutPoint(anchor.TxId, anchor.OutputIndex))
+                            is not null)
+                        unspent.Add(anchor);
+                anchors = unspent;
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // Tried again at the next block
+                lock (_sweptCommitments)
+                    _sweptCommitments.Remove(commitment.TransactionId);
+                _logger.LogInformation("Cannot check the anchors of commitment {TxId} (channel {ChannelId}): {Reason}",
+                                       Display(commitment.TransactionId), channel.ChannelId, e.Message);
+                return null;
+            }
+        }
+
         if (anchors.Count == 0)
             return null;
 
@@ -611,6 +730,85 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         return _builder.BuildAnchorSweep(anchors, destination, decision.FeeSat);
     }
+
+    /// <summary>
+    /// Whether the pending children of a confirmed commitment can no longer confirm, so their wallet inputs may go back:
+    /// the wait (<see cref="AnchorCpfpOptions.ConfirmedCommitmentChildWaitBlocks"/>) passed, or our anchor, which every
+    /// child spends, is spent in the active chain and the monitor has processed the block that spent it (seen in an
+    /// earlier round at a bitcoind tip at or below this round's height; this round's rows were read after that
+    /// processing, so a child that won is already <c>Confirmed</c>).
+    /// </summary>
+    private async Task<bool> ChildrenSettledAsync(ChannelModel channel, BroadcastTransactionModel commitment,
+                                                  uint height)
+    {
+        var channelId = channel.ChannelId;
+        if (commitment.ConfirmedHeight is { } confirmedHeight
+         && height >= (ulong)confirmedHeight + _options.ConfirmedCommitmentChildWaitBlocks)
+        {
+            _logger.LogWarning("Commitment {TxId} of channel {ChannelId} confirmed at {Height} but its anchor child is "
+                             + "still unconfirmed; it is abandoned and its wallet inputs released",
+                               Display(commitment.TransactionId), channelId, confirmedHeight);
+            return true;
+        }
+
+        if (_chainService is null
+         || _builder.FindAnchorOutput(commitment.RawTransaction, channel.LocalKeySet.FundingCompactPubKey)
+                is not { } anchorVout)
+            return false;
+
+        lock (_anchorSpentSeenAtTip)
+        {
+            if (_anchorSpentSeenAtTip.TryGetValue(channelId, out var seenAtTip) && height >= seenAtTip)
+            {
+                _anchorSpentSeenAtTip.Remove(channelId);
+                return true;
+            }
+        }
+
+        try
+        {
+            var outpoint = ToOutPoint(commitment.TransactionId, anchorVout);
+            if (await _chainService.GetConfirmedUnspentOutputAsync(outpoint) is not null)
+            {
+                lock (_anchorSpentSeenAtTip)
+                    _anchorSpentSeenAtTip.Remove(channelId);
+                return false;
+            }
+
+            var tip = await _chainService.GetCurrentBlockHeightAsync();
+            lock (_anchorSpentSeenAtTip)
+                _anchorSpentSeenAtTip.TryAdd(channelId, tip);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            LogOnce($"{channelId}:anchor-spent-check", e,
+                    "Cannot check the anchor of confirmed commitment {TxId} (channel {ChannelId}); its child keeps its "
+                  + "wallet inputs", Display(commitment.TransactionId), channelId);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The deadline (earliest <c>cltv_expiry</c>) and our stake (to_local plus the HTLCs, in sat) of the channel's local
+    /// commitment, counting only the HTLCs that have an output on it (untrimmed with our dust limit).
+    /// </summary>
+    private static (uint? Deadline, ulong StakeSat) GetDeadlineAndStake(ChannelModel channel)
+    {
+        if (channel.Commitments is not { } commitments)
+            return (null, (ulong)channel.LocalBalance.Satoshi);
+
+        var spec = commitments.LocalCommit.Spec;
+        var dust = commitments.Params.Local.DustLimitSatoshis;
+        var untrimmed = spec.Htlcs.Where(h => !CommitmentFeeCalculator.IsHtlcTrimmed(spec, h, dust,
+                                                                                     commitments.Params.OptionAnchors))
+                            .ToList();
+        var htlcMsat = untrimmed.Aggregate(0UL, (sum, h) => checked(sum + h.AmountMsat));
+        return (AnchorCpfpPolicy.GetDeadline(untrimmed.Select(h => h.CltvExpiry)),
+                (spec.LocalMsat + htlcMsat) / 1000);
+    }
+
+    private static OutPoint ToOutPoint(TxId txId, uint outputIndex) => new(new uint256(txId), outputIndex);
 
     private void HandleNewBlockDetected(object? sender, NewBlockEventArgs args)
     {

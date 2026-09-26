@@ -58,8 +58,9 @@ public sealed class AnchorCpfpHookTests : IDisposable
 
         // Assert
         Assert.Equal(ChannelFailureStatus.Broadcast, outcome.Status);
-        _cpfp.Verify(c => c.OnCommitmentBroadcastAsync(_channel.ChannelId, It.IsAny<CancellationToken>()),
-                     Times.Exactly(expectedCalls));
+        _cpfp.Verify(c => c.ScheduleCommitmentRound(_channel.ChannelId), Times.Exactly(expectedCalls));
+        _cpfp.Verify(c => c.OnCommitmentBroadcastAsync(It.IsAny<ChannelId>(), It.IsAny<CancellationToken>()),
+                     Times.Never);
     }
 
     [Fact]
@@ -67,8 +68,8 @@ public sealed class AnchorCpfpHookTests : IDisposable
     {
         // Arrange
         Init(hasAnchors: true);
-        _cpfp.Setup(c => c.OnCommitmentBroadcastAsync(It.IsAny<ChannelId>(), It.IsAny<CancellationToken>()))
-             .ThrowsAsync(new InvalidOperationException("boom"));
+        _cpfp.Setup(c => c.ScheduleCommitmentRound(It.IsAny<ChannelId>()))
+             .Throws(new InvalidOperationException("boom"));
         var service = _provider.GetRequiredService<ChannelFailureService>();
 
         // Act

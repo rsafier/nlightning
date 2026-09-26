@@ -11,8 +11,14 @@ using Infrastructure.Bitcoin.Builders.Interfaces;
 /// <remarks>
 /// <para>This is the consumer port of <see cref="AnchorCpfpService"/>; the wallet's fee-input selector (O7-T1) backs
 /// it through an adapter. Reservations are keyed by channel: every child of a channel (the first one and its RBF
-/// replacements) draws from the same reservation, and <see cref="ReleaseAsync"/> gives all of it back once the
-/// commitment or a child confirmed, or the commitment can no longer confirm.</para>
+/// replacements) draws from the same reservation, and <see cref="ReleaseAsync"/> gives all of it back once no child
+/// can confirm any more (a child or the anchor's other spend confirmed, or the commitment can no longer confirm).</para>
+/// <para>Reservations MUST be durable: persisted before <see cref="ReserveAsync"/> returns and restored at startup, so
+/// <see cref="GetReservedAsync"/> returns them after a restart and no other spend (a funding transaction) takes the
+/// inputs of a child that is still pending (the chain monitor rebroadcasts its row after a restart; a conflicting spend
+/// would replace it and strip the commitment's fee bump). The service never re-reserves on its own. The O7-T1
+/// <c>IFeeInputSelector</c> persists its reservations (<c>FeeInputReservations</c>) and restores them with the UTXO
+/// set; an adapter keys them by channel through the reservation's purpose.</para>
 /// <para>The inputs are signed by <c>ILightningSigner.SignWalletTransaction</c>, which must sign exactly the inputs
 /// that spend wallet outputs and leave the anchor input alone. A P2TR input's BIP 341 signature commits to every spent
 /// output, the anchor (330 sat, P2WSH) included, so a selector that returns P2TR outputs needs a wallet signer that

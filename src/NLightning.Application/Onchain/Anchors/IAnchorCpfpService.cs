@@ -17,9 +17,16 @@ public interface IAnchorCpfpService
     void Stop();
 
     /// <summary>
-    /// Runs the round of one channel now: called by the fail-the-channel path right after it published (or tried to
-    /// publish) the channel's commitment, outside every lock. A channel without anchors is skipped. Never throws for a
-    /// failed round (it is logged and retried at the next block).
+    /// Schedules the round of one channel in the background and returns at once: called by the fail-the-channel path
+    /// right after it published (or tried to publish) the channel's commitment, which may run on the peer's inbound
+    /// loop and must not wait for a block round. The round uses the service's stopping token; a failure is logged and
+    /// the next block's round is the safety net.
+    /// </summary>
+    void ScheduleCommitmentRound(ChannelId channelId);
+
+    /// <summary>
+    /// Runs the round of one channel now (after any running round). A channel without anchors is skipped. Never throws
+    /// for a failed round (it is logged and retried at the next block).
     /// </summary>
     Task OnCommitmentBroadcastAsync(ChannelId channelId, CancellationToken cancellationToken = default);
 

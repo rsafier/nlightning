@@ -13,6 +13,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Infrastructure.Bitcoin.Builders.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// An in-memory <c>BroadcastTransactions</c> table for the anchor CPFP tests: writes apply at once, and
@@ -190,6 +191,39 @@ public class WalletSigningProxy : DispatchProxy
             ExceptionDispatchInfo.Capture(e.InnerException).Throw();
             throw;
         }
+    }
+}
+
+/// <summary>
+/// The chain answers the anchor CPFP asks for: which outpoints are spent (<see cref="Spent"/>, for <c>gettxout</c> with
+/// and without the mempool alike), bitcoind's tip, and a switch that makes every answer throw.
+/// </summary>
+internal sealed class FakeAnchorChain : IBitcoinChainService
+{
+    public HashSet<OutPoint> Spent { get; } = [];
+    public uint Tip { get; set; } = 500;
+    public bool Throws { get; set; }
+
+    public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) => Answer(outPoint);
+
+    public Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) => Answer(outPoint);
+
+    public Task<uint> GetCurrentBlockHeightAsync() =>
+        Throws ? throw new InvalidOperationException("bitcoind down") : Task.FromResult(Tip);
+
+    public Task<uint256> SendTransactionAsync(Transaction transaction) => throw new NotSupportedException();
+    public Task<Transaction?> GetTransactionAsync(uint256 txId) => Task.FromResult<Transaction?>(null);
+    public Task<Block?> GetBlockAsync(uint height) => Task.FromResult<Block?>(null);
+    public Task<uint256> GetBlockHashAsync(uint height) => Task.FromResult(uint256.Zero);
+    public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) => Task.FromResult(0u);
+
+    private Task<(TxOut Output, uint Height)?> Answer(OutPoint outPoint)
+    {
+        if (Throws)
+            throw new InvalidOperationException("bitcoind down");
+
+        return Task.FromResult<(TxOut Output, uint Height)?>(
+            Spent.Contains(outPoint) ? null : (new TxOut(Money.Satoshis(330), Script.Empty), 1));
     }
 }
 
