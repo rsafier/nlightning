@@ -25,6 +25,8 @@ public enum MessageTypes : ushort
     ChannelReady = 36,
     Shutdown = 38,
     ClosingSigned = 39,
+    ClosingComplete = 40,
+    ClosingSig = 41,
     OpenChannel2 = 64,
     AcceptChannel2 = 65,
 

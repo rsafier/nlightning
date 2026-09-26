@@ -60,6 +60,10 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(ClosingSignedMessage),
                          new ClosingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                 _tlvStreamSerializer));
+        _serializers.Add(typeof(ClosingCompleteMessage),
+                         new ClosingCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(ClosingSigMessage),
+                         new ClosingSigMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(CommitmentSignedMessage),
                          new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                    _tlvStreamSerializer));
@@ -151,6 +155,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.ChannelReady, typeof(ChannelReadyMessage));
         _messageTypeDictionary.Add(MessageTypes.ChannelReestablish, typeof(ChannelReestablishMessage));
         _messageTypeDictionary.Add(MessageTypes.ClosingSigned, typeof(ClosingSignedMessage));
+        _messageTypeDictionary.Add(MessageTypes.ClosingComplete, typeof(ClosingCompleteMessage));
+        _messageTypeDictionary.Add(MessageTypes.ClosingSig, typeof(ClosingSigMessage));
         _messageTypeDictionary.Add(MessageTypes.CommitmentSigned, typeof(CommitmentSignedMessage));
         _messageTypeDictionary.Add(MessageTypes.Error, typeof(ErrorMessage));
         _messageTypeDictionary.Add(MessageTypes.FundingCreated, typeof(FundingCreatedMessage));
