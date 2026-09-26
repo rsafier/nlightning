@@ -173,43 +173,217 @@ public class SweepTransactionBuilderTests
     }
 
     [Theory]
-    [MemberData(nameof(AppendixCNames))]
-    public void Given_PeerCommitment_When_AllHtlcsClaimedWithToRemote_Then_EveryInputPasses(string name)
+    [MemberData(nameof(AppendixFNames))]
+    public void Given_AnchorPeerCommitment_When_HtlcsClaimedDirectly_Then_CsvOneSpendsPassAndCsvZeroFails(string name)
     {
-        // Arrange: node B claims every HTLC of node A's commitment directly (B5-RMT-LO-02 timeout claims of the HTLCs
-        // it offered, B5-RMT-RO-01 preimage claims of those node A offered) and sweeps its to_remote in the same tx
-        var (commitTx, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.GetAppendixC(name), CommitmentCase.Remote);
+        // Arrange: option_anchors HTLC scripts end with `1 OP_CHECKSEQUENCEVERIFY OP_DROP` (O4-T2 on LND's default
+        // channel type): node B's timeout claims of the HTLCs it offered and preimage claims of those node A offered
+        var (commitTx, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.GetAppendixF(name), CommitmentCase.Remote,
+                                                        hasAnchors: true);
         var txId = map.OnChainTxId!.Value;
-        var inputs = new List<SweepInput>();
-        var spent = new List<TxOut>();
-        foreach (var output in map.Outputs.Where(o => o.IsOurs))
+        var claims = map.Outputs
+                        .Where(o => o.Kind is OutputDescriptorKind.RemoteReceivedHtlc
+                                        or OutputDescriptorKind.RemoteOfferedHtlc)
+                        .Select(o => (Output: o, Input: o.Kind == OutputDescriptorKind.RemoteReceivedHtlc
+                                                            ? SweepInputFactory.HtlcTimeoutClaim(o, txId,
+                                                                map.PerCommitmentPoint)
+                                                            : SweepInputFactory.HtlcPreimageClaim(
+                                                                o, txId, map.PerCommitmentPoint,
+                                                                Bolt3VectorHarness.Preimages[(int)o.Htlc!.Value.Id])))
+                        .ToList();
+        var builder = SweepTestKit.CreateBuilder();
+        var signer = new AppendixCSweepSigner(asNodeB: true);
+
+        foreach (var (output, input) in claims)
         {
-            inputs.Add(output.Kind switch
-            {
-                OutputDescriptorKind.PaymentToRemote => SweepInputFactory.ToRemote(
-                    output, txId, Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes()),
-                OutputDescriptorKind.RemoteReceivedHtlc => SweepInputFactory.HtlcTimeoutClaim(output, txId,
-                    map.PerCommitmentPoint),
-                OutputDescriptorKind.RemoteOfferedHtlc => SweepInputFactory.HtlcPreimageClaim(
-                    output, txId, map.PerCommitmentPoint, Bolt3VectorHarness.Preimages[(int)output.Htlc!.Value.Id]),
-                _ => throw new InvalidOperationException($"Unexpected {output.Kind}")
-            });
-            spent.Add(commitTx.Outputs[(int)output.Vout]);
+            var spent = commitTx.Outputs[(int)output.Vout];
+            var withoutCsv = input with { CsvDelay = 0 }; // nSequence 0xFFFFFFFD: the CSV disable flag is set
+
+            // Act
+            var signed = builder.Sign(builder.Build([input], SweepTestKit.Destination, FeeratePerKw), signer,
+                                      ChannelId.Zero);
+            var tooEarly = builder.Sign(builder.Build([withoutCsv], SweepTestKit.Destination, FeeratePerKw), signer,
+                                        ChannelId.Zero);
+
+            // Assert
+            Assert.Equal((ushort)1, input.CsvDelay);
+            Assert.Equal(1U, Transaction.Load(signed.RawTxBytes, Network.Main).Inputs[0].Sequence.Value);
+            Assert.True(SweepTestKit.Verifies(signed, 0, spent, out var error), $"{output.Kind}: {error}");
+            Assert.False(SweepTestKit.Verifies(tooEarly, 0, spent, out error));
+            Assert.Equal(ScriptError.UnsatisfiedLockTime, error);
         }
 
+        // Every untrimmed HTLC output of the commitment was claimed
+        Assert.Equal(map.Outputs.Count(o => o.Htlc is not null), claims.Count);
+    }
+
+    [Fact]
+    public void Given_AppendixF_When_Mapped_Then_BothAnchorHtlcClaimKindsAreCovered()
+    {
+        // Arrange / Act: the theory above runs over these; make sure it exercises both script branches
+        var kinds = Bolt3SpecVectors.AppendixF
+                                    .Select(v => SweepTestKit.MapAppendixC(v, CommitmentCase.Remote,
+                                                                           hasAnchors: true))
+                                    .SelectMany(m => m.Map.Outputs)
+                                    .Select(o => o.Kind)
+                                    .ToList();
+
+        // Assert
+        Assert.Contains(OutputDescriptorKind.RemoteReceivedHtlc, kinds);
+        Assert.Contains(OutputDescriptorKind.RemoteOfferedHtlc, kinds);
+    }
+
+    [Theory]
+    [MemberData(nameof(AppendixCNames))]
+    public void Given_PeerCommitment_When_AllHtlcsClaimedGroupedByKind_Then_EveryInputPasses(string name)
+    {
+        // Arrange: node B claims every HTLC of node A's commitment directly: the preimage claims of those node A
+        // offered (B5-RMT-RO-01) with its to_remote in one tx at nLockTime 0, the timeout claims of those it offered
+        // (B5-RMT-LO-02) in one tx per cltv_expiry, locked at that expiry
+        var (commitTx, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.GetAppendixC(name), CommitmentCase.Remote);
+        var txId = map.OnChainTxId!.Value;
+        var immediate = new List<(SweepInput Input, TxOut Spent)>();
+        var timeouts = new List<(SweepInput Input, TxOut Spent)>();
+        foreach (var output in map.Outputs.Where(o => o.IsOurs))
+        {
+            var spent = commitTx.Outputs[(int)output.Vout];
+            switch (output.Kind)
+            {
+                case OutputDescriptorKind.PaymentToRemote:
+                    immediate.Add((SweepInputFactory.ToRemote(output, txId,
+                                                              Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes()),
+                                   spent));
+                    break;
+                case OutputDescriptorKind.RemoteOfferedHtlc:
+                    immediate.Add((SweepInputFactory.HtlcPreimageClaim(
+                                       output, txId, map.PerCommitmentPoint,
+                                       Bolt3VectorHarness.Preimages[(int)output.Htlc!.Value.Id]), spent));
+                    break;
+                case OutputDescriptorKind.RemoteReceivedHtlc:
+                    timeouts.Add((SweepInputFactory.HtlcTimeoutClaim(output, txId, map.PerCommitmentPoint), spent));
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected {output.Kind}");
+            }
+        }
+
+        var batches = timeouts.GroupBy(t => t.Input.CltvExpiry).Select(g => g.ToList()).ToList();
+        if (immediate.Count > 0)
+            batches.Add(immediate);
+
+        var builder = SweepTestKit.CreateBuilder();
+        var signer = new AppendixCSweepSigner(asNodeB: true);
+
+        foreach (var batch in batches)
+        {
+            var inputs = batch.Select(b => b.Input).ToList();
+
+            // Act
+            var unsigned = builder.Build(inputs, SweepTestKit.Destination, FeeratePerKw);
+            var signed = builder.Sign(unsigned, signer, ChannelId.Zero);
+
+            // Assert: a timeout batch locks at its expiry, the rest at 0 (below every preimage claim's deadline)
+            var tx = Transaction.Load(signed.RawTxBytes, Network.Main);
+            var expectedLockTime = inputs[0].SpendKind == SweepSpendKind.HtlcTimeoutClaim ? inputs[0].CltvExpiry : 0U;
+            Assert.Equal(expectedLockTime, tx.LockTime.Value);
+            SweepTestKit.AssertAllInputsVerify(signed, batch.Select(b => b.Spent).ToList());
+            Assert.InRange(unsigned.EstimatedWeight - SweepTestKit.Weight(signed), 0, 4 * inputs.Count);
+        }
+    }
+
+    [Fact]
+    public void Given_TimeoutClaimAndPreimageClaim_When_BatchedTogether_Then_Refused()
+    {
+        // Arrange: the timeout claim's nLockTime would hold the preimage claim back past its deadline
+        var (_, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.AppendixC[1], CommitmentCase.Remote);
+        var txId = map.OnChainTxId!.Value;
+        var timeout = SweepInputFactory.HtlcTimeoutClaim(
+            map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteReceivedHtlc), txId, map.PerCommitmentPoint);
+        var offered = map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteOfferedHtlc);
+        var preimage = SweepInputFactory.HtlcPreimageClaim(offered, txId, map.PerCommitmentPoint,
+                                                           Bolt3VectorHarness.Preimages[(int)offered.Htlc!.Value.Id]);
+        var builder = SweepTestKit.CreateBuilder();
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => builder.Build([timeout, preimage], SweepTestKit.Destination,
+                                                             FeeratePerKw));
+        Assert.Throws<ArgumentException>(() => builder.BuildWithFee([preimage, timeout], SweepTestKit.Destination,
+                                                                    1_000));
+    }
+
+    [Fact]
+    public void Given_TimeoutClaimAndToRemote_When_BatchedTogether_Then_Refused()
+    {
+        // Arrange
+        var (_, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.AppendixC[1], CommitmentCase.Remote);
+        var txId = map.OnChainTxId!.Value;
+        var timeout = SweepInputFactory.HtlcTimeoutClaim(
+            map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteReceivedHtlc), txId, map.PerCommitmentPoint);
+        var toRemote = SweepInputFactory.ToRemote(
+            map.Outputs.First(o => o.Kind == OutputDescriptorKind.PaymentToRemote), txId,
+            Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes());
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => SweepTestKit.CreateBuilder()
+                                                           .Build([toRemote, timeout], SweepTestKit.Destination,
+                                                                  FeeratePerKw));
+    }
+
+    [Fact]
+    public void Given_TimeoutClaimsWithDifferentExpiries_When_BatchedTogether_Then_Refused()
+    {
+        // Arrange: the earlier claim would wait for the later expiry
+        var (_, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.AppendixC[1], CommitmentCase.Remote);
+        var first = SweepInputFactory.HtlcTimeoutClaim(
+            map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteReceivedHtlc), map.OnChainTxId!.Value,
+            map.PerCommitmentPoint);
+        var later = first with { Vout = first.Vout + 100, CltvExpiry = first.CltvExpiry + 1 };
+
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => SweepTestKit.CreateBuilder()
+                                                           .Build([first, later], SweepTestKit.Destination,
+                                                                  FeeratePerKw));
+    }
+
+    [Fact]
+    public void Given_TimeoutClaimsWithSameExpiry_When_Batched_Then_LockTimeIsThatExpiry()
+    {
+        // Arrange
+        var (_, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.AppendixC[1], CommitmentCase.Remote);
+        var first = SweepInputFactory.HtlcTimeoutClaim(
+            map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteReceivedHtlc), map.OnChainTxId!.Value,
+            map.PerCommitmentPoint);
+        var twin = first with { Vout = first.Vout + 100 };
+
+        // Act
+        var unsigned = SweepTestKit.CreateBuilder().Build([first, twin], SweepTestKit.Destination, FeeratePerKw);
+
+        // Assert
+        var tx = Transaction.Load(unsigned.Transaction.RawTxBytes, Network.Main);
+        Assert.Equal(first.CltvExpiry, tx.LockTime.Value);
+    }
+
+    [Fact]
+    public void Given_PreimageClaim_When_LockTimeAtOrAboveItsCltv_Then_Refused()
+    {
+        // Arrange: from cltv_expiry on, the peer can take the HTLC back through its HTLC-timeout path
+        var (_, map) = SweepTestKit.MapAppendixC(Bolt3SpecVectors.AppendixC[1], CommitmentCase.Remote);
+        var offered = map.Outputs.First(o => o.Kind == OutputDescriptorKind.RemoteOfferedHtlc);
+        var preimage = SweepInputFactory.HtlcPreimageClaim(offered, map.OnChainTxId!.Value, map.PerCommitmentPoint,
+                                                           Bolt3VectorHarness.Preimages[(int)offered.Htlc!.Value.Id]);
         var builder = SweepTestKit.CreateBuilder();
 
         // Act
-        var unsigned = builder.Build(inputs, SweepTestKit.Destination, FeeratePerKw);
-        var signed = builder.Sign(unsigned, new AppendixCSweepSigner(asNodeB: true), ChannelId.Zero);
+        var below = builder.Build([preimage], SweepTestKit.Destination, FeeratePerKw, preimage.CltvExpiry - 1);
 
-        // Assert: nLockTime is the largest cltv_expiry of the timeout claims
-        var tx = Transaction.Load(signed.RawTxBytes, Network.Main);
-        var expectedLockTime = inputs.Where(i => i.SpendKind == SweepSpendKind.HtlcTimeoutClaim)
-                                     .Select(i => i.CltvExpiry).DefaultIfEmpty(0U).Max();
-        Assert.Equal(expectedLockTime, tx.LockTime.Value);
-        SweepTestKit.AssertAllInputsVerify(signed, spent);
-        Assert.InRange(unsigned.EstimatedWeight - SweepTestKit.Weight(signed), 0, 4 * inputs.Count);
+        // Assert
+        Assert.True(preimage.CltvExpiry > 0);
+        Assert.Equal(preimage.CltvExpiry - 1,
+                     Transaction.Load(below.Transaction.RawTxBytes, Network.Main).LockTime.Value);
+        Assert.Throws<ArgumentException>(() => builder.Build([preimage], SweepTestKit.Destination, FeeratePerKw,
+                                                             preimage.CltvExpiry));
+        Assert.Throws<ArgumentException>(() => builder.BuildWithFee([preimage], SweepTestKit.Destination, 1_000,
+                                                                    preimage.CltvExpiry + 1));
     }
 
     [Fact]
