@@ -20,6 +20,14 @@ using Payments.Policies;
 /// intermediate nodes with unknown even features (B7-CA-03, B7-NA-04), excluded nodes/channels/directions, paths
 /// over <see cref="PathfindingRequest.MaxHops"/>, <see cref="PathfindingRequest.MaxTotalCltvDelta"/> or
 /// <see cref="PathfindingRequest.MaxFeeMsat"/>, and edges below <see cref="PathCostModel.MinProbability"/>.</para>
+/// <para>Limits: the search keeps one label (the cheapest) per node, so a limit can prune the only label of a node
+/// that a costlier, limit-respecting label would have kept. When a search finds nothing and a hop, CLTV or fee limit
+/// pruned something, it is run again with that dimension ordering the labels first (fewest hops, lowest CLTV or
+/// lowest amount, then cost): that search is exact for the one limit, so a path within a single limit is always
+/// found; with several limits at once it stays best effort.</para>
+/// <para>Our own channels: when <see cref="PathfindingRequest.LocalChannels"/> lists a first-hop channel, its live
+/// state replaces the gossip checks that describe liveness (the <c>disable</c> bit, the stale check and the
+/// unverified factor).</para>
 /// <para>Diverse paths (<see cref="FindPaths"/>): Dijkstra again with every edge of the earlier paths penalized by
 /// <see cref="PathCostModel.DiversityPenalty"/> per earlier use (a cheap alternative to Yen's k-shortest paths).</para>
 /// <para>Thread-safe: it keeps no state between calls; the graph view is immutable.</para>
@@ -56,7 +64,7 @@ public sealed class GraphPathfinder
         // Each round either adds a path or penalizes a duplicate further; bound the rounds
         for (var round = 0; round < 2 * count && paths.Count < count; round++)
         {
-            var path = search.Run(usage);
+            var path = search.RunWithFallback(usage);
             if (path is null)
                 break;
 
@@ -78,6 +86,36 @@ public sealed class GraphPathfinder
     private readonly record struct Edge(int From, ShortChannelId ShortChannelId, byte Direction, GraphPolicy? Policy,
                                         ulong? CapacityMsat, GraphChannel? Channel);
 
+    /// <summary>
+    /// What orders the labels of a search before the cost: nothing (the normal search), or the dimension of a limit
+    /// that pruned the normal search.
+    /// </summary>
+    private enum SearchMode
+    {
+        Cost,
+        FewestHops,
+        LowestCltv,
+        LowestAmount
+    }
+
+    [Flags]
+    private enum PrunedLimits
+    {
+        None = 0,
+        Hops = 1,
+        Cltv = 2,
+        Fee = 4
+    }
+
+    private readonly record struct Label(double Primary, double Cost) : IComparable<Label>
+    {
+        public int CompareTo(Label other)
+        {
+            var primary = Primary.CompareTo(other.Primary);
+            return primary != 0 ? primary : Cost.CompareTo(other.Cost);
+        }
+    }
+
     private sealed class Search
     {
         private readonly IGraphView _graph;
@@ -90,6 +128,7 @@ public sealed class GraphPathfinder
         private readonly Dictionary<CompactPubKey, int> _extraIndexByNode = new();
         private readonly Dictionary<int, List<Edge>> _extraIncoming = new();
         private readonly bool _targetUsable;
+        private PrunedLimits _pruned;
 
         public Search(IGraphView graph, PathfindingRequest request)
         {
@@ -120,7 +159,37 @@ public sealed class GraphPathfinder
 
         private int TotalNodes => _nodeCount + _extraNodeIds.Count;
 
-        public FoundPath? Run(IReadOnlyDictionary<DirectedChannel, int> usage)
+        /// <summary>
+        /// The cost search, then, when it found nothing and a limit pruned it, a search ordered by each pruned
+        /// limit's dimension in turn.
+        /// </summary>
+        public FoundPath? RunWithFallback(IReadOnlyDictionary<DirectedChannel, int> usage)
+        {
+            _pruned = PrunedLimits.None;
+            var path = Run(usage, SearchMode.Cost);
+            var tried = PrunedLimits.None;
+            while (path is null)
+            {
+                var untried = _pruned & ~tried;
+                PrunedLimits next;
+                SearchMode mode;
+                if (untried.HasFlag(PrunedLimits.Hops))
+                    (next, mode) = (PrunedLimits.Hops, SearchMode.FewestHops);
+                else if (untried.HasFlag(PrunedLimits.Cltv))
+                    (next, mode) = (PrunedLimits.Cltv, SearchMode.LowestCltv);
+                else if (untried.HasFlag(PrunedLimits.Fee))
+                    (next, mode) = (PrunedLimits.Fee, SearchMode.LowestAmount);
+                else
+                    break;
+
+                tried |= next;
+                path = Run(usage, mode);
+            }
+
+            return path;
+        }
+
+        private FoundPath? Run(IReadOnlyDictionary<DirectedChannel, int> usage, SearchMode mode)
         {
             if (!_targetUsable)
                 return null;
@@ -128,6 +197,8 @@ public sealed class GraphPathfinder
             var total = TotalNodes;
             var cost = new double[total];
             Array.Fill(cost, double.PositiveInfinity);
+            var label = new Label[total];
+            Array.Fill(label, new Label(double.PositiveInfinity, double.PositiveInfinity));
             var amount = new ulong[total];
             var cltv = new uint[total];
             var hops = new int[total];
@@ -137,6 +208,7 @@ public sealed class GraphPathfinder
             var settled = new bool[total];
 
             cost[_targetIndex] = 0;
+            label[_targetIndex] = new Label(0, 0);
             amount[_targetIndex] = _request.AmountMsat;
             cltv[_targetIndex] = _request.FinalCltvDelta;
             next[_targetIndex] = -1;
@@ -144,11 +216,11 @@ public sealed class GraphPathfinder
             if (_request.FinalCltvDelta > _request.MaxTotalCltvDelta)
                 return null;
 
-            var queue = new PriorityQueue<int, double>();
-            queue.Enqueue(_targetIndex, 0);
-            while (queue.TryDequeue(out var v, out var queuedCost))
+            var queue = new PriorityQueue<int, Label>();
+            queue.Enqueue(_targetIndex, label[_targetIndex]);
+            while (queue.TryDequeue(out var v, out var queuedLabel))
             {
-                if (settled[v] || queuedCost > cost[v])
+                if (settled[v] || queuedLabel.CompareTo(label[v]) > 0)
                     continue;
 
                 settled[v] = true;
@@ -160,7 +232,10 @@ public sealed class GraphPathfinder
                     continue;
 
                 if (hops[v] + 1 > _request.MaxHops)
+                {
+                    _pruned |= PrunedLimits.Hops;
                     continue;
+                }
 
                 foreach (var edge in GetIncoming(v))
                 {
@@ -176,9 +251,17 @@ public sealed class GraphPathfinder
                     var edgeCost = _model.EdgeCost(feeMsat, amount[v], cltvDelta, edgeProbability)
                                  + _model.DiversityPenalty(usage.GetValueOrDefault(directed), amount[v]);
                     var newCost = cost[v] + edgeCost;
-                    if (newCost >= cost[u])
+                    var newLabel = new Label(mode switch
+                    {
+                        SearchMode.FewestHops => hops[v] + 1,
+                        SearchMode.LowestCltv => newCltv,
+                        SearchMode.LowestAmount => newAmount,
+                        _ => 0
+                    }, newCost);
+                    if (newLabel.CompareTo(label[u]) >= 0)
                         continue;
 
+                    label[u] = newLabel;
                     cost[u] = newCost;
                     amount[u] = newAmount;
                     cltv[u] = newCltv;
@@ -186,7 +269,7 @@ public sealed class GraphPathfinder
                     next[u] = v;
                     nextEdge[u] = edge;
                     probability[u] = edgeProbability;
-                    queue.Enqueue(u, newCost);
+                    queue.Enqueue(u, newLabel);
                 }
             }
 
@@ -231,19 +314,6 @@ public sealed class GraphPathfinder
              || _request.ExcludedEdges?.Contains(directed) == true)
                 return false;
 
-            var channel = edge.Channel;
-            if (channel is not null)
-            {
-                if (channel.SpentAtHeight is not null || channel.HasUnknownEvenFeatures)
-                    return false;
-                if (_request.StaleAfter is { } staleAfter && channel.IsStale(_request.NowUnixSeconds, staleAfter))
-                    return false;
-            }
-
-            var policy = EffectivePolicy(edge);
-            if (policy is null)
-                return false;
-
             var fromSource = edge.From == _sourceIndex;
             LocalChannelState? local = null;
             if (fromSource && _request.LocalChannels is { } localChannels)
@@ -253,10 +323,25 @@ public sealed class GraphPathfinder
                                                                                || amountAtV < local.HtlcMinimumMsat)
                     return false;
             }
-            else if (policy.IsDisabled)
+
+            var channel = edge.Channel;
+            if (channel is not null)
             {
-                return false;
+                if (channel.SpentAtHeight is not null || channel.HasUnknownEvenFeatures)
+                    return false;
+
+                // Our own channel's live state is authoritative (nothing refreshes its gossip timestamp yet)
+                if (local is null && _request.StaleAfter is { } staleAfter
+                                  && channel.IsStale(_request.NowUnixSeconds, staleAfter))
+                    return false;
             }
+
+            var policy = EffectivePolicy(edge);
+            if (policy is null)
+                return false;
+
+            if (local is null && policy.IsDisabled)
+                return false;
 
             if (amountAtV < policy.HtlcMinimumMsat || amountAtV > policy.HtlcMaximumMsat)
                 return false;
@@ -290,9 +375,16 @@ public sealed class GraphPathfinder
             }
 
             if (newCltv > _request.MaxTotalCltvDelta)
+            {
+                _pruned |= PrunedLimits.Cltv;
                 return false;
+            }
+
             if (_request.MaxFeeMsat is { } maxFee && newAmount - _request.AmountMsat > maxFee)
+            {
+                _pruned |= PrunedLimits.Fee;
                 return false;
+            }
 
             if (local is not null)
             {
