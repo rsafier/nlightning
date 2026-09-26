@@ -55,6 +55,24 @@ public interface IGraphStore
     /// <summary>The funding transaction id of a channel, when known (from the chain check or our own channel).</summary>
     bool TryGetFundingTxId(ShortChannelId shortChannelId, out TxId fundingTxId);
 
+    /// <summary>
+    /// Records the funding transaction id of a stored channel (the pruner's startup lookup: txids are not persisted);
+    /// false when the channel is unknown.
+    /// </summary>
+    bool TrySetFundingTxId(ShortChannelId shortChannelId, TxId fundingTxId);
+
+    /// <summary>
+    /// The channel whose funding output is <paramref name="transactionId"/>:<paramref name="outputIndex"/>, when its
+    /// funding transaction id is known (plan D4: the pruner's spent check, O(1) per block input).
+    /// </summary>
+    bool TryGetChannelByFundingOutpoint(TxId transactionId, uint outputIndex, out ShortChannelId shortChannelId);
+
+    /// <summary>The channels whose funding transaction id is not known (after a restart, or unverified).</summary>
+    IReadOnlyList<ShortChannelId> GetChannelsWithoutFundingTxId();
+
+    /// <summary>When a channel's announcement was stored (the stale baseline of a channel without updates).</summary>
+    bool TryGetChannelReceivedAt(ShortChannelId shortChannelId, out DateTimeOffset receivedAt);
+
     /// <summary>True when the gossip of <paramref name="nodeId"/> is ignored (a ban that has not ended).</summary>
     bool IsBanned(CompactPubKey nodeId);
 

@@ -25,7 +25,8 @@ using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 /// </para>
 /// <para>
 /// Not persisted: the funding transaction ids (<see cref="TryGetFundingTxId"/>; the graph tables have no column for
-/// them), which the chain check or our own channel fills in again after a restart.
+/// them), which the chain check, our own channel or the <see cref="GraphPruner"/>'s startup lookup
+/// (<see cref="TrySetFundingTxId"/>) fills in again after a restart.
 /// </para>
 /// </remarks>
 public sealed class GraphStore : IGraphStore
@@ -39,6 +40,7 @@ public sealed class GraphStore : IGraphStore
     private readonly Dictionary<ShortChannelId, GraphChannel> _channels = new();
     private readonly Dictionary<ShortChannelId, DateTimeOffset> _channelReceivedAt = new();
     private readonly Dictionary<ShortChannelId, TxId> _fundingTxIds = new();
+    private readonly Dictionary<(TxId, uint), ShortChannelId> _channelsByFundingOutpoint = new();
     private readonly Dictionary<CompactPubKey, GraphNode> _nodes = new();
     private readonly Dictionary<CompactPubKey, DateTimeOffset> _nodeReceivedAt = new();
     private readonly Dictionary<CompactPubKey, int> _channelCountByNode = new();
@@ -285,6 +287,41 @@ public sealed class GraphStore : IGraphStore
     }
 
     /// <inheritdoc />
+    public bool TrySetFundingTxId(ShortChannelId shortChannelId, TxId fundingTxId)
+    {
+        lock (_lock)
+        {
+            if (!_channels.ContainsKey(shortChannelId))
+                return false;
+
+            SetFundingTxIdLocked(shortChannelId, fundingTxId);
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    public bool TryGetChannelByFundingOutpoint(TxId transactionId, uint outputIndex,
+                                               out ShortChannelId shortChannelId)
+    {
+        lock (_lock)
+            return _channelsByFundingOutpoint.TryGetValue((transactionId, outputIndex), out shortChannelId);
+    }
+
+    /// <inheritdoc />
+    public IReadOnlyList<ShortChannelId> GetChannelsWithoutFundingTxId()
+    {
+        lock (_lock)
+            return _channels.Keys.Where(s => !_fundingTxIds.ContainsKey(s)).ToList();
+    }
+
+    /// <inheritdoc />
+    public bool TryGetChannelReceivedAt(ShortChannelId shortChannelId, out DateTimeOffset receivedAt)
+    {
+        lock (_lock)
+            return _channelReceivedAt.TryGetValue(shortChannelId, out receivedAt);
+    }
+
+    /// <inheritdoc />
     public bool IsBanned(CompactPubKey nodeId)
     {
         lock (_lock)
@@ -302,7 +339,7 @@ public sealed class GraphStore : IGraphStore
 
             _channelReceivedAt[channel.ShortChannelId] = _timeProvider.GetUtcNow();
             if (fundingTxId is { } txId)
-                _fundingTxIds[channel.ShortChannelId] = txId;
+                SetFundingTxIdLocked(channel.ShortChannelId, txId);
             CountChannelEnds(channel, +1);
             _deletedChannels.Remove(channel.ShortChannelId);
             _dirtyChannels.Add(channel.ShortChannelId);
@@ -414,7 +451,8 @@ public sealed class GraphStore : IGraphStore
                 return false;
 
             _channelReceivedAt.Remove(shortChannelId);
-            _fundingTxIds.Remove(shortChannelId);
+            if (_fundingTxIds.Remove(shortChannelId, out var fundingTxId))
+                _channelsByFundingOutpoint.Remove((fundingTxId, shortChannelId.OutputIndex));
             CountChannelEnds(channel, -1);
             _dirtyChannels.Remove(shortChannelId);
             _dirtyPolicies.Remove((shortChannelId, 0));
@@ -439,6 +477,15 @@ public sealed class GraphStore : IGraphStore
             _version++;
             return true;
         }
+    }
+
+    private void SetFundingTxIdLocked(ShortChannelId shortChannelId, TxId fundingTxId)
+    {
+        if (_fundingTxIds.TryGetValue(shortChannelId, out var previous))
+            _channelsByFundingOutpoint.Remove((previous, shortChannelId.OutputIndex));
+
+        _fundingTxIds[shortChannelId] = fundingTxId;
+        _channelsByFundingOutpoint[(fundingTxId, shortChannelId.OutputIndex)] = shortChannelId;
     }
 
     private void CountChannelEnds(GraphChannel channel, int delta)

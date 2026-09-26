@@ -549,6 +549,37 @@ public class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_BlockInputsListener_When_ABlockIsProcessed_Then_EveryNonCoinbaseInputIsRaisedAfterTheBlock()
+    {
+        // Arrange (BOLT 7 G2-T5: the graph pruner checks every spent outpoint, watched or not)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var first = new TxId(Enumerable.Repeat((byte)0x21, 32).ToArray());
+        var second = new TxId(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var spendA = CreateSpend(first, 3);
+        var spendB = CreateSpend(second, 0);
+        spendB.Inputs.Add(new OutPoint(new uint256((byte[])first), 7));
+        var order = new List<string>();
+        var raised = new List<BlockInputsEventArgs>();
+        _service.OnNewBlockDetected += (_, _) => order.Add("block");
+        _service.OnBlockInputs += (_, args) =>
+        {
+            order.Add("inputs");
+            raised.Add(args);
+        };
+
+        // Act
+        var block = _chain.Mine(spendA, spendB);
+        await _service.ProcessNewBlockAsync(block, 111);
+
+        // Assert: the coinbase's null prevout is not listed
+        var args = Assert.Single(raised);
+        Assert.Equal(111u, args.Height);
+        Assert.Equal(new Hash(block.GetHash().ToBytes()), args.BlockHash);
+        Assert.Equal([(first, 3u), (second, 0u), (first, 7u)], args.SpentOutpoints);
+        Assert.Equal(["block", "inputs"], order);
+    }
+
+    [Fact]
     public async Task Given_OutpointNoLongerWatched_When_BlockSpendsIt_Then_NothingRaised()
     {
         // Arrange
