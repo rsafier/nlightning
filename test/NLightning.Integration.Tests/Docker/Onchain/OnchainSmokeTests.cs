@@ -24,11 +24,10 @@ using Utils;
 /// branch is back.
 /// </summary>
 /// <remarks>
-/// <para>What this does not prove: that the short channel id follows the funding transaction while the competing
-/// branch is active. It does not: a funding confirmation that completed in a disconnected block is not rolled back
-/// (BOLT 5 plan O6-T3), so the channel keeps the old short channel id until the original branch returns. The explicit
-/// test <see cref="Given_FundingBlockReorged_When_CompetingBranchIsActive_Then_ScidFollowsTheFundingTransaction"/>
-/// reproduces that gap; drop its <c>Explicit</c> when the rollback exists.</para>
+/// <para>A funding confirmation that completed in a disconnected block is pending again after the rewind (BOLT 5 plan
+/// O6-T3, NL-292): once the funding transaction reaches the channel's depth on the competing branch, the short channel
+/// id follows it (<see cref="Given_FundingBlockReorged_When_CompetingBranchIsActive_Then_ScidFollowsTheFundingTransaction"/>,
+/// an explicit reproducer until ABCD wave 6).</para>
 /// <para>Run with <c>scripts/run-onchain.sh</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
@@ -97,7 +96,7 @@ public class OnchainSmokeTests : IAsyncLifetime
         var (competingHeight, competingIndex) = await GetActivePositionAsync(fundingTxId, ct);
         var stale = (await node.GetChannelAsync(opened.ChannelId, ct)).ShortChannelId;
         Console.WriteLine(
-            $"Competing branch: funding at {competingHeight}x{competingIndex}, channel short channel id {stale} (not rolled back, O6-T3)");
+            $"Competing branch: funding at {competingHeight}x{competingIndex}, channel short channel id {stale} (moves once the funding is deep enough there)");
 
         // Act: reconsider the original, longer branch
         var tipBefore = await ReconsiderAsync(fundingBlock, ct);
@@ -116,11 +115,11 @@ public class OnchainSmokeTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Known gap (BOLT 5 plan O6-T3): a funding confirmation completed in a disconnected block is not rolled back, so
-    /// while the competing branch is active the short channel id still names the old block. Explicit until the
-    /// rollback exists; then drop <c>Explicit</c>.
+    /// NL-292 (BOLT 5 plan O6-T3): the funding confirmation completed in the disconnected block is pending again; once
+    /// the funding transaction is as deep as the channel requires on the competing branch, the short channel id names
+    /// its position there.
     /// </summary>
-    [Fact(Explicit = true)]
+    [Fact]
     public async Task Given_FundingBlockReorged_When_CompetingBranchIsActive_Then_ScidFollowsTheFundingTransaction()
     {
         // Arrange
@@ -137,12 +136,25 @@ public class OnchainSmokeTests : IAsyncLifetime
         await WaitUsableAsync(node, david, opened, ct);
         Assert.NotNull(opened.TxId);
 
-        // Act
+        // Act: the competing branch holds the funding transaction one block higher; it is mined on until the funding
+        // transaction is deep enough there
         var fundingBlock = await SwitchToCompetingBranchAsync(node, opened.TxId.Value, ct);
 
         try
         {
             // Assert
+            var (height, index) = (0u, 0u);
+            await Poll.UntilAsync(async () =>
+            {
+                (height, index) = await GetActivePositionAsync(opened.TxId.Value, ct);
+                var scid = (await node.GetChannelAsync(opened.ChannelId, ct)).ShortChannelId;
+                if (scid is { } current && current.BlockHeight == height && current.TransactionIndex == index)
+                    return true;
+
+                await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
+                return false;
+            }, s_timeout, "the short channel id at the funding transaction's position on the competing branch", ct);
+            Console.WriteLine($"Short channel id moved to {height}x{index}");
             await AssertScidMatchesActiveChainAsync(node, opened, opened.TxId.Value, ct);
         }
         finally
