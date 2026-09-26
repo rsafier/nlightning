@@ -81,6 +81,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     private async Task RegisterExistingChannelLockedAsync(IServiceScope scope, ChannelModel channel)
     {
+        if (!await ResumeStartupStateAsync(scope, channel))
+            return;
 
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
@@ -110,20 +112,85 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             case ChannelState.Open:
                 // Not usable until channel_reestablish on the peer's next connection (OnPeerConnectedAsync, N7)
                 break;
+            case ChannelState.V1FundingSigned:
+                // The funding confirmation resumes from the persisted watch (ConfirmUnconfirmedChannels on the next
+                // block, or the blockchain monitor when it reaches the depth)
+                _logger.LogInformation("Waiting for the funding of channel {ChannelId} to confirm", channel.ChannelId);
+                break;
             case ChannelState.ReadyForThem or ChannelState.ReadyForUs:
                 _logger.LogInformation("Waiting for channel {ChannelId} to be ready", channel.ChannelId);
+                break;
+            case ChannelState.Closing:
+                // Nothing moves a channel to Closing yet: shutdown, its re-send and closing_signed are N10 (NL-036).
+                // Kept in memory so the peer's messages for it are recognized; updates on it are refused
+                _logger.LogWarning("Channel {ChannelId} is closing; the close resumes only once shutdown exists (N10)",
+                                   channel.ChannelId);
                 break;
             case ChannelState.Failed:
                 // Kept in memory so its messages are ignored; its error is re-sent on every connection (B2-RE-05)
                 _logger.LogWarning("Channel {ChannelId} was failed; every update on it is refused",
                                    channel.ChannelId);
                 break;
-            default:
-                // TODO: Deal with channels that are Closing, Stale, or any other state
-                _logger.LogWarning("We don't know how to deal with {channelState} for channel {ChannelId}",
-                                   Enum.GetName(channel.State), channel.ChannelId);
-                break;
         }
+    }
+
+    /// <summary>
+    /// Decides what a channel loaded at startup resumes as (BOLT2 plan N7-T5), before it is registered.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item>Closed and Stale channels, and states before funding_created (never persisted), are not registered.</item>
+    /// <item>V1FundingCreated is the funder's crash window in <c>FundingSignedMessageHandler</c>: the channel is
+    /// persisted, then the funding transaction is watched (persisted) and published, then V1FundingSigned is persisted.
+    /// A persisted watch means the transaction may be out, so the channel moves on to V1FundingSigned and waits for
+    /// the confirmation. Without one the transaction was never published, and BOLT 2 says a funder that has not
+    /// broadcast the funding transaction SHOULD NOT remember the channel: it is persisted Stale and not registered
+    /// (NL-048).</item>
+    /// <item>Every other state is registered as it is.</item>
+    /// </list>
+    /// </remarks>
+    /// <returns>True when the channel must be registered.</returns>
+    private async Task<bool> ResumeStartupStateAsync(IServiceScope scope, ChannelModel channel)
+    {
+        switch (channel.State)
+        {
+            case ChannelState.Closed or ChannelState.Stale:
+                return false;
+            case ChannelState.None or ChannelState.V1Opening or ChannelState.V2Opening:
+                _logger.LogWarning("Channel {ChannelId} was stored before funding in state {State}; not remembered",
+                                   channel.ChannelId, Enum.GetName(channel.State));
+                return false;
+            case ChannelState.V1FundingCreated:
+                return await ResumeInterruptedFundingAsync(scope, channel);
+            default:
+                return true;
+        }
+    }
+
+    private async Task<bool> ResumeInterruptedFundingAsync(IServiceScope scope, ChannelModel channel)
+    {
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var watched = channel.FundingOutput?.TransactionId is { } fundingTxId
+                          ? await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(fundingTxId)
+                          : null;
+
+        var published = watched is not null && watched.ChannelId == channel.ChannelId;
+        channel.UpdateState(published ? ChannelState.V1FundingSigned : ChannelState.Stale);
+        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await unitOfWork.SaveChangesAsync();
+
+        if (published)
+        {
+            _logger.LogInformation(
+                "Channel {ChannelId} was stopped while its funding transaction was being published; waiting for it to confirm",
+                channel.ChannelId);
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Channel {ChannelId} was stopped before its funding transaction was published; forgetting it (BOLT 2: a funder that has not broadcast SHOULD NOT remember the channel)",
+            channel.ChannelId);
+        return false;
     }
 
     /// <summary>

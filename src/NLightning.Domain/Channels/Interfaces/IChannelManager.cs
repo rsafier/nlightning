@@ -51,6 +51,13 @@ public interface IChannelManager
     /// </summary>
     void OnPeerConnectionChanged(CompactPubKey peerPubKey);
 
+    /// <summary>
+    /// Registers a channel loaded from the database at startup (memory and signer), after resuming its state (BOLT2
+    /// plan N7-T5): Closed and Stale channels are skipped; a funder's channel stopped between persisting
+    /// funding_signed and moving to V1FundingSigned moves on when its funding transaction was watched (so it may have
+    /// been published) and is forgotten (persisted Stale) otherwise, since BOLT 2 says a funder that has not broadcast
+    /// SHOULD NOT remember the channel.
+    /// </summary>
     Task RegisterExistingChannelAsync(ChannelModel channel);
 
     /// <summary>
