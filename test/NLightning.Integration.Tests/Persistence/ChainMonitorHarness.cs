@@ -36,6 +36,9 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
     public FakeBitcoinChain Chain { get; }
     public BlockchainMonitorService Monitor { get; private set; }
 
+    /// <summary>The harness's services: a Scoped <see cref="IUnitOfWork"/> over <see cref="Db"/>.</summary>
+    public IServiceProvider Services => _services;
+
     /// <summary>When true, every save that writes a block header throws (after its earlier statements ran).</summary>
     public bool FailSaves
     {
