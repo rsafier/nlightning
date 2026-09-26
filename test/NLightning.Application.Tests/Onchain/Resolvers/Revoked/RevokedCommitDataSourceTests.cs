@@ -174,10 +174,35 @@ public class RevokedCommitDataSourceTests
 
         // Assert
         Assert.NotNull(spend);
-        Assert.Equal(spenderId, spend.SpendingTransaction.TxId);
+        Assert.Equal(spenderId, spend.SpendingTransactionId);
+        Assert.Equal(spenderId, spend.SpendingTransaction!.TxId);
         Assert.Equal(400u, spend.Height);
         Assert.True(spend.ByUs);
         Assert.Null(unspent);
+    }
+
+    [Fact]
+    public async Task Given_SpenderCannotBeFetched_When_GetSpend_Then_SpendWithTxIdAndNoTransaction()
+    {
+        // Arrange: the watched outpoint records a spender that neither its block nor txindex can serve
+        var spenderId = new TxId(Enumerable.Repeat((byte)9, 32).ToArray());
+        var watch = new WatchedOutpointModel(new TxId(Enumerable.Repeat((byte)1, 32).ToArray()), 0,
+                                             RealSigningCommitmentPair.ChannelId,
+                                             WatchedOutpointPurpose.ResolutionOutput);
+        watch.MarkSpent(spenderId, 400, new Hash(new byte[32]));
+        _watches.Setup(w => w.GetAsync(watch.TransactionId, 0)).ReturnsAsync(watch);
+        _chain.Setup(c => c.GetBlockAsync(400)).ThrowsAsync(new HttpRequestException("pruned"));
+        var dataSource = CreateDataSource();
+
+        // Act
+        var spend = await dataSource.GetSpendAsync(watch.TransactionId, 0, TestContext.Current.CancellationToken);
+
+        // Assert: still a spend, not ours, with its txid, never a guess
+        Assert.NotNull(spend);
+        Assert.Equal(spenderId, spend.SpendingTransactionId);
+        Assert.Null(spend.SpendingTransaction);
+        Assert.Equal(400u, spend.Height);
+        Assert.False(spend.ByUs);
     }
 
     [Fact]

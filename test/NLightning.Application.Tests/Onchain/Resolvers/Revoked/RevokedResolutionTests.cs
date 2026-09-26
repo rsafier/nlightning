@@ -177,18 +177,36 @@ public class RevokedResolutionTests
         Assert.Equal(0ul, fulfilled.HtlcId);
         Assert.Equal(s_b1Preimage, fulfilled.PaymentPreimage);
 
-        // And the second-level output is penalized; the fulfill is not asked again
+        // And the second-level output is penalized; the fulfill is asked again (the switch is idempotent), never a fail
         var round = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 2);
         var secondLevel = Assert.Single(kit.Rows, r => r.Descriptor == OutputDescriptorKind.RevokedSecondLevel);
         kit.AssertVerifies(secondLevel.ResolvingTransactionId!.Value, htlcSuccess);
-        Assert.DoesNotContain(round, a => a is RaiseChannelEventAction);
+        Assert.All(round.OfType<RaiseChannelEventAction>(), a => AssertFulfilled(a.Event, 0, s_b1Preimage));
 
         // Our second-level penalty confirms: still no failure upstream, ever
         var secondPenalty = RevokedBreachKit.ToChainTx(kit.LoadBroadcast(secondLevel.ResolvingTransactionId!.Value));
         await kit.ConfirmAsync(secondPenalty, RevokedBreachKit.SpentAtHeight + 3);
         for (var h = RevokedBreachKit.SpentAtHeight + 3; h < RevokedBreachKit.SpentAtHeight + 20; h++)
             await kit.RunAsync(h);
-        Assert.Single(kit.Events);
+        Assert.All(kit.Events, e => AssertFulfilled(e, 0, s_b1Preimage));
+    }
+
+    [Fact]
+    public async Task Given_FulfillLostWithAFailedSave_When_NextRound_Then_FulfillAskedAgain()
+    {
+        // Arrange: the cheater's HTLC-success reveals b1's preimage, and the executor's save of that block fails (so
+        // the switch never got the event)
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+        await kit.ConfirmAsync(htlcSuccess, RevokedBreachKit.SpentAtHeight + 2);
+        kit.Events.Clear();
+
+        // Act
+        var round = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 3);
+
+        // Assert: asked again from the chain facts, not suppressed by memory
+        AssertFulfilled(Assert.Single(round.OfType<RaiseChannelEventAction>()).Event, 0, s_b1Preimage);
     }
 
     [Fact]
@@ -208,13 +226,16 @@ public class RevokedResolutionTests
             Assert.Empty(kit.Events);
         }
 
-        // At depth 6 b1 fails upstream, once, however many blocks follow
+        // From depth 6 b1 fails upstream (asked every round until the output is irrevocable; the switch is idempotent)
         for (var tip = h + OutputResolutionFacts.DefaultReasonableDepth - 1; tip < h + 30; tip++)
-            await kit.RunAsync(tip);
+        {
+            var round = await kit.RunAsync(tip);
+            var failed = Assert.IsType<OutgoingHtlcFailed>(Assert.Single(round.OfType<RaiseChannelEventAction>()).Event);
+            Assert.Equal(0ul, failed.HtlcId);
+            Assert.Equal(OnchainHtlcRemovals.OnchainTimeoutKind, (byte)failed.Removal.Kind);
+        }
 
-        var failed = Assert.IsType<OutgoingHtlcFailed>(Assert.Single(kit.Events));
-        Assert.Equal(0ul, failed.HtlcId);
-        Assert.Equal(OnchainHtlcRemovals.OnchainTimeoutKind, (byte)failed.Removal.Kind);
+        Assert.All(kit.Events, e => Assert.Equal(0ul, Assert.IsType<OutgoingHtlcFailed>(e).HtlcId));
     }
 
     [Fact]
@@ -231,8 +252,8 @@ public class RevokedResolutionTests
 
         await kit.RunAsync(commitmentDepth6);
         await kit.RunAsync(commitmentDepth6 + 1);
-        var failed = Assert.Single(kit.Events.OfType<OutgoingHtlcFailed>());
-        Assert.Equal(1ul, failed.HtlcId);
+        Assert.NotEmpty(kit.Events);
+        Assert.All(kit.Events, e => Assert.Equal(1ul, Assert.IsType<OutgoingHtlcFailed>(e).HtlcId));
         Assert.DoesNotContain(kit.Rows, r => r.HtlcId == 1 && r.HtlcDirection == HtlcDirection.Outgoing);
     }
 
@@ -335,6 +356,172 @@ public class RevokedResolutionTests
         kit.AssertVerifies(broadcast.TransactionId);
     }
 
+    /// <summary>
+    /// A breach whose HTLC outputs cannot be rebuilt, with b1 (our offered HTLC) still pending: before the log
+    /// (<paramref name="predatesLog"/>), or inside it with the entry missing. b1's output is unmapped.
+    /// </summary>
+    private static RevokedBreachKit CreateUnmappedHtlcBreach(bool predatesLog)
+    {
+        var kit = new RevokedBreachKit();
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, B1Msat, s_b1Preimage, B1Expiry);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach(useLog: false, logStart: predatesLog ? kit.RevokedNumber + 1 : 0);
+        return kit;
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_UnmappedOutputOfPendingOfferedHtlc_When_ReasonablyDeep_Then_NoUpstreamFailure(
+        bool predatesLog)
+    {
+        // Arrange
+        using var kit = CreateUnmappedHtlcBreach(predatesLog);
+        var outputCount = kit.RevokedChainTx.Outputs.Count;
+
+        // Act: well past reasonable depth, nothing spent the unmapped output
+        for (var h = RevokedBreachKit.SpentAtHeight + 1; h < RevokedBreachKit.SpentAtHeight + 20; h++)
+            await kit.RunAsync(h);
+
+        // Assert: b1 may still be claimed by the cheater with its preimage: never failed upstream (BOLT 5 limits the
+        // failure to an HTLC without an output); the unmapped output is watched and reported
+        Assert.DoesNotContain(kit.Events, e => e is OutgoingHtlcFailed);
+        var unmapped = Enumerable.Range(0, outputCount).Select(v => (uint)v)
+                                 .Where(v => kit.Rows.All(r => r.OutputIndex != v)).ToList();
+        var vout = Assert.Single(unmapped);
+        Assert.Contains((kit.RevokedChainTx.TxId, vout), kit.Watches);
+        Assert.Contains(kit.Alerts, a => a.RequirementId == "B5-REV-04" && a.Message.Contains($"outputs {vout}"));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_UnmappedOfferedHtlcClaimedWithPreimage_When_Resolved_Then_UpstreamFulfilledNotFailed(
+        bool predatesLog)
+    {
+        // Arrange: the cheater sweeps b1's (unmapped) output with its HTLC-success
+        using var kit = CreateUnmappedHtlcBreach(predatesLog);
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+        var h = RevokedBreachKit.SpentAtHeight + 3;
+        await kit.ConfirmAsync(htlcSuccess, h);
+
+        // Act
+        var round = await kit.RunAsync(h);
+        for (var tip = h + 1; tip < h + 20; tip++)
+            await kit.RunAsync(tip);
+
+        // Assert: fulfilled at once (B5-REV-RES-01), and never failed
+        AssertFulfilled(Assert.Single(round.OfType<RaiseChannelEventAction>()).Event, 0, s_b1Preimage);
+        Assert.All(kit.Events, e => AssertFulfilled(e, 0, s_b1Preimage));
+    }
+
+    [Fact]
+    public async Task Given_UnmappedOutputSpentWithoutPreimage_When_ReasonablyDeep_Then_UpstreamFailed()
+    {
+        // Arrange: b1's unmapped output is spent by a transaction that reveals no preimage
+        using var kit = CreateUnmappedHtlcBreach(predatesLog: true);
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var spend = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0);
+        var h = RevokedBreachKit.SpentAtHeight + 3;
+        await kit.ConfirmAsync(spend, h);
+
+        // Act / Assert: nothing before that spend is 6 deep, then b1 fails upstream
+        for (var tip = h; tip < h + OutputResolutionFacts.DefaultReasonableDepth - 1; tip++)
+        {
+            await kit.RunAsync(tip);
+            Assert.Empty(kit.Events);
+        }
+
+        await kit.RunAsync(h + OutputResolutionFacts.DefaultReasonableDepth - 1);
+        Assert.Equal(0ul, Assert.IsType<OutgoingHtlcFailed>(Assert.Single(kit.Events)).HtlcId);
+    }
+
+    [Fact]
+    public async Task Given_SpenderUnreadableAfterRestart_When_Resolved_Then_NoGuessAndSecondLevelStillPenalized()
+    {
+        // Arrange: the cheater's HTLC-success took b1 (our offered HTLC) with the preimage; the node restarts and the
+        // spending transaction can no longer be fetched (pruned block, RPC error)
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var batchTxId = kit.Broadcasts.Keys.Single();
+        var htlcSuccess = kit.CheaterSecondLevel(HtlcDirection.Outgoing, 0, s_b1Preimage);
+        await kit.ConfirmAsync(htlcSuccess, RevokedBreachKit.SpentAtHeight + 2);
+        kit.RestartResolver();
+        kit.DataSource.FetchFails = true;
+        kit.Events.Clear();
+
+        // Act
+        var round = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 2);
+        for (var h = RevokedBreachKit.SpentAtHeight + 3; h < RevokedBreachKit.SpentAtHeight + 30; h++)
+            await kit.RunAsync(h);
+
+        // Assert: b1 is not taken for our own penalty, so nothing fails upstream; the operator is told
+        Assert.DoesNotContain(kit.Events, e => e is OutgoingHtlcFailed);
+        Assert.Single(kit.Alerts, a => a.RequirementId == "B5-GEN-06");
+
+        // The batch lost b1 to another transaction (its txid is known): the rest and the recorded second-level output
+        // are penalized again, and every input is valid
+        var rebuilt = Assert.Single(round.OfType<BroadcastAction>()).Transaction;
+        Assert.NotEqual(batchTxId, rebuilt.TransactionId);
+        var rebuiltTx = kit.LoadBroadcast(rebuilt.TransactionId);
+        Assert.Contains(rebuiltTx.Inputs, i => i.PrevOut == new OutPoint(new uint256((byte[])htlcSuccess.TxId), 0));
+        kit.AssertVerifies(rebuilt.TransactionId, htlcSuccess);
+    }
+
+    [Fact]
+    public async Task Given_TheirSpendReorgedOut_When_Resolved_Then_CachedSpendIgnored()
+    {
+        // Arrange: the cheater's HTLC-timeout for a1 is seen in a block that is then disconnected: the monitor drops
+        // the spend and the executor puts the row back
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var batchTxId = kit.Broadcasts.Keys.Single();
+        var htlcTimeout = kit.CheaterSecondLevel(HtlcDirection.Incoming, 0);
+        await kit.ConfirmAsync(htlcTimeout, RevokedBreachKit.SpentAtHeight + 2);
+        var a1 = kit.Rows.FindIndex(r => r is { Descriptor: OutputDescriptorKind.RevokedHtlc, HtlcDirection: HtlcDirection.Incoming });
+        kit.Rows[a1] = kit.Rows[a1] with { State = OutputResolutionState.Broadcast, ResolvedHeight = null };
+        foreach (var input in htlcTimeout.Inputs)
+            kit.Spends.Remove((input.PreviousTxId, input.PreviousVout));
+
+        // Act
+        var round = await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 2);
+
+        // Assert: the batch is valid again, so it is neither rebuilt nor replaced
+        Assert.DoesNotContain(round, a => a is BroadcastAction);
+        Assert.All(kit.Rows.Where(r => r.Descriptor != OutputDescriptorKind.RevokedSecondLevel),
+                   r => Assert.Equal(batchTxId, r.ResolvingTransactionId));
+    }
+
+    [Fact]
+    public async Task Given_BatchFeeUnknown_When_DeadlineMinus18_Then_BatchKeptWithAlert()
+    {
+        // Arrange: the batch cannot be read back, so no replacement can be priced against it
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var batchTxId = kit.Broadcasts.Keys.Single();
+        kit.DataSource.BroadcastsHidden = true;
+
+        // Act
+        var round = await kit.RunAsync(B1Expiry - new SweepFeePolicyOptions().SecurityDelay);
+
+        // Assert: nothing split (every single would be refused and the rows would point at them)
+        Assert.DoesNotContain(round, a => a is BroadcastAction or UpsertOutputAction);
+        Assert.Contains(round, a => a is AlertAction { RequirementId: "B5-REV-08" });
+        Assert.All(kit.Rows, r => Assert.Equal(batchTxId, r.ResolvingTransactionId));
+    }
+
+    private static void AssertFulfilled(IChannelDomainEvent channelEvent, ulong htlcId, Secret preimage)
+    {
+        var fulfilled = Assert.IsType<OutgoingHtlcFulfilled>(channelEvent);
+        Assert.Equal(htlcId, fulfilled.HtlcId);
+        Assert.Equal(preimage, fulfilled.PaymentPreimage);
+    }
+
     [Fact]
     public async Task Given_NoContext_When_Resolved_Then_AlertAndNothingElse()
     {
@@ -370,6 +557,14 @@ public class RevokedResolutionTests
         Assert.All(kit.Rows, r => Assert.True(r.State is OutputResolutionState.Broadcast or OutputResolutionState.Ignored,
                                               $"{r.Descriptor} {r.State}"));
         Assert.Equal(kit.Rows.Count(r => r.State == OutputResolutionState.Ignored), kit.Alerts.Count);
+
+        // The small HTLC output is not given up: its penalty pays everything above dust rather than leave it to the
+        // cheater (the policy may spend the whole value this close to the deadline)
+        var b1 = Assert.Single(kit.Rows, r => r is { Descriptor: OutputDescriptorKind.RevokedHtlc, HtlcId: 0 });
+        Assert.Equal(OutputResolutionState.Broadcast, b1.State);
+        var penalty = kit.LoadBroadcast(b1.ResolvingTransactionId!.Value);
+        Assert.Single(penalty.Inputs);
+        kit.AssertVerifies(b1.ResolvingTransactionId!.Value);
     }
 
     [Fact]

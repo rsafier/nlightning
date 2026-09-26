@@ -22,12 +22,15 @@ using Infrastructure.Bitcoin.Builders.Interfaces;
 /// +272 weight); an output closer to its deadline gets its own (B5-REV-08).</item>
 /// <item>A batched penalty that is still unconfirmed when one of its outputs comes within <c>security_delay</c> of its
 /// deadline is split: every output still unspent gets its own penalty, the most urgent one paying at least the BIP 125
-/// replacement fee of the batch (O5-T3).</item>
+/// replacement fee of the batch (O5-T3), and published first, so the others no longer conflict once it replaced the
+/// batch. The batch is kept (with an alert) when its fee is unknown or the most urgent output cannot outbid it: the
+/// singles would all be refused as replacements, and the rows would point at them with nothing left to retry.</item>
 /// <item>A penalty invalidated by the cheater (one of its inputs was spent by its HTLC-timeout/success transaction) is
 /// replaced by a new one for the inputs it still has (B5-REV-09); the second-level outputs are penalized separately.</item>
 /// <item>Fees follow <see cref="SweepFeePolicy"/>: the estimate floored at 253 sat/kw, capped at half the value, and at
 /// the whole value once a deadline is within <c>security_delay</c>; an output that cannot pay its own fee at the floor
-/// is recorded <see cref="OutputResolutionState.Ignored"/> (dust) with an alert.</item>
+/// is recorded <see cref="OutputResolutionState.Ignored"/> (dust) with an alert. A transaction the builder refuses for
+/// any other reason is alerted and the row left as it is, so the next block tries again.</item>
 /// </list>
 /// Pure apart from signing: nothing is saved or published here (the executor saves, then publishes).
 /// </remarks>
@@ -120,11 +123,28 @@ public sealed class PenaltyTransactionComposer
                   + "splitting it into {Count} penalties (B5-REV-08)", batchTxId, channelId,
                     _policy.Options.SecurityDelay, members.Count);
 
-            var oldFee = await getFeeAsync(batchTxId);
             var ordered = members.OrderBy(m => m.DeadlineHeight ?? uint.MaxValue).ToList();
+            if (await getFeeAsync(batchTxId) is not { } oldFee)
+            {
+                actions.Add(new AlertAction("B5-REV-08",
+                                            $"Batched penalty {batchTxId} of channel {channelId} is unconfirmed near a "
+                                          + "deadline but its fee is unknown, so no replacement can outbid it; it is "
+                                          + "kept as it is"));
+                continue;
+            }
+
+            if (!CanOutbid(ordered[0], oldFee, height, estimatePerKw, destinationScript))
+            {
+                actions.Add(new AlertAction("B5-REV-08",
+                                            $"Batched penalty {batchTxId} of channel {channelId} is unconfirmed near a "
+                                          + $"deadline, but output {ordered[0].Input.Vout} of {ordered[0].Input.TxId} "
+                                          + $"cannot pay more than its {oldFee} sat fee; the batch is kept"));
+                continue;
+            }
+
             for (var i = 0; i < ordered.Count; i++)
             {
-                var replacementOf = i == 0 ? oldFee : null;
+                ulong? replacementOf = i == 0 ? oldFee : null;
                 actions.AddRange(BuildSingle(channelId, ordered[i], height, estimatePerKw, destinationScript,
                                              batchTxId, replacementOf));
             }
@@ -145,6 +165,33 @@ public sealed class PenaltyTransactionComposer
             actions.AddRange(BuildBatch(channelId, batchable, height, estimatePerKw, destinationScript));
 
         return actions;
+    }
+
+    /// <summary>
+    /// True when <paramref name="need"/> alone can replace a transaction paying <paramref name="oldFee"/> (BIP 125
+    /// rules 3 and 4) and keep an output above dust.
+    /// </summary>
+    private bool CanOutbid(PenaltyNeed need, ulong oldFee, uint height, uint estimatePerKw, byte[] destinationScript)
+    {
+        var inputs = new List<SweepInput> { need.Input };
+        var decision = Decide(inputs, destinationScript, need.IsPenalty, height, need.DeadlineHeight, estimatePerKw);
+        if (decision.Abandon)
+            return false;
+
+        var weight = SweepWeights.EstimateTransactionWeight(inputs, [destinationScript.Length]);
+        var wanted = Math.Max(decision.FeeSat, _policy.GetReplacementFee(oldFee, SweepWeights.VirtualSize(weight)));
+        var dust = ShutdownScriptValidator.GetDustThresholdSat(destinationScript);
+        return need.Input.AmountSat > dust && wanted <= need.Input.AmountSat - dust;
+    }
+
+    /// <summary>
+    /// The largest fee that keeps the output at the dust threshold, when <paramref name="feeSat"/> would leave less;
+    /// null when the fee leaves enough (or nothing above dust is left at all).
+    /// </summary>
+    private static ulong? LeavesDust(ulong amountSat, ulong feeSat, byte[] destinationScript)
+    {
+        var dust = ShutdownScriptValidator.GetDustThresholdSat(destinationScript);
+        return amountSat > dust && feeSat > amountSat - dust ? amountSat - dust : null;
     }
 
     private bool IsUrgent(PenaltyNeed need, uint height) =>
@@ -212,6 +259,13 @@ public sealed class PenaltyTransactionComposer
                 unsigned = _sweepTransactionBuilder.BuildWithFee(inputs, destinationScript, wanted);
                 feeratePerKw = SweepFeePolicy.FeeratePerKw(unsigned.FeeSat, unsigned.EstimatedWeight);
             }
+            else if (need.IsPenalty && LeavesDust(need.Input.AmountSat, decision.FeeSat, destinationScript) is { } fee)
+            {
+                // Near a deadline the policy may spend the whole value: pay all but the dust threshold rather than
+                // leave the output to the cheater (the builder refuses an output below dust)
+                unsigned = _sweepTransactionBuilder.BuildWithFee(inputs, destinationScript, fee);
+                feeratePerKw = SweepFeePolicy.FeeratePerKw(unsigned.FeeSat, unsigned.EstimatedWeight);
+            }
             else
             {
                 unsigned = need.IsPenalty
@@ -223,9 +277,16 @@ public sealed class PenaltyTransactionComposer
         }
         catch (ArgumentException e)
         {
-            _logger.LogWarning(e, "Penalty for {Vout} of {OutputTxId} (channel {ChannelId}) could not be built",
-                               need.Input.Vout, need.Input.TxId, channelId);
-            return Abandon(need, $"no transaction could be built: {e.Message}");
+            // Not the dust decision: never give the output up for it, the next block tries again
+            _logger.LogError(e, "Penalty for {Vout} of {OutputTxId} (channel {ChannelId}) could not be built",
+                             need.Input.Vout, need.Input.TxId, channelId);
+            return
+            [
+                new AlertAction(need.IsPenalty ? "B5-REV-03" : "B5-REV-02",
+                                $"Output {need.Input.Vout} of {need.Input.TxId} ({need.Input.AmountSat} sat) of channel "
+                              + $"{need.Row.ChannelId}: no transaction could be built ({e.Message}); retrying every "
+                              + "block")
+            ];
         }
     }
 

@@ -115,12 +115,10 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
         if (watch is not { SpentByTransactionId: { } spender, SpentAtHeight: { } height })
             return null;
 
+        // A spender that cannot be fetched is still a spend: its txid alone says whether it is ours
         var transaction = await GetTransactionAsync(spender, height);
-        if (transaction is null)
-            return null;
-
         var byUs = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(spender) is not null;
-        return new RevokedOutputSpend(transaction, height, byUs);
+        return new RevokedOutputSpend(spender, transaction, height, byUs);
     }
 
     /// <inheritdoc />
