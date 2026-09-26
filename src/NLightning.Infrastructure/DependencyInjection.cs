@@ -26,7 +26,9 @@ public static class DependencyInjection
         services.AddSingleton<IOnionReplayCache, OnionReplayCache>();
         services.AddSingleton<IPeerServiceFactory, PeerServiceFactory>();
         services.AddSingleton<ITcpService, TcpService>();
-        services.AddSingleton<ISha256, Sha256>();
+        // Shared by singletons (ChannelFactory) and scoped users alike: per-thread state, so concurrent callers never
+        // mix their data (NL-247)
+        services.AddSingleton<ISha256, ThreadLocalSha256>();
         services.AddSingleton<ITransportServiceFactory, TransportServiceFactory>();
 
         // TryAdd: AddSerializationInfrastructureServices also registers it so that it can be composed on its own
