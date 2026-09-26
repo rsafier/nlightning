@@ -302,6 +302,37 @@ public class ChannelManagerNormalOperationTests
     }
 
     [Fact]
+    public async Task Given_FailedChannel_When_AnnouncementSignaturesArrives_Then_TheChannelErrorIsRaisedAgain()
+    {
+        // Arrange - 259 takes the channel path (G0-T2): a failed channel re-sends its error for it (B2-RE-05)
+        var context = new NormalOperationTestContext(state: ChannelState.Failed);
+        context.ChannelMemoryRepository.Setup(r => r.TryGetChannelState(TestChannelId, out It.Ref<ChannelState>.IsAny))
+               .Returns(new TryGetStateDelegate((ChannelId _, out ChannelState state) =>
+                {
+                    state = ChannelState.Failed;
+                    return true;
+                }));
+        var services = new ServiceCollection();
+        services.AddScoped<ChannelDomainEventQueue>();
+        var channelManager = new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider,
+                                                context.ChannelMemoryRepository.Object,
+                                                NullLogger<ChannelManager>.Instance, context.LightningSigner.Object,
+                                                services.BuildServiceProvider());
+        var message = new AnnouncementSignaturesMessage(
+            new AnnouncementSignaturesPayload(TestChannelId, new ShortChannelId(103, 1, 0), new byte[64],
+                                              new byte[64]));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelFailedException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(), PeerNodeId));
+
+        // Assert - the stored error names the channel; nothing is persisted again
+        Assert.Equal(TestChannelId, exception.ChannelId);
+        Assert.Equal(ChannelFailedException.DefaultPeerMessage, exception.PeerMessage);
+        Assert.Empty(context.Calls);
+    }
+
+    [Fact]
     public async Task Given_FundingCreated_When_Handled_Then_TheRealChannelIdIsLockedToo()
     {
         // Arrange - NL-235: the fundee's handler creates the channel under its real id

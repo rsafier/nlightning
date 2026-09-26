@@ -84,7 +84,7 @@ public class PeerServiceTests
     }
 
     [Fact]
-    public void Given_259_Then_RaisedAsChannelMessage()
+    public void Given_InitializedPeer_When_AnnouncementSignaturesReceived_Then_RaisedAsChannelMessage()
     {
         // Arrange: BOLT 7 announcement_signatures carries a channel_id and is handled on the channel path (G0-T2)
         var peerService = CreatePeerService();
