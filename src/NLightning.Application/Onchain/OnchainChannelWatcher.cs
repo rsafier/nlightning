@@ -163,6 +163,24 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         foreach (var watch in recorded.NewWatches)
             _outpointWatcher.TrackWatchedOutpoint(watch);
 
+        // O8: a prepared transaction made pending again goes out now (the monitor then resends it after every block)
+        if (_outpointWatcher is IChainBroadcaster broadcaster)
+            foreach (var transaction in recorded.Revived)
+            {
+                try
+                {
+                    if (!await broadcaster.PublishAsync(transaction))
+                        _logger.LogWarning("{Purpose} {TxId} of channel {ChannelId} was refused; it is sent again "
+                                         + "after the next block", transaction.Purpose,
+                                           Display(transaction.TransactionId), channelId);
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    _logger.LogError(e, "Publishing {Purpose} {TxId} of channel {ChannelId} failed", transaction.Purpose,
+                                     Display(transaction.TransactionId), channelId);
+                }
+            }
+
         if (recorded.ErrorToSend is { } error)
             await _channelErrorSender.TrySendAsync(recorded.Peer, error);
 
@@ -471,7 +489,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         var ours = descriptors.Where(d => d.IsOurs).ToList();
         var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
-        var prepared = await SettlePreparedAsync(unitOfWork, channelId, broadcasts, spend.TxId);
+        var revived = new List<BroadcastTransactionModel>();
+        var prepared = await SettlePreparedAsync(unitOfWork, channelId, broadcasts, spend.TxId, revived);
         var newWatches = new List<WatchedOutpointModel>();
         foreach (var descriptor in ours)
         {
@@ -555,7 +574,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             alerts.Add(new AlertAction("B5-GEN-06", unmapped));
 
         return new Recorded(new FundingSpendOutcome(closeKind, ours.Count, false), newWatches, errorToSend,
-                            channel.RemoteNodeId, alerts);
+                            channel.RemoteNodeId, alerts, revived);
     }
 
     /// <summary>
@@ -567,16 +586,37 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// </summary>
     private async Task<Dictionary<uint, TxId>> SettlePreparedAsync(IUnitOfWork unitOfWork, ChannelId channelId,
                                                                    IReadOnlyList<BroadcastTransactionModel> broadcasts,
-                                                                   TxId spend)
+                                                                   TxId spend,
+                                                                   List<BroadcastTransactionModel> revived)
     {
         var spentBy = new Dictionary<uint, TxId>();
-        foreach (var broadcast in broadcasts.Where(b => b.State is (BroadcastState.Pending or BroadcastState.Confirmed)
-                                                     && IsPreparedPurpose(b.Purpose)))
+
+        // The abandoned ones last: one is revived only for outputs no live transaction spends
+        foreach (var broadcast in broadcasts.Where(b => b.State is BroadcastState.Pending or BroadcastState.Confirmed
+                                                                    or BroadcastState.Abandoned
+                                                     && IsPreparedPurpose(b.Purpose))
+                                            .OrderBy(b => b.State == BroadcastState.Abandoned))
         {
             if (!ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) || transaction is null)
                 continue;
 
             var fromSpend = transaction.Inputs.Where(i => i.PreviousTxId == spend).ToList();
+            if (broadcast.State == BroadcastState.Abandoned)
+            {
+                // Abandoned when this commitment left the mempool (or while the monitor lagged), and it confirmed
+                // after all: pending again, or the resolver's penalty would find it abandoned and never send it (the
+                // same txid: lock time 0, the same wallet address, RFC 6979 signatures, often the same fee)
+                if (fromSpend.Count == 0 || fromSpend.Any(i => spentBy.ContainsKey(i.PreviousVout))
+                 || !await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(broadcast.TransactionId))
+                    continue;
+
+                broadcast.MarkPending();
+                revived.Add(broadcast);
+                _logger.LogWarning("Channel {ChannelId}: {Purpose} {TxId}, abandoned before the revoked commitment "
+                                 + "{Spend} confirmed, is pending again", channelId, broadcast.Purpose,
+                                   Display(broadcast.TransactionId), Display(spend));
+            }
+
             if (fromSpend.Count == 0)
             {
                 if (broadcast.State != BroadcastState.Pending)
@@ -630,5 +670,6 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         IReadOnlyList<WatchedOutpointModel> NewWatches,
         ErrorMessage? ErrorToSend,
         CompactPubKey Peer,
-        IReadOnlyList<AlertAction> Alerts);
+        IReadOnlyList<AlertAction> Alerts,
+        IReadOnlyList<BroadcastTransactionModel> Revived);
 }
