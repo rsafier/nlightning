@@ -100,12 +100,14 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
 
         // NL-379: as fundee of an anchors channel we still pay the CPFP child of our commitment and the fee inputs of
         // our HTLC transactions from the wallet, so refuse the channel when the confirmed balance can't keep the anchors
-        // reserve with it (LND does the same). The channel type decided the anchors, as it does in the factory
+        // reserve with it (LND does the same). The channel type decided the anchors, as it does in the factory. Once
+        // admitted, the channel counts toward the reserve while it is being opened, so concurrent opens can't all pass
+        // against the reserve of one
         if (channel.ChannelParams.OptionAnchorOutputs && _anchorReserveService is not null)
         {
             try
             {
-                await _anchorReserveService.EnsureCanAcceptAnchorsChannelAsync();
+                await _anchorReserveService.EnsureCanAcceptAnchorsChannelAsync(channel);
             }
             catch (AnchorReserveException e)
             {

@@ -26,20 +26,24 @@ public interface IUtxoMemoryRepository
 
     /// <summary>
     /// Locks outputs worth at least <paramref name="requestFundingAmount"/> for the funding of
-    /// <paramref name="channelId"/>, from the outputs neither locked, reserved for a fee nor in
-    /// <paramref name="excludedOutpoints"/> (outputs our own pending broadcasts spend, NL-385), and only when those
-    /// outputs minus the funding amount still cover <paramref name="reserveToKeep"/> (the anchors reserve, NL-379; the
-    /// funding's change returns to the wallet and counts toward it). Atomic against the other lock and reservation
-    /// calls. Throws <see cref="InvalidOperationException"/> when there are no free outputs or they do not cover the
-    /// amount, and <see cref="Exceptions.AnchorReserveException"/> when they do but not with the reserve.
+    /// <paramref name="channelId"/> plus the worst-case fee of its funding transaction at
+    /// <paramref name="fundingFeeRatePerKw"/> (P2WPKH inputs, a P2TR change output), from the P2WPKH/P2TR outputs
+    /// neither locked, reserved for a fee nor in <paramref name="excludedOutpoints"/> (outputs our own pending
+    /// broadcasts spend, NL-385). When <paramref name="reserveToKeep"/> (the anchors reserve, NL-379) is not zero, the
+    /// outputs left that back it (see <see cref="GetAvailableConfirmedBalance"/>) plus the least change the funding
+    /// returns (after its fee; none when dust) must cover it. Atomic against the other lock and reservation calls.
+    /// Throws <see cref="InvalidOperationException"/> when there are no free outputs or they do not cover the amount
+    /// and fee, and <see cref="Exceptions.AnchorReserveException"/> when they do but not with the reserve.
     /// </summary>
     List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId,
                                               LightningMoney reserveToKeep,
-                                              IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints);
+                                              IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints,
+                                              LightningMoney fundingFeeRatePerKw, uint currentBlockHeight);
 
     /// <summary>
-    /// The confirmed balance (the rule of <see cref="GetConfirmedBalance"/>) of the outputs neither locked to a channel,
-    /// reserved for a fee nor in <paramref name="excludedOutpoints"/>.
+    /// The balance that backs the anchors reserve: the outputs neither locked to a channel, reserved for a fee nor in
+    /// <paramref name="excludedOutpoints"/> that the fee input selector can spend (mined, with a known P2WPKH or P2TR
+    /// address) and that are confirmed by the rule of <see cref="GetConfirmedBalance"/>.
     /// </summary>
     LightningMoney GetAvailableConfirmedBalance(uint currentBlockHeight,
                                                 IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints);

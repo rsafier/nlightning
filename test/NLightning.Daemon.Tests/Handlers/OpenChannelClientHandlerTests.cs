@@ -596,7 +596,7 @@ public class OpenChannelClientHandlerTests
         var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
         var reserveMock = new Mock<IAnchorReserveService>();
         var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
-        reserveMock.Setup(x => x.EnsureCanFundAsync(fundingAmount, true, It.IsAny<CancellationToken>()))
+        reserveMock.Setup(x => x.EnsureCanFundAsync(fundingAmount, channelModel, It.IsAny<CancellationToken>()))
                    .ThrowsAsync(new AnchorReserveException("Funding would leave the wallet below the anchors reserve",
                                                            fundingAmount + LightningMoney.Satoshis(10_000),
                                                            LightningMoney.Satoshis(105_000),
@@ -609,13 +609,14 @@ public class OpenChannelClientHandlerTests
         // Assert
         Assert.Equal(ErrorCodes.NotEnoughBalance, ex.ErrorCode);
         Assert.Contains("anchors reserve", ex.Message);
-        reserveMock.Verify(x => x.LockFundingUtxosAsync(It.IsAny<LightningMoney>(), It.IsAny<ChannelId>(),
-                                                        It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+        reserveMock.Verify(x => x.LockFundingUtxosAsync(It.IsAny<LightningMoney>(), It.IsAny<ChannelModel>(),
+                                                        It.IsAny<CancellationToken>()),
                            Times.Never);
         _utxoMemoryRepositoryMock.Verify(x => x.LockUtxosToSpendOnChannel(It.IsAny<LightningMoney>(),
                                                                           It.IsAny<ChannelId>()), Times.Never);
         _channelManagerMock.Verify(x => x.StartOpeningChannelAsync(peerId, channelModel, It.IsAny<IChannelMessage>()),
                                    Times.Never);
+        reserveMock.Verify(x => x.ReleasePendingChannel(channelModel.ChannelId), Times.AtLeastOnce);
     }
 
     [Fact]
@@ -627,7 +628,8 @@ public class OpenChannelClientHandlerTests
         var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
         var reserveMock = new Mock<IAnchorReserveService>();
         var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
-        reserveMock.Setup(x => x.LockFundingUtxosAsync(fundingAmount, channelModel.ChannelId, true,
+        var temporaryChannelId = channelModel.ChannelId;
+        reserveMock.Setup(x => x.LockFundingUtxosAsync(fundingAmount, channelModel,
                                                        It.IsAny<CancellationToken>()))
                    .ReturnsAsync([]);
         var handler = CreateHandlerWithReserve(reserveMock.Object);
@@ -642,9 +644,13 @@ public class OpenChannelClientHandlerTests
 
         // Assert
         Assert.Equal(finalChannelId, response.ChannelId);
-        reserveMock.Verify(x => x.EnsureCanFundAsync(fundingAmount, true, It.IsAny<CancellationToken>()), Times.Once);
-        reserveMock.Verify(x => x.LockFundingUtxosAsync(fundingAmount, channelModel.ChannelId, true,
+        reserveMock.Verify(x => x.EnsureCanFundAsync(fundingAmount, channelModel, It.IsAny<CancellationToken>()),
+                           Times.Once);
+        reserveMock.Verify(x => x.LockFundingUtxosAsync(fundingAmount, channelModel,
                                                         It.IsAny<CancellationToken>()), Times.Once);
+
+        // The funded channel counts as a channel now, so its pending open is released (NL-379)
+        reserveMock.Verify(x => x.ReleasePendingChannel(temporaryChannelId), Times.Once);
         _utxoMemoryRepositoryMock.Verify(x => x.LockUtxosToSpendOnChannel(It.IsAny<LightningMoney>(),
                                                                           It.IsAny<ChannelId>()), Times.Never);
     }

@@ -47,7 +47,7 @@ public class OpenChannel1AnchorReserveTests
     {
         // Arrange
         var handler = CreateHandler(anchors: true);
-        _reserve.Setup(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<CancellationToken>()))
+        _reserve.Setup(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<ChannelModel>(), It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new AnchorReserveException("Not enough confirmed on-chain funds for the anchors reserve",
                                                         LightningMoney.Satoshis(10_000), LightningMoney.Zero,
                                                         LightningMoney.Satoshis(10_000)));
@@ -68,7 +68,7 @@ public class OpenChannel1AnchorReserveTests
     {
         // Arrange
         var handler = CreateHandler(anchors: true);
-        _reserve.Setup(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<CancellationToken>()))
+        _reserve.Setup(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<ChannelModel>(), It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
 
         // Act
@@ -76,7 +76,7 @@ public class OpenChannel1AnchorReserveTests
 
         // Assert
         Assert.IsType<AcceptChannel1Message>(Assert.Single(replies));
-        _reserve.Verify(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<CancellationToken>()), Times.Once);
+        _reserve.Verify(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<ChannelModel>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -90,7 +90,7 @@ public class OpenChannel1AnchorReserveTests
 
         // Assert
         Assert.Single(replies);
-        _reserve.Verify(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<CancellationToken>()), Times.Never);
+        _reserve.Verify(r => r.EnsureCanAcceptAnchorsChannelAsync(It.IsAny<ChannelModel>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     private OpenChannel1MessageHandler CreateHandler(bool anchors)

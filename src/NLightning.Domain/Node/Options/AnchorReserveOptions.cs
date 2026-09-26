@@ -38,6 +38,13 @@ public class AnchorReserveOptions
     public ulong MaxReserve { get; set; } = DefaultMaxReserveSat;
 
     /// <summary>
+    /// How long an anchors channel still being opened (a temporary channel, as opener or fundee) counts toward the
+    /// reserve before it is funded (<c>Node:Anchors:PendingOpenTimeout</c>, default 10 minutes). Past it an abandoned
+    /// open stops holding reserve; a funded channel counts as a channel from then on.
+    /// </summary>
+    public TimeSpan PendingOpenTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// The reserve for <paramref name="anchorsChannelCount"/> anchors channels:
     /// <c>min(ReservePerChannel x count, MaxReserve)</c>.
     /// </summary>
@@ -61,6 +68,8 @@ public class AnchorReserveOptions
             errors.Add($"Anchors:{nameof(MaxReserve)} must be at least Anchors:{nameof(ReservePerChannel)}.");
         if (MaxReserve > MaxMoneySat)
             errors.Add($"Anchors:{nameof(MaxReserve)} is more than 21 million bitcoin.");
+        if (PendingOpenTimeout <= TimeSpan.Zero)
+            errors.Add($"Anchors:{nameof(PendingOpenTimeout)} must be positive.");
         return errors;
     }
 }
