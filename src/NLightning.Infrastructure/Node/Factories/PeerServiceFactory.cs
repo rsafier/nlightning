@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Node.Factories;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -75,7 +76,8 @@ public class PeerServiceFactory : IPeerServiceFactory
                                          _serviceProvider);
 
         // Create the service
-        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout);
+        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
+                               _serviceProvider.GetService<IGossipIngress>());
     }
 
     /// <inheritdoc />
@@ -122,6 +124,7 @@ public class PeerServiceFactory : IPeerServiceFactory
                                                                 pingPongService, _serviceProvider);
 
         // Create the application service (application layer)
-        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout);
+        return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
+                               _serviceProvider.GetService<IGossipIngress>());
     }
 }

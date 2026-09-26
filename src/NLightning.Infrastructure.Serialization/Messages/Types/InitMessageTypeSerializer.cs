@@ -80,15 +80,28 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
             }
 
             RemoteAddressTlv? remoteAddressTlv = null;
+            byte[]? undecodableRemoteAddress = null;
             if (extension.TryGetTlv(TlvConstants.RemoteAddress, out var baseRemoteAddressTlv))
             {
                 var tlvConverter = _tlvConverterFactory.GetConverter<RemoteAddressTlv>()
                                 ?? throw new SerializationException(
                                        $"No serializer found for tlv type {nameof(RemoteAddressTlv)}");
-                remoteAddressTlv = tlvConverter.ConvertFromBase(baseRemoteAddressTlv!);
+                try
+                {
+                    remoteAddressTlv = tlvConverter.ConvertFromBase(baseRemoteAddressTlv!);
+                }
+                catch (Exception e) when (e is InvalidCastException or ArgumentException)
+                {
+                    // remote_addr is odd and advisory (BOLT 1): an address we cannot decode must not fail the init
+                    // (NL-344). The receiver logs and drops it.
+                    undecodableRemoteAddress = baseRemoteAddressTlv!.Value;
+                }
             }
 
-            return new InitMessage(payload, networksTlv, remoteAddressTlv);
+            return new InitMessage(payload, networksTlv, remoteAddressTlv)
+            {
+                UndecodableRemoteAddress = undecodableRemoteAddress
+            };
         }
         catch (SerializationException e)
         {

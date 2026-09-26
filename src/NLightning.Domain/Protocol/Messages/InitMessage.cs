@@ -23,6 +23,13 @@ public sealed class InitMessage : BaseMessage
 
     public RemoteAddressTlv? RemoteAddressTlv { get; }
 
+    /// <summary>
+    /// The raw value of a received <c>remote_addr</c> that is not a valid address descriptor (NL-344). The TLV is odd
+    /// and only advisory, so it never fails the init: <see cref="RemoteAddressTlv"/> is then null and the receiver
+    /// logs this and drops it. Never serialized.
+    /// </summary>
+    public byte[]? UndecodableRemoteAddress { get; init; }
+
     public InitMessage(InitPayload payload, NetworksTlv? networksTlv = null, RemoteAddressTlv? remoteAddressTlv = null)
         : base(MessageTypes.Init, payload)
     {
