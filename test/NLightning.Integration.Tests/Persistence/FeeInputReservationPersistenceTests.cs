@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -14,12 +15,18 @@ using Domain.Crypto.Hashes;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Infrastructure.Bitcoin.Wallet;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Persistence.Contexts;
+using Infrastructure.Persistence.Enums;
+using Infrastructure.Persistence.Providers;
 using Infrastructure.Repositories;
 using Infrastructure.Repositories.Database.Bitcoin;
+using Infrastructure.Repositories.Database.Onchain;
 using Infrastructure.Repositories.Memory;
 
 /// <summary>
@@ -30,6 +37,22 @@ using Infrastructure.Repositories.Memory;
 public class FeeInputReservationPersistenceTests
 {
     private static readonly LightningMoney s_feeRate = LightningMoney.Satoshis(2_500);
+
+    [Fact]
+    public async Task Given_SchemaFromBeforeAddFeeInputReservations_When_Migrated_Then_ReservationsRoundTrip()
+    {
+        // Arrange (the SQLite run of the schema round trip the Docker Postgres/SQL Server tests share)
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await FeeInputReservationSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)),
+            TestContext.Current.CancellationToken);
+    }
 
     [Fact]
     public async Task Given_AReservation_When_Reloaded_Then_EveryFieldRoundTrips()
@@ -153,7 +176,7 @@ public class FeeInputReservationPersistenceTests
     }
 
     [Fact]
-    public async Task Given_AReservation_When_Confirmed_Then_ItsRowsAndItsUtxosAreGone()
+    public async Task Given_AReservation_When_ConfirmedBeforeAndAfterTheChainMonitorSpendsIt_Then_OnlyAfterItEnds()
     {
         // Arrange
         using var database = new SqliteTestDatabase();
@@ -161,8 +184,17 @@ public class FeeInputReservationPersistenceTests
         var reservation = await node.Selector.ReserveAsync(LightningMoney.Satoshis(70_000), s_feeRate, 700,
                                                            "cpfp:confirm", TestContext.Current.CancellationToken);
 
-        // Act
-        await node.Selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken);
+        // Act / Assert: before the block is processed the coins are still the wallet's and stay reserved
+        Assert.False(await node.Selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken));
+        await using (var early = database.CreateContext())
+        {
+            Assert.Equal(2, await early.Utxos.CountAsync(TestContext.Current.CancellationToken));
+            Assert.Single(await early.FeeInputReservations.ToListAsync(TestContext.Current.CancellationToken));
+        }
+
+        // The chain monitor processes the block that spends them (its own save), then the caller confirms
+        await node.SpendInBlockAsync(database, reservation.Inputs);
+        Assert.True(await node.Selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken));
 
         // Assert
         await using var context = database.CreateContext();
@@ -176,11 +208,55 @@ public class FeeInputReservationPersistenceTests
         }
     }
 
+    [Fact]
+    public async Task Given_APendingFundingBroadcast_When_TheNodeRestartsAndReserves_Then_ItsInputIsNotPicked()
+    {
+        // Arrange: our funding transaction spends the largest output and is broadcast but not mined; its channel lock
+        // lived in memory only, so after the restart only its BroadcastTransactions row says the output is spent
+        using var database = new SqliteTestDatabase();
+        var before = await WalletNode.CreateAsync(database, 500_000, 40_000);
+        var largest = before.Utxos.GetUnreservedUtxos().MaxBy(u => u.Amount.Satoshi)!;
+        var funding = Network.RegTest.CreateTransaction();
+        funding.Inputs.Add(new TxIn(new OutPoint(new uint256((byte[])largest.TxId), largest.Index)));
+        funding.Outputs.Add(Money.Satoshis(499_000), new Key().PubKey.WitHash.ScriptPubKey);
+        await using (var context = database.CreateContext())
+        {
+            var broadcasts = new BroadcastTransactionDbRepository(context);
+            broadcasts.Add(new BroadcastTransactionModel(
+                               new SignedTransaction(funding.GetHash().ToBytes(), funding.ToBytes()),
+                               BroadcastPurpose.Funding, null, 100));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var after = await WalletNode.RestartAsync(database);
+
+        // Act
+        var reservation = await after.Selector.ReserveAsync(LightningMoney.Satoshis(1_000), s_feeRate, 700,
+                                                            "cpfp:restart", TestContext.Current.CancellationToken);
+
+        // Assert: the smaller output pays; the funding's input is neither reserved nor offered
+        var input = Assert.Single(reservation.Inputs);
+        Assert.False(input.TxId.Equals(largest.TxId) && input.Index == largest.Index);
+        Assert.False(after.Utxos.TryGetFeeReservation(largest.TxId, largest.Index, out _));
+        await Assert.ThrowsAsync<InsufficientFundsException>(
+            () => after.Selector.ReserveAsync(LightningMoney.Satoshis(1_000), s_feeRate, 700, "cpfp:second",
+                                              TestContext.Current.CancellationToken));
+    }
+
     /// <summary>One node's wallet: its UTXO memory set, a selector and the services it resolves per scope.</summary>
     private sealed class WalletNode
     {
         public required UtxoMemoryRepository Utxos { get; init; }
         public required FeeInputSelector Selector { get; init; }
+
+        /// <summary>What the chain monitor does when it processes a block spending these outputs: one save.</summary>
+        public async Task SpendInBlockAsync(SqliteTestDatabase database, IEnumerable<WalletInput> inputs)
+        {
+            using var uow = CreateUnitOfWork(database, Utxos);
+            foreach (var input in inputs)
+                uow.TrySpendUtxo(input.TxId, input.Index);
+            await uow.SaveChangesAsync();
+        }
 
         public static async Task<WalletNode> CreateAsync(SqliteTestDatabase database, params long[] amounts)
         {

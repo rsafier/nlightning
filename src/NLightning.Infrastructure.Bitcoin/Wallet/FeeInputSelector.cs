@@ -67,9 +67,15 @@ public sealed class FeeInputSelector : IFeeInputSelector
         await _gate.WaitAsync(cancellationToken);
         try
         {
+            // Outputs our own pending broadcasts spend (a funding transaction not yet mined, whose channel lock is
+            // memory only and lost on a restart; a sweep or an earlier child): the chain monitor removes them from the
+            // wallet only when a block holds the spend, and a child built from them would conflict with it
+            var spentByPendingBroadcasts = await GetOutpointsSpentByPendingBroadcastsAsync();
+
             for (var attempt = 1; attempt <= MaxReserveAttempts; attempt++)
             {
-                var selection = Select(GetCandidates(), CeilSatoshis(targetFee), feeRatePerKw.Satoshi, extraWeight);
+                var selection = Select(GetCandidates(spentByPendingBroadcasts), CeilSatoshis(targetFee),
+                                       feeRatePerKw.Satoshi, extraWeight);
                 var reservationId = Guid.NewGuid();
                 var outpoints = selection.Inputs.Select(i => (i.TxId, i.Index)).ToList();
 
@@ -124,7 +130,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
     }
 
     /// <inheritdoc />
-    public async Task ConfirmAsync(Guid reservationId, CancellationToken cancellationToken = default)
+    public async Task<bool> ConfirmAsync(Guid reservationId, CancellationToken cancellationToken = default)
     {
         await _gate.WaitAsync(cancellationToken);
         try
@@ -134,12 +140,20 @@ public sealed class FeeInputSelector : IFeeInputSelector
                 var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 var reservation = await uow.FeeInputReservationDbRepository.GetByIdAsync(reservationId);
                 if (reservation is null)
-                    return;
+                    return true;
 
-                // The spend confirmed: its inputs leave the wallet in the same save (a no-op for the ones the chain
-                // monitor already removed)
-                foreach (var input in reservation.Inputs)
-                    uow.TrySpendUtxo(input.TxId, input.Index);
+                // Only the chain monitor removes wallet outputs, when it processes the block that spends them: while one
+                // is still in the wallet the spend is not seen on chain (not yet processed, or another transaction won),
+                // and ending the reservation now would hand the output to the next selection
+                var unspent = reservation.Inputs.Where(i => _utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _))
+                                         .ToList();
+                if (unspent.Count > 0)
+                {
+                    _logger.LogWarning(
+                        "Fee input reservation {ReservationId} not confirmed: {Count} of its inputs are still unspent in "
+                      + "the wallet", reservationId, unspent.Count);
+                    return false;
+                }
 
                 await uow.FeeInputReservationDbRepository.DeleteAsync(reservationId);
                 await uow.SaveChangesAsync();
@@ -147,6 +161,7 @@ public sealed class FeeInputSelector : IFeeInputSelector
 
             _utxoMemoryRepository.ReleaseFeeReservation(reservationId);
             _logger.LogInformation("Fee input reservation {ReservationId} confirmed", reservationId);
+            return true;
         }
         finally
         {
@@ -203,11 +218,41 @@ public sealed class FeeInputSelector : IFeeInputSelector
         throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
     }
 
-    private List<WalletInput> GetCandidates()
+    private async Task<HashSet<(TxId, uint)>> GetOutpointsSpentByPendingBroadcastsAsync()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+        var spent = new HashSet<(TxId, uint)>();
+        foreach (var broadcast in await uow.BroadcastTransactionDbRepository.GetPendingAsync())
+        {
+            Transaction tx;
+            try
+            {
+                tx = Transaction.Load(broadcast.RawTransaction, _network);
+            }
+            catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
+            {
+                _logger.LogWarning(e, "Pending broadcast {TxId} does not parse; its inputs are not excluded",
+                                   broadcast.TransactionId);
+                continue;
+            }
+
+            foreach (var input in tx.Inputs)
+                spent.Add((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
+        }
+
+        return spent;
+    }
+
+    private List<WalletInput> GetCandidates(HashSet<(TxId, uint)> spentByPendingBroadcasts)
     {
         var candidates = new List<WalletInput>();
         foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())
         {
+            if (spentByPendingBroadcasts.Contains((utxo.TxId, utxo.Index)))
+                continue;
+
             // Only mined outputs whose script we know
             if (utxo.BlockHeight == 0 || utxo.WalletAddress is null
                                       || utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))

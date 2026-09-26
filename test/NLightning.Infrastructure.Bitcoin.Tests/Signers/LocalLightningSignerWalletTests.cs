@@ -206,6 +206,78 @@ public class LocalLightningSignerWalletTests
         Assert.All(handedOut, b => Assert.Equal(0, b));
     }
 
+    [Fact]
+    public void Given_InputsOfTheGivenReservation_When_SigningForIt_Then_EveryInputVerifies()
+    {
+        // Arrange
+        var reservationId = Guid.NewGuid();
+        var first = AddWalletUtxo(AddressType.P2Wpkh, 0, false, 60_000, reserved: true, reservationId);
+        var second = AddWalletUtxo(AddressType.P2Wpkh, 1, false, 40_000, reserved: true, reservationId);
+        var signed = ToSigned(CreateSpend(first.OutPoint, second.OutPoint));
+
+        // Act
+        var allSigned = _signer.SignWalletTransaction(signed, reservationId, []);
+
+        // Assert
+        Assert.True(allSigned);
+        var result = Transaction.Load(signed.RawTxBytes, Network.RegTest);
+        AssertAllVerify(result, first.TxOut, second.TxOut);
+    }
+
+    [Fact]
+    public void Given_AnInputOfAnotherReservation_When_SigningForOne_Then_ThrowsAndSignsNothing()
+    {
+        // Arrange: a caller holding reservation A that built its spend from an input of reservation B
+        var reservationA = Guid.NewGuid();
+        var ours = AddWalletUtxo(AddressType.P2Wpkh, 0, false, 60_000, reserved: true, reservationA);
+        var theirs = AddWalletUtxo(AddressType.P2Wpkh, 1, false, 60_000, reserved: true, Guid.NewGuid());
+        var signed = ToSigned(CreateSpend(ours.OutPoint, theirs.OutPoint));
+        var before = signed.RawTxBytes.ToArray();
+
+        // Act
+        var exception = Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed, reservationA, []));
+
+        // Assert
+        Assert.Contains("belongs to fee reservation", exception.Message);
+        Assert.Equal(before, signed.RawTxBytes);
+        _keyManager.Verify(k => k.GetDepositP2WpkhKeyAtIndex(It.IsAny<uint>(), It.IsAny<bool>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(AddressType.P2Wpkh)]
+    [InlineData(AddressType.P2Tr)]
+    public void Given_AUtxoWhoseIndexDoesNotMatchItsAddress_When_Signing_Then_ThrowsAndSignsNothing(AddressType type)
+    {
+        // Arrange: the row says index 5 but the output pays the key at index 6; a signature by the index-5 key would
+        // pass a check against its own script and still be invalid on chain
+        var utxo = AddWalletUtxo(type, 5, false, 60_000, reserved: true, addressKeyIndex: 6);
+        var signed = ToSigned(CreateSpend(utxo.OutPoint));
+        var before = signed.RawTxBytes.ToArray();
+
+        // Act
+        var exception = Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed));
+
+        // Assert
+        Assert.Contains("does not match its address", exception.Message);
+        Assert.Equal(before, signed.RawTxBytes);
+    }
+
+    [Fact]
+    public void Given_AUtxoWithoutWalletAddress_When_Signing_Then_Throws()
+    {
+        // Arrange
+        var outPoint = new OutPoint(RandomUtils.GetUInt256(), 0);
+        var model = new UtxoModel(new TxId(outPoint.Hash.ToBytes()), 0, LightningMoney.Satoshis(10_000), 100,
+                                  0, false, AddressType.P2Wpkh);
+        _utxos.Add(model);
+        Assert.True(_utxos.TryReserveForFee([(model.TxId, model.Index)], Guid.NewGuid()));
+        var signed = ToSigned(CreateSpend(outPoint));
+
+        // Act / Assert
+        var exception = Assert.Throws<SignerException>(() => _signer.SignWalletTransaction(signed));
+        Assert.Contains("no wallet address", exception.Message);
+    }
+
     private static ExtKey GetP2WpkhExtKey(uint index, bool isChange) =>
         s_masterKey.Derive(isChange ? 1u : 0u).Derive(index);
 
@@ -214,11 +286,14 @@ public class LocalLightningSignerWalletTests
 
     private (UtxoModel Model, OutPoint OutPoint, TxOut TxOut) AddWalletUtxo(AddressType type, uint index,
                                                                            bool isChange, long amountSat,
-                                                                           bool reserved)
+                                                                           bool reserved, Guid? reservationId = null,
+                                                                           uint? addressKeyIndex = null)
     {
+        // addressKeyIndex: the key the recorded address is made from, when it is not the one at index (a corrupt row)
+        var keyIndex = addressKeyIndex ?? index;
         var pubKey = type == AddressType.P2Wpkh
-                         ? GetP2WpkhExtKey(index, isChange).Neuter().PubKey
-                         : GetP2TrExtKey(index, isChange).Neuter().PubKey;
+                         ? GetP2WpkhExtKey(keyIndex, isChange).Neuter().PubKey
+                         : GetP2TrExtKey(keyIndex, isChange).Neuter().PubKey;
         var address = pubKey.GetAddress(type == AddressType.P2Wpkh
                                             ? ScriptPubKeyType.Segwit
                                             : ScriptPubKeyType.TaprootBIP86, Network.RegTest);
@@ -227,7 +302,7 @@ public class LocalLightningSignerWalletTests
                                   100, new WalletAddressModel(type, index, isChange, address.ToString()));
         _utxos.Add(model);
         if (reserved)
-            Assert.True(_utxos.TryReserveForFee([(model.TxId, model.Index)], Guid.NewGuid()));
+            Assert.True(_utxos.TryReserveForFee([(model.TxId, model.Index)], reservationId ?? Guid.NewGuid()));
 
         return (model, outPoint, new TxOut(Money.Satoshis(amountSat), address.ScriptPubKey));
     }

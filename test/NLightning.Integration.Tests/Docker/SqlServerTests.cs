@@ -148,6 +148,19 @@ public class SqlServerTests
     }
 
     [Fact]
+    public async Task Given_SqlServerSchemaFromBeforeAddFeeInputReservations_When_Migrated_Then_ReservationsRoundTrip()
+    {
+        // Arrange (BOLT 5 plan O7-T1: fee input reservations round-trip, the outpoint key refuses a second
+        // reservation and a delete cascades, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_fee_input_reservations");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.MicrosoftSql);
+
+        // Act & Assert
+        await FeeInputReservationSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_SqlServerRowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
     {
         // Arrange (NL-237: the data steps of PersistCommitmentNumbers, SplitChannelParams,

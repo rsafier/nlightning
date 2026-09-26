@@ -11,9 +11,13 @@ using Money;
 /// A reservation is persisted (tables <c>FeeInputReservations</c>/<c>FeeInputReservationInputs</c>, keyed by outpoint,
 /// so an outpoint is never in two reservations) before it is returned, and restored at startup with the wallet's UTXO
 /// set, so neither another reservation nor a channel funding picks its outputs, also after a crash. Outputs locked to a
-/// channel funding are never picked. Sign the spend with <c>ILightningSigner.SignWalletTransaction</c>, which signs
-/// reserved wallet inputs only. A reorg that unconfirms a confirmed spend does not bring its reservation back: the
-/// caller reserves again.
+/// channel funding are never picked, nor are outputs that a pending <c>BroadcastTransactions</c> row spends (our own
+/// unconfirmed funding, sweep or child: channel funding locks are memory only, so after a restart that row is what
+/// keeps its inputs out). Sign the spend with <c>ILightningSigner.SignWalletTransaction(tx, reservationId, ...)</c>,
+/// which signs that reservation's wallet inputs only; persist the spend as a broadcast row before publishing it. At
+/// startup the chain monitor deletes the reservations none of whose inputs is still in the wallet (their spend was
+/// processed in a block). A reorg that unconfirms a confirmed spend does not bring its reservation back: the pending
+/// broadcast row keeps the outputs out, and the caller reserves again if it builds another spend.
 /// </remarks>
 public interface IFeeInputSelector
 {
@@ -41,11 +45,14 @@ public interface IFeeInputSelector
     Task ReleaseAsync(Guid reservationId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Ends a reservation whose spend confirmed: its rows are deleted and its outputs are removed from the wallet in the
-    /// same save (the chain monitor removes them too when it processes the block; this closes the gap). A no-op for an
-    /// unknown id.
+    /// Ends a reservation whose spend confirmed: its rows are deleted. The wallet outputs themselves are removed only
+    /// by the chain monitor when it processes the block that spends them, so this refuses (returns false, nothing
+    /// changed) while any of the reservation's inputs is still in the wallet; call it again after that block. Call it
+    /// at a reorg-safe depth: a reorg that unconfirms the spend does not bring the reservation back (the outputs stay
+    /// excluded while the spend is a pending broadcast). True for an unknown id (already ended, e.g. by the startup
+    /// sweep of reservations whose inputs are all spent).
     /// </summary>
-    Task ConfirmAsync(Guid reservationId, CancellationToken cancellationToken = default);
+    Task<bool> ConfirmAsync(Guid reservationId, CancellationToken cancellationToken = default);
 
     /// <summary>The stored reservation with that id, or null.</summary>
     Task<FeeInputReservation?> GetAsync(Guid reservationId, CancellationToken cancellationToken = default);
