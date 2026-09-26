@@ -96,6 +96,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresChannelsFromBeforeAddGossipGraph_When_Migrated_Then_TheyArePrivateAndTheGraphRoundTrips()
+    {
+        // Arrange (BOLT 7 plan G2-T3/G1-T1: channels stored before the migration are private with no announcement
+        // state and their signing data still loads (NL-067); the graph tables round-trip raw bytes on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_gossip_graph");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await GossipGraphSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                     DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforeAddOnionReplaySet_When_Migrated_Then_TheyMoveForwardAndTheReplaySetWorks()
     {
         // Arrange (NL-078: rows written before the migration move forward; replay entries round-trip, are pruned by

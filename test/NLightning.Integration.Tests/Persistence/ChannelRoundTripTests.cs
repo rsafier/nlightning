@@ -68,6 +68,40 @@ public class ChannelRoundTripTests
     }
 
     [Fact]
+    public async Task Given_AnnouncedChannel_When_AnnouncementStateResetAndUpdated_Then_ItReloadsCleared()
+    {
+        // Arrange (a reorg moved the short channel id: the old signatures are useless, BOLT 7 plan §8.6)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await AddChangeAddressAsync(db);
+        var channel = CreateFullChannel(true);
+        await SaveAndReloadAsync(db, channel);
+        channel.ResetAnnouncementSignatures();
+
+        // Act
+        var reloaded = await UpdateAndReloadAsync(db, channel);
+
+        // Assert
+        Assert.True(reloaded.AnnounceChannel);
+        Assert.Null(reloaded.RemoteAnnouncementSignatures);
+        Assert.Null(reloaded.LocalAnnouncementSignaturesSentAt);
+    }
+
+    [Fact]
+    public async Task Given_PrivateChannel_When_Reloaded_Then_ItIsNotAnnounced()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        var reloaded = await SaveAndReloadAsync(db, SqliteDbTestContext.CreateChannel(false));
+
+        // Assert
+        Assert.False(reloaded.AnnounceChannel);
+        Assert.Null(reloaded.RemoteAnnouncementSignatures);
+        Assert.Null(reloaded.LocalAnnouncementSignaturesSentAt);
+    }
+
+    [Fact]
     public async Task Given_BalanceWithOneMsatRemainder_When_Reloaded_Then_RemainderSurvives()
     {
         // Arrange (NL-191: balances used to be stored as whole satoshis)
@@ -211,7 +245,8 @@ public class ChannelRoundTripTests
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(2_535), 6, true,
                                               FeatureSupport.Compulsory)
         {
-            HasInferredParams = true
+            HasInferredParams = true,
+            AnnounceChannel = true
         };
 
         var localKeySet = new ChannelKeySetModel(9, s_key1, s_key2, s_key3, s_key4, s_key5, s_key6, 281474976710650);
@@ -274,6 +309,12 @@ public class ChannelRoundTripTests
         channel.SetRemoteShutdownScript(Convert.FromHexString("0020" + new string('b', 64)));
         channel.SetClosingTransaction(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x5c, 32).ToArray()),
                                                             [0x02, 0x00, 0x00, 0x00, 0x01]));
+        // Announcement state (BOLT 7 plan G1, migration AddGossipGraph)
+        channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(new CompactSignature(Enumerable.Repeat((byte)0x41, 64).ToArray()),
+                                              new CompactSignature(Enumerable.Repeat((byte)0x42, 64).ToArray())));
+        channel.MarkAnnouncementSignaturesSent(
+            new DateTimeOffset(2026, 9, 26, 12, 34, 56, TimeSpan.FromHours(2)).AddTicks(7_891));
 
         return channel;
     }
@@ -342,6 +383,11 @@ public class ChannelRoundTripTests
         Assert.NotNull(actual.ClosingTransaction);
         Assert.Equal(expected.ClosingTransaction!.TxId, actual.ClosingTransaction.TxId);
         Assert.Equal(expected.ClosingTransaction.RawTxBytes, actual.ClosingTransaction.RawTxBytes);
+
+        // Announcement state (BOLT 7 plan G1)
+        Assert.Equal(expected.AnnounceChannel, actual.AnnounceChannel);
+        Assert.Equal(expected.RemoteAnnouncementSignatures, actual.RemoteAnnouncementSignatures);
+        Assert.Equal(expected.LocalAnnouncementSignaturesSentAt, actual.LocalAnnouncementSignaturesSentAt);
     }
 
     private static void AssertKeySetsEqual(ChannelKeySetModel expected, ChannelKeySetModel actual)

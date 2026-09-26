@@ -369,6 +369,10 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             ClosingTxId = channelModel.ClosingTransaction?.TxId,
             ClosingTransaction = channelModel.ClosingTransaction?.RawTxBytes,
 
+            RemoteAnnouncementNodeSig = channelModel.RemoteAnnouncementSignatures?.NodeSignature.Value,
+            RemoteAnnouncementBitcoinSig = channelModel.RemoteAnnouncementSignatures?.BitcoinSignature.Value,
+            LocalAnnouncementSigsSentAt = channelModel.LocalAnnouncementSignaturesSentAt,
+
             Config = config,
             KeySets = keySets,
             LocalAliases = localAliasEntities
@@ -453,6 +457,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             channelModel.SetRemoteShutdownScript(channelEntity.RemoteShutdownScript);
         if (channelEntity is { ClosingTxId: { } closingTxId, ClosingTransaction: { Length: > 0 } closingTx })
             channelModel.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx));
+        if (channelEntity is { RemoteAnnouncementNodeSig: { } nodeSig, RemoteAnnouncementBitcoinSig: { } bitcoinSig })
+            channelModel.SetRemoteAnnouncementSignatures(
+                new ChannelAnnouncementSignatures(new CompactSignature(nodeSig), new CompactSignature(bitcoinSig)));
+        if (channelEntity.LocalAnnouncementSigsSentAt is { } sentAt)
+            channelModel.MarkAnnouncementSignaturesSent(sentAt);
 
         return channelModel;
     }

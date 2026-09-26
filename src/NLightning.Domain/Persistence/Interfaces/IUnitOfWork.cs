@@ -4,6 +4,7 @@ using Bitcoin.Interfaces;
 using Bitcoin.ValueObjects;
 using Bitcoin.Wallet.Models;
 using Channels.Interfaces;
+using Gossip.Interfaces;
 using Node.Interfaces;
 using Node.Models;
 using Onchain.Interfaces;
@@ -33,6 +34,12 @@ public interface IUnitOfWork : IDisposable
     IChannelKeySetDbRepository ChannelKeySetDbRepository { get; }
     IChannelStateDbRepository ChannelStateDbRepository { get; }
     IRemoteShachainDbRepository RemoteShachainDbRepository { get; }
+
+    // The signer's view of a stored channel (NL-067)
+    IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository { get; }
+
+    // BOLT 7 graph (migration AddGossipGraph)
+    IGraphDbRepository GraphDbRepository { get; }
 
     // Node repositories
     IPeerDbRepository PeerDbRepository { get; }

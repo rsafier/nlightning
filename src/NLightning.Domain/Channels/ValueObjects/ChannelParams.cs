@@ -46,6 +46,13 @@ public readonly record struct ChannelParams
     /// </summary>
     public bool HasInferredParams { get; init; }
 
+    /// <summary>
+    /// The <c>announce_channel</c> bit of <c>open_channel.channel_flags</c> (BOLT 2): the opener asked for a public
+    /// channel, announced with <c>announcement_signatures</c> and <c>channel_announcement</c> (BOLT 7) once it is deep
+    /// enough. False for private channels and for channels stored before migration <c>AddGossipGraph</c>.
+    /// </summary>
+    public bool AnnounceChannel { get; init; }
+
     public ChannelParams(ChannelParty local, ChannelParty remote, LightningMoney feeRateAmountPerKw, uint minimumDepth,
                          bool optionAnchorOutputs, FeatureSupport useScidAlias)
     {
@@ -63,7 +70,8 @@ public readonly record struct ChannelParams
     public ChannelParams WithRemote(ChannelParty remote) =>
         new(Local, remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
         {
-            HasInferredParams = HasInferredParams
+            HasInferredParams = HasInferredParams,
+            AnnounceChannel = AnnounceChannel
         };
 
     /// <summary>

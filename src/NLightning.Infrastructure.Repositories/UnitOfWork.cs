@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Repositories;
 
 using Database.Bitcoin;
 using Database.Channel;
+using Database.Gossip;
 using Database.Node;
 using Database.Onchain;
 using Database.Payment;
@@ -14,6 +15,7 @@ using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Onchain.Interfaces;
@@ -50,6 +52,10 @@ public class UnitOfWork : IUnitOfWork
     private ChannelKeySetDbRepository? _channelKeySetDbRepository;
     private ChannelStateDbRepository? _channelStateDbRepository;
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
+    private ChannelSigningInfoDbRepository? _channelSigningInfoDbRepository;
+
+    // Gossip graph
+    private GraphDbRepository? _graphDbRepository;
 
     // Node repositories
     private PeerDbRepository? _peerDbRepository;
@@ -102,6 +108,11 @@ public class UnitOfWork : IUnitOfWork
 
     public IRemoteShachainDbRepository RemoteShachainDbRepository =>
         _remoteShachainDbRepository ??= new RemoteShachainDbRepository(_context);
+
+    public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository =>
+        _channelSigningInfoDbRepository ??= new ChannelSigningInfoDbRepository(_context);
+
+    public IGraphDbRepository GraphDbRepository => _graphDbRepository ??= new GraphDbRepository(_context);
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
