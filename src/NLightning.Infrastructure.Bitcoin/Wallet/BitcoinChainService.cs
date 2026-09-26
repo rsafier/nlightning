@@ -111,6 +111,41 @@ public class BitcoinChainService : IBitcoinChainService
         }
     }
 
+    public async Task<Block?> GetBlockAsync(uint256 blockHash)
+    {
+        try
+        {
+            return await _rpcClient.GetBlockAsync(blockHash);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+        {
+            return null; // Block not found
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get block {BlockHash}", blockHash);
+            throw;
+        }
+    }
+
+    public async Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint)
+    {
+        try
+        {
+            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, false);
+            if (response is null || response.Confirmations <= 0)
+                return null;
+
+            var tip = await _rpcClient.GetBlockCountAsync();
+            return (response.TxOut, (uint)(tip - response.Confirmations + 1));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get the unspent output {OutPoint}", outPoint);
+            throw;
+        }
+    }
+
     public async Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {
         try

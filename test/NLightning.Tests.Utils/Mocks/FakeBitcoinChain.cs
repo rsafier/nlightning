@@ -17,6 +17,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 public sealed class FakeBitcoinChain : IBitcoinChainService
 {
     private readonly List<Block> _blocks = [];
+    private readonly List<Block> _staleBlocks = [];
     private readonly List<Transaction> _sent = [];
     private uint _nonce;
 
@@ -64,6 +65,7 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
     /// </summary>
     public IReadOnlyList<Block> Reorg(uint forkHeight, int newBlockCount, params Transaction[] firstBlockTransactions)
     {
+        _staleBlocks.AddRange(_blocks.Skip((int)forkHeight + 1));
         _blocks.RemoveRange((int)forkHeight + 1, _blocks.Count - (int)forkHeight - 1);
         var added = new List<Block>();
         for (var i = 0; i < newBlockCount; i++)
@@ -98,6 +100,25 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
         height <= TipHeight
             ? Task.FromResult(_blocks[(int)height].GetHash())
             : throw new InvalidOperationException($"No block at height {height}");
+
+    public Task<Block?> GetBlockAsync(uint256 blockHash) =>
+        Task.FromResult(_blocks.Concat(_staleBlocks).FirstOrDefault(b => b.GetHash() == blockHash));
+
+    public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint)
+    {
+        for (var height = 0; height < _blocks.Count; height++)
+        {
+            var tx = _blocks[height].Transactions.FirstOrDefault(t => t.GetHash() == outPoint.Hash);
+            if (tx is null || outPoint.N >= tx.Outputs.Count)
+                continue;
+
+            var spent = _blocks.SelectMany(b => b.Transactions).SelectMany(t => t.Inputs)
+                               .Any(i => i.PrevOut == outPoint);
+            return Task.FromResult<(TxOut Output, uint Height)?>(spent ? null : (tx.Outputs[outPoint.N], (uint)height));
+        }
+
+        return Task.FromResult<(TxOut Output, uint Height)?>(null);
+    }
 
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {
