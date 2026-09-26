@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Payments.Switch;
 
@@ -15,6 +16,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -95,7 +97,7 @@ using Onion;
 /// (<see cref="LinkUpEventReplayer"/>). Before BOLT2 N7 a link is marked only when a channel opens, so an HTLC refused
 /// because its peer disconnected waits for N7's <c>MarkLinkUp</c> after the reestablish (NL-252).</para>
 /// </remarks>
-public sealed class HtlcSwitch : IHtlcSwitch
+public sealed class HtlcSwitch : IHtlcSwitch, IDisposable
 {
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelLockProvider _channelLockProvider;
@@ -116,6 +118,16 @@ public sealed class HtlcSwitch : IHtlcSwitch
     private readonly KeyedAsyncLock<Hash> _paymentHashLocks = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unhandledLocalResolutions = new();
 
+    // basic_mpp (ABCD W6-B): the HTLC sets being held, by payment hash (read and changed only under its hash lock),
+    // the parts of a timed-out set whose mpp_timeout failure was refused (failed again on their replay), and the
+    // timeout rounds running in the background
+    private readonly bool _acceptMultiPart;
+    private readonly TimeSpan _mppTimeout;
+    private readonly ConcurrentDictionary<Hash, HtlcSet> _htlcSets = new();
+    private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _timedOutParts = new();
+    private readonly ConcurrentDictionary<Task, byte> _backgroundTasks = new();
+    private volatile bool _disposed;
+
     public HtlcSwitch(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
                       IChannelOperations channelOperations, IFailureOnionService failureOnionService,
                       FinalHopProcessor finalHopProcessor, IForwardingPolicy forwardingPolicy,
@@ -123,7 +135,8 @@ public sealed class HtlcSwitch : IHtlcSwitch
                       IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
                       TimeProvider? timeProvider = null, IBlockchainMonitor? blockchainMonitor = null,
                       IChannelUpdateService? channelUpdateService = null,
-                      IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null)
+                      IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null,
+                      IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
@@ -139,6 +152,28 @@ public sealed class HtlcSwitch : IHtlcSwitch
         _peerLivenessProbe = peerLivenessProbe;
         _serviceScopeFactory = serviceScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _acceptMultiPart = (nodeOptions?.Value.Features.BasicMpp ?? FeatureSupport.Optional) != FeatureSupport.No;
+        var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
+        _mppTimeout = mppTimeout > TimeSpan.Zero ? mppTimeout : HtlcSwitchOptions.DefaultMppTimeout;
+    }
+
+    /// <summary>Waits until no <c>mpp_timeout</c> round runs in the background (tests).</summary>
+    internal async Task WhenIdleAsync()
+    {
+        while (!_backgroundTasks.IsEmpty)
+            await Task.WhenAll(_backgroundTasks.Keys);
+    }
+
+    /// <summary>The payment hashes whose HTLC set is held (tests).</summary>
+    internal IReadOnlyCollection<Hash> HeldPaymentHashes => _htlcSets.Keys.ToList();
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        _disposed = true;
+        foreach (var set in _htlcSets.Values)
+            set.Timer?.Dispose();
+        _htlcSets.Clear();
     }
 
     /// <inheritdoc />
@@ -254,7 +289,9 @@ public sealed class HtlcSwitch : IHtlcSwitch
     }
 
     /// <summary>
-    /// Final hop (M4-T3, NL-253): check the invoice under its payment hash lock, then fulfill and settle it in one save.
+    /// Final hop (M4-T3, NL-253; <c>basic_mpp</c>, ABCD W6-B): check the HTLC under its payment hash lock, add it to
+    /// the payment's HTLC set, and once the set's <c>amt_to_forward</c> reach <c>total_msat</c> fulfill every part,
+    /// settling the invoice in the first fulfill's save. A single-part payment is a set of one.
     /// </summary>
     private async Task ReceiveAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
                                     CancellationToken cancellationToken)
@@ -271,13 +308,21 @@ public sealed class HtlcSwitch : IHtlcSwitch
         var amount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         using var paymentHashLock = await _paymentHashLocks.AcquireAsync(htlc.PaymentHash, cancellationToken);
 
+        // A part of a set that timed out while its failure could not be sent: fail it now
+        if (_timedOutParts.ContainsKey((channelId, htlc.Id)))
+        {
+            await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.MppTimeout(), cancellationToken);
+            _timedOutParts.TryRemove((channelId, htlc.Id), out _);
+            return;
+        }
+
         FinalHopResult decision;
         using (var scope = _serviceScopeFactory.CreateScope())
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
             decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, amount, htlc.CltvExpiry,
-                                                   final.Payload, height);
+                                                   final.Payload, height, _acceptMultiPart);
         }
 
         if (!decision.IsAccepted)
@@ -286,26 +331,215 @@ public sealed class HtlcSwitch : IHtlcSwitch
             return;
         }
 
-        try
+        if (decision.InvoiceAlreadySettled)
         {
-            // The invoice settles in the fulfill's own save: no crash leaves one without the other
+            // A part of the set whose first fulfill settled the invoice (the others were refused, or we stopped in
+            // between): BOLT 4 requires the whole set to be fulfilled
             await _channelOperations.FulfillHtlcAsync(channelId, htlc.Id, decision.Preimage!.Value,
-                                                      unitOfWork => SettleInvoiceAsync(unitOfWork, htlc.PaymentHash,
-                                                                                       amount),
                                                       cancellationToken);
-        }
-        catch (InvoiceNotOpenException e)
-        {
-            // Canceled (or paid) since it was checked: nothing was persisted, fail the HTLC as for any unusable invoice
-            _logger.LogInformation("Invoice {PaymentHash} changed before HTLC {HtlcId} of channel {ChannelId} was "
-                                 + "fulfilled: {Reason}", htlc.PaymentHash, htlc.Id, channelId, e.Message);
-            await FailBackAsync(channelId, htlc, final.SharedSecret,
-                                FailureMessage.IncorrectOrUnknownPaymentDetails(amount, height), cancellationToken);
+            _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}, a part "
+                                 + "of the settled payment {PaymentHash}", htlc.Id, htlc.AmountMsat, channelId,
+                                   htlc.PaymentHash);
             return;
         }
 
-        _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId} for "
-                             + "our invoice {PaymentHash}", htlc.Id, htlc.AmountMsat, channelId, htlc.PaymentHash);
+        var part = new HtlcSetPart(channelId, htlc.Id, amount, decision.PartAmount!, final.SharedSecret);
+        var set = GetHtlcSet(htlc.PaymentHash, decision.TotalMsat!);
+        if (set.TotalMsat != decision.TotalMsat!)
+        {
+            // BOLT 4: SHOULD fail the entire HTLC set if total_msat is not the same for all HTLCs in the set
+            _logger.LogInformation("HTLC {HtlcId} of channel {ChannelId} carries total_msat {TotalMsat} but the set of "
+                                 + "{PaymentHash} expects {SetTotalMsat}: failing the set", htlc.Id, channelId,
+                                   decision.TotalMsat!.MilliSatoshi, htlc.PaymentHash, set.TotalMsat.MilliSatoshi);
+            RemoveHtlcSet(set);
+            foreach (var member in set.Parts.Where(p => p.Key != part.Key).Append(part).ToList())
+                await FailPartAsync(member,
+                                    FailureMessage.IncorrectOrUnknownPaymentDetails(member.HtlcAmount, height),
+                                    cancellationToken);
+            return;
+        }
+
+        set.Add(part);
+        if (!set.IsComplete)
+        {
+            set.Timer ??= StartMppTimer(set);
+            _logger.LogInformation("Holding HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}: {Parts} part(s), "
+                                 + "{PartsMsat} of {TotalMsat} msat of {PaymentHash} received", htlc.Id,
+                                   htlc.AmountMsat, channelId, set.Parts.Count, set.PartsSum.MilliSatoshi,
+                                   set.TotalMsat.MilliSatoshi, htlc.PaymentHash);
+            return;
+        }
+
+        await FulfillSetAsync(set, decision.Preimage!.Value, height, cancellationToken);
+    }
+
+    /// <summary>
+    /// The held set of <paramref name="paymentHash"/> without the parts that no longer wait for us, or a new one when
+    /// there is none (or none of its parts is left). Under the payment hash lock.
+    /// </summary>
+    private HtlcSet GetHtlcSet(Hash paymentHash, LightningMoney totalMsat)
+    {
+        if (_htlcSets.TryGetValue(paymentHash, out var set))
+        {
+            set.Prune(p => GetAwaitingIncomingHtlc(p.ChannelId, p.HtlcId) is not null);
+            if (set.Parts.Count > 0)
+                return set;
+
+            RemoveHtlcSet(set);
+        }
+
+        set = new HtlcSet(paymentHash, totalMsat, _timeProvider.GetUtcNow());
+        _htlcSets[paymentHash] = set;
+        return set;
+    }
+
+    private void RemoveHtlcSet(HtlcSet set)
+    {
+        set.Timer?.Dispose();
+        set.Timer = null;
+        _htlcSets.TryRemove(new KeyValuePair<Hash, HtlcSet>(set.PaymentHash, set));
+    }
+
+    /// <summary>
+    /// The set is complete: fulfill every part. The first fulfill that goes through stages the invoice's settlement
+    /// in its save (<c>Settled</c> means "the preimage is out"); a part whose fulfill is refused stays held and is
+    /// fulfilled on its replay (the invoice is then <c>Settled</c>, <see cref="FinalHopResult.InvoiceAlreadySettled"/>).
+    /// When every fulfill is refused nothing was revealed: the complete set stays held for the replays. Under the
+    /// payment hash lock.
+    /// </summary>
+    private async Task FulfillSetAsync(HtlcSet set, Secret preimage, uint height, CancellationToken cancellationToken)
+    {
+        set.Timer?.Dispose();
+        set.Timer = null;
+        var htlcSum = set.HtlcSum;
+        var settled = false;
+        foreach (var part in set.Parts.ToList())
+        {
+            if (GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is null)
+            {
+                set.Remove(part);
+                continue;
+            }
+
+            try
+            {
+                if (settled)
+                {
+                    await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage,
+                                                              cancellationToken);
+                }
+                else
+                {
+                    // The invoice settles in the fulfill's own save: no crash leaves one without the other
+                    await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage,
+                                                              unitOfWork => SettleInvoiceAsync(
+                                                                  unitOfWork, set.PaymentHash, htlcSum),
+                                                              cancellationToken);
+                    settled = true;
+                }
+
+                set.Remove(part);
+                _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId} "
+                                     + "for our invoice {PaymentHash}", part.HtlcId, part.HtlcAmount.MilliSatoshi,
+                                       part.ChannelId, set.PaymentHash);
+            }
+            catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+            {
+                _logger.LogWarning("Could not fulfill HTLC {HtlcId} of channel {ChannelId} for {PaymentHash} yet: "
+                                 + "{Reason}", part.HtlcId, part.ChannelId, set.PaymentHash, e.Message);
+            }
+            catch (InvoiceNotOpenException e)
+            {
+                // Canceled since it was checked: nothing was persisted, fail the whole set as for an unusable invoice
+                _logger.LogInformation("Invoice {PaymentHash} changed before its HTLC set was fulfilled: {Reason}",
+                                       set.PaymentHash, e.Message);
+                RemoveHtlcSet(set);
+                foreach (var member in set.Parts.ToList())
+                    await FailPartAsync(member,
+                                        FailureMessage.IncorrectOrUnknownPaymentDetails(member.HtlcAmount, height),
+                                        cancellationToken);
+                return;
+            }
+        }
+
+        // Once settled, the parts still held are fulfilled on their replay; otherwise the complete set waits for it
+        if (settled || set.Parts.Count == 0)
+            RemoveHtlcSet(set);
+    }
+
+    private ITimer StartMppTimer(HtlcSet set) =>
+        _timeProvider.CreateTimer(_ => RunInBackground(() => ExpireHtlcSetAsync(set)), null, _mppTimeout,
+                                  Timeout.InfiniteTimeSpan);
+
+    private void RunInBackground(Func<Task> work)
+    {
+        if (_disposed)
+            return;
+
+        var task = Task.Run(async () =>
+        {
+            try
+            {
+                await work();
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _logger.LogError(e, "HTLC set timeout round failed");
+            }
+        });
+        _backgroundTasks[task] = 0;
+        _ = task.ContinueWith(t => _backgroundTasks.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// The <c>mpp_timeout</c> of a set (BOLT 4: fail all HTLCs of an incomplete set after a reasonable timeout, at
+    /// least 60 s after the first, with <c>mpp_timeout</c>). A set that completed meanwhile (its fulfills waiting for
+    /// the link) is never failed. A part whose failure is refused is failed again on its replay.
+    /// </summary>
+    private async Task ExpireHtlcSetAsync(HtlcSet set)
+    {
+        if (_disposed)
+            return;
+
+        using var paymentHashLock = await _paymentHashLocks.AcquireAsync(set.PaymentHash, CancellationToken.None);
+        if (_disposed || !_htlcSets.TryGetValue(set.PaymentHash, out var current) || !ReferenceEquals(current, set))
+            return;
+
+        set.Prune(p => GetAwaitingIncomingHtlc(p.ChannelId, p.HtlcId) is not null);
+        if (set.IsComplete)
+            return;
+
+        _logger.LogInformation("HTLC set of {PaymentHash} incomplete after {Timeout} ({PartsMsat} of {TotalMsat} msat "
+                             + "in {Parts} part(s)): failing it with mpp_timeout", set.PaymentHash, _mppTimeout,
+                               set.PartsSum.MilliSatoshi, set.TotalMsat.MilliSatoshi, set.Parts.Count);
+        RemoveHtlcSet(set);
+        foreach (var part in set.Parts.ToList())
+        {
+            _timedOutParts[part.Key] = 0;
+            if (await FailPartAsync(part, FailureMessage.MppTimeout(), CancellationToken.None))
+                _timedOutParts.TryRemove(part.Key, out _);
+        }
+    }
+
+    /// <summary>Fails one held part; a refusal is logged (the part stays locked in for a replay).</summary>
+    private async Task<bool> FailPartAsync(HtlcSetPart part, FailureMessage failure,
+                                           CancellationToken cancellationToken)
+    {
+        try
+        {
+            var reason = _failureOnionService.CreateErrorPacket(part.SharedSecret, failure);
+            await _channelOperations.FailHtlcAsync(part.ChannelId, part.HtlcId, reason, cancellationToken);
+            _logger.LogInformation("Failed back incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}: "
+                                 + "{Reason}", part.HtlcId, part.HtlcAmount.MilliSatoshi, part.ChannelId,
+                                   failure.Code);
+            return true;
+        }
+        catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+        {
+            _logger.LogWarning("Could not fail HTLC {HtlcId} of channel {ChannelId} with {Code} yet: {Reason}",
+                               part.HtlcId, part.ChannelId, failure.Code, e.Message);
+            return false;
+        }
     }
 
     /// <summary>

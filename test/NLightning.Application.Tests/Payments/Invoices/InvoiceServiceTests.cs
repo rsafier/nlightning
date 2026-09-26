@@ -46,13 +46,31 @@ public class InvoiceServiceTests : IDisposable
         Assert.Equal(invoice.CreatedAt.ToUnixTimeSeconds(), decoded.Timestamp);
         Assert.True(decoded.Features!.IsFeatureSet(Feature.VarOnionOptin, true));
         Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
-        Assert.False(decoded.Features.HasFeature(Feature.BasicMpp));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.BasicMpp, false)); // ABCD W6-B: we receive MPP
+        Assert.False(decoded.Features.IsFeatureSet(Feature.BasicMpp, true));
 
         // Assert: the model
         Assert.Equal(invoice.PaymentHash, (Hash)SHA256.HashData(invoice.Preimage));
         Assert.Equal(amount, invoice.Amount);
         Assert.Equal(InvoiceStatus.Open, invoice.Status);
         Assert.Equal(3_600U, invoice.ExpirySeconds);
+    }
+
+    [Fact]
+    public async Task Given_BasicMppTurnedOff_When_InvoiceCreated_Then_NoBasicMppBit()
+    {
+        // Arrange
+        _node.Options.Features.BasicMpp = FeatureSupport.No;
+
+        // Act
+        var invoice = await _node.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(1_000), "single", null,
+                                                                    TestContext.Current.CancellationToken);
+        var decoded = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest);
+
+        // Assert: exactly bits 8 and 14 compulsory
+        Assert.False(decoded.Features!.HasFeature(Feature.BasicMpp));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
     }
 
     [Fact]

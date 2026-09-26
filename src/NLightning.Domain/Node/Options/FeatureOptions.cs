@@ -18,8 +18,8 @@ public class FeatureOptions
     /// <remarks>
     /// Advertising a feature makes peers act on it: anchors need BOLT 5 CPFP / fee bumping (BOLT 2 plan N11), quiesce
     /// needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
-    /// attribution_data error attribution (onion M3b), simple_close the closing_complete/closing_sig flow, basic_mpp
-    /// final-hop HTLC sets (onion M4), onion_messages the onion_message handler and provide_storage peer_storage.
+    /// attribution_data error attribution (onion M3b), simple_close the closing_complete/closing_sig flow,
+    /// onion_messages the onion_message handler and provide_storage peer_storage.
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
@@ -30,7 +30,6 @@ public class FeatureOptions
         Feature.OptionRouteBlinding,
         Feature.OptionAttributionData,
         Feature.OptionSimpleClose,
-        Feature.BasicMpp,
         Feature.OptionOnionMessages,
         Feature.OptionProvideStorage
     };
@@ -90,9 +89,12 @@ public class FeatureOptions
     /// Enable basic MPP.
     /// </summary>
     /// <remarks>
-    /// Defaults to No: receiving payments (HTLCs) is not implemented.
+    /// Defaults to Optional: the final hop holds the parts of a multi-part payment until <c>total_msat</c> arrives
+    /// (BOLT 4 <c>basic_mpp</c>, ABCD W6-B), and our invoices advertise it. We never split our own payments. No turns
+    /// multi-part receiving off (a part with <c>total_msat</c> != <c>amt_to_forward</c> is failed, BOLT 4) and removes
+    /// the bit from init and from our invoices.
     /// </remarks>
-    public FeatureSupport BasicMpp { get; set; } = FeatureSupport.No;
+    public FeatureSupport BasicMpp { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable large channels.
