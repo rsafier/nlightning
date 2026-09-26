@@ -23,7 +23,8 @@ using Domain.Protocol.ValueObjects;
 
 /// <summary>
 /// NL-245: our invoices carry a route hint per private channel, with the peer's own policy from its
-/// <c>channel_update</c>.
+/// <c>channel_update</c>; since BOLT 7 G4 none once an announced channel can receive the payment
+/// (<see cref="InvoiceRouteHintMode"/>).
 /// </summary>
 public class InvoiceRouteHintTests : IDisposable
 {
@@ -222,18 +223,117 @@ public class InvoiceRouteHintTests : IDisposable
         Assert.Equal(connected.RemoteNodeId, hint.CompactPubKey);
     }
 
-    private InvoiceService CreateService() =>
+    [Fact]
+    public async Task Given_AnAnnouncedChannelThePeerCanPayUsOver_When_CreatingAnInvoice_Then_NoHints()
+    {
+        // Arrange: a public channel with inbound, and a private one that would get a hint
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announced: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "public", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert: payers find us through the graph; the private channel stays unrevealed
+        Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannelAndHintsForced_When_CreatingAnInvoice_Then_Hints()
+    {
+        // Arrange
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announced: true);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService(InvoiceRouteHintMode.Always)
+                         .CreateInvoiceAsync(null, "forced", null, TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(announced.RemoteNodeId, hint.CompactPubKey);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannelWithoutEnoughInbound_When_CreatingAnInvoice_Then_ThePrivateHintStays()
+    {
+        // Arrange: the public channel's peer holds only 30,000 sat (20,000 of them reserve)
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 30_000, announced: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "inbound", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(hidden.RemoteNodeId, hint.CompactPubKey);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannelWhoseLinkIsDown_When_CreatingAnInvoice_Then_HintsStay()
+    {
+        // Arrange
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announced: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+        _links.Setup(l => l.IsAliveAsync(announced.ChannelId, announced.RemoteNodeId, It.IsAny<CancellationToken>()))
+              .ReturnsAsync(false);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(null, "down", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(hidden.RemoteNodeId, hint.CompactPubKey);
+    }
+
+    [Fact]
+    public async Task Given_HintsTurnedOff_When_CreatingAnInvoiceOnAPrivateOnlyNode_Then_NoHints()
+    {
+        // Arrange
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+
+        // Act
+        var invoice = await CreateService(InvoiceRouteHintMode.Never)
+                         .CreateInvoiceAsync(null, "never", null, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
+    }
+
+    private InvoiceService CreateService(InvoiceRouteHintMode mode = InvoiceRouteHintMode.Auto) =>
         new(_provider.GetRequiredService<IServiceScopeFactory>(), _us,
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
-            NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object, _links.Object);
+            NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object, _links.Object,
+            Microsoft.Extensions.Options.Options.Create(new InvoiceOptions { RouteHints = mode }));
 
     private ChannelModel AddChannel(CompactPubKey peer, byte tag, ShortChannelId shortChannelId, ulong remoteSat,
-                                    FeatureSupport scidAlias = FeatureSupport.No, bool weFunded = true)
+                                    FeatureSupport scidAlias = FeatureSupport.No, bool weFunded = true,
+                                    bool announced = false)
     {
         var key = new CompactPubKey(new NBitcoin.Key().PubKey.ToBytes());
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
                                      LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(2_000_000), 144);
-        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false, scidAlias);
+        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false, scidAlias)
+        {
+            AnnounceChannel = announced
+        };
         var keySet = new ChannelKeySetModel(tag, key, key, key, key, key, key);
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()), null, null,
                                        weFunded, null, null, LightningMoney.Satoshis(2_000_000 - remoteSat), keySet,
@@ -243,6 +343,13 @@ public class InvoiceRouteHintTests : IDisposable
         {
             ShortChannelId = shortChannelId
         };
+        if (announced)
+        {
+            // Both halves of announcement_signatures exchanged (ChannelAnnouncementService.IsAnnounced)
+            channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(new byte[64], new byte[64]));
+            channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UnixEpoch);
+        }
+
         _open.Add(channel);
         return channel;
     }
