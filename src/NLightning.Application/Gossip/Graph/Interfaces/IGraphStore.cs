@@ -1,0 +1,93 @@
+using System.Diagnostics.CodeAnalysis;
+
+namespace NLightning.Application.Gossip.Graph.Interfaces;
+
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
+
+/// <summary>
+/// The node's network graph (plan BOLT7 §3.1, D2): authoritative in memory, persisted write-behind through
+/// <c>IGraphDbRepository</c> and loaded at startup. Every change goes through one writer lock (never a channel lock);
+/// readers get immutable values and snapshots.
+/// </summary>
+public interface IGraphStore
+{
+    /// <summary>True once <see cref="LoadAsync"/> completed.</summary>
+    bool IsLoaded { get; }
+
+    /// <summary>The number of channels (spent ones included).</summary>
+    int ChannelCount { get; }
+
+    /// <summary>The number of announced nodes.</summary>
+    int NodeCount { get; }
+
+    /// <summary>Changes not written to the database yet.</summary>
+    int PendingChanges { get; }
+
+    /// <summary>
+    /// Raised (outside the writer lock) after a channel was added, so what waited for it (orphan updates, node
+    /// announcements) can be replayed.
+    /// </summary>
+    event EventHandler<GraphChannel>? ChannelAdded;
+
+    /// <summary>
+    /// Loads the persisted graph (once; later calls return at once). Changes made before the load are kept and win.
+    /// </summary>
+    Task LoadAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>Writes the pending changes in one unit of work. On failure they stay pending.</summary>
+    Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>An immutable snapshot for pathfinding and listings (rebuilt only after a change).</summary>
+    IGraphView GetSnapshot();
+
+    /// <summary>The channel with <paramref name="shortChannelId"/>.</summary>
+    bool TryGetChannel(ShortChannelId shortChannelId, [NotNullWhen(true)] out GraphChannel? channel);
+
+    /// <summary>The announcement of <paramref name="nodeId"/>.</summary>
+    bool TryGetNode(CompactPubKey nodeId, [NotNullWhen(true)] out GraphNode? node);
+
+    /// <summary>True when <paramref name="nodeId"/> is an end of at least one graph channel.</summary>
+    bool NodeHasChannels(CompactPubKey nodeId);
+
+    /// <summary>The funding transaction id of a channel, when known (from the chain check or our own channel).</summary>
+    bool TryGetFundingTxId(ShortChannelId shortChannelId, out TxId fundingTxId);
+
+    /// <summary>True when the gossip of <paramref name="nodeId"/> is ignored (a ban that has not ended).</summary>
+    bool IsBanned(CompactPubKey nodeId);
+
+    /// <summary>
+    /// Adds a channel (with <see cref="GraphChannel.RawAnnouncement"/> set); false when one with that short channel id
+    /// is already stored.
+    /// </summary>
+    bool TryAddChannel(GraphChannel channel, TxId? fundingTxId = null);
+
+    /// <summary>
+    /// Sets the policy of one direction of a stored channel; false when the channel is unknown or the stored policy of
+    /// that direction is not older.
+    /// </summary>
+    bool TryApplyPolicy(ShortChannelId shortChannelId, GraphPolicy policy);
+
+    /// <summary>
+    /// Stores a node announcement (with <see cref="GraphNode.RawAnnouncement"/> set); false when the stored one is not
+    /// older.
+    /// </summary>
+    bool TryApplyNode(GraphNode node);
+
+    /// <summary>Ignores the gossip of <paramref name="nodeId"/> until <paramref name="until"/>.</summary>
+    void Ban(CompactPubKey nodeId, string reason, DateTimeOffset until);
+
+    /// <summary>Marks the funding output of a channel spent at <paramref name="height"/>; false when unknown.</summary>
+    bool MarkSpent(ShortChannelId shortChannelId, uint height);
+
+    /// <summary>Reorg: clears the spend of every channel spent above <paramref name="height"/>; returns how many.</summary>
+    int ClearSpentAbove(uint height);
+
+    /// <summary>Removes a channel and its policies; false when unknown.</summary>
+    bool RemoveChannel(ShortChannelId shortChannelId);
+
+    /// <summary>Removes a node announcement; false when unknown.</summary>
+    bool RemoveNode(CompactPubKey nodeId);
+}

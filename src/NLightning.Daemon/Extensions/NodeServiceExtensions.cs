@@ -10,6 +10,7 @@ namespace NLightning.Daemon.Extensions;
 using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
+using Application.Gossip.Graph;
 using Application.Onchain;
 using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
@@ -258,6 +259,22 @@ public static class NodeServiceExtensions
                      if (errors.Count > 0)
                          throw new OptionsValidationException(GossipOptions.SectionName, typeof(GossipOptions),
                                                               errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
+
+        // BOLT 7 graph: ingress, store and write-behind (G2-T4). Gossip:Enabled unset means on everywhere but
+        // mainnet (plan D12); the peer services hand graph gossip to the ingress and ask gossip peers for their graph
+        services.AddGossipGraphServices();
+        services.AddOptions<GossipGraphOptions>()
+                .BindConfiguration(GossipGraphOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipGraphOptions.SectionName,
+                                                              typeof(GossipGraphOptions), errors);
 
                      return true;
                  })
