@@ -34,20 +34,21 @@ using Domain.Routing.Pathfinding;
 /// takes the largest amount that fits (at least <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that
 /// is left), until the amount is covered, within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries
 /// <c>total_msat</c> = <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
-/// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when there is no
-/// usable direct or hint path (the payee is not our peer and no hint starts at one, or the payment avoided them all),
-/// <see cref="GraphPathfinder"/> searches the gossip graph from us to the payee
+/// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when no direct
+/// or hint path carries the whole amount (there is none, the payment avoided them, or they are depleted, bounded by a
+/// failure, too small or too dear), <see cref="GraphPathfinder"/> searches the gossip graph from us to the payee
 /// (Dijkstra backward from the payee, probability-weighted with <see cref="MissionControl"/>'s estimates) with our
 /// usable channels as the first hops (their live sendable amount, never their gossip state), the invoice's route hints
 /// as extra edges (so a private payee is reached through the graph and then its hint), the payment's exclusions, the
-/// nodes mission control penalizes and the verified <c>channel_update</c>s of earlier failures
+/// nodes mission control penalizes (never our own peers) and the verified <c>channel_update</c>s of earlier failures
 /// (<see cref="RouteConstraints.GraphPolicyOverrides"/>, this payment only), the fee limit and
 /// <see cref="RoutingOptions.MaxCltvExpiryDistance"/>. It returns up to <see cref="GraphRoutingContext.PathsPerAmount"/>
 /// diverse paths, cheapest first; for a split it is asked again for half the amount, a quarter,
 /// and so on down to <see cref="PaymentPlanRequest.MinPartMsat"/>, so smaller channels are found too. A graph path's
 /// hops also keep their <c>htlc_minimum_msat</c>, <c>htlc_maximum_msat</c> and capacity, which every part (and the
 /// parts together, for the capacity) must respect, and its payee CLTV carries the shadow offset
-/// (<see cref="GraphRoutingContext.ShadowCltvOffset"/>, cut to the CLTV limit).</para>
+/// (<see cref="GraphRoutingContext.ShadowCltvOffset"/>, cut to the CLTV limit). A graph path found then is used alone
+/// when it carries the amount, else the split combines it with the direct and hint paths.</para>
 /// </remarks>
 public sealed class PaymentRoutePlanner
 {
@@ -93,10 +94,7 @@ public sealed class PaymentRoutePlanner
         var reasons = new List<string>();
         var paths = BuildPaths(request, reasons);
 
-        // The graph only when no direct or hint path is usable (none exists, or the payment avoided them all)
-        var useGraph = request.Graph is not null && paths.Count == 0;
-
-        // One part, when one path can carry the whole amount
+        // One part, when one direct or hint path can carry the whole amount (they come first: the payee's own hints)
         var singleReasons = new List<string>();
         if (TryFitSingle(request, paths, inFlight, singleReasons, out parts))
         {
@@ -104,8 +102,11 @@ public sealed class PaymentRoutePlanner
             return true;
         }
 
+        // Then the graph (plan D7, a third candidate source): none of those paths carries the amount alone (none
+        // exists, the payment avoided them, or they are depleted, bounded by a failure, too small or too dear)
+        var useGraph = request.Graph is not null;
         var graphPaths = new List<CandidatePath>();
-        var seen = new HashSet<string>();
+        var seen = new HashSet<string>(paths.Select(Signature));
         if (useGraph)
         {
             graphPaths.AddRange(BuildGraphPaths(request, request.AmountMsat, seen));
@@ -319,7 +320,9 @@ public sealed class PaymentRoutePlanner
         {
             var scid = path.Hops[i].ShortChannelId;
             var forwarded = route.Hops[i].AmountToForward.MilliSatoshi;
-            if (request.Constraints.PolicyOverrides.TryGetValue(scid, out var policy))
+            // A graph hop's limits already hold the failure's update of its direction (GraphPolicyOverrides, the
+            // pathfinder's effective policy); the SCID-keyed overrides have no direction and are for hint paths only
+            if (path.Limits is null && request.Constraints.PolicyOverrides.TryGetValue(scid, out var policy))
             {
                 if (!ignoreMinimums && forwarded < policy.HtlcMinimumMsat)
                 {
@@ -527,8 +530,12 @@ public sealed class PaymentRoutePlanner
             }
         }
 
-        var excludedNodes = new HashSet<CompactPubKey>(constraints.ExcludedNodes);
-        excludedNodes.UnionWith(graph.PenalizedNodes);
+        // Mission control's node penalties never apply to our own peers: their live state (the usable channels above)
+        // is authoritative, and this payment's own failures still exclude them (RouteConstraints.ExcludedNodes)
+        var excludedNodes = new HashSet<CompactPubKey>(graph.PenalizedNodes);
+        foreach (var (_, local) in locals)
+            excludedNodes.Remove(local.Channel.PeerNodeId);
+        excludedNodes.UnionWith(constraints.ExcludedNodes);
         var pathfinding = new PathfindingRequest(request.OurNodeId, request.Target.PayeeNodeId, amountMsat,
                                                  finalCltvDelta)
         {

@@ -315,17 +315,18 @@ public class PaymentRetryPolicyTests
     }
 
     [Fact]
-    public void Given_ANodeFailure_When_Decided_Then_MissionControlPenalizesTheNode()
+    public void Given_ANodeFailureFromOurPeer_When_Decided_Then_OnlyThisPaymentAvoidsIt()
     {
         // Arrange
         var missionControl = new MissionControl(Options.Create(new PaymentSendOptions()), TimeProvider.System);
         var policy = new PaymentRetryPolicy(_signer.Object, ChainConstants.Regtest, 6, missionControl);
 
-        // Act
+        // Act: Carol is our peer (hop 0)
         policy.Decide(Part(), HtlcRemovalKind.Fail, FromCarol(FailureCode.TemporaryNodeFailure, node: true),
                       _constraints);
 
-        // Assert
-        Assert.Contains(s_carol, missionControl.GetSnapshot().PenalizedNodes);
+        // Assert: no penalty for later payments (her live channel state decides), but this payment avoids her
+        Assert.Empty(missionControl.GetSnapshot().PenalizedNodes);
+        Assert.Contains(s_carol, _constraints.ExcludedNodes);
     }
 }

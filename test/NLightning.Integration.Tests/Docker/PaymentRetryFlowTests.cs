@@ -24,6 +24,7 @@ using Utils;
 /// <c>payment_secret</c> and <c>total_msat</c>); (b) our first hop (alice) refuses our HTLC with
 /// <c>incorrect_cltv_expiry</c> because bob's invoice hints her channel with too small a CLTV delta, and the retry with
 /// alice's signed <c>channel_update</c> succeeds; (c) the per-call fee limit decides whether a hinted fee is paid.
+/// The node routes without the gossip graph (<c>Node:Payments:UseGraph = false</c>).
 /// </summary>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
 public class PaymentRetryFlowTests : IAsyncLifetime
@@ -44,6 +45,11 @@ public class PaymentRetryFlowTests : IAsyncLifetime
         Assert.True(port > 0);
         _node = new NLightningTestNode(fixture, $"nlightning_payment_retry_{Guid.NewGuid()}.db",
                                        new FakeSecureKeyManager(), port);
+
+        // These proofs are about direct channels and route hints (NL-270). With the graph, a hint that does not fit
+        // (e.g. (c)'s fee above the call's limit) brings in the gossip graph (BOLT 7 plan D7), which knows alice's
+        // public channel to bob at her real, lower fee; graph routing has its own proofs (GraphPaymentHarnessTests)
+        _node.ExtraConfiguration["Node:Payments:UseGraph"] = "false";
     }
 
     public async ValueTask InitializeAsync()

@@ -24,7 +24,7 @@ using Send;
 ///   <c>channel_disabled</c>, a BADONION from downstream) bounds edge <c>i</c> at 0 (unusable until it fades); the
 ///   policy failures (<c>fee_insufficient</c>, <c>incorrect_cltv_expiry</c>, <c>amount_below_minimum</c>,
 ///   <c>expiry_too_soon</c>) teach nothing about liquidity; a NODE failure avoids hop <c>i</c>'s node for
-///   <see cref="PaymentSendOptions.NodeFailurePenalty"/>. A failure from the payee (every edge reached it) only records
+///   <see cref="PaymentSendOptions.NodeFailurePenalty"/> (never hop 0, our own peer). A failure from the payee (every edge reached it) only records
 ///   the lower bounds.</item>
 /// </list>
 /// <para>Our own first channel is never recorded: the planner reads its live state. What the failure's
@@ -94,7 +94,10 @@ public sealed class MissionControl
             var flags = (FailureCodeFlags)((ushort)failureCode & 0xF000);
             if (flags.HasFlag(FailureCodeFlags.Node))
             {
-                _nodeFailures[route.Hops[erringHopIndex].NodeId] = _timeProvider.GetUtcNow();
+                // Never our own peer (hop 0): the planner reads its live state, and the payment that got the failure
+                // avoids it on its own (RouteConstraints.ExcludedNodes)
+                if (erringHopIndex > 0)
+                    _nodeFailures[route.Hops[erringHopIndex].NodeId] = _timeProvider.GetUtcNow();
                 return;
             }
 

@@ -2,6 +2,7 @@ namespace NLightning.Application.Tests.Payments.Send;
 
 using Bolt11.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Graph;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
@@ -129,6 +130,44 @@ public class GraphPaymentHarnessTests
         Assert.Equal(policiesBefore, graph.Channels.Select(c => (c.ShortChannelId, c.Policy1, c.Policy2)).ToList());
         Assert.True(graph.TryGetChannel(failing.Value, out var failed));
         Assert.False(failed.Policy1!.IsDisabled || failed.Policy2!.IsDisabled);
+    }
+
+    [Fact]
+    public async Task Given_TwoCarolDavidChannelsEachTooSmall_When_BobPaysAnMppInvoice_Then_ItIsSplitOverBothGraphPaths()
+    {
+        // Arrange: Carol forwards at most 30,000,000 msat to David over each channel, so no single path carries the
+        // 50,000,123 msat; Erin's invoice offers basic_mpp and hints nothing
+        using var harness = Harness(secondCarolDavid: true);
+        var erin = harness.Erin!;
+        const ulong carolMaximum = 30_000_000;
+        var graph = harness.BuildGraph((uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+        var channels = graph.Channels.Select(channel =>
+        {
+            if (channel.ShortChannelId != PaymentHarness.ScidCarolDavid
+             && channel.ShortChannelId != PaymentHarness.ScidCarolDavid2)
+                return channel;
+
+            var fromCarol = channel.GetPolicy(channel.GetDirectionFrom(harness.Carol.NodeId))!;
+            return channel.WithPolicy(fromCarol with { HtlcMaximumMsat = carolMaximum });
+        }).ToList();
+        harness.Bob.GraphView = new GraphSnapshot(channels, []);
+        var invoice = await erin.CreateMppInvoiceAsync(s_amount, []);
+
+        // Act
+        var result = await PayAsync(harness, invoice.Bolt11);
+
+        // Assert: two HTLCs, one over each Carol–David channel, delivering the amount to Erin together
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(invoice.Preimage, result.Payment.Preimage);
+        Assert.Equal(2, result.Attempts);
+        var forwards = harness.Carol.Switch.Forwards.ToArray();
+        Assert.Equal(2, forwards.Length);
+        Assert.Equal(new HashSet<ShortChannelId> { PaymentHarness.ScidCarolDavid, PaymentHarness.ScidCarolDavid2 },
+                     forwards.Select(f => f.Forward.OutgoingShortChannelId).ToHashSet());
+        Assert.All(forwards, f => Assert.True(f.Forward.AmountToForward.MilliSatoshi <= carolMaximum));
+        var received = erin.Switch.Received.ToArray();
+        Assert.Equal(2, received.Length);
+        Assert.Equal(s_amount.MilliSatoshi, received.Aggregate(0UL, (sum, r) => sum + r.AmountMsat));
     }
 
     [Fact]
