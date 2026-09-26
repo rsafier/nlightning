@@ -104,6 +104,7 @@ using Onion;
 /// </remarks>
 public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 {
+    private readonly IAttributionDataService? _attributionDataService;
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -127,6 +128,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     // the parts of a timed-out set whose mpp_timeout failure was refused (failed again on their replay), and the
     // timeout rounds running in the background
     private readonly bool _acceptMultiPart;
+    private readonly bool _advertisesAttribution;
     private readonly TimeSpan _mppTimeout;
     private readonly ConcurrentDictionary<Hash, HtlcSet> _htlcSets = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _timedOutParts = new();
@@ -142,8 +144,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       TimeProvider? timeProvider = null, IBlockchainMonitor? blockchainMonitor = null,
                       IChannelUpdateService? channelUpdateService = null,
                       IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null,
-                      IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null)
+                      IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null,
+                      IAttributionDataService? attributionDataService = null)
     {
+        _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -159,6 +163,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         _serviceScopeFactory = serviceScopeFactory;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _acceptMultiPart = (nodeOptions?.Value.Features.BasicMpp ?? FeatureSupport.Optional) != FeatureSupport.No;
+        _advertisesAttribution = (nodeOptions?.Value.Features.OptionAttributionData ?? FeatureSupport.No)
+                              != FeatureSupport.No;
         var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
         _mppTimeout = mppTimeout > TimeSpan.Zero ? mppTimeout : HtlcSwitchOptions.DefaultMppTimeout;
     }
@@ -393,8 +399,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             if (onchain)
                 return;
 
-            await _channelOperations.FulfillHtlcAsync(channelId, htlc.Id, decision.Preimage!.Value,
-                                                      cancellationToken);
+            await FulfillFinalAsync(channelId, htlc.Id, decision.Preimage!.Value, final.SharedSecret, null,
+                                    cancellationToken);
             _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}, a part "
                                  + "of the settled payment {PaymentHash}", htlc.Id, htlc.AmountMsat, channelId,
                                    htlc.PaymentHash);
@@ -581,7 +587,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
             try
             {
-                await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage, cancellationToken);
+                await FulfillFinalAsync(part.ChannelId, part.HtlcId, preimage, part.SharedSecret, null,
+                                        cancellationToken);
                 LogFulfilled(part, set.PaymentHash);
             }
             catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
@@ -610,8 +617,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         {
             try
             {
-                await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage, Settle,
-                                                          cancellationToken);
+                await FulfillFinalAsync(part.ChannelId, part.HtlcId, preimage, part.SharedSecret, Settle,
+                                        cancellationToken);
                 LogFulfilled(part, set.PaymentHash);
                 return true;
             }
@@ -832,8 +839,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         try
         {
-            var reason = _failureOnionService.CreateErrorPacket(part.SharedSecret, failure);
-            await _channelOperations.FailHtlcAsync(part.ChannelId, part.HtlcId, reason, cancellationToken);
+            await SendFailureAsync(part.ChannelId, part.HtlcId, GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId),
+                                   part.SharedSecret, failure, cancellationToken);
             _logger.LogInformation("Failed back incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}: "
                                  + "{Reason}", part.HtlcId, part.HtlcAmount.MilliSatoshi, part.ChannelId,
                                    failure.Code);
@@ -1090,8 +1097,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private async Task FailBackAsync(ChannelId channelId, HtlcRecord htlc, Secret sharedSecret,
                                      FailureMessage failure, CancellationToken cancellationToken)
     {
-        var reason = _failureOnionService.CreateErrorPacket(sharedSecret, failure);
-        await _channelOperations.FailHtlcAsync(channelId, htlc.Id, reason, cancellationToken);
+        await SendFailureAsync(channelId, htlc.Id, htlc, sharedSecret, failure, cancellationToken);
         LogFailedBack(channelId, htlc, failure.Code.ToString());
     }
 
@@ -1167,7 +1173,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     {
         try
         {
-            await FulfillUpstreamAsync(incomingChannelId, incomingHtlcId, fulfilled.PaymentPreimage, cancellationToken);
+            await FulfillUpstreamAsync(incomingChannelId, incomingHtlcId, fulfilled, cancellationToken);
         }
         catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
         {
@@ -1193,12 +1199,26 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is { } incoming)
         {
             var sharedSecret = await GetIncomingSharedSecretAsync(incomingChannelId, incoming);
-            var reason = sharedSecret is { } secret
+            var attributed = sharedSecret is not null && AddsAttribution(incoming);
+            var reason = sharedSecret is { } secret && !attributed
                              ? ReturnPacket(secret, failed.Removal)
                              : null;
             try
             {
-                if (reason is not null)
+                if (attributed)
+                {
+                    // The attribution seam (NL-326): wrap the downstream attribution_data (all zero when none came)
+                    // with our hold time
+                    var holdTime = await _channelOperations.GetHoldTimeAsync(incomingChannelId, incomingHtlcId,
+                                                                             cancellationToken);
+                    await _channelOperations.FailHtlcAsync(incomingChannelId, incomingHtlcId,
+                                                           AttributedReturnPacket(sharedSecret!.Value, failed.Removal,
+                                                                                  holdTime),
+                                                           cancellationToken);
+                    LogFailedBack(incomingChannelId, incoming,
+                                  $"downstream {failed.Removal.Kind} on channel {failed.ChannelId}");
+                }
+                else if (reason is not null)
                 {
                     await _channelOperations.FailHtlcAsync(incomingChannelId, incomingHtlcId, reason,
                                                            cancellationToken);
@@ -1299,13 +1319,30 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         return circuit?.Status is null or ForwardCircuitStatus.Fulfilled or ForwardCircuitStatus.Failed;
     }
 
-    private async Task FulfillUpstreamAsync(ChannelId incomingChannelId, ulong incomingHtlcId, Secret preimage,
-                                            CancellationToken cancellationToken)
+    private async Task FulfillUpstreamAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
+                                            OutgoingHtlcFulfilled fulfilled, CancellationToken cancellationToken)
     {
-        if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is null)
+        if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is not { } incoming)
             return;
 
-        await _channelOperations.FulfillHtlcAsync(incomingChannelId, incomingHtlcId, preimage, cancellationToken);
+        if (AddsAttribution(incoming)
+         && await GetIncomingSharedSecretAsync(incomingChannelId, incoming) is { } sharedSecret)
+        {
+            // The attribution seam (NL-326): wrap the downstream attribution_data and fulfillment_payload (all zero /
+            // none when none came, e.g. after a disconnect reverted the fulfill) with our hold time
+            var holdTime = await _channelOperations.GetHoldTimeAsync(incomingChannelId, incomingHtlcId,
+                                                                     cancellationToken);
+            var attribution = _attributionDataService!.WrapFulfillment(sharedSecret, fulfilled.AttributionData.Span,
+                                                                       fulfilled.FulfillmentPayload.Span, holdTime);
+            await _channelOperations.FulfillHtlcAsync(incomingChannelId, incomingHtlcId, fulfilled.PaymentPreimage,
+                                                      attribution, null, cancellationToken);
+        }
+        else
+        {
+            await _channelOperations.FulfillHtlcAsync(incomingChannelId, incomingHtlcId, fulfilled.PaymentPreimage,
+                                                      cancellationToken);
+        }
+
         _logger.LogInformation("Fulfilled upstream HTLC {HtlcId} of channel {ChannelId}", incomingHtlcId,
                                incomingChannelId);
     }
@@ -1341,6 +1378,87 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return _failureOnionService.CreateErrorPacket(incomingSharedSecret,
                                                           FailureMessage.TemporaryChannelFailure());
         }
+    }
+
+    /// <summary>
+    /// <see cref="ReturnPacket"/> with <c>attribution_data</c> (BOLT 4 intermediate node, NL-326): a downstream failure
+    /// is wrapped together with its attribution data (an all-zero block when none came), and a failure we originate
+    /// here (malformed downstream, settled on chain) gets fresh attribution data; both carry our hold time.
+    /// </summary>
+    private AttributedErrorPacket AttributedReturnPacket(Secret incomingSharedSecret, HtlcRemoval removal,
+                                                         uint holdTime)
+    {
+        var service = _attributionDataService!;
+        if (removal.Kind == HtlcRemovalKind.OnchainTimeout)
+            return service.CreateErrorPacket(incomingSharedSecret, FailureMessage.PermanentChannelFailure(), holdTime);
+
+        if (removal.Kind != HtlcRemovalKind.FailMalformed)
+            return service.WrapErrorPacket(incomingSharedSecret, removal.Reason.Span, removal.AttributionData.Span,
+                                           holdTime);
+
+        try
+        {
+            return service.CreateErrorPacketFromMalformed(incomingSharedSecret, (FailureCode)removal.FailureCode,
+                                                          removal.Sha256OfOnion.Span, holdTime);
+        }
+        catch (ArgumentException e)
+        {
+            _logger.LogWarning("Cannot convert update_fail_malformed_htlc 0x{Code:x4}: {Reason}", removal.FailureCode,
+                               e.Message);
+            return service.CreateErrorPacket(incomingSharedSecret, FailureMessage.TemporaryChannelFailure(), holdTime);
+        }
+    }
+
+    /// <summary>
+    /// Whether our removal of <paramref name="incoming"/> carries <c>attribution_data</c> (BOLT 4, NL-326): only when
+    /// we advertise <c>option_attribution_data</c> and the incoming <c>update_add_htlc</c> had no <c>path_key</c>.
+    /// </summary>
+    private bool AddsAttribution(HtlcRecord? incoming) =>
+        _attributionDataService is not null && _advertisesAttribution && incoming is { PathKey: null };
+
+    /// <summary>
+    /// Fails an incoming HTLC as the erring node with our own error onion, with <c>attribution_data</c> and our hold
+    /// time when <see cref="AddsAttribution"/>.
+    /// </summary>
+    private async Task SendFailureAsync(ChannelId channelId, ulong htlcId, HtlcRecord? incoming, Secret sharedSecret,
+                                        FailureMessage failure, CancellationToken cancellationToken)
+    {
+        if (AddsAttribution(incoming))
+        {
+            var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+            await _channelOperations.FailHtlcAsync(channelId, htlcId,
+                                                   _attributionDataService!.CreateErrorPacket(sharedSecret, failure,
+                                                       holdTime),
+                                                   cancellationToken);
+            return;
+        }
+
+        await _channelOperations.FailHtlcAsync(channelId, htlcId,
+                                               _failureOnionService.CreateErrorPacket(sharedSecret, failure),
+                                               cancellationToken);
+    }
+
+    /// <summary>
+    /// Fulfills an incoming HTLC we accepted as the final node, with <paramref name="stage"/> in the fulfill's save;
+    /// with <c>attribution_data</c> and our hold time when <see cref="AddsAttribution"/>.
+    /// </summary>
+    private async Task FulfillFinalAsync(ChannelId channelId, ulong htlcId, Secret preimage, Secret sharedSecret,
+                                         Func<IUnitOfWork, Task>? stage, CancellationToken cancellationToken)
+    {
+        if (AddsAttribution(GetAwaitingIncomingHtlc(channelId, htlcId)))
+        {
+            var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+            await _channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage,
+                                                      _attributionDataService!.CreateFulfillment(sharedSecret,
+                                                          holdTime),
+                                                      stage, cancellationToken);
+            return;
+        }
+
+        if (stage is null)
+            await _channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage, cancellationToken);
+        else
+            await _channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage, stage, cancellationToken);
     }
 
     private async Task<Secret?> GetIncomingSharedSecretAsync(ChannelId incomingChannelId, HtlcRecord incoming)

@@ -33,6 +33,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.ValueObjects;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -75,6 +76,8 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IHtlcExpiryMonitor>());
         Assert.NotNull(provider.GetRequiredService<IFeeUpdateScheduler>());
         Assert.IsType<DustExposureHtlcSwitch>(provider.GetRequiredService<IHtlcSwitch>());
+        Assert.Same(provider.GetRequiredService<OnionReplayBlockPruner>(),
+                    provider.GetRequiredService<OnionReplayBlockPruner>());
         var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
         Assert.Contains(ClientCommand.ListChannels, commands);
         Assert.Equal(commands.Count, commands.Distinct().Count());

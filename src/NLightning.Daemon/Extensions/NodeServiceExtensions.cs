@@ -33,6 +33,7 @@ using Infrastructure;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onchain;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Persistence;
@@ -170,6 +171,9 @@ public static class NodeServiceExtensions
         // Add the Infrastructure services (AddBitcoinInfrastructure also registers the signer)
         services.AddBitcoinInfrastructure();
         services.AddInfrastructureServices();
+
+        // Prunes the persistent onion replay set on every block (NL-327); the hosted service starts and stops it
+        services.AddOnionReplayBlockPruner();
         services.AddPersistenceInfrastructureServices(configuration);
         services.AddRepositoriesInfrastructureServices();
         services.AddSerializationInfrastructureServices();

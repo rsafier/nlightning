@@ -13,6 +13,7 @@ using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 public class NltgDaemonService : BackgroundService
@@ -25,6 +26,7 @@ public class NltgDaemonService : BackgroundService
     private readonly IHtlcExpiryMonitor _htlcExpiryMonitor;
     private readonly ILogger<NltgDaemonService> _logger;
     private readonly INamedPipeIpcService _namedPipeIpcService;
+    private readonly OnionReplayBlockPruner _onionReplayBlockPruner;
     private readonly IPeerManager _peerManager;
     private readonly NodeOptions _nodeOptions;
     private readonly IPaymentOutcomeHandler _paymentOutcomeHandler;
@@ -34,7 +36,7 @@ public class NltgDaemonService : BackgroundService
                              IConfiguration configuration, IFeeService feeService,
                              IFeeUpdateScheduler feeUpdateScheduler, IHtlcExpiryMonitor htlcExpiryMonitor,
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
-                             IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
+                             OnionReplayBlockPruner onionReplayBlockPruner, IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
                              IPeerManager peerManager, ISecureKeyManager secureKeyManager)
     {
         _blockchainMonitor = blockchainMonitor;
@@ -45,6 +47,7 @@ public class NltgDaemonService : BackgroundService
         _htlcExpiryMonitor = htlcExpiryMonitor;
         _logger = logger;
         _namedPipeIpcService = namedPipeIpcService;
+        _onionReplayBlockPruner = onionReplayBlockPruner;
         _peerManager = peerManager;
         _nodeOptions = nodeOptions.Value;
         _paymentOutcomeHandler = paymentOutcomeHandler;
@@ -89,6 +92,9 @@ public class NltgDaemonService : BackgroundService
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
 
+            // Prune the onion replay set on every block (NL-327)
+            _onionReplayBlockPruner.Start();
+
             // Start the IPC server
             await _namedPipeIpcService.StartAsync(stoppingToken);
 
@@ -108,6 +114,9 @@ public class NltgDaemonService : BackgroundService
         // The safety services and the fee rounds stop before the chain monitor and the peers they use
         await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
         _channelFailureService.Stop();
+
+        // The replay pruner stops before the chain monitor that drives it
+        await _onionReplayBlockPruner.StopAsync();
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

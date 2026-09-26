@@ -18,6 +18,8 @@ using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
@@ -25,7 +27,10 @@ using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
+using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
 using static Channels.Handlers.NormalOperationTestContext;
 
@@ -310,12 +315,112 @@ public class HtlcSwitchTests
         Assert.Equal(0, locks.Count);
     }
 
-    private HtlcSwitch CreateSwitch()
+    [Fact]
+    public async Task Given_AttributionAdvertised_When_ForwardIsFulfilledDownstream_Then_UpstreamGetsTheWrappedAttribution()
+    {
+        // Arrange - the switch seam (NL-326): wrap the downstream attribution_data and payload with our hold time
+        var preimage = SecretOf(9);
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        SetOrigin(4, HtlcOrigin.Forwarded(TestChannelId, incoming.Id));
+        var circuit = Circuit(ForwardCircuitStatus.Offered, incoming.Id);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id)).ReturnsAsync(circuit);
+        _operations.Setup(o => o.GetHoldTimeAsync(TestChannelId, incoming.Id, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(7u);
+        var downstream = Enumerable.Repeat((byte)0xAD, 920).ToArray();
+        var payload = new byte[] { 1, 2, 3 };
+        var wrapped = new AttributedFulfillment(new byte[920], null);
+        var attribution = new RecordingAttributionService { Fulfillment = wrapped };
+        _operations.Setup(o => o.FulfillHtlcAsync(TestChannelId, incoming.Id, preimage, wrapped, null,
+                                                  It.IsAny<CancellationToken>()))
+                   .Callback(() => _calls.Add("attributed fulfill"))
+                   .Returns(Task.CompletedTask);
+
+        // Act
+        await CreateSwitch(attribution, advertiseAttribution: true)
+           .HandleAsync(new OutgoingHtlcFulfilled(s_otherChannelId, 4, incoming.PaymentHash, preimage, downstream,
+                                                  payload), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["attributed fulfill", "circuit Fulfilled"], _calls);
+        var call = Assert.Single(attribution.Calls);
+        Assert.Equal("wrap fulfillment", call.Call);
+        Assert.Equal(circuit.IncomingSharedSecret, call.Secret);
+        Assert.Equal(downstream, call.First);
+        Assert.Equal(payload, call.Second);
+        Assert.Equal(7u, call.HoldTime);
+        _operations.Verify(o => o.FulfillHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(), It.IsAny<Secret>(),
+                                                   It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AttributionNotAdvertised_When_ForwardIsFulfilledDownstream_Then_UpstreamGetsNoAttribution()
+    {
+        // Arrange - BOLT 4: attribution_data only when we advertise option_attribution_data
+        var preimage = SecretOf(9);
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        SetOrigin(4, HtlcOrigin.Forwarded(TestChannelId, incoming.Id));
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id))
+                 .ReturnsAsync(Circuit(ForwardCircuitStatus.Offered, incoming.Id));
+        _operations.Setup(o => o.FulfillHtlcAsync(TestChannelId, incoming.Id, preimage, It.IsAny<CancellationToken>()))
+                   .Callback(() => _calls.Add("fulfill"))
+                   .Returns(Task.CompletedTask);
+        var attribution = new RecordingAttributionService();
+
+        // Act
+        await CreateSwitch(attribution)
+           .HandleAsync(new OutgoingHtlcFulfilled(s_otherChannelId, 4, incoming.PaymentHash, preimage,
+                                                  new byte[920]), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["fulfill", "circuit Fulfilled"], _calls);
+        Assert.Empty(attribution.Calls);
+    }
+
+    [Fact]
+    public async Task Given_AttributionAdvertised_When_ForwardFailsDownstream_Then_UpstreamGetsTheWrappedFailure()
+    {
+        // Arrange
+        var preimage = SecretOf(9);
+        var incoming = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        SetOrigin(4, HtlcOrigin.Forwarded(TestChannelId, incoming.Id));
+        var circuit = Circuit(ForwardCircuitStatus.Offered, incoming.Id);
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, incoming.Id)).ReturnsAsync(circuit);
+        _operations.Setup(o => o.GetHoldTimeAsync(TestChannelId, incoming.Id, It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(3u);
+        var packet = new AttributedErrorPacket(new byte[292], new byte[920]);
+        var attribution = new RecordingAttributionService { ErrorPacket = packet };
+        _operations.Setup(o => o.FailHtlcAsync(TestChannelId, incoming.Id, packet, It.IsAny<CancellationToken>()))
+                   .Callback(() => _calls.Add("attributed fail"))
+                   .Returns(Task.CompletedTask);
+        var reason = Enumerable.Repeat((byte)0x0F, 292).ToArray();
+        var downstream = Enumerable.Repeat((byte)0xAD, 920).ToArray();
+        var removal = HtlcRemoval.Fail(reason, downstream);
+
+        // Act
+        await CreateSwitch(attribution, advertiseAttribution: true)
+           .HandleAsync(new OutgoingHtlcFailed(s_otherChannelId, 4, incoming.PaymentHash, removal),
+                        TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(["attributed fail", "circuit Failed"], _calls);
+        var call = Assert.Single(attribution.Calls);
+        Assert.Equal("wrap error", call.Call);
+        Assert.Equal(circuit.IncomingSharedSecret, call.Secret);
+        Assert.Equal(reason, call.First);
+        Assert.Equal(downstream, call.Second);
+        Assert.Equal(3u, call.HoldTime);
+    }
+
+    private HtlcSwitch CreateSwitch(IAttributionDataService? attributionDataService = null,
+                                    bool advertiseAttribution = false)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
         var provider = services.BuildServiceProvider();
-        var options = Options.Create(new NodeOptions { EnableHtlcs = true });
+        var nodeOptions = new NodeOptions { EnableHtlcs = true };
+        if (advertiseAttribution)
+            nodeOptions.Features.OptionAttributionData = FeatureSupport.Optional;
+        var options = Options.Create(nodeOptions);
         var onionProcessor = new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
                                                         new Mock<IHopPayloadSerializer>().Object,
                                                         new Mock<IOnionReplayStore>().Object,
@@ -325,7 +430,8 @@ public class HtlcSwitchTests
                               new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance),
                               new HtlcForwardingPolicy(options), NullLogger<HtlcSwitch>.Instance, onionProcessor,
                               new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>(),
-                              localPaymentHandlers: [_paymentHandler.Object]);
+                              localPaymentHandlers: [_paymentHandler.Object], nodeOptions: options,
+                              attributionDataService: attributionDataService);
     }
 
     private void SetOrigin(ulong outgoingHtlcId, HtlcOrigin origin) =>
@@ -347,5 +453,57 @@ public class HtlcSwitchTests
                                            status is ForwardCircuitStatus.Fulfilled or ForwardCircuitStatus.Failed
                                                ? now
                                                : null);
+    }
+
+    /// <summary>Records the switch's wrap calls (Moq cannot match span arguments).</summary>
+    private sealed class RecordingAttributionService : IAttributionDataService
+    {
+        public List<(string Call, Secret Secret, byte[] First, byte[] Second, uint HoldTime)> Calls { get; } = [];
+        public AttributedErrorPacket? ErrorPacket { get; init; }
+        public AttributedFulfillment? Fulfillment { get; init; }
+
+        public AttributedErrorPacket CreateErrorPacket(Secret sharedSecret, FailureMessage message, uint holdTime,
+                                                       int minFailurePadLength = 256) =>
+            throw new NotSupportedException();
+
+        public AttributedErrorPacket CreateErrorPacketFromMalformed(Secret incomingSharedSecret,
+                                                                    FailureCode failureCode,
+                                                                    ReadOnlySpan<byte> sha256OfOnion, uint holdTime,
+                                                                    int minFailurePadLength = 256) =>
+            throw new NotSupportedException();
+
+        public AttributedErrorPacket WrapErrorPacket(Secret sharedSecret, ReadOnlySpan<byte> errorPacket,
+                                                     ReadOnlySpan<byte> downstreamAttributionData, uint holdTime)
+        {
+            Calls.Add(("wrap error", sharedSecret, errorPacket.ToArray(), downstreamAttributionData.ToArray(),
+                       holdTime));
+            return ErrorPacket!;
+        }
+
+        public AttributedFailure DecryptErrorPacket(IReadOnlyList<Secret> hopSharedSecrets,
+                                                    ReadOnlySpan<byte> errorPacket,
+                                                    ReadOnlySpan<byte> attributionData) =>
+            throw new NotSupportedException();
+
+        public AttributedFulfillment CreateFulfillment(Secret sharedSecret, uint holdTime,
+                                                       IReadOnlyList<BaseTlv>? fulfillmentRecords = null) =>
+            throw new NotSupportedException();
+
+        public AttributedFulfillment WrapFulfillment(Secret sharedSecret,
+                                                     ReadOnlySpan<byte> downstreamAttributionData,
+                                                     ReadOnlySpan<byte> downstreamFulfillmentPayload, uint holdTime)
+        {
+            Calls.Add(("wrap fulfillment", sharedSecret, downstreamAttributionData.ToArray(),
+                       downstreamFulfillmentPayload.ToArray(), holdTime));
+            return Fulfillment!;
+        }
+
+        public byte[] WrapFulfillmentPayload(Secret sharedSecret, ReadOnlySpan<byte> fulfillmentPayload) =>
+            throw new NotSupportedException();
+
+        public VerifiedFulfillment VerifyFulfillment(IReadOnlyList<Secret> hopSharedSecrets,
+                                                     ReadOnlySpan<byte> attributionData,
+                                                     ReadOnlySpan<byte> fulfillmentPayload) =>
+            throw new NotSupportedException();
     }
 }

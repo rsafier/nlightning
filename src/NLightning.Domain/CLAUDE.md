@@ -64,7 +64,7 @@ This is the pure domain layer: it holds value objects, models, wire-message mode
 - `LightningMoney` is a mutable reference type (NL-202; the commitment engine uses checked `ulong` msat instead). The `-` operator throws on underflow.
 - The `protected internal BaseMessage(MessageTypes)` constructor installs `PlaceholderPayload`, whose `ChannelId` throws. `Stfu`, `Error` and `Warning` messages are not `IChannelMessage`.
 
-## Onion routing (BOLT 4): M1+M2 done, M3 error onions done, M3b attribution_data library and channel layer done (not wired into the switch)
+## Onion routing (BOLT 4): M1+M2 done, M3 error onions done, M3b attribution_data library, channel layer and switch done (only when `OptionAttributionData` is advertised; experimental)
 Everything is under `Protocol/Onion/` (namespace `NLightning.Domain.Protocol.Onion.*`) plus `Exceptions/OnionException.cs`; tests in `test/NLightning.Domain.Tests/Protocol/Onion/`.
 - `Constants/OnionConstants` (1366/1300/32 sizes, version 0, key labels `Rho`/`Mu`/`Um`/`Pad`/`Ammag`/`AmmagExt`/`BlindedNodeId`/`Fulfillment`, error-packet limits, `MaxHtlcCltv`), `OnionPayloadTlvTypes` (2..18, a separate namespace from `TlvConstants`), `EncryptedDataTlvTypes` (route-blinding namespace, M5; constants only).
 - `ValueObjects/OnionPacket`: raw version(1) + pubkey(33) + hop_payloads(variable) + hmac(32). It validates only lengths, never the version byte or the pubkey, so `update_add_htlc` still parses and the peeler can return `invalid_onion_version`/`invalid_onion_key`. `default(OnionPacket)` members throw.

@@ -34,6 +34,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Fixtures;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence.Contexts;
@@ -285,6 +286,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await Services.GetRequiredService<IFeeUpdateScheduler>().StartAsync(cancellationToken);
             safetyStarted = true;
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            // As the daemon does: prune the onion replay set on every block (NL-327)
+            Services.GetRequiredService<OnionReplayBlockPruner>().Start();
             _started = true;
         }
         catch
@@ -308,6 +311,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
             if (_started)
             {
                 await StopSafetyServicesAsync();
+                await Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync();
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
             }
         }

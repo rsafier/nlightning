@@ -54,7 +54,7 @@ public static class DependencyInjection
         services.AddSingleton<ISecp256K1Math, Secp256K1Math>();
         services.AddSingleton<ISphinxService, SphinxService>();
 
-        // BOLT 4 attributable failures and hold times (onion M3b); not used by the switch yet (feature not advertised)
+        // BOLT 4 attributable failures and hold times (onion M3b); the switch uses it when OptionAttributionData is advertised
         services.AddOnionAttributionServices();
 
         // The signer holds the node's secrets; ISecureKeyManager is registered by the host

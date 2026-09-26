@@ -21,7 +21,9 @@ using Enums;
 /// <param name="KnownPreimage">The preimage the peer revealed with an <c>update_fulfill_htlc</c> for an HTLC we offered.
 /// Unlike <paramref name="Removal"/> it survives <see cref="ChannelCommitments.RevertUncommitted"/> (BOLT 2: "the
 /// effects of update_fulfill_htlc are not completely reversed"), so persisting an upserted record never loses it and the
-/// preimage can be used (e.g. to fulfill upstream or claim on chain) even when the fulfill is not re-sent.</param>
+/// preimage can be used (e.g. to fulfill upstream or claim on chain) even when the fulfill is not re-sent. For an
+/// incoming HTLC it is set by the HTLC switch when we accepted the HTLC as the final node (a part of a set we committed
+/// to, NL-322/NL-323): its replay fulfills it and the on-chain resolvers claim it with this preimage.</param>
 public sealed record HtlcRecord(
     HtlcDirection Direction,
     ulong Id,
