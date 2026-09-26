@@ -5,6 +5,7 @@ using Money;
 using Payments.ValueObjects;
 using Persistence.Interfaces;
 using Protocol.Onion.Enums;
+using Protocol.Onion.Models;
 using Protocol.Onion.ValueObjects;
 using Protocol.Tlv;
 using ValueObjects;
@@ -84,11 +85,53 @@ public interface IChannelOperations
                           Func<IUnitOfWork, Task> stageWithFulfill, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Fulfills an incoming HTLC like <see cref="FulfillHtlcAsync(ChannelId, ulong, Secret, CancellationToken)"/> and
+    /// sends <paramref name="attribution"/> with it: the <c>attribution_data</c> TLV and, when there is one, the
+    /// <c>fulfillment_payload</c> TLV (BOLT 2/4, <c>option_attribution_data</c>). Both are persisted with the fulfill,
+    /// so a retransmission after a reconnection sends them again.
+    /// </summary>
+    /// <param name="channelId">The incoming channel.</param>
+    /// <param name="htlcId">The peer's id of the HTLC.</param>
+    /// <param name="paymentPreimage">The preimage.</param>
+    /// <param name="attribution">What <c>IAttributionDataService.CreateFulfillment</c> (final node) or
+    /// <c>WrapFulfillment</c> (intermediate node) returned.</param>
+    /// <param name="stageWithFulfill">As in
+    /// <see cref="FulfillHtlcAsync(ChannelId, ulong, Secret, Func{IUnitOfWork, Task}, CancellationToken)"/>; null for
+    /// none.</param>
+    /// <param name="cancellationToken">Cancels waiting for the channel lock; once the save started it completes.</param>
+    /// <exception cref="ArgumentException">The <c>fulfillment_payload</c> is longer than 32768 bytes (BOLT 2: the peer
+    /// would fail the channel). Nothing is persisted.</exception>
+    Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                          AttributedFulfillment attribution, Func<IUnitOfWork, Task>? stageWithFulfill = null,
+                          CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Fails an incoming HTLC (<c>update_fail_htlc</c>) with an already encrypted error onion
     /// (<c>IFailureOnionService</c>, created or wrapped with the HTLC's stored shared secret).
     /// </summary>
     Task FailHtlcAsync(ChannelId channelId, ulong htlcId, ReadOnlyMemory<byte> reason,
                        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fails an incoming HTLC (<c>update_fail_htlc</c>) with a return packet and its <c>attribution_data</c>
+    /// (BOLT 4 attributable failures): what <c>IAttributionDataService.CreateErrorPacket</c> (erring node) or
+    /// <c>WrapErrorPacket</c> (intermediate node) returned. The attribution is persisted with the failure, so a
+    /// retransmission after a reconnection sends it again.
+    /// </summary>
+    Task FailHtlcAsync(ChannelId channelId, ulong htlcId, AttributedErrorPacket errorPacket,
+                       CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// This node's BOLT 4 hold time for an incoming HTLC, to report in the <c>attribution_data</c> of its removal:
+    /// the time since its <c>update_add_htlc</c> was received and persisted
+    /// (<see cref="IChannelStateDbRepository.GetHtlcAddedAtAsync"/>), in units of 100 ms (rounded down). Zero ("no
+    /// timing information", which BOLT 4 allows) when the receipt time is unknown (an HTLC received before migration
+    /// <c>AddAttributionData</c>, or no row). Reads only; takes no channel lock.
+    /// </summary>
+    /// <param name="channelId">The incoming channel.</param>
+    /// <param name="htlcId">The peer's id of the HTLC.</param>
+    /// <param name="cancellationToken">Unused by the read; kept for symmetry.</param>
+    Task<uint> GetHoldTimeAsync(ChannelId channelId, ulong htlcId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Fails an incoming HTLC whose onion we could not parse (<c>update_fail_malformed_htlc</c>).

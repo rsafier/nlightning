@@ -15,7 +15,9 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -50,6 +52,12 @@ using Interfaces;
 /// <see cref="IChannelStateDbRepository.SetHtlcOriginAsync"/> in the same save as the add (NL-250), so after a restart
 /// the resolution of the outgoing HTLC can always be routed back to its payment or forward circuit.
 /// </para>
+/// <para>
+/// Attribution (BOLT 4 <c>option_attribution_data</c>, NL-326): the overloads taking an
+/// <see cref="AttributedErrorPacket"/> or <see cref="AttributedFulfillment"/> persist the <c>attribution_data</c> (and
+/// <c>fulfillment_payload</c>) with the removal and send them as TLVs; <see cref="GetHoldTimeAsync"/> gives the hold
+/// time to put in them, measured with the injected <see cref="TimeProvider"/> from the HTLC's persisted receipt time.
+/// </para>
 /// </remarks>
 public sealed class ChannelOperationsService : IChannelOperations
 {
@@ -65,14 +73,16 @@ public sealed class ChannelOperationsService : IChannelOperations
     private readonly NodeOptions _nodeOptions;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
     private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly TimeProvider _timeProvider;
 
     public ChannelOperationsService(IChannelLockProvider channelLockProvider,
                                     IChannelMemoryRepository channelMemoryRepository,
                                     IChannelMessagePublisher channelMessagePublisher, ICommitScheduler commitScheduler,
                                     ILogger<ChannelOperationsService> logger, IOptions<NodeOptions> nodeOptions,
                                     IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
-                                    IBlockchainMonitor? blockchainMonitor = null)
+                                    IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -127,11 +137,49 @@ public sealed class ChannelOperationsService : IChannelOperations
     }
 
     /// <inheritdoc />
+    public Task FulfillHtlcAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
+                                 AttributedFulfillment attribution, Func<IUnitOfWork, Task>? stageWithFulfill = null,
+                                 CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(attribution);
+        if (attribution.FulfillmentPayload is { Length: > OnionConstants.MaxFulfillmentPayloadLength } payload)
+            throw new ArgumentException(
+                $"The fulfillment_payload is {payload.Length} bytes; at most {OnionConstants.MaxFulfillmentPayloadLength}",
+                nameof(attribution));
+
+        return FulfillAsync(channelId, htlcId, paymentPreimage,
+                            stageWithFulfill is null ? null : (unitOfWork, _) => stageWithFulfill(unitOfWork),
+                            cancellationToken, attribution.AttributionData, attribution.FulfillmentPayload ?? []);
+    }
+
+    /// <inheritdoc />
     public async Task FailHtlcAsync(ChannelId channelId, ulong htlcId, ReadOnlyMemory<byte> reason,
                                     CancellationToken cancellationToken = default)
     {
         await RunAsync(channelId, "update_fail_htlc", c => c.SendFail(htlcId, reason.ToArray()),
                        cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task FailHtlcAsync(ChannelId channelId, ulong htlcId, AttributedErrorPacket errorPacket,
+                                    CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(errorPacket);
+        await RunAsync(channelId, "update_fail_htlc",
+                       c => c.SendFail(htlcId, errorPacket.Reason.ToArray(), errorPacket.AttributionData.ToArray()),
+                       cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<uint> GetHoldTimeAsync(ChannelId channelId, ulong htlcId,
+                                             CancellationToken cancellationToken = default)
+    {
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var addedAt = await unitOfWork.ChannelStateDbRepository.GetHtlcAddedAtAsync(
+                          channelId, new HtlcKey(HtlcDirection.Incoming, htlcId));
+
+        return addedAt is { } received ? AttributionHoldTime.FromDuration(_timeProvider.GetUtcNow() - received) : 0;
     }
 
     /// <inheritdoc />
@@ -207,12 +255,14 @@ public sealed class ChannelOperationsService : IChannelOperations
 
     private async Task FulfillAsync(ChannelId channelId, ulong htlcId, Secret paymentPreimage,
                                     Func<IUnitOfWork, CommitmentsResult, Task>? stageWithTransition,
-                                    CancellationToken cancellationToken)
+                                    CancellationToken cancellationToken, byte[]? attributionData = null,
+                                    byte[]? fulfillmentPayload = null)
     {
         await RunAsync(channelId, "update_fulfill_htlc", c =>
         {
             using var sha256 = new Sha256();
-            return c.SendFulfill(htlcId, paymentPreimage, sha256);
+            return c.SendFulfill(htlcId, paymentPreimage, sha256, attributionData?.ToArray() ?? [],
+                                 fulfillmentPayload?.ToArray() ?? []);
         }, cancellationToken, stageWithTransition);
     }
 

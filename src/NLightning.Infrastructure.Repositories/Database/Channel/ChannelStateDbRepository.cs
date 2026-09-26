@@ -26,10 +26,15 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
     private readonly NLightningDbContext _context;
     private readonly RemoteShachainDbRepository _remoteShachainDbRepository;
     private readonly RevokedCommitmentDbRepository _revokedCommitmentDbRepository;
+    private readonly TimeProvider _timeProvider;
 
-    public ChannelStateDbRepository(NLightningDbContext context)
+    /// <param name="context">The unit of work's database context.</param>
+    /// <param name="timeProvider">The clock that stamps a new HTLC row's <see cref="HtlcEntity.AddedAt"/>;
+    /// <see cref="TimeProvider.System"/> when null.</param>
+    public ChannelStateDbRepository(NLightningDbContext context, TimeProvider? timeProvider = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _remoteShachainDbRepository = new RemoteShachainDbRepository(context);
         _revokedCommitmentDbRepository = new RevokedCommitmentDbRepository(context);
     }
@@ -150,6 +155,14 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                                    .FirstOrDefaultAsync();
 
         return secret is null ? (Secret?)null : new Secret(secret);
+    }
+
+    /// <inheritdoc />
+    public async Task<DateTimeOffset?> GetHtlcAddedAtAsync(ChannelId channelId, HtlcKey htlc)
+    {
+        // Through the change tracker first: a row staged by this unit of work is visible before its save
+        var entity = await FindHtlcAsync(channelId, htlc);
+        return entity?.AddedAt;
     }
 
     /// <inheritdoc />
@@ -362,8 +375,9 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             {
                 HtlcRemovalKind.Fulfill => HtlcRemoval.Fulfill(
                     new Secret(row.PaymentPreimage
-                            ?? throw new InvalidOperationException($"Fulfilled HTLC {row.HtlcId} has no preimage"))),
-                HtlcRemovalKind.Fail => HtlcRemoval.Fail(row.FailReason ?? []),
+                            ?? throw new InvalidOperationException($"Fulfilled HTLC {row.HtlcId} has no preimage")),
+                    row.AttributionData ?? [], row.FulfillmentPayload ?? []),
+                HtlcRemovalKind.Fail => HtlcRemoval.Fail(row.FailReason ?? [], row.AttributionData ?? []),
                 HtlcRemovalKind.FailMalformed => HtlcRemoval.FailMalformed(row.FailureCode ?? 0,
                                                                            row.Sha256OfOnion ?? []),
                 _ => throw new InvalidOperationException($"HTLC {row.HtlcId} has unknown removal kind {kind}")
@@ -390,6 +404,13 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
         entity.RemovalKind = removal is null ? null : (byte)removal.Kind;
         entity.PaymentPreimage = removal?.PaymentPreimage is { } preimage ? ((byte[])preimage).ToArray() : null;
         entity.FailReason = removal?.Kind == HtlcRemovalKind.Fail ? removal.Reason.ToArray() : null;
+        entity.AttributionData = removal?.Kind is HtlcRemovalKind.Fulfill or HtlcRemovalKind.Fail
+                              && !removal.AttributionData.IsEmpty
+                                     ? removal.AttributionData.ToArray()
+                                     : null;
+        entity.FulfillmentPayload = removal?.Kind == HtlcRemovalKind.Fulfill && !removal.FulfillmentPayload.IsEmpty
+                                        ? removal.FulfillmentPayload.ToArray()
+                                        : null;
         entity.FailureCode = removal?.Kind == HtlcRemovalKind.FailMalformed ? removal.FailureCode : null;
         entity.Sha256OfOnion = removal?.Kind == HtlcRemovalKind.FailMalformed ? removal.Sha256OfOnion.ToArray() : null;
     }
@@ -422,7 +443,8 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                 PaymentHash = [],
                 CltvExpiry = htlc.CltvExpiry,
                 State = (byte)htlc.State,
-                OnionRoutingPacket = []
+                OnionRoutingPacket = [],
+                AddedAt = _timeProvider.GetUtcNow()
             };
             MapHtlcToEntity(htlc, entity);
             _context.Htlcs.Add(entity);

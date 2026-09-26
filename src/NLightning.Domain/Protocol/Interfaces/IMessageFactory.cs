@@ -101,10 +101,23 @@ public interface IMessageFactory
                                                     ReadOnlyMemory<byte> paymentHash, uint cltvExpiry,
                                                     ReadOnlyMemory<byte> onionRoutingPacket);
 
+    /// <summary>
+    /// An <c>update_fulfill_htlc</c>, with the <c>attribution_data</c> TLV (1) when <paramref name="attributionData"/>
+    /// is not empty and the <c>fulfillment_payload</c> TLV (3) when <paramref name="fulfillmentPayload"/> is not empty.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="attributionData"/> is neither empty nor 920 bytes.</exception>
     UpdateFulfillHtlcMessage CreateUpdateFulfillHtlcMessage(ChannelId channelId, ulong id,
-                                                            ReadOnlyMemory<byte> preimage);
+                                                            ReadOnlyMemory<byte> preimage,
+                                                            ReadOnlyMemory<byte> attributionData = default,
+                                                            ReadOnlyMemory<byte> fulfillmentPayload = default);
 
-    UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason);
+    /// <summary>
+    /// An <c>update_fail_htlc</c>, with the <c>attribution_data</c> TLV (1) when <paramref name="attributionData"/> is
+    /// not empty.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="attributionData"/> is neither empty nor 920 bytes.</exception>
+    UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason,
+                                                      ReadOnlyMemory<byte> attributionData = default);
 
     CommitmentSignedMessage CreateCommitmentSignedMessage(ChannelId channelId, CompactSignature signature,
                                                           IEnumerable<CompactSignature> htlcSignatures,

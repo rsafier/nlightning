@@ -55,7 +55,7 @@ public static class ChannelDomainEvents
             }
 
             if (PreimageOf(htlc) is { } preimage)
-                events.Add(new OutgoingHtlcFulfilled(channelId, htlc.Id, htlc.PaymentHash, preimage));
+                events.Add(Fulfilled(channelId, htlc, preimage));
             if (HtlcStateTable.IsFinal(htlc.State))
                 AddSettled(events, channelId, htlc);
         }
@@ -105,7 +105,7 @@ public static class ChannelDomainEvents
             }
 
             if (PreimageOf(htlc) is { } preimage && (old is null || PreimageOf(old) is null))
-                (events ??= []).Add(new OutgoingHtlcFulfilled(channelId, htlc.Id, htlc.PaymentHash, preimage));
+                (events ??= []).Add(Fulfilled(channelId, htlc, preimage));
             if (HtlcStateTable.IsFinal(htlc.State))
                 AddSettled(events ??= [], channelId, htlc);
         }
@@ -130,4 +130,11 @@ public static class ChannelDomainEvents
     }
 
     private static Secret? PreimageOf(HtlcRecord htlc) => htlc.KnownPreimage ?? htlc.Removal?.PaymentPreimage;
+
+    /// <summary>The fulfill event, with the attribution of the stored fulfill when there is one.</summary>
+    private static OutgoingHtlcFulfilled Fulfilled(ChannelId channelId, HtlcRecord htlc, Secret preimage) =>
+        htlc.Removal is { IsFulfill: true } removal
+            ? new OutgoingHtlcFulfilled(channelId, htlc.Id, htlc.PaymentHash, preimage, removal.AttributionData,
+                                        removal.FulfillmentPayload)
+            : new OutgoingHtlcFulfilled(channelId, htlc.Id, htlc.PaymentHash, preimage);
 }

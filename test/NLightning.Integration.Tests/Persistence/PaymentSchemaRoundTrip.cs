@@ -297,8 +297,18 @@ internal static class PaymentSchemaRoundTrip
                                                                                         expected.IncomingHtlcId));
     }
 
-    private static async Task SeedAsync(NLightningDbContext context, DatabaseType databaseType,
-                                        CancellationToken cancellationToken)
+    /// <summary>The channel <see cref="SeedAsync"/> writes.</summary>
+    internal static ChannelId SeededChannelId => s_channelId;
+
+    /// <summary>The HTLC <see cref="SeedAsync"/> writes.</summary>
+    internal static HtlcKey SeededHtlc => s_seededHtlc;
+
+    /// <summary>
+    /// Writes, with raw SQL, a funded channel whose snapshot holds one outgoing HTLC (usable on any schema from
+    /// <c>AddInvoicesPaymentsAndCircuits</c>'s predecessor on).
+    /// </summary>
+    internal static async Task SeedAsync(NLightningDbContext context, DatabaseType databaseType,
+                                         CancellationToken cancellationToken)
     {
         var sql = new MigrationSqlDialect(databaseType);
         var remoteNodeId = new byte[33];

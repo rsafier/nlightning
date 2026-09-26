@@ -73,6 +73,7 @@ public static class PaymentEntityConfiguration
             entity.Property(e => e.AmountMsat).IsRequired();
             entity.Property(e => e.CltvExpiry).IsRequired();
             entity.Property(e => e.SharedSecret).IsRequired();
+            entity.Property(e => e.HoldTimeMs).IsRequired(false);
 
             if (databaseType == DatabaseType.MicrosoftSql)
                 OptimizeConfigurationForSqlServer(entity);

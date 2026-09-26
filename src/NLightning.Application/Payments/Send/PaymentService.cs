@@ -118,6 +118,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     private readonly IOptions<PaymentSendOptions> _sendOptions;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
+    private readonly IAttributionDataService? _attributionDataService;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -139,8 +140,10 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                           IOptions<NodeOptions> nodeOptions, PaymentOnionFactory onionFactory,
                           IPeerLivenessProbe peerLivenessProbe, PaymentRoutePlanner planner,
                           ISecureKeyManager secureKeyManager, IOptions<PaymentSendOptions> sendOptions,
-                          IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider)
+                          IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider,
+                          IAttributionDataService? attributionDataService = null)
     {
+        _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
         _channelOperations = channelOperations;
@@ -312,6 +315,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
             if (match == OutcomeMatch.Match)
             {
                 payment.Succeed(fulfilled.PaymentPreimage, now);
+                RecordFulfillHoldTimes(payment, fulfilled, payment.Route);
             }
             else
             {
@@ -366,11 +370,21 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                 return false;
             }
 
-            var (code, sourceIndex, reason) =
-                payment.OutgoingChannelId == failed.ChannelId && payment.OutgoingHtlcId == failed.HtlcId
-                    ? InterpretFailure(payment, failed.Removal)
-                    : (null, null, $"HTLC {failed.HtlcId} on channel {failed.ChannelId}, one part of the payment, "
-                                 + "failed; its route was not stored, so its error cannot be read; not retried.");
+            FailureCode? code = null;
+            int? sourceIndex = null;
+            string reason;
+            if (payment.OutgoingChannelId == failed.ChannelId && payment.OutgoingHtlcId == failed.HtlcId)
+            {
+                (code, sourceIndex, reason, _, var attribution) = DescribeFailure(payment.Route, failed.Removal);
+                reason += "; not retried.";
+                payment.RecordHoldTimes(ToDurations(attribution));
+            }
+            else
+            {
+                reason = $"HTLC {failed.HtlcId} on channel {failed.ChannelId}, one part of the payment, failed; its "
+                       + "route was not stored, so its error cannot be read; not retried.";
+            }
+
             payment.Fail(code, sourceIndex, reason, _timeProvider.GetUtcNow());
             await scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>().UpdateAsync(payment);
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
@@ -423,7 +437,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     internal (FailureCode? Code, int? SourceIndex, string Reason) InterpretFailure(PaymentModel payment,
                                                                                   HtlcRemoval removal)
     {
-        var (code, sourceIndex, reason, _) = DescribeFailure(payment.Route, removal);
+        var (code, sourceIndex, reason, _, _) = DescribeFailure(payment.Route, removal);
         return (code, sourceIndex, reason + "; not retried.");
     }
 
@@ -784,6 +798,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
                 if (stored.Status == PaymentStatus.InFlight)
                 {
+                    RecordLastFailureHoldTimes(stored, session);
                     stored.Fail(code, sourceIndex, reason, now);
                     payment = stored;
                 }
@@ -817,6 +832,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
             return;
 
         var last = session.LastFailure;
+        RecordLastFailureHoldTimes(row, session);
         row.Fail(last?.Code, last?.SourceIndex, (last?.Reason ?? "The attempt failed.") + " Retrying.",
                  _timeProvider.GetUtcNow());
         await repository.UpdateAsync(row);
@@ -919,6 +935,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                                                  payment.Amount, settledFee, payment.CreatedAt,
                                                  PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
                                                  fulfilled.PaymentPreimage, null, null, null, now, part.Hops);
+            RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
             await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
             payment = succeeded;
         }
@@ -929,6 +946,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                 if (payment.OutgoingHtlcId is null)
                     payment.AddOutgoingHtlc(fulfilled.ChannelId, fulfilled.HtlcId);
                 payment.Succeed(fulfilled.PaymentPreimage, now);
+                RecordFulfillHoldTimes(payment, fulfilled, part?.Hops ?? payment.Route);
             }
             else
             {
@@ -957,9 +975,12 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         }
 
         part.Status = PaymentPartStatus.Failed;
-        var (code, sourceIndex, reason, interpretation) = DescribeFailure(part.Hops, failed.Removal);
+        var (code, sourceIndex, reason, interpretation, attribution) = DescribeFailure(part.Hops, failed.Removal);
         var (retry, note) = _retryPolicy.Decide(part, failed.Removal.Kind, interpretation, session.Constraints);
         session.LastFailure = (code, sourceIndex, $"{reason} ({note}).");
+        session.LastFailureHoldTimes = attribution.IsPresent
+                                           ? (failed.ChannelId, failed.HtlcId, ToDurations(attribution))
+                                           : null;
         if (!retry)
             session.TerminalReason ??= note;
 
@@ -988,17 +1009,25 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
     /// <summary>
     /// What an irrevocable failure of an HTLC sent along <paramref name="route"/> means at the origin: (BOLT 4 code,
-    /// erring hop index, local description, the interpreted error onion when one was read).
+    /// erring hop index, local description, the interpreted error onion when one was read, what its
+    /// <c>attribution_data</c> said).
     /// </summary>
-    private (FailureCode? Code, int? SourceIndex, string Reason, FailureInterpretation? Interpretation)
-        DescribeFailure(IReadOnlyList<PaymentHop> route, HtlcRemoval removal)
+    /// <remarks>
+    /// With <c>attribution_data</c> (BOLT 4 attributable failures, NL-326) the return packet is decrypted by
+    /// <see cref="IAttributionDataService.DecryptErrorPacket"/>, which also verifies each hop's HMACs up to the erring
+    /// hop and yields their hold times. When no hop authenticated the return packet, the first hop whose attribution
+    /// HMAC failed is blamed (the source index; it shares the blame with its upstream neighbour).
+    /// </remarks>
+    private (FailureCode? Code, int? SourceIndex, string Reason, FailureInterpretation? Interpretation,
+        AttributionVerification Attribution) DescribeFailure(IReadOnlyList<PaymentHop> route, HtlcRemoval removal)
     {
+        var absent = AttributionVerification.Absent;
         if (removal.Kind == HtlcRemovalKind.FailMalformed)
         {
             // BOLT 4: our peer could not parse the onion we built (it is the only hop that can send this to us)
             var malformed = (FailureCode)removal.FailureCode;
             return (malformed, 0, $"Our peer {DescribeHop(route, 0)} rejected the onion as malformed "
-                                + $"({malformed}, 0x{removal.FailureCode:X4})", null);
+                                + $"({malformed}, 0x{removal.FailureCode:X4})", null, absent);
         }
 
         if (removal.Kind == HtlcRemovalKind.OnchainTimeout)
@@ -1007,19 +1036,40 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
             // sent an error, we are the erring node
             return (FailureCode.PermanentChannelFailure, null,
                     $"The channel to our peer {DescribeHop(route, 0)} was closed on chain and the HTLC timed out "
-                  + "there (permanent_channel_failure)", null);
+                  + "there (permanent_channel_failure)", null, absent);
         }
 
         if (route.Count == 0)
             return (null, null, "The HTLC failed and the route's shared secrets were not recorded; the error onion "
-                              + "cannot be read", null);
+                              + "cannot be read", null, absent);
 
-        var decrypted = _failureOnionService.DecryptErrorPacket(route.Select(h => h.SharedSecret).ToList(),
-                                                                removal.Reason.Span);
+        var secrets = route.Select(h => h.SharedSecret).ToList();
+        DecryptedFailure? decrypted;
+        var attribution = absent;
+        if (!removal.AttributionData.IsEmpty && _attributionDataService is not null)
+        {
+            var attributed = _attributionDataService.DecryptErrorPacket(secrets, removal.Reason.Span,
+                                                                        removal.AttributionData.Span);
+            decrypted = attributed.Failure;
+            attribution = attributed.Attribution;
+        }
+        else
+        {
+            decrypted = _failureOnionService.DecryptErrorPacket(secrets, removal.Reason.Span);
+        }
+
         var interpretation = FailureInterpreter.Interpret(decrypted, route.Count);
         if (!interpretation.IsAttributed)
+        {
+            if (attribution.InvalidHopIndex is { } blamed)
+                return (null, blamed,
+                        "The HTLC failed with an error onion no hop of the route authenticated; its attribution_data "
+                      + $"blames hop {blamed} ({DescribeHop(route, blamed)}) or its upstream neighbour"
+                      + DescribeHoldTimes(attribution), interpretation, attribution);
+
             return (null, null, "The HTLC failed with an error onion no hop of the route authenticated",
-                    interpretation);
+                    interpretation, attribution);
+        }
 
         var index = interpretation.ErringHopIndex!.Value;
         var codeText = interpretation.Code is { } failureCode
@@ -1029,9 +1079,55 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         var detail = interpretation.IsFinalNode
                          ? interpretation.IsPermanent ? "permanent" : "final node"
                          : interpretation.IsNodeFailure ? "node failure" : "channel failure";
+        var tampered = attribution.InvalidHopIndex is { } invalid
+                           ? $"; the attribution_data of hop {invalid} ({DescribeHop(route, invalid)}) did not verify"
+                           : "";
         return (interpretation.Code, index,
-                $"{codeText} from {role} {index} ({DescribeHop(route, index)}), {detail}", interpretation);
+                $"{codeText} from {role} {index} ({DescribeHop(route, index)}), {detail}{tampered}"
+              + DescribeHoldTimes(attribution), interpretation, attribution);
     }
+
+    /// <summary>
+    /// Records on <paramref name="payment"/> the hold times of a fulfill's verified <c>attribution_data</c>
+    /// (<see cref="IAttributionDataService.VerifyFulfillment"/> over the hops' shared secrets); nothing without
+    /// attribution, a route or the service.
+    /// </summary>
+    private void RecordFulfillHoldTimes(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
+                                        IReadOnlyList<PaymentHop> route)
+    {
+        if (_attributionDataService is null || fulfilled.AttributionData.IsEmpty || route.Count == 0)
+            return;
+
+        var verified = _attributionDataService.VerifyFulfillment(route.Select(h => h.SharedSecret).ToList(),
+                                                                 fulfilled.AttributionData.Span,
+                                                                 fulfilled.FulfillmentPayload.Span);
+        payment.RecordHoldTimes(ToDurations(verified.Attribution));
+        if (verified.Attribution.InvalidHopIndex is { } invalid)
+            _logger.LogWarning("Payment {PaymentHash}: the fulfill's attribution_data of hop {HopIndex} ({Node}) did not "
+                             + "verify", payment.PaymentHash, invalid, DescribeHop(route, invalid));
+        else if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Payment {PaymentHash}: hold times{HoldTimes}", payment.PaymentHash,
+                             DescribeHoldTimes(verified.Attribution));
+    }
+
+    /// <summary>
+    /// Records the hold times of the session's last failure on <paramref name="row"/> when the row records that
+    /// failure's HTLC.
+    /// </summary>
+    private static void RecordLastFailureHoldTimes(PaymentModel row, PaymentSession session)
+    {
+        if (session.LastFailureHoldTimes is { } holdTimes && row.OutgoingChannelId == holdTimes.ChannelId
+                                                         && row.OutgoingHtlcId == holdTimes.HtlcId)
+            row.RecordHoldTimes(holdTimes.HoldTimes);
+    }
+
+    private static List<TimeSpan> ToDurations(AttributionVerification attribution) =>
+        attribution.HoldTimes.Select(AttributionHoldTime.ToDuration).ToList();
+
+    private static string DescribeHoldTimes(AttributionVerification attribution) =>
+        attribution.IsPresent && attribution.HoldTimes.Count > 0
+            ? $"; hold times {string.Join(", ", attribution.HoldTimes.Select(h => $"{AttributionHoldTime.ToDuration(h).TotalMilliseconds} ms"))}"
+            : "";
 
     #endregion
 

@@ -839,6 +839,10 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         return Task.CompletedTask;
     }
 
+    /// <summary>No receipt time is kept: hold times are reported as zero ("no timing information").</summary>
+    public Task<DateTimeOffset?> GetHtlcAddedAtAsync(ChannelId channelId, HtlcKey htlc) =>
+        Task.FromResult<DateTimeOffset?>(null);
+
     public Task<HtlcOrigin?> GetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc) =>
         Task.FromResult(_origins.TryGetValue((channelId, htlc), out var origin) ? origin : (HtlcOrigin?)null);
 

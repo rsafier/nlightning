@@ -385,21 +385,34 @@ public sealed record ChannelCommitments
     /// <summary>Fulfills an HTLC the peer offered (<c>update_fulfill_htlc</c>).</summary>
     /// <exception cref="CommitmentRefusedException">Unknown/own HTLC (B2-DEL-00), not locked in (B2-DEL-03), already
     /// removed (B2-DEL-R07) or wrong preimage (B2-DEL-R02).</exception>
-    public CommitmentsResult SendFulfill(ulong id, Secret paymentPreimage, ISha256 sha256)
+    /// <param name="id">The peer's id of the HTLC.</param>
+    /// <param name="paymentPreimage">The preimage.</param>
+    /// <param name="sha256">A hasher for the preimage check.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> to send (opaque, 920 bytes), or empty for none.</param>
+    /// <param name="fulfillmentPayload">The <c>fulfillment_payload</c> to send (opaque), or empty for none.</param>
+    public CommitmentsResult SendFulfill(ulong id, Secret paymentPreimage, ISha256 sha256,
+                                         ReadOnlyMemory<byte> attributionData = default,
+                                         ReadOnlyMemory<byte> fulfillmentPayload = default)
     {
         var htlc = GetRemovableIncoming(id);
         if (!PreimageMatches(paymentPreimage, htlc.PaymentHash, sha256))
             throw new CommitmentRefusedException("B2-DEL-R02", $"Preimage does not match the hash of HTLC {id}");
 
-        return SendRemove(htlc, HtlcRemoval.Fulfill(paymentPreimage), new OutboundFulfillHtlc(id, paymentPreimage));
+        return SendRemove(htlc, HtlcRemoval.Fulfill(paymentPreimage, attributionData, fulfillmentPayload),
+                          new OutboundFulfillHtlc(id, paymentPreimage, attributionData, fulfillmentPayload));
     }
 
     /// <summary>Fails an HTLC the peer offered (<c>update_fail_htlc</c>) with an opaque, already encrypted reason.</summary>
+    /// <param name="id">The peer's id of the HTLC.</param>
+    /// <param name="reason">The encrypted return packet.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> to send (opaque, 920 bytes), or empty for none.</param>
     /// <exception cref="CommitmentRefusedException">See <see cref="SendFulfill"/>.</exception>
-    public CommitmentsResult SendFail(ulong id, ReadOnlyMemory<byte> reason)
+    public CommitmentsResult SendFail(ulong id, ReadOnlyMemory<byte> reason,
+                                      ReadOnlyMemory<byte> attributionData = default)
     {
         var htlc = GetRemovableIncoming(id);
-        return SendRemove(htlc, HtlcRemoval.Fail(reason), new OutboundFailHtlc(id, reason));
+        return SendRemove(htlc, HtlcRemoval.Fail(reason, attributionData),
+                          new OutboundFailHtlc(id, reason, attributionData));
     }
 
     /// <summary>Fails an HTLC the peer offered because its onion is malformed (<c>update_fail_malformed_htlc</c>).</summary>
@@ -422,21 +435,34 @@ public sealed record ChannelCommitments
     /// (a fulfill re-sent after a reconnection).</remarks>
     /// <exception cref="CommitmentViolationException">Unknown id or HTLC not in our current commitment (B2-DEL-R01),
     /// already removed (B2-DEL-R07) or wrong preimage (B2-DEL-R02).</exception>
-    public CommitmentsResult ReceiveFulfill(ulong id, Secret paymentPreimage, ISha256 sha256)
+    /// <param name="id">Our id of the HTLC.</param>
+    /// <param name="paymentPreimage">The preimage.</param>
+    /// <param name="sha256">A hasher for the preimage check.</param>
+    /// <param name="attributionData">The received <c>attribution_data</c> (opaque), or empty for none. It is kept with
+    /// the removal and carried by <see cref="OutgoingHtlcFulfilled"/>.</param>
+    /// <param name="fulfillmentPayload">The received <c>fulfillment_payload</c> (opaque), or empty for none.</param>
+    public CommitmentsResult ReceiveFulfill(ulong id, Secret paymentPreimage, ISha256 sha256,
+                                            ReadOnlyMemory<byte> attributionData = default,
+                                            ReadOnlyMemory<byte> fulfillmentPayload = default)
     {
         var htlc = GetRemovableOutgoing(id);
         if (!PreimageMatches(paymentPreimage, htlc.PaymentHash, sha256))
             throw Violation("B2-DEL-R02", $"Preimage does not hash to the payment_hash of HTLC {id}");
 
-        return ReceiveRemove(htlc, HtlcRemoval.Fulfill(paymentPreimage));
+        return ReceiveRemove(htlc, HtlcRemoval.Fulfill(paymentPreimage, attributionData, fulfillmentPayload));
     }
 
     /// <summary>Applies the peer's <c>update_fail_htlc</c> for an HTLC we offered.</summary>
+    /// <param name="id">Our id of the HTLC.</param>
+    /// <param name="reason">The encrypted return packet.</param>
+    /// <param name="attributionData">The received <c>attribution_data</c> (opaque), or empty for none. It is kept with
+    /// the removal and carried by <see cref="OutgoingHtlcFailed"/>.</param>
     /// <exception cref="CommitmentViolationException">See <see cref="ReceiveFulfill"/>.</exception>
-    public CommitmentsResult ReceiveFail(ulong id, ReadOnlyMemory<byte> reason)
+    public CommitmentsResult ReceiveFail(ulong id, ReadOnlyMemory<byte> reason,
+                                         ReadOnlyMemory<byte> attributionData = default)
     {
         var htlc = GetRemovableOutgoing(id);
-        return ReceiveRemove(htlc, HtlcRemoval.Fail(reason));
+        return ReceiveRemove(htlc, HtlcRemoval.Fail(reason, attributionData));
     }
 
     /// <summary>Applies the peer's <c>update_fail_malformed_htlc</c> for an HTLC we offered.</summary>

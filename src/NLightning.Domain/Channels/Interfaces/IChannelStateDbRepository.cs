@@ -63,6 +63,15 @@ public interface IChannelStateDbRepository
     Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc);
 
     /// <summary>
+    /// When the HTLC's row was first written: for an incoming HTLC the moment its <c>update_add_htlc</c> was received
+    /// and persisted, for one we offered the moment we added it. It is the start of the BOLT 4 hold time
+    /// (<c>attribution_data</c>, NL-326). <see cref="ApplyAsync"/> stamps it once, on insert, and never changes it.
+    /// </summary>
+    /// <returns>The time, or null when there is no row or the row predates the stamp (migration
+    /// <c>AddAttributionData</c>).</returns>
+    Task<DateTimeOffset?> GetHtlcAddedAtAsync(ChannelId channelId, HtlcKey htlc);
+
+    /// <summary>
     /// Stages the <see cref="HtlcOrigin"/> of an HTLC we offered (<c>IChannelOperations.OfferHtlcAsync</c>): call it
     /// after <see cref="ApplyAsync"/> staged the add, in the same unit of work, so the origin commits with the add.
     /// <see cref="ApplyAsync"/> never overwrites it.

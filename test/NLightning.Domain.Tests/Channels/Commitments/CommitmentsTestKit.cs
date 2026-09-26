@@ -206,10 +206,13 @@ internal sealed class CommitmentPair
         Bob = Track(BobEvents, "receive fail", Bob.ReceiveFail(bobHtlcId, new byte[] { 4, 5, 6 }));
     }
 
-    public void BobFail(ulong aliceHtlcId)
+    /// <param name="aliceHtlcId">Alice's HTLC.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> Bob sends with it, if any (NL-326).</param>
+    public void BobFail(ulong aliceHtlcId, byte[]? attributionData = null)
     {
-        Bob = Track(BobEvents, "fail", Bob.SendFail(aliceHtlcId, new byte[] { 1, 2, 3 }));
-        Alice = Track(AliceEvents, "receive fail", Alice.ReceiveFail(aliceHtlcId, new byte[] { 1, 2, 3 }));
+        Bob = Track(BobEvents, "fail", Bob.SendFail(aliceHtlcId, new byte[] { 1, 2, 3 }, attributionData ?? []));
+        Alice = Track(AliceEvents, "receive fail",
+                      Alice.ReceiveFail(aliceHtlcId, new byte[] { 1, 2, 3 }, attributionData ?? []));
     }
 
     public void AliceFee(uint feeratePerKw)
