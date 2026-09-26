@@ -7,13 +7,20 @@ using Money;
 using Protocol.Onion.Enums;
 
 /// <summary>
-/// One of our outgoing payments: a single HTLC (no MPP) sent over one of our channels, directly to the payee or along
-/// the invoice's route hints.
+/// One of our outgoing payments (the stored row of one payment hash): its full amount and one recorded part, a route
+/// and HTLC sent over one of our channels, directly to the payee or along the invoice's route hints.
 /// </summary>
 /// <remarks>
+/// <para>Since ABCD wave 6 a payment may be split into several parts (<c>basic_mpp</c>, NL-270) and retried. The row
+/// holds <see cref="Amount"/> for the whole payment but only one part: <see cref="Route"/>, its shared secrets and
+/// <see cref="OutgoingChannelId"/>/<see cref="OutgoingHtlcId"/> are those of a part that was offered (rewritten to a
+/// live part when the recorded one fails while others are in flight), and <see cref="Fee"/> is the fee of the parts in
+/// flight (on success, those the payee settled). The other parts live only in the sending session's memory and are not
+/// persisted (NL-321): their outcomes still reach the payment after a restart through their
+/// <c>HtlcOrigin.Local(PaymentHash)</c>, but their failures can no longer be decrypted.</para>
 /// <para>The payment is persisted (<c>IPaymentDbRepository</c>) as <see cref="PaymentStatus.InFlight"/> before its
-/// HTLC is offered, and the HTLC carries <c>HtlcOrigin.Local(PaymentHash)</c>, so after a restart the outcome still
-/// reaches the payment. There is at most one stored payment per <see cref="PaymentHash"/>: the latest attempt. A
+/// first HTLC is offered, and every HTLC carries <c>HtlcOrigin.Local(PaymentHash)</c>, so after a restart the outcome
+/// still reaches the payment. There is at most one stored payment per <see cref="PaymentHash"/>: the latest attempt. A
 /// retry of a <see cref="PaymentStatus.Failed"/> payment is a new <see cref="PaymentModel"/> that replaces the failed
 /// one (<c>IPaymentDbRepository.AddAsync</c>); an in-flight or succeeded payment is never retried.</para>
 /// <para>Status moves only from <see cref="PaymentStatus.InFlight"/> to <see cref="PaymentStatus.Succeeded"/> or
