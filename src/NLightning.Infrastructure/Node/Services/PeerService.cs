@@ -143,6 +143,9 @@ public sealed class PeerService : IPeerService
 
     public FeatureOptions Features { get; private set; }
 
+    /// <inheritdoc />
+    public DateTimeOffset? LastMessageReceivedAt => _peerCommunicationService.LastMessageReceivedAt;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="PeerService"/> class.
     /// </summary>
@@ -198,6 +201,11 @@ public sealed class PeerService : IPeerService
         _peerCommunicationService.Disconnect(exception);
     }
 
+    /// <inheritdoc />
+    public Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
+        _peerCommunicationService.PingAsync(timeout, cancellationToken);
+
+    /// <inheritdoc />
     public Task SendMessageAsync(IChannelMessage replyMessage)
     {
         return _peerCommunicationService.SendMessageAsync(replyMessage);

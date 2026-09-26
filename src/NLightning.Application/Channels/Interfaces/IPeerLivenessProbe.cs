@@ -20,8 +20,8 @@ using Domain.Crypto.ValueObjects;
 /// usable (<see cref="MarkLinkUp"/>, called by <c>ChannelManager</c> when a channel turns Open) and answers true while
 /// that same connection is up. A channel loaded at startup is never marked: there is no channel_reestablish until N7,
 /// which must call <see cref="MarkLinkUp"/> once the reestablish is done (and then replay the channel's pending
-/// events). A probe that sends a BOLT 1 <c>ping</c> when nothing was received recently needs something like
-/// <c>IPeerService.LastMessageReceivedAt</c>, which does not exist yet.
+/// events). The BOLT 2 ping before <c>commitment_signed</c> when nothing was received recently is a separate step of the
+/// scheduler (<see cref="IPingBeforeCommit"/>, NL-251), outside the channel lock.
 /// </para>
 /// </remarks>
 public interface IPeerLivenessProbe

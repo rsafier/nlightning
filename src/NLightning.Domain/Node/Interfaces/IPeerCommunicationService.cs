@@ -20,6 +20,20 @@ public interface IPeerCommunicationService : IDisposable
     CompactPubKey PeerCompactPubKey { get; }
 
     /// <summary>
+    /// When the last message of any type was received from the peer (UTC), or null before the first one.
+    /// </summary>
+    DateTimeOffset? LastMessageReceivedAt { get; }
+
+    /// <summary>
+    /// Sends a <c>ping</c> (or joins the one in flight) and waits for its <c>pong</c>. A timeout closes the
+    /// connection (BOLT 1 MAY).
+    /// </summary>
+    /// <param name="timeout">How long to wait for the pong.</param>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>True when the pong arrived in time; false on a timeout or before the init exchange finished.</returns>
+    Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Event raised when a message is received from the peer.
     /// </summary>
     event EventHandler<IMessage?> MessageReceived;

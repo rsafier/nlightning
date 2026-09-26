@@ -20,11 +20,23 @@ public sealed class CommitSchedulerOptions
     /// <c>commitment_signed</c> (BOLT2 plan §3.4: ~10 ms). Zero signs on the next turn of the thread pool.
     /// </summary>
     public TimeSpan Debounce { get; set; } = TimeSpan.FromMilliseconds(10);
+
+    /// <summary>
+    /// Ping the peer before a <c>commitment_signed</c> when nothing was received from it for this long (BOLT 2: "if it
+    /// has not recently received a message from the remote node: SHOULD use ping and await the reply pong", NL-251).
+    /// </summary>
+    public TimeSpan PingWhenQuietFor { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long to wait for the <c>pong</c> of that ping; the connection is closed when it does not come (BOLT 1 MAY).
+    /// </summary>
+    public TimeSpan PongTimeout { get; set; } = TimeSpan.FromSeconds(10);
 }
 
 /// <summary>
 /// Signs the peer's next commitment after our own updates (BOLT2 plan N6-T2): debounced per channel, only while the
-/// channel's link is up (<see cref="IPeerLivenessProbe"/>, checked again under the lock), never while a signed
+/// channel's link is up (<see cref="IPeerLivenessProbe"/>, checked again under the lock) and the peer answers a ping
+/// when it was quiet (<see cref="IPingBeforeCommit"/>, before the lock, NL-251), never while a signed
 /// commitment waits for its <c>revoke_and_ack</c> (D7), persisted with its diff before it is enqueued (D3, D4, through
 /// <see cref="ChannelStateTransitionService.SignIfPendingAsync"/>).
 /// </summary>
@@ -42,13 +54,15 @@ public sealed class CommitScheduler : ICommitScheduler
     private readonly ConcurrentDictionary<Task, byte> _inFlight = new();
     private readonly ILogger<CommitScheduler> _logger;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
+    private readonly IPingBeforeCommit? _pingBeforeCommit;
     private readonly ConcurrentDictionary<ChannelId, byte> _scheduled = new();
     private readonly IServiceScopeFactory _serviceScopeFactory;
 
     public CommitScheduler(IChannelLockProvider channelLockProvider, IChannelMemoryRepository channelMemoryRepository,
                            IChannelMessagePublisher channelMessagePublisher, ILogger<CommitScheduler> logger,
                            IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
-                           IOptions<CommitSchedulerOptions>? options = null)
+                           IOptions<CommitSchedulerOptions>? options = null,
+                           IPingBeforeCommit? pingBeforeCommit = null)
     {
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -57,6 +71,7 @@ public sealed class CommitScheduler : ICommitScheduler
         _peerLivenessProbe = peerLivenessProbe;
         _serviceScopeFactory = serviceScopeFactory;
         _debounce = options?.Value.Debounce ?? new CommitSchedulerOptions().Debounce;
+        _pingBeforeCommit = pingBeforeCommit;
     }
 
     /// <inheritdoc />
@@ -82,8 +97,14 @@ public sealed class CommitScheduler : ICommitScheduler
          || channel.Commitments is not { CanSendCommit: true })
             return false;
 
-        // Ping before commit: don't sign for a peer that is gone (the changes stay pending for the reestablish)
+        // Ping before commit: don't sign for a peer that is gone (the changes stay pending for the reestablish), and
+        // ping a quiet one first, outside the lock (a pong takes a round trip). A peer that does not answer is
+        // disconnected, so the reestablish of the next connection signs these changes.
         if (!await IsLinkUpAsync(channel, cancellationToken))
+            return false;
+
+        if (_pingBeforeCommit is not null
+         && !await _pingBeforeCommit.EnsureResponsiveAsync(channel.RemoteNodeId, cancellationToken))
             return false;
 
         using var scope = _serviceScopeFactory.CreateScope();

@@ -50,7 +50,8 @@ public static class CommitmentEngineServiceCollectionExtensions
     /// <summary>
     /// Adds the send side of the normal operation (plan N6-T2): <see cref="IChannelOperations"/>
     /// (<see cref="ChannelOperationsService"/>), <see cref="ICommitScheduler"/> (<see cref="CommitScheduler"/>, options
-    /// <see cref="CommitSchedulerOptions"/>), the default <see cref="IPeerLivenessProbe"/> and the default
+    /// <see cref="CommitSchedulerOptions"/>, pinging a quiet peer first through <see cref="IPingBeforeCommit"/>, NL-251),
+    /// the default <see cref="IPeerLivenessProbe"/> and the default
     /// <see cref="IHtlcSwitch"/> (<see cref="LocalOnlyHtlcSwitch"/>), all singletons.
     /// </summary>
     /// <remarks>
@@ -64,6 +65,7 @@ public static class CommitmentEngineServiceCollectionExtensions
     {
         services.AddOptions<CommitSchedulerOptions>();
         services.TryAddSingleton<IPeerLivenessProbe, ConnectedPeerLivenessProbe>();
+        services.TryAddSingleton<IPingBeforeCommit, PingBeforeCommit>();
         services.AddSingleton<ICommitScheduler, CommitScheduler>();
         services.AddSingleton<IChannelOperations, ChannelOperationsService>();
         services.TryAddSingleton<IHtlcSwitch, LocalOnlyHtlcSwitch>();

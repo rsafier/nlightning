@@ -39,6 +39,7 @@ public class PeerCommunicationService : IPeerCommunicationService
     private CancellationTokenSource? _initWaitCancellationTokenSource;
     private EventHandler<IMessage?>? _messageReceived;
     private int _listening;
+    private long _lastMessageReceivedTicks;
 
     /// <inheritdoc />
     /// <remarks>
@@ -74,6 +75,16 @@ public class PeerCommunicationService : IPeerCommunicationService
 
     /// <inheritdoc />
     public CompactPubKey PeerCompactPubKey { get; }
+
+    /// <inheritdoc />
+    public DateTimeOffset? LastMessageReceivedAt
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _lastMessageReceivedTicks);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PeerCommunicationService"/> class.
@@ -177,6 +188,20 @@ public class PeerCommunicationService : IPeerCommunicationService
     }
 
     /// <inheritdoc />
+    /// <remarks>Only once the keep-alive ping loop runs (both init messages exchanged): before that no ping may go out
+    /// (BOLT 1), so the answer is false at once.</remarks>
+    public Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        lock (_pingStartLock)
+        {
+            if (!_pingStarted || Volatile.Read(ref _disconnecting) == 1)
+                return Task.FromResult(false);
+        }
+
+        return _pingPongService.PingAsync(timeout, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public void Disconnect(Exception? exception = null)
     {
         // Only the first caller disconnects, so DisconnectEvent fires once and we never touch a disposed _cts
@@ -276,6 +301,8 @@ public class PeerCommunicationService : IPeerCommunicationService
         {
             return;
         }
+
+        Interlocked.Exchange(ref _lastMessageReceivedTicks, DateTimeOffset.UtcNow.UtcTicks);
 
         if (!_isInitialized && message.Type == MessageTypes.Init)
         {

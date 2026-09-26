@@ -87,4 +87,91 @@ public class PingPongServiceTests
         Assert.True(pingTask.IsCompleted);
         Assert.False(disconnectRaised);
     }
+
+    [Fact]
+    public async Task Given_NoPingInFlight_When_PingAsync_Then_APingGoesOutAndItsPongAnswersIt()
+    {
+        // Arrange - NL-251: ping before commitment_signed
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        var pings = new List<PingMessage>();
+        service.OnPingMessageReady += (_, ping) => pings.Add((PingMessage)ping);
+
+        // Act
+        var pingTask = service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        service.HandlePong(new PongMessage(Assert.Single(pings).Payload.NumPongBytes));
+
+        // Assert
+        Assert.True(await pingTask);
+    }
+
+    [Fact]
+    public async Task Given_APingInFlight_When_PingAsync_Then_ItJoinsItAndNoSecondPingGoesOut()
+    {
+        // Arrange - one ping at a time, so a pong is always checked against the ping it answers
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        var pings = new List<PingMessage>();
+        service.OnPingMessageReady += (_, ping) => pings.Add((PingMessage)ping);
+        var first = service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Act
+        var second = service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        service.HandlePong(new PongMessage(Assert.Single(pings).Payload.NumPongBytes));
+
+        // Assert
+        Assert.True(await first);
+        Assert.True(await second);
+        Assert.Single(pings);
+    }
+
+    [Fact]
+    public async Task Given_APongAlreadyReceived_When_PingAsyncAgain_Then_ANewPingGoesOut()
+    {
+        // Arrange
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        var pings = new List<PingMessage>();
+        service.OnPingMessageReady += (_, ping) =>
+        {
+            pings.Add((PingMessage)ping);
+            service.HandlePong(new PongMessage(((PingMessage)ping).Payload.NumPongBytes));
+        };
+        Assert.True(await service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken));
+
+        // Act
+        var answered = await service.PingAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(answered);
+        Assert.Equal(2, pings.Count);
+    }
+
+    [Fact]
+    public async Task Given_NoPong_When_PingAsyncTimesOut_Then_FalseAndDisconnectEventIsRaised()
+    {
+        // Arrange - BOLT 1: no pong, MAY close the connection (never fail the channels)
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        Exception? disconnect = null;
+        service.DisconnectEvent += (_, e) => disconnect = e;
+
+        // Act
+        var answered = await service.PingAsync(TimeSpan.FromMilliseconds(50), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(answered);
+        Assert.IsType<ConnectionException>(disconnect);
+    }
+
+    [Fact]
+    public async Task Given_NoPong_When_PingAsyncIsCancelled_Then_ItThrowsWithoutDisconnecting()
+    {
+        // Arrange
+        var service = CreateService(TimeSpan.FromSeconds(30));
+        var disconnectRaised = false;
+        service.DisconnectEvent += (_, _) => disconnectRaised = true;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+        // Act & Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.PingAsync(TimeSpan.FromSeconds(30), cts.Token));
+        Assert.False(disconnectRaised);
+    }
 }
