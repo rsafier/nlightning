@@ -99,6 +99,108 @@ public class ChannelManagerReconnectTests
     }
 
     [Fact]
+    public async Task Given_ChannelsWaitingForChannelReady_When_PeerConnects_Then_EachSendsItsReestablish()
+    {
+        // Arrange - regression: only Open channels sent one, so a channel_ready lost with the previous connection was
+        // never retransmitted between two NLightning nodes (BOLT 2: MUST transmit channel_reestablish for each channel)
+        _channels.Add(CreateChannel(0x01, ChannelState.V1FundingSigned, s_peer));
+        _channels.Add(CreateChannel(0x02, ChannelState.ReadyForThem, s_peer));
+        _channels.Add(CreateChannel(0x03, ChannelState.ReadyForUs, s_peer));
+        _channels.Add(CreateChannel(0x04, ChannelState.Closing, s_peer));
+        var manager = CreateManager();
+
+        // Act
+        var errors = await manager.OnPeerConnectedAsync(s_peer);
+
+        // Assert
+        Assert.Empty(errors);
+        var reestablishes = _raised.Select(r => Assert.IsType<ChannelReestablishMessage>(r.Message)).ToList();
+        Assert.Equal([_channels[0].ChannelId, _channels[1].ChannelId, _channels[2].ChannelId],
+                     reestablishes.Select(m => m.Payload.ChannelId).ToList());
+        Assert.All(reestablishes, m => Assert.Equal(1UL, m.Payload.NextCommitmentNumber));
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[2].ChannelId));
+        Assert.Equal(ReestablishStatus.Awaiting, _tracker.GetStatus(_channels[3].ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_ReadyForUsReestablishedAtConnect_When_ThePeerAnswers_Then_OurChannelReadyIsRetransmitted()
+    {
+        // Arrange (B2-RE-15): we sent channel_ready, it was lost with the previous connection
+        var channel = CreateChannel(0x01, ChannelState.ReadyForUs, s_peer);
+        _channels.Add(channel);
+        var manager = CreateManager();
+        await manager.OnPeerConnectedAsync(s_peer);
+        _raised.Clear();
+
+        // Act
+        await manager.HandleChannelMessageAsync(PeerReestablish(channel.ChannelId, 1, 0), new FeatureOptions(),
+                                                s_peer);
+
+        // Assert
+        Assert.IsType<ChannelReadyMessage>(Assert.Single(_raised).Message);
+        Assert.Equal(ReestablishStatus.Reestablished, _tracker.GetStatus(channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_ChannelOpenedOnThisConnection_When_ThePeersReestablishArrives_Then_OursGoesOutAndItCompletes()
+    {
+        // Arrange - regression: LND sends one after channel_ready for a channel pending at connect and waits for ours
+        var channel = CreateChannel(0x01, ChannelState.Open, s_peer);
+        _channels.Add(channel);
+        _tracker.MarkOpened(channel.ChannelId, s_peer);
+        var manager = CreateManager();
+
+        // Act
+        await manager.HandleChannelMessageAsync(PeerReestablish(channel.ChannelId, 1, 0), new FeatureOptions(),
+                                                s_peer);
+        var repeated = _raised.Count;
+        await manager.HandleChannelMessageAsync(PeerReestablish(channel.ChannelId, 1, 0), new FeatureOptions(),
+                                                s_peer);
+
+        // Assert - ours and channel_ready once; a second one after we answered is ignored
+        Assert.Equal(2, repeated);
+        Assert.IsType<ChannelReestablishMessage>(_raised[0].Message);
+        Assert.IsType<ChannelReadyMessage>(_raised[1].Message);
+        Assert.Equal(2, _raised.Count);
+        Assert.Equal(ReestablishStatus.Reestablished, _tracker.GetStatus(channel.ChannelId));
+        Assert.True(_tracker.IsReestablished(channel.ChannelId));
+    }
+
+    [Fact]
+    public void Given_ChannelNotReestablishedOnTheCurrentConnection_When_AnUpdateIsPublished_Then_ItIsDropped()
+    {
+        // Arrange - regression: the link was checked before the save, and the connection was replaced during it
+        var channel = CreateChannel(0x01, ChannelState.Open, s_peer);
+        _channels.Add(channel);
+        _tracker.MarkOpened(channel.ChannelId, s_peer);
+        var manager = CreateManager();
+        manager.OnPeerConnectionChanged(s_peer);
+
+        // Act
+        manager.Publish(s_peer, [UpdateAdd(channel.ChannelId)]);
+
+        // Assert - nothing may precede our channel_reestablish on the new connection (B2-RE-07)
+        Assert.Empty(_raised);
+    }
+
+    [Fact]
+    public void Given_ChannelReestablished_When_AnUpdateIsPublished_Then_ItIsRaised()
+    {
+        // Arrange
+        var channel = CreateChannel(0x01, ChannelState.Open, s_peer);
+        _channels.Add(channel);
+        _tracker.MarkOpened(channel.ChannelId, s_peer);
+        var manager = CreateManager();
+        var update = UpdateAdd(channel.ChannelId);
+
+        // Act
+        manager.Publish(s_peer, [update]);
+
+        // Assert
+        Assert.Same(update, Assert.Single(_raised).Message);
+    }
+
+    [Fact]
     public async Task Given_OpenChannelNotReestablished_When_PeerSendsAnUpdate_Then_WarningAndClose()
     {
         // Arrange (B2-RE-07)
@@ -201,6 +303,11 @@ public class ChannelManagerReconnectTests
         manager.OnResponseMessageReady += (_, args) => _raised.Add((args.PeerPubKey, args.ResponseMessage));
         return manager;
     }
+
+    private static UpdateAddHtlcMessage UpdateAdd(ChannelId channelId) =>
+        new NormalOperationTestContext().MessageFactory.CreateUpdateAddHtlcMessage(
+            channelId, 0, 1_000_000, NormalOperationTestContext.HashOf(NormalOperationTestContext.SecretOf(1)), 500,
+            NormalOperationTestContext.Onion);
 
     private static ChannelReestablishMessage PeerReestablish(ChannelId channelId, ulong next, ulong revocation) =>
         new(new ChannelReestablishPayload(channelId, NormalOperationTestContext.Point(0x30), next, revocation,

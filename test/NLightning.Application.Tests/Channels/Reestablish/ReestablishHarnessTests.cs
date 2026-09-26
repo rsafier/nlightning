@@ -56,6 +56,40 @@ public class ReestablishHarnessTests
         AssertConverged(harness, aliceOffered: 1, bobOffered: 0);
     }
 
+    [Theory]
+    [InlineData(ChannelState.ReadyForUs, ChannelState.ReadyForUs)]
+    [InlineData(ChannelState.ReadyForUs, ChannelState.Open)]
+    [InlineData(ChannelState.Open, ChannelState.ReadyForUs)]
+    public async Task Given_ChannelReadyLostWithTheLink_When_Reconnected_Then_BothSidesOpenAndCarryAnHtlc(
+        ChannelState aliceState, ChannelState bobState)
+    {
+        // Arrange - regression: a side that sent channel_ready (ReadyForUs) lost it with the connection; only Open
+        // channels sent channel_reestablish on connect, so two ReadyForUs sides never retransmitted it (B2-RE-15)
+        using var harness = new TwoNodeHarness(localOnlySwitch: true, aliceState: aliceState, bobState: bobState);
+        await harness.DisconnectAsync();
+
+        // Act
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert - channel_reestablish both ways, then channel_ready retransmitted both ways (both next numbers 1)
+        Assert.Equal(ChannelState.Open, harness.Alice.Channel.State);
+        Assert.Equal(ChannelState.Open, harness.Bob.Channel.State);
+        Assert.Single(harness.Alice.Received.OfType<ChannelReestablishMessage>());
+        Assert.Single(harness.Bob.Received.OfType<ChannelReestablishMessage>());
+        Assert.Single(harness.Alice.Received.OfType<ChannelReadyMessage>());
+        Assert.Single(harness.Bob.Received.OfType<ChannelReadyMessage>());
+        Assert.True(harness.Alice.Tracker.IsReestablished(TwoNodeHarness.ChannelId));
+        Assert.True(harness.Bob.Tracker.IsReestablished(TwoNodeHarness.ChannelId));
+
+        // Act 2 - the channel carries an HTLC
+        await OfferAsync(harness.Alice, AliceAmountMsat, 1);
+        await harness.PumpAsync();
+
+        // Assert 2
+        AssertConverged(harness, aliceOffered: 1, bobOffered: 0);
+    }
+
     [Fact]
     public async Task Given_TheFullDance_When_RunWithoutFailures_Then_ItNeedsSeveralMessagesAndSaves()
     {

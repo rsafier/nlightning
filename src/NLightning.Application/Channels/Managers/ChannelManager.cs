@@ -32,6 +32,7 @@ using Services;
 public class ChannelManager : IChannelManager, IChannelMessagePublisher
 {
     private readonly IChannelLockProvider _channelLockProvider;
+    private readonly Lock _connectionGate = new();
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<ChannelManager> _logger;
     private readonly ILightningSigner _lightningSigner;
@@ -71,12 +72,33 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <inheritdoc />
-    /// <remarks>Raises <see cref="OnResponseMessageReady"/> for each message; call it while holding the channel's lock.
+    /// <remarks>
+    /// Raises <see cref="OnResponseMessageReady"/> for each message; call it while holding the channel's lock. An
+    /// update, <c>commitment_signed</c> or <c>revoke_and_ack</c> of a channel that is not reestablished on the peer's
+    /// current connection is dropped (B2-RE-07): the caller checked the link before persisting, but the connection can
+    /// be replaced during the save, and the peer's new connection must see our <c>channel_reestablish</c> first. What
+    /// was persisted is retransmitted by the reestablish. The check and the raise run under the same gate as
+    /// <see cref="OnPeerConnectionChanged"/>, which the peer manager calls before it swaps the connection, so a message
+    /// that passes the check is enqueued on the old connection.
     /// </remarks>
     public void Publish(CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        RaiseResponseMessages(peerPubKey, messages);
+        var tracker = GetTracker();
+        lock (_connectionGate)
+        {
+            var kept = tracker is null
+                           ? messages
+                           : messages.Where(m => !IsNormalOperationMessage(m.Type)
+                                              || tracker.IsReestablished(m.Payload.ChannelId))
+                                     .ToList();
+            if (kept.Count != messages.Count)
+                _logger.LogInformation(
+                    "Dropping {Count} message(s) for peer {Peer}: the connection changed before they went out; the channel_reestablish retransmits them",
+                    messages.Count - kept.Count, peerPubKey);
+
+            RaiseResponseMessages(peerPubKey, kept);
+        }
     }
 
     private async Task RegisterExistingChannelLockedAsync(IServiceScope scope, ChannelModel channel)
@@ -145,7 +167,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// A persisted watch means the transaction may be out, so the channel moves on to V1FundingSigned and waits for
     /// the confirmation. Without one the transaction was never published, and BOLT 2 says a funder that has not
     /// broadcast the funding transaction SHOULD NOT remember the channel: it is persisted Stale and not registered
-    /// (NL-048).</item>
+    /// (NL-048). Known gap: the blockchain monitor saves the watch before it publishes, so a crash or a failed publish
+    /// in between leaves a watch for a transaction that never went out, and nothing rebroadcasts it yet.</item>
     /// <item>Every other state is registered as it is.</item>
     /// </list>
     /// </remarks>
@@ -341,9 +364,11 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// <remarks>
     /// Each channel is handled under its own lock (one at a time, never two). Failed channels get no
     /// channel_reestablish (BOLT 2: "retransmit the error packet and ignore any other packets for that channel").
-    /// Channels still waiting for channel_ready send theirs only in reply to the peer's (a peer that still sees the
-    /// channel as pending may not expect it). A channel whose reestablish can't be built is logged and skipped: it stays
-    /// unusable on this connection, the others go on.
+    /// Every other channel past funding_signed sends its channel_reestablish now (BOLT 2: "MUST transmit
+    /// channel_reestablish for each channel"), channels still waiting for channel_ready included: the exchange is what
+    /// retransmits a channel_ready lost with the previous connection (both next_commitment_numbers 1), so two nodes
+    /// running this code never stay ReadyForUs/ReadyForThem. A channel whose reestablish can't be built is logged and
+    /// skipped: it stays unusable on this connection, the others go on.
     /// </remarks>
     public async Task<IReadOnlyList<ErrorMessage>> OnPeerConnectedAsync(CompactPubKey peerPubKey)
     {
@@ -364,8 +389,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                         _logger.LogInformation("Re-sending the error of failed channel {ChannelId}",
                                                channel.ChannelId);
                         break;
-                    case ChannelState.Open:
-                        if (channel.Commitments is not null)
+                    case ChannelState.V1FundingSigned or ChannelState.ReadyForThem or ChannelState.ReadyForUs
+                      or ChannelState.Open:
+                        if (channel.State == ChannelState.Open && channel.Commitments is not null)
                             await RevertUncommittedAsync(channel);
 
                         var reestablishService = scope.ServiceProvider.GetRequiredService<ReestablishService>();
@@ -408,7 +434,12 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <inheritdoc />
-    public void OnPeerConnectionChanged(CompactPubKey peerPubKey) => GetTracker()?.ResetPeer(peerPubKey);
+    /// <remarks>Waits for a <see cref="Publish"/> in progress (see there).</remarks>
+    public void OnPeerConnectionChanged(CompactPubKey peerPubKey)
+    {
+        lock (_connectionGate)
+            GetTracker()?.ResetPeer(peerPubKey);
+    }
 
     private List<ChannelModel> GetPeerChannels(CompactPubKey peerPubKey) =>
         _channelMemoryRepository.FindChannels(c => c.RemoteNodeId == peerPubKey);
