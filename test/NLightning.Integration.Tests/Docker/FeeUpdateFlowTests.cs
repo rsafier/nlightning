@@ -116,14 +116,10 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     /// <c>update_fee</c> on it however the estimate moves (BOLT 2: the non-funder MUST NOT).
     /// </summary>
     /// <remarks>
-    /// Skipped: our node refuses alice's open_channel ("Fee rate per kw is too small: 6250, currentFee 10000").
-    /// <c>FeeEstimationOptions.RateMultiplier</c> defaults to 1000, which turns the test node's fixed 10 sat/vB into
-    /// 10,000 "sat/kw" (sat/kvB; 250 would give 2,500 sat/kw), and <c>ChannelOpenValidator</c> refuses a feerate 20 %
-    /// below that estimate, so LND's legacy 25 sat/vB (6,250 sat/kw) is refused. Unskip once the multiplier unit is
-    /// fixed (outside this lane: Infrastructure.Bitcoin options and the daemon's appsettings template).
+    /// Regression for NL-288/NL-289: our node used to refuse alice's open_channel ("Fee rate per kw is too small:
+    /// 6250, currentFee 10000"), because the estimate was sat/kvB (x 1000) and the fundee floor 80 % of it.
     /// </remarks>
-    [Fact(Skip = "our fee estimate is 4x too high (RateMultiplier 1000 is sat/kvB, not sat/kw), so we refuse LND's "
-               + "open_channel feerate; unskip with the multiplier fix")]
+    [Fact]
     public async Task Given_LndFundedChannel_When_PaymentsFlow_Then_TheyWorkAndWeNeverSendUpdateFee()
     {
         // Arrange

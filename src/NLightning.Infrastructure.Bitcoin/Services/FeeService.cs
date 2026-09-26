@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,6 +12,9 @@ using Options;
 public class FeeService : IFeeService
 {
     private const string FeeCacheFileName = "fee_cache.bin";
+
+    /// <summary>BOLT 3: the lowest feerate a node should use or accept (253 sat/kw).</summary>
+    private const long FeeRatePerKwFloor = 253;
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
 
     private DateTime _lastFetchTime = DateTime.MinValue;
@@ -158,10 +162,13 @@ public class FeeService : IFeeService
                 $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
         }
 
-        // Apply the multiplier to convert to sat/kw
-        if (decimal.TryParse(_feeEstimationOptions.RateMultiplier, out var multiplier))
+        // Apply the multiplier to convert to sat/kw (250 for sat/vB, NL-288), never below BOLT 3's 253 sat/kw floor:
+        // peers refuse a lower feerate in open_channel and update_fee
+        if (decimal.TryParse(_feeEstimationOptions.RateMultiplier, NumberStyles.Number, CultureInfo.InvariantCulture,
+                             out var multiplier))
         {
-            return (long)(feeRate * multiplier);
+            var feeRatePerKw = (long)(feeRate * multiplier);
+            return feeRatePerKw > 0 ? Math.Max(feeRatePerKw, FeeRatePerKwFloor) : feeRatePerKw;
         }
 
         throw new InvalidOperationException(

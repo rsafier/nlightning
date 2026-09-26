@@ -236,7 +236,7 @@ public static class NodeConfigurationExtensions
                    "ContentType": "application/json",
                    "PreferredFeeRate": "fastestFee",
                    "CacheExpiration": "5m",
-                   "RateMultiplier": 1000,
+                   "RateMultiplier": 250,
                    "CacheFile": "fee_estimation_cache.bin"
                  },
                  "Database": {

@@ -28,7 +28,7 @@ public sealed class ClnChannelSession : IAsyncDisposable
     public static readonly LightningMoney Push = LightningMoney.Satoshis(300_000);
 
     /// <summary>
-    /// The feerate of the channel we fund: 10 sat/vB (the test node's fixed fee answer) as sat/kw.
+    /// The feerate of the channel we fund, our default: 10 sat/vB (the test node's fixed fee answer) x 250 = sat/kw.
     /// </summary>
     public static readonly LightningMoney OpenFeeRatePerKw = LightningMoney.Satoshis(2_500);
 
@@ -210,7 +210,7 @@ public sealed class ClnChannelSession : IAsyncDisposable
     /// <summary>
     /// A separate node <paramref name="nodeName"/> to which CLN opens a private channel of
     /// <paramref name="capacity"/> (CLN funds it from its own wallet, at <paramref name="clnFeerate"/>, e.g.
-    /// <c>10000perkw</c>), followed until both ends are usable. The caller disposes the session (and so the node).
+    /// <c>opening</c> for CLN's own estimate or <c>10000perkw</c>), followed until both ends are usable. The caller disposes the session (and so the node).
     /// </summary>
     public static async Task<ClnChannelSession> BuildClnFundedAsync(ClnFixture fixture, string nodeName,
                                                                     LightningMoney capacity, string clnFeerate,
@@ -251,14 +251,11 @@ public sealed class ClnChannelSession : IAsyncDisposable
             await fixture.WaitAllAtTipAsync([node], cancellationToken);
             await session.ConnectAsync(cancellationToken);
 
-            // The test node's fixed fee answer (fastestFee 10 sat/vB) is 2,500 sat/kw, inside CLN's acceptable range.
-            // Our default open would use 10,000 sat/kw instead (FeeEstimation:RateMultiplier 1000 turns sat/vB into
-            // sat/kvB, not sat/kw), which CLN refuses with its fee limits on: the gap is reproduced by
-            // ClnInteropTests.Given_OurDefaultFeerate_When_OpeningToCln_Then_ClnAccepts
+            // No explicit feerate: our estimate, the test node's fixed fee answer (fastestFee 10 sat/vB) as sat/kw
+            // (OpenFeeRatePerKw), inside CLN's acceptable range (NL-288)
             var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(fixture.ClnAddress, Capacity)
             {
-                PushAmount = Push,
-                FeeRatePerKw = OpenFeeRatePerKw
+                PushAmount = Push
             }, cancellationToken);
             session.ChannelId = channel.ChannelId;
             Console.WriteLine($"[cln] opened {channel.ChannelId} ({channel.ChannelPoint()}), state {channel.ChannelState}");

@@ -142,12 +142,12 @@ public sealed class ClnInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// CLN funds a private channel to us (we are the fundee, static_remotekey), both ends reach
-    /// <c>CHANNELD_NORMAL</c>/usable, and payments work both ways (CLN pays first: all the funds are on its side). CLN
-    /// funds at 10,000 sat/kw: at its own regtest estimate (253 sat/kw) we refuse the open, because we require at
-    /// least 80 % of our own estimate (the fundee feerate floor gap in the ledger). CLN, as the opener, chooses this
-    /// feerate itself, so its fee limits (enforced by the fixture) do not apply to it. CLN sends <c>update_fee</c> only when its
-    /// estimate changes after the channel is normal, so this test does not wait for one.
+    /// CLN funds a private channel to us (we are the fundee, static_remotekey) at 10,000 sat/kw, above our estimate,
+    /// both ends reach <c>CHANNELD_NORMAL</c>/usable, and payments work both ways (CLN pays first: all the funds are
+    /// on its side). CLN, as the opener, chooses the feerate itself, so its fee limits (enforced by the fixture) do not
+    /// apply to it. <see cref="Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept"/> covers CLN's own estimate.
+    /// CLN sends <c>update_fee</c> only when its estimate changes after the channel is normal, so this test does not
+    /// wait for one.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ClnFundsChannelToUs_When_Normal_Then_PaymentsWorkBothWays()
@@ -166,31 +166,36 @@ public sealed class ClnInteropTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Interop gap found by this suite (see the lane's ledger items): CLN funds at its own estimate (253 sat/kw on an
-    /// idle regtest) and we refuse the <c>open_channel</c> with "Fee rate per kw is too small" because it is below 80 %
-    /// of our estimate. Explicit until the fee floor is fixed; then drop <c>Explicit</c> (and the explicit feerate of
-    /// <see cref="Given_ClnFundsChannelToUs_When_Normal_Then_PaymentsWorkBothWays"/>).
+    /// NL-289 regression (the W3-E reproducer): CLN funds at its own estimate, which on an idle regtest is the
+    /// 253 sat/kw relay floor, while our estimate is 2,500 sat/kw. We used to refuse the <c>open_channel</c> ("Fee rate
+    /// per kw is too small": below 1,000 sat/kw and below 80 % of our estimate); BOLT 2 only lets the fundee fail a
+    /// feerate too small for timely processing, and we now accept anything from the 253 sat/kw floor. Payments work
+    /// both ways over the channel.
     /// </summary>
-    [Fact(Timeout = TestTimeoutMs, Explicit = true)]
+    [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept()
     {
-        // Arrange + Act: fundchannel without a feerate, so CLN uses its own opening estimate
+        // Arrange + Act: fundchannel at CLN's own opening estimate
         var ct = TestContext.Current.CancellationToken;
-
-        // Assert: the build fails with CLN's "They sent ERROR ... Fee rate per kw is too small" while the gap is open
         await using var session = await ClnChannelSession.BuildClnFundedAsync(
                                       _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000), "opening", ct);
+
+        // Assert: usable at our end, at a feerate our old floor refused
         Assert.True((await session.GetOurChannelAsync(ct)).IsUsable());
+        var theirs = await session.GetClnChannelAsync(ct);
+        var feerate = theirs["feerate"]!["perkw"]!.GetValue<long>();
+        Console.WriteLine($"[cln] CLN-funded channel at its estimate: {ClnChannelSession.DescribeCln(theirs)}");
+        Assert.InRange(feerate, 253, 999);
+        await AssertClnPaysUsAsync(session, LightningMoney.Satoshis(20_000), ct);
+        await AssertWePayClnAsync(session, LightningMoney.Satoshis(5_000), ct);
     }
 
     /// <summary>
-    /// Interop gap found with CLN's fee limits on (see the ledger): our default open feerate is our estimate times
-    /// <c>FeeEstimation:RateMultiplier</c> (1000), which turns the estimator's sat/vB into sat/kvB rather than sat/kw
-    /// (x250), so the test node's 10 sat/vB becomes 10,000 sat/kw and CLN refuses the <c>open_channel</c> with
-    /// "feerate_per_kw 10000 above maximum". Explicit until the conversion is fixed; then drop <c>Explicit</c> and the
-    /// explicit <see cref="ClnChannelSession.OpenFeeRatePerKw"/> of the shared channel.
+    /// NL-288 regression (the W3-E reproducer), with CLN's fee limits on: our default open feerate is our estimate as
+    /// sat/kw (the test node's 10 sat/vB x 250 = 2,500 sat/kw), inside CLN's acceptable range. It used to be x 1000
+    /// (sat/kvB), 10,000 sat/kw, which CLN refused with "feerate_per_kw 10000 above maximum".
     /// </summary>
-    [Fact(Timeout = TestTimeoutMs, Explicit = true)]
+    [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurDefaultFeerate_When_OpeningToCln_Then_ClnAccepts()
     {
         // Arrange
@@ -212,7 +217,9 @@ public sealed class ClnInteropTests : IAsyncLifetime
                                                          node.NodeIdHex, channel.ChannelId.ToString(), ct),
                                          TimeSpan.FromSeconds(30), "CLN lists the channel", ct);
         var (min, max) = await GetClnAcceptableFeerateRangeAsync(ct);
-        Assert.InRange(theirs["feerate"]!["perkw"]!.GetValue<long>(), min, max);
+        var feerate = theirs["feerate"]!["perkw"]!.GetValue<long>();
+        Assert.Equal((long)ClnChannelSession.OpenFeeRatePerKw.Satoshi, feerate);
+        Assert.InRange(feerate, min, max);
     }
 
     /// <summary>

@@ -362,6 +362,85 @@ public class ChannelOpenValidatorTests
         Assert.Contains("at or below the channel reserve", exception.Message);
     }
 
+    [Theory]
+    [InlineData(253)]
+    [InlineData(1_000)]
+    [InlineData(2_500)]
+    public void Given_PeerFeerateFarBelowOurEstimate_When_PerformingMandatoryChecks_Then_Accepted(long feeratePerKw)
+    {
+        // Arrange (NL-289: CLN opens at its own estimate, 253 sat/kw on an idle chain, while ours is 10,000)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(500_000), null, FeatureSupport.No),
+                                     LightningMoney.Satoshis(feeratePerKw));
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateBelowRelayFloor_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange (BOLT 2: too small for timely processing; BOLT 3's floor is 253 sat/kw)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(500_000), null, FeatureSupport.No),
+                                     LightningMoney.Satoshis(252));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Fee rate per kw is too small", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateAboveMaximum_When_PerformingMandatoryChecks_Then_Throws()
+    {
+        // Arrange (BOLT 2: unreasonably large)
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(16_000_000), null, FeatureSupport.No),
+                                     ChannelConstants.MaxFeePerKw + LightningMoney.Satoshis(1));
+
+        // Act
+        var exception = Assert.Throws<ChannelErrorException>(() => _validator.PerformMandatoryChecks(parameters,
+                                                                    out _));
+
+        // Assert
+        Assert.Contains("Fee rate per kw is too large", exception.Message);
+    }
+
+    [Fact]
+    public void Given_PeerFeerateAtMaximum_When_PerformingMandatoryChecks_Then_Accepted()
+    {
+        // Arrange: 100,000 sat/kw costs the funder 72,400 sat on a legacy commitment
+        var parameters = WithFeeRate(CreateParameters(LightningMoney.Satoshis(1_000_000), null, FeatureSupport.No),
+                                     ChannelConstants.MaxFeePerKw);
+
+        // Act
+        var exception = Record.Exception(() => _validator.PerformMandatoryChecks(parameters, out _));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    private static ChannelOpenMandatoryValidationParameters WithFeeRate(
+        ChannelOpenMandatoryValidationParameters parameters, LightningMoney feeRatePerKw)
+    {
+        return new ChannelOpenMandatoryValidationParameters
+        {
+            ChannelTypeTlv = parameters.ChannelTypeTlv,
+            CurrentFeeRatePerKw = parameters.CurrentFeeRatePerKw,
+            NegotiatedFeatures = parameters.NegotiatedFeatures,
+            FundingAmount = parameters.FundingAmount,
+            PushAmount = parameters.PushAmount,
+            FeeRatePerKw = feeRatePerKw,
+            ToSelfDelay = parameters.ToSelfDelay,
+            MaxAcceptedHtlcs = parameters.MaxAcceptedHtlcs,
+            DustLimitAmount = parameters.DustLimitAmount,
+            ChannelReserveAmount = parameters.ChannelReserveAmount
+        };
+    }
+
     private static ChannelOpenMandatoryValidationParameters CreateParameters(
         LightningMoney fundingAmount, LightningMoney? pushAmount, FeatureSupport optionAnchors,
         FeatureSupport largeChannels = FeatureSupport.Optional)
