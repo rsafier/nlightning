@@ -32,7 +32,21 @@ public sealed record GossipIngressResult(
     GossipRejectReason RejectReason = GossipRejectReason.None,
     bool CloseConnection = false)
 {
+    /// <summary>
+    /// Why the ingress itself refused the message when the validator did not (a rate limit, a graph limit, a banned
+    /// peer, an invalid signature, the chain check): a <see cref="Metrics.GossipMetricReasons"/> value, else null.
+    /// </summary>
+    public string? LimitReason { get; init; }
+
+    /// <summary>The <c>reason</c> tag of the rejected counter.</summary>
+    public string MetricReason =>
+        LimitReason ?? (RejectReason == GossipRejectReason.None ? Metrics.GossipMetricReasons.Other
+                                                                 : RejectReason.ToString());
+
     internal static GossipIngressResult Accepted(string detail) => new(GossipIngressOutcome.Accepted, detail);
+
+    internal static GossipIngressResult Limited(string detail, string limitReason) =>
+        new(GossipIngressOutcome.Ignored, detail) { LimitReason = limitReason };
 
     internal static GossipIngressResult Ignored(string detail,
                                                 GossipRejectReason reason = GossipRejectReason.None) =>

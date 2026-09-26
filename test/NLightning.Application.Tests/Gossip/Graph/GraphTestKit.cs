@@ -75,7 +75,7 @@ internal sealed class GraphTestKit
     public GraphTestKit(InMemoryGraphDbRepository? repository = null, DateTimeOffset? now = null,
                         Action<GossipGraphOptions>? configure = null,
                         IChannelMemoryRepository? channelMemoryRepository = null,
-                        CompactPubKey? ourNodeId = null)
+                        CompactPubKey? ourNodeId = null, Application.Gossip.Metrics.GossipMetrics? metrics = null)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
         Clock = new SettableTimeProvider(now ?? DefaultNow);
@@ -108,7 +108,8 @@ internal sealed class GraphTestKit
         Ingress = new GossipIngress(Store, new GossipSignatureVerifier(), FundingLookup.Object,
                                     Microsoft.Extensions.Options.Options.Create(Options),
                                     Microsoft.Extensions.Options.Options.Create(nodeOptions),
-                                    NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository, keyManager);
+                                    NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository, keyManager,
+                                    metrics);
     }
 
     public InMemoryGraphDbRepository Repository { get; }

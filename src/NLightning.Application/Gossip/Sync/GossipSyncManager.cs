@@ -20,6 +20,7 @@ using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
 using Graph.Interfaces;
 using Interfaces;
+using Metrics;
 
 /// <inheritdoc cref="IGossipSyncManager"/>
 /// <remarks>
@@ -88,6 +89,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly Func<uint>? _getTipHeight;
     private readonly Func<int>? _getIngressQueueDepth;
     private readonly int _ingressQueueCapacity;
+    private readonly GossipMetrics? _metrics;
     private readonly ConcurrentDictionary<IPeerService, PeerSession> _sessions = new(ReferenceEqualityComparer.Instance);
     private readonly Lock _timerLock = new();
     private readonly Lock _missedLock = new();
@@ -114,13 +116,15 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// a tenth of it in channels (each brings up to <see cref="MessagesPerQueriedChannel"/> messages), so the answer
     /// fits in the half the querier waited for.
     /// </param>
+    /// <param name="metrics">Where the range sync durations are recorded (null: nowhere).</param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
                              Func<IReadOnlyList<ShortChannelId>>? takeMissedShortChannelIds = null,
                              Func<uint>? getTipHeight = null, Func<int>? getIngressQueueDepth = null,
-                             int ingressQueueCapacity = 0)
+                             int ingressQueueCapacity = 0, GossipMetrics? metrics = null)
     {
+        _metrics = metrics;
         _getIngressQueueDepth = getIngressQueueDepth;
         _ingressQueueCapacity = Math.Max(0, ingressQueueCapacity);
         _graphStore = graphStore;
@@ -558,6 +562,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         session.IsRangeSyncRunning = true;
         var completed = false;
         var startedAt = NowSeconds();
+        var startedTimestamp = _timeProvider.GetTimestamp();
         try
         {
             var tip = _getTipHeight?.Invoke() ?? 0;
@@ -631,6 +636,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             session.IsRangeSyncRunning = false;
             if (!completed)
                 session.NeedsLiveFilter = true;
+            _metrics?.RecordSyncDuration(_timeProvider.GetElapsedTime(startedTimestamp), completed);
         }
     }
 

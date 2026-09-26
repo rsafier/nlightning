@@ -24,6 +24,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Interfaces;
+using Metrics;
 
 /// <summary>
 /// The incoming graph gossip pipeline (plan BOLT7 §3.3, G2-T4): a bounded queue drained by workers that run, per
@@ -44,6 +45,21 @@ using Interfaces;
 /// a spend in the mempool, fewer than 6 confirmations) defers the announcement: a worker retries it after
 /// <see cref="GossipGraphOptions.RetryDelay"/>, up to <see cref="GossipGraphOptions.MaxRetries"/> times; a transient
 /// result never counts against the peer.
+/// </para>
+/// <para>
+/// DoS limits (plan §3.8, G5-T2; <see cref="GossipGraphOptions"/>): the per-peer and global queues; a
+/// <c>channel_update</c> rate per channel direction and a <c>node_announcement</c> rate per node
+/// (<see cref="GossipRateLimiter"/>); a keep-alive <c>channel_update</c> (same fields) only when
+/// <see cref="GossipGraphOptions.KeepAliveMinInterval"/> newer; timestamps more than
+/// <see cref="GossipGraphOptions.MaxFutureTimestamp"/> ahead dropped; no new channel or node beyond
+/// <see cref="GossipGraphOptions.MaxChannels"/>/<see cref="GossipGraphOptions.MaxNodes"/>; and a per-peer misbehaviour
+/// score (<see cref="GossipMisbehaviourTracker"/>: invalid signatures, bad encodings, funding outputs that contradict
+/// the announcement) that bans the peer (<see cref="IGraphStore.Ban"/>, persisted in <c>GraphBannedNodes</c>) with a
+/// <c>warning</c> and a disconnection. For the rest of the ban (kept in memory; a restart keeps only the persisted
+/// node ban) everything the peer hands over is dropped at the door without being validated, and its connection is left
+/// alone (it may carry our channels); a node blacklisted for a conflicting announcement (B7-CA-04) keeps relaying other
+/// nodes' gossip, only its own is ignored.
+/// Everything is counted in <see cref="GossipMetrics"/> when one is given.
 /// </para>
 /// <para>
 /// The workers and the store's write-behind loop start with <see cref="StartAsync"/>, or on the first queued message.
@@ -73,19 +89,24 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
     private readonly ConcurrentDictionary<ShortChannelId, byte> _missed = new();
     private readonly CompactPubKey? _ourNodeId;
+    private readonly GossipRateLimiter _rateLimiter;
+    private readonly GossipMisbehaviourTracker _misbehaviour;
+    private readonly GossipMetrics? _metrics;
+    private readonly ConcurrentDictionary<CompactPubKey, DateTimeOffset> _bannedPeers = new();
 
     private Task? _startTask;
     private int _pendingRetries;
     private int _flushRequested;
     private int _pendingOwn;
     private long _droppedCount;
+    private long _graphFullCount;
 
     public GossipIngress(IGraphStore store, IGossipSignatureVerifier signatureVerifier,
                          IFundingOutputLookup fundingOutputLookup, IOptions<GossipGraphOptions> options,
                          IOptions<NodeOptions> nodeOptions, ILogger<GossipIngress> logger,
                          TimeProvider? timeProvider = null,
                          IChannelMemoryRepository? channelMemoryRepository = null,
-                         ISecureKeyManager? secureKeyManager = null)
+                         ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null)
     {
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _store = store;
@@ -105,6 +126,17 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         });
         _recentMessages = new RecentMessageCache(_options.RecentMessageCacheSize);
         _orphans = new OrphanUpdateCache(_options.MaxOrphans, _options.OrphanTtl, _timeProvider);
+        _rateLimiter = new GossipRateLimiter(_options.ChannelUpdateRateInterval, _options.ChannelUpdateBurst,
+                                             _options.NodeAnnouncementRateInterval, _timeProvider);
+        _misbehaviour = new GossipMisbehaviourTracker(_options.MisbehaviourThreshold, _options.MisbehaviourWindow,
+                                                      _timeProvider);
+        _metrics = metrics;
+        if (metrics is not null)
+        {
+            metrics.RegisterQueue("ingress", () => _queue.Reader.Count);
+            metrics.RegisterQueue("orphans", () => _orphans.Count);
+            metrics.RegisterQueue("retries", () => Volatile.Read(ref _pendingRetries));
+        }
     }
 
     /// <inheritdoc />
@@ -116,6 +148,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// <summary>The orphan cache (for tests and metrics).</summary>
     internal OrphanUpdateCache Orphans => _orphans;
 
+    /// <summary>The rate limits (for tests).</summary>
+    internal GossipRateLimiter RateLimiter => _rateLimiter;
+
+    /// <summary>The misbehaviour score (for tests).</summary>
+    internal GossipMisbehaviourTracker Misbehaviour => _misbehaviour;
+
     /// <inheritdoc />
     public bool TryEnqueue(IPeerService origin, IMessage message)
     {
@@ -126,14 +164,22 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return false;
 
         _ = StartAsync();
+        _metrics?.RecordReceived(message.Type);
 
         var peer = origin.PeerPubKey;
+        if (IsPeerBanned(peer))
+        {
+            // Dropped at the door without validation, never re-requested
+            _metrics?.RecordRejected(message.Type, GossipMetricReasons.BannedPeer);
+            return false;
+        }
+
         if (_queuedPerPeer.AddOrUpdate(peer, 1, (_, count) => count + 1) > _options.MaxQueuedPerPeer)
         {
             ReleasePeerSlot(peer);
             _logger.LogDebug("Dropping {MessageType} from peer {Peer}: its gossip queue is full",
                              Enum.GetName(message.Type), peer);
-            RecordMissed(message);
+            RecordMissed(message, GossipMetricReasons.PeerQueueFull);
             return false;
         }
 
@@ -143,7 +189,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         ReleasePeerSlot(peer);
         _logger.LogDebug("Dropping {MessageType} from peer {Peer}: the gossip queue is full",
                          Enum.GetName(message.Type), peer);
-        RecordMissed(message);
+        RecordMissed(message, GossipMetricReasons.QueueFull);
         return false;
     }
 
@@ -384,8 +430,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         }
     }
 
-    private void RecordMissed(IMessage message)
+    private void RecordMissed(IMessage message, string reason)
     {
+        _metrics?.RecordDropped(reason);
         var dropped = Interlocked.Increment(ref _droppedCount);
         if (dropped == 1 || dropped % 1_000 == 0)
             _logger.LogWarning("{Count} graph gossip messages dropped so far (full queues or chain lookups given up); "
@@ -422,6 +469,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             _logger.LogTrace("{MessageType} from peer {Peer}: {Outcome} ({Detail})", Enum.GetName(message.Type),
                              origin?.PeerPubKey.ToString() ?? "us", result.Outcome, result.Detail);
 
+        RecordOutcome(message.Type, result);
         return result;
     }
 
@@ -455,17 +503,23 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
         }
 
+        // Plan §3.8: no new channel beyond the limit (before the signatures and the chain lookup it would cost)
+        if (known is null && _store.ChannelCount >= _options.MaxChannels)
+            return GraphFull($"the graph holds {_options.MaxChannels} channels",
+                             announcement.ShortChannelId.ToString());
+
         if (!VerifyChannelAnnouncement(announcement))
         {
             Remember(MessageTypes.ChannelAnnouncement, raw);
             return await WarnAsync(origin, GossipRejectReason.None,
                                    $"Invalid signature in channel_announcement for {announcement.ShortChannelId}",
-                                   closeConnection: true);
+                                   closeConnection: true, GossipMetricReasons.InvalidSignature);
         }
 
         var lookup = await _fundingOutputLookup.VerifyAsync(announcement.ShortChannelId, announcement.BitcoinKey1,
                                                             announcement.BitcoinKey2,
                                                             cancellationToken: cancellationToken);
+        _metrics?.RecordChainLookup(lookup.Status.ToString());
         ulong? capacitySat;
         var verification = GraphChannelVerification.Verified;
         switch (lookup.Status)
@@ -487,7 +541,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
                 // Permanent: the announcement names no unspent 2-of-2 of its keys (BOLT 7 MUST ignore)
                 Remember(MessageTypes.ChannelAnnouncement, raw);
-                return GossipIngressResult.Ignored($"funding output check: {lookup.Status}");
+                return FundingCheckFailed(origin, announcement.ShortChannelId, lookup.Status);
         }
 
         var channel = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
@@ -514,6 +568,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         if (_store.IsBanned(announcement.NodeId))
             return GossipIngressResult.Ignored("the node is banned", GossipRejectReason.BlacklistedNode);
 
+        if (announcement.Timestamp > NowUnixSeconds() + (ulong)_options.MaxFutureTimestamp.TotalSeconds)
+            return GossipIngressResult.Limited("the timestamp is too far in the future",
+                                               GossipMetricReasons.FutureTimestamp);
+
         var fields = new NodeAnnouncementFields((byte[])announcement.NodeId, announcement.Timestamp,
                                                 announcement.Features, announcement.Addresses);
         uint? lastTimestamp = _store.TryGetNode(announcement.NodeId, out var stored) ? stored.Timestamp : null;
@@ -532,8 +590,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                     lock (_orphanGate)
                     {
                         nowKnown = _store.NodeHasChannels(announcement.NodeId);
-                        if (!nowKnown)
-                            _orphans.AddNodeAnnouncement(message, origin);
+                        if (!nowKnown && !_orphans.AddNodeAnnouncement(message, origin, out var full) && full)
+                            _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
                     }
 
                     // Its first channel was added between the check and the gate: validate again
@@ -545,13 +603,24 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
         }
 
+        if (stored is null && _store.NodeCount >= _options.MaxNodes)
+            return GraphFull($"the graph holds {_options.MaxNodes} nodes", announcement.NodeId.ToString());
+
+        if (!_rateLimiter.CanAcceptNodeAnnouncement(announcement.NodeId))
+            return GossipIngressResult.Limited("the node announced itself too recently",
+                                               GossipMetricReasons.RateLimited);
+
         if (!_signatureVerifier.Verify(announcement.GetSignatureHash(), announcement.Signature, announcement.NodeId))
         {
             Remember(MessageTypes.NodeAnnouncement, raw);
             return await WarnAsync(origin, GossipRejectReason.None,
                                    $"Invalid signature in node_announcement of {announcement.NodeId}",
-                                   closeConnection: true);
+                                   closeConnection: true, GossipMetricReasons.InvalidSignature);
         }
+
+        if (!_rateLimiter.TryAcquireNodeAnnouncement(announcement.NodeId))
+            return GossipIngressResult.Limited("the node announced itself too recently",
+                                               GossipMetricReasons.RateLimited);
 
         var node = new GraphNode(announcement.NodeId, announcement.Timestamp, announcement.Features,
                                  announcement.Alias.Span, announcement.RgbColor.Span, addresses!.Addresses)
@@ -588,7 +657,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             {
                 if (!_store.TryGetChannel(update.ShortChannelId, out channel))
                 {
-                    _orphans.AddUpdate(message, origin);
+                    if (!_orphans.AddUpdate(message, origin, out var full) && full)
+                        _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
                     return GossipIngressResult.Orphaned("the channel is not in the graph yet");
                 }
             }
@@ -611,13 +681,33 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         if (_store.IsBanned(signer))
             return GossipIngressResult.Ignored("the node is banned", GossipRejectReason.BlacklistedNode);
 
+        // Plan §3.8: a keep-alive (the stored fields again) only when it is more than a day newer
+        var direction = update.Direction ? (byte)1 : (byte)0;
+        if (_options.KeepAliveMinInterval > TimeSpan.Zero && channel.GetPolicy(direction) is { } last
+                                                          && last.HasSameFieldsAs(update)
+                                                          && (ulong)update.Timestamp - last.Timestamp
+                                                          <= (ulong)_options.KeepAliveMinInterval.TotalSeconds)
+        {
+            Remember(MessageTypes.ChannelUpdate, raw);
+            return GossipIngressResult.Limited("a keep-alive less than a day newer than the stored update",
+                                               GossipMetricReasons.KeepAliveTooSoon);
+        }
+
+        if (!_rateLimiter.CanAcceptUpdate(update.ShortChannelId, direction))
+            return GossipIngressResult.Limited("the channel direction's update rate is spent",
+                                               GossipMetricReasons.RateLimited);
+
         if (!_signatureVerifier.Verify(update.GetSignatureHash(), update.Signature, signer))
         {
             Remember(MessageTypes.ChannelUpdate, raw);
             return await WarnAsync(origin, GossipRejectReason.None,
                                    $"Invalid signature in channel_update for {update.ShortChannelId}",
-                                   closeConnection: true);
+                                   closeConnection: true, GossipMetricReasons.InvalidSignature);
         }
+
+        if (!_rateLimiter.TryAcquireUpdate(update.ShortChannelId, direction))
+            return GossipIngressResult.Limited("the channel direction's update rate is spent",
+                                               GossipMetricReasons.RateLimited);
 
         Remember(MessageTypes.ChannelUpdate, raw);
         var policy = GraphPolicy.FromChannelUpdate(update) with { RawUpdate = raw };
@@ -737,7 +827,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     private async Task<GossipIngressResult> WarnAsync(IPeerService? origin, GossipRejectReason reason, string text,
-                                                      bool closeConnection)
+                                                      bool closeConnection, string? limitReason = null)
     {
         _logger.LogWarning("Gossip from peer {Peer}: {Text}{Close}", origin?.PeerPubKey.ToString() ?? "us", text,
                            closeConnection ? " (closing the connection)" : "");
@@ -756,14 +846,119 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             }
         }
 
-        return new GossipIngressResult(GossipIngressOutcome.Warned, text, reason, closeConnection);
+        // Plan §3.3: invalid signatures and bad encodings count against the peer
+        ScoreMisbehaviour(origin, text);
+        return new GossipIngressResult(GossipIngressOutcome.Warned, text, reason, closeConnection)
+        {
+            LimitReason = limitReason
+        };
     }
+
+    /// <summary>
+    /// A funding output check that failed for good. A contradiction (another script or amount, no such transaction
+    /// index) is the announcer's lie that the relaying peer should have caught, so it counts against the peer; a spent
+    /// output (a closed channel) or an unreadable block never does.
+    /// </summary>
+    private GossipIngressResult FundingCheckFailed(IPeerService? origin, ShortChannelId shortChannelId,
+                                                   FundingOutputStatus status)
+    {
+        var detail = $"funding output check: {status}";
+        switch (status)
+        {
+            case FundingOutputStatus.ScriptMismatch or FundingOutputStatus.AmountMismatch
+                                                    or FundingOutputStatus.TransactionIndexOutOfRange:
+                _logger.LogDebug("The funding output of channel_announcement {ShortChannelId} from peer {Peer} "
+                               + "contradicts it: {Status}", shortChannelId, origin?.PeerPubKey.ToString() ?? "us",
+                                 status);
+                ScoreMisbehaviour(origin, $"channel_announcement for {shortChannelId} contradicted by the chain");
+                return GossipIngressResult.Limited(detail, GossipMetricReasons.ChainMismatch);
+            case FundingOutputStatus.OutputSpentOrMissing:
+                return GossipIngressResult.Limited(detail, GossipMetricReasons.FundingSpent);
+            case FundingOutputStatus.BlockUnavailable:
+                return GossipIngressResult.Limited(detail, GossipMetricReasons.FundingUnavailable);
+            default:
+                return GossipIngressResult.Ignored(detail);
+        }
+    }
+
+    /// <summary>Plan §3.8: a new channel or node beyond the graph's limits (logged at the first and every 1,000th).</summary>
+    private GossipIngressResult GraphFull(string detail, string what)
+    {
+        var count = Interlocked.Increment(ref _graphFullCount);
+        if (count == 1 || count % 1_000 == 0)
+            _logger.LogWarning("The graph is full ({Detail}); refused {What} ({Count} refused so far)", detail, what,
+                               count);
+        return GossipIngressResult.Limited(detail, GossipMetricReasons.GraphFull);
+    }
+
+    /// <summary>
+    /// Counts one misbehaviour of <paramref name="origin"/>; at the threshold the peer is banned for
+    /// <see cref="GossipGraphOptions.MisbehaviourBanDuration"/>, warned and disconnected (plan §3.8).
+    /// </summary>
+    private void ScoreMisbehaviour(IPeerService? origin, string why)
+    {
+        if (origin is null || origin.PeerPubKey == _ourNodeId || !_misbehaviour.Record(origin.PeerPubKey))
+            return;
+
+        var peer = origin.PeerPubKey;
+        var until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
+        _store.Ban(peer, $"gossip misbehaviour ({_options.MisbehaviourThreshold} in "
+                       + $"{_options.MisbehaviourWindow}), the last: {why}", until);
+        _bannedPeers[peer] = until;
+        _metrics?.RecordPeerBanned();
+        _logger.LogWarning("Peer {Peer} sent {Threshold} invalid gossip messages within {Window}; ignoring its gossip "
+                         + "until {Until} and disconnecting it (last: {Why})", peer, _options.MisbehaviourThreshold,
+                           _options.MisbehaviourWindow, until, why);
+        try
+        {
+            origin.Disconnect(new WarningException("Too much invalid gossip: your gossip is ignored for a while"));
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not disconnect banned peer {Peer}", peer);
+        }
+    }
+
+    /// <summary>True while <paramref name="peer"/> is banned for misbehaviour (an ended ban is forgotten).</summary>
+    private bool IsPeerBanned(CompactPubKey peer)
+    {
+        if (_bannedPeers.IsEmpty || !_bannedPeers.TryGetValue(peer, out var until))
+            return false;
+
+        if (until > _timeProvider.GetUtcNow())
+            return true;
+
+        _bannedPeers.TryRemove(new KeyValuePair<CompactPubKey, DateTimeOffset>(peer, until));
+        return false;
+    }
+
+    private void RecordOutcome(MessageTypes type, GossipIngressResult result)
+    {
+        if (_metrics is null)
+            return;
+
+        switch (result.Outcome)
+        {
+            case GossipIngressOutcome.Accepted:
+                _metrics.RecordAccepted(type);
+                break;
+            case GossipIngressOutcome.Ignored or GossipIngressOutcome.Warned:
+                _metrics.RecordRejected(type, result.MetricReason);
+                break;
+            case GossipIngressOutcome.Orphaned:
+                _metrics.RecordOrphaned(type);
+                break;
+        }
+    }
+
+    private ulong NowUnixSeconds() => (ulong)Math.Max(0, _timeProvider.GetUtcNow().ToUnixTimeSeconds());
 
     private GossipValidationContext CreateContext() =>
         new(_nodeOptions.BitcoinNetwork.ChainHash, (ulong)_timeProvider.GetUtcNow().ToUnixTimeSeconds())
         {
             MinConfirmations = AnnouncementDepth,
             StaleAfter = _options.StaleAfter,
+            MaxFutureSkew = _options.MaxFutureTimestamp,
             IsBlacklisted = _store.IsBanned
         };
 
@@ -810,7 +1005,16 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             await foreach (var item in _queue.Reader.ReadAllAsync(cancellationToken))
             {
                 if (item.Attempt == 0 && item.Origin is not null)
+                {
                     ReleasePeerSlot(item.Origin.PeerPubKey);
+
+                    // Queued before the peer was banned: its flood must not reach the validation stages
+                    if (IsPeerBanned(item.Origin.PeerPubKey))
+                    {
+                        _metrics?.RecordRejected(item.Message.Type, GossipMetricReasons.BannedPeer);
+                        continue;
+                    }
+                }
 
                 try
                 {
@@ -854,7 +1058,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         {
             _logger.LogDebug("Giving up on {MessageType} after {Attempts} attempts: {Reason}",
                              Enum.GetName(item.Message.Type), item.Attempt + 1, reason);
-            RecordMissed(item.Message);
+            RecordMissed(item.Message, GossipMetricReasons.RetriesExhausted);
             return;
         }
 
@@ -863,7 +1067,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             Interlocked.Decrement(ref _pendingRetries);
             _logger.LogDebug("Dropping deferred {MessageType}: too many retries pending",
                              Enum.GetName(item.Message.Type));
-            RecordMissed(item.Message);
+            RecordMissed(item.Message, GossipMetricReasons.RetryQueueFull);
             return;
         }
 
@@ -876,7 +1080,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 {
                     _logger.LogDebug("Dropping deferred {MessageType}: the gossip queue is full",
                                      Enum.GetName(item.Message.Type));
-                    RecordMissed(item.Message);
+                    RecordMissed(item.Message, GossipMetricReasons.QueueFull);
                 }
             }
             catch (OperationCanceledException)
@@ -899,6 +1103,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 await Task.Delay(_options.FlushInterval, _timeProvider, cancellationToken);
                 await _store.FlushAsync(cancellationToken);
                 _orphans.PruneExpired();
+                _rateLimiter.Prune();
+                _misbehaviour.Prune();
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

@@ -46,6 +46,14 @@ public sealed class GossipRelayOptions
     /// </summary>
     public TimeSpan RelaySendWait { get; set; } = TimeSpan.FromSeconds(2);
 
+    /// <summary>
+    /// The most relay messages waiting for one connection's next flush (plan §3.7: <c>Gossip:MaxOutboundQueue</c>,
+    /// 5,000). Beyond it the oldest waiting one is dropped (counted as <c>relay_backlog_full</c>): the peer can ask for
+    /// it again with a query, and a peer that drains slowly never makes the relay queue more than this per flush on
+    /// its outbox. <c>Gossip:MaxRelayPendingPerPeer</c>.
+    /// </summary>
+    public int MaxRelayPendingPerPeer { get; set; } = 5_000;
+
     /// <summary>How many received message versions keep their origin peers (origin suppression).</summary>
     public int MaxTrackedOrigins { get; set; } = GossipOriginTracker.DefaultCapacity;
 
@@ -68,6 +76,8 @@ public sealed class GossipRelayOptions
             errors.Add($"{nameof(RelaySendWait)} must be positive");
         if (BacklogMessagesPerSecond < 1)
             errors.Add($"{nameof(BacklogMessagesPerSecond)} must be at least 1");
+        if (MaxRelayPendingPerPeer < 1)
+            errors.Add($"{nameof(MaxRelayPendingPerPeer)} must be at least 1");
         if (MaxTrackedOrigins < 1)
             errors.Add($"{nameof(MaxTrackedOrigins)} must be at least 1");
         return errors;

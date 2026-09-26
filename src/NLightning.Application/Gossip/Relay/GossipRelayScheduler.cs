@@ -13,6 +13,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Graph.Interfaces;
 using Interfaces;
+using Metrics;
 using Sync.Interfaces;
 
 /// <inheritdoc cref="IGossipRelayScheduler"/>
@@ -45,6 +46,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     private readonly NodeOptions _nodeOptions;
     private readonly GossipOptions _gossipOptions;
     private readonly TimeProvider _timeProvider;
+    private readonly GossipMetrics? _metrics;
 
     private readonly Lock _lock = new();
     private readonly Dictionary<string, OwnEntry> _own = [];
@@ -65,13 +67,14 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
     /// <param name="originTracker">Which peer sent which message (null: no origin suppression).</param>
     /// <param name="relayOptions">The relay settings.</param>
     /// <param name="secureKeyManager">Our node id: our own messages are left to the own path.</param>
+    /// <param name="metrics">Where relayed and dropped messages are counted (null: nowhere).</param>
     public GossipRelayScheduler(IGossipPeerDirectory peerDirectory, ILogger<GossipRelayScheduler> logger,
                                 IOptions<NodeOptions> nodeOptions, IOptions<GossipOptions>? gossipOptions = null,
                                 TimeProvider? timeProvider = null, IGossipPeerSender? sender = null,
                                 IGraphStore? graphStore = null, IGossipSyncManager? syncManager = null,
                                 GossipOriginTracker? originTracker = null,
                                 IOptions<GossipRelayOptions>? relayOptions = null,
-                                ISecureKeyManager? secureKeyManager = null)
+                                ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null)
     {
         _peerDirectory = peerDirectory;
         _logger = logger;
@@ -84,6 +87,8 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
         _originTracker = originTracker;
         _relayOptions = relayOptions?.Value ?? new GossipRelayOptions();
         _ourNodeId = secureKeyManager?.GetNodePubKey();
+        _metrics = metrics;
+        metrics?.RegisterQueue("relay_pending", () => _relayPeers.Sum(p => (long)p.Value.PendingCount));
 
         if (IsRelayingOthers)
             _syncManager!.FilterReceived += OnFilterReceived;
@@ -209,6 +214,7 @@ public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDispo
                     return;
 
                 sent.Add(entry.Digest);
+                _metrics?.RecordRelayed(entry.Message.Type, "own");
             }
             catch (Exception e)
             {

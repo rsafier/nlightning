@@ -11,6 +11,7 @@ using Graph;
 using Graph.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Metrics;
 
 public static class SyncServiceCollectionExtensions
 {
@@ -45,7 +46,8 @@ public static class SyncServiceCollectionExtensions
                                          ingress is null ? null : () => ingress.QueuedCount,
                                          ingress is null
                                              ? 0
-                                             : Math.Min(graphOptions.MaxQueuedPerPeer, graphOptions.MaxQueued));
+                                             : Math.Min(graphOptions.MaxQueuedPerPeer, graphOptions.MaxQueued),
+                                         sp.GetService<GossipMetrics>());
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());
