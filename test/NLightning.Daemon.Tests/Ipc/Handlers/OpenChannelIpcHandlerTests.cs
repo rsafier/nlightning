@@ -50,6 +50,32 @@ public class OpenChannelIpcHandlerTests
         Assert.Equal(channelId, payload.ChannelId);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(20_000L)]
+    public async Task Given_PushAmount_When_OpenChannelHandleAsync_Then_ClientRequestCarriesIt(long? pushSats)
+    {
+        // Arrange
+        OpenChannelClientRequest? received = null;
+        var clientHandlerMock =
+            new Mock<IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>>();
+        clientHandlerMock.Setup(x => x.HandleAsync(It.IsAny<OpenChannelClientRequest>(),
+                                                   It.IsAny<CancellationToken>()))
+                         .Callback<OpenChannelClientRequest, CancellationToken>((r, _) => received = r)
+                         .ReturnsAsync(new OpenChannelClientResponse(ChannelId.Zero));
+        var handler = new OpenChannelIpcHandler(NullLogger<OpenChannelIpcHandler>.Instance,
+                                                BuildProvider(clientHandlerMock.Object));
+        var push = pushSats is null ? null : LightningMoney.Satoshis(pushSats.Value);
+
+        // Act
+        await handler.HandleAsync(CreateOpenChannelEnvelope(push), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(received);
+        Assert.Equal(LightningMoney.Satoshis(100_000), received.FundingAmount);
+        Assert.Equal(push, received.PushAmount);
+    }
+
     [Fact]
     public async Task GivenClientException_WhenOpenChannelHandleAsync_ThenErrorCodeIsTheExceptionCode()
     {
@@ -109,12 +135,13 @@ public class OpenChannelIpcHandlerTests
         return services.BuildServiceProvider();
     }
 
-    private static IpcEnvelope CreateOpenChannelEnvelope()
+    private static IpcEnvelope CreateOpenChannelEnvelope(LightningMoney? pushAmount = null)
     {
         var request = new OpenChannelIpcRequest
         {
             NodeInfo = "peer@127.0.0.1:9735",
-            Amount = LightningMoney.Satoshis(100_000)
+            Amount = LightningMoney.Satoshis(100_000),
+            PushAmount = pushAmount
         };
 
         return new IpcEnvelope

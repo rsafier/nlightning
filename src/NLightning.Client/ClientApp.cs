@@ -195,7 +195,16 @@ internal static class ClientApp
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
             case "openchannel":
             case "open-channel":
-                return commandArgs.Length < 2 ? $"Missing arguments. Usage: {cmd} <node> <amount_sats>" : null;
+                if (commandArgs.Length < 2)
+                    return $"Missing arguments. Usage: {cmd} <node> <amount_sats> [push_sats]";
+                if (!ulong.TryParse(commandArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var fundingSats)
+                 || fundingSats == 0)
+                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of sats.";
+                if (commandArgs.Length > 2
+                 && !(ulong.TryParse(commandArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
+                   && pushSats < fundingSats))
+                    return $"Invalid push '{commandArgs[2]}': expected a number of sats below the channel amount.";
+                return null;
             case "createinvoice":
             case "create-invoice":
             case "addinvoice":

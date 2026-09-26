@@ -10,10 +10,12 @@ internal class OpenChannelMessageHandler
                                            CancellationToken cancellationToken)
     {
         if (commandArgs.Length < 2)
-            throw new ArgumentException("Missing arguments. Usage: openchannel <node> <amount_sats>",
+            throw new ArgumentException("Missing arguments. Usage: openchannel <node> <amount_sats> [push_sats]",
                                         nameof(commandArgs));
 
-        var channelResponse = await client.OpenChannelAsync(commandArgs[0], commandArgs[1], cancellationToken);
+        var channelResponse = await client.OpenChannelAsync(commandArgs[0], commandArgs[1],
+                                                           commandArgs.Length > 2 ? commandArgs[2] : null,
+                                                           cancellationToken);
         new OpenChannelPrinter().Print(channelResponse);
 
         while (!cancellationToken.IsCancellationRequested)
