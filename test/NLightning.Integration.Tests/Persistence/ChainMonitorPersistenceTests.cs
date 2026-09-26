@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NLightning.Tests.Utils.Mocks;
 
@@ -11,6 +13,8 @@ using Domain.Channels.Enums;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Events;
 using Domain.Onchain.Models;
+using Infrastructure.Bitcoin.Onion;
+using Infrastructure.Protocol.Onion;
 using static ChainWatchSchemaRoundTrip;
 
 /// <summary>
@@ -594,6 +598,46 @@ public class ChainMonitorPersistenceTests
         var headers = await context.BlockHeaders.AsNoTracking().Where(h => h.Height > 100).OrderBy(h => h.Height)
                                    .ToListAsync(TestContext.Current.CancellationToken);
         Assert.Equal(Enumerable.Range(101, 8).Select(h => (uint)h), headers.Select(h => h.Height));
+    }
+
+    [Fact]
+    public async Task Given_OnionReplayEntries_When_BlocksPassTheirExpiry_Then_ThePrunerDeletesThemWithoutAnOnion()
+    {
+        // Arrange (NL-327): the real monitor, the persistent replay store on the same database and the block pruner
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        using var store = new PersistentOnionReplayStore(harness.Services.GetRequiredService<IServiceScopeFactory>(),
+                                                         NullLogger<PersistentOnionReplayStore>.Instance);
+        var channelId = ChannelIdOf(0x10);
+        for (var i = 0; i < 3; i++)
+            Assert.True(await store.TryAddAsync(Enumerable.Repeat((byte)(0x20 + i), 32).ToArray(), channelId,
+                                                (ulong)i, 102 + (uint)i, TestContext.Current.CancellationToken));
+
+        var pruner = new OnionReplayBlockPruner(harness.Monitor, store,
+                                                NullLogger<OnionReplayBlockPruner>.Instance);
+        pruner.Start();
+
+        // Act: 101 and 102 (the chain has not passed 102 yet), then 103 (passes 102) and 104 (passes 103)
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        await pruner.WhenIdleAsync();
+        var afterBlock102 = await LoadReplayExpiriesAsync(harness);
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        await pruner.WhenIdleAsync();
+        var afterBlock104 = await LoadReplayExpiriesAsync(harness);
+        await pruner.StopAsync();
+
+        // Assert
+        Assert.Equal([102u, 103u, 104u], afterBlock102);
+        Assert.Equal([104u], afterBlock104);
+    }
+
+    private static async Task<List<uint>> LoadReplayExpiriesAsync(ChainMonitorHarness harness)
+    {
+        await using var context = harness.Context();
+        return await context.OnionReplayEntries.AsNoTracking().Select(e => e.ExpiryHeight).OrderBy(h => h)
+                            .ToListAsync(TestContext.Current.CancellationToken);
     }
 
     private static async Task<BroadcastTransactionModel> LoadBroadcastAsync(ChainMonitorHarness harness,

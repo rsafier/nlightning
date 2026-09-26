@@ -22,9 +22,11 @@ using Domain.Protocol.Onion.Models;
 /// accepted. The store assumes it is the only writer of the table (one node process per database).
 /// </para>
 /// <para>
-/// Pruning: <see cref="PruneAsync"/> deletes the entries the chain passed. <see cref="TryAddAsync"/> also prunes, at
-/// most once per new height, using the chain monitor's last processed height (<c>BlockchainStates</c>), so the table
-/// stays bounded without a block subscription of its own.
+/// Pruning: <see cref="PruneAsync"/> deletes the entries the chain passed; the node calls it on every new block
+/// through <c>Infrastructure.Bitcoin.Onion.OnionReplayBlockPruner</c> (NL-327), so expired rows go even when no HTLC
+/// arrives. <see cref="TryAddAsync"/> also prunes, at most once per new height, using the chain monitor's last
+/// processed height (<c>BlockchainStates</c>), so the table stays bounded in a composition without the pruner too. Both
+/// paths share one gate and the pruned height, so a block already pruned is not pruned again by the lazy path.
 /// </para>
 /// </remarks>
 public sealed class PersistentOnionReplayStore : IOnionReplayStore, IDisposable
