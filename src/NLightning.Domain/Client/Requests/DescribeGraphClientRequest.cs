@@ -18,7 +18,9 @@ public sealed class DescribeGraphClientRequest
     /// <summary>Include a page of node announcements.</summary>
     public bool IncludeNodes { get; init; }
 
-    /// <summary>How many entries of each listing to skip.</summary>
+    /// <summary>
+    /// How many entries to skip. A non-zero offset pages one listing and is refused when both are requested.
+    /// </summary>
     public int Offset { get; init; }
 
     /// <summary>The page size, 1 to <see cref="MaxLimit"/>.</summary>

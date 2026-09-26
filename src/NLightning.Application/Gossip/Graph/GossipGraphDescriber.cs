@@ -50,7 +50,10 @@ public sealed class GossipGraphDescriber
                     disabled++;
             }
 
-            capacitySat += channel.CapacitySat ?? 0;
+            // Only unspent channels whose capacity came from the chain (verified or our own) count
+            if (channel.SpentAtHeight is null
+             && channel.Verification != Domain.Gossip.Graph.GraphChannelVerification.Unverified)
+                capacitySat += channel.CapacitySat ?? 0;
         }
 
         var ingress = _ingress is null
@@ -78,7 +81,9 @@ public sealed class GossipGraphDescriber
 /// <param name="DisabledPolicies">Directions whose <c>disable</c> bit is set.</param>
 /// <param name="AnnouncedNodes">Nodes with a <c>node_announcement</c>.</param>
 /// <param name="GraphNodes">Nodes the graph knows (channel ends and announced nodes).</param>
-/// <param name="CapacitySat">The summed capacity of the verified channels.</param>
+/// <param name="CapacitySat">
+/// The summed capacity of the unspent verified and own channels (spent and unverified channels are left out).
+/// </param>
 /// <param name="PendingWrites">Changes the write-behind has not saved yet.</param>
 /// <param name="Memory">The store's memory estimate.</param>
 /// <param name="Ingress">The ingress queues, or null without an ingress.</param>

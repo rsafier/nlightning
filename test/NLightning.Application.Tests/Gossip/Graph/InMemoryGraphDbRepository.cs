@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
 
 namespace NLightning.Application.Tests.Gossip.Graph;
 
@@ -11,7 +12,8 @@ using Domain.Gossip.Persistence;
 /// An <see cref="IGraphDbRepository"/> over dictionaries: writes are staged and applied by <see cref="Commit"/> (the
 /// unit of work's save), list reads read what is committed, like the EF repository. <see cref="FailNextSave"/> makes
 /// the next commit throw and drop what was staged, <see cref="FailAtAttempt"/> a given one. The bulk members are the
-/// interface's defaults (one single-row call each).
+/// interface's defaults (one single-row call each). The stream reads call <see cref="BeforeStreamedRow"/> and yield
+/// control before each row, so a test can change the store between the load's batches.
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
@@ -32,6 +34,29 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
 
     /// <summary>The 1-based commit attempt that fails (0: none).</summary>
     public int FailAtAttempt { get; set; }
+
+    /// <summary>
+    /// Called before each streamed row with the stream ("channels", "policies" or "nodes") and the row's index.
+    /// </summary>
+    public Func<string, int, Task>? BeforeStreamedRow { get; set; }
+
+    public IAsyncEnumerable<GraphChannelRecord> StreamChannelsAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+            return StreamAsync("channels", Channels.Values.ToList(), cancellationToken);
+    }
+
+    public IAsyncEnumerable<GraphPolicyRecord> StreamPoliciesAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+            return StreamAsync("policies", Policies.Values.ToList(), cancellationToken);
+    }
+
+    public IAsyncEnumerable<GraphNodeRecord> StreamNodesAsync(CancellationToken cancellationToken = default)
+    {
+        lock (_lock)
+            return StreamAsync("nodes", Nodes.Values.ToList(), cancellationToken);
+    }
 
     public void Commit()
     {
@@ -197,5 +222,18 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
         lock (_lock)
             _staged.Add(action);
         return Task.CompletedTask;
+    }
+
+    private async IAsyncEnumerable<T> StreamAsync<T>(string stream, List<T> rows,
+                                                     [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < rows.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Yield();
+            if (BeforeStreamedRow is { } hook)
+                await hook(stream, i);
+            yield return rows[i];
+        }
     }
 }

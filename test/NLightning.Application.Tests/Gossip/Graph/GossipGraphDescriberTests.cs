@@ -44,7 +44,7 @@ public class GossipGraphDescriberTests
                                        description.ChannelsWithoutPolicy));
         Assert.Equal((3, 0), (description.Policies, description.DisabledPolicies));
         Assert.Equal((2, 3), (description.AnnouncedNodes, description.GraphNodes));
-        Assert.Equal(2_000_000UL, description.CapacitySat);
+        Assert.Equal(1_000_000UL, description.CapacitySat); // bc is spent: only ab counts
         Assert.Equal(kit.Store.PendingChanges, description.PendingWrites);
         Assert.Equal(kit.Store.GetMemoryEstimate(), description.Memory);
         Assert.Equal(new GossipIngressState(0, 0, 1), description.Ingress);

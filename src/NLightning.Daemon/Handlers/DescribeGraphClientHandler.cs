@@ -47,6 +47,10 @@ public sealed class DescribeGraphClientHandler
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The limit must be between 1 and {DescribeGraphClientRequest.MaxLimit}");
 
+        if (request.Offset > 0 && request.IncludeChannels && request.IncludeNodes)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "An offset pages one listing: ask for the channels or the nodes, not both");
+
         var description = _describer.Describe();
         var snapshot = description.Snapshot;
         var response = new DescribeGraphClientResponse

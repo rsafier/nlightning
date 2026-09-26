@@ -16,7 +16,9 @@ public sealed class DescribeGraphIpcRequest
     /// <summary>Include a page of node announcements (by node id).</summary>
     [Key(1)] public bool IncludeNodes { get; set; }
 
-    /// <summary>How many entries of each listing to skip.</summary>
+    /// <summary>
+    /// How many entries to skip. A non-zero offset pages one listing and is refused when both are requested.
+    /// </summary>
     [Key(2)] public int Offset { get; set; }
 
     /// <summary>The page size (1 to 1,000).</summary>

@@ -682,7 +682,8 @@ internal static class ClientApp
     /// <summary>
     /// The arguments of describegraph: the flags <c>--channels</c> and <c>--nodes</c> (a page of each) and the options
     /// <c>--limit &lt;n&gt;</c> (1 to 1,000, default 100) and <c>--offset &lt;n&gt;</c>, each also as
-    /// <c>--option=value</c>.
+    /// <c>--option=value</c>. A non-zero offset pages one listing, so it is refused with both flags (the two listings
+    /// end at different offsets).
     /// </summary>
     /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
     internal static DescribeGraphArguments? ParseDescribeGraphOptions(string[] commandArgs, out string? error)
@@ -746,6 +747,12 @@ internal static class ClientApp
             {
                 offset = number;
             }
+        }
+
+        if (offset > 0 && includeChannels && includeNodes)
+        {
+            error = "--offset pages one listing: use it with --channels or with --nodes, not both.";
+            return null;
         }
 
         error = null;
