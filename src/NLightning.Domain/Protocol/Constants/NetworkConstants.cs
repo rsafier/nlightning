@@ -15,4 +15,10 @@ public static class NetworkConstants
     public const string Testnet = "testnet";
     public const string Regtest = "regtest";
     public const string Signet = "signet";
+
+    /// <summary>
+    /// Mutinynet, a custom signet (30 s blocks) with the signet genesis block. It is registered as a custom signet by
+    /// default, so it resolves to <see cref="Signet"/> (see <c>BitcoinNetwork.Resolve</c>).
+    /// </summary>
+    public const string Mutinynet = "mutinynet";
 }

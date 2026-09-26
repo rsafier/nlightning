@@ -107,6 +107,41 @@ public class NodeOptionsTests
     }
 
     [Fact]
+    public void Given_CustomSignetOnRegtest_When_GetValidationErrors_Then_Error()
+    {
+        // Arrange
+        var options = new NodeOptions
+        {
+            BitcoinNetwork = BitcoinNetwork.Regtest,
+            CustomSignet = new CustomSignetOptions { Name = "mutinynet" }
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains("CustomSignet"));
+    }
+
+    [Fact]
+    public void Given_NodeSectionWithCustomSignet_When_Bound_Then_CustomSignetIsReadAndValid()
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                                                               """{ "Node": { "CustomSignet": { "Name": "mutinynet" } } }""")))
+                           .Build();
+        var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Signet };
+
+        // Act
+        configuration.GetSection("Node").Bind(options);
+
+        // Assert
+        Assert.Equal("mutinynet", options.CustomSignet?.Name);
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
     public void Given_MaxReconnectDelayBelowInitial_When_GetValidationErrors_Then_Error()
     {
         // Arrange
