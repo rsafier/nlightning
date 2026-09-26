@@ -341,13 +341,13 @@ public class NodeServiceExtensionsTests
     }
 
     [Theory]
-    [InlineData("regtest", true)]
-    [InlineData("mainnet", false)]
-    [InlineData("testnet", false)]
-    [InlineData("signet", true)]
-    [InlineData("mutinynet", true)]
+    [InlineData("regtest", true, true)]
+    [InlineData("mainnet", null, false)]
+    [InlineData("testnet", false, false)]
+    [InlineData("signet", true, true)]
+    [InlineData("mutinynet", true, true)]
     public void Given_DefaultConfigJson_When_Bound_Then_RoutingDefaultsAndEnableHtlcsAreExplicitAndValid(
-        string network, bool expectedHtlcs)
+        string network, bool? expectedEnableHtlcs, bool expectedHtlcs)
     {
         // Arrange
         var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
@@ -363,8 +363,10 @@ public class NodeServiceExtensionsTests
         var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
 
         // Assert
-        Assert.Equal(expectedHtlcs, configuration.GetValue<bool?>("Node:EnableHtlcs"));
-        Assert.Equal(expectedHtlcs, options.EnableHtlcs);
+        // Mainnet keeps the key (the integrator's switch) with null, which binds as unset: the code default applies
+        Assert.Contains(configuration.GetSection("Node").GetChildren(), c => c.Key == "EnableHtlcs");
+        Assert.Equal(expectedEnableHtlcs, configuration.GetValue<bool?>("Node:EnableHtlcs"));
+        Assert.Equal(expectedEnableHtlcs, options.EnableHtlcs);
         Assert.Equal(expectedHtlcs, options.HtlcsEnabled);
         Assert.Equal(defaults.FeeBaseMsat, options.Routing.FeeBaseMsat);
         Assert.Equal(defaults.FeeProportionalMillionths, options.Routing.FeeProportionalMillionths);
@@ -379,6 +381,51 @@ public class NodeServiceExtensionsTests
         var routingKeys = configuration.GetSection("Node:Routing").GetChildren().Select(c => c.Key).ToList();
         Assert.Equal(8, routingKeys.Count);
         Assert.All(routingKeys, key => Assert.NotNull(typeof(RoutingOptions).GetProperty(key)));
+    }
+
+    [Theory]
+    [InlineData("mainnet", false)]
+    [InlineData("testnet", true)]
+    [InlineData("regtest", true)]
+    [InlineData("signet", true)]
+    [InlineData("mutinynet", true)]
+    public void Given_DefaultConfigJson_When_Bound_Then_GossipMainnetGateIsExplicit(string network, bool expectedOn)
+    {
+        // Arrange: BOLT 7 plan D12 / G5-T5
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var nodeOptions = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+        var graph = provider.GetRequiredService<IOptions<GossipGraphOptions>>().Value;
+        var sync = provider.GetRequiredService<IOptions<GossipSyncOptions>>().Value;
+        var relay = provider.GetRequiredService<IOptions<GossipRelayOptions>>().Value;
+        var gossip = provider.GetRequiredService<IOptions<GossipOptions>>().Value;
+        var chain = nodeOptions.BitcoinNetwork;
+
+        // Assert: written explicitly (visible in the file) and equal to the code default of the network
+        Assert.Equal(expectedOn, graph.Enabled);
+        Assert.Equal(expectedOn, sync.SyncEnabled);
+        Assert.Equal(expectedOn, relay.RelayEnabled);
+        Assert.Equal(expectedOn, gossip.AcceptPublicChannels);
+        Assert.False(gossip.AllowPublicChannelsOnMainnet);
+        Assert.Equal(new GossipGraphOptions().IsEnabledFor(chain), graph.IsEnabledFor(chain));
+        Assert.Equal(new GossipSyncOptions().IsSyncEnabledFor(chain), sync.IsSyncEnabledFor(chain));
+        Assert.Equal(new GossipRelayOptions().IsRelayEnabledFor(chain), relay.IsRelayEnabledFor(chain));
+        Assert.Equal(expectedOn, gossip.ArePublicChannelsAllowed(chain));
+        // Every key of the section binds to a real option (a typo would bind nothing)
+        var gossipKeys = configuration.GetSection(GossipOptions.SectionName).GetChildren().Select(c => c.Key).ToList();
+        Assert.Equal(5, gossipKeys.Count);
+        Assert.All(gossipKeys, key => Assert.True(typeof(GossipOptions).GetProperty(key) is not null
+                                               || typeof(GossipGraphOptions).GetProperty(key) is not null
+                                               || typeof(GossipSyncOptions).GetProperty(key) is not null
+                                               || typeof(GossipRelayOptions).GetProperty(key) is not null,
+                                                  key));
     }
 
     [Theory]

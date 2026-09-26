@@ -11,8 +11,9 @@ NLTG_BUILD="${NLTG_BUILD:-Release}"
 NLTG_FRAMEWORK="${NLTG_FRAMEWORK:-net10.0}"
 NLTG_DIR="$HOME/.nltg/$NLTG_NETWORK"
 NLTG_PASSWORD_FILE="${NLTG_PASSWORD_FILE:-$NLTG_DIR/.password}"
-NLTG_DAEMON_BIN="$repo_root/src/NLightning.Daemon/bin/$NLTG_BUILD/$NLTG_FRAMEWORK/NLightning.Daemon"
-NLTG_CLIENT_BIN="$repo_root/src/NLightning.Client/bin/$NLTG_BUILD/$NLTG_FRAMEWORK/NLightning.Client"
+# NLTG_DAEMON_BIN/NLTG_CLIENT_BIN may point elsewhere (soak-gossip.sh runs a staged copy of the build)
+NLTG_DAEMON_BIN="${NLTG_DAEMON_BIN:-$repo_root/src/NLightning.Daemon/bin/$NLTG_BUILD/$NLTG_FRAMEWORK/NLightning.Daemon}"
+NLTG_CLIENT_BIN="${NLTG_CLIENT_BIN:-$repo_root/src/NLightning.Client/bin/$NLTG_BUILD/$NLTG_FRAMEWORK/NLightning.Client}"
 FAUCET_URL="${FAUCET_URL:-https://faucet.mutinynet.com}"
 FAUCET_NODE="${FAUCET_NODE:-02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b@45.79.52.207:9735}"
 export repo_root MUTINYNET_DIR NLTG_NETWORK NLTG_BUILD NLTG_FRAMEWORK NLTG_DIR NLTG_PASSWORD_FILE NLTG_DAEMON_BIN \
