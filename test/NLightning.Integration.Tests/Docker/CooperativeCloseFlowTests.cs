@@ -6,6 +6,7 @@ using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker;
 
+using Abcd;
 using Application.Channels.Close;
 using Daemon.Interfaces;
 using Domain.Bitcoin.Enums;
@@ -17,21 +18,29 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
+using Domain.Payments.Enums;
 using Fixtures;
 using TestCollections;
 using Utils;
 
 /// <summary>
-/// Proof N10 (BOLT2 plan): cooperative close against LND. A channel we funded (with a push to alice) is closed by us
-/// and by alice, with and without <c>fee_range</c>; the agreed closing transaction confirms, LND lists a
-/// <c>COOPERATIVE_CLOSE</c> with the same txid, our side becomes Closed after 6 blocks and our wallet receives our
-/// output.
+/// Proof N10 (BOLT2 plan): cooperative close against LND. A channel we funded (with a push to alice) carries a
+/// payment each way, then is closed by us and by alice, with and without <c>fee_range</c>; the agreed closing
+/// transaction confirms, LND lists a <c>COOPERATIVE_CLOSE</c> with the same txid and alice's settled balance, our
+/// side becomes Closed after 6 blocks and our wallet receives our output.
 /// </summary>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
 public class CooperativeCloseFlowTests : IAsyncLifetime
 {
     private const long FundingSat = 1_000_000;
     private const long PushSat = 200_000;
+    private const long WePaySat = 30_000;
+    private const long AlicePaysSat = 10_000;
+
+    /// <summary>
+    /// Alice's side of the channel after the push and the two payments (the funder pays the fees).
+    /// </summary>
+    private const long AliceShareSat = PushSat + WePaySat - AlicePaysSat;
 
     private static readonly TimeSpan s_activeTimeout = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan s_closeTimeout = TimeSpan.FromSeconds(60);
@@ -62,6 +71,7 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         var node = _node!;
         var alice = _fixture.GetLndNode("alice");
         var (channelId, channelPoint) = await OpenChannelAndWaitUntilActiveAsync(node, alice, ct);
+        await MakePaymentsAsync(node, alice, channelId, channelPoint, ct);
         var walletBefore = WalletBalance(node);
 
         // Act
@@ -84,7 +94,7 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         var closingTx = GetClosingTransaction(node, channelId);
         Assert.NotNull(closingTx);
         Assert.Equal(closed.ClosingTxId.Value, closingTx.TxId);
-        await AssertClosedAsync(node, alice, channelId, channelPoint, closingTx, walletBefore, Initiator.Local, ct);
+        await AssertClosedAsync(node, alice, channelId, channelPoint, closingTx, walletBefore, Initiator.Remote, ct);
         Assert.True(node.CountLogLines("closing_signed for channel") > 0);
     }
 
@@ -99,10 +109,13 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         var alice = _fixture.GetLndNode("alice");
         node.Services.GetRequiredService<IOptions<ChannelCloseOptions>>().Value.SendFeeRange = withFeeRange;
         var (channelId, channelPoint) = await OpenChannelAndWaitUntilActiveAsync(node, alice, ct);
+        await MakePaymentsAsync(node, alice, channelId, channelPoint, ct);
         var walletBefore = WalletBalance(node);
 
         // Act: alice closes (the stream reports the pending close; the close goes on without it)
         var parts = channelPoint.Split(':');
+        using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        closeTimeout.CancelAfter(s_closeTimeout);
         using var closeCall = alice.LightningClient.CloseChannel(new CloseChannelRequest
         {
             ChannelPoint = new ChannelPoint
@@ -110,13 +123,11 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
                 FundingTxidStr = parts[0],
                 OutputIndex = uint.Parse(parts[1])
             }
-        }, cancellationToken: ct);
-        var pending = await Poll.ForAsync(async () =>
-        {
-            if (!await closeCall.ResponseStream.MoveNext(ct))
-                return null;
-            return closeCall.ResponseStream.Current.ClosePending;
-        }, s_closeTimeout, "alice reports the close pending", ct);
+        }, cancellationToken: closeTimeout.Token);
+        PendingUpdate? pending = null;
+        while (pending is null && await closeCall.ResponseStream.MoveNext(closeTimeout.Token))
+            pending = closeCall.ResponseStream.Current.ClosePending;
+        Assert.NotNull(pending);
 
         // Assert
         var closingTx = await Poll.ForAsync(async () =>
@@ -127,7 +138,7 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         // LND's ClosePending txid is in internal byte order, like ours
         Assert.Equal(Convert.ToHexString(pending.Txid.ToByteArray()).ToLowerInvariant(),
                      Convert.ToHexString((byte[])closingTx.TxId).ToLowerInvariant());
-        await AssertClosedAsync(node, alice, channelId, channelPoint, closingTx, walletBefore, Initiator.Remote, ct);
+        await AssertClosedAsync(node, alice, channelId, channelPoint, closingTx, walletBefore, Initiator.Local, ct);
     }
 
     public async ValueTask DisposeAsync()
@@ -142,8 +153,9 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Mines 6 blocks, then: LND lists a cooperative close with our closing txid and the right initiator, alice got
-    /// the push back, our channel is Closed, and our wallet received our output (funding - push - fee).
+    /// Mines 6 blocks, then: LND lists a cooperative close with our closing txid and the right initiator (from
+    /// alice's view: Local when alice closed), alice got her share back, our channel is Closed, and our wallet
+    /// received our output (funding - alice's share - fee).
     /// </summary>
     private static async Task AssertClosedAsync(NLightningTestNode node, LNDNodeConnection alice, ChannelId channelId,
                                                 string channelPoint, SignedTransaction closingTx,
@@ -153,9 +165,10 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         var closingTxHex = Convert.ToHexString(((byte[])closingTx.TxId).Reverse().ToArray()).ToLowerInvariant();
         var tx = NBitcoin.Transaction.Load(closingTx.RawTxBytes, Network.RegTest);
         var fee = FundingSat - tx.Outputs.Sum(o => o.Value.Satoshi);
-        var ourOutput = FundingSat - PushSat - fee;
+        var ourOutput = FundingSat - AliceShareSat - fee;
         Assert.InRange(fee, 1, 20_000);
-        Assert.Contains(tx.Outputs, o => o.Value.Satoshi == PushSat);
+        Assert.Equal(2, tx.Outputs.Count);
+        Assert.Contains(tx.Outputs, o => o.Value.Satoshi == AliceShareSat);
         Assert.Contains(tx.Outputs, o => o.Value.Satoshi == ourOutput);
         Console.WriteLine($"Closing transaction {closingTxHex}: fee {fee} sat, ours {ourOutput} sat");
 
@@ -177,7 +190,7 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         Assert.Equal(ChannelCloseSummary.Types.ClosureType.CooperativeClose, summary.CloseType);
         Assert.Equal(closingTxHex, summary.ClosingTxHash);
         Assert.Equal(initiator, summary.CloseInitiator);
-        Assert.Equal(PushSat, summary.SettledBalance);
+        Assert.Equal(AliceShareSat, summary.SettledBalance);
 
         await Poll.UntilAsync(async () =>
         {
@@ -188,6 +201,36 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         await Poll.UntilAsync(() => Task.FromResult(WalletBalance(node) - walletBefore
                                                  == LightningMoney.Satoshis(ourOutput)),
                               s_closeTimeout, "our wallet received our closing output", ct);
+    }
+
+    /// <summary>
+    /// We pay alice <see cref="WePaySat"/> and alice pays us <see cref="AlicePaysSat"/>, then waits until no HTLC is
+    /// left and both sides agree on alice's share, so the close starts from a settled channel.
+    /// </summary>
+    private static async Task MakePaymentsAsync(NLightningTestNode node, LNDNodeConnection alice, ChannelId channelId,
+                                                string channelPoint, CancellationToken ct)
+    {
+        var lndChannel = await LndTestHelpers.GetChannelByPointAsync(alice, channelPoint, ct);
+        Assert.NotNull(lndChannel);
+
+        var aliceInvoice = await LndTestHelpers.AddInvoiceAsync(alice, WePaySat * 1_000, [], ct, "n10 we pay alice");
+        var ourPayment = await node.PayInvoiceAsync(aliceInvoice.PaymentRequest, ct);
+        Assert.Equal(PaymentStatus.Succeeded, ourPayment.Status);
+
+        var ourInvoice = await node.CreateInvoiceAsync(LightningMoney.Satoshis(AlicePaysSat), "n10 alice pays us", ct);
+        await LndTestHelpers.ResetMissionControlAsync(alice, ct);
+        var alicePayment = await LndTestHelpers.SendPaymentV2Async(
+                               alice, LndTestHelpers.PinnedPayment(ourInvoice.Bolt11, [lndChannel.ChanId]), ct);
+        Assert.Equal(Payment.Types.PaymentStatus.Succeeded, alicePayment.Status);
+
+        await Poll.UntilAsync(async () =>
+        {
+            var ours = await node.GetChannelAsync(channelId, ct);
+            var theirs = await LndTestHelpers.GetChannelByPointAsync(alice, channelPoint, ct);
+            return ours is { OfferedHtlcCount: 0, ReceivedHtlcCount: 0 }
+                && ours.RemoteBalance == LightningMoney.Satoshis(AliceShareSat)
+                && theirs is not null && theirs.PendingHtlcs.Count == 0 && theirs.LocalBalance == AliceShareSat;
+        }, s_closeTimeout, "the payments are settled on both sides", ct);
     }
 
     private static SignedTransaction? GetClosingTransaction(NLightningTestNode node, ChannelId channelId) =>
