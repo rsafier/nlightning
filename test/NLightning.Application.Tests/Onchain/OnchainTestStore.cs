@@ -30,6 +30,15 @@ internal sealed class OnchainTestStore
     public List<ChannelId> DeletedRevocationLogs { get; } = [];
     public Dictionary<(ChannelId, ulong), RevokedCommitmentModel> RevocationLog { get; } = [];
 
+    /// <summary>The first commitment number the revocation log covers (<c>GetLogStartAsync</c>).</summary>
+    public ulong RevocationLogStart { get; set; }
+
+    /// <summary>What <c>ChannelDbRepository.GetByIdAsync</c> returns (the database's copy of a channel).</summary>
+    public Func<ChannelId, ChannelModel?>? LoadChannel { get; set; }
+
+    /// <summary>Spends recorded on watches (<c>MarkSpentAsync</c>): outpoint → (spending txid, height).</summary>
+    public Dictionary<(TxId, uint), (TxId SpendingTxId, uint Height)> WatchSpends { get; } = [];
+
     /// <summary>Per save, the writes it committed (e.g. "close", "output 1", "watch 1", "channel OnchainResolving").
     /// </summary>
     public List<IReadOnlyList<string>> Saves { get; } = [];
@@ -82,6 +91,15 @@ internal sealed class OnchainTestStore
                    });
         repository.Setup(r => r.GetAsync(It.IsAny<TxId>(), It.IsAny<uint>()))
                   .ReturnsAsync((TxId txId, uint index) => Watches.GetValueOrDefault((txId, index)));
+        repository.Setup(r => r.MarkSpentAsync(It.IsAny<TxId>(), It.IsAny<uint>(), It.IsAny<TxId>(), It.IsAny<uint>(),
+                                               It.IsAny<Hash>()))
+                  .Callback((TxId txId, uint index, TxId spendingTxId, uint height, Hash _) =>
+                   {
+                       WatchSpends[(txId, index)] = (spendingTxId, height);
+                       _undo.Add(() => WatchSpends.Remove((txId, index)));
+                       _pending.Add($"watch {index} spent");
+                   })
+                  .Returns(Task.CompletedTask);
         return repository;
     }
 
@@ -123,6 +141,8 @@ internal sealed class OnchainTestStore
                        _pending.Add($"channel {c.State}");
                    })
                   .Returns(Task.CompletedTask);
+        repository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
+                  .ReturnsAsync((ChannelId id) => LoadChannel?.Invoke(id));
         return repository;
     }
 
@@ -131,6 +151,7 @@ internal sealed class OnchainTestStore
         var repository = new Mock<IRevokedCommitmentDbRepository>();
         repository.Setup(r => r.GetAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>()))
                   .ReturnsAsync((ChannelId id, ulong number) => RevocationLog.GetValueOrDefault((id, number)));
+        repository.Setup(r => r.GetLogStartAsync(It.IsAny<ChannelId>())).ReturnsAsync(() => RevocationLogStart);
         repository.Setup(r => r.DeleteByChannelIdAsync(It.IsAny<ChannelId>()))
                   .Callback<ChannelId>(id =>
                    {

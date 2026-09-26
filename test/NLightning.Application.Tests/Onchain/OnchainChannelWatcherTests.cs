@@ -52,6 +52,7 @@ public sealed class OnchainChannelWatcherTests : IDisposable
     private readonly Mock<IOnchainResolutionExecutor> _executor = new();
     private readonly Mock<IOutpointWatcher> _outpointWatcher = new();
     private readonly Mock<ISecretStorageServiceFactory> _shachainFactory = new();
+    private readonly RecordingLogger<OnchainChannelWatcher> _logger = new();
     private readonly ServiceProvider _provider;
     private readonly ChannelModel _channel;
 
@@ -79,6 +80,7 @@ public sealed class OnchainChannelWatcherTests : IDisposable
         unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(new Mock<IRemoteShachainDbRepository>().Object);
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton<ILogger<OnchainChannelWatcher>>(_logger);
         services.AddSingleton(Options.Create(new Domain.Node.Options.NodeOptions()));
         services.AddSingleton(new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
@@ -139,6 +141,73 @@ public sealed class OnchainChannelWatcherTests : IDisposable
         _errorSender.Verify(s => s.TrySendAsync(_channel.RemoteNodeId, It.IsAny<ErrorMessage>()), Times.Once);
         _executor.Verify(e => e.ResolveChannelAsync(_channel.ChannelId, SpendHeight, It.IsAny<CancellationToken>()),
                          Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_FundingSpent_When_Recorded_Then_NewWatchesCaughtUpFromTheSpendHeightBeforeTheFirstRound()
+    {
+        // Arrange (BOLT 5 "monitor every output not irrevocably resolved"): the monitor may already have processed a
+        // block spending an output of the commitment (the same block, or one after it) before the watches existed
+        var calls = new List<string>();
+        IReadOnlyList<WatchedOutpointModel>? caughtUp = null;
+        _outpointWatcher.Setup(w => w.TrackWatchedOutpoint(It.IsAny<WatchedOutpointModel>()))
+                        .Callback(() => calls.Add("track"));
+        _executor.Setup(e => e.CatchUpSpendsAsync(It.IsAny<ChannelId>(), It.IsAny<IReadOnlyList<WatchedOutpointModel>>(),
+                                                  It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+                 .Callback((ChannelId _, IReadOnlyList<WatchedOutpointModel> watches, uint _, CancellationToken _) =>
+                  {
+                      caughtUp = watches;
+                      calls.Add("catch up");
+                  })
+                 .Returns(Task.CompletedTask);
+        _executor.Setup(e => e.ResolveChannelAsync(It.IsAny<ChannelId>(), It.IsAny<uint>(),
+                                                   It.IsAny<CancellationToken>()))
+                 .Callback(() => calls.Add("resolve"))
+                 .Returns(Task.CompletedTask);
+        var local = _pair.Alice.State.LocalCommit;
+        var spend = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(SpentBy(spend), TestContext.Current.CancellationToken);
+
+        // Assert: every new watch tracked, then caught up from the commitment's height, then the first round
+        Assert.Equal(["track", "track", "track", "catch up", "resolve"], calls);
+        Assert.Equal(_store.Watches.Values.Select(w => w.OutputIndex).Order(),
+                     caughtUp!.Select(w => w.OutputIndex).Order());
+        Assert.All(caughtUp!, w => Assert.Equal(_store.Closes[_channel.ChannelId].CommitmentTransactionId,
+                                                w.TransactionId));
+        _executor.Verify(e => e.CatchUpSpendsAsync(_channel.ChannelId, It.IsAny<IReadOnlyList<WatchedOutpointModel>>(),
+                                                   SpendHeight, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_SameSpendConfirmedAgainElsewhere_When_Raised_Then_CloseHeightAndBlockUpdatedOnly()
+    {
+        // Arrange (a reorg re-confirms the commitment one block higher): the irrevocable depth counts from there
+        var local = _pair.Alice.State.LocalCommit;
+        var spend = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(spend), TestContext.Current.CancellationToken);
+        var saves = _store.Saves.Count;
+        var moved = new OutpointSpentEventArgs(_channel.ChannelId, spend, SpendHeight + 1, 1,
+                                               _channel.FundingOutput!.TransactionId!.Value,
+                                               _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(7));
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(moved, TestContext.Current.CancellationToken);
+
+        // Assert: a replay (outputs untouched) whose close now carries the new block
+        Assert.True(outcome!.Replayed);
+        var close = _store.Closes[_channel.ChannelId];
+        Assert.Equal(SpendHeight + 1, close.SpentAtHeight);
+        Assert.Equal(OnchainTestStore.BlockHash(7), close.BlockHash);
+        Assert.Equal(["close"], _store.Saves[saves]);
+        Assert.Equal(saves + 1, _store.Saves.Count);
+
+        // Act: raised again in that block
+        await Watcher.HandleFundingSpentAsync(moved, TestContext.Current.CancellationToken);
+
+        // Assert: nothing more
+        Assert.Equal(saves + 1, _store.Saves.Count);
     }
 
     [Fact]
@@ -214,6 +283,34 @@ public sealed class OnchainChannelWatcherTests : IDisposable
             OutputDescriptorKind.RevokedHtlc, OutputDescriptorKind.RevokedHtlc
         ]);
         AssertRecordedInOneSave(expectedOutputs: 4);
+    }
+
+    [Fact]
+    public async Task Given_RevokedCommitmentOlderThanTheLog_When_FundingSpent_Then_UnmappedHtlcOutputsAlerted()
+    {
+        // Arrange: Bob's revoked commitment had both HTLCs, but it predates the revocation log (no entry)
+        var revoked = _pair.Alice.State.RemoteCommit;
+        _pair.Add(_pair.Alice, 5_000_000, RealSigningCommitmentPair.Preimage(3));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _store.RevocationLogStart = revoked.Number + 1;
+        var secret = _pair.Bob.Signer.RevealPerCommitmentSecret(RealSigningCommitmentPair.ChannelId, revoked.Number);
+        var shachain = new Mock<ISecretStorageService>();
+        shachain.Setup(s => s.DeriveOldSecret(It.IsAny<ulong>())).Returns(secret);
+        _shachainFactory.Setup(f => f.CreatePerCommitmentStorage()).Returns(shachain.Object);
+        var spend = BuildCommitment(CommitmentSide.Remote, revoked.Spec, revoked.Number, revoked.PerCommitmentPoint);
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(spend), TestContext.Current.CancellationToken);
+
+        // Assert: to_local and to_remote are found by script; the two HTLC outputs are named in a critical alert
+        Assert.Equal(ChannelCloseKind.RevokedCommitment, outcome!.Kind);
+        AssertKinds([OutputDescriptorKind.PaymentToRemote, OutputDescriptorKind.RevokedToLocal]);
+        var alert = Assert.Single(_logger.Messages, m => m.Contains("[B5-GEN-06]", StringComparison.Ordinal));
+        Assert.Contains("2 output(s)", alert);
+        Assert.Contains("predates the revocation log", alert);
+        Assert.Contains("20000 sat", alert);
+        Assert.Contains("30000 sat", alert);
     }
 
     [Fact]
@@ -344,6 +441,32 @@ public sealed class OnchainChannelWatcherTests : IDisposable
     {
         _provider.Dispose();
         _pair.Dispose();
+    }
+
+    /// <summary>Keeps every formatted log message, with its level's alert prefix intact.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = [];
+
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_messages)
+                    return _messages.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages)
+                _messages.Add(formatter(state, exception));
+        }
     }
 
     private void AssertKinds(IEnumerable<OutputDescriptorKind> expected)
