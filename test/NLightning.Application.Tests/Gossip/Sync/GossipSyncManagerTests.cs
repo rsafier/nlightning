@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.Gossip.Sync;
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Queries;
 using Domain.Node.Options;
@@ -437,6 +438,34 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_PerPeerQueueDepths_When_Syncing_Then_OnlyThePeersOwnQueueHoldsTheQueryBackWithoutTimeLimit()
+    {
+        // Arrange (NL-412): capacity 100 → queries of 10 channels while the peer's own queue is at most 50; the whole
+        // queue (other peers' gossip) is far fuller, and the peer's own queue stays full past the reply timeout
+        var ownDepth = 0;
+        var manager = CreateManager(o => o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150),
+                                    getIngressQueueDepth: () => 10_000, ingressQueueCapacity: 100,
+                                    getPeerQueueDepth: _ => Volatile.Read(ref ownDepth));
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        var ids = Enumerable.Range(0, 15).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
+
+        // Act / Assert: the first query goes out at once although the whole queue is full
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        Assert.Equal(ids[..10], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+
+        // Its answer fills the peer's own queue: the next query waits, also past the reply timeout
+        Volatile.Write(ref ownDepth, 51);
+        manager.HandleMessage(peer, End());
+        Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(600)));
+        Volatile.Write(ref ownDepth, 50);
+        Assert.Equal(ids[10..], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+    }
+
+    [Fact]
     public async Task Given_ASyncWithTimestamps_When_ItEnds_Then_TheFilterStartsAtTheSyncLessTheMargin()
     {
         // Arrange (review of G3-T2: the two-week backlog would ask for the whole graph again; with timestamps the
@@ -612,6 +641,39 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ADroppedUpdateOfAStoredChannel_When_Retried_Then_ItIsQueriedAgainUntilBothPoliciesAreKnown()
+    {
+        // Arrange: NL-410, a channel_update dropped at a full queue while its announcement was stored
+        var complete = _graph.AddSignedChannel(new ShortChannelId(100, 0, 0), SyncTestGraph.NodeA,
+                                               SyncTestGraph.NodeB);
+        var oneSided = _graph.AddSignedChannel(new ShortChannelId(200, 0, 0), SyncTestGraph.NodeA,
+                                               SyncTestGraph.NodeC, timestamp2: null);
+        var withoutPolicy = _graph.AddSignedChannel(new ShortChannelId(300, 0, 0), SyncTestGraph.NodeB,
+                                                    SyncTestGraph.NodeC, null, null);
+        var spent = _graph.AddSignedChannel(new ShortChannelId(400, 0, 0), SyncTestGraph.NodeB, SyncTestGraph.NodeC,
+                                            timestamp2: null, spentAtHeight: 450);
+        _missed =
+        [
+            complete.ShortChannelId, oneSided.ShortChannelId, withoutPolicy.ShortChannelId, spent.ShortChannelId
+        ];
+        var manager = CreateManager(o => o.SyncPeers = 0);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+
+        // Act
+        var queued = manager.RetryMissedShortChannelIds();
+
+        // Assert: the channels missing a policy are asked for again, once
+        Assert.Equal(2, queued);
+        Assert.Equal([oneSided.ShortChannelId, withoutPolicy.ShortChannelId],
+                     Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+        Assert.Equal(0, manager.RetryMissedShortChannelIds());
+    }
+
+    [Fact]
     public async Task Given_TwoPeers_When_TheSyncRotates_Then_ThePeerSyncedLongestAgoRunsTheRangeQuery()
     {
         // Arrange
@@ -661,7 +723,8 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null,
-                                            Func<int>? getIngressQueueDepth = null, int ingressQueueCapacity = 0)
+                                            Func<int>? getIngressQueueDepth = null, int ingressQueueCapacity = 0,
+                                            Func<CompactPubKey, int>? getPeerQueueDepth = null)
     {
         var options = new GossipSyncOptions();
         configure?.Invoke(options);
@@ -675,7 +738,8 @@ public class GossipSyncManagerTests : IDisposable
                                                 var taken = _missed;
                                                 _missed = [];
                                                 return taken;
-                                            }, () => Tip, getIngressQueueDepth, ingressQueueCapacity);
+                                            }, () => Tip, getIngressQueueDepth, ingressQueueCapacity,
+                                            getPeerQueueDepth: getPeerQueueDepth);
         _managers.Add(manager);
         return manager;
     }

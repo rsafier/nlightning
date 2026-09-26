@@ -152,6 +152,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// <summary>The number of messages waiting for a worker.</summary>
     public int QueuedCount => _queue.Reader.Count;
 
+    /// <summary>
+    /// The messages of <paramref name="peer"/> waiting for a worker (what counts against
+    /// <see cref="GossipGraphOptions.MaxQueuedPerPeer"/>; retries of deferred messages are not counted).
+    /// </summary>
+    public int QueuedCountOf(CompactPubKey peer) => _queuedPerPeer.TryGetValue(peer, out var count) ? count : 0;
+
     /// <summary>The orphan cache (for tests and metrics).</summary>
     internal OrphanUpdateCache Orphans => _orphans;
 
