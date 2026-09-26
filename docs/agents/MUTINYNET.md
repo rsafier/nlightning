@@ -2,8 +2,8 @@
 
 Mutinynet is a custom signet with ~30 s blocks, run by Mutiny (benthecarman). This page describes how to run the
 NLightning daemon (`nltg`) against the local Mutinynet bitcoind in `~/mutinynet` (see `~/mutinynet/README.md` for the
-node itself). It was written in ABCD wave 4 (lane W4-D). The live smoke test (open a channel to the faucet node, pay
-both ways) belongs to a later wave, after the local bitcoind has synced.
+node itself). It was written in ABCD wave 4 (lane W4-D); the live smoke test (open a channel to the faucet node, pay
+both ways, restart, close cooperatively) passed in wave 5 (lane w5e), see [Live smoke test](#live-smoke-test-wave-5).
 
 ## How NLightning sees a custom signet
 
@@ -84,13 +84,78 @@ when set; delete it from old configuration files.
 ## Faucet and peers
 
 - Faucet node (LND): `02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b@45.79.52.207:9735`.
-- Faucet: https://faucet.mutinynet.com (on-chain coins to a `tb1` address, a channel from the faucet node to us, or a
-  payment to our invoice); the API needs a GitHub-login JWT or an L402 token, see `~/mutinynet/README.md`.
+- Faucet: https://faucet.mutinynet.com. Two endpoints need **no login** (IP rate-limited, 60 a day) and are all a
+  smoke test needs (`scripts/mutinynet/faucet.sh`):
+  - `POST /api/bolt11 {"amount_sats":N}` returns `{"bolt11":"lntbs..."}`, an invoice of the faucet LND node itself
+    (our peer), so we pay it directly over the channel.
+  - LNURL-withdraw: `GET /api/lnurlw` returns a `k1` (max 1,000,000 sat), then
+    `GET /api/lnurlw/callback?k1=<k1>&pr=<our bolt11>` makes the faucet pay our invoice (it needs an amount and
+    enough inbound liquidity on our side: push at open, or pay first). The call answers `{"status":"OK"}` after the
+    payment succeeded.
+  - On-chain coins (`/api/onchain`), a channel from the faucet to us (`/api/channel`) and paying a lightning address
+    (`/api/lightning`) need a GitHub-login JWT or an L402 token (see `~/mutinynet/README.md`); the smoke test does not
+    use them (on-chain coins came from the local `nltg-funding` wallet).
 - Explorer and API: https://mutinynet.com/api/ (`/api/blocks/tip/height`, `/api/v1/fees/recommended`).
 
-Smoke test outline for the later wave: fund `getaddress` from the faucet, wait for the deposit, `connect` to the
-faucet node, `openchannel` to it (our feerate is the estimate above; LND accepts 253 sat/kw), wait `MinimumDepth`
-blocks (~1.5 min), create an invoice and have the faucet pay it, pay a faucet invoice, then `closechannel`.
+## Scripts (`scripts/mutinynet/`)
+
+All of them read `env.sh` (`MUTINYNET_DIR`, `NLTG_NETWORK` default `mutinynet`, `NLTG_BUILD` default `Release`,
+`NLTG_FRAMEWORK` default `net10.0`, `FAUCET_URL`, `FAUCET_NODE`) and run the built binaries, not `dotnet run`.
+
+| Script | What |
+|---|---|
+| `build.sh` | builds `NLightning.Daemon` and `NLightning.Client` |
+| `start-daemon.sh` | runs the daemon in the foreground with `--password-file ~/.nltg/<network>/.password` (created with a random password, mode 600, if missing) and appends the output to `~/.nltg/<network>/daemon.out`. The first run writes the template and fails at the key step (bitcoind 401) |
+| `configure.sh` | writes the local bitcoind RPC/ZMQ settings (from `~/mutinynet/.env`) and `Database:RunMigrations=true` into the template (needs `jq`) |
+| `cli.sh` | the CLI with `--network mutinynet` |
+| `faucet.sh invoice <sats>` / `faucet.sh withdraw <bolt11>` | the two no-login faucet calls above |
+
+## Live smoke test (wave 5)
+
+Run on 2026-09-26 (UTC 06:07-06:30) with `wip/fafo` @ `30fc0d5` plus the lane commits (NL-301 push over IPC,
+NL-302 UTXO wallet addresses at startup), Release build, SQLite, against the local synced node (tip 3456825 at the
+start). Node id `030f7defc57e05273c109870dbc15ec0f1ade96872852a06247c42c75bfac2495a`.
+
+```bash
+scripts/mutinynet/build.sh
+scripts/mutinynet/start-daemon.sh          # first run: writes the template, fails at the key step (401)
+scripts/mutinynet/configure.sh
+scripts/mutinynet/start-daemon.sh &        # creates the key, migrates, syncs from the birthday height
+scripts/mutinynet/cli.sh getaddress p2wpkh
+~/mutinynet/cli.sh -rpcwallet=nltg-funding sendtoaddress <address> 0.009
+scripts/mutinynet/cli.sh connect 02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b@45.79.52.207:9735
+scripts/mutinynet/cli.sh openchannel 02465ed5...1b@45.79.52.207:9735 200000 50000     # push 50,000 sat
+scripts/mutinynet/cli.sh payinvoice "$(scripts/mutinynet/faucet.sh invoice 5000)"
+scripts/mutinynet/cli.sh createinvoice 10000000 "w5e mutinynet smoke receive"
+scripts/mutinynet/faucet.sh withdraw <bolt11>
+# restart the daemon, wait for "Reestablished: Yes", pay again
+scripts/mutinynet/cli.sh closechannel <channel_id> 0 120
+```
+
+| Step | Result |
+|---|---|
+| Faucet funding of `nltg-funding` (earlier) | `e228b23b7bb7bdd4a1f7313c0421ce9ceaf180069295a9fdbfe6deb7a45d3294` (1,000,000 sat, block 3456568) |
+| Deposit to the nltg wallet (`tb1qf2fzcfvzempdv97tvqlj5qpugk0vxl4jxd75xt`, 900,000 sat) | `79301b2a986410fbef2b87f01d7edf04fa7130209536a94bee571670e3346d29` (block 3456831) |
+| First open attempt after a daemon restart | failed before broadcast: the restored UTXO had no wallet address, the signer skipped the input and the open ended in a NullReferenceException (NL-302, fixed in this lane; nothing was broadcast, the UTXO was released) |
+| Funding tx (200,000 sat, push 50,000 sat, 1 input, 154 sat fee at 1 sat/vB) | `17eb2731122d05e4bbe9d74c6edad915fdc455e34d2e82c653c046efc9dd37dc`, output 0, block 3456838, SCID `3456838x12x0` |
+| Channel id | `dc37ddc9ef46c053c6822e4de355c4fd15d9da6e4cd7e9bbe4052d123127eb17` (Open 3 min after broadcast; `channel_ready` both ways) |
+| Pay a faucet invoice, 5,000 sat | payment hash `ca3d3ac830e6807a27a8d0c3321750a3ac03c3f70c659b20a3beda8d5c287ccd`, preimage `1ed58f1702e3a6c6a8ce666af8a7f9bd3ce8c38784b2475935cbda7aee9ed0de`, Succeeded in < 1 s, fee 0 (direct) |
+| Receive 10,000 sat (LNURL-withdraw) | payment hash `f2acea8a1f718824256f6682dae8060a855a3ea1b6632747bb74cfa7591dbcec`, invoice Settled, 10,000,000 msat received |
+| Daemon restart | `channel_reestablish` with LND, `Reestablished: Yes`, balances unchanged (local 155,000 / remote 45,000 sat, commitment 5/5) |
+| Pay a faucet invoice after the restart, 1,000 sat | payment hash `85e2fb58ddbdb24d7b794cb833e5472daff84f584c08b09adfd326691f60901c`, preimage `e6e4c88d613704dedf766fed895729d9485ff870c6fc15724424c41229c905e9`, Succeeded |
+| Cooperative close (we initiate, feerate from the estimator) | closing tx `ac6b8f9aa3b0853e3f28b924425be8167d41100ed5e834eddf926c4159bb5465`, 169 vB, 180 sat fee (ours, as funder); outputs 46,000 sat to the faucet, 153,820 sat to us; block 3456859; channel `Closed`, final commitment 7/7 |
+| Wallet after the close | 853,666 sat confirmed (699,846 funding change + 153,820 close output) |
+
+Observations from the run (ledger items, not fixed here):
+
+- NL-303: `info` prints the best block hash, and `openchannel`/`listchannels` print the funding txid, in internal
+  byte order (`bf2416f6...0000` for block `00000284...24bf`; `dc37ddc9...eb17:0` for funding tx `17eb2731...37dc`). The
+  closing txid is printed in the usual order. Display only.
+- NL-304: `LocalLightningSigner.SignFundingTransaction` logs a warning for an input it cannot sign (no UTXO or no wallet
+  address), leaves it null and then fails with a NullReferenceException; it should throw a `SignerException` naming the
+  input.
+- NL-305: the deposit address `tb1qf2fz...5xt` was still "unused" after it received the deposit, so the cooperative
+  close paid our output to it again (address reuse); `getaddress` moved on only after the close output arrived.
 
 ## Known gaps
 

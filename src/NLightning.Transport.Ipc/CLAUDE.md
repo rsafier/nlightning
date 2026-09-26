@@ -21,7 +21,7 @@ This is the wire contract for local IPC between the CLI (`src/NLightning.Client`
 
 ## Conventions
 - File-scoped namespace `NLightning.Transport.Ipc[.Requests|.Responses|.MessagePack[.Formatters]]`. Put `using MessagePack;` above the namespace and relative `using Domain.X;` directives after it.
-- The layout is integer-keyed arrays. Only append new keys; never reuse or reorder them. `OpenChannelIpcRequest` skips Key 1 on purpose, so keep it that way.
+- The layout is integer-keyed arrays. Only append new keys; never reuse or reorder them. `OpenChannelIpcRequest` skips Key 1 on purpose, so keep it that way; its Key 3 `PushAmount` (optional, null = no push) was appended in NL-301 without a new `ClientCommand`, because an absent key reads as null in both directions.
 - Name DTOs `<Name>IpcRequest` / `<Name>IpcResponse`. Handlers are singletons, so they must resolve scoped services through `CreateScope()`.
 - A property with a default value must use `set`, not `init`: the MessagePack analyzer (MsgPack017) warns that an `init` initializer is reset on deserialization (see `ListInvoicesIpcRequest.Take`).
 
