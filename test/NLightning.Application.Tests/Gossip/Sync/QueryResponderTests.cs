@@ -113,13 +113,15 @@ public class QueryResponderTests
                                verification: GraphChannelVerification.Unverified);
         graph.AddSignedChannel(new ShortChannelId(104, 0, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB,
                                timestamp1: null); // one update is enough
+        graph.AddSignedChannel(new ShortChannelId(105, 0, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB,
+                               verification: GraphChannelVerification.Assumed); // Gossip:AssumeChannelValid
         graph.AddSignedChannel(new ShortChannelId(110, 0, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB); // after
         var responder = CreateResponder(graph);
 
         // Act
         var replies = responder.CreateRangeReplies(Query(100, 10), s_chain);
 
-        // Assert: spent, update-less and unverified channels are never offered
+        // Assert: spent, update-less, unverified and assumed channels are never offered
         Assert.Single(replies);
         Assert.Equal([new ShortChannelId(100, 0, 0), new ShortChannelId(104, 0, 0)], Scids(replies[0]));
     }
@@ -268,11 +270,13 @@ public class QueryResponderTests
         var unverified = graph.AddSignedChannel(new ShortChannelId(101, 0, 0), SyncTestGraph.NodeA,
                                                 SyncTestGraph.NodeB,
                                                 verification: GraphChannelVerification.Unverified);
+        var assumed = graph.AddSignedChannel(new ShortChannelId(102, 0, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeB,
+                                             verification: GraphChannelVerification.Assumed);
         var responder = CreateResponder(graph);
 
         // Act
         var replies = responder.CreateShortChannelIdsReplies(
-            ScidQuery([spent.ShortChannelId, unverified.ShortChannelId]), s_chain, true);
+            ScidQuery([spent.ShortChannelId, unverified.ShortChannelId, assumed.ShortChannelId]), s_chain, true);
 
         // Assert
         Assert.Equal(MessageTypes.ReplyShortChannelIdsEnd, Assert.Single(replies).Type);

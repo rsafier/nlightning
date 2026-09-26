@@ -177,12 +177,12 @@ public sealed class QueryResponder
 
     /// <summary>
     /// True when the channel is one we relay: its announcement is kept, its funding output is unspent and it was
-    /// verified (or is ours).
+    /// verified against the chain (or is ours; never <c>Unverified</c> or <c>Assumed</c>).
     /// </summary>
     internal static bool IsServed(GraphChannel channel) =>
         !channel.RawAnnouncement.IsEmpty
      && channel.SpentAtHeight is null
-     && channel.Verification != GraphChannelVerification.Unverified;
+     && channel.IsChainChecked;
 
     private GraphChannel[] GetSortedServedChannels()
     {

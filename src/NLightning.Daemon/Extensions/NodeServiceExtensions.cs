@@ -316,6 +316,18 @@ public static class NodeServiceExtensions
 
                      return true;
                  })
+                // Gossip:AssumeChannelValid never on mainnet together with HTLCs or public channels (refused at start)
+                .Validate<IOptions<NodeOptions>, IOptions<GossipOptions>>((options, nodeOptions, gossipOptions) =>
+                 {
+                     var network = nodeOptions.Value.BitcoinNetwork;
+                     var errors = options.GetAssumeChannelValidErrors(
+                         network, nodeOptions.Value.HtlcsEnabled, gossipOptions.Value.ArePublicChannelsAllowed(network));
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipGraphOptions.SectionName,
+                                                              typeof(GossipGraphOptions), errors);
+
+                     return true;
+                 })
                 .ValidateOnStart();
 
         // BOLT 7 gossip queries and sync (G3-T1/G3-T2): answers peers' queries from the graph, syncs the graph from

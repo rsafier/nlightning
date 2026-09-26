@@ -30,7 +30,8 @@ using Sync.Interfaces;
 /// into the pending set of every connection that sent a <c>gossip_timestamp_filter</c>, the newest version per key
 /// (a newer update replaces an older one). The first scan only records the graph as it is (a restart does not relay
 /// the stored graph; each peer's filter asks for its backlog). Left out: spent channels (B7-Q-05 SHOULD NOT), channels
-/// kept <see cref="GraphChannelVerification.Unverified"/> (never relayed, plan §3.4), <c>dont_forward</c> updates and
+/// kept <see cref="GraphChannelVerification.Unverified"/> or <see cref="GraphChannelVerification.Assumed"/> (never
+/// relayed, plan §3.4), <c>dont_forward</c> updates and
 /// our own messages (the own path sends them to every peer regardless of filters).
 /// </para>
 /// <para>
@@ -440,10 +441,12 @@ public sealed partial class GossipRelayScheduler
     private bool IsOrigin(RelayItem item, CompactPubKey peerId) =>
         _originTracker is not null && _originTracker.IsOrigin(item.VersionKey, peerId);
 
-    /// <summary>A channel whose gossip may go out: announced (raw bytes), unspent and not kept unverified.</summary>
+    /// <summary>
+    /// A channel whose gossip may go out: announced (raw bytes), unspent and checked against the chain (not kept
+    /// <c>Unverified</c> or <c>Assumed</c>).
+    /// </summary>
     private static bool IsRelayable(GraphChannel channel) =>
-        !channel.RawAnnouncement.IsEmpty && channel.SpentAtHeight is null
-                                         && channel.Verification != GraphChannelVerification.Unverified;
+        !channel.RawAnnouncement.IsEmpty && channel.SpentAtHeight is null && channel.IsChainChecked;
 
     /// <summary>
     /// True when one of the channel's forwardable updates is inside <paramref name="filter"/> (B7-Q-05: the timestamp

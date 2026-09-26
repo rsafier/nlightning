@@ -779,7 +779,9 @@ public sealed class GraphStore : IGraphStore
             var verification = (GraphVerification)(byte)record.Verification;
             return new GraphChannel(record.ShortChannelId, record.NodeId1, record.NodeId2, record.BitcoinKey1,
                                     record.BitcoinKey2,
-                                    verification == GraphVerification.Unverified ? null : record.CapacitySat,
+                                    verification is GraphVerification.Unverified or GraphVerification.Assumed
+                                        ? null
+                                        : record.CapacitySat,
                                     record.Features, verification)
             {
                 SpentAtHeight = record.SpentAtHeight,

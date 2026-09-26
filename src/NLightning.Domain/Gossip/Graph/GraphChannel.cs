@@ -87,6 +87,29 @@ public sealed record GraphChannel
     public ulong? CapacityMsat => CapacitySat is { } sat ? checked(sat * 1_000) : null;
 
     /// <summary>
+    /// The capacity for the routing estimates: <see cref="CapacityMsat"/> when the chain gave it, otherwise the larger
+    /// <c>htlc_maximum_msat</c> of the two policies (LND sets it to the capacity less the reserve, CLN to at most the
+    /// capacity, so it is a lower bound close to the real one), or null without a policy. Only a hint for the
+    /// liquidity model: an <see cref="GraphChannelVerification.Assumed"/> or
+    /// <see cref="GraphChannelVerification.Unverified"/> channel has no capacity from the chain.
+    /// </summary>
+    public ulong? EstimatedCapacityMsat =>
+        CapacityMsat ?? (Policy1?.HtlcMaximumMsat, Policy2?.HtlcMaximumMsat) switch
+        {
+            (null, null) => null,
+            ({ } max1, null) => max1,
+            (null, { } max2) => max2,
+            ({ } max1, { } max2) => Math.Max(max1, max2)
+        };
+
+    /// <summary>
+    /// True when the funding output was checked against the chain (<see cref="GraphChannelVerification.Verified"/>)
+    /// or the channel is ours: only such a channel is relayed and served in query replies.
+    /// </summary>
+    public bool IsChainChecked =>
+        Verification is GraphChannelVerification.Verified or GraphChannelVerification.Own;
+
+    /// <summary>
     /// The policy of <paramref name="direction"/> (0 or 1), or null when none was received.
     /// </summary>
     public GraphPolicy? GetPolicy(byte direction) => direction switch

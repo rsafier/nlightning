@@ -34,7 +34,9 @@ public sealed class GossipGraphDescriber
         {
             if (channel.SpentAtHeight is not null)
                 spent++;
-            if (channel.Verification == Domain.Gossip.Graph.GraphChannelVerification.Unverified)
+            // Assumed channels (Gossip:AssumeChannelValid) are counted as unverified: no chain check either
+            if (channel.Verification is Domain.Gossip.Graph.GraphChannelVerification.Unverified
+                                     or Domain.Gossip.Graph.GraphChannelVerification.Assumed)
                 unverified++;
             if (channel.Verification == Domain.Gossip.Graph.GraphChannelVerification.Own)
                 own++;
@@ -51,8 +53,7 @@ public sealed class GossipGraphDescriber
             }
 
             // Only unspent channels whose capacity came from the chain (verified or our own) count
-            if (channel.SpentAtHeight is null
-             && channel.Verification != Domain.Gossip.Graph.GraphChannelVerification.Unverified)
+            if (channel.SpentAtHeight is null && channel.IsChainChecked)
                 capacitySat += channel.CapacitySat ?? 0;
         }
 
@@ -74,7 +75,9 @@ public sealed class GossipGraphDescriber
 /// <param name="Snapshot">The snapshot the counts come from (for the listing pages).</param>
 /// <param name="Channels">Channels, spent ones included.</param>
 /// <param name="SpentChannels">Channels whose funding output is spent (removed 72 blocks later).</param>
-/// <param name="UnverifiedChannels">Channels kept without a funding check (<c>FundingValidation = SkipUnavailable</c>).</param>
+/// <param name="UnverifiedChannels">
+/// Channels kept without a funding check (<c>FundingValidation = SkipUnavailable</c>, or <c>AssumeChannelValid</c>).
+/// </param>
 /// <param name="OwnChannels">Our own announced channels.</param>
 /// <param name="ChannelsWithoutPolicy">Channels with no <c>channel_update</c> in either direction.</param>
 /// <param name="Policies">Stored <c>channel_update</c> directions.</param>

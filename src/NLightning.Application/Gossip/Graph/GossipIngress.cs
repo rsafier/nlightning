@@ -532,6 +532,23 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                                    closeConnection: true, GossipMetricReasons.InvalidSignature);
         }
 
+        if (_options.AssumeChannelValid)
+        {
+            // Gossip:AssumeChannelValid: the four signatures are all we check (no chain lookup, no capacity, no
+            // funding outpoint for the spend detection); the channel is never relayed or served (IsChainChecked)
+            var assumed = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
+                                           announcement.BitcoinKey1, announcement.BitcoinKey2, null,
+                                           announcement.Features, GraphChannelVerification.Assumed)
+            {
+                RawAnnouncement = raw
+            };
+
+            Remember(MessageTypes.ChannelAnnouncement, raw);
+            return await AddChannelAndReplayAsync(assumed, null, cancellationToken)
+                       ? GossipIngressResult.Accepted(GraphChannelVerification.Assumed.ToString())
+                       : GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
+        }
+
         var lookup = await _fundingOutputLookup.VerifyAsync(announcement.ShortChannelId, announcement.BitcoinKey1,
                                                             announcement.BitcoinKey2,
                                                             cancellationToken: cancellationToken);
@@ -1124,6 +1141,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         }
 
         _logger.LogInformation("Gossip ingress started with {Workers} workers", workers);
+        if (_options.AssumeChannelValid)
+            _logger.LogWarning("Gossip:AssumeChannelValid is on: channel announcements are accepted on their "
+                             + "signatures alone, without checking their funding output on chain. Their capacity is "
+                             + "unknown, closed channels leave the graph only when their updates grow stale, and they "
+                             + "are never relayed. Anyone can make up channels this way; use it only on a node that "
+                             + "routes no payments of value");
     }
 
     private async Task WorkerLoopAsync(CancellationToken cancellationToken)

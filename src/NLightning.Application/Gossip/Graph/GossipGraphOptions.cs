@@ -143,6 +143,19 @@ public sealed class GossipGraphOptions
     /// <summary>What to do when a funding block cannot be read.</summary>
     public FundingValidationMode FundingValidation { get; set; } = FundingValidationMode.Full;
 
+    /// <summary>
+    /// Accepts a <c>channel_announcement</c> whose four signatures verify without looking up its funding output
+    /// (the equivalent of LND's <c>--routing.assumechanvalid</c>), for a node without a full bitcoind. Such channels
+    /// are stored <see cref="Domain.Gossip.Graph.GraphChannelVerification.Assumed"/>: no capacity (routing estimates it
+    /// from the larger <c>htlc_maximum_msat</c> of the channel's updates,
+    /// <see cref="Domain.Gossip.Graph.GraphChannel.EstimatedCapacityMsat"/>), no funding outpoint (a closed channel
+    /// leaves the graph only by the stale rule, <see cref="DeleteStaleAfter"/>), never relayed or served in query
+    /// replies. A warning is logged at startup. BOLT 7 requires the output check, so this is a deliberate deviation:
+    /// on mainnet it is refused together with public channels or HTLCs
+    /// (<see cref="GetAssumeChannelValidErrors"/>). Default false. <c>Gossip:AssumeChannelValid</c>.
+    /// </summary>
+    public bool AssumeChannelValid { get; set; }
+
     /// <summary>Wait before a message whose chain check was transient is validated again.</summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(30);
 
@@ -189,6 +202,29 @@ public sealed class GossipGraphOptions
         string.Equals(network.Name, NetworkConstants.Regtest, StringComparison.OrdinalIgnoreCase)
             ? Math.Max(1U, AnnouncementDepth)
             : Math.Max(MinimumAnnouncementDepth, AnnouncementDepth);
+
+    /// <summary>
+    /// The start-up errors of <see cref="AssumeChannelValid"/> on <paramref name="network"/>: on mainnet it is refused
+    /// while HTLCs are enabled (<c>Node:EnableHtlcs</c>, on by default) or public channels are allowed
+    /// (<c>Gossip:AllowPublicChannelsOnMainnet</c>), since a graph of unchecked channels must not route or announce
+    /// real funds. Empty when allowed (always when the option is off, and on every other network).
+    /// </summary>
+    public IReadOnlyList<string> GetAssumeChannelValidErrors(BitcoinNetwork network, bool htlcsEnabled,
+                                                             bool publicChannelsAllowed)
+    {
+        if (!AssumeChannelValid
+         || !string.Equals(network.Name, NetworkConstants.Mainnet, StringComparison.OrdinalIgnoreCase))
+            return [];
+
+        var errors = new List<string>();
+        if (htlcsEnabled)
+            errors.Add($"{SectionName}:{nameof(AssumeChannelValid)} is refused on mainnet while HTLCs are enabled: "
+                     + "set Node:EnableHtlcs=false (a graph of unchecked channels must not route payments)");
+        if (publicChannelsAllowed)
+            errors.Add($"{SectionName}:{nameof(AssumeChannelValid)} is refused on mainnet together with "
+                     + "Gossip:AllowPublicChannelsOnMainnet");
+        return errors;
+    }
 
     /// <summary>The number of workers to start.</summary>
     public int GetWorkerCount() => Workers > 0 ? Workers : Math.Max(1, Environment.ProcessorCount / 2);

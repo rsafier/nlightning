@@ -39,7 +39,9 @@ using Interfaces;
 /// Funding txids are not persisted, so after a restart the pruner looks up the channels without one
 /// (<see cref="IFundingOutputLookup.LookupAsync"/>): found records the txid, an output spent while we were down is
 /// marked spent at the last processed block, a transient answer is retried at the next block, and an answer that
-/// cannot change (pruned block, index out of range) is not asked again. Such a channel is left to the stale rule.
+/// cannot change (pruned block, index out of range) is not asked again. Such a channel is left to the stale rule, as is
+/// every <see cref="GraphChannelVerification.Assumed"/> channel (<c>Gossip:AssumeChannelValid</c>), which is never looked
+/// up: without its funding outpoint a close goes unnoticed until the channel's updates grow stale.
 /// The lookups wait for the first block when the monitor has no height yet (it loads it only when it starts).
 /// </para>
 /// <para>
@@ -263,7 +265,8 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
         // BOLT 7: a channel whose funding output was reorganized out is forgotten after 72 blocks like a spent one
         foreach (var channel in _store.GetSnapshot().Channels)
         {
-            if (channel.ShortChannelId.BlockHeight > forkHeight && channel.SpentAtHeight is null)
+            if (channel.ShortChannelId.BlockHeight > forkHeight && channel.SpentAtHeight is null
+                                                                && channel.Verification != GraphChannelVerification.Assumed)
                 _reorgRecheck.Add(channel.ShortChannelId);
         }
 
@@ -284,8 +287,11 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
         var transient = 0;
         foreach (var shortChannelId in _store.GetChannelsWithoutFundingTxId())
         {
+            // An assumed channel (Gossip:AssumeChannelValid) is never looked up: that is the point of the option, and
+            // on a node without the chain it would cost one lookup per channel at every start
             if (_unresolvable.Contains(shortChannelId)
-             || !_store.TryGetChannel(shortChannelId, out var channel) || channel.SpentAtHeight is not null)
+             || !_store.TryGetChannel(shortChannelId, out var channel) || channel.SpentAtHeight is not null
+             || channel.Verification == GraphChannelVerification.Assumed)
                 continue;
 
             var result = await _fundingOutputLookup.LookupAsync(shortChannelId, cancellationToken);
@@ -403,6 +409,12 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
         return removed;
     }
 
+    /// <summary>A channel without a funding txid that a lookup may still resolve (not given up on, not assumed).</summary>
+    private bool NeedsFundingLookup(ShortChannelId shortChannelId) =>
+        !_unresolvable.Contains(shortChannelId)
+     && _store.TryGetChannel(shortChannelId, out var channel)
+     && channel.Verification != GraphChannelVerification.Assumed;
+
     private bool IsOurs(GraphChannel channel) =>
         channel.Verification == GraphChannelVerification.Own
      || (_ourNodeId is { } ours && (channel.NodeId1 == ours || channel.NodeId2 == ours));
@@ -487,7 +499,7 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
                         ApplyBlock(work.Height, work.SpentOutpoints);
 
                         // Channels added since (our own before its txid was known, a restart) get their txid next
-                        retryResolution |= _store.GetChannelsWithoutFundingTxId().Any(s => !_unresolvable.Contains(s));
+                        retryResolution |= _store.GetChannelsWithoutFundingTxId().Any(NeedsFundingLookup);
                     }
 
                     await FlushIfChangedAsync(cancellationToken);
