@@ -94,7 +94,8 @@ internal sealed class HarnessForwardingSwitch(
 
     private async Task HandleIncomingAsync(ChannelId channelId, HtlcRecord htlc, CancellationToken cancellationToken)
     {
-        var result = await onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash);
+        var result = await onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
+                                                       new OnionReplayOwner(channelId, htlc.Id, htlc.CltvExpiry));
         if (result.SharedSecretOrNull is { } secret)
             await channelOperations.RecordOnionSecretAsync(channelId, htlc.Id, secret, cancellationToken);
 

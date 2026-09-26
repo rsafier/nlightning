@@ -219,9 +219,10 @@ public sealed class HtlcSwitch : IHtlcSwitch
 
         // A stored secret means we processed this onion before (restart, reestablish). Otherwise the HMAC is recorded
         // for this HTLC until its cltv_expiry (NL-078): a restart between that and the secret's save is not a replay
-        var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, htlc.PathKey,
-                                                        checkReplay: storedSecret is null,
-                                                        new OnionReplayOwner(channelId, htlcId, htlc.CltvExpiry));
+        OnionReplayOwner? replayOwner =
+            storedSecret is null ? new OnionReplayOwner(channelId, htlcId, htlc.CltvExpiry) : null;
+        var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, replayOwner,
+                                                        htlc.PathKey);
         switch (result)
         {
             case IncomingOnionMalformed malformed:
@@ -825,7 +826,7 @@ public sealed class HtlcSwitch : IHtlcSwitch
 
         // Peel again (without the replay cache): the secret only depends on the onion and our node key
         var result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
-                                                        incoming.PathKey, checkReplay: false);
+                                                        replayOwner: null, incoming.PathKey);
         return result.SharedSecretOrNull;
     }
 

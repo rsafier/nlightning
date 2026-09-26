@@ -259,6 +259,54 @@ public class ThreeNodeSwitchTests
     }
 
     [Fact]
+    public async Task Given_BobCrashesAfterRecordingTheOnionHmac_When_Restarted_Then_HeForwardsItInsteadOfFailingAReplay()
+    {
+        // Arrange: Bob's switch records the onion HMAC (its own save), then "crashes" on the shared secret's save
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "crash after hmac", null,
+                                                                      TestContext.Current.CancellationToken);
+        var crashes = 0;
+        harness.Bob.BeforeSetOnionSharedSecret = (_, _) =>
+        {
+            crashes++;
+            throw new InvalidOperationException("Simulated crash before the shared secret's save");
+        };
+        var (_, onion) = await harness.AlicePaysAsync(harness.RouteToCarol(s_amount, invoice.PaymentHash,
+                                                                           invoice.PaymentSecret));
+        await harness.PumpAsync();
+        harness.Bob.BeforeSetOnionSharedSecret = null;
+
+        var incoming = harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!
+                              .GetHtlc(HtlcDirection.Incoming, 0)!;
+        var hmac = onion.Packet.Hmac;
+        var recorded = await harness.Bob.InScopeAsync(u => u.OnionReplayDbRepository.GetByHmacAsync(hmac));
+        var storedSecret = await harness.Bob.InScopeAsync(u => u.ChannelStateDbRepository.GetOnionSharedSecretAsync(
+                                                              ThreeNodeHarness.AliceBobChannelId,
+                                                              new HtlcKey(HtlcDirection.Incoming, 0)));
+        Assert.Equal(1, crashes);
+        Assert.Null(storedSecret);
+        Assert.Empty(harness.Carol.Received.OfType<UpdateAddHtlcMessage>());
+
+        // The HMAC is owned by the incoming HTLC (channel, id) and kept until its cltv_expiry
+        Assert.NotNull(recorded);
+        Assert.True(recorded.IsOwnedBy(ThreeNodeHarness.AliceBobChannelId, 0));
+        Assert.Equal(incoming.CltvExpiry, recorded.ExpiryHeight);
+
+        // Act: the restarted Bob processes the same HTLC again (startup / link-up replay)
+        await harness.RestartAsync(harness.Bob);
+        await harness.ReconnectAsync(harness.Bob);
+        await harness.PumpAsync();
+
+        // Assert: not a replay of itself; forwarded once and paid
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
+        AssertNoHtlcs(harness);
+        AssertNeverTwoLocks(harness);
+    }
+
+    [Fact]
     public async Task Given_LockInReplayedDuringTheForward_When_Handled_Then_NothingIsOfferedTwice()
     {
         // Arrange

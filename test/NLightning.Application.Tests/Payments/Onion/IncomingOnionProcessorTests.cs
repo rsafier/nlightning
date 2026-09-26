@@ -19,6 +19,8 @@ public class IncomingOnionProcessorTests : IDisposable
 {
     private static readonly Hash s_paymentHash = Enumerable.Repeat((byte)0x77, 32).ToArray();
     private static readonly Secret s_paymentSecret = Enumerable.Repeat((byte)0x78, 32).ToArray();
+    // The incoming HTLC owning the recorded HMAC (a real caller passes its channel, id and cltv_expiry)
+    private static readonly OnionReplayOwner s_replayOwner = new(ChannelId.Zero, 0, 1_000);
 
     private readonly PaymentsTestNode _sender = new("sender", 0x31);
     private readonly PaymentsTestNode _bob = new("bob", 0x32);
@@ -73,7 +75,7 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(FinalPayload()));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var final = Assert.IsType<IncomingOnionFinal>(result);
@@ -88,7 +90,8 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(FinalPayload()));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, Enumerable.Repeat((byte)0x76, 32).ToArray());
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, Enumerable.Repeat((byte)0x76, 32).ToArray(),
+                                                            s_replayOwner);
 
         // Assert
         var malformed = Assert.IsType<IncomingOnionMalformed>(result);
@@ -104,7 +107,7 @@ public class IncomingOnionProcessorTests : IDisposable
         onion[0] = 1;
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var malformed = Assert.IsType<IncomingOnionMalformed>(result);
@@ -119,7 +122,7 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(FinalPayload()));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, _carol.NodeId);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner, _carol.NodeId);
 
         // Assert
         var malformed = Assert.IsType<IncomingOnionMalformed>(result);
@@ -135,7 +138,7 @@ public class IncomingOnionProcessorTests : IDisposable
                                await SerializeAsync(FinalPayload()));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var failed = Assert.IsType<IncomingOnionFailed>(result);
@@ -152,7 +155,7 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(payload));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var failed = Assert.IsType<IncomingOnionFailed>(result);
@@ -171,7 +174,7 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(payload));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var failed = Assert.IsType<IncomingOnionFailed>(result);
@@ -189,7 +192,7 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(payload), await SerializeAsync(FinalPayload()));
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
 
         // Assert
         var failed = Assert.IsType<IncomingOnionFailed>(result);
@@ -204,9 +207,9 @@ public class IncomingOnionProcessorTests : IDisposable
         var onion = BuildOnion(await SerializeAsync(ForwardPayload()), await SerializeAsync(FinalPayload()));
 
         // Act
-        var atBob = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash);
+        var atBob = await _bob.OnionProcessor.ProcessAsync(onion, s_paymentHash, s_replayOwner);
         var forward = Assert.IsType<IncomingOnionForward>(atBob);
-        var atCarol = await _carol.OnionProcessor.ProcessAsync(forward.NextPacket, s_paymentHash);
+        var atCarol = await _carol.OnionProcessor.ProcessAsync(forward.NextPacket, s_paymentHash, s_replayOwner);
 
         // Assert
         Assert.Equal(new ShortChannelId(1, 2, 3), forward.OutgoingShortChannelId);
@@ -219,6 +222,6 @@ public class IncomingOnionProcessorTests : IDisposable
     {
         // Act / Assert
         await Assert.ThrowsAsync<ArgumentException>(() => _bob.OnionProcessor.ProcessAsync(new byte[100],
-                                                                                            s_paymentHash));
+                                                                                            s_paymentHash, s_replayOwner));
     }
 }

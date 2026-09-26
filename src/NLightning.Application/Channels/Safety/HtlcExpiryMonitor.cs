@@ -362,7 +362,7 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
             {
                 // Never processed (e.g. before a restart): peel again, without the replay check
                 var processed = await _incomingOnionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
-                                                                           htlc.PathKey, checkReplay: false);
+                                                                           replayOwner: null, htlc.PathKey);
                 if (processed is IncomingOnionMalformed malformed)
                 {
                     await _channelOperations.FailMalformedHtlcAsync(channelId, htlc.Id, malformed.FailureCode,

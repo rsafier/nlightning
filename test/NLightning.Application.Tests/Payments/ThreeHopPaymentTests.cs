@@ -12,6 +12,7 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Models;
 using Domain.Protocol.ValueObjects;
 
 /// <summary>
@@ -27,6 +28,8 @@ public class ThreeHopPaymentTests : IDisposable
     private static readonly LightningMoney s_amount = LightningMoney.MilliSatoshis(50_000_123);
     private static readonly ShortChannelId s_scidBobCarol = new(400, 1, 0);
     private static readonly ShortChannelId s_scidCarolDavid = new(401, 2, 1);
+    // The incoming HTLC owning the recorded HMAC (a real caller passes its channel, id and cltv_expiry)
+    private static readonly OnionReplayOwner s_replayOwner = new(ChannelId.Zero, 0, 1_000);
 
     private readonly PaymentsTestNode _alice = new("alice", 0x0a);
 
@@ -68,20 +71,20 @@ public class ThreeHopPaymentTests : IDisposable
         var feeBob = 1_000 + amountBobCarol * 100 / 1_000_000;
 
         // Act: Bob
-        var atBob = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash);
+        var atBob = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner);
         var bobForward = Assert.IsType<IncomingOnionForward>(atBob);
         var bobDecision = _bob.ForwardingPolicy.Evaluate(ForwardRequest(route.FirstHopAmount, route.FirstHopCltvExpiry,
                                                                          bobForward));
 
         // Act: Carol
-        var atCarol = await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash);
+        var atCarol = await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash, s_replayOwner);
         var carolForward = Assert.IsType<IncomingOnionForward>(atCarol);
         var carolDecision = _carol.ForwardingPolicy.Evaluate(ForwardRequest(bobForward.AmountToForward,
                                                                              bobForward.OutgoingCltvValue,
                                                                              carolForward));
 
         // Act: David
-        var atDavid = await _david.OnionProcessor.ProcessAsync(carolForward.NextPacket, invoice.PaymentHash);
+        var atDavid = await _david.OnionProcessor.ProcessAsync(carolForward.NextPacket, invoice.PaymentHash, s_replayOwner);
         var davidFinal = Assert.IsType<IncomingOnionFinal>(atDavid);
         var davidResult = await _david.FinalHopProcessor.ProcessAsync(
             _david.Invoices, invoice.PaymentHash, carolForward.AmountToForward, carolForward.OutgoingCltvValue,
@@ -125,11 +128,11 @@ public class ThreeHopPaymentTests : IDisposable
         var onion = await BuildAliceOnionAsync(invoice);
 
         var bobForward = Assert.IsType<IncomingOnionForward>(
-            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash));
+            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner));
         var carolForward = Assert.IsType<IncomingOnionForward>(
-            await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash));
+            await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash, s_replayOwner));
         var davidFinal = Assert.IsType<IncomingOnionFinal>(
-            await _david.OnionProcessor.ProcessAsync(carolForward.NextPacket, invoice.PaymentHash));
+            await _david.OnionProcessor.ProcessAsync(carolForward.NextPacket, invoice.PaymentHash, s_replayOwner));
 
         // Act: David fails, Carol and Bob wrap, Alice decrypts
         var davidResult = await _david.FinalHopProcessor.ProcessAsync(
@@ -159,9 +162,9 @@ public class ThreeHopPaymentTests : IDisposable
         var invoice = await _david.InvoiceService.CreateInvoiceAsync(s_amount, "abcd variant a2", null, ct);
         var onion = await BuildAliceOnionAsync(invoice);
         var bobForward = Assert.IsType<IncomingOnionForward>(
-            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash));
+            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner));
         var carolForward = Assert.IsType<IncomingOnionForward>(
-            await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash));
+            await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, invoice.PaymentHash, s_replayOwner));
 
         // Act
         var decision = _carol.ForwardingPolicy.Evaluate(ForwardRequest(bobForward.AmountToForward,
@@ -180,18 +183,21 @@ public class ThreeHopPaymentTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _david.InvoiceService.CreateInvoiceAsync(s_amount, "replay", null, ct);
         var onion = await BuildAliceOnionAsync(invoice);
-        var first = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash);
+        var first = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner);
 
-        // Act
-        var replay = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash);
+        // Act: another HTLC carries the onion, then the first HTLC is processed again (link-up), then without a check
+        var replay = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash,
+                                                            s_replayOwner with { HtlcId = s_replayOwner.HtlcId + 1 });
+        var sameHtlc = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner);
         var reprocessed = await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash,
-                                                                 checkReplay: false);
+                                                                 replayOwner: null);
 
         // Assert
         Assert.IsType<IncomingOnionForward>(first);
         var failed = Assert.IsType<IncomingOnionFailed>(replay);
         Assert.Equal(FailureCode.TemporaryNodeFailure, failed.Failure.Code);
         Assert.Equal(onion.SharedSecrets[0], failed.SharedSecret);
+        Assert.IsType<IncomingOnionForward>(sameHtlc);
         Assert.IsType<IncomingOnionForward>(reprocessed);
     }
 
@@ -203,11 +209,11 @@ public class ThreeHopPaymentTests : IDisposable
         var invoice = await _david.InvoiceService.CreateInvoiceAsync(s_amount, "wrong key", null, ct);
         var onion = await BuildAliceOnionAsync(invoice);
         var bobForward = Assert.IsType<IncomingOnionForward>(
-            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash));
+            await _bob.OnionProcessor.ProcessAsync(onion.Packet, invoice.PaymentHash, s_replayOwner));
         var carolPacket = bobForward.NextPacket.ToBytes();
 
         // Act
-        var result = await _bob.OnionProcessor.ProcessAsync(carolPacket, invoice.PaymentHash);
+        var result = await _bob.OnionProcessor.ProcessAsync(carolPacket, invoice.PaymentHash, s_replayOwner);
 
         // Assert
         var malformed = Assert.IsType<IncomingOnionMalformed>(result);

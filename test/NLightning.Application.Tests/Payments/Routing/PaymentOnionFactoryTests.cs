@@ -6,6 +6,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Protocol.Onion.Constants;
+using Domain.Protocol.Onion.Models;
 
 /// <summary>
 /// ONION M4-T6: hop payloads per the BOLT 4 writer rules and a fresh CSPRNG session key per onion.
@@ -15,6 +16,8 @@ public class PaymentOnionFactoryTests : IDisposable
     private static readonly Hash s_paymentHash = Enumerable.Repeat((byte)0x33, 32).ToArray();
     private static readonly Secret s_paymentSecret = Enumerable.Repeat((byte)0x44, 32).ToArray();
     private static readonly ShortChannelId s_scid = new(200, 3, 1);
+    // The incoming HTLC owning the recorded HMAC (a real caller passes its channel, id and cltv_expiry)
+    private static readonly OnionReplayOwner s_replayOwner = new(ChannelId.Zero, 0, 1_000);
 
     private readonly PaymentsTestNode _alice = new("alice", 0x21);
     private readonly PaymentsTestNode _bob = new("bob", 0x22);
@@ -75,9 +78,9 @@ public class PaymentOnionFactoryTests : IDisposable
 
         // Act
         var onion = await _alice.OnionFactory.CreateAsync(route);
-        var atBob = await _bob.OnionProcessor.ProcessAsync(onion.Packet, s_paymentHash);
+        var atBob = await _bob.OnionProcessor.ProcessAsync(onion.Packet, s_paymentHash, s_replayOwner);
         var bobForward = Assert.IsType<IncomingOnionForward>(atBob);
-        var atCarol = await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, s_paymentHash);
+        var atCarol = await _carol.OnionProcessor.ProcessAsync(bobForward.NextPacket, s_paymentHash, s_replayOwner);
 
         // Assert
         Assert.Equal(OnionConstants.PacketLength, onion.Packet.Length);

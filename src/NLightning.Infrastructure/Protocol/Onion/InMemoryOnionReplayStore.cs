@@ -10,9 +10,9 @@ using Domain.Protocol.Onion.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Nothing survives a restart: a persistent implementation of <see cref="IOnionReplayStore"/> (a table, see the
-/// interface remarks) replaces it once the schema exists. Until then the switch's re-processing of stored HTLCs is
-/// covered by the owner check, and only onions of HTLCs forgotten across a restart are missed.
+/// Nothing survives a restart, so the node uses <see cref="PersistentOnionReplayStore"/>; this one serves compositions
+/// without a database (tests, tools). Entries are only dropped by <see cref="PruneAsync"/> or by the capacity rule
+/// below.
 /// </para>
 /// <para>
 /// The size is bounded by <see cref="Capacity"/> as a last resort against memory exhaustion. When full, the entry that
