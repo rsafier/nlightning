@@ -22,6 +22,10 @@ public interface IUnitOfWork : IDisposable
     IBroadcastTransactionDbRepository BroadcastTransactionDbRepository { get; }
     IBlockHeaderDbRepository BlockHeaderDbRepository { get; }
 
+    // On-chain resolution repositories (BOLT 5 plan O1)
+    IRevokedCommitmentDbRepository RevokedCommitmentDbRepository { get; }
+    IOnchainResolutionDbRepository OnchainResolutionDbRepository { get; }
+
     // Chanel repositories
     IChannelConfigDbRepository ChannelConfigDbRepository { get; }
     IChannelDbRepository ChannelDbRepository { get; }

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NLightning.Infrastructure.Persistence.Contexts;
 
@@ -10,9 +11,11 @@ using NLightning.Infrastructure.Persistence.Contexts;
 namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 {
     [DbContext(typeof(NLightningDbContext))]
-    partial class NLightningDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260926045000_AddOnchainResolution")]
+    partial class AddOnchainResolution
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");

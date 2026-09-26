@@ -25,11 +25,13 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
 {
     private readonly NLightningDbContext _context;
     private readonly RemoteShachainDbRepository _remoteShachainDbRepository;
+    private readonly RevokedCommitmentDbRepository _revokedCommitmentDbRepository;
 
     public ChannelStateDbRepository(NLightningDbContext context)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _remoteShachainDbRepository = new RemoteShachainDbRepository(context);
+        _revokedCommitmentDbRepository = new RevokedCommitmentDbRepository(context);
     }
 
     /// <inheritdoc />
@@ -96,6 +98,11 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
                     _context.Commitments.Remove(stale);
             }
         }
+
+        // The revocation log (BOLT 5 plan O1-T1): the commitment the peer just revoked, in the same save as the
+        // revoke_and_ack and its shachain entry, so a breach of it can be rebuilt output by output
+        if (transition.RevokedRemoteCommit is { } revoked)
+            await _revokedCommitmentDbRepository.StageAsync(channelId, revoked);
 
         if (extras?.RemoteShachain is { } shachain)
             await _remoteShachainDbRepository.SaveAsync(channelId, shachain);

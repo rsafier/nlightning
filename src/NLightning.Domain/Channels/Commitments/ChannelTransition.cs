@@ -10,6 +10,10 @@ namespace NLightning.Domain.Channels.Commitments;
 /// <param name="LocalCommitChanged">A new local commitment (write <see cref="ChannelCommitments.LocalCommit"/>).</param>
 /// <param name="RemoteCommitChanged">The remote commitment rotated, or the unacked one was set or cleared.</param>
 /// <param name="ScalarsChanged">Balances, next HTLC ids or the remote next point changed.</param>
+/// <param name="RevokedRemoteCommit">The peer commitment this transition revoked (set only by
+/// <see cref="ChannelCommitments.ReceiveRevoke"/>): the persistence layer keeps its spec in the revocation log, in the
+/// same save as the <c>revoke_and_ack</c>, so a breach of it can be penalized output by output (BOLT 5 plan O1-T1,
+/// D2).</param>
 public sealed record ChannelTransition(
     IReadOnlyList<HtlcRecord> UpsertedHtlcs,
     IReadOnlyList<HtlcRecord> SettledHtlcs,
@@ -17,8 +21,10 @@ public sealed record ChannelTransition(
     bool FeeUpdatesChanged,
     bool LocalCommitChanged,
     bool RemoteCommitChanged,
-    bool ScalarsChanged)
+    bool ScalarsChanged,
+    RemoteCommit? RevokedRemoteCommit = null)
 {
     public bool IsEmpty => UpsertedHtlcs.Count == 0 && SettledHtlcs.Count == 0 && DroppedHtlcs.Count == 0
-                        && !FeeUpdatesChanged && !LocalCommitChanged && !RemoteCommitChanged && !ScalarsChanged;
+                        && !FeeUpdatesChanged && !LocalCommitChanged && !RemoteCommitChanged && !ScalarsChanged
+                        && RevokedRemoteCommit is null;
 }

@@ -41,6 +41,17 @@ public enum ChannelState : byte
     /// </remarks>
     Failed = 35,
 
+    /// <summary>
+    /// A commitment transaction (ours, the peer's or a revoked one) spent the funding output in the active chain and its
+    /// outputs are being resolved (BOLT 5; plan <c>BOLT5_ONCHAIN_PLAN.md</c> §3.9, O1-T2).
+    /// </summary>
+    /// <remarks>
+    /// No update is sent or accepted. A failed channel whose commitment we broadcast stays <see cref="Failed"/> until
+    /// that commitment confirms, then moves here; the channel becomes <see cref="Closed"/> only once every output is
+    /// irrevocably resolved. A mutual close goes <see cref="Closing"/> → <see cref="Closed"/> and never passes here.
+    /// </remarks>
+    OnchainResolving = 37,
+
     Closed = 40,
     Stale = 50
 }

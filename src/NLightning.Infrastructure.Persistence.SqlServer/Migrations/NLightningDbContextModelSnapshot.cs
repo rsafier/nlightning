@@ -408,6 +408,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("RemoteShutdownScript")
                         .HasColumnType("varbinary(max)");
 
+                    b.Property<decimal?>("RevocationLogFromNumber")
+                        .HasColumnType("decimal(20,0)");
+
                     b.Property<byte[]>("SentCommitDiff")
                         .HasColumnType("varbinary(max)");
 
@@ -638,6 +641,32 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("RemoteShachains");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("Number")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Htlcs")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal>("LocalMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<decimal>("RemoteMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.HasKey("ChannelId", "Number");
+
+                    b.ToTable("RevokedCommitments");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
                 {
                     b.Property<byte[]>("NodeId")
@@ -660,6 +689,88 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("NodeId");
 
                     b.ToTable("Peers");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("BlockHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal?>("CommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("CommitmentTxId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("SpentAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ChannelId");
+
+                    b.ToTable("ChannelCloses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("DeadlineHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Descriptor")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("DescriptorData")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte?>("HtlcDirection")
+                        .HasColumnType("tinyint");
+
+                    b.Property<decimal?>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long?>("ResolvedHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ResolvingTxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long?>("WaitUntilHeight")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TransactionId", "OutputIndex");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("OutputResolutions");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity", b =>
@@ -939,6 +1050,33 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithOne()
+                        .HasForeignKey("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", "ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
                         .WithMany()

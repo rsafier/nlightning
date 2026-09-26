@@ -100,6 +100,27 @@ public class ChannelRoundTripTests
     }
 
     [Fact]
+    public async Task Given_OnchainResolvingChannel_When_ReloadedAndMovedOn_Then_StatesAreKept()
+    {
+        // Arrange (BOLT 5 plan O1-T2: state 37 sits between Failed and Closed)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var channel = SqliteDbTestContext.CreateChannel(true, state: ChannelState.Failed);
+        var failed = await SaveAndReloadAsync(db, channel);
+        Assert.Equal(ChannelState.Failed, failed.State);
+
+        // Act: its commitment confirms, then every output is resolved
+        failed.UpdateState(ChannelState.OnchainResolving);
+        var resolving = await UpdateAndReloadAsync(db, failed);
+        var resolvingState = resolving.State;
+        resolving.UpdateState(ChannelState.Closed);
+        var closed = await UpdateAndReloadAsync(db, resolving);
+
+        // Assert
+        Assert.Equal(ChannelState.OnchainResolving, resolvingState);
+        Assert.Equal(ChannelState.Closed, closed.State);
+    }
+
+    [Fact]
     public async Task Given_UnconfirmedChannel_When_Reloaded_Then_ShortChannelIdStaysUnset()
     {
         // Arrange
@@ -152,6 +173,19 @@ public class ChannelRoundTripTests
         await using var readContext = db.CreateDbContext();
         var readRepository = new ChannelDbRepository(readContext, db.Sha256);
         return await readRepository.GetByIdAsync(channel.ChannelId)
+            ?? throw new InvalidOperationException("Channel was not reloaded");
+    }
+
+    private static async Task<ChannelModel> UpdateAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)
+    {
+        await using (var writeContext = db.CreateDbContext())
+        {
+            await new ChannelDbRepository(writeContext, db.Sha256).UpdateAsync(channel);
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var readContext = db.CreateDbContext();
+        return await new ChannelDbRepository(readContext, db.Sha256).GetByIdAsync(channel.ChannelId)
             ?? throw new InvalidOperationException("Channel was not reloaded");
     }
 

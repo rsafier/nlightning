@@ -83,6 +83,19 @@ public class SqlServerTests
     }
 
     [Fact]
+    public async Task Given_SqlServerChannelsFromBeforeAddOnchainResolution_When_Migrated_Then_TheLogStartIsRecordedAndTheNewTablesRoundTrip()
+    {
+        // Arrange (BOLT 5 plan O1-T3: the revocation-log start is recorded for real rows; the revocation log, channel
+        // closes, output resolutions and state 37 round-trip on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_onchain_resolution");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.MicrosoftSql);
+
+        // Act & Assert
+        await OnchainResolutionSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                           DatabaseType.MicrosoftSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_SqlServerRowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
     {
         // Arrange (NL-237: the data steps of PersistCommitmentNumbers, SplitChannelParams,

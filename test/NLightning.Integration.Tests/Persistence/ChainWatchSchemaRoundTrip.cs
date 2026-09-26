@@ -269,10 +269,12 @@ internal static class ChainWatchSchemaRoundTrip
         }
     }
 
-    /// <summary>A funded channel row with only the columns every schema since <c>AddCommitmentState</c> requires.</summary>
+    /// <summary>A funded channel row with only the columns every schema since <c>AddCommitmentState</c> requires (the
+    /// peer's commitment number is <paramref name="remoteCommitmentNumber"/>).</summary>
     internal static async Task SeedChannelAsync(NLightningDbContext context, DatabaseType databaseType,
                                                 ChannelId channelId, TxId fundingTxId, ushort fundingOutputIndex,
-                                                ChannelState state, CancellationToken cancellationToken)
+                                                ChannelState state, CancellationToken cancellationToken,
+                                                ulong remoteCommitmentNumber = 0)
     {
         var sql = new MigrationSqlDialect(databaseType);
         var remoteNodeId = new byte[33];
@@ -286,7 +288,8 @@ internal static class ChainWatchSchemaRoundTrip
                        ("FundingOutputIndex", $"{fundingOutputIndex}"), ("FundingAmountSatoshis", "1000000"),
                        ("IsInitiator", sql.Bool(true)), ("RemoteNodeId", "{2}"), ("LocalNextHtlcId", "0"),
                        ("RemoteNextHtlcId", "0"), ("LocalRevocationNumber", "0"), ("RemoteRevocationNumber", "0"),
-                       ("LocalCommitmentNumber", "0"), ("RemoteCommitmentNumber", "0"), ("State", $"{(byte)state}"),
+                       ("LocalCommitmentNumber", "0"),
+                       ("RemoteCommitmentNumber", $"{remoteCommitmentNumber}"), ("State", $"{(byte)state}"),
                        ("Version", "1"), ("LocalBalanceMsat", "600000000"), ("RemoteBalanceMsat", "400000000"),
                        ("RemoteNextPerCommitmentPoint", "{3}"), ("LastSentOrder", "0"),
                        ("DataLossDetected", sql.Bool(false))),

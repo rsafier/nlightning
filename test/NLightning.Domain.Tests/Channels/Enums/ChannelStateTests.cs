@@ -18,6 +18,18 @@ public class ChannelStateTests
     }
 
     [Fact]
+    public void Given_OnchainResolving_When_Compared_Then_SitsAfterFailedAndBeforeClosed()
+    {
+        // A failed channel whose commitment confirms moves on to OnchainResolving, then to Closed (BOLT 5 plan §3.9)
+
+        // Assert
+        Assert.Equal(37, (byte)ChannelState.OnchainResolving);
+        Assert.True(ChannelState.Closing < ChannelState.OnchainResolving);
+        Assert.True(ChannelState.Failed < ChannelState.OnchainResolving);
+        Assert.True(ChannelState.OnchainResolving < ChannelState.Closed);
+    }
+
+    [Fact]
     public void Given_ExistingStates_When_Read_Then_PersistedValuesUnchanged()
     {
         // Assert (the values are stored as bytes; renumbering would corrupt existing rows)

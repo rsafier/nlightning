@@ -65,6 +65,7 @@ public static class ChannelEntityConfiguration
 
             // Dust exposure policy of the snapshot (migration AddInvoicesPaymentsAndCircuits, NL-242)
             entity.Property(e => e.MaxDustHtlcExposureMsat).IsRequired(false);
+            entity.Property(e => e.RevocationLogFromNumber).IsRequired(false);
 
             // Mutual close (migration AddShutdownState, BOLT2 plan N10)
             entity.Property(e => e.LocalShutdownScript).IsRequired(false);
