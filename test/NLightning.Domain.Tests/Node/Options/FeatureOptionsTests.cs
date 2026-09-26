@@ -66,7 +66,6 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [InlineData(Feature.GossipQueriesEx)]
     [InlineData(Feature.OptionRouteBlinding)]
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
@@ -84,6 +83,23 @@ public class FeatureOptionsTests
 
         // Assert
         Assert.False(features.HasFeature(feature));
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_GossipQueriesAndGossipQueriesExAreOptional()
+    {
+        // Arrange (BOLT 7 plan G3-T4: timestamps and checksums answered, proven against CLN's captured reply)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.True(features.IsFeatureSet(Feature.GossipQueries, false));
+        Assert.False(features.IsFeatureSet(Feature.GossipQueries, true));
+        Assert.True(features.IsFeatureSet(Feature.GossipQueriesEx, false));
+        Assert.False(features.IsFeatureSet(Feature.GossipQueriesEx, true));
+        Assert.DoesNotContain(Feature.GossipQueriesEx, FeatureOptions.ExperimentalFeatures);
     }
 
     [Fact]

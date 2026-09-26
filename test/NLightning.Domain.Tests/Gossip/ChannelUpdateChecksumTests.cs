@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using NLightning.Tests.Utils.Vectors;
 
 namespace NLightning.Domain.Tests.Gossip;
@@ -35,6 +36,34 @@ public class ChannelUpdateChecksumTests
 
         // Act / Assert
         Assert.Equal(expected, ChannelUpdateChecksum.Compute(update.Payload));
+    }
+
+    [Fact]
+    public void Given_ClnsReplyChannelRangeWithChecksums_When_OurChecksumsAreComputed_Then_TheyEqualClns()
+    {
+        // Arrange (G3-T4 interop vector: CLN's reply_channel_range to query_option = timestamps | checksums, and the
+        // two channel_updates it describes, captured in Docker)
+        var reply = Bolt7QueryVectors.ClnReplyChannelRange.Payload;
+        var update0 = ChannelUpdatePayload.Parse(Bolt7QueryVectors.ClnUpdateDirection0.Payload);
+        var update1 = ChannelUpdatePayload.Parse(Bolt7QueryVectors.ClnUpdateDirection1.Payload);
+        var encodedLength = BinaryPrimitives.ReadUInt16BigEndian(reply.AsSpan(41));
+        var ids = GossipQueryCodec.DecodeShortChannelIds(reply.AsSpan(43, encodedLength), "reply_channel_range");
+        var tlvs = ReadTlvs(reply.AsSpan(43 + encodedLength));
+
+        // Act
+        var timestamps = GossipQueryCodec.DecodeTimestamps(tlvs[1], ids.Length);
+        var checksums = GossipQueryCodec.DecodeChecksums(tlvs[3], ids.Length);
+
+        // Assert: one channel, CLN's values equal ours (the checksum skips signature and timestamp)
+        var shortChannelId = Assert.Single(ids);
+        Assert.Equal(update0.ShortChannelId, shortChannelId);
+        Assert.Equal(update1.ShortChannelId, shortChannelId);
+        Assert.False(update0.Direction);
+        Assert.True(update1.Direction);
+        Assert.Equal(new ChannelUpdatePair(update0.Timestamp, update1.Timestamp), timestamps[0]);
+        Assert.Equal(ChannelUpdateChecksum.Compute(update0.GetBytes()), checksums[0].Node1);
+        Assert.Equal(ChannelUpdateChecksum.Compute(update1.GetBytes()), checksums[0].Node2);
+        Assert.Equal(new ChannelUpdatePair(0xDEF50176u, 0x80CB93D6u), checksums[0]);
     }
 
     [Fact]
@@ -79,6 +108,20 @@ public class ChannelUpdateChecksumTests
     {
         // Act / Assert
         Assert.Throws<ArgumentException>(() => ChannelUpdateChecksum.Compute(new byte[ChannelUpdatePayload.MinLength - 1]));
+    }
+
+    /// <summary>The records of a TLV stream whose types and lengths fit in one byte (enough for these vectors).</summary>
+    private static Dictionary<byte, byte[]> ReadTlvs(ReadOnlySpan<byte> stream)
+    {
+        var records = new Dictionary<byte, byte[]>();
+        while (!stream.IsEmpty)
+        {
+            var length = stream[1];
+            records[stream[0]] = stream.Slice(2, length).ToArray();
+            stream = stream[(2 + length)..];
+        }
+
+        return records;
     }
 
     private static uint BitwiseCrc32C(byte[] data)
