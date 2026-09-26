@@ -18,16 +18,7 @@ public sealed class ListNodesIpcResponse
         ArgumentNullException.ThrowIfNull(clientResponse);
         return new ListNodesIpcResponse
         {
-            Nodes = clientResponse.Nodes.Select(n => new GraphNodeIpcInfo
-            {
-                NodeId = n.Node.NodeId,
-                Alias = n.Node.AliasText,
-                Color = n.Node.ColorHex,
-                Addresses = n.Node.Addresses.Select(a => a.ToString()).ToList(),
-                Features = Convert.ToHexStringLower(n.Node.Features.Span),
-                Timestamp = n.Node.Timestamp,
-                ChannelCount = n.ChannelCount
-            }).ToList()
+            Nodes = clientResponse.Nodes.Select(GraphNodeIpcInfo.From).ToList()
         };
     }
 }
@@ -55,4 +46,20 @@ public sealed class GraphNodeIpcInfo
 
     /// <summary>The graph channels the node is an end of.</summary>
     [Key(6)] public int ChannelCount { get; init; }
+
+    /// <summary>The IPC form of a graph node (also used by <c>describegraph</c>'s page).</summary>
+    public static GraphNodeIpcInfo From(GraphNodeInfo node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        return new GraphNodeIpcInfo
+        {
+            NodeId = node.Node.NodeId,
+            Alias = node.Node.AliasText,
+            Color = node.Node.ColorHex,
+            Addresses = node.Node.Addresses.Select(a => a.ToString()).ToList(),
+            Features = Convert.ToHexStringLower(node.Node.Features.Span),
+            Timestamp = node.Node.Timestamp,
+            ChannelCount = node.ChannelCount
+        };
+    }
 }

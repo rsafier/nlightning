@@ -445,6 +445,94 @@ public class PrinterSnapshotTests
                          "    CLTV Expiry:      743"), output);
     }
 
+    [Fact]
+    public void Given_GraphDescription_When_Printed_Then_MatchesSnapshot()
+    {
+        // Arrange (BOLT 7 G5-T4): one sync peer, one plain peer, a one-channel page with more to come, no node page
+        var description = new DescribeGraphIpcResponse
+        {
+            IsLoaded = true,
+            Channels = 2,
+            SpentChannels = 1,
+            UnverifiedChannels = 0,
+            OwnChannels = 1,
+            ChannelsWithoutPolicy = 0,
+            Policies = 3,
+            DisabledPolicies = 1,
+            AnnouncedNodes = 2,
+            GraphNodes = 3,
+            CapacitySat = 3_000_000,
+            PendingWrites = 4,
+            EstimatedStoreBytes = 5 * 1048576,
+            EstimatedSnapshotBytes = 1048576 / 2,
+            IngressQueued = 7,
+            IngressDropped = 0,
+            Orphans = 2,
+            HasCompletedInitialSync = true,
+            Peers =
+            [
+                new GraphPeerSyncIpcInfo
+                {
+                    PeerId = s_payee,
+                    SupportsQueries = true,
+                    SupportsQueriesEx = true,
+                    IsSyncPeer = true,
+                    LastRangeSyncAt = 1_790_000_000,
+                    PeerFilterFirstTimestamp = 1_789_000_000,
+                    PeerFilterTimestampRange = uint.MaxValue,
+                    OurFilterFirstTimestamp = 1_788_000_000,
+                    OurFilterTimestampRange = uint.MaxValue,
+                    PendingWork = 1
+                },
+                new GraphPeerSyncIpcInfo { PeerId = s_payee, QueryingStopped = true }
+            ],
+            ChannelPage =
+            [
+                new GraphChannelIpcInfo
+                {
+                    ShortChannelId = (110UL << 40) | (1UL << 16),
+                    NodeId1 = s_payee,
+                    NodeId2 = s_payee,
+                    CapacitySat = 1_000_000,
+                    Verification = "Own",
+                    Features = ""
+                }
+            ],
+            NodePage = [],
+            NextChannelOffset = 1
+        };
+
+        // Act
+        var output = Print(w => new DescribeGraphPrinter(w).Print(description));
+
+        // Assert
+        Assert.Equal(Lines(
+                         "Graph: 2 channels, 3 nodes",
+                         "  Channels:           2 (1 spent, 0 unverified, 1 ours, 0 without a policy)",
+                         "  Policies:           3 (1 disabled)",
+                         "  Nodes:              3 (2 announced)",
+                         "  Capacity (sat):     3000000",
+                         "  Memory (estimate):  5.0 MiB store + 0.5 MiB per snapshot",
+                         "  Pending writes:     4",
+                         "  Ingress:            7 queued, 0 dropped, 2 orphans",
+                         "  Initial sync:       complete",
+                         "  Peers:              2",
+                         $"    02{Hex(0x11)}: sync peer, gossip_queries_ex, last range sync 2026-09-21 14:13:20 UTC, their filter 1789000000+4294967295, ours 1788000000+4294967295, 1 queued",
+                         $"    02{Hex(0x11)}: peer, no queries, last range sync never, their filter none, ours none, 0 queued, querying stopped",
+                         Separator,
+                         "Graph channels: 1",
+                         Separator,
+                         "  Short Channel Id:   110x1x0",
+                         $"  Node 1:             02{Hex(0x11)}",
+                         $"  Node 2:             02{Hex(0x11)}",
+                         "  Capacity (sat):     1000000",
+                         "  Verification:       Own",
+                         "  Policy 1 -> 2:      -",
+                         "  Policy 2 -> 1:      -",
+                         Separator,
+                         "More channels: describegraph --channels --offset 1"), output);
+    }
+
     private static string Print(Action<TextWriter> print)
     {
         using var writer = new StringWriter();

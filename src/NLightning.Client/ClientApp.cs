@@ -5,6 +5,7 @@ namespace NLightning.Client;
 using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -185,6 +186,14 @@ internal static class ClientApp
                                                            cancellationToken);
                     new GetRoutePrinter().Print(route);
                     break;
+                case "describegraph":
+                case "describe-graph":
+                    var describeArgs = ParseDescribeGraphOptions(commandArgs, out _)!;
+                    var description = await client.DescribeGraphAsync(describeArgs.IncludeChannels,
+                                                                       describeArgs.IncludeNodes, describeArgs.Offset,
+                                                                       describeArgs.Limit, cancellationToken);
+                    new DescribeGraphPrinter().Print(description);
+                    break;
                 case "pendingsweeps":
                 case "pending-sweeps":
                     var (sweepChannel, includeClosed) = ParsePendingSweepsOptions(commandArgs);
@@ -314,6 +323,9 @@ internal static class ClientApp
             case "getroute":
             case "get-route":
                 return ParseGetRouteOptions(commandArgs, out var routeError) is null ? routeError : null;
+            case "describegraph":
+            case "describe-graph":
+                return ParseDescribeGraphOptions(commandArgs, out var describeError) is null ? describeError : null;
             case "pendingsweeps":
             case "pending-sweeps":
                 foreach (var argument in commandArgs)
@@ -668,6 +680,79 @@ internal static class ClientApp
     }
 
     /// <summary>
+    /// The arguments of describegraph: the flags <c>--channels</c> and <c>--nodes</c> (a page of each) and the options
+    /// <c>--limit &lt;n&gt;</c> (1 to 1,000, default 100) and <c>--offset &lt;n&gt;</c>, each also as
+    /// <c>--option=value</c>.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static DescribeGraphArguments? ParseDescribeGraphOptions(string[] commandArgs, out string? error)
+    {
+        bool includeChannels = false, includeNodes = false;
+        var offset = 0;
+        var limit = DescribeGraphClientRequest.DefaultLimit;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            var separator = argument.IndexOf('=');
+            var name = (separator < 0 ? argument : argument[..separator]).ToLowerInvariant();
+            switch (name)
+            {
+                case "--channels" when separator < 0:
+                    includeChannels = true;
+                    continue;
+                case "--nodes" when separator < 0:
+                    includeNodes = true;
+                    continue;
+                case "--limit":
+                case "--offset":
+                    break;
+                default:
+                    error = $"Unknown argument '{argument}': expected --channels, --nodes, --limit or --offset.";
+                    return null;
+            }
+
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var number))
+            {
+                error = $"Invalid value '{value}' for {name}: expected a number.";
+                return null;
+            }
+
+            if (name == "--limit")
+            {
+                if (number is < 1 or > DescribeGraphClientRequest.MaxLimit)
+                {
+                    error = $"Invalid limit '{value}': expected 1 to {DescribeGraphClientRequest.MaxLimit}.";
+                    return null;
+                }
+
+                limit = number;
+            }
+            else
+            {
+                offset = number;
+            }
+        }
+
+        error = null;
+        return new DescribeGraphArguments(includeChannels, includeNodes, offset, limit);
+    }
+
+    /// <summary>
     /// <c>[channel_id] [all]</c> of pendingsweeps, in any order: one channel only, and the closed channels too.
     /// </summary>
     internal static (ChannelId? ChannelId, bool IncludeClosed) ParsePendingSweepsOptions(string[] commandArgs)
@@ -698,6 +783,11 @@ internal static class ClientApp
         return (take, skip);
     }
 }
+
+/// <summary>
+/// The parsed arguments of describegraph.
+/// </summary>
+internal sealed record DescribeGraphArguments(bool IncludeChannels, bool IncludeNodes, int Offset, int Limit);
 
 /// <summary>
 /// The parsed arguments of getroute.

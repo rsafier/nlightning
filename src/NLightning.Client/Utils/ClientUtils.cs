@@ -53,6 +53,10 @@ public static class ClientUtils
         Console.WriteLine("  getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]");
         Console.WriteLine("                               Show the route a payment would take now, hop by hop, with");
         Console.WriteLine("                               fees, CLTVs and its success estimate (alias: get-route)");
+        Console.WriteLine("  describegraph [--channels] [--nodes] [--limit <n>] [--offset <n>]");
+        Console.WriteLine("                               Show the gossip graph's counts, memory, queues and sync");
+        Console.WriteLine("                               peers (alias: describe-graph), with a page of channels");
+        Console.WriteLine("                               and/or nodes [limit 1-1000, default 100]");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

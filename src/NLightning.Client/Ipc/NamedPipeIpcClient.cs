@@ -355,6 +355,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                   }, ct);
 
     /// <summary>
+    /// The gossip graph's state, with an optional page of channels and of nodes (ClientCommand 20).
+    /// </summary>
+    public Task<DescribeGraphIpcResponse> DescribeGraphAsync(bool includeChannels, bool includeNodes, int offset,
+                                                             int limit, CancellationToken ct = default) =>
+        SendRequestAsync<DescribeGraphIpcRequest, DescribeGraphIpcResponse>(ClientCommand.DescribeGraph,
+                                                                            new DescribeGraphIpcRequest
+                                                                            {
+                                                                                IncludeChannels = includeChannels,
+                                                                                IncludeNodes = includeNodes,
+                                                                                Offset = offset,
+                                                                                Limit = limit
+                                                                            }, ct);
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)

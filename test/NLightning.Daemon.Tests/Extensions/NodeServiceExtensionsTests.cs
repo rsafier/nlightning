@@ -111,6 +111,15 @@ public class NodeServiceExtensionsTests
                             .GetRequiredService<IClientCommandHandler<GetRouteClientRequest,
                                  GetRouteClientResponse>>());
         Assert.Same(provider.GetRequiredService<PaymentService>(), provider.GetRequiredService<IRouteQueryService>());
+
+        // BOLT 7 G5-T4: describegraph reads the node's own store, ingress and sync manager (it reports their parts)
+        Assert.Contains(ClientCommand.DescribeGraph, commands);
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<DescribeGraphClientRequest,
+                                 DescribeGraphClientResponse>>());
+        var description = provider.GetRequiredService<GossipGraphDescriber>().Describe();
+        Assert.NotNull(description.Ingress);
+        Assert.NotNull(description.Sync);
         Assert.True(provider.GetRequiredService<GraphPathSource>().IsAvailable);
         Assert.Same(provider.GetRequiredService<MissionControl>(),
                     provider.GetRequiredService<GraphPathSource>().MissionControl);
