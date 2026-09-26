@@ -17,6 +17,12 @@ using Protocol.Payloads;
 /// <c>B7-NA-04</c>, <c>B7-CU-02</c>, <c>B7-CU-03</c>, <c>B7-PR-02</c>). Deviation from the plan's summary: an
 /// unknown even feature bit in a <c>channel_announcement</c> does not make us ignore it; BOLT 7 only says we MUST NOT
 /// route through the channel, so it is accepted with <see cref="GossipValidationResult.Routable"/> false.
+/// <para>Blacklisting: BOLT 7 allows it only for messages whose signatures are valid. Stage 1 runs before the
+/// signature stage, so <see cref="GossipValidationResult.MayBlacklist"/> is only ever set when the caller passes
+/// <c>signaturesVerified: true</c>, which it may do only after stage 3 has verified every signature of the same
+/// message. The ingress that wants to blacklist a node over a conflicting announcement or update therefore verifies
+/// the ignored message's signatures and validates it again with <c>signaturesVerified: true</c>; otherwise an
+/// unsigned forgery could get any node (our own peers included) blacklisted.</para>
 /// </remarks>
 public static class GossipValidator
 {
@@ -25,16 +31,21 @@ public static class GossipValidator
     /// key format (warning), chain (ignore), depth when the tip is known (ignore below
     /// <c>MinConfirmations - DepthToleranceBlocks</c>), blacklist (ignore, B7-CA-04), then the known channel with the
     /// same short channel id: the same announcement is <see cref="GossipRejectReason.AlreadyKnown"/>, a different one
-    /// is <see cref="GossipRejectReason.ConflictingAnnouncement"/> with
-    /// <see cref="GossipValidationResult.MayBlacklist"/> (BOLT 7: blacklist both node pairs). Unknown even features:
-    /// accepted, not routable.
+    /// is <see cref="GossipRejectReason.ConflictingAnnouncement"/>. BOLT 7 says to blacklist both node pairs only
+    /// when a validly signed announcement names a different <c>node_id_1</c> or <c>node_id_2</c>, so
+    /// <see cref="GossipValidationResult.MayBlacklist"/> is set only for that case and only with
+    /// <paramref name="signaturesVerified"/>; different bitcoin keys alone are a conflict without blacklisting.
+    /// Unknown even features: accepted, not routable.
     /// </summary>
     /// <param name="fields">The announcement.</param>
     /// <param name="context">Our chain, clock and tip.</param>
     /// <param name="knownChannel">The graph channel with the same short channel id, if any.</param>
+    /// <param name="signaturesVerified">The four signatures of this announcement were verified (stage 3). Only
+    /// then may the result carry <see cref="GossipValidationResult.MayBlacklist"/>.</param>
     public static GossipValidationResult ValidateChannelAnnouncement(ChannelAnnouncementFields fields,
                                                                      GossipValidationContext context,
-                                                                     GraphChannel? knownChannel = null)
+                                                                     GraphChannel? knownChannel = null,
+                                                                     bool signaturesVerified = false)
     {
         ArgumentNullException.ThrowIfNull(fields);
         ArgumentNullException.ThrowIfNull(context);
@@ -68,14 +79,14 @@ public static class GossipValidator
 
         if (knownChannel is not null)
         {
-            var same = knownChannel.NodeId1 == nodeId1
-                    && knownChannel.NodeId2 == nodeId2
+            var sameNodes = knownChannel.NodeId1 == nodeId1 && knownChannel.NodeId2 == nodeId2;
+            var same = sameNodes
                     && ((ReadOnlySpan<byte>)knownChannel.BitcoinKey1).SequenceEqual(fields.BitcoinKey1.Span)
                     && ((ReadOnlySpan<byte>)knownChannel.BitcoinKey2).SequenceEqual(fields.BitcoinKey2.Span);
             return same
                        ? GossipValidationResult.Ignore(GossipRejectReason.AlreadyKnown, "B7-CA-05")
                        : GossipValidationResult.Ignore(GossipRejectReason.ConflictingAnnouncement, "B7-CA-04",
-                                                       mayBlacklist: true);
+                                                       mayBlacklist: signaturesVerified && !sameNodes);
         }
 
         var routable = !GossipFeatures.HasUnknownEvenBits(fields.Features.Span);
@@ -122,10 +133,10 @@ public static class GossipValidator
     /// The pure checks of a <c>channel_update</c> (B7-CU-02, B7-CU-03, B7-PR-02), in the BOLT 7 order: unknown chain
     /// (ignore); no announcement and not our channel (ignore: an orphan the ingress may cache); spent without
     /// <c>disable</c> (ignore); same timestamp with the same fields (ignore) or different ones (ignore, may
-    /// blacklist); older (ignore); too far in the future (ignore); stale (ignore, when
-    /// <see cref="GossipValidationContext.IgnoreStaleUpdates"/>). Accepted updates with
-    /// <c>htlc_maximum_msat &lt; htlc_minimum_msat</c>, or a maximum above the known capacity (may blacklist), are
-    /// not routable. <c>dont_forward</c> and an unannounced own channel make the update not forwardable (a
+    /// blacklist once <paramref name="signaturesVerified"/>); older (ignore); too far in the future (ignore); stale
+    /// (ignore, when <see cref="GossipValidationContext.IgnoreStaleUpdates"/>). Accepted updates with
+    /// <c>htlc_maximum_msat &lt; htlc_minimum_msat</c>, or a maximum above the known capacity (may blacklist once
+    /// <paramref name="signaturesVerified"/>), are not routable. <c>dont_forward</c> and an unannounced own channel make the update not forwardable (a
     /// disabled update of a spent channel stays forwardable, as BOLT 7 allows).
     /// </summary>
     /// <param name="update">The update.</param>
@@ -134,10 +145,13 @@ public static class GossipValidator
     /// <param name="isOwnChannel">The short channel id names one of our own channels (public or not).</param>
     /// <param name="lastPolicy">The stored policy of the update's direction; null reads it from
     /// <paramref name="channel"/>.</param>
+    /// <param name="signaturesVerified">The update's signature was verified (stage 3). Only then may the result
+    /// carry <see cref="GossipValidationResult.MayBlacklist"/>.</param>
     public static GossipValidationResult ValidateChannelUpdate(ChannelUpdatePayload update,
                                                                GossipValidationContext context,
                                                                GraphChannel? channel, bool isOwnChannel = false,
-                                                               GraphPolicy? lastPolicy = null)
+                                                               GraphPolicy? lastPolicy = null,
+                                                               bool signaturesVerified = false)
     {
         ArgumentNullException.ThrowIfNull(update);
         ArgumentNullException.ThrowIfNull(context);
@@ -159,7 +173,7 @@ public static class GossipValidator
                 return lastPolicy.HasSameFieldsAs(update)
                            ? GossipValidationResult.Ignore(GossipRejectReason.DuplicateUpdate, "B7-CU-02")
                            : GossipValidationResult.Ignore(GossipRejectReason.ConflictingSameTimestamp, "B7-CU-02",
-                                                           mayBlacklist: true);
+                                                           mayBlacklist: signaturesVerified);
 
             if (update.Timestamp < lastPolicy.Timestamp)
                 return GossipValidationResult.Ignore(GossipRejectReason.OutdatedUpdate, "B7-CU-02");
@@ -176,7 +190,7 @@ public static class GossipValidator
         var routable = update.HtlcMaximumMsat >= update.HtlcMinimumMsat && !aboveCapacity;
         var forwardable = channel is not null && !update.DontForward;
         return GossipValidationResult.Accept(routable ? "B7-CU-02" : "B7-CU-03", forwardable, routable,
-                                             mayBlacklist: aboveCapacity);
+                                             mayBlacklist: signaturesVerified && aboveCapacity);
     }
 
     /// <summary>

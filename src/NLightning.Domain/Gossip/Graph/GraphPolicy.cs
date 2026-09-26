@@ -35,6 +35,13 @@ public sealed record GraphPolicy(
     public ReadOnlyMemory<byte> RawUpdate { get; init; }
 
     /// <summary>
+    /// The unknown fields that followed <c>htlc_maximum_msat</c> in the update (covered by its signature; BOLT 7
+    /// compares them for a same-timestamp update). Empty when there were none or they are unknown; a store that
+    /// rebuilds the policy from <see cref="RawUpdate"/> should parse them back with it.
+    /// </summary>
+    public ReadOnlyMemory<byte> ExtraData { get; init; }
+
+    /// <summary>
     /// The <c>direction</c> bit: 0 when the origin is <c>node_id_1</c>, 1 when it is <c>node_id_2</c>.
     /// </summary>
     public byte Direction => (byte)(ChannelFlags & ChannelUpdatePayload.ChannelFlagDirection);
@@ -58,12 +65,16 @@ public sealed record GraphPolicy(
         ArgumentNullException.ThrowIfNull(update);
         return new GraphPolicy(update.Timestamp, update.MessageFlags, update.ChannelFlags, update.CltvExpiryDelta,
                                update.HtlcMinimumMsat, update.HtlcMaximumMsat, update.FeeBaseMsat,
-                               update.FeeProportionalMillionths);
+                               update.FeeProportionalMillionths)
+        {
+            // Left default when empty, so record equality with a policy built by hand still holds
+            ExtraData = update.ExtraData.IsEmpty ? default : update.ExtraData.ToArray()
+        };
     }
 
     /// <summary>
     /// True when every field of <paramref name="update"/> after its <c>timestamp</c> equals this policy's (BOLT 7
-    /// compares them for a same-timestamp update). Unknown trailing fields are not compared.
+    /// compares them for a same-timestamp update), including the unknown trailing fields (<see cref="ExtraData"/>).
     /// </summary>
     public bool HasSameFieldsAs(ChannelUpdatePayload update)
     {
@@ -74,6 +85,7 @@ public sealed record GraphPolicy(
             && HtlcMinimumMsat == update.HtlcMinimumMsat
             && FeeBaseMsat == update.FeeBaseMsat
             && FeeProportionalMillionths == update.FeeProportionalMillionths
-            && HtlcMaximumMsat == update.HtlcMaximumMsat;
+            && HtlcMaximumMsat == update.HtlcMaximumMsat
+            && ExtraData.Span.SequenceEqual(update.ExtraData.Span);
     }
 }
