@@ -47,12 +47,20 @@ using Revoked;
 /// <para>
 /// A commitment without HTLCs has no log entry: its <c>to_local</c> and <c>to_remote</c> are found by script. A
 /// commitment revoked before the log existed (<see cref="RevokedCommitContext.PredatesLog"/>) gets the same treatment,
-/// and its HTLC outputs, which cannot be rebuilt, are reported (plan §8 risk 5).
+/// and its HTLC outputs, which cannot be rebuilt, are reported (plan §8 risk 5). While any output of the commitment
+/// is unmapped, B5-REV-RES-03 does not apply (an unmapped output may be our offered HTLC, which the cheater can still
+/// claim with the preimage): the unmapped outputs are watched, a preimage in their spends fulfills upstream, and our
+/// offered HTLCs without a mapped output are failed only once every unmapped output is spent, reasonably deep, without
+/// their preimage.
 /// </para>
 /// <para>
-/// Stateless apart from a cache of spending transactions seen through <see cref="OnOutputSpentAsync"/>: every decision
-/// is taken again from the rows and the chain each round, and repeated until its effect is on chain (the executor
-/// dedupes broadcasts by txid, watches by outpoint, and the switch is idempotent).
+/// Stateless apart from a cache of spending transactions seen through <see cref="OnOutputSpentAsync"/> (used only
+/// while the output's row still says it was spent at that height) and the set of HTLCs a fulfill was asked for (so no
+/// failure follows it): every decision is taken again from the rows and the chain each round, and repeated until its
+/// effect is on chain (the executor dedupes broadcasts by txid, watches by outpoint, and the switch is idempotent).
+/// Switch events are raised again every round, since an executor save that fails applies none of them. A recorded
+/// spend whose transaction cannot be fetched is never guessed: a spend by one of our transactions is known from its
+/// txid, any other holds the output until the transaction can be read.
 /// </para>
 /// </remarks>
 public sealed class RevokedCommitResolver : IOutputResolver
@@ -66,7 +74,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly ICommitmentOutputMapper _mapper;
     private readonly RevokedCommitResolverOptions _options;
     private readonly ConcurrentDictionary<string, byte> _alerted = new();
-    private readonly ConcurrentDictionary<(ChannelId, ulong, bool), byte> _raised = new();
+    private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _fulfilled = new();
     private readonly ConcurrentDictionary<(TxId, uint), (ChainTx Transaction, uint Height)> _seenSpends = new();
 
     public RevokedCommitResolver(IRevokedCommitDataSource dataSource, ICommitmentOutputMapper mapper,
@@ -125,7 +133,11 @@ public sealed class RevokedCommitResolver : IOutputResolver
             await PlanOutputAsync(round, map, descriptor, needs, spentBy, cancellationToken);
         }
 
-        PlanHtlcsWithoutOutput(round, mappedHtlcs);
+        // B5-REV-RES-03 applies only when every output of the commitment is known
+        if (map.UnmappedVouts.Count == 0)
+            PlanHtlcsWithoutOutput(round, mappedHtlcs);
+        else
+            await PlanHtlcsBesideUnmappedOutputsAsync(round, map, mappedHtlcs, cancellationToken);
 
         if (needs.Count > 0)
         {
@@ -204,21 +216,31 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var row = round.GetOrCreateRow(commitmentTxId, descriptor.Vout,
                                        () => CreateCommitmentRow(round, descriptor, map.PerCommitmentPoint))!;
 
-        var spend = await GetSpendAsync(row, descriptor.Htlc, cancellationToken);
-        if (spend is not null)
-            spentBy[(row.TransactionId, row.OutputIndex)] = spend.Value.Spend.SpendingTxId;
+        var lookup = await GetSpendAsync(row, descriptor.Htlc, cancellationToken);
+        if (lookup.SpenderTxId is { } spender)
+            spentBy[(row.TransactionId, row.OutputIndex)] = spender;
+        if (lookup.Undetermined)
+        {
+            if (!IsFinished(row))
+                HoldUndetermined(round, row, lookup.SpenderTxId);
+            if (lookup.SpenderTxId is { } unreadable)
+                await PenalizeKnownSecondLevelAsync(round, unreadable, needs, spentBy, cancellationToken);
+            return;
+        }
+
+        var spend = lookup.Spend;
 
         // The cheater's HTLC-timeout/success took the output: its second-level output is the one to penalize now
         OutputResolutionModel? secondLevelRow = null;
         OutputSpend? secondLevelSpend = null;
-        if (spend is { Spend: { ByUs: false, Path: HtlcSpendPath.HtlcSuccessTransaction or HtlcSpendPath.HtlcTimeoutTransaction } }
-                    theirs && descriptor.Htlc is { } htlc)
+        if (spend is { ByUs: false, Path: HtlcSpendPath.HtlcSuccessTransaction or HtlcSpendPath.HtlcTimeoutTransaction }
+         && lookup.Transaction is { } theirTransaction && descriptor.Htlc is { } htlc)
         {
-            var inputIndex = theirs.Transaction.IndexOfInputSpending(commitmentTxId, descriptor.Vout);
-            secondLevelRow = round.GetOrCreateRow(theirs.Transaction.TxId, (uint)Math.Max(0, inputIndex), () =>
+            var inputIndex = theirTransaction.IndexOfInputSpending(commitmentTxId, descriptor.Vout);
+            secondLevelRow = round.GetOrCreateRow(theirTransaction.TxId, (uint)Math.Max(0, inputIndex), () =>
             {
-                var created = CreateSecondLevelRow(context, round.Close, row, htlc, theirs.Transaction,
-                                                   (uint)Math.Max(0, inputIndex), theirs.Spend.Height, out var alert);
+                var created = CreateSecondLevelRow(context, round.Close, row, htlc, theirTransaction,
+                                                   (uint)Math.Max(0, inputIndex), spend.Height, out var alert);
                 if (alert is not null)
                     round.Actions.Add(alert);
                 return created;
@@ -227,11 +249,16 @@ public sealed class RevokedCommitResolver : IOutputResolver
             if (secondLevelRow is not null)
             {
                 var second = await GetSpendAsync(secondLevelRow, null, cancellationToken);
-                if (second is not null)
+                if (second.SpenderTxId is { } secondSpender)
+                    spentBy[(secondLevelRow.TransactionId, secondLevelRow.OutputIndex)] = secondSpender;
+                if (second.Undetermined)
                 {
-                    secondLevelSpend = second.Value.Spend;
-                    spentBy[(secondLevelRow.TransactionId, secondLevelRow.OutputIndex)] = second.Value.Spend.SpendingTxId;
+                    if (!IsFinished(secondLevelRow))
+                        HoldUndetermined(round, secondLevelRow, second.SpenderTxId);
+                    return;
                 }
+
+                secondLevelSpend = second.Spend;
             }
         }
 
@@ -239,7 +266,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
             return;
 
         var record = descriptor.Htlc is { } spec ? context.Channel.Commitments?.GetHtlc(spec.Direction, spec.Id) : null;
-        var facts = new OutputResolutionFacts(round.Height, round.Close.SpentAtHeight, spend?.Spend, secondLevelSpend,
+        var facts = new OutputResolutionFacts(round.Height, round.Close.SpentAtHeight, spend, secondLevelSpend,
                                               record?.KnownPreimage is { } known ? (byte[])known : null,
                                               UpstreamResolved: descriptor.Htlc is { } h
                                                              && IsUpstreamResolved(context.Channel, h),
@@ -298,6 +325,27 @@ public sealed class RevokedCommitResolver : IOutputResolver
     }
 
     /// <summary>
+    /// The second-level outputs already recorded for a spender that cannot be read now (their rows keep the script):
+    /// they are still penalized, which is right whoever spent the parent; nothing else is decided from them.
+    /// </summary>
+    private async Task PenalizeKnownSecondLevelAsync(Round round, TxId spender, List<PenaltyNeed> needs,
+                                                     Dictionary<(TxId, uint), TxId> spentBy,
+                                                     CancellationToken cancellationToken)
+    {
+        foreach (var row in round.AllRows.Where(r => r.TransactionId == spender
+                                                  && r.Descriptor == OutputDescriptorKind.RevokedSecondLevel
+                                                  && !IsFinished(r)).ToList())
+        {
+            var second = await GetSpendAsync(row, null, cancellationToken);
+            if (second.SpenderTxId is { } secondSpender)
+                spentBy[(row.TransactionId, row.OutputIndex)] = secondSpender;
+            if (second.Spend is null && !second.Undetermined
+             && CreateSecondLevelInput(round.Context, row) is { } input)
+                needs.Add(new PenaltyNeed(row, input, row.DeadlineHeight));
+        }
+    }
+
+    /// <summary>
     /// B5-REV-RES-03: our offered HTLCs that are committed but have no output in the revoked commitment.
     /// </summary>
     private void PlanHtlcsWithoutOutput(Round round, HashSet<HtlcKey> mappedHtlcs)
@@ -334,6 +382,78 @@ public sealed class RevokedCommitResolver : IOutputResolver
             }
         }
     }
+
+    /// <summary>
+    /// Our offered HTLCs without a mapped output while some output of the revoked commitment is unmapped (a commitment
+    /// that predates the log, a missing log entry, a rebuild that differs): any unmapped output may be one of them, and
+    /// the cheater, the HTLC's receiver, can claim it with the preimage until it is spent. So the unmapped outputs are
+    /// watched; a preimage in their spends (or a known one) fulfills upstream at once; the failure (B5-REV-RES-03)
+    /// waits until every unmapped output is spent, reasonably deep, by a transaction we could read that does not
+    /// reveal the preimage. Nothing is failed while a spend is missing or cannot be read.
+    /// </summary>
+    private async Task PlanHtlcsBesideUnmappedOutputsAsync(Round round, CommitmentOutputMap map,
+                                                            HashSet<HtlcKey> mappedHtlcs,
+                                                            CancellationToken cancellationToken)
+    {
+        var channel = round.Context.Channel;
+        if (channel.Commitments is not { } commitments)
+            return;
+
+        var commitmentTxId = round.Close.CommitmentTransactionId;
+        var spends = new List<(uint Vout, RevokedOutputSpend? Spend)>();
+        foreach (var vout in map.UnmappedVouts)
+        {
+            var spend = await _dataSource.GetSpendAsync(commitmentTxId, vout, cancellationToken);
+            if (spend is null)
+                round.Actions.Add(new WatchOutpointAction(new WatchedOutpointModel(
+                                      commitmentTxId, vout, round.Close.ChannelId,
+                                      WatchedOutpointPurpose.ResolutionOutput)));
+            spends.Add((vout, spend));
+        }
+
+        var allSpentDeep = spends.All(s => s.Spend is { SpendingTransaction: not null } spend
+                                        && Depth(round.Height, spend.Height) >= _options.ReasonableDepth);
+        foreach (var record in commitments.Htlcs.Values)
+        {
+            if (record.Direction != HtlcDirection.Outgoing || mappedHtlcs.Contains(record.Key))
+                continue;
+
+            var spec = new SpecHtlc(record.Direction, record.Id, record.AmountMsat, record.PaymentHash,
+                                    record.CltvExpiry);
+            if (IsUpstreamResolved(channel, spec))
+                continue;
+
+            var preimage = record.KnownPreimage;
+            foreach (var (vout, spend) in spends)
+            {
+                if (preimage is not null)
+                    break;
+                if (spend?.SpendingTransaction is { } transaction
+                 && HtlcWitnessParser.TryExtractPreimage(transaction, commitmentTxId, vout, spec.PaymentHash,
+                                                         out var revealed))
+                    preimage = revealed;
+            }
+
+            if (preimage is { } known)
+                Raise(round.Actions, new OutgoingHtlcFulfilled(round.Close.ChannelId, spec.Id, spec.PaymentHash, known));
+            else if (allSpentDeep)
+                Raise(round.Actions, new OutgoingHtlcFailed(round.Close.ChannelId, spec.Id, spec.PaymentHash,
+                                                             OnchainHtlcRemovals.OnchainTimeout()));
+        }
+    }
+
+    private static uint Depth(uint tip, uint height) => tip >= height ? tip - height + 1 : 0;
+
+    /// <summary>
+    /// An output whose recorded spend cannot be read (its transaction could not be fetched, or the row says it was
+    /// spent and no spend is recorded): nothing is decided for it this round, and the operator is told once.
+    /// </summary>
+    private static void HoldUndetermined(Round round, OutputResolutionModel row, TxId? spender) =>
+        round.Actions.Add(new AlertAction("B5-GEN-06",
+                                          $"Output {row.OutputIndex} of {row.TransactionId} of channel "
+                                        + $"{round.Close.ChannelId} was spent by "
+                                        + (spender is { } id ? $"transaction {id}" : "an unrecorded transaction")
+                                        + " that cannot be read; holding its resolution until it can"));
 
     private CommitmentOutputMap Map(RevokedCommitContext context)
     {
@@ -481,45 +601,60 @@ public sealed class RevokedCommitResolver : IOutputResolver
         _keyDerivationService.DeriveRevocationPubKey(context.Channel.LocalKeySet.RevocationCompactBasepoint,
                                                      context.PerCommitmentPoint);
 
-    /// <summary>The recorded spend of an output, with the path and preimage its witness shows for an HTLC.</summary>
-    private async Task<(OutputSpend Spend, ChainTx Transaction)?> GetSpendAsync(OutputResolutionModel? row,
-                                                                               SpecHtlc? htlc,
-                                                                               CancellationToken cancellationToken)
+    /// <summary>
+    /// The recorded spend of an output, with the path and preimage its witness shows for an HTLC. The chain monitor's
+    /// record (the watched outpoint) comes first; the transaction seen in <see cref="OnOutputSpentAsync"/> stands in only
+    /// while the row still says it was spent at that height (a reorg that removed the spend drops it). A spend by one of
+    /// our transactions is known from its txid; any other spend whose transaction cannot be read is
+    /// <see cref="SpendLookup.Undetermined"/>, never guessed.
+    /// </summary>
+    private async Task<SpendLookup> GetSpendAsync(OutputResolutionModel? row, SpecHtlc? htlc,
+                                                  CancellationToken cancellationToken)
     {
         if (row is null)
-            return null;
+            return default;
 
-        ChainTx transaction;
+        var key = (row.TransactionId, row.OutputIndex);
+        var hasSeen = _seenSpends.TryGetValue(key, out var seen);
+        var rowSaysSpent = row.State is OutputResolutionState.Resolved or OutputResolutionState.Irrevocable;
+
+        ChainTx? transaction;
+        TxId spender;
         uint height;
         bool byUs;
-        if (_seenSpends.TryGetValue((row.TransactionId, row.OutputIndex), out var seen))
+        if (await _dataSource.GetSpendAsync(row.TransactionId, row.OutputIndex, cancellationToken) is { } recorded)
         {
-            (transaction, height) = seen;
-            byUs = transaction.TxId == row.ResolvingTransactionId
-                || await _dataSource.IsOurTransactionAsync(transaction.TxId);
-        }
-        else if (await _dataSource.GetSpendAsync(row.TransactionId, row.OutputIndex, cancellationToken) is { } recorded)
-        {
-            transaction = recorded.SpendingTransaction;
+            spender = recorded.SpendingTransactionId;
             height = recorded.Height;
-            byUs = recorded.ByUs || transaction.TxId == row.ResolvingTransactionId;
+            transaction = recorded.SpendingTransaction
+                       ?? (hasSeen && seen.Transaction.TxId == spender ? seen.Transaction : null);
+            byUs = recorded.ByUs || spender == row.ResolvingTransactionId;
         }
-        else if (row is
+        else if (hasSeen && rowSaysSpent && row.ResolvedHeight == seen.Height)
         {
-            State: OutputResolutionState.Resolved or OutputResolutionState.Irrevocable,
-            ResolvedHeight: { } resolvedHeight
-        })
-        {
-            // The executor saw a spend we cannot look up: ours if we had a transaction for it
-            var spender = row.ResolvingTransactionId ?? new TxId(new byte[32]);
-            return (new OutputSpend(spender, resolvedHeight, row.ResolvingTransactionId is not null,
-                                    row.ResolvingTransactionId is not null
-                                        ? HtlcSpendPath.Revocation
-                                        : HtlcSpendPath.Unknown), new ChainTx(spender, 2, 0, [], []));
+            // The executor's spend of this block, not recorded by the monitor yet
+            transaction = seen.Transaction;
+            spender = transaction.TxId;
+            height = seen.Height;
+            byUs = spender == row.ResolvingTransactionId || await _dataSource.IsOurTransactionAsync(spender);
         }
         else
         {
-            return null;
+            if (hasSeen)
+                _seenSpends.TryRemove(key, out _);
+
+            // The row says spent, but no spend is recorded: hold rather than guess who spent it
+            return rowSaysSpent ? SpendLookup.Unknown(null) : default;
+        }
+
+        if (transaction is null)
+        {
+            // Our own transaction needs no witness: it penalized (or swept) the output
+            return byUs
+                       ? new SpendLookup(new OutputSpend(spender, height, true,
+                                                         htlc is null ? HtlcSpendPath.Unknown
+                                                                      : HtlcSpendPath.Revocation), null, false)
+                       : SpendLookup.Unknown(spender);
         }
 
         var path = HtlcSpendPath.Unknown;
@@ -533,7 +668,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
                 preimage = found;
         }
 
-        return (new OutputSpend(transaction.TxId, height, byUs, path, preimage), transaction);
+        return new SpendLookup(new OutputSpend(transaction.TxId, height, byUs, path, preimage), transaction, false);
     }
 
     /// <summary>
@@ -583,24 +718,45 @@ public sealed class RevokedCommitResolver : IOutputResolver
     }
 
     /// <summary>
-    /// Asks for an upstream event once per process (the switch is idempotent, and a restart asks again): the planner
-    /// repeats its decision every block until the output is irrevocably resolved.
+    /// Asks the switch for an upstream event, every round the planner decides it (the switch is idempotent, and a
+    /// failed executor save applies nothing, so a remembered event could be lost until a restart). Within a round each
+    /// HTLC gets one event, and a fulfill wins: once a fulfill was asked for in this process, no failure follows it (a
+    /// preimage is final knowledge).
     /// </summary>
     private void Raise(List<OutputResolverAction> actions, IChannelDomainEvent channelEvent)
     {
-        var key = channelEvent switch
+        var (channelId, htlcId, fulfill) = channelEvent switch
         {
             OutgoingHtlcFulfilled fulfilled => (fulfilled.ChannelId, fulfilled.HtlcId, true),
             OutgoingHtlcFailed failed => (failed.ChannelId, failed.HtlcId, false),
             _ => throw new ArgumentOutOfRangeException(nameof(channelEvent), channelEvent, null)
         };
 
-        // A fulfill wins over a failure asked for earlier in this process (a preimage is final knowledge)
-        if (_raised.ContainsKey((key.ChannelId, key.HtlcId, true)) || !_raised.TryAdd(key, 0))
+        if (fulfill)
+        {
+            _fulfilled.TryAdd((channelId, htlcId), 0);
+            actions.RemoveAll(a => IsEventFor(a, channelId, htlcId, false));
+            if (actions.Any(a => IsEventFor(a, channelId, htlcId, true)))
+                return;
+        }
+        else if (_fulfilled.ContainsKey((channelId, htlcId))
+              || actions.Any(a => IsEventFor(a, channelId, htlcId, true) || IsEventFor(a, channelId, htlcId, false)))
+        {
             return;
+        }
 
         actions.Add(new RaiseChannelEventAction(channelEvent));
     }
+
+    private static bool IsEventFor(OutputResolverAction action, ChannelId channelId, ulong htlcId, bool fulfill) =>
+        action switch
+        {
+            RaiseChannelEventAction { Event: OutgoingHtlcFulfilled f } => fulfill && f.ChannelId == channelId
+                                                                                  && f.HtlcId == htlcId,
+            RaiseChannelEventAction { Event: OutgoingHtlcFailed f } => !fulfill && f.ChannelId == channelId
+                                                                                 && f.HtlcId == htlcId,
+            _ => false
+        };
 
     /// <summary>
     /// Drops the alerts already returned by this process: the planner repeats a loss every block until the output is
@@ -634,6 +790,18 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var record = channel.Commitments?.GetHtlc(htlc.Direction, htlc.Id);
         return record is null
             || record is { State: HtlcState.RcvdRemoveAckRevocation, Removal.IsFulfill: false };
+    }
+
+    /// <summary>
+    /// What <see cref="GetSpendAsync"/> found: no spend (<c>default</c>), a spend (with its transaction when it could
+    /// be read), or a spend that cannot be decided on (<see cref="Undetermined"/>, with the spender's txid when known).
+    /// </summary>
+    private readonly record struct SpendLookup(OutputSpend? Spend, ChainTx? Transaction, bool Undetermined,
+                                               TxId? UnknownSpenderTxId = null)
+    {
+        public TxId? SpenderTxId => Spend?.SpendingTxId ?? UnknownSpenderTxId;
+
+        public static SpendLookup Unknown(TxId? spender) => new(null, null, true, spender);
     }
 
     /// <summary>The state of one round: the rows (with the ones created this round) and the actions.</summary>

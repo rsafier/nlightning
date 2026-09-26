@@ -41,6 +41,7 @@ internal sealed class RevokedBreachKit : IDisposable
     public static readonly byte[] Destination =
         new Key(Enumerable.Repeat((byte)0x55, 32).ToArray()).PubKey.WitHash.ScriptPubKey.ToBytes();
 
+    private readonly RevokedCommitResolverOptions? _options;
     private readonly ServiceProvider _services;
 
     public RealSigningCommitmentPair Pair { get; }
@@ -56,7 +57,7 @@ internal sealed class RevokedBreachKit : IDisposable
 
     public IKeyDerivationService KeyDerivationService { get; }
     public FakeRevokedCommitDataSource DataSource { get; } = new();
-    public RevokedCommitResolver Resolver { get; }
+    public RevokedCommitResolver Resolver { get; private set; }
 
     public List<OutputResolutionModel> Rows { get; } = [];
     public Dictionary<TxId, BroadcastTransactionModel> Broadcasts { get; } = [];
@@ -80,13 +81,21 @@ internal sealed class RevokedBreachKit : IDisposable
         _services = services.BuildServiceProvider();
         KeyDerivationService = _services.GetRequiredService<IKeyDerivationService>();
 
-        var nodeOptions = Options.Create(new NodeOptions());
-        var sweepBuilder = new SweepTransactionBuilder(nodeOptions);
-        Resolver = new RevokedCommitResolver(DataSource, CreateMapper(Victim), new PenaltyTransactionBuilder(sweepBuilder),
-                                             sweepBuilder, Victim.Signer, KeyDerivationService,
-                                             NullLogger<RevokedCommitResolver>.Instance,
-                                             options is null ? null : Options.Create(options));
+        _options = options;
+        Resolver = CreateResolver();
         DataSource.Kit = this;
+    }
+
+    /// <summary>A new resolver instance, as after a restart of the node: nothing it kept in memory survives.</summary>
+    public void RestartResolver() => Resolver = CreateResolver();
+
+    private RevokedCommitResolver CreateResolver()
+    {
+        var sweepBuilder = new SweepTransactionBuilder(Options.Create(new NodeOptions()));
+        return new RevokedCommitResolver(DataSource, CreateMapper(Victim), new PenaltyTransactionBuilder(sweepBuilder),
+                                         sweepBuilder, Victim.Signer, KeyDerivationService,
+                                         NullLogger<RevokedCommitResolver>.Instance,
+                                         _options is null ? null : Options.Create(_options));
     }
 
     /// <summary>
@@ -284,6 +293,12 @@ internal sealed class FakeRevokedCommitDataSource : IRevokedCommitDataSource
     public uint Feerate { get; set; } = RevokedBreachKit.FeeratePerKw;
     public int LoadCount { get; private set; }
 
+    /// <summary>When true, recorded spends come back without their transaction (a fetch that failed).</summary>
+    public bool FetchFails { get; set; }
+
+    /// <summary>When true, stored broadcasts cannot be read back (their fee is unknown).</summary>
+    public bool BroadcastsHidden { get; set; }
+
     public Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, CancellationToken cancellationToken)
     {
         LoadCount++;
@@ -299,14 +314,15 @@ internal sealed class FakeRevokedCommitDataSource : IRevokedCommitDataSource
             return Task.FromResult<RevokedOutputSpend?>(null);
 
         return Task.FromResult<RevokedOutputSpend?>(
-            new RevokedOutputSpend(spend.Transaction, spend.Height, Kit.Broadcasts.ContainsKey(spend.Transaction.TxId)));
+            new RevokedOutputSpend(spend.Transaction.TxId, FetchFails ? null : spend.Transaction, spend.Height,
+                                   Kit.Broadcasts.ContainsKey(spend.Transaction.TxId)));
     }
 
     public Task<bool> IsOurTransactionAsync(TxId transactionId) =>
         Task.FromResult(Kit.Broadcasts.ContainsKey(transactionId));
 
     public Task<BroadcastTransactionModel?> GetBroadcastAsync(TxId transactionId) =>
-        Task.FromResult(Kit.Broadcasts.GetValueOrDefault(transactionId));
+        Task.FromResult(BroadcastsHidden ? null : Kit.Broadcasts.GetValueOrDefault(transactionId));
 
     public Task<byte[]> GetDestinationScriptAsync(Domain.Channels.ValueObjects.ChannelId channelId,
                                                   CancellationToken cancellationToken) =>

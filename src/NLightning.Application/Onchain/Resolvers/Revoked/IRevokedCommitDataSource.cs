@@ -23,7 +23,10 @@ public interface IRevokedCommitDataSource
 
     /// <summary>
     /// The confirmed spend of <paramref name="transactionId"/>:<paramref name="outputIndex"/> in the active chain, as
-    /// recorded by the chain monitor (watched outpoint), with the spending transaction; null when none is recorded.
+    /// recorded by the chain monitor (watched outpoint), with the spending transaction when it can be fetched; null when
+    /// none is recorded. A recorded spend whose transaction cannot be fetched (RPC error, pruned block without
+    /// <c>txindex</c>) still comes back, with its txid and a null transaction, so the caller never mistakes it for no
+    /// spend or guesses its spender.
     /// </summary>
     Task<RevokedOutputSpend?> GetSpendAsync(TxId transactionId, uint outputIndex, CancellationToken cancellationToken);
 
@@ -75,9 +78,11 @@ public sealed record RevokedCommitLoadResult(RevokedCommitContext? Context, stri
 }
 
 /// <summary>
-/// A confirmed spend of an output, with the spending transaction.
+/// A confirmed spend of an output, with the spending transaction when it could be fetched.
 /// </summary>
-/// <param name="SpendingTransaction">The transaction (witnesses included).</param>
+/// <param name="SpendingTransactionId">The spender's txid, as the watched outpoint recorded it.</param>
+/// <param name="SpendingTransaction">The transaction (witnesses included), or null when it could not be fetched.</param>
 /// <param name="Height">The height of its block.</param>
 /// <param name="ByUs">True when it is a transaction we saved for broadcast.</param>
-public sealed record RevokedOutputSpend(ChainTx SpendingTransaction, uint Height, bool ByUs);
+public sealed record RevokedOutputSpend(TxId SpendingTransactionId, ChainTx? SpendingTransaction, uint Height,
+                                        bool ByUs);
