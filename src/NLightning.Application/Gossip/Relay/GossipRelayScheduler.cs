@@ -85,7 +85,8 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
             lock (_lock)
                 entries = _own.Values.ToList();
 
-            // BOLT 7: a channel_announcement never goes out without an update for its channel; 256, then 258, then 257
+            // BOLT 7: a channel_announcement never goes out without an update for its channel, and our
+            // node_announcement never before one of our channel_announcements; 256, then 258, then 257
             var updated = entries.Where(e => e.Rank == ChannelUpdateRank).Select(e => e.ShortChannelId!.Value)
                                  .ToHashSet();
             var ordered = entries.Where(e => e.Rank != ChannelAnnouncementRank
@@ -151,6 +152,12 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
         foreach (var entry in ordered)
         {
             if (sent.Contains(entry.Digest))
+                continue;
+
+            // BOLT 7: a node_announcement for a node with no known channel is ignored, so it waits until one of our
+            // channel_announcements went out on this connection (earlier, or above in this flush: 256 ranks first)
+            if (entry.Rank == NodeAnnouncementRank
+             && !ordered.Any(e => e.Rank == ChannelAnnouncementRank && sent.Contains(e.Digest)))
                 continue;
 
             try
