@@ -15,7 +15,8 @@
 # SOAK_RPC_LOG   1 (default) turns on bitcoind's "rpc" debug category at runtime (bitcoin-cli logging, reverted at the
 #                end; a bitcoind restart also clears it) to count RPC calls from its console log; 0 skips the rate
 # SOAK_BUILD     1 (default) builds the daemon and CLI first (build.sh); 0 stages the existing build
-# The binaries are copied to ~/.nltg/<network>/soak/bin, so rebuilding the checkout does not touch a running soak.
+# The binaries and these scripts are copied to ~/.nltg/<network>/soak/bin and the sampler runs from there, so
+# rebuilding, editing or removing the checkout does not touch a running soak.
 # Output: ~/.nltg/<network>/soak/soak-<UTC date>.log (samples), soak/sampler.out, and the daemon's usual daemon.out.
 # Credentials: bitcoind is asked through ~/mutinynet/cli.sh (cookie auth in the container); nothing prints the RPC
 # settings of appsettings.json.
@@ -64,6 +65,10 @@ stage_build() {
     mkdir -p "$bin_dir"
     cp -R "$daemon_src" "$bin_dir/daemon"
     cp -R "$client_src" "$bin_dir/client"
+    # The sampler runs from a copy of these scripts too: bash reads a script while it runs it, so editing or removing
+    # the checkout must not reach a running soak
+    mkdir -p "$bin_dir/scripts"
+    cp "$script_dir"/*.sh "$bin_dir/scripts/"
     git -C "$repo_root" rev-parse HEAD > "$bin_dir/commit" 2>/dev/null || true
     log "staged the build of $(cat "$bin_dir/commit" 2>/dev/null || echo unknown) in $bin_dir"
 }
@@ -111,8 +116,8 @@ rpc_log_off() {
 }
 
 sample() {
-    local log_file="$1" started="$2" since="$3"
-    local now elapsed pid rss cpu graph nodes spent peers db_kb tip rpc rpc_rate btc_stats
+    local log_file="$1" started="$2" since="$3" out_start="$4"
+    local now elapsed pid rss cpu graph nodes spent peers db_kb tip rpc rpc_rate btc_stats daemon_log wrn err
     now="$(date +%s)"
     elapsed=$(( now - started ))
     pid="$(daemon_pid)"
@@ -128,7 +133,12 @@ sample() {
     spent="$(grep -c '(closed)$' <<< "$channels_out" || true)"
     nodes="$(cli listnodes 2>/dev/null | sed -n 's/^Graph nodes: \([0-9]*\)$/\1/p' | head -n 1)"
     peers="$(cli listpeers 2>/dev/null | grep -c 'Connected:   Yes' || true)"
-    db_kb="$(du -k "$NLTG_DIR/nltg.db" 2>/dev/null | cut -f1)"
+    # The database with its write-ahead log
+    db_kb="$(cat "$NLTG_DIR/nltg.db" "$NLTG_DIR/nltg.db-wal" 2>/dev/null | wc -c | awk '{ printf "%d", $1 / 1024 }')"
+    # Warnings and errors the daemon logged since the soak started
+    daemon_log="$(tail -n "+$out_start" "$NLTG_DIR/daemon.out" 2>/dev/null || true)"
+    wrn="$(grep -c ' WRN\] ' <<< "$daemon_log" || true)"
+    err="$(grep -c -E ' (ERR|FTL)\] ' <<< "$daemon_log" || true)"
     tip="$(bitcoin_cli getblockcount 2>/dev/null || echo -)"
     rpc="-"
     rpc_rate="-"
@@ -140,13 +150,14 @@ sample() {
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) elapsed=${elapsed}s graph_channels=${graph:--} spent=${spent:-0}" \
         "graph_nodes=${nodes:--} peers=${peers:-0} daemon_pid=${pid:--} rss_kb=${rss:--} cpu=${cpu:--}" \
         "db_kb=${db_kb:--} tip=${tip} bitcoind_rpc_calls=${rpc} rpc_per_min=${rpc_rate}" \
-        "bitcoind_cpu=${btc_stats}" >> "$log_file"
+        "bitcoind_cpu=${btc_stats} daemon_wrn=${wrn:-0} daemon_err=${err:-0}" >> "$log_file"
 }
 
 run() {
     echo $$ > "$runner_pid_file"
-    local log_file started last started_daemon=0
+    local log_file started last out_start started_daemon=0
     log_file="$soak_dir/soak-$(date -u +%Y%m%d).log"
+    out_start=$(( $(wc -l < "$NLTG_DIR/daemon.out" 2>/dev/null || echo 0) + 1 ))
     started="$(date +%s)"
     [[ -f "$staged_daemon" ]] || stage_build
     if [[ -z "$(daemon_pid)" ]]; then
@@ -172,7 +183,7 @@ run() {
         ensure_peer
         local now
         now="$(date +%s)"
-        sample "$log_file" "$started" "$last"
+        sample "$log_file" "$started" "$last" "$out_start"
         last="$now"
         if [[ "$SOAK_DURATION" != "0" ]] && (( now - started >= SOAK_DURATION )); then
             echo "# soak end $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$log_file"
@@ -203,7 +214,7 @@ case "${1:-}" in
             exit 1
         fi
         stage_build
-        nohup "$0" run >> "$soak_dir/sampler.out" 2>&1 &
+        nohup "$bin_dir/scripts/soak-gossip.sh" run >> "$soak_dir/sampler.out" 2>&1 &
         echo "soak started (sampler pid $!); samples in $soak_dir/soak-$(date -u +%Y%m%d).log"
         ;;
     run)
