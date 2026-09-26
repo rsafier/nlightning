@@ -73,17 +73,24 @@ public class PaymentsMessagePackTests
         {
             Bolt11 = "lnbcrt500u1pexample",
             Amount = LightningMoney.MilliSatoshis(1_001),
-            TimeoutSeconds = 30
+            TimeoutSeconds = 30,
+            MaxFee = LightningMoney.MilliSatoshis(7_500),
+            MaxParts = 5
         };
 
         // Act
         var result = RoundTrip(request);
         var clientRequest = result.ToClientRequest();
+        var defaults = RoundTrip(new PayInvoiceIpcRequest { Bolt11 = "lnbcrt1" }).ToClientRequest();
 
         // Assert
         Assert.Equal("lnbcrt500u1pexample", clientRequest.Bolt11);
         Assert.Equal(1_001UL, clientRequest.Amount!.MilliSatoshi);
         Assert.Equal(30U, clientRequest.TimeoutSeconds);
+        Assert.Equal(7_500UL, clientRequest.MaxFee!.MilliSatoshi);
+        Assert.Equal(5U, clientRequest.MaxParts);
+        Assert.Null(defaults.MaxFee);
+        Assert.Null(defaults.MaxParts);
     }
 
     [Fact]
@@ -154,10 +161,11 @@ public class PaymentsMessagePackTests
     public void Given_SucceededPayment_When_RoundTripped_Then_EveryFieldIsPreserved()
     {
         // Arrange
-        var response = new PayInvoiceIpcResponse { Payment = CreateSucceededPayment() };
+        var response = new PayInvoiceIpcResponse { Payment = CreateSucceededPayment(), Attempts = 3, Parts = 2 };
 
         // Act
-        var result = RoundTrip(response).Payment;
+        var roundTripped = RoundTrip(response);
+        var result = roundTripped.Payment;
 
         // Assert
         Assert.Equal(s_paymentHash, result.PaymentHash);
@@ -172,6 +180,7 @@ public class PaymentsMessagePackTests
         Assert.Null(result.FailureReason);
         Assert.Equal(s_channelId, result.OutgoingChannelId);
         Assert.Equal(4UL, result.OutgoingHtlcId);
+        Assert.Equal((3, 2), (roundTripped.Attempts, roundTripped.Parts));
         Assert.Equal(s_createdAt, result.CreatedAt);
         Assert.Equal(s_createdAt.AddSeconds(3), result.CompletedAt);
     }

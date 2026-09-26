@@ -4,6 +4,7 @@ namespace NLightning.Application.Payments.Routing;
 
 using Bolt11.Models;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Models;
 using Domain.Money;
 
@@ -18,6 +19,8 @@ using Domain.Money;
 /// <param name="RouteHints">BOLT 11 <c>r</c> fields in invoice order, each an ordered list of hops from a node we may
 /// reach to the payee.</param>
 /// <param name="PaymentMetadata">BOLT 11 <c>m</c>, sent as the final payload's <c>payment_metadata</c>.</param>
+/// <param name="SupportsMpp">The invoice's features set <c>basic_mpp</c> (bit 16 or 17): the payee accepts the payment
+/// in several HTLCs (BOLT 4 "Basic Multi-Part Payments"; the payer MUST NOT split otherwise).</param>
 public sealed record PaymentTarget(
     CompactPubKey PayeeNodeId,
     Hash PaymentHash,
@@ -25,7 +28,8 @@ public sealed record PaymentTarget(
     LightningMoney? Amount,
     ushort MinFinalCltvExpiryDelta,
     IReadOnlyList<IReadOnlyList<RoutingInfo>> RouteHints,
-    ReadOnlyMemory<byte>? PaymentMetadata = null)
+    ReadOnlyMemory<byte>? PaymentMetadata = null,
+    bool SupportsMpp = false)
 {
     /// <summary>
     /// Builds the target from a decoded (and therefore validated) BOLT 11 invoice.
@@ -49,7 +53,8 @@ public sealed record PaymentTarget(
         return new PaymentTarget(new CompactPubKey(payee.ToBytes()), ToWireBytes(paymentHash),
                                  ToWireBytes(paymentSecret), invoice.Amount.IsZero ? null : invoice.Amount,
                                  invoice.MinFinalCltvExpiry, routeHints,
-                                 invoice.Metadata is { Length: > 0 } metadata ? metadata : null);
+                                 invoice.Metadata is { Length: > 0 } metadata ? metadata : null,
+                                 invoice.Features?.IsFeatureSet(Feature.BasicMpp) ?? false);
     }
 
     // Bolt11 keeps 32-byte hashes as uint256 whose ToString() is the wire (and LND) hex

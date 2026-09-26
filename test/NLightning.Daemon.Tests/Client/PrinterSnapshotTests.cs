@@ -146,7 +146,9 @@ public class PrinterSnapshotTests
                 OutgoingHtlcId = 4,
                 CreatedAt = s_createdAt,
                 CompletedAt = s_createdAt.AddSeconds(3)
-            }
+            },
+            Attempts = 3,
+            Parts = 2
         };
 
         // Act
@@ -164,7 +166,8 @@ public class PrinterSnapshotTests
                          $"  Outgoing HTLC:      {Hex(0x07)} #4",
                          "  Created:            2026-09-25 10:00:00Z",
                          "  Completed:          2026-09-25 10:00:03Z",
-                         "  Bolt11:             lnbcrt1pay"), output);
+                         "  Bolt11:             lnbcrt1pay",
+                         "  Attempts: 3 HTLC(s), at most 2 in flight at once"), output);
     }
 
     [Fact]

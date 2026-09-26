@@ -26,12 +26,24 @@ public sealed class PayInvoiceIpcRequest
     /// </summary>
     [Key(2)] public uint? TimeoutSeconds { get; init; }
 
+    /// <summary>
+    /// The most the payment may pay in routing fees, or null for the daemon's default (NL-270).
+    /// </summary>
+    [Key(3)] public LightningMoney? MaxFee { get; init; }
+
+    /// <summary>
+    /// The most HTLCs the payment may have in flight at once (1 never splits), or null for the daemon's default.
+    /// </summary>
+    [Key(4)] public uint? MaxParts { get; init; }
+
     public PayInvoiceClientRequest ToClientRequest()
     {
         return new PayInvoiceClientRequest(Bolt11)
         {
             Amount = Amount,
-            TimeoutSeconds = TimeoutSeconds
+            TimeoutSeconds = TimeoutSeconds,
+            MaxFee = MaxFee,
+            MaxParts = MaxParts
         };
     }
 }

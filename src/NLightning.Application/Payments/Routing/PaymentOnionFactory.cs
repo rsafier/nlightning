@@ -16,8 +16,9 @@ using Domain.Serialization.Interfaces;
 /// <remarks>
 /// <para>Hop payloads (BOLT 4 writer, outside a blinded route): every hop gets <c>amt_to_forward</c> and
 /// <c>outgoing_cltv_value</c>; intermediate hops also get <c>short_channel_id</c>; the payee gets
-/// <c>payment_data</c> (<c>payment_secret</c>, <c>total_msat</c> = the amount, since we never split payments) and,
-/// when the invoice has one, <c>payment_metadata</c>.</para>
+/// <c>payment_data</c> (<c>payment_secret</c>, <c>total_msat</c> = <see cref="PaymentRoute.TotalAmount"/>: the amount,
+/// or the whole payment's amount for one part of a multi-part payment) and, when the invoice has one,
+/// <c>payment_metadata</c>.</para>
 /// <para>The session key is 32 bytes from the OS CSPRNG, drawn again until it is a valid secp256k1 scalar, used for
 /// this onion only and zeroed afterwards.</para>
 /// </remarks>
@@ -94,7 +95,7 @@ public sealed class PaymentOnionFactory
         }
         else
         {
-            tlvs.Add(new PaymentDataTlv(route.PaymentSecret, hop.AmountToForward));
+            tlvs.Add(new PaymentDataTlv(route.PaymentSecret, route.TotalAmount));
             if (route.PaymentMetadata is { Length: > 0 } metadata)
                 tlvs.Add(new PaymentMetadataTlv(metadata.Span));
         }

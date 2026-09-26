@@ -20,6 +20,16 @@ public sealed class PayInvoiceClientRequest
     /// </summary>
     public uint? TimeoutSeconds { get; init; }
 
+    /// <summary>
+    /// The most the payment may pay in routing fees, or null for the node's default (max(0.5 %, 5000 msat), NL-270).
+    /// </summary>
+    public LightningMoney? MaxFee { get; init; }
+
+    /// <summary>
+    /// The most HTLCs the payment may have in flight at once (1 never splits), or null for the node's default (16).
+    /// </summary>
+    public uint? MaxParts { get; init; }
+
     public PayInvoiceClientRequest(string bolt11)
     {
         Bolt11 = bolt11;
