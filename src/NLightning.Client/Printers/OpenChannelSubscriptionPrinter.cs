@@ -1,3 +1,4 @@
+using System.Globalization;
 using NLightning.Domain.Channels.Enums;
 
 namespace NLightning.Client.Printers;
@@ -21,7 +22,8 @@ public sealed class OpenChannelSubscriptionPrinter : IPrinter<OpenChannelSubscri
                 _output.WriteLine("Peer sent their signature. Sending ours.");
                 // The txid in the display (bitcoind, block explorer) byte order, not TxId.ToString()'s internal one.
                 _output.WriteLine("Funding transaction published. TxId: {0}, Index: {1}",
-                                  item.TxId is { } txId ? DisplayOrder.ToHex(txId) : "-", item.Index);
+                                  item.TxId is { } txId ? DisplayOrder.ToHex(txId) : "-",
+                                  item.Index?.ToString(CultureInfo.InvariantCulture) ?? "-");
                 _output.WriteLine("Waiting for confirmations.");
                 _output.WriteLine("You can either wait for the full confirmation or press CTRL+C to quit.");
                 break;

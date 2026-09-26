@@ -147,7 +147,7 @@ public class TxIdDisplayTests
         var output = Print(w => new OpenChannelSubscriptionPrinter(w).Print(response));
 
         // Assert
-        Assert.Contains("Funding transaction published. TxId: -, Index: \n", output);
+        Assert.Contains("Funding transaction published. TxId: -, Index: -\n", output);
     }
 
     [Fact]
