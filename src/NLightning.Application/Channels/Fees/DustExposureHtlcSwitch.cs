@@ -105,8 +105,8 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
             return false;
         }
 
-        var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, htlc.PathKey,
-                                                        checkReplay: false);
+        var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, replayOwner: null,
+                                                        htlc.PathKey);
         if (result.SharedSecretOrNull is not { } sharedSecret)
             return false;
 

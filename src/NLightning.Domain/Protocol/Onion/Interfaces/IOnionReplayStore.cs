@@ -24,7 +24,11 @@ using Channels.ValueObjects;
 /// Expiry: an entry is kept while the chain has not passed <c>expiryHeight</c>, the incoming HTLC's
 /// <c>cltv_expiry</c> (as LND's decaying log). Once the chain is past it, a replay of the onion can no longer be
 /// forwarded (its <c>outgoing_cltv_value</c> is below the incoming expiry, so it is in the past) and a final-hop replay
-/// meets an invoice already paid or failed. Call <see cref="PruneAsync"/> on every new block.
+/// meets an invoice already paid or failed. Implementations decide when to forget: the persistent store prunes lazily
+/// inside <see cref="TryAddAsync"/> (at most once per new chain height, from the chain monitor's last processed
+/// height), the in-memory one evicts the soonest-expiring entry when full. <see cref="PruneAsync"/> is an optional
+/// explicit prune; nothing in the node has to call it. A node that receives no HTLCs does not prune, which is harmless:
+/// the set only holds entries of HTLCs it already received.
 /// </para>
 /// <para>
 /// Persistence (migration <c>AddOnionReplaySet</c>): one row per HMAC, <c>OnionReplayEntries(Hmac primary key,

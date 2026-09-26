@@ -446,6 +446,10 @@ internal sealed class SwitchNode
     /// throwing from it fails the offer before its save.</summary>
     public Action<HtlcOrigin>? BeforeSetHtlcOrigin { get; set; }
 
+    /// <summary>Called before every <c>IChannelStateDbRepository.SetOnionSharedSecretAsync</c> (the switch storing an
+    /// incoming HTLC's shared secret); throwing from it fails that save, as a crash right before it would.</summary>
+    public Action<ChannelId, HtlcKey>? BeforeSetOnionSharedSecret { get; set; }
+
     public bool IsRunning => _provider is not null;
     public IServiceProvider Services => _provider ?? throw new InvalidOperationException($"{Name} is stopped");
     public ChannelManager ChannelManager { get; private set; } = null!;
@@ -731,8 +735,11 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
         public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params) =>
             inner.LoadAsync(channelId, @params);
 
-        public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret) =>
-            inner.SetOnionSharedSecretAsync(channelId, htlc, sharedSecret);
+        public Task SetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc, Secret sharedSecret)
+        {
+            node.BeforeSetOnionSharedSecret?.Invoke(channelId, htlc);
+            return inner.SetOnionSharedSecretAsync(channelId, htlc, sharedSecret);
+        }
 
         public Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc) =>
             inner.GetOnionSharedSecretAsync(channelId, htlc);

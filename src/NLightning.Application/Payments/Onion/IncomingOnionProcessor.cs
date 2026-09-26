@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Payments.Onion;
 
-using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Protocol.Onion.Enums;
@@ -48,9 +47,6 @@ public sealed class IncomingOnionProcessor
     private readonly IOnionReplayStore _replayStore;
     private readonly ILogger<IncomingOnionProcessor> _logger;
 
-    // Counts down the HTLC ids of HMACs recorded without an incoming HTLC
-    private long _unownedRecords;
-
     public IncomingOnionProcessor(ISphinxService sphinxService, IHopPayloadSerializer hopPayloadSerializer,
                                   IOnionReplayStore replayStore, ILogger<IncomingOnionProcessor> logger)
     {
@@ -65,20 +61,20 @@ public sealed class IncomingOnionProcessor
     /// </summary>
     /// <param name="onionRoutingPacket">The <c>update_add_htlc</c> <c>onion_routing_packet</c> (1366 bytes).</param>
     /// <param name="paymentHash">The HTLC's <c>payment_hash</c> (the Sphinx associated data).</param>
+    /// <param name="replayOwner">The incoming HTLC carrying the onion, which turns on the replay check: it owns the
+    /// recorded HMAC (so processing the same HTLC again is not a replay) and its <c>cltv_expiry</c> bounds how long the
+    /// HMAC is kept. Pass null only when re-processing an HTLC this node already processed and acted on (for example
+    /// to recover its shared secret): then nothing is recorded or checked. There is deliberately no way to record an
+    /// HMAC without an owning HTLC, since such a row could never be pruned and would fail its own HTLC after a
+    /// restart.</param>
     /// <param name="updateAddPathKey">The <c>update_add_htlc</c> <c>path_key</c> TLV, if any; never the payload's
     /// <c>current_path_key</c>.</param>
-    /// <param name="checkReplay">False only when re-processing an HTLC this node already processed and acted on (for
-    /// example to recover its shared secret), so nothing is recorded.</param>
-    /// <param name="replayOwner">The incoming HTLC carrying the onion: it owns the recorded HMAC (so processing the
-    /// same HTLC again is not a replay) and its <c>cltv_expiry</c> bounds how long the HMAC is kept. Without it
-    /// (tests, tools) the HMAC is recorded for no HTLC, never expires and any second use is a replay.</param>
     /// <returns>The classification; never throws for a bad onion.</returns>
     /// <exception cref="ArgumentException">If <paramref name="onionRoutingPacket"/> is not a payment onion length
     /// (the <c>update_add_htlc</c> serializer already guarantees it).</exception>
     public async Task<IncomingOnionResult> ProcessAsync(ReadOnlyMemory<byte> onionRoutingPacket, Hash paymentHash,
-                                                        CompactPubKey? updateAddPathKey = null,
-                                                        bool checkReplay = true,
-                                                        OnionReplayOwner? replayOwner = null)
+                                                        OnionReplayOwner? replayOwner,
+                                                        CompactPubKey? updateAddPathKey = null)
     {
         var packet = new OnionPacket(onionRoutingPacket.Span);
         var hasPathKey = updateAddPathKey is not null;
@@ -95,7 +91,8 @@ public sealed class IncomingOnionProcessor
         }
 
         // 2. Replay protection, only for authenticated packets
-        if (checkReplay && !await TryRecordAsync(packet.Hmac, replayOwner))
+        if (replayOwner is { } owner
+         && !await _replayStore.TryAddAsync(packet.Hmac, owner.ChannelId, owner.HtlcId, owner.CltvExpiry))
         {
             if (_logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Replayed onion for payment hash {PaymentHash}", paymentHash);
@@ -132,17 +129,6 @@ public sealed class IncomingOnionProcessor
             return new IncomingOnionFinal(peeled.SharedSecret, payload);
 
         return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value);
-    }
-
-    private Task<bool> TryRecordAsync(ReadOnlyMemory<byte> hmac, OnionReplayOwner? replayOwner)
-    {
-        // Without an owner: a fresh id on the all-zero channel (no real channel id) and no expiry, so no later call
-        // owns it (every repeat is a replay) and it is never pruned
-        var owner = replayOwner
-                 ?? new OnionReplayOwner(ChannelId.Zero,
-                                         ulong.MaxValue - (ulong)Interlocked.Increment(ref _unownedRecords),
-                                         uint.MaxValue);
-        return _replayStore.TryAddAsync(hmac, owner.ChannelId, owner.HtlcId, owner.CltvExpiry);
     }
 
     private IncomingOnionResult FromPeelFailure(OnionException e, ReadOnlyMemory<byte> onion, bool hasPathKey)
