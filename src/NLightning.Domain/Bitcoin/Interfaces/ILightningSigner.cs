@@ -88,7 +88,8 @@ public interface ILightningSigner
     /// Guard (NL-189, BOLT2 plan invariant I3): the secret of commitment <c>n</c> is released only when
     /// <c>n &lt; LocalCommitmentNumber</c>, i.e. when commitment <c>n</c> has been superseded by a newer local commitment
     /// that was persisted with the peer's signatures and reported through <see cref="AdvanceLocalCommitment"/>.
-    /// Revealing the secret of our current commitment would let the peer take every output of it.
+    /// Revealing the secret of our current commitment would let the peer take every output of it. Invariant S1: it is
+    /// also refused for <c>n &gt;=</c> a commitment signed for broadcast (<see cref="MarkBroadcastSigned"/>).
     /// </remarks>
     /// <param name="channelId">The registered channel.</param>
     /// <param name="commitmentNumber">The commitment number (not a BOLT 3 index).</param>
@@ -154,6 +155,8 @@ public interface ILightningSigner
     /// Guards (invariants I4 and I12): refuses a commitment older than the signer's current local commitment number
     /// (it is revoked: broadcasting it lets the peer take every output), and refuses everything after
     /// <see cref="MarkDataLoss"/> (the peer holds a newer state; broadcasting ours would be a revoked broadcast).
+    /// Invariant S1: on success it records the number with <see cref="MarkBroadcastSigned"/> before returning, and once
+    /// a number is recorded any other number is refused.
     /// </remarks>
     /// <param name="channelId">The registered channel.</param>
     /// <param name="commitmentNumber">The number of the local commitment <paramref name="unsignedCommitment"/> is.</param>
@@ -173,6 +176,29 @@ public interface ILightningSigner
     /// <see cref="ChannelSigningInfo.DataLossDetected"/> sets it too.
     /// </summary>
     void MarkDataLoss(ChannelId channelId);
+
+    /// <summary>
+    /// Invariant S1 (BOLT 5 plan §3.5): record that our local commitment <paramref name="commitmentNumber"/> of the
+    /// channel was signed for broadcast. <see cref="SignLocalCommitmentForBroadcast"/> records it itself before it
+    /// returns; call this at channel registration (before the first connection) for every channel whose persisted
+    /// state holds a broadcast of that commitment, so the guard survives restarts.
+    /// </summary>
+    /// <remarks>
+    /// From then on, for the life of the channel, the signer refuses to release the per-commitment secret of that
+    /// commitment or any later one (<see cref="RevealPerCommitmentSecret"/>, so no <c>revoke_and_ack</c> can revoke the
+    /// commitment that may be on chain), refuses <see cref="AdvanceLocalCommitment"/> past it, refuses any other number
+    /// in <see cref="SignLocalCommitmentForBroadcast"/> (the same number may be signed again), and refuses new
+    /// commitment and HTLC signatures (<see cref="SignChannelTransaction"/>, <see cref="SignRemoteHtlcTransactions"/>).
+    /// Sweep and HTLC-transaction signatures for the on-chain resolution stay allowed. Sticky: marking a lower number
+    /// keeps the lower one, and nothing clears it.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">The number does not fit in 48 bits.</exception>
+    void MarkBroadcastSigned(ChannelId channelId, ulong commitmentNumber);
+
+    /// <summary>
+    /// The local commitment number the channel was signed for broadcast at (<see cref="MarkBroadcastSigned"/>), if any.
+    /// </summary>
+    bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber);
 
     /// <summary>
     /// Sign a general transaction using the wallet signing context

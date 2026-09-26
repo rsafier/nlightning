@@ -43,6 +43,10 @@ public class LocalLightningSigner : ILightningSigner
 
     // Channels whose channel_reestablish proved data loss: nothing is signed for them any more (I12, N9-T4)
     private readonly ConcurrentDictionary<ChannelId, bool> _dataLossChannels = new();
+
+    // Invariant S1 (BOLT 5 plan §3.5): the local commitment number signed for broadcast per channel. Once set, the
+    // secret of that commitment is never released and nothing later is signed for the channel.
+    private readonly ConcurrentDictionary<ChannelId, ulong> _broadcastSignedNumbers = new();
     private readonly ILogger<LocalLightningSigner> _logger;
     private readonly Network _network;
 
@@ -237,6 +241,27 @@ public class LocalLightningSigner : ILightningSigner
     }
 
     /// <inheritdoc />
+    public void MarkBroadcastSigned(ChannelId channelId, ulong commitmentNumber)
+    {
+        if (commitmentNumber > CommitmentNumber.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(commitmentNumber), commitmentNumber,
+                                                  "Commitment numbers are 48-bit values");
+
+        // Keep the lowest number: every commitment from it on stays unrevoked (sticky, never cleared)
+        _broadcastSignedNumbers.AddOrUpdate(channelId, commitmentNumber,
+                                            (_, current) => Math.Min(current, commitmentNumber));
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation(
+                "Local commitment {CommitmentNumber} of channel {ChannelId} is signed for broadcast: its secret is "
+              + "never released and no later commitment is signed", commitmentNumber, channelId);
+    }
+
+    /// <inheritdoc />
+    public bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber) =>
+        _broadcastSignedNumbers.TryGetValue(channelId, out commitmentNumber);
+
+    /// <inheritdoc />
     public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber,
                                                              SignedTransaction unsignedCommitment,
                                                              CompactSignature remoteSignature)
@@ -253,6 +278,12 @@ public class LocalLightningSigner : ILightningSigner
                 $"Refusing to sign revoked local commitment {commitmentNumber} for broadcast (current local "
               + $"commitment is {localCommitmentNumber})", channelId, "Internal error");
 
+        // S1: once a commitment is signed for broadcast, only that commitment may be signed again (a retry)
+        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber != broadcastNumber)
+            throw new SignerException(
+                $"Refusing to sign local commitment {commitmentNumber} for broadcast: commitment {broadcastNumber} is "
+              + "already signed for broadcast", channelId, "Internal error");
+
         Transaction tx;
         try
         {
@@ -268,7 +299,7 @@ public class LocalLightningSigner : ILightningSigner
 
         // The peer's signature must be valid for exactly this transaction, or the broadcast would be rejected
         ValidateSignature(channelId, remoteSignature, unsignedCommitment);
-        var localCompact = SignChannelTransaction(channelId, unsignedCommitment);
+        var localCompact = SignFundingInput(channelId, signingInfo, unsignedCommitment);
 
         var fundingOutput = _fundingOutputBuilder.Build(new FundingOutputInfo(signingInfo.FundingSatoshis,
                                                                               signingInfo.LocalFundingPubKey,
@@ -283,6 +314,10 @@ public class LocalLightningSigner : ILightningSigner
 
         var localSig = new TransactionSignature(localSignature, SigHash.All).ToBytes();
         var remoteSig = new TransactionSignature(remoteEcdsa, SigHash.All).ToBytes();
+
+        // S1: record the broadcast signature before it leaves the signer, so the secret of this commitment can never
+        // be released afterwards (a racing revoke_and_ack would hand the peer the key to our on-chain to_local)
+        MarkBroadcastSigned(channelId, commitmentNumber);
 
         // BOLT 3 funding witness: 0 <pubkey1_signature> <pubkey2_signature> <funding script>, in the script's key order
         var localFirst = IsFirstFundingKey(fundingScript, signingInfo.LocalFundingPubKey);
@@ -311,6 +346,12 @@ public class LocalLightningSigner : ILightningSigner
                 $"Refusing to reveal the per-commitment secret of unrevoked commitment {commitmentNumber} "
               + $"(current local commitment is {localCommitmentNumber})", channelId, "Internal error");
 
+        // S1: the secret of a commitment signed for broadcast (and of any later one) is never released
+        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber >= broadcastNumber)
+            throw new SignerException(
+                $"Refusing to reveal the per-commitment secret of commitment {commitmentNumber}: local commitment "
+              + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
+
         return DerivePerCommitmentSecret(signingInfo.ChannelKeyIndex, commitmentNumber);
     }
 
@@ -322,6 +363,13 @@ public class LocalLightningSigner : ILightningSigner
                                                   "Commitment numbers are 48-bit values");
 
         _ = GetRegisteredSigningInfo(channelId);
+
+        // S1: a newer local commitment would make the broadcast one revocable
+        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber)
+         && newLocalCommitmentNumber > broadcastNumber)
+            throw new SignerException(
+                $"Refusing to advance the local commitment to {newLocalCommitmentNumber}: local commitment "
+              + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
 
         while (true)
         {
@@ -344,6 +392,7 @@ public class LocalLightningSigner : ILightningSigner
         ArgumentNullException.ThrowIfNull(htlcTransactions);
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign HTLC transactions of a new commitment");
+        ThrowIfBroadcastSigned(channelId, "sign HTLC transactions of a new commitment");
 
         if (htlcTransactions.Count == 0)
             return [];
@@ -622,44 +671,9 @@ public class LocalLightningSigner : ILightningSigner
             throw new InvalidOperationException($"Channel {channelId} not registered with signer");
 
         ThrowIfDataLoss(channelId, "sign a commitment");
+        ThrowIfBroadcastSigned(channelId, "sign a channel transaction");
 
-        Transaction nBitcoinTx;
-        try
-        {
-            nBitcoinTx = Transaction.Load(unsignedTransaction.RawTxBytes, _network);
-        }
-        catch (Exception ex)
-        {
-            throw new ArgumentException(
-                $"Failed to load transaction from RawTxBytes. TxId hint: {unsignedTransaction.TxId}", ex);
-        }
-
-        try
-        {
-            // Build the funding output using the channel's signing info
-            var fundingOutputInfo = new FundingOutputInfo(signingInfo.FundingSatoshis, signingInfo.LocalFundingPubKey,
-                                                          signingInfo.RemoteFundingPubKey, signingInfo.FundingTxId,
-                                                          signingInfo.FundingOutputIndex);
-
-            var fundingOutput = _fundingOutputBuilder.Build(fundingOutputInfo);
-            var spentOutput = fundingOutput.ToTxOut();
-
-            // Get the signature hash for SegWit
-            var signatureHash = nBitcoinTx.GetSignatureHash(fundingOutput.RedeemScript, 0, SigHash.All, spentOutput,
-                                                            HashVersion.WitnessV0);
-
-            // Get the funding private key
-            using var fundingPrivateKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
-
-            var signature = fundingPrivateKey.Sign(signatureHash, new SigningOptions(SigHash.All, false));
-
-            return signature.Signature.MakeCanonical().ToCompact();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Exception during signature verification for TxId {nBitcoinTx.GetHash()}", ex);
-        }
+        return SignFundingInput(channelId, signingInfo, unsignedTransaction);
     }
 
     /// <inheritdoc />
@@ -781,6 +795,60 @@ public class LocalLightningSigner : ILightningSigner
         if (_dataLossChannels.ContainsKey(channelId))
             throw new SignerException($"Refusing to {what}: data loss was detected on the channel", channelId,
                                       "Internal error");
+    }
+
+    private void ThrowIfBroadcastSigned(ChannelId channelId, string what)
+    {
+        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber))
+            throw new SignerException(
+                $"Refusing to {what}: local commitment {broadcastNumber} is signed for broadcast", channelId,
+                "Internal error");
+    }
+
+    /// <summary>
+    /// Our funding-key signature (<c>SIGHASH_ALL</c>, input 0) of a transaction spending the funding output, without
+    /// the guards of the public entry points.
+    /// </summary>
+    private CompactSignature SignFundingInput(ChannelId channelId, ChannelSigningInfo signingInfo,
+                                              SignedTransaction unsignedTransaction)
+    {
+        Transaction nBitcoinTx;
+        try
+        {
+            nBitcoinTx = Transaction.Load(unsignedTransaction.RawTxBytes, _network);
+        }
+        catch (Exception ex)
+        {
+            throw new ArgumentException(
+                $"Failed to load transaction from RawTxBytes. TxId hint: {unsignedTransaction.TxId}", ex);
+        }
+
+        try
+        {
+            // Build the funding output using the channel's signing info
+            var fundingOutputInfo = new FundingOutputInfo(signingInfo.FundingSatoshis, signingInfo.LocalFundingPubKey,
+                                                          signingInfo.RemoteFundingPubKey, signingInfo.FundingTxId,
+                                                          signingInfo.FundingOutputIndex);
+
+            var fundingOutput = _fundingOutputBuilder.Build(fundingOutputInfo);
+            var spentOutput = fundingOutput.ToTxOut();
+
+            // Get the signature hash for SegWit
+            var signatureHash = nBitcoinTx.GetSignatureHash(fundingOutput.RedeemScript, 0, SigHash.All, spentOutput,
+                                                            HashVersion.WitnessV0);
+
+            // Get the funding private key
+            using var fundingPrivateKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+
+            var signature = fundingPrivateKey.Sign(signatureHash, new SigningOptions(SigHash.All, false));
+
+            return signature.Signature.MakeCanonical().ToCompact();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Exception during signature verification for TxId {nBitcoinTx.GetHash()} of channel {channelId}", ex);
+        }
     }
 
     /// <summary>
