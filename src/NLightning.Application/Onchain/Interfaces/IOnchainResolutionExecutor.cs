@@ -26,6 +26,15 @@ public interface IOnchainResolutionExecutor
     /// </summary>
     Task HandleOutputSpentAsync(OutpointSpentEventArgs args, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Handles the spends of just-tracked resolution-output watches that are already mined, from
+    /// <paramref name="fromHeight"/> (their parent's height) up to bitcoind's tip: a block the chain monitor processed
+    /// before a watch was tracked never raises its spend. Takes the channel's lock itself; the caller must hold none.
+    /// Idempotent; does nothing without an <c>IBitcoinChainService</c>.
+    /// </summary>
+    Task CatchUpSpendsAsync(ChannelId channelId, IReadOnlyList<Domain.Onchain.Models.WatchedOutpointModel> watches,
+                            uint fromHeight, CancellationToken cancellationToken = default);
+
     /// <summary>Waits until no scheduled round is running or pending (tests).</summary>
     Task WhenIdleAsync();
 }

@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Onchain;
 
@@ -19,6 +20,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// BOLT 5 plan §3.2 steps 4-5, O6-T2: <see cref="OnchainResolutionExecutor"/> applies a resolver's actions in one save
@@ -38,6 +40,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     private readonly Mock<IOutpointWatcher> _outpointWatcher = new();
     private readonly Mock<IHtlcSwitch> _htlcSwitch = new();
     private readonly FakeResolver _resolver = new();
+    private readonly FakeBitcoinChain _chain = new(SpentAt - 1);
     private readonly List<string> _calls = [];
     private readonly ServiceProvider _provider;
     private readonly ChannelModel _channel;
@@ -69,12 +72,16 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
                    .Returns(Task.CompletedTask);
 
         _store.OnSave = () => _calls.Add("save");
+
+        // The database's copy of the channel: another instance than the shared in-memory model
+        _store.LoadChannel = id => id == _pair.Bob.Channel.ChannelId ? _pair.Bob.Channel : null;
         var unitOfWork = _store.CreateUnitOfWork();
 
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IOutputResolver>(_ => _resolver);
         services.AddSingleton(_htlcSwitch.Object);
+        services.AddSingleton<IBitcoinChainService>(_chain);
         _provider = services.BuildServiceProvider();
 
         _store.Closes[_channel.ChannelId] = new ChannelCloseModel(_channel.ChannelId,
@@ -249,6 +256,94 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_SaveFailsAtTheIrrevocableDepth_When_NextRound_Then_ChannelStillResolvingThenClosed()
+    {
+        // Arrange (NL-282 class): everything is irrevocable at SpentAt + 100, and that round's save fails
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal, OutputResolutionState.Resolved, SpentAt + 1);
+        var executor = CreateExecutor();
+        _store.FailNextSave = new InvalidOperationException("database down");
+
+        // Act
+        await executor.RunRoundAsync(SpentAt + 100, TestContext.Current.CancellationToken);
+
+        // Assert: the shared model is still resolving and still loaded, so the next round sees it
+        Assert.Equal(ChannelState.OnchainResolving, _channel.State);
+        _memory.Verify(m => m.TryRemoveChannel(It.IsAny<ChannelId>()), Times.Never);
+        Assert.Empty(_store.Saves);
+
+        // Act: the next block
+        await executor.RunRoundAsync(SpentAt + 101, TestContext.Current.CancellationToken);
+
+        // Assert: closed now, in one save
+        Assert.Equal(ChannelState.Closed, _channel.State);
+        Assert.Equal(["output 0 Irrevocable", "channel Closed", "revocation log deleted"], Assert.Single(_store.Saves));
+        _memory.Verify(m => m.TryRemoveChannel(_channel.ChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_CommitmentOutputsSpentInItsBlockAndTheNext_When_WatchesCaughtUp_Then_BothResolved()
+    {
+        // Arrange (BOLT 5 "monitor every output not irrevocably resolved"): the commitment and a spend of its vout 0
+        // in one block, a spend of its vout 1 in the next; both blocks were processed before the watches existed
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF0, 32).ToArray()), 0, outputs: 2);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend0 = CreateTransaction(commitmentTxId, 0);
+        var spend1 = CreateTransaction(commitmentTxId, 1);
+        _chain.Mine(commitment, spend0);
+        _chain.Mine(spend1);
+        _chain.Mine();
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, txId: commitmentTxId);
+        AddOutput(1, OutputDescriptorKind.LocalReceivedHtlc, txId: commitmentTxId);
+        var watches = new[]
+        {
+            new WatchedOutpointModel(commitmentTxId, 0, _channel.ChannelId, WatchedOutpointPurpose.ResolutionOutput),
+            new WatchedOutpointModel(commitmentTxId, 1, _channel.ChannelId, WatchedOutpointPurpose.ResolutionOutput)
+        };
+
+        // Act
+        await CreateExecutor().CatchUpSpendsAsync(_channel.ChannelId, watches, SpentAt,
+                                                  TestContext.Current.CancellationToken);
+
+        // Assert: each resolved at its own block, the resolver saw both spenders, the watches record the spends
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 0)].State);
+        Assert.Equal(SpentAt, _store.Outputs[(commitmentTxId, 0)].ResolvedHeight);
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 1)].State);
+        Assert.Equal(SpentAt + 1, _store.Outputs[(commitmentTxId, 1)].ResolvedHeight);
+        Assert.Equal([spend0.GetHash(), spend1.GetHash()],
+                     _resolver.Spends.Select(x => new uint256(x.Spender.TxId)).ToArray());
+        Assert.Equal((new TxId(spend0.GetHash().ToBytes()), SpentAt), _store.WatchSpends[(commitmentTxId, 0)]);
+        Assert.Equal((new TxId(spend1.GetHash().ToBytes()), SpentAt + 1), _store.WatchSpends[(commitmentTxId, 1)]);
+        Assert.All(_store.Saves, save => Assert.Contains(save, w => w.EndsWith(" spent", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task Given_ResolverWatchesAnOutputAlreadySpent_When_Round_Then_TheSpendIsFoundAndResolved()
+    {
+        // Arrange: the resolver starts watching commitment output 2, which was spent two blocks before this round
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF1, 32).ToArray()), 0, outputs: 3);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend2 = CreateTransaction(commitmentTxId, 2);
+        _chain.Mine(commitment);
+        _chain.Mine();
+        _chain.Mine(spend2);
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(2, OutputDescriptorKind.PaymentToRemote, txId: commitmentTxId);
+        var watch = new WatchedOutpointModel(commitmentTxId, 2, _channel.ChannelId,
+                                             WatchedOutpointPurpose.ResolutionOutput);
+        _resolver.OnResolve = (_, _, _) => [new WatchOutpointAction(watch)];
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 3, TestContext.Current.CancellationToken);
+
+        // Assert: tracked, then the mined spend handled like the monitor's event
+        _outpointWatcher.Verify(w => w.TrackWatchedOutpoint(watch), Times.Once);
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 2)].State);
+        Assert.Equal(SpentAt + 2, _store.Outputs[(commitmentTxId, 2)].ResolvedHeight);
+        Assert.Equal(new uint256(spend2.GetHash()), new uint256(Assert.Single(_resolver.Spends).Spender.TxId));
+    }
+
+    [Fact]
     public async Task Given_ScheduledRounds_When_Idle_Then_TheLatestHeightRan()
     {
         // Arrange
@@ -269,12 +364,29 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         _pair.Dispose();
     }
 
-    private void AddOutput(uint vout, OutputDescriptorKind kind,
-                           OutputResolutionState state = OutputResolutionState.Pending, uint? resolvedHeight = null)
-    {
-        _store.Outputs[(s_commitmentTxId, vout)] = new OutputResolutionModel
+    private void UseClose(TxId commitmentTxId, uint height) =>
+        _store.Closes[_channel.ChannelId] = _store.Closes[_channel.ChannelId] with
         {
-            TransactionId = s_commitmentTxId,
+            CommitmentTransactionId = commitmentTxId,
+            SpentAtHeight = height
+        };
+
+    private static Transaction CreateTransaction(TxId spent, uint vout, int outputs = 1)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(new uint256(spent), vout));
+        for (var i = 0; i < outputs; i++)
+            transaction.Outputs.Add(Money.Satoshis(10_000 + i), new Key().PubKey.WitHash.ScriptPubKey);
+        return transaction;
+    }
+
+    private void AddOutput(uint vout, OutputDescriptorKind kind,
+                           OutputResolutionState state = OutputResolutionState.Pending, uint? resolvedHeight = null,
+                           TxId? txId = null)
+    {
+        _store.Outputs[(txId ?? s_commitmentTxId, vout)] = new OutputResolutionModel
+        {
+            TransactionId = txId ?? s_commitmentTxId,
             OutputIndex = vout,
             ChannelId = _channel.ChannelId,
             Descriptor = kind,

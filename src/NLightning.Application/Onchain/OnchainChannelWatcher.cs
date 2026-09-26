@@ -111,6 +111,22 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             if (existing is not null && existing.CommitmentTransactionId == spend.TxId)
             {
                 var outputs = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
+                var blockHash = args.BlockHash ?? existing.BlockHash;
+                if (existing.SpentAtHeight != args.BlockHeight || !existing.BlockHash.Equals(blockHash))
+                {
+                    // The same transaction confirmed again in another block (a reorg): the irrevocable depth counts
+                    // from the new block. The outputs and watches stay as they are (same transaction).
+                    _logger.LogWarning("Funding spend {TxId} of channel {ChannelId} is now at height {Height} (was "
+                                     + "{Previous}, reorg): recording the new block", Display(spend.TxId), channelId,
+                                       args.BlockHeight, existing.SpentAtHeight);
+                    await unitOfWork.OnchainResolutionDbRepository.UpsertCloseAsync(existing with
+                    {
+                        SpentAtHeight = args.BlockHeight,
+                        BlockHash = blockHash
+                    });
+                    await unitOfWork.SaveChangesAsync();
+                }
+
                 return new FundingSpendOutcome(existing.Kind, outputs.Count, Replayed: true);
             }
 
@@ -132,8 +148,9 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             }
 
             var closeKind = ToCloseKind(classification.Kind);
-            var (descriptors, point) = await MapOutputsAsync(scope, channel, classification, spend);
-            recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors, point);
+            var (descriptors, point, unmapped) = await MapOutputsAsync(scope, channel, classification, spend);
+            recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors, point,
+                                          unmapped);
         }
 
         foreach (var watch in recorded.NewWatches)
@@ -148,6 +165,10 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         try
         {
+            // The chain monitor went on processing blocks while this spend was classified: an output of the commitment
+            // spent in its own block or in a block processed before the watches were tracked is found here (BOLT 5:
+            // monitor every output that is not irrevocably resolved)
+            await _executor.CatchUpSpendsAsync(channelId, recorded.NewWatches, args.BlockHeight, cancellationToken);
             await _executor.ResolveChannelAsync(channelId, args.BlockHeight, cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -248,13 +269,15 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// The outputs of the commitment on chain (§3.3). A peer commitment that can't be mapped still yields our
     /// <c>to_remote</c> (static_remotekey: found by script whatever the number, B5-RMT-03).
     /// </summary>
-    private async Task<(IReadOnlyList<CommitmentOutputDescriptor> Outputs, CompactPubKey? Point)> MapOutputsAsync(
-        IServiceScope scope, ChannelModel channel, FundingSpendClassification classification, ChainTx spend)
+    private async Task<(IReadOnlyList<CommitmentOutputDescriptor> Outputs, CompactPubKey? Point, string? Unmapped)>
+        MapOutputsAsync(IServiceScope scope, ChannelModel channel, FundingSpendClassification classification,
+                        ChainTx spend)
     {
         var number = classification.CommitmentNumber ?? 0;
         try
         {
             CommitmentOutputMap? map = null;
+            var predatesLog = false;
             switch (classification.Kind)
             {
                 case FundingSpendKind.LocalCommit when LocalSource(channel) is var (spec, _, _):
@@ -269,7 +292,7 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                       CommitmentCase.Remote, number, next.PerCommitmentPoint, spend);
                     break;
                 case FundingSpendKind.Revoked:
-                    map = await MapRevokedAsync(scope, channel, number, spend);
+                    (map, predatesLog) = await MapRevokedAsync(scope, channel, number, spend);
                     break;
             }
 
@@ -278,16 +301,42 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
              && outputs.All(o => o.Kind != OutputDescriptorKind.PaymentToRemote))
                 outputs.AddRange(FindToRemote(channel, spend).Where(r => outputs.All(o => o.Vout != r.Vout)));
 
-            return (outputs.OrderBy(o => o.Vout).ToList(), map?.PerCommitmentPoint);
+            var ordered = outputs.OrderBy(o => o.Vout).ToList();
+            return (ordered, map?.PerCommitmentPoint, DescribeUnmapped(spend, map, ordered, predatesLog));
         }
         catch (Exception e)
         {
             _logger.LogCritical(e, "Could not map the outputs of {Kind} {TxId} of channel {ChannelId}",
                                 classification.Kind, Display(spend.TxId), channel.ChannelId);
             return classification.Kind is FundingSpendKind.LocalCommit or FundingSpendKind.Unknown
-                       ? ([], null)
-                       : (FindToRemote(channel, spend), null);
+                       ? ([], null, null)
+                       : (FindToRemote(channel, spend), null, null);
         }
+    }
+
+    /// <summary>
+    /// The outputs of the commitment on chain that match nothing we expect (with their amounts), or null: an output
+    /// we can't identify may be an HTLC (a revoked commitment older than the revocation log had HTLCs we no longer
+    /// know), so the operator is told funds may be at risk (B5-GEN-06 style).
+    /// </summary>
+    private static string? DescribeUnmapped(ChainTx spend, CommitmentOutputMap? map,
+                                            IReadOnlyList<CommitmentOutputDescriptor> outputs, bool predatesLog)
+    {
+        if (map is null || map.UnmappedVouts.Count == 0)
+            return null;
+
+        var unmapped = map.UnmappedVouts.Where(v => outputs.All(o => o.Vout != v)).ToList();
+        if (unmapped.Count == 0)
+            return null;
+
+        var described = string.Join(", ", unmapped.Select(v => v < spend.Outputs.Count
+                                                                   ? $"{v} ({spend.Outputs[(int)v].AmountSat} sat)"
+                                                                   : v.ToString()));
+        return $"{unmapped.Count} output(s) of {Display(spend.TxId)} match no expected output: {described}"
+             + (predatesLog
+                    ? "; the commitment predates the revocation log, so its HTLC outputs can't be rebuilt"
+                    : string.Empty)
+             + ": they are not resolved, funds may be lost";
     }
 
     private IReadOnlyList<CommitmentOutputDescriptor> FindToRemote(ChannelModel channel, ChainTx spend) =>
@@ -300,13 +349,13 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     /// script from a stand-in spec without HTLCs: <c>to_local</c> and <c>to_remote</c> scripts do not depend on the
     /// amounts.
     /// </summary>
-    private async Task<CommitmentOutputMap?> MapRevokedAsync(IServiceScope scope, ChannelModel channel, ulong number,
-                                                             ChainTx spend)
+    private async Task<(CommitmentOutputMap? Map, bool PredatesLog)> MapRevokedAsync(
+        IServiceScope scope, ChannelModel channel, ulong number, ChainTx spend)
     {
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
         var factory = scope.ServiceProvider.GetService<ISecretStorageServiceFactory>();
         if (factory is null)
-            return null;
+            return (null, false);
 
         CompactPubKey point;
         using (var shachain = factory.CreatePerCommitmentStorage())
@@ -318,19 +367,21 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         }
 
         var logged = await unitOfWork.RevokedCommitmentDbRepository.GetAsync(channel.ChannelId, number);
+        var predatesLog = logged is null
+                       && number < await unitOfWork.RevokedCommitmentDbRepository.GetLogStartAsync(channel.ChannelId);
         var fundingMsat = (ulong)channel.FundingOutput!.Amount.Satoshi * 1_000;
         var spec = logged is not null
                        ? CommitmentTxSpec.FromCommitmentSpec(logged.Spec)
                        : new CommitmentTxSpec(fundingMsat / 2, fundingMsat / 2,
                                               (ulong)channel.ChannelParams.FeeRateAmountPerKw.Satoshi);
-        return _commitmentOutputMapper.Map(channel, spec, CommitmentCase.Revoked, number, point, spend);
+        return (_commitmentOutputMapper.Map(channel, spec, CommitmentCase.Revoked, number, point, spend), predatesLog);
     }
 
     private async Task<Recorded> PersistAsync(IServiceScope scope, ChannelModel channel, OutpointSpentEventArgs args,
                                               ChainTx spend, FundingSpendClassification classification,
                                               ChannelCloseKind closeKind,
                                               IReadOnlyList<CommitmentOutputDescriptor> descriptors,
-                                              CompactPubKey? point)
+                                              CompactPubKey? point, string? unmapped)
     {
         var channelId = channel.ChannelId;
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -407,6 +458,9 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                          + "than any we know (we lost data): only to_remote can be swept"));
                 break;
         }
+
+        if (unmapped is not null)
+            alerts.Add(new AlertAction("B5-GEN-06", unmapped));
 
         return new Recorded(new FundingSpendOutcome(closeKind, ours.Count, false), newWatches, errorToSend,
                             channel.RemoteNodeId, alerts);
