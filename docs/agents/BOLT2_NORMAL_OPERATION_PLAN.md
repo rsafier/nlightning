@@ -5,7 +5,8 @@ This is the authoritative plan for BOLT 2 "Normal Operation" (`update_add_htlc`,
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-25: `02-peer-protocol.md` (§Channel Close, §Normal Operation, §Message Retransmission) and `03-transactions.md` (HTLC txs, fee calculation, closing txs, Appendices C, D, E, F). Re-read the requirement block before you implement a handler.
 - **Sources merged:** three independent drafts (safety-first, MVP-to-interop, requirements traceability). Where they disagreed about the code, the code was checked (§2.3). Design choices are recorded in §4.
 - **Issue ledger:** every bug and gap here has an `NL-###` ID in [`ISSUES.md`](ISSUES.md). Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-26, `wip/fafo` @ `1a5ab49`, after ABCD wave 5):** N0-N10 are **done**; wave 5 closed the N9-T4 remainder (NL-271: the commitment's `BroadcastTransactions` row in the Failed save, the handler path under the manager's lock) and BOLT 5 O2-O5 now resolve every force-closed channel on chain (`BOLT5_ONCHAIN_PLAN.md` "ABCD wave 5 record"), which covers B2-RE-27 and the on-chain half of B2-FWD-05. Next: N11 (`option_simple_close`, NL-020), NL-279, NL-285, NL-286, NL-045, NL-312. See "ABCD wave 5 record" in §5.
+- **Status (2026-09-26, `wip/fafo` @ `3ce3cad`, after ABCD wave 6):** N0-N10 are **done** and **N11-T1/T2 (`option_simple_close`) are done** (W6-E, NL-020 fixed): `closing_complete`/`closing_sig` with strict `closing_tlvs` serializers (aa569c8), `Channels/Close/Simple/` closer-pays builder and the closer/closee/closing_sig rules, RBF through `closechannel` (b67e065), routed in `ChannelManager` with a simple-close spend accepted as a mutual close (a2331b8), Docker proof against LND 0.20 `--protocol.rbf-coop-close` (we close, LND closes, both RBF; 5b9ce68), review fixes (d8dd76c, 7ebc93c). The feature left `ExperimentalFeatures` but `OptionSimpleClose` defaults to **No** (it needs `BeyondSegwitShutdown`), so the legacy close stays the default. N11-T3 (anchors) waits for BOLT 5 O7. Next: NL-279, NL-285, NL-286, NL-045, NL-312, NL-325 (fulfillment_payload size check). See "ABCD wave 6 record" in §5.
+- Status after ABCD wave 5 (superseded by the line above): N0-N10 are **done**; wave 5 closed the N9-T4 remainder (NL-271: the commitment's `BroadcastTransactions` row in the Failed save, the handler path under the manager's lock) and BOLT 5 O2-O5 now resolve every force-closed channel on chain (`BOLT5_ONCHAIN_PLAN.md` "ABCD wave 5 record"), which covers B2-RE-27 and the on-chain half of B2-FWD-05. Next: N11 (`option_simple_close`, NL-020), NL-279, NL-285, NL-286, NL-045, NL-312. See "ABCD wave 5 record" in §5.
 - Status after ABCD wave 4 (superseded by the line above): N0-N10 are **done** and their Docker proofs (N9 `ChannelSafetyFlowTests`, `FeeUpdateFlowTests` with the LND-funded case, N10 `CooperativeCloseFlowTests` plus CLN `ClnCloseTests`) pass on `wip/fafo`. Wave 4 added the closing timeouts (NL-284), the fee-unit and fundee-floor fixes (NL-288, NL-289) and the watch in the Failed save (NL-271 partial). Next: N11 (`option_simple_close`, NL-020), NL-279, NL-285, NL-286, NL-045; the rest of fail-the-channel is BOLT 5 (`BOLT5_ONCHAIN_PLAN.md`). See "ABCD wave 4 record" in §5.
 - Status after ABCD wave 3 (`c92d837`, superseded by the line above): N0-N10 are **done** (N10 awaits a re-run of its Docker proof on `wip/fafo`). N9 (W3-A, W3-C): `HtlcDeadlinePolicy` + block-driven `HtlcExpiryMonitor` (36d2270, 06da54b), `ChannelFailureService` as the only broadcast path with the signer's broadcast signing, revoked-number refusal and data-loss lock (36d2270, 06da54b), `FeeUpdatePolicy`/`FeeUpdateScheduler`, the `max_dust_htlc_exposure_msat` node option and `DustExposureHtlcSwitch` (1dbbc1f, 525973a); wired and started by the daemon (983b2b4). N10 (W3-B, migration owner): shutdown script forms, the legacy closing tx and negotiator, states 23/25/30, migration `AddShutdownState`, `closechannel` (34757a3, b38ce86, 6d81ecd), LND interop fixes (9733937, 5d0aafc) and crash/chain safety (8e0e154). Proofs: Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) and `CooperativeCloseFlowTests` (287a956) passed in their lanes; the integrator could not run the LND Docker suite (NL-276), so neither was re-verified at `c92d837`. **Next:** re-run the Docker proofs, N11 (`option_simple_close`, NL-020), the closing timeouts (NL-284) and BOLT 5 (`docs/agents/BOLT5_ONCHAIN_PLAN.md`). §5 opens with the wave-3 record.
 - Status after ABCD wave 2 (`a5675cb`, superseded by the line above): N0-N8 are **done**. N7 (ABCD W2-A): pure `ReestablishPlanner` with an exhaustive oracle table (4620895); lifecycle hooks, gating, retransmission, data-loss detection, error re-send without disconnect and `HandleChannelMessageAsync` returning `Task` (4ec83d3); startup resumes every stored state and the funder remember rule is pinned (82c4c37); a peer's reestablish after channel_ready is answered and ours is sent at connect for every channel past funding_signed (22c29ae). Proof N7: I11 harness (1ad14ce) and Docker (a)(b)(c) (a4e95d7, 30c1bb8). N8 (W2-B switch ca87313/d1476a4, W2-C `PaymentService` 6cb279f/083a726, W2-D Docker fdc80af, integration f2f1ef6/a5675cb): LND pays our invoice (also trimmed), we pay LND's, 10 concurrent each way, restart with an HTLC in flight; the ABCD multi-hop suite is green. Remaining in N7: Closing/Negotiating resumption and shutdown re-send (N10), signer-level broadcast refusal (N9-T4). **Next milestones: N9** (deadlines `HtlcExpiryMonitor`, fail-the-channel broadcast) and **N10** (close). §5 opens with the wave-2 record.
@@ -308,6 +309,16 @@ Each needs Domain request/response, `[MessagePackObject]` DTOs in `src/NLightnin
 
 ## 5. Milestones
 
+### ABCD wave 6 record (status 2026-09-26, `wip/fafo` @ `3ce3cad`)
+
+Lane SHAs mapped through the `-x` footers:
+- **N11-T1 done** (aa569c8): messages 40/41 over `SimpleClosingPayload` with `ClosingSignatures` (TLVs 1/2/3), strict serializers.
+- **N11-T2 done** (b67e065, a2331b8, 5b9ce68, d8dd76c, 7ebc93c): `SimpleClosingTerms`, `SimpleCloseRules`, `SimpleCloseCoordinator` (propose once per connection, `BumpAsync` RBF, `ReceiveClosingCompleteAsync`, `ReceiveClosingSigAsync`), `ClosingCompleteMessageHandler`/`ClosingSigMessageHandler`; negotiated per connection; a peer's `closing_signed` under simple close gets a warning. Tests: `Channels/Close/Simple/SimpleCloseRulesTests`, `Close/SimpleCloseHarnessTests`, Docker `CooperativeCloseFlowTests` (`Given_SimpleCloseNegotiated_*`, `Given_SimpleClose_When_BothSidesBumpTheFee_*`, LND with `--protocol.rbf-coop-close`). Default stays No (deviation from N11-T2's "set Optional after a Docker close": the proof exists, but the default was left for a later decision).
+- Wire side effects from W6-D: `update_fail_htlc`/`update_fulfill_htlc` read their TLV stream strictly (NL-324 fixed, 6d7e480); the BOLT 2 32 KiB `fulfillment_payload` MUST is not enforced (NL-325).
+- Docker: LND suite 57/57 (incl. `CooperativeCloseFlowTests` with the simple-close proofs), CLN 17/17, ABCD 3 × 10/10 on net10.0 and net11.0.
+
+Still open in BOLT 2: B2-SHUT-S08 (NL-279), R09 deviation on the legacy path (NL-285), a Docker restart while closing (NL-286), local upfront script (NL-045), a Failed channel whose signed mutual close confirms (NL-312), fulfillment_payload size (NL-325), IPC disconnect (NL-152), N11-T3 anchors.
+
 ### ABCD wave 5 record (status 2026-09-26, `wip/fafo` @ `1a5ab49`)
 
 Wave 5 was BOLT 5 O2-O5 (see `BOLT5_ONCHAIN_PLAN.md` "ABCD wave 5 record"); the BOLT 2 side effects (lane SHAs mapped through the `-x` footers):
@@ -559,8 +570,8 @@ Prerequisite: ONION M3-T1 + create half of M3-T2: **met** (ONION M3 done, NL-070
 **Proof N10:** Docker `Given_OpenChannel_When_CooperativeClose_Then_FundsReturnToWallets`: (a) we close: LND lists `COOPERATIVE_CLOSE`, after 6 blocks we are `Closed` and our wallet rises by `to_local − fee`; (b) alice closes a second channel: we reply `shutdown`, negotiate, same checks; (c) with and without `fee_range`; stretch: close with a hold-invoice HTLC in flight completes only after it settles.
 
 ### N11 (optional): `option_simple_close` and anchors
-- **N11-T1** Messages 40/41 + TLVs 1/2/3 (4-place registration). Resolves NL-020.
-- **N11-T2** `SimpleCloseNegotiator`, handlers, `BuildSimple`; set `OptionSimpleClose = Optional` only after a Docker close against a peer that supports it **(unverified LND version)**.
+- **N11-T1** Messages 40/41 + TLVs 1/2/3 (4-place registration). Resolves NL-020. **Done** (aa569c8).
+- **N11-T2** `SimpleCloseNegotiator`, handlers, `BuildSimple`; set `OptionSimpleClose = Optional` only after a Docker close against a peer that supports it **(unverified LND version)**. **Done** (b67e065, a2331b8, 5b9ce68, d8dd76c, 7ebc93c; as-built `SimpleCloseCoordinator`; proven against LND 0.20 with `--protocol.rbf-coop-close`); the default is still No.
 - **N11-T3** Enable `OptionAnchors` only after N2-T5, N3-T1 and BOLT 5 CPFP.
 
 ### After N10 (separate plan, gates mainnet)
@@ -775,22 +786,24 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 ### 6.12 `closing_complete` / `closing_sig` (optional)
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
-| B2-SC-W01 | Messages 40/41 + TLVs 1/2/3 | MISSING (NL-020) | N11-T1 | `ST/Messages/ClosingCompleteMessageTests`, `ClosingSigMessageTests` |
-| B2-SC-01 | Send `closing_complete` once cleared | MISSING | N11-T2 | `DT/Channels/Closing/SimpleCloseNegotiatorTests` |
-| B2-SC-C01 | Fee ≤ own balance | MISSING | N11-T2 | `…Given_FeeAboveBalance_Then_Refused` |
-| B2-SC-C02 | At least one non-dust output | MISSING | N11-T2 | `…Given_BothDust_Then_Refused` |
-| B2-SC-C03/04/05 | Scripts and locktime | MISSING | N11-T2 | `…Given_Proposal_Then_ScriptsAndLocktime` |
-| B2-SC-C06/C07 | TLV selection by balance/dust | MISSING | N11-T2 | table test |
-| B2-SC-C08 | BOLT 3 simple closing tx + sigs | MISSING | N11-T2 | `BT/Builders/ClosingTransactionBuilderTests.Given_SimpleClose_Then_Seq0xFFFFFFFD_LocktimeFromMsg_Bip69` |
-| B2-SC-C09 | Wait for `closing_sig` | MISSING | N11-T2 | `…Given_Outstanding_Then_SecondRefused` |
-| B2-SC-E01 | Fee > closer balance → fail | MISSING | N11-T2 | `AT/…/ClosingCompleteMessageHandlerTests` |
-| B2-SC-E02/E03 | Script mismatch / invalid | MISSING | N11-T2 | same |
-| B2-SC-E04/E05 | OP_RETURN zero; build closer's tx | MISSING | N11-T2 | builder tests |
-| B2-SC-E06 | Signature selection rules | MISSING | N11-T2 | table test |
-| B2-SC-E07/E08 | Missing / invalid sig → fail | MISSING | N11-T2 | handler tests |
-| B2-SC-E09 | Sign, broadcast, reply `closing_sig` | MISSING | N11-T2 | handler tests |
-| B2-SC-E10 | Use `closer_scriptpubkey` later | MISSING | N11-T2 | negotiator tests |
-| B2-SC-G01..G06 | `closing_sig` receiver rules | MISSING | N11-T2 | `AT/…/ClosingSigMessageHandlerTests` |
+| B2-SC-W01 | Messages 40/41 + TLVs 1/2/3 | DONE (aa569c8) | N11-T1 | `ST/Messages/ClosingCompleteMessageTests`, `ClosingSigMessageTests` |
+| B2-SC-01 | Send `closing_complete` once cleared | DONE (b67e065) | N11-T2 | `DT/Channels/Closing/SimpleCloseNegotiatorTests` |
+| B2-SC-C01 | Fee ≤ own balance | DONE (b67e065) | N11-T2 | `…Given_FeeAboveBalance_Then_Refused` |
+| B2-SC-C02 | At least one non-dust output | DONE (b67e065) | N11-T2 | `…Given_BothDust_Then_Refused` |
+| B2-SC-C03/04/05 | Scripts and locktime | DONE (b67e065) | N11-T2 | `…Given_Proposal_Then_ScriptsAndLocktime` |
+| B2-SC-C06/C07 | TLV selection by balance/dust | DONE (b67e065) | N11-T2 | table test |
+| B2-SC-C08 | BOLT 3 simple closing tx + sigs | DONE (b67e065) | N11-T2 | `BT/Builders/ClosingTransactionBuilderTests.Given_SimpleClose_Then_Seq0xFFFFFFFD_LocktimeFromMsg_Bip69` |
+| B2-SC-C09 | Wait for `closing_sig` | DONE (b67e065) | N11-T2 | `…Given_Outstanding_Then_SecondRefused` |
+| B2-SC-E01 | Fee > closer balance → fail | DONE (b67e065) | N11-T2 | `AT/…/ClosingCompleteMessageHandlerTests` |
+| B2-SC-E02/E03 | Script mismatch / invalid | DONE (b67e065) | N11-T2 | same |
+| B2-SC-E04/E05 | OP_RETURN zero; build closer's tx | DONE (b67e065) | N11-T2 | builder tests |
+| B2-SC-E06 | Signature selection rules | DONE (b67e065) | N11-T2 | table test |
+| B2-SC-E07/E08 | Missing / invalid sig → fail | DONE (b67e065) | N11-T2 | handler tests |
+| B2-SC-E09 | Sign, broadcast, reply `closing_sig` | DONE (b67e065) | N11-T2 | handler tests |
+| B2-SC-E10 | Use `closer_scriptpubkey` later | DONE (b67e065) | N11-T2 | negotiator tests |
+| B2-SC-G01..G06 | `closing_sig` receiver rules | DONE (b67e065) | N11-T2 | `AT/…/ClosingSigMessageHandlerTests` |
+
+As built (ABCD wave 6): the rules are tested in `AT/Channels/Close/Simple/SimpleCloseRulesTests` (requirement table) and `AT/Channels/Close/SimpleCloseHarnessTests` (crafted messages signed with the peer's real key); the test names above are the plan's, not the as-built ones. Docker: `CooperativeCloseFlowTests` against LND 0.20.
 
 ### 6.13 BOLT 3
 | ID | Requirement | Status | Task | Test |
@@ -814,7 +827,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B3-HTX-02 | HTLC tx output script | DONE (NL-056, NL-058) | N2-T4 | same + `BT/Outputs/HtlcResolutionOutputTests` |
 | B3-HTX-03 | Anchors: SINGLE\|ACP remote sig | DONE (N3-T1) | N3-T1 | Appendix F HTLC txs [B5] |
 | B3-LCTX-01 | Legacy closing tx | MISSING (NL-065) | N10-T2 | `BT/Builders/ClosingTransactionBuilderTests` + DK close |
-| B3-CLTX-01 | Simple closing tx | MISSING | N11-T2 | same |
+| B3-CLTX-01 | Simple closing tx | DONE (b67e065) | N11-T2 | same |
 | B3-DUST-01 | Script dust thresholds | PARTIAL (in DI since NL-068) | N10-T1 | `BT/Services/DustServiceTests` |
 | B3-KEY-01 | Per-commitment key derivation | DONE | — | Appendix E |
 | B3-KEY-02 | Secret generation + shachain storage | DONE (NL-136 storage; saved with each transition by `ApplyAsync`, 4472a8b; runtime save on RAA a604dff) | N3-T4 | Appendix D + persistence round trip [B5] |
