@@ -55,6 +55,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
     private readonly ServiceProvider _provider;
     private readonly Dictionary<uint256, Transaction> _knownTransactions = [];
+    private readonly Dictionary<uint, List<Transaction>> _blocks = [];
 
     public RealSigningCommitmentPair Pair { get; }
     public ChannelModel Channel => Pair.Alice.Channel;
@@ -82,8 +83,14 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <summary>True: mined blocks leave the mempool out (a fee too low to be mined, O6-T1 tests).</summary>
     public bool HoldMempool { get; set; }
 
-    /// <summary>False: <c>IBitcoinChainService.GetTransactionAsync</c> finds nothing (pruned node, RPC down).</summary>
+    /// <summary>False: <c>IBitcoinChainService.GetTransactionAsync</c> finds nothing (no txindex, RPC down).</summary>
     public bool ChainServiceFindsTransactions { get; set; } = true;
+
+    /// <summary>False: <c>IBitcoinChainService.GetBlockAsync(height)</c> finds nothing (pruned node, RPC down).</summary>
+    public bool ChainServiceFindsBlocks { get; set; } = true;
+
+    /// <summary>False: mined blocks skip the per-block <c>ResolveAsync</c> round (the node is offline).</summary>
+    public bool ResolveEachBlock { get; set; } = true;
 
     /// <summary>What the executor did, in order ("stage ...", "raise ...", "broadcast ...").</summary>
     public List<string> Log { get; } = [];
@@ -113,6 +120,10 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                     .ReturnsAsync((uint256 txId) => ChainServiceFindsTransactions
                                                         ? _knownTransactions.GetValueOrDefault(txId)
                                                         : null);
+        chainService.Setup(c => c.GetBlockAsync(It.IsAny<uint>()))
+                    .ReturnsAsync((uint height) => ChainServiceFindsBlocks && _blocks.TryGetValue(height, out var txs)
+                                                       ? BuildBlock(txs)
+                                                       : null);
         var destinations = new Mock<ISweepDestinationProvider>();
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
@@ -171,6 +182,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
             Mempool.Clear();
         foreach (var tx in transactions)
             Mempool.RemoveAll(m => m.GetHash() == tx.GetHash());
+        _blocks[Height] = block;
         foreach (var tx in block)
         {
             _knownTransactions[tx.GetHash()] = tx;
@@ -201,7 +213,15 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                 Rows[key] = row with { State = OutputResolutionState.Irrevocable };
         }
 
-        await ResolveAsync();
+        if (ResolveEachBlock)
+            await ResolveAsync();
+    }
+
+    private static Block BuildBlock(IEnumerable<Transaction> transactions)
+    {
+        var block = Network.Main.Consensus.ConsensusFactory.CreateBlock();
+        block.Transactions.AddRange(transactions);
+        return block;
     }
 
     /// <summary>Mines empty blocks (plus the mempool) until the tip is <paramref name="height"/>.</summary>
