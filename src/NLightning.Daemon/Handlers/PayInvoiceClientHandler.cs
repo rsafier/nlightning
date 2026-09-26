@@ -1,17 +1,21 @@
 namespace NLightning.Daemon.Handlers;
 
+using Application.Payments.Send;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Interfaces;
 
 /// <summary>
 /// Pays a BOLT 11 invoice through <see cref="IPaymentService"/> and waits for the outcome (ClientCommand 10).
 /// </summary>
 /// <remarks>
+/// The request's optional <see cref="PayInvoiceClientRequest.MaxFee"/> and <see cref="PayInvoiceClientRequest.MaxParts"/>
+/// are the per-call fee and part limits (NL-270, <see cref="PayInvoiceOptions"/>); the timeout also ends the retries.
 /// The wait is bounded by <see cref="PayInvoiceClientRequest.TimeoutSeconds"/> (default
 /// <see cref="DefaultTimeoutSeconds"/>, at most <see cref="MaxTimeoutSeconds"/>). When it ends first, the response
 /// carries the payment still <c>InFlight</c>: its HTLC stays offered and resolves later (see <c>ListPayments</c>).
@@ -65,12 +69,25 @@ public sealed class PayInvoiceClientHandler
         if (timeoutSeconds is 0 or > MaxTimeoutSeconds)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The timeout must be between 1 and {MaxTimeoutSeconds} seconds.");
+        if (request.MaxParts is 0 or > PaymentSendOptions.MaxPartsLimit)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      $"The part limit must be between 1 and {PaymentSendOptions.MaxPartsLimit}.");
+
+        var options = new PayInvoiceOptions
+        {
+            Timeout = TimeSpan.FromSeconds(timeoutSeconds),
+            MaxFee = request.MaxFee,
+            MaxParts = request.MaxParts is { } maxParts ? (int)maxParts : null
+        };
 
         try
         {
-            var payment = await _paymentService.PayInvoiceAsync(request.Bolt11.Trim(), request.Amount,
-                                                                TimeSpan.FromSeconds(timeoutSeconds), ct);
-            return new PayInvoiceClientResponse(PaymentInfoClientResponse.FromModel(payment));
+            var result = await _paymentService.PayInvoiceAsync(request.Bolt11.Trim(), request.Amount, options, ct);
+            return new PayInvoiceClientResponse(PaymentInfoClientResponse.FromModel(result.Payment))
+            {
+                Attempts = result.Attempts,
+                Parts = result.Parts
+            };
         }
         catch (ArgumentException e)
         {

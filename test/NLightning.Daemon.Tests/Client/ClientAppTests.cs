@@ -51,6 +51,15 @@ public class ClientAppTests
     [InlineData("createinvoice", "0")]
     [InlineData("pay", "lnbcrt1", "0")]
     [InlineData("payinvoice", "lnbcrt1", "any", "301")]
+    [InlineData("payinvoice", "lnbcrt1", "--max-parts", "0")]
+    [InlineData("payinvoice", "lnbcrt1", "--max-parts", "129")]
+    [InlineData("payinvoice", "lnbcrt1", "--max-fee-msat", "-1")]
+    [InlineData("payinvoice", "lnbcrt1", "--max-fee-msat")]
+    [InlineData("payinvoice", "lnbcrt1", "--timeout=0")]
+    [InlineData("payinvoice", "lnbcrt1", "any", "30", "--timeout", "30")]
+    [InlineData("payinvoice", "lnbcrt1", "--fast")]
+    [InlineData("payinvoice", "lnbcrt1", "any", "30", "extra")]
+    [InlineData("payinvoice", "--max-parts", "2")]
     [InlineData("closechannel")]
     [InlineData("close-channel", "abcd")]
     [InlineData("closechannel", "zz21212121212121212121212121212121212121212121212121212121212121")]
@@ -108,6 +117,9 @@ public class ClientAppTests
     [InlineData("pay-invoice", "lnbcrt1", "1000")]
     [InlineData("listinvoices", "1000")]
     [InlineData("pay", "lnbcrt1", "any", "300")]
+    [InlineData("payinvoice", "lnbcrt1", "--max-fee-msat", "0")]
+    [InlineData("payinvoice", "lnbcrt1", "any", "--max-parts=128", "--max-fee-msat=5000", "--timeout", "300")]
+    [InlineData("payinvoice", "--max-parts", "1", "lnbcrt1", "1000")]
     [InlineData("openchannel", "peer@host", "50000")]
     [InlineData("openchannel", "peer@host", "50000", "0")]
     [InlineData("open-channel", "peer@host", "50000", "20000")]
@@ -120,6 +132,37 @@ public class ClientAppTests
 
         // Assert
         Assert.Null(error);
+    }
+
+    [Fact]
+    public void GivenPayInvoiceOptions_WhenParsed_ThenPositionalArgumentsAndOptionsAreRead()
+    {
+        // Act
+        var parsed = ClientApp.ParsePayInvoiceOptions(
+            ["lnbcrt1", "--max-fee-msat", "2500", "any", "--max-parts=3", "--timeout", "45"], out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.NotNull(parsed);
+        Assert.Equal("lnbcrt1", parsed.Bolt11);
+        Assert.Null(parsed.Amount);
+        Assert.Equal(45U, parsed.TimeoutSeconds);
+        Assert.Equal(2_500UL, parsed.MaxFeeMsat);
+        Assert.Equal(3U, parsed.MaxParts);
+    }
+
+    [Fact]
+    public void GivenOnlyPositionalPayInvoiceArguments_WhenParsed_ThenNoLimitsAreSet()
+    {
+        // Act
+        var parsed = ClientApp.ParsePayInvoiceOptions(["lnbcrt1", "7000", "20"], out _);
+
+        // Assert
+        Assert.NotNull(parsed);
+        Assert.Equal(7_000UL, parsed.Amount!.MilliSatoshi);
+        Assert.Equal(20U, parsed.TimeoutSeconds);
+        Assert.Null(parsed.MaxFeeMsat);
+        Assert.Null(parsed.MaxParts);
     }
 
     [Theory]

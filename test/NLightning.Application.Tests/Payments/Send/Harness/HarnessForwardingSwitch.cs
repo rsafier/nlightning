@@ -41,6 +41,7 @@ internal sealed class HarnessForwardingSwitch(
     private readonly ConcurrentDictionary<(ChannelId, ulong), Circuit> _circuits = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _handledIncoming = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _resolvedOutgoing = new();
+    private readonly Dictionary<Hash, List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat)>> _parts = [];
 
     /// <summary>Every event handed to the switch, in order.</summary>
     public ConcurrentQueue<IChannelDomainEvent> Events { get; } = new();
@@ -50,6 +51,18 @@ internal sealed class HarnessForwardingSwitch(
 
     /// <summary>When set, every HTLC to forward is failed with <c>unknown_next_peer</c> instead.</summary>
     public bool FailEveryForward { get; set; }
+
+    /// <summary>
+    /// When set, called for every HTLC to forward (with its forward instruction); a non-null failure fails it back
+    /// instead (a stand-in for a hop's forwarding policy, e.g. <c>fee_insufficient</c> with a new channel_update).
+    /// </summary>
+    public Func<HtlcRecord, IncomingOnionForward, FailureMessage?>? ForwardInterceptor { get; set; }
+
+    /// <summary>The forwards this node made or refused, in order: (incoming amount, forward instruction).</summary>
+    public ConcurrentQueue<(ulong IncomingAmountMsat, IncomingOnionForward Forward)> Forwards { get; } = new();
+
+    /// <summary>The final-hop HTLCs this node received, in order: (amount, <c>total_msat</c>).</summary>
+    public ConcurrentQueue<(ulong AmountMsat, ulong TotalMsat)> Received { get; } = new();
 
     public async Task HandleAsync(IChannelDomainEvent channelEvent, CancellationToken cancellationToken)
     {
@@ -101,6 +114,15 @@ internal sealed class HarnessForwardingSwitch(
         switch (result)
         {
             case IncomingOnionForward forward:
+                Forwards.Enqueue((htlc.AmountMsat, forward));
+                if (ForwardInterceptor?.Invoke(htlc, forward) is { } intercepted)
+                {
+                    await channelOperations.FailHtlcAsync(channelId, htlc.Id,
+                                                          failureOnionService.CreateErrorPacket(
+                                                              forward.SharedSecret, intercepted), cancellationToken);
+                    return;
+                }
+
                 var outgoing = channelMemoryRepository
                               .FindChannels(c => c.State == ChannelState.Open
                                               && c.ShortChannelId == forward.OutgoingShortChannelId)
@@ -122,6 +144,15 @@ internal sealed class HarnessForwardingSwitch(
                 return;
 
             case IncomingOnionFinal final:
+                Received.Enqueue((htlc.AmountMsat, final.Payload.PaymentData?.TotalMsat.MilliSatoshi ?? 0));
+                if (final.Payload.PaymentData is { } paymentData
+                 && paymentData.TotalMsat.MilliSatoshi != htlc.AmountMsat)
+                {
+                    await ReceivePartAsync(channelId, htlc, final, paymentData.TotalMsat.MilliSatoshi,
+                                           cancellationToken);
+                    return;
+                }
+
                 using (var scope = serviceScopeFactory.CreateScope())
                 {
                     var invoices = scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>();
@@ -158,6 +189,46 @@ internal sealed class HarnessForwardingSwitch(
                                                                malformed.Sha256OfOnion.ToArray(), cancellationToken);
                 return;
         }
+    }
+
+    /// <summary>
+    /// A stand-in for a <c>basic_mpp</c> payee (our production final hop takes one HTLC per payment): holds each part
+    /// until the parts of the hash reach <c>total_msat</c>, then fulfills them all with the invoice's preimage.
+    /// </summary>
+    private async Task ReceivePartAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
+                                        ulong totalMsat, CancellationToken cancellationToken)
+    {
+        using var scope = serviceScopeFactory.CreateScope();
+        var invoices = scope.ServiceProvider.GetRequiredService<IInvoiceDbRepository>();
+        var invoice = await invoices.GetByPaymentHashAsync(htlc.PaymentHash);
+        if (invoice is null || invoice.PaymentSecret != final.Payload.PaymentData!.PaymentSecret
+                            || invoice.Amount is { } amount && amount.MilliSatoshi > totalMsat)
+        {
+            var failure = FailureMessage.IncorrectOrUnknownPaymentDetails(
+                LightningMoney.MilliSatoshis(htlc.AmountMsat), blockchainMonitor.LastProcessedBlockHeight);
+            await channelOperations.FailHtlcAsync(channelId, htlc.Id,
+                                                  failureOnionService.CreateErrorPacket(final.SharedSecret, failure),
+                                                  cancellationToken);
+            return;
+        }
+
+        List<(ChannelId ChannelId, ulong HtlcId, ulong AmountMsat)> complete;
+        lock (_parts)
+        {
+            if (!_parts.TryGetValue(htlc.PaymentHash, out var held))
+                _parts[htlc.PaymentHash] = held = [];
+            held.Add((channelId, htlc.Id, htlc.AmountMsat));
+            if (held.Aggregate(0UL, (sum, p) => sum + p.AmountMsat) < totalMsat)
+                return;
+
+            complete = [.. held];
+            _parts.Remove(htlc.PaymentHash);
+        }
+
+        invoice.Accept(LightningMoney.MilliSatoshis(complete.Aggregate(0UL, (sum, p) => sum + p.AmountMsat)));
+        await invoices.UpdateAsync(invoice);
+        foreach (var (partChannelId, partHtlcId, _) in complete)
+            await channelOperations.FulfillHtlcAsync(partChannelId, partHtlcId, invoice.Preimage, cancellationToken);
     }
 
     private async Task FailUpstreamAsync(Circuit circuit, HtlcRemoval removal, CancellationToken cancellationToken)

@@ -138,9 +138,12 @@ public class PaymentsClientHandlerTests
         var payment = CreatePayment();
         payment.AddOutgoingHtlc(new byte[32], 3);
         payment.Succeed(s_preimage, s_now.AddSeconds(2));
-        _paymentServiceMock.Setup(x => x.PayInvoiceAsync("lnbcrt1pay", null, TimeSpan.FromSeconds(60),
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync("lnbcrt1pay", null,
+                                                         It.Is<PayInvoiceOptions>(
+                                                             o => o.Timeout == TimeSpan.FromSeconds(60)
+                                                               && o.MaxFee == null && o.MaxParts == null),
                                                          It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(payment);
+                           .ReturnsAsync(new PayInvoiceResult(payment, 3, 2));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
         // Act
@@ -153,6 +156,7 @@ public class PaymentsClientHandlerTests
         Assert.Equal(3UL, response.Payment.OutgoingHtlcId);
         Assert.Equal(50_000_123UL, response.Payment.Amount.MilliSatoshi);
         Assert.Equal(3_025UL, response.Payment.Fee.MilliSatoshi);
+        Assert.Equal((3, 2), (response.Attempts, response.Parts));
     }
 
     [Fact]
@@ -160,8 +164,8 @@ public class PaymentsClientHandlerTests
     {
         // Arrange
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(CreatePayment());
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayInvoiceResult(CreatePayment(), 1, 1));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
         // Act
@@ -174,8 +178,55 @@ public class PaymentsClientHandlerTests
         // Assert
         Assert.Equal(PaymentStatus.InFlight, response.Payment.Status);
         _paymentServiceMock.Verify(x => x.PayInvoiceAsync("lnbcrt1pay", LightningMoney.MilliSatoshis(7_000),
-                                                          TimeSpan.FromSeconds(5), It.IsAny<CancellationToken>()),
+                                                          It.Is<PayInvoiceOptions>(
+                                                              o => o.Timeout == TimeSpan.FromSeconds(5)),
+                                                          It.IsAny<CancellationToken>()),
                                    Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_FeeAndPartLimits_When_PayInvoice_Then_TheyArePassedThrough()
+    {
+        // Arrange (NL-270)
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayInvoiceResult(CreatePayment(), 1, 1));
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act
+        await handler.HandleAsync(new PayInvoiceClientRequest("lnbcrt1pay")
+        {
+            MaxFee = LightningMoney.MilliSatoshis(12_345),
+            MaxParts = 4
+        }, TestContext.Current.CancellationToken);
+
+        // Assert
+        _paymentServiceMock.Verify(x => x.PayInvoiceAsync("lnbcrt1pay", null,
+                                                          It.Is<PayInvoiceOptions>(
+                                                              o => o.MaxFee!.MilliSatoshi == 12_345
+                                                                && o.MaxParts == 4
+                                                                && o.Timeout == TimeSpan.FromSeconds(60)),
+                                                          It.IsAny<CancellationToken>()),
+                                   Times.Once);
+    }
+
+    [Theory]
+    [InlineData(0U)]
+    [InlineData(129U)]
+    public async Task Given_APartLimitOutOfRange_When_PayInvoice_Then_InvalidOperationAndNothingSent(uint maxParts)
+    {
+        // Arrange
+        var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(
+                            () => handler.HandleAsync(new PayInvoiceClientRequest("lnbcrt1pay") { MaxParts = maxParts },
+                                                      TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        Assert.Contains("part limit", exception.Message);
+        _paymentServiceMock.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -185,8 +236,8 @@ public class PaymentsClientHandlerTests
         var payment = CreatePayment();
         payment.Fail(FailureCode.IncorrectOrUnknownPaymentDetails, 2, "payee refused", s_now.AddSeconds(1));
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(payment);
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
+                           .ReturnsAsync(new PayInvoiceResult(payment, 1, 1));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
         // Act
@@ -231,7 +282,7 @@ public class PaymentsClientHandlerTests
     {
         // Arrange
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new ArgumentException("invoice expired"));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
@@ -250,7 +301,7 @@ public class PaymentsClientHandlerTests
     {
         // Arrange
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new InvalidOperationException("already in flight"));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
@@ -269,7 +320,7 @@ public class PaymentsClientHandlerTests
     {
         // Arrange: ObjectDisposedException derives from InvalidOperationException but is not the duplicate refusal
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new ObjectDisposedException("PaymentService"));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
@@ -288,7 +339,7 @@ public class PaymentsClientHandlerTests
     {
         // Arrange: the payment was persisted InFlight and the HTLC offered, then something below failed
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new KeyNotFoundException("channel vanished after the offer"));
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 
@@ -310,7 +361,7 @@ public class PaymentsClientHandlerTests
     {
         // Arrange
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new OperationCanceledException());
         var handler = new PayInvoiceClientHandler(_paymentServiceMock.Object);
 

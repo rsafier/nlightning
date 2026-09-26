@@ -9,6 +9,7 @@ using Application.Payments.Routing;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
 using Bolt11.Models;
+using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -66,6 +67,7 @@ public class PaymentServiceTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ISecureKeyManager>(_us);
+        services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(
                                   new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
         services.AddSingleton<IOnionReplayCache>(new OnionReplayCache());
@@ -299,6 +301,30 @@ public class PaymentServiceTests : IDisposable
         // Assert
         Assert.False(handled);
         Assert.Equal(PaymentStatus.Failed, (await _payments.GetByPaymentHashAsync(hash))!.Status);
+    }
+
+    [Fact]
+    public async Task Given_AnotherPartWithOurOriginFailsAndNoneIsLive_When_Handled_Then_ThePaymentFailsWithoutCode()
+    {
+        // Arrange: after a restart (no session), a part of a split payment that the row does not record fails; its
+        // stored origin says it is ours, and no HTLC of the payment is live any more (NL-270)
+        var hash = HashOf(Preimage());
+        await _payments.AddAsync(StoredPayment(hash, PaymentStatus.InFlight, htlcId: 3));
+        _channelState.Setup(s => s.GetHtlcOriginAsync(s_channelId, new HtlcKey(HtlcDirection.Outgoing, 4)))
+                     .ReturnsAsync(HtlcOrigin.Local(hash));
+
+        // Act
+        var handled = await Service.HandleOutgoingHtlcFailedAsync(
+                          new OutgoingHtlcFailed(s_channelId, 4, hash, HtlcRemoval.Fail(new byte[292])),
+                          TestContext.Current.CancellationToken);
+
+        // Assert: its route was not stored, so the failure is recorded without a code
+        Assert.True(handled);
+        var stored = await _payments.GetByPaymentHashAsync(hash);
+        Assert.Equal(PaymentStatus.Failed, stored!.Status);
+        Assert.Null(stored.FailureCode);
+        Assert.Contains("one part of the payment", stored.FailureReason);
+        Assert.Equal(3UL, stored.OutgoingHtlcId);
     }
 
     [Fact]

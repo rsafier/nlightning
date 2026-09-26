@@ -33,6 +33,16 @@ internal static class ClientApp
     internal const uint MaxPayTimeoutSeconds = 300;
 
     /// <summary>
+    /// The largest payinvoice part limit; the daemon refuses a larger one (<c>PaymentSendOptions.MaxPartsLimit</c>).
+    /// </summary>
+    internal const uint MaxPayParts = 128;
+
+    /// <summary>
+    /// The largest payinvoice fee limit, in msat: the 21M BTC supply.
+    /// </summary>
+    internal const ulong MaxPayFeeMsat = 2_100_000_000_000_000_000;
+
+    /// <summary>
     /// The longest closechannel wait; the daemon refuses a longer one (<c>CloseChannelClientHandler.MaxWaitSeconds</c>).
     /// </summary>
     internal const uint MaxCloseWaitSeconds = 300;
@@ -125,12 +135,10 @@ internal static class ClientApp
                 case "payinvoice":
                 case "pay-invoice":
                 case "pay":
-                    var payment = await client.PayInvoiceAsync(commandArgs[0],
-                                                               commandArgs.Length > 1
-                                                                   ? ParseInvoiceAmount(commandArgs[1])
-                                                                   : null,
-                                                               commandArgs.Length > 2 ? ParseUInt(commandArgs[2]) : null,
-                                                               cancellationToken);
+                    var payOptions = ParsePayInvoiceOptions(commandArgs, out _)!;
+                    var payment = await client.PayInvoiceAsync(payOptions.Bolt11, payOptions.Amount,
+                                                               payOptions.TimeoutSeconds, payOptions.MaxFeeMsat,
+                                                               payOptions.MaxParts, cancellationToken);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
@@ -225,13 +233,9 @@ internal static class ClientApp
             case "pay-invoice":
             case "pay":
                 if (commandArgs.Length < 1)
-                    return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds]";
-                if (commandArgs.Length > 1 && !TryParseInvoiceAmount(commandArgs[1], out _))
-                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of msat or 'any'.";
-                if (commandArgs.Length > 2
-                 && !(TryParsePositiveUInt(commandArgs[2], out var timeout) && timeout <= MaxPayTimeoutSeconds))
-                    return $"Invalid timeout '{commandArgs[2]}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
-                return null;
+                    return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds] "
+                         + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>]";
+                return ParsePayInvoiceOptions(commandArgs, out var payError) is null ? payError : null;
             case "closechannel":
             case "close-channel":
                 if (commandArgs.Length < 1)
@@ -354,6 +358,119 @@ internal static class ClientApp
     }
 
     /// <summary>
+    /// The arguments of payinvoice: <c>&lt;bolt11&gt; [amount_msat|any] [timeout_seconds]</c> positionally, and the
+    /// options <c>--max-fee-msat &lt;msat&gt;</c> (the per-call fee limit, 0 for fee-free routes only, NL-270),
+    /// <c>--max-parts &lt;n&gt;</c> (1 to <see cref="MaxPayParts"/>; 1 never splits) and <c>--timeout &lt;seconds&gt;</c>
+    /// (1 to <see cref="MaxPayTimeoutSeconds"/>, instead of the positional timeout), each also as
+    /// <c>--option=value</c>, anywhere after the command.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static PayInvoiceArguments? ParsePayInvoiceOptions(string[] commandArgs, out string? error)
+    {
+        var positional = new List<string>();
+        ulong? maxFeeMsat = null;
+        uint? maxParts = null;
+        uint? timeout = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            var separator = argument.IndexOf('=');
+            var name = separator < 0 ? argument : argument[..separator];
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            switch (name.ToLowerInvariant())
+            {
+                case "--max-fee-msat":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var fee)
+                     || fee > MaxPayFeeMsat)
+                    {
+                        error = $"Invalid fee limit '{value}': expected a number of msat from 0 to {MaxPayFeeMsat}.";
+                        return null;
+                    }
+
+                    maxFeeMsat = fee;
+                    break;
+                case "--max-parts":
+                    if (!TryParsePositiveUInt(value, out var parts) || parts > MaxPayParts)
+                    {
+                        error = $"Invalid part limit '{value}': expected 1 to {MaxPayParts}.";
+                        return null;
+                    }
+
+                    maxParts = parts;
+                    break;
+                case "--timeout":
+                    if (!TryParsePositiveUInt(value, out var seconds) || seconds > MaxPayTimeoutSeconds)
+                    {
+                        error = $"Invalid timeout '{value}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
+                        return null;
+                    }
+
+                    timeout = seconds;
+                    break;
+                default:
+                    error = $"Unknown option '{name}': expected --max-fee-msat, --max-parts or --timeout.";
+                    return null;
+            }
+        }
+
+        if (positional.Count is < 1 or > 3)
+        {
+            error = positional.Count == 0
+                        ? "Missing argument: the invoice."
+                        : $"Unexpected argument '{positional[3]}'.";
+            return null;
+        }
+
+        LightningMoney? amount = null;
+        if (positional.Count > 1 && !TryParseInvoiceAmount(positional[1], out amount))
+        {
+            error = $"Invalid amount '{positional[1]}': expected a positive number of msat or 'any'.";
+            return null;
+        }
+
+        if (positional.Count > 2)
+        {
+            if (timeout is not null)
+            {
+                error = "Give the timeout either as the third argument or with --timeout, not both.";
+                return null;
+            }
+
+            if (!(TryParsePositiveUInt(positional[2], out var positionalTimeout)
+               && positionalTimeout <= MaxPayTimeoutSeconds))
+            {
+                error = $"Invalid timeout '{positional[2]}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
+                return null;
+            }
+
+            timeout = positionalTimeout;
+        }
+
+        error = null;
+        return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts);
+    }
+
+    /// <summary>
     /// <c>[channel_id] [all]</c> of pendingsweeps, in any order: one channel only, and the closed channels too.
     /// </summary>
     internal static (ChannelId? ChannelId, bool IncludeClosed) ParsePendingSweepsOptions(string[] commandArgs)
@@ -384,3 +501,13 @@ internal static class ClientApp
         return (take, skip);
     }
 }
+
+/// <summary>
+/// The parsed arguments of payinvoice.
+/// </summary>
+internal sealed record PayInvoiceArguments(
+    string Bolt11,
+    LightningMoney? Amount,
+    uint? TimeoutSeconds,
+    ulong? MaxFeeMsat,
+    uint? MaxParts);

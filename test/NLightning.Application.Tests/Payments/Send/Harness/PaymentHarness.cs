@@ -15,9 +15,11 @@ using Application.Channels.Managers;
 using Application.Channels.Services;
 using Application.Gossip.Interfaces;
 using Application.Payments;
+using Application.Payments.Routing;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
 using Application.Protocol.Factories;
+using Bolt11.Models;
 using Channels.Harness;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
@@ -31,9 +33,12 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Models;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -72,16 +77,26 @@ internal sealed class PaymentHarness : IDisposable
 
     public static readonly ShortChannelId ScidBobCarol = new(400, 1, 0);
     public static readonly ShortChannelId ScidCarolDavid = new(401, 2, 1);
+    public static readonly ShortChannelId ScidBobCarol2 = new(402, 3, 0);
+    public static readonly ShortChannelId ScidCarolDavid2 = new(403, 4, 1);
 
     private static readonly ChannelId s_bobCarolId = new(Enumerable.Repeat((byte)0xBC, 32).ToArray());
     private static readonly ChannelId s_carolDavidId = new(Enumerable.Repeat((byte)0xCD, 32).ToArray());
+    private static readonly ChannelId s_bobCarol2Id = new(Enumerable.Repeat((byte)0xBD, 32).ToArray());
+    private static readonly ChannelId s_carolDavid2Id = new(Enumerable.Repeat((byte)0xCE, 32).ToArray());
 
     public PaymentHarnessNode Bob { get; }
     public PaymentHarnessNode Carol { get; }
     public PaymentHarnessNode David { get; }
 
-    public PaymentHarness()
+    public PaymentHarness() : this(new PaymentHarnessTopology())
     {
+    }
+
+    /// <param name="topology">Extra channels and the Bob–Carol balances (NL-270 retry and multi-part tests).</param>
+    public PaymentHarness(PaymentHarnessTopology topology)
+    {
+        Topology = topology;
         Bob = new PaymentHarnessNode("bob", 0xB0, new RoutingOptions
         {
             FeeBaseMsat = 1_000,
@@ -98,12 +113,47 @@ internal sealed class PaymentHarness : IDisposable
         foreach (var node in (PaymentHarnessNode[])[Bob, Carol, David])
             node.Network = this;
 
-        OpenChannel(Bob, 1, Carol, 1, s_bobCarolId, ScidBobCarol, 0x71);
-        OpenChannel(Carol, 2, David, 1, s_carolDavidId, ScidCarolDavid, 0x72);
+        OpenChannel(Bob, 1, Carol, 1, s_bobCarolId, ScidBobCarol, 0x71, topology.BobCarolFundingSatoshis,
+                    topology.BobCarolPushSatoshis);
+        OpenChannel(Carol, 2, David, 1, s_carolDavidId, ScidCarolDavid, 0x72, FundingSatoshis, PushSatoshis);
+        if (topology.SecondBobCarol)
+            OpenChannel(Bob, 2, Carol, 3, s_bobCarol2Id, ScidBobCarol2, 0x73, topology.BobCarolFundingSatoshis,
+                        topology.BobCarolPushSatoshis);
+        if (topology.SecondCarolDavid)
+            OpenChannel(Carol, 4, David, 2, s_carolDavid2Id, ScidCarolDavid2, 0x74, FundingSatoshis, PushSatoshis);
     }
+
+    public PaymentHarnessTopology Topology { get; }
 
     public ChannelId BobCarol => s_bobCarolId;
     public ChannelId CarolDavid => s_carolDavidId;
+    public ChannelId BobCarol2 => s_bobCarol2Id;
+    public ChannelId CarolDavid2 => s_carolDavid2Id;
+
+    /// <summary>
+    /// Every (node, channel) end of the harness's channels.
+    /// </summary>
+    public IEnumerable<(PaymentHarnessNode Node, ChannelId ChannelId)> ChannelEnds
+    {
+        get
+        {
+            yield return (Bob, BobCarol);
+            yield return (Carol, BobCarol);
+            yield return (Carol, CarolDavid);
+            yield return (David, CarolDavid);
+            if (Topology.SecondBobCarol)
+            {
+                yield return (Bob, BobCarol2);
+                yield return (Carol, BobCarol2);
+            }
+
+            if (Topology.SecondCarolDavid)
+            {
+                yield return (Carol, CarolDavid2);
+                yield return (David, CarolDavid2);
+            }
+        }
+    }
 
     /// <summary>
     /// Delivers queued messages, one per direction in turn, until every queue is empty and no commit scheduler has a
@@ -163,14 +213,14 @@ internal sealed class PaymentHarness : IDisposable
 
     private static void OpenChannel(PaymentHarnessNode funder, uint funderKeyIndex, PaymentHarnessNode fundee,
                                     uint fundeeKeyIndex, ChannelId channelId, ShortChannelId shortChannelId,
-                                    byte fundingTag)
+                                    byte fundingTag, ulong fundingSatoshis, ulong pushSatoshis)
     {
         var funderParty = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
                                            LightningMoney.MilliSatoshis(1_000), 30,
-                                           LightningMoney.Satoshis(FundingSatoshis), 144);
+                                           LightningMoney.Satoshis(fundingSatoshis), 144);
         var fundeeParty = new ChannelParty(LightningMoney.Satoshis(600), LightningMoney.Satoshis(20_000),
                                            LightningMoney.MilliSatoshis(1_000), 30,
-                                           LightningMoney.Satoshis(FundingSatoshis), 100);
+                                           LightningMoney.Satoshis(fundingSatoshis), 100);
         var fundingTxId = new TxId(Enumerable.Repeat(fundingTag, 32).ToArray());
         var funderBasepoints = funder.Signer.GetChannelBasepoints(funderKeyIndex);
         var fundeeBasepoints = fundee.Signer.GetChannelBasepoints(fundeeKeyIndex);
@@ -179,10 +229,10 @@ internal sealed class PaymentHarness : IDisposable
 
         var funderChannel = CreateChannel(funder, funderKeyIndex, funderBasepoints, fundee, fundeeKeyIndex,
                                           fundeeBasepoints, funderParty, fundeeParty, true, channelId, fundingTxId,
-                                          obscuring);
+                                          obscuring, fundingSatoshis, pushSatoshis);
         var fundeeChannel = CreateChannel(fundee, fundeeKeyIndex, fundeeBasepoints, funder, funderKeyIndex,
                                           funderBasepoints, fundeeParty, funderParty, false, channelId, fundingTxId,
-                                          obscuring);
+                                          obscuring, fundingSatoshis, pushSatoshis);
         funderChannel.ShortChannelId = shortChannelId;
         fundeeChannel.ShortChannelId = shortChannelId;
 
@@ -196,11 +246,12 @@ internal sealed class PaymentHarness : IDisposable
                                               ChannelBasepoints selfBasepoints, PaymentHarnessNode peer,
                                               uint peerKeyIndex, ChannelBasepoints peerBasepoints, ChannelParty local,
                                               ChannelParty remote, bool isInitiator, ChannelId channelId,
-                                              TxId fundingTxId, CommitmentNumber obscuring)
+                                              TxId fundingTxId, CommitmentNumber obscuring, ulong fundingSatoshis,
+                                              ulong pushSatoshis)
     {
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(FeeratePerKw), 3, false,
                                               FeatureSupport.No);
-        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
+        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(fundingSatoshis),
                                                   selfBasepoints.FundingPubKey, peerBasepoints.FundingPubKey,
                                                   fundingTxId, 0);
         var localKeySet = new ChannelKeySetModel(selfKeyIndex, selfBasepoints.FundingPubKey,
@@ -211,10 +262,10 @@ internal sealed class PaymentHarness : IDisposable
                                                   peerBasepoints.PaymentBasepoint,
                                                   peerBasepoints.DelayedPaymentBasepoint, peerBasepoints.HtlcBasepoint,
                                                   peer.Signer.GetPerCommitmentPoint(peerKeyIndex, 0));
-        var localSat = isInitiator ? FundingSatoshis - PushSatoshis : PushSatoshis;
+        var localSat = isInitiator ? fundingSatoshis - pushSatoshis : pushSatoshis;
         return new ChannelModel(channelParams, channelId, obscuring, fundingOutput, isInitiator, null, null,
                                 LightningMoney.Satoshis(localSat), localKeySet, 0, 0,
-                                LightningMoney.Satoshis(FundingSatoshis - localSat), remoteKeySet, 0,
+                                LightningMoney.Satoshis(fundingSatoshis - localSat), remoteKeySet, 0,
                                 peer.NodeId, 0, ChannelState.Open, ChannelVersion.V1);
     }
 }
@@ -331,6 +382,53 @@ internal sealed class PaymentHarnessNode : IDisposable
                                         routing.HtlcMinimumMsat, routing.FeeBaseMsat,
                                         routing.FeeProportionalMillionths,
                                         PaymentHarness.FundingSatoshis * 1_000);
+    }
+
+    /// <summary>
+    /// A <c>channel_update</c> this node signs for its own direction of a channel to <paramref name="peer"/>, with the
+    /// given policy (what a hop puts in an UPDATE failure).
+    /// </summary>
+    public ChannelUpdatePayload SignedUpdate(PaymentHarnessNode peer, ShortChannelId shortChannelId, uint timestamp,
+                                             uint feeBaseMsat, uint feeProportionalMillionths, ushort cltvExpiryDelta,
+                                             bool disabled = false)
+    {
+        var isNode2 = ((ReadOnlySpan<byte>)NodeId).SequenceCompareTo(peer.NodeId) > 0;
+        var channelFlags = (byte)((isNode2 ? ChannelUpdatePayload.ChannelFlagDirection : 0)
+                                | (disabled ? ChannelUpdatePayload.ChannelFlagDisable : 0));
+        var unsigned = new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest,
+                                                shortChannelId, timestamp, ChannelUpdatePayload.MessageFlagMustBeOne,
+                                                channelFlags, cltvExpiryDelta, 1_000, feeBaseMsat,
+                                                feeProportionalMillionths, PaymentHarness.FundingSatoshis * 1_000);
+        return unsigned.WithSignature(Signer.SignNodeMessage(unsigned.GetSignatureHash()));
+    }
+
+    /// <summary>
+    /// An invoice of this node that offers <c>basic_mpp</c> (the production <c>InvoiceService</c> does not), with the
+    /// given route hints, stored with its preimage like one the invoice service made.
+    /// </summary>
+    public async Task<InvoiceModel> CreateMppInvoiceAsync(LightningMoney amount, IEnumerable<RoutingInfo> hints)
+    {
+        var preimage = RandomNumberGenerator.GetBytes(32);
+        var paymentHash = SHA256.HashData(preimage);
+        var paymentSecret = RandomNumberGenerator.GetBytes(32);
+        // var_onion_optin (8) and payment_secret (14) compulsory, as the invoice service sets them, plus basic_mpp (17)
+        var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+        features.SetFeature(Feature.BasicMpp, false);
+        var invoice = new Invoice(amount, "mpp", PaymentTarget.FromWireBytes(paymentHash),
+                                  PaymentTarget.FromWireBytes(paymentSecret), BitcoinNetwork.Regtest, KeyManager)
+        {
+            MinFinalCltvExpiry = Options.Routing.InvoiceMinFinalCltvExpiry,
+            Features = features
+        };
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + 3_600);
+        foreach (var hint in hints)
+            invoice.AddRouteHint(new RoutingInfoCollection { hint });
+
+        var model = new InvoiceModel(new Hash(paymentHash), new Secret(preimage), new Secret(paymentSecret), amount,
+                                     "mpp", invoice.Encode(), DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp),
+                                     3_600, Options.Routing.InvoiceMinFinalCltvExpiry);
+        await Invoices.AddAsync(model);
+        return model;
     }
 
     /// <summary>Hands the oldest queued message to its recipient's channel manager.</summary>
@@ -579,3 +677,15 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
         return Task.CompletedTask;
     }
 }
+
+/// <summary>Optional extra channels of <see cref="PaymentHarness"/>.</summary>
+/// <param name="SecondBobCarol">A second Bob–Carol channel (Bob funds it), <c>ScidBobCarol2</c>.</param>
+/// <param name="SecondCarolDavid">A second Carol–David channel (Carol funds it), <c>ScidCarolDavid2</c>.</param>
+/// <param name="BobCarolFundingSatoshis">The capacity of each Bob–Carol channel.</param>
+/// <param name="BobCarolPushSatoshis">What Bob pushes to Carol on each Bob–Carol channel.</param>
+[ExcludeFromCodeCoverage]
+internal sealed record PaymentHarnessTopology(
+    bool SecondBobCarol = false,
+    bool SecondCarolDavid = false,
+    ulong BobCarolFundingSatoshis = PaymentHarness.FundingSatoshis,
+    ulong BobCarolPushSatoshis = PaymentHarness.PushSatoshis);

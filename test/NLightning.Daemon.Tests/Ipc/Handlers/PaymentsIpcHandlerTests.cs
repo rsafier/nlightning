@@ -80,12 +80,22 @@ public class PaymentsIpcHandlerTests
         var payment = CreatePayment();
         payment.AddOutgoingHtlc(new byte[32], 0);
         payment.Succeed(s_preimage, s_now.AddSeconds(1));
-        _paymentServiceMock.Setup(x => x.PayInvoiceAsync("lnbcrt1pay", null, TimeSpan.FromSeconds(45),
+        _paymentServiceMock.Setup(x => x.PayInvoiceAsync("lnbcrt1pay", null,
+                                                         It.Is<PayInvoiceOptions>(
+                                                             o => o.Timeout == TimeSpan.FromSeconds(45)
+                                                               && o.MaxFee!.MilliSatoshi == 9_000
+                                                               && o.MaxParts == 3),
                                                          It.IsAny<CancellationToken>()))
-                           .ReturnsAsync(payment);
+                           .ReturnsAsync(new PayInvoiceResult(payment, 4, 2));
         var handler = new PayInvoiceIpcHandler(NullLogger<PayInvoiceIpcHandler>.Instance, BuildProvider());
         var envelope = CreateEnvelope(ClientCommand.PayInvoice,
-                                      new PayInvoiceIpcRequest { Bolt11 = "lnbcrt1pay", TimeoutSeconds = 45 });
+                                      new PayInvoiceIpcRequest
+                                      {
+                                          Bolt11 = "lnbcrt1pay",
+                                          TimeoutSeconds = 45,
+                                          MaxFee = LightningMoney.MilliSatoshis(9_000),
+                                          MaxParts = 3
+                                      });
 
         // Act
         var response = await handler.HandleAsync(envelope, TestContext.Current.CancellationToken);
@@ -97,6 +107,7 @@ public class PaymentsIpcHandlerTests
         Assert.Equal(s_preimage, payload.Payment.Preimage);
         Assert.Equal(s_payee, payload.Payment.PayeeNodeId);
         Assert.Equal(0UL, payload.Payment.OutgoingHtlcId);
+        Assert.Equal((4, 2), (payload.Attempts, payload.Parts));
     }
 
     [Fact]
@@ -155,7 +166,7 @@ public class PaymentsIpcHandlerTests
     {
         // Arrange
         _paymentServiceMock.Setup(x => x.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<LightningMoney?>(),
-                                                         It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+                                                         It.IsAny<PayInvoiceOptions>(), It.IsAny<CancellationToken>()))
                            .ThrowsAsync(new InvalidOperationException("already in flight"));
         var handler = new PayInvoiceIpcHandler(NullLogger<PayInvoiceIpcHandler>.Instance, BuildProvider());
         var envelope = CreateEnvelope(ClientCommand.PayInvoice, new PayInvoiceIpcRequest { Bolt11 = "lnbcrt1pay" });

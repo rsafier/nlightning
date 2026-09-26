@@ -246,16 +246,23 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     /// </summary>
     /// <param name="bolt11">The invoice.</param>
     /// <param name="amount">The amount when the invoice has none.</param>
-    /// <param name="timeoutSeconds">How long the daemon waits for the outcome, or null for its default.</param>
+    /// <param name="timeoutSeconds">How long the daemon waits for the outcome and retries, or null for its default.
+    /// </param>
+    /// <param name="maxFeeMsat">The per-call fee limit in msat, or null for the daemon's default (NL-270).</param>
+    /// <param name="maxParts">The most HTLCs in flight at once (1 never splits), or null for the daemon's default.
+    /// </param>
     /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
     public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
+                                                       ulong? maxFeeMsat = null, uint? maxParts = null,
                                                        CancellationToken ct = default)
     {
         var req = new PayInvoiceIpcRequest
         {
             Bolt11 = bolt11,
             Amount = amount,
-            TimeoutSeconds = timeoutSeconds
+            TimeoutSeconds = timeoutSeconds,
+            MaxFee = maxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
+            MaxParts = maxParts
         };
         return SendRequestAsync<PayInvoiceIpcRequest, PayInvoiceIpcResponse>(ClientCommand.PayInvoice, req, ct);
     }

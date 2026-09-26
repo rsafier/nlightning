@@ -100,7 +100,7 @@ public sealed class HintRouteBuilder
         var reasons = new List<string>();
         var hintCandidates = 0;
 
-        foreach (var (description, path) in GetCandidates(target, ourNodeId))
+        foreach (var (description, _, path) in GetCandidates(target, ourNodeId))
         {
             if (path.Count > 0)
                 hintCandidates++;
@@ -142,10 +142,14 @@ public sealed class HintRouteBuilder
         return false;
     }
 
-    private static IEnumerable<(string Description, IReadOnlyList<RoutingInfo> Path)> GetCandidates(
+    /// <summary>
+    /// The candidate paths after us, in order: the payee directly (hint index -1, empty path), then each route hint in
+    /// invoice order (cut after our own entry when it passes through us).
+    /// </summary>
+    internal static IEnumerable<(string Description, int HintIndex, IReadOnlyList<RoutingInfo> Path)> GetCandidates(
         PaymentTarget target, CompactPubKey ourNodeId)
     {
-        yield return ("direct", []);
+        yield return ("direct", -1, []);
 
         for (var i = 0; i < target.RouteHints.Count; i++)
         {
@@ -165,12 +169,21 @@ public sealed class HintRouteBuilder
             if (ourIndex >= 0 && path.Count == 0)
                 continue;
 
-            yield return ($"route hint {i}", path);
+            yield return ($"route hint {i}", i, path);
         }
     }
 
-    private static PaymentRoute BuildAlong(IReadOnlyList<RoutingInfo> path, PaymentTarget target,
-                                           LightningMoney amount, uint finalCltv)
+    /// <summary>
+    /// The route along <paramref name="path"/> (the hops after our peer's channel, empty for the payee directly) that
+    /// delivers <paramref name="amount"/> with the final <c>outgoing_cltv_value</c> <paramref name="finalCltv"/>.
+    /// </summary>
+    /// <param name="path">The hint entries after us, first node first.</param>
+    /// <param name="target">What to pay.</param>
+    /// <param name="amount">What the payee receives over this route.</param>
+    /// <param name="finalCltv">The final <c>outgoing_cltv_value</c>.</param>
+    /// <param name="totalAmount">The whole payment's amount when this route is one part of it; null otherwise.</param>
+    internal static PaymentRoute BuildAlong(IReadOnlyList<RoutingInfo> path, PaymentTarget target,
+                                            LightningMoney amount, uint finalCltv, LightningMoney? totalAmount = null)
     {
         var hops = new RouteHop[path.Count + 1];
         hops[^1] = new RouteHop(target.PayeeNodeId, amount, finalCltv, null);
@@ -189,6 +202,6 @@ public sealed class HintRouteBuilder
         }
 
         return new PaymentRoute(hops, LightningMoney.MilliSatoshis(amountMsat), cltv, target.PaymentHash,
-                                target.PaymentSecret, target.PaymentMetadata);
+                                target.PaymentSecret, target.PaymentMetadata, totalAmount);
     }
 }
