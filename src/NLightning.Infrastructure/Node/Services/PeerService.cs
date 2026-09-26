@@ -64,6 +64,10 @@ public sealed class PeerService : IPeerService
     private readonly TaskCompletionSource _initReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private volatile bool _isInitialized;
+    private readonly Lock _bootstrapLock = new();
+    private bool _ourInitSent;
+    private bool _peerInitAccepted;
+    private bool _gossipRequested;
     private EventHandler<ChannelMessageEventArgs>? _onChannelMessageReceived;
     private EventHandler<PeerDisconnectedEventArgs>? _onDisconnect;
     private EventHandler<ChannelUpdateMessage>? _onChannelUpdateReceived;
@@ -209,6 +213,9 @@ public sealed class PeerService : IPeerService
             Dispose();
             throw connectionException;
         }
+
+        // The peer's init may have been handled while ours was still being sent: nothing may precede our init
+        MarkBootstrapStep(ourInitSent: true);
     }
 
     /// <inheritdoc/>
@@ -538,6 +545,29 @@ public sealed class PeerService : IPeerService
         _logger.LogTrace("Initialization from peer {peer} completed successfully", PeerPubKey);
         _isInitialized = true;
         _initReceived.TrySetResult();
+
+        MarkBootstrapStep(ourInitSent: false);
+    }
+
+    /// <summary>
+    /// Records that our init went out (<paramref name="ourInitSent"/>) or that the peer's was accepted, and asks for
+    /// gossip once both happened: the peer's init can be handled on the read loop while ours is still being written,
+    /// and BOLT 1 requires init to be the first message on the wire.
+    /// </summary>
+    private void MarkBootstrapStep(bool ourInitSent)
+    {
+        lock (_bootstrapLock)
+        {
+            if (ourInitSent)
+                _ourInitSent = true;
+            else
+                _peerInitAccepted = true;
+
+            if (!_ourInitSent || !_peerInitAccepted || _gossipRequested)
+                return;
+
+            _gossipRequested = true;
+        }
 
         RequestGossipIfEnabled();
     }

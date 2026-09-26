@@ -126,6 +126,30 @@ public class PeerServiceGossipTests
     }
 
     [Fact]
+    public void Given_PeerInitHandledWhileOursIsBeingSent_When_OursGoesOut_Then_TheFilterFollowsIt()
+    {
+        // Arrange: the read loop hands us the peer's init before our own init finished writing (seen against LND:
+        // "very first message between nodes must be init message")
+        var events = new List<string>();
+        _communication.Setup(x => x.InitializeAsync(It.IsAny<TimeSpan>()))
+                      .Returns(() =>
+                       {
+                           RaiseMessage(CreateInitMessage());
+                           events.Add("our init sent");
+                           return Task.CompletedTask;
+                       });
+        _communication.Setup(x => x.SendMessageAsync(It.IsAny<IMessage>()))
+                      .Callback<IMessage, CancellationToken>((m, _) => events.Add(m.Type.ToString()))
+                      .Returns(Task.CompletedTask);
+
+        // Act
+        CreatePeerService(_ingress.Object);
+
+        // Assert
+        Assert.Equal(["our init sent", nameof(MessageTypes.GossipTimestampFilter)], events);
+    }
+
+    [Fact]
     public void Given_GraphDisabled_When_InitIsAccepted_Then_NoFilterIsSent()
     {
         // Arrange: mainnet by default (plan D12)
