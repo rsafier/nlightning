@@ -139,9 +139,9 @@ internal static class ChainWatchSchemaRoundTrip
         // Broadcast: pending -> confirmed -> pending again after a reorg
         var raw = Enumerable.Range(0, 200).Select(i => (byte)i).ToArray();
         var broadcastTxId = TxIdOf(0x35);
-        var broadcast = BroadcastTransactionModel.Restore(broadcastTxId, raw, BroadcastPurpose.Funding, channelId,
-                                                          2_500, TxIdOf(0x36), 800, BroadcastState.Pending, null,
-                                                          null, createdAt);
+        var broadcast = BroadcastTransactionModel.Restore(broadcastTxId, raw, BroadcastPurpose.LocalCommitment,
+                                                          channelId, 2_500, TxIdOf(0x36), 800, BroadcastState.Pending,
+                                                          null, null, createdAt, 0xFFFF_FFFF_FFFF);
         await SaveAsync(contextFactory, c =>
         {
             new BroadcastTransactionDbRepository(c).Add(broadcast);
@@ -329,6 +329,7 @@ internal static class ChainWatchSchemaRoundTrip
         Assert.Equal(expected.ConfirmedHeight, actual.ConfirmedHeight);
         Assert.Equal(expected.ConfirmedBlockHash, actual.ConfirmedBlockHash);
         Assert.Equal(expected.CreatedAt.UtcTicks, actual.CreatedAt.UtcTicks);
+        Assert.Equal(expected.CommitmentNumber, actual.CommitmentNumber);
     }
 
     private static async Task SaveAsync(Func<NLightningDbContext> contextFactory,

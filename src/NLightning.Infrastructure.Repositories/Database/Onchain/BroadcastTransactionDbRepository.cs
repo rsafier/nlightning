@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 namespace NLightning.Infrastructure.Repositories.Database.Onchain;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
@@ -40,7 +41,8 @@ public class BroadcastTransactionDbRepository
             State = (byte)transaction.State,
             ConfirmedHeight = transaction.ConfirmedHeight,
             ConfirmedBlockHash = transaction.ConfirmedBlockHash,
-            CreatedAt = transaction.CreatedAt
+            CreatedAt = transaction.CreatedAt,
+            CommitmentNumber = transaction.CommitmentNumber is { } number ? (long)number : null
         });
     }
 
@@ -49,6 +51,26 @@ public class BroadcastTransactionDbRepository
     {
         var entity = await DbSet.FindAsync(transactionId);
         return entity is null ? null : MapEntityToDomain(entity);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<BroadcastTransactionModel>> GetByChannelIdAsync(ChannelId channelId)
+    {
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(b => b.ChannelId == channelId)
+                                  .ToListAsync();
+        return entities.OrderBy(b => b.CreatedAt).Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> MarkAbandonedAsync(TxId transactionId)
+    {
+        var entity = await DbSet.FindAsync(transactionId);
+        if (entity is null || entity.State != (byte)BroadcastState.Pending)
+            return false;
+
+        entity.State = (byte)BroadcastState.Abandoned;
+        return true;
     }
 
     /// <inheritdoc />
@@ -95,6 +117,7 @@ public class BroadcastTransactionDbRepository
                                                  (uint)entity.FeeratePerKw, entity.ReplacesTransactionId,
                                                  entity.FirstBroadcastHeight, (BroadcastState)entity.State,
                                                  entity.ConfirmedHeight, entity.ConfirmedBlockHash,
-                                                 entity.CreatedAt);
+                                                 entity.CreatedAt,
+                                                 entity.CommitmentNumber is { } number ? (ulong)number : null);
     }
 }

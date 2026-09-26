@@ -47,19 +47,26 @@ public sealed class BroadcastTransactionModel
 
     public DateTimeOffset CreatedAt { get; }
 
+    /// <summary>
+    /// For <see cref="BroadcastPurpose.LocalCommitment"/>: the number of our local commitment it is. The signer's
+    /// invariant S1 is restored from it at channel registration (NL-297): the per-commitment secret of that commitment
+    /// is never released, even after a restart.
+    /// </summary>
+    public ulong? CommitmentNumber { get; }
+
     public BroadcastTransactionModel(SignedTransaction transaction, BroadcastPurpose purpose, ChannelId? channelId,
                                      uint firstBroadcastHeight, uint feeratePerKw = 0,
-                                     TxId? replacesTransactionId = null)
+                                     TxId? replacesTransactionId = null, ulong? commitmentNumber = null)
         : this(transaction?.TxId ?? throw new ArgumentNullException(nameof(transaction)), transaction.RawTxBytes,
                purpose, channelId, feeratePerKw, replacesTransactionId, firstBroadcastHeight, BroadcastState.Pending,
-               null, null, DateTimeOffset.UtcNow)
+               null, null, DateTimeOffset.UtcNow, commitmentNumber)
     {
     }
 
     private BroadcastTransactionModel(TxId transactionId, byte[] rawTransaction, BroadcastPurpose purpose,
                                       ChannelId? channelId, uint feeratePerKw, TxId? replacesTransactionId,
                                       uint firstBroadcastHeight, BroadcastState state, uint? confirmedHeight,
-                                      Hash? confirmedBlockHash, DateTimeOffset createdAt)
+                                      Hash? confirmedBlockHash, DateTimeOffset createdAt, ulong? commitmentNumber)
     {
         ArgumentNullException.ThrowIfNull(rawTransaction);
         if (rawTransaction.Length == 0)
@@ -78,6 +85,7 @@ public sealed class BroadcastTransactionModel
         ConfirmedHeight = confirmedHeight;
         ConfirmedBlockHash = confirmedBlockHash;
         CreatedAt = createdAt;
+        CommitmentNumber = commitmentNumber;
     }
 
     /// <summary>Rebuilds a stored broadcast (persistence only).</summary>
@@ -86,11 +94,11 @@ public sealed class BroadcastTransactionModel
                                                     uint feeratePerKw, TxId? replacesTransactionId,
                                                     uint firstBroadcastHeight, BroadcastState state,
                                                     uint? confirmedHeight, Hash? confirmedBlockHash,
-                                                    DateTimeOffset createdAt)
+                                                    DateTimeOffset createdAt, ulong? commitmentNumber = null)
     {
         return new BroadcastTransactionModel(transactionId, rawTransaction, purpose, channelId, feeratePerKw,
                                              replacesTransactionId, firstBroadcastHeight, state, confirmedHeight,
-                                             confirmedBlockHash, createdAt);
+                                             confirmedBlockHash, createdAt, commitmentNumber);
     }
 
     /// <summary>The transaction as a <see cref="SignedTransaction"/>.</summary>
@@ -105,6 +113,16 @@ public sealed class BroadcastTransactionModel
         State = BroadcastState.Confirmed;
         ConfirmedHeight = height;
         ConfirmedBlockHash = blockHash;
+    }
+
+    /// <summary>
+    /// Given up: it can never confirm (for example our commitment after the peer's commitment spent the funding
+    /// output). Not rebroadcast any more; a confirmed one is kept as it is.
+    /// </summary>
+    public void MarkAbandoned()
+    {
+        if (State == BroadcastState.Pending)
+            State = BroadcastState.Abandoned;
     }
 
     /// <summary>The block that held it was disconnected: it is pending (and rebroadcast) again.</summary>
