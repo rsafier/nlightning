@@ -190,6 +190,12 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                 continue;
             }
 
+            // Without txindex bitcoind cannot serve a confirmed transaction that left its mempool: while the monitor
+            // is behind its tip (catch-up) or halted, the commitment may be in a block not processed yet, so that
+            // block does not count as missing
+            if (!await IsMonitorAtTipAsync())
+                continue;
+
             if (++prepared.MissingBlocks < Math.Max(1, _options.EvictionGraceBlocks))
                 continue;
 
@@ -373,11 +379,14 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
             if (classification is not { Kind: FundingSpendKind.Revoked, CommitmentNumber: { } number })
                 return (classification.Kind, []);
 
+            // A penalty abandoned when this commitment left the mempool is revived: the commitment is back, and a
+            // penalty built again would have the same txid (lock time 0, the same address, RFC 6979, the same fee)
             var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
-            toPublish = broadcasts.Where(b => b.State == BroadcastState.Pending
+            toPublish = broadcasts.Where(b => b.State is BroadcastState.Pending or BroadcastState.Abandoned
                                            && OnchainChannelWatcher.IsPreparedPurpose(b.Purpose)
                                            && OnchainChannelWatcher.SpendsFrom(b, spend.TxId))
                                   .ToList();
+            var revived = await ReviveAbandonedAsync(unitOfWork, toPublish);
             if (toPublish.Count == 0)
             {
                 if (_revokedCommitResolver is null)
@@ -394,15 +403,26 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                 alerts = actions.OfType<AlertAction>().ToList();
                 foreach (var broadcast in actions.OfType<BroadcastAction>().Select(b => b.Transaction))
                 {
-                    if (await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
-                            broadcast.TransactionId) is not null)
-                        continue;
-
-                    unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
-                    toPublish.Add(broadcast);
+                    var stored = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
+                                     broadcast.TransactionId);
+                    if (stored is null)
+                    {
+                        unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
+                        toPublish.Add(broadcast);
+                    }
+                    else if (stored.State is BroadcastState.Pending or BroadcastState.Abandoned)
+                    {
+                        toPublish.Add(stored);
+                    }
                 }
 
+                await ReviveAbandonedAsync(unitOfWork, toPublish);
+
                 // Stored before the publish (D4): the monitor resends them after every block until they confirm
+                await unitOfWork.SaveChangesAsync();
+            }
+            else if (revived)
+            {
                 await unitOfWork.SaveChangesAsync();
             }
 
@@ -429,6 +449,29 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
         }
 
         return (classification.Kind, toPublish.Select(t => t.TransactionId).ToList());
+    }
+
+    /// <summary>
+    /// Stages every abandoned transaction of the list as pending again (the monitor then resends it after every block);
+    /// true when one changed.
+    /// </summary>
+    private async Task<bool> ReviveAbandonedAsync(IUnitOfWork unitOfWork, IEnumerable<BroadcastTransactionModel> list)
+    {
+        var revived = false;
+        foreach (var abandoned in list.Where(b => b.State == BroadcastState.Abandoned).ToList())
+        {
+            if (!await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(abandoned.TransactionId))
+                continue;
+
+            // The model too: the monitor keeps a published transaction for rebroadcast only while it is pending
+            abandoned.MarkPending();
+            revived = true;
+            _logger.LogWarning("Channel {ChannelId}: {Purpose} {TxId}, abandoned when its revoked commitment left the "
+                             + "mempool, is pending again: the commitment is back", abandoned.ChannelId,
+                               abandoned.Purpose, Display(abandoned.TransactionId));
+        }
+
+        return revived;
     }
 
     private async Task AbandonAsync(PreparedPenalty prepared, CancellationToken cancellationToken)
@@ -478,6 +521,28 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
         {
             _logger.LogWarning(e, "Could not ask bitcoind for {TxId}", Display(txId));
             return true;
+        }
+    }
+
+    /// <summary>
+    /// True when the monitor processed bitcoind's tip and is not halted; false when it is behind, halted, or bitcoind
+    /// cannot be asked (nothing is abandoned then).
+    /// </summary>
+    private async Task<bool> IsMonitorAtTipAsync()
+    {
+        if (_chainService is null)
+            return true;
+        if (_blockchainMonitor.IsChainProcessingHalted)
+            return false;
+
+        try
+        {
+            return _blockchainMonitor.LastProcessedBlockHeight >= await _chainService.GetCurrentBlockHeightAsync();
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not ask bitcoind for its tip");
+            return false;
         }
     }
 

@@ -130,6 +130,17 @@ internal sealed class OnchainTestStore
                        _pending.Add("broadcast abandoned");
                        return true;
                    });
+        repository.Setup(r => r.MarkPendingAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId txId) =>
+                   {
+                       var broadcast = Broadcasts.FirstOrDefault(b => b.TransactionId == txId);
+                       if (broadcast is not { State: BroadcastState.Abandoned or BroadcastState.Replaced })
+                           return false;
+
+                       broadcast.MarkPending();
+                       _pending.Add("broadcast pending");
+                       return true;
+                   });
         return repository;
     }
 

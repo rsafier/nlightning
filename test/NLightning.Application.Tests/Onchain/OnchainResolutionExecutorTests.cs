@@ -155,6 +155,27 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ResolverRebuildsAnAbandonedBroadcast_When_Round_Then_PendingAgainAndPublished()
+    {
+        // Arrange: a transaction with the same txid was stored and abandoned earlier (a penalty prepared from the
+        // mempool whose commitment left it, then confirmed after all: rebuilt, the penalty has the same txid)
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal);
+        var sweep = CreateBroadcast(0x53);
+        _store.Broadcasts.Add(sweep);
+        sweep.MarkAbandoned();
+        _resolver.OnResolve = (_, _, _) => [new BroadcastAction(sweep)];
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 5, TestContext.Current.CancellationToken);
+
+        // Assert: pending again (so the monitor resends it every block), in the round's save, then published
+        Assert.Single(_store.Broadcasts);
+        Assert.Equal(BroadcastState.Pending, sweep.State);
+        Assert.Equal(["broadcast pending"], Assert.Single(_store.Saves));
+        Assert.Equal(["save", "publish Sweep"], _calls);
+    }
+
+    [Fact]
     public async Task Given_OutputSpent_When_Handled_Then_ResolvedAtThatHeightAndResolverToldWithTheSpender()
     {
         // Arrange

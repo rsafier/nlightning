@@ -118,7 +118,7 @@ public sealed class MempoolReactorTests : IDisposable
         services.AddSingleton(_memory.Object);
         services.AddSingleton(new Mock<IChannelErrorSender>().Object);
         services.AddSingleton(new Mock<IOnchainResolutionExecutor>().Object);
-        services.AddSingleton(new Mock<IOutpointWatcher>().Object);
+        services.AddSingleton<IOutpointWatcher>(_monitor.Object); // as in production: the monitor also publishes
         services.AddSingleton(_shachainFactory.Object);
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
         services.AddSingleton<IMessageFactory, MessageFactory>();
@@ -310,6 +310,88 @@ public sealed class MempoolReactorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_PenaltyAbandonedAfterEviction_When_TheSameCommitmentConfirms_Then_PendingAgainLinkedAndPublished()
+    {
+        // Arrange: the revoked commitment left the mempool for the grace blocks, so its penalty was abandoned; then
+        // the cheater got the same commitment mined. The penalty's txid is deterministic (lock time 0, the same unused
+        // address, RFC 6979, the same fee), so a rebuilt one would match the abandoned row and never be sent.
+        var revoked = PrepareBreach();
+        await Reactor.HandleSpendAsync(FundingSpend(revoked), TestContext.Current.CancellationToken);
+        var penalty = Assert.Single(_store.Broadcasts);
+        await EvictAsync(penalty);
+        _published.Clear();
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(SpentBy(revoked), TestContext.Current.CancellationToken);
+
+        // Assert: pending again, every row names it (the resolver builds nothing), and it went out
+        Assert.Equal(ChannelCloseKind.RevokedCommitment, outcome!.Kind);
+        Assert.Equal(BroadcastState.Pending, penalty.State);
+        Assert.NotEmpty(_store.Outputs);
+        Assert.All(_store.Outputs.Values, o =>
+        {
+            Assert.Equal(OutputResolutionState.Broadcast, o.State);
+            Assert.Equal(penalty.TransactionId, o.ResolvingTransactionId);
+        });
+        Assert.Equal([penalty.TransactionId], _published.Select(p => p.TransactionId));
+        Assert.Equal(BroadcastState.Pending, _published[0].State);
+    }
+
+    [Fact]
+    public async Task Given_PenaltyAbandonedAfterEviction_When_TheCommitmentIsSeenAgain_Then_PendingAgainAndPublished()
+    {
+        // Arrange
+        var revoked = PrepareBreach();
+        await Reactor.HandleSpendAsync(FundingSpend(revoked), TestContext.Current.CancellationToken);
+        var penalty = Assert.Single(_store.Broadcasts);
+        await EvictAsync(penalty);
+        _published.Clear();
+        _calls.Clear();
+
+        // Act: the cheater broadcasts the same commitment again
+        var reaction = await Reactor.HandleSpendAsync(FundingSpend(revoked), TestContext.Current.CancellationToken);
+
+        // Assert: the same row, pending again in one save before the publish, and followed again
+        Assert.Single(_store.Broadcasts);
+        Assert.Equal(BroadcastState.Pending, penalty.State);
+        Assert.Equal([penalty.TransactionId], reaction.PenaltyTransactionIds);
+        Assert.Equal(["save", "publish"], _calls);
+        Assert.Equal(BroadcastState.Pending, _published.Single().State);
+        Assert.Contains(revoked.TxId, Reactor.PreparedCommitments);
+    }
+
+    [Fact]
+    public async Task Given_MonitorBehindBitcoindsTip_When_TheCommitmentIsUnknown_Then_NothingIsAbandoned()
+    {
+        // Arrange: without txindex bitcoind answers "unknown" for a confirmed transaction out of its mempool; while our
+        // monitor catches up (behind the tip) or is halted the commitment may sit in a block not processed yet
+        var revoked = PrepareBreach();
+        await Reactor.HandleSpendAsync(FundingSpend(revoked), TestContext.Current.CancellationToken);
+        var penalty = Assert.Single(_store.Broadcasts);
+        _chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>())).ReturnsAsync((Transaction?)null);
+        _chainService.Setup(c => c.GetCurrentBlockHeightAsync()).ReturnsAsync(Tip + 10);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: many blocks behind the tip, then halted at the tip
+        for (var i = 0; i < 5; i++)
+            await Reactor.CheckPreparedAsync(ct);
+        _chainService.Setup(c => c.GetCurrentBlockHeightAsync()).ReturnsAsync(Tip);
+        _monitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        for (var i = 0; i < 5; i++)
+            await Reactor.CheckPreparedAsync(ct);
+
+        // Assert
+        Assert.Equal(BroadcastState.Pending, penalty.State);
+        Assert.Contains(revoked.TxId, Reactor.PreparedCommitments);
+
+        // Act / Assert: at the tip and running, the grace blocks count again
+        _monitor.SetupGet(m => m.IsChainProcessingHalted).Returns(false);
+        for (var i = 0; i < 3; i++)
+            await Reactor.CheckPreparedAsync(ct);
+        Assert.Equal(BroadcastState.Abandoned, penalty.State);
+    }
+
+    [Fact]
     public async Task Given_PenaltiesPreparedBeforeARestart_When_Restored_Then_TheirCommitmentIsFollowedAgain()
     {
         // Arrange
@@ -405,6 +487,17 @@ public sealed class MempoolReactorTests : IDisposable
     }
 
     private OnchainChannelWatcher Watcher => _provider.GetRequiredService<OnchainChannelWatcher>();
+
+    /// <summary>bitcoind forgets the commitment for the grace blocks (monitor at its tip): the penalty is abandoned.</summary>
+    private async Task EvictAsync(BroadcastTransactionModel penalty)
+    {
+        _chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>())).ReturnsAsync((Transaction?)null);
+        _chainService.Setup(c => c.GetCurrentBlockHeightAsync()).ReturnsAsync(Tip);
+        for (var i = 0; i < new OnchainMempoolOptions().EvictionGraceBlocks; i++)
+            await Reactor.CheckPreparedAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(BroadcastState.Abandoned, penalty.State);
+        Assert.Empty(Reactor.PreparedCommitments);
+    }
 
     /// <summary>
     /// Bob's commitment with both HTLCs, revoked by the next round: its log entry and secret are known (as in the

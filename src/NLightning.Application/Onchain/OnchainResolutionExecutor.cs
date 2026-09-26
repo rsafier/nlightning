@@ -699,6 +699,15 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             {
                 toPublish.Add(stored);
             }
+            else if (stored.State == BroadcastState.Abandoned
+                  && await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(stored.TransactionId))
+            {
+                // The resolver needs a transaction given up earlier (e.g. a penalty prepared from the mempool and
+                // abandoned when its commitment left it, which confirmed later: rebuilt, it has the same txid)
+                stored.MarkPending();
+                toPublish.Add(stored);
+                staged = true;
+            }
         }
 
         foreach (var watch in actions.OfType<WatchOutpointAction>().Select(a => a.Watch))
