@@ -38,7 +38,7 @@ using Interfaces;
 /// timestamps when both sides offer <c>gossip_queries_ex</c>); the replies are checked (<see cref="RangeReplyCollector"/>,
 /// a violation gets a <c>warning</c> and ends the sync); the channels we lack (or, with timestamps, whose updates are
 /// newer) are asked for with <c>query_short_channel_ids</c> in batches that fit one message; then
-/// <c>gossip_timestamp_filter(now - SyncFilterBacklog, 0xFFFFFFFF)</c>;</item>
+/// <c>gossip_timestamp_filter(start - backlog, 0xFFFFFFFF)</c> (see below);</item>
 /// <item>another <c>gossip_queries</c> peer gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c> (new gossip only);</item>
 /// <item>a peer without <c>gossip_queries</c> gets <c>gossip_timestamp_filter(0xFFFFFFFF, 0)</c> (B7-Q-06).</item>
 /// </list>
@@ -50,11 +50,32 @@ using Interfaces;
 /// ago runs the range query again; every <see cref="GossipSyncOptions.MissedScidRetryInterval"/> the channels the
 /// ingress dropped (NL-353) are asked for again, from an idle <c>gossip_queries</c> peer.
 /// </para>
+/// <para>
+/// A query that is not answered in time, or whose replies break the rules, ends the querying of that connection for
+/// good (the peer may still be answering it, and a late reply would be taken for the next query's); a sync peer whose
+/// range sync failed gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c>. With the ingress's queue known, each
+/// <c>query_short_channel_ids</c> asks for at most a tenth of its per-peer capacity in channels and waits until the
+/// queue is at most half full (NL-353), so the answers of a large sync are not dropped. After a sync with timestamps
+/// the filter starts where the sync started (less <see cref="TimestampSyncFilterMarginSeconds"/>), since the sync
+/// already asked for every newer update; without them it reaches back <see cref="GossipSyncOptions.SyncFilterBacklog"/>.
+/// </para>
 /// </remarks>
 public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 {
     /// <summary>The bytes of a <c>query_short_channel_ids</c> besides its ids and flags (with room to spare).</summary>
     internal const int QueryOverhead = 64;
+
+    /// <summary>The most messages one short channel id can bring: its 256, two 258 and two 257.</summary>
+    internal const int MessagesPerQueriedChannel = 5;
+
+    /// <summary>
+    /// How far before the start of a range sync with timestamps the following <c>gossip_timestamp_filter</c> reaches
+    /// (clock differences between the nodes that signed the updates and us).
+    /// </summary>
+    internal const uint TimestampSyncFilterMarginSeconds = 600;
+
+    /// <summary>How often the querier looks at the ingress queue while it waits for it to drain.</summary>
+    private static readonly TimeSpan s_ingressPollInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly IGraphStore _graphStore;
     private readonly QueryResponder _responder;
@@ -65,6 +86,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly IGossipIngress? _ingress;
     private readonly Func<IReadOnlyList<ShortChannelId>>? _takeMissedShortChannelIds;
     private readonly Func<uint>? _getTipHeight;
+    private readonly Func<int>? _getIngressQueueDepth;
+    private readonly int _ingressQueueCapacity;
     private readonly ConcurrentDictionary<IPeerService, PeerSession> _sessions = new(ReferenceEqualityComparer.Instance);
     private readonly Lock _timerLock = new();
     private readonly Lock _missedLock = new();
@@ -82,12 +105,24 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// <param name="ingress">The graph ingress; the sync runs only while it is enabled (null: never).</param>
     /// <param name="takeMissedShortChannelIds">Takes the short channel ids the ingress dropped (NL-353).</param>
     /// <param name="getTipHeight">Our chain tip, for the range query's end (null or 0: the whole u32 range).</param>
+    /// <param name="getIngressQueueDepth">
+    /// The messages waiting in the graph ingress (null: no backpressure). Before each <c>query_short_channel_ids</c> the
+    /// querier waits until it is at most half of <paramref name="ingressQueueCapacity"/>.
+    /// </param>
+    /// <param name="ingressQueueCapacity">
+    /// How many messages of one peer the ingress queues before it drops them (0: no limit). A query asks for at most
+    /// a tenth of it in channels (each brings up to <see cref="MessagesPerQueriedChannel"/> messages), so the answer
+    /// fits in the half the querier waited for.
+    /// </param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
                              Func<IReadOnlyList<ShortChannelId>>? takeMissedShortChannelIds = null,
-                             Func<uint>? getTipHeight = null)
+                             Func<uint>? getTipHeight = null, Func<int>? getIngressQueueDepth = null,
+                             int ingressQueueCapacity = 0)
     {
+        _getIngressQueueDepth = getIngressQueueDepth;
+        _ingressQueueCapacity = Math.Max(0, ingressQueueCapacity);
         _graphStore = graphStore;
         _options = options.Value;
         _nodeOptions = nodeOptions.Value;
@@ -282,7 +317,11 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             return null;
 
         var session = _sessions.Values
-                               .Where(s => s is { IsReady: true, SupportsQueries: true, IsRangeSyncRunning: false })
+                               .Where(s => s is
+                               {
+                                   IsReady: true, SupportsQueries: true, IsRangeSyncRunning: false,
+                                   IsQuerySlotPoisoned: false
+                               })
                                .OrderBy(s => s.LastRangeSyncAt ?? DateTimeOffset.MinValue)
                                .FirstOrDefault();
         if (session is null || !session.EnqueueWork(new RangeSyncWork()))
@@ -362,7 +401,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             return null;
 
         return _sessions.Values
-                        .Where(s => s is { IsReady: true, SupportsQueries: true })
+                        .Where(s => s is { IsReady: true, SupportsQueries: true, IsQuerySlotPoisoned: false })
                         .OrderBy(s => s.PendingWork)
                         .ThenByDescending(s => s.IsSyncPeer)
                         .FirstOrDefault();
@@ -447,6 +486,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             {
                 try
                 {
+                    if (work is RangeSyncWork or ScidQueryWork && session.IsQuerySlotPoisoned)
+                    {
+                        // A query of ours may still be answered: nothing more is asked on this connection
+                        (work as ScidQueryWork)?.Completion?.TrySetResult(false);
+                        continue;
+                    }
+
                     switch (work)
                     {
                         case FilterWork filter:
@@ -463,6 +509,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 }
                 catch (SyncViolationException violation)
                 {
+                    // The peer may go on answering the query it broke the rules in: never ask it anything again
+                    session.PoisonQuerySlot();
                     (work as ScidQueryWork)?.Completion?.TrySetResult(false);
                     _logger.LogWarning("Ending the gossip sync with peer {Peer}: {Message}", session.Peer.PeerPubKey,
                                        violation.InnerException?.Message);
@@ -480,6 +528,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 }
                 finally
                 {
+                    if (work is RangeSyncWork)
+                        await SendLiveFilterIfNeededAsync(session, cancellationToken);
                     session.WorkDone();
                 }
             }
@@ -506,6 +556,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private async Task RunRangeSyncAsync(PeerSession session, CancellationToken cancellationToken)
     {
         session.IsRangeSyncRunning = true;
+        var completed = false;
+        var startedAt = NowSeconds();
         try
         {
             var tip = _getTipHeight?.Invoke() ?? 0;
@@ -529,6 +581,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     var reply = await ReadReplyAsync(session, cancellationToken);
                     if (reply is null)
                     {
+                        // BOLT 7: no new query before the last one is answered, and a late reply would be taken for
+                        // the next query's: nothing more is asked on this connection
+                        session.PoisonQuerySlot();
                         _logger.LogInformation("Peer {Peer} did not finish its reply_channel_range in {Timeout}; "
                                              + "ending the sync with it", session.Peer.PeerPubKey,
                                                _options.SyncReplyTimeout);
@@ -559,12 +614,12 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     return;
 
             session.LastRangeSyncAt = _timeProvider.GetUtcNow();
+            completed = true;
             if (!session.SyncFilterSent)
             {
                 session.SyncFilterSent = true;
-                var backlog = (uint)Math.Min(_options.SyncFilterBacklog.TotalSeconds, uint.MaxValue);
-                var first = NowSeconds() > backlog ? NowSeconds() - backlog : 0;
-                await SendFilterAsync(session, new GossipTimestampFilter(first, uint.MaxValue));
+                await SendFilterAsync(session, new GossipTimestampFilter(GetSyncFilterStart(withTimestamps, startedAt),
+                                                                         uint.MaxValue));
             }
 
             if (!_hasCompletedInitialSync)
@@ -574,7 +629,45 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         finally
         {
             session.IsRangeSyncRunning = false;
+            if (!completed)
+                session.NeedsLiveFilter = true;
         }
+    }
+
+    /// <summary>
+    /// A sync peer whose range sync failed (no reply in time, a rule broken, a failed batch) still gets new gossip:
+    /// LND and CLN relay nothing to a <c>gossip_queries</c> peer before its filter. Sent once, after the warning of a
+    /// violation; a later successful sync replaces it with the backlog filter.
+    /// </summary>
+    private async Task SendLiveFilterIfNeededAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        if (!session.NeedsLiveFilter || session.SyncFilterSent || session.LiveFilterSent
+         || cancellationToken.IsCancellationRequested)
+            return;
+
+        session.NeedsLiveFilter = false;
+        session.LiveFilterSent = true;
+        try
+        {
+            await SendFilterAsync(session, new GossipTimestampFilter(NowSeconds(), uint.MaxValue));
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not send a gossip filter to peer {Peer}", session.Peer.PeerPubKey);
+        }
+    }
+
+    /// <summary>
+    /// Where the filter after a range sync starts. With timestamps the sync already fetched every channel and update
+    /// newer than ours, so only what changed since it started (less a margin for clock differences) is asked for;
+    /// without them known channels' updates could not be compared, so <see cref="GossipSyncOptions.SyncFilterBacklog"/>.
+    /// </summary>
+    private uint GetSyncFilterStart(bool withTimestamps, uint startedAt)
+    {
+        var back = withTimestamps
+                       ? TimestampSyncFilterMarginSeconds
+                       : (uint)Math.Min(_options.SyncFilterBacklog.TotalSeconds, uint.MaxValue);
+        return startedAt > back ? startedAt - back : 0;
     }
 
     private List<(ShortChannelId, ulong?)> Diff(IReadOnlyList<KeyValuePair<ShortChannelId, ChannelUpdatePair?>> entries,
@@ -626,6 +719,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                                             GossipQueryCodec.EncodeShortChannelIds(ids.Select(e => e.Id).ToList())),
             flags);
 
+        await WaitForIngressAsync(session, cancellationToken);
         session.ExpectReplies(MessageTypes.ReplyShortChannelIdsEnd);
         try
         {
@@ -633,6 +727,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             var reply = await ReadReplyAsync(session, cancellationToken);
             if (reply is null)
             {
+                // BOLT 7: MUST NOT send query_short_channel_ids before reply_short_channel_ids_end, and a late end
+                // would complete the next query: nothing more is asked on this connection
+                session.PoisonQuerySlot();
                 _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}",
                                        session.Peer.PeerPubKey, _options.SyncReplyTimeout);
                 return false;
@@ -650,6 +747,31 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         finally
         {
             session.ExpectReplies(null);
+        }
+    }
+
+    /// <summary>
+    /// Backpressure (NL-353): waits until the graph ingress has room for the answer to one query (its queue at most
+    /// half of the per-peer capacity), at most <see cref="GossipSyncOptions.SyncReplyTimeout"/>; after that the query
+    /// goes out anyway (what the ingress drops comes back through the missed-channel retry).
+    /// </summary>
+    private async Task WaitForIngressAsync(PeerSession session, CancellationToken cancellationToken)
+    {
+        if (_getIngressQueueDepth is null || _ingressQueueCapacity <= 0)
+            return;
+
+        var started = _timeProvider.GetTimestamp();
+        var room = _ingressQueueCapacity / 2;
+        while (_getIngressQueueDepth() > room)
+        {
+            if (_timeProvider.GetElapsedTime(started) >= _options.SyncReplyTimeout)
+            {
+                _logger.LogInformation("The gossip ingress queue did not drain in {Timeout}; querying peer {Peer} "
+                                     + "anyway", _options.SyncReplyTimeout, session.Peer.PeerPubKey);
+                return;
+            }
+
+            await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);
         }
     }
 
@@ -693,8 +815,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     {
         // A flag in 0..0x1F is one bigsize byte
         var perScid = ShortChannelId.Length + (withFlags ? 1 : 0);
-        return Math.Max(1, Math.Min(_options.MaxScidsPerQuery,
-                                    (GossipSyncOptions.MaxMessageLength - QueryOverhead) / perScid));
+        var max = Math.Min(_options.MaxScidsPerQuery, (GossipSyncOptions.MaxMessageLength - QueryOverhead) / perScid);
+
+        // NL-353: the answer must fit in the half of the ingress queue WaitForIngressAsync keeps free
+        if (_ingressQueueCapacity > 0)
+            max = Math.Min(max, _ingressQueueCapacity / 2 / MessagesPerQueriedChannel);
+
+        return Math.Max(1, max);
     }
 
     private uint NowSeconds() => (uint)Math.Clamp(_timeProvider.GetUtcNow().ToUnixTimeSeconds(), 0, uint.MaxValue);
@@ -770,6 +897,17 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool IsSyncPeer { get; set; }
         public volatile bool IsRangeSyncRunning;
         public bool SyncFilterSent { get; set; }
+        public bool LiveFilterSent { get; set; }
+        public bool NeedsLiveFilter { get; set; }
+        private volatile bool _querySlotPoisoned;
+
+        /// <summary>
+        /// True once a query of ours went unanswered in time or broke the rules: the peer may still be answering it,
+        /// so nothing more is asked on this connection (BOLT 7: one outstanding query per kind).
+        /// </summary>
+        public bool IsQuerySlotPoisoned => _querySlotPoisoned;
+
+        public void PoisonQuerySlot() => _querySlotPoisoned = true;
         public DateTimeOffset? LastRangeSyncAt { get; set; }
         public int PendingWork => Volatile.Read(ref _pendingWork);
         public bool IsIdle => PendingWork == 0 && Volatile.Read(ref _queuedQueries) == 0;

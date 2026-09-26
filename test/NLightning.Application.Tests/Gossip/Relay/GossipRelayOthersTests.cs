@@ -104,6 +104,57 @@ public class GossipRelayOthersTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AnAnnouncementAndItsUpdateInTwoFlushWindows_When_Flushed_Then_TheAnnouncementGoesWithIt()
+    {
+        // Arrange (review of G3-T3: the 256 is stored before its 258 and a flush falls between them; a 256 alone is
+        // never relayed, and a 258 without its 256 is ignored by the receiver)
+        var peer = AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        await BaselineAsync();
+        _graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB, null, null);
+        await FlushAllAsync();
+        Assert.Empty(peer.Sent);
+        var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+
+        // Act
+        ApplyUpdate(s_scid1, node1, 0, 1_700_000_000);
+        await FlushAllAsync();
+
+        // Assert
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate], peer.Sent.Select(m => m.Type));
+    }
+
+    [Fact]
+    public async Task Given_APeerWhoseSendStalls_When_TheRelayTicks_Then_TheOtherPeersStillGetTheirGossip()
+    {
+        // Arrange (review of G3-T3: a peer that stops reading its socket must not stop the relay to every peer)
+        var sender = new StallingSender();
+        using var relay = new GossipRelayOthersTests(
+            new GossipRelayOptions { RelaySendWait = TimeSpan.FromMilliseconds(100) }, sender);
+        var slow = relay.AddPeer(0x41, new GossipTimestampFilter(0, uint.MaxValue));
+        var fast = relay.AddPeer(0x42, new GossipTimestampFilter(0, uint.MaxValue));
+        sender.Stalled = slow;
+        await relay.BaselineAsync();
+        relay._graph.AddSignedChannel(s_scid1, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+
+        // Act
+        await relay.FlushAllAsync();
+        relay._graph.AddSignedChannel(s_scid2, SyncTestGraph.NodeA, SyncTestGraph.NodeC);
+        await relay.FlushAllAsync();
+
+        // Assert: the fast peer got both channels, the stalled one was not asked again while its send hangs
+        Assert.Equal([s_scid1, s_scid2],
+                     fast.Sent.OfType<ChannelAnnouncementMessage>().Select(m => m.Payload.ShortChannelId));
+        Assert.Equal(1, sender.StalledAttempts);
+        Assert.Empty(slow.Sent);
+
+        // The stalled send ends: that peer's run finishes its flush
+        sender.Release();
+        for (var i = 0; i < 100 && !slow.Sent.Any(m => m is ChannelUpdateMessage); i++)
+            await Task.Delay(50, TestContext.Current.CancellationToken);
+        Assert.Contains(slow.Sent, m => m is ChannelUpdateMessage);
+    }
+
+    [Fact]
     public async Task Given_AFilterWindow_When_UpdatesAtTheBoundariesAreRelayed_Then_FirstIsInAndFirstPlusRangeIsOut()
     {
         // Arrange (B7-Q-05: relay only first_timestamp <= ts < first_timestamp + timestamp_range)
@@ -448,6 +499,30 @@ public class GossipRelayOthersTests : IDisposable
     {
         _clock.Advance(by);
         return _relay.RelayTickAsync(TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>Sends straight to the peer, except that every send to <see cref="Stalled"/> hangs until released.</summary>
+    private sealed class StallingSender : IGossipPeerSender
+    {
+        private readonly TaskCompletionSource _released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _stalledAttempts;
+
+        public IPeerService? Stalled { get; set; }
+        public int StalledAttempts => Volatile.Read(ref _stalledAttempts);
+
+        public void Release() => _released.TrySetResult();
+
+        public async ValueTask<bool> SendAsync(GossipPeer peer, IMessage message)
+        {
+            if (ReferenceEquals(peer.Service, Stalled) && !_released.Task.IsCompleted)
+            {
+                Interlocked.Increment(ref _stalledAttempts);
+                await _released.Task;
+            }
+
+            await peer.Service.SendGossipMessageAsync(message);
+            return true;
+        }
     }
 
     private sealed class RecordingOutbox : IPeerGossipOutbox

@@ -127,12 +127,17 @@ public class GossipSyncManagerTests : IDisposable
                 break;
         }
 
-        // Assert: B7-Q-04 violation → warning, no scid query, no filter, no full_information
+        // Assert: B7-Q-04 violation → warning, no scid query, no full_information; only new gossip is asked for, and
+        // nothing is queried on that connection again
         await peer.NextAsync<WarningMessage>();
         Assert.Single(peer.Warnings);
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.Equal(Now, filter.Payload.FirstTimestamp);
         Assert.True(await peer.NothingSentWithinAsync(s_quiet));
         await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
         Assert.False(manager.HasCompletedInitialSync);
+        Assert.Null(manager.RotateSyncPeer());
+        Assert.False(await manager.QueryScidAsync(new ShortChannelId(101, 0, 0), TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -280,10 +285,95 @@ public class GossipSyncManagerTests : IDisposable
         await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
         manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true)); // too late: unsolicited
 
-        // Assert
+        // Assert: the failed sync peer still asks for new gossip (LND/CLN relay nothing before a filter)
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.Equal(Now, filter.Payload.FirstTimestamp);
+        Assert.Equal(uint.MaxValue, filter.Payload.TimestampRange);
         Assert.True(await peer.NothingSentWithinAsync(s_quiet));
         Assert.Empty(peer.Warnings);
         Assert.False(manager.HasCompletedInitialSync);
+    }
+
+    [Fact]
+    public async Task Given_ATimedOutScidQuery_When_ItsLateEndArrivesDuringAnotherQuery_Then_NothingMoreIsAskedOfThatPeer()
+    {
+        // Arrange (review of G3-T2; BOLT 7: MUST NOT send query_short_channel_ids before the previous one's
+        // reply_short_channel_ids_end): the peer answers the scid query after our timeout
+        var manager = CreateManager(o =>
+        {
+            o.SyncReplyTimeout = TimeSpan.FromMilliseconds(150);
+            o.SyncPeers = 1;
+        });
+        var slow = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(slow);
+        await slow.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(slow, RangeReplyCollectorTests.Reply(0, Tip + 1, true, new ShortChannelId(200, 1, 0)));
+        await slow.NextAsync<QueryShortChannelIdsMessage>();
+        await slow.NextAsync<GossipTimestampFilterMessage>(); // the timeout passed: the live filter
+        await manager.WhenIdleAsync(slow, TestContext.Current.CancellationToken);
+        var other = new FakeGossipPeer(2);
+        manager.OnPeerInitialized(other);
+        await other.NextAsync<GossipTimestampFilterMessage>();
+
+        // Act: a new query goes to the other peer, never to the slow one, and the slow one's late end completes
+        // nothing
+        var waiting = manager.QueryScidAsync(new ShortChannelId(300, 1, 0), TestContext.Current.CancellationToken);
+        var query = await other.NextAsync<QueryShortChannelIdsMessage>();
+        manager.HandleMessage(slow, End());
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(waiting.IsCompleted);
+        Assert.Equal([new ShortChannelId(300, 1, 0)], Ids(query));
+        manager.HandleMessage(other, End());
+        Assert.True(await waiting);
+        Assert.True(await slow.NothingSentWithinAsync(s_quiet));
+        Assert.NotSame(slow, manager.RotateSyncPeer());
+    }
+
+    [Fact]
+    public async Task Given_AnIngressQueue_When_Syncing_Then_BatchesFitItAndWaitForItToDrain()
+    {
+        // Arrange (NL-353, review of G3-T2): capacity 100 → at most 100 / 2 / 5 = 10 channels per query, sent only
+        // while the queue is at most 50
+        var depth = 60;
+        var manager = CreateManager(getIngressQueueDepth: () => Volatile.Read(ref depth), ingressQueueCapacity: 100);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        var ids = Enumerable.Range(0, 15).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
+
+        // Act / Assert
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(400)));
+        Volatile.Write(ref depth, 50);
+        Assert.Equal(ids[..10], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        Volatile.Write(ref depth, 51);
+        manager.HandleMessage(peer, End());
+        Assert.True(await peer.NothingSentWithinAsync(TimeSpan.FromMilliseconds(400)));
+        Volatile.Write(ref depth, 0);
+        Assert.Equal(ids[10..], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+    }
+
+    [Fact]
+    public async Task Given_ASyncWithTimestamps_When_ItEnds_Then_TheFilterStartsAtTheSyncLessTheMargin()
+    {
+        // Arrange (review of G3-T2: the two-week backlog would ask for the whole graph again; with timestamps the
+        // sync already asked for every newer update)
+        var manager = CreateManager();
+        var peer = new FakeGossipPeer(1, gossipQueriesEx: true);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+
+        // Act
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true));
+
+        // Assert
+        var filter = await peer.NextAsync<GossipTimestampFilterMessage>();
+        Assert.Equal(Now - GossipSyncManager.TimestampSyncFilterMarginSeconds, filter.Payload.FirstTimestamp);
+        Assert.Equal(uint.MaxValue, filter.Payload.TimestampRange);
     }
 
     [Fact]
@@ -491,7 +581,8 @@ public class GossipSyncManagerTests : IDisposable
             manager.Dispose();
     }
 
-    private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null)
+    private GossipSyncManager CreateManager(Action<GossipSyncOptions>? configure = null,
+                                            Func<int>? getIngressQueueDepth = null, int ingressQueueCapacity = 0)
     {
         var options = new GossipSyncOptions();
         configure?.Invoke(options);
@@ -505,7 +596,7 @@ public class GossipSyncManagerTests : IDisposable
                                                 var taken = _missed;
                                                 _missed = [];
                                                 return taken;
-                                            }, () => Tip);
+                                            }, () => Tip, getIngressQueueDepth, ingressQueueCapacity);
         _managers.Add(manager);
         return manager;
     }

@@ -23,7 +23,9 @@ using Sync.Interfaces;
 /// <remarks>
 /// <para>
 /// <b>Collect:</b> every <see cref="GossipRelayOptions.RelayCollectInterval"/> the graph snapshot is compared with what
-/// the relay saw before (per channel, update direction and node: the timestamp). What the ingress accepted since goes
+/// the relay saw before (per channel, update direction and node: the timestamp; a <c>channel_announcement</c> counts
+/// as seen only once the channel has a relayable update, so it is queued with that update). What the ingress accepted
+/// since goes
 /// into the pending set of every connection that sent a <c>gossip_timestamp_filter</c>, the newest version per key
 /// (a newer update replaces an older one). The first scan only records the graph as it is (a restart does not relay
 /// the stored graph; each peer's filter asks for its backlog). Left out: spent channels (B7-Q-05 SHOULD NOT), channels
@@ -38,6 +40,11 @@ using Sync.Interfaces;
 /// <c>channel_announcement</c>s first, then the <c>channel_update</c>s, then the <c>node_announcement</c>s (of nodes
 /// that still have a channel), never to a peer that sent us that version (origin suppression) and never to a peer
 /// whose <c>init</c> networks exclude our chain. A peer that sent no filter gets nothing (B7-RL-01).
+/// </para>
+/// <para>
+/// <b>Runs:</b> each connection's share of a tick runs on its own task; the tick waits at most
+/// <see cref="GossipRelayOptions.RelaySendWait"/> for them, and a connection whose run is still sending (a stalled
+/// transport write) is skipped by the later ticks until it ends, so one slow peer never stops the relay to the others.
 /// </para>
 /// <para>
 /// <b>Backlog:</b> a new filter asks for the graph inside it: one pass over the snapshot taken at the next tick (per
@@ -91,7 +98,9 @@ public sealed partial class GossipRelayScheduler
                 _lastCollectAt = now;
             }
 
-            var sent = 0;
+            // Each peer runs on its own: a peer whose transport write stalls keeps its run (and later ticks skip it
+            // until the run ends) but never holds up the others
+            var runs = new List<Task<int>>();
             foreach (var peer in peers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -101,30 +110,70 @@ public sealed partial class GossipRelayScheduler
                     continue;
 
                 var state = GetRelayState(peer, now);
-                if (state.TakeBacklogRequest())
-                {
-                    state.Pending.Clear();
-                    state.Backlog?.Dispose();
-                    state.Backlog = EnumerateBacklog(_graphStore!.GetSnapshot(), filter, peer.NodeId)
-                       .GetEnumerator();
-                }
+                if (!state.TryBeginRun())
+                    continue;
 
-                if (state.Backlog is not null)
-                    sent += await SendBacklogAsync(peer, state);
-
-                if (now >= state.NextFlushAt)
-                {
-                    sent += await FlushPeerAsync(peer, state, filter);
-                    while (state.NextFlushAt <= now)
-                        state.NextFlushAt += _relayOptions.RelayFlushInterval;
-                }
+                runs.Add(RunPeerAsync(peer, state, filter, now));
             }
 
-            return sent;
+            if (runs.Count == 0)
+                return 0;
+
+            try
+            {
+                await Task.WhenAll(runs).WaitAsync(_relayOptions.RelaySendWait, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogDebug("{Count} gossip relay runs are still sending; their peers are skipped until they end",
+                                 runs.Count(r => !r.IsCompleted));
+            }
+
+            return runs.Where(r => r.IsCompletedSuccessfully).Sum(r => r.Result);
         }
         finally
         {
             _relayGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// One peer's share of a tick: a new backlog when its filter asked for one, a paced part of the backlog, and the
+    /// flush when its phase is due. Runs while <paramref name="state"/> is marked running.
+    /// </summary>
+    private async Task<int> RunPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter,
+                                         DateTimeOffset now)
+    {
+        try
+        {
+            var sent = 0;
+            if (state.TakeBacklogRequest())
+            {
+                state.ClearPending();
+                state.Backlog?.Dispose();
+                state.Backlog = EnumerateBacklog(_graphStore!.GetSnapshot(), filter, peer.NodeId).GetEnumerator();
+            }
+
+            if (state.Backlog is not null)
+                sent += await SendBacklogAsync(peer, state);
+
+            if (now >= state.NextFlushAt)
+            {
+                sent += await FlushPeerAsync(peer, state, filter);
+                while (state.NextFlushAt <= now)
+                    state.NextFlushAt += _relayOptions.RelayFlushInterval;
+            }
+
+            return sent;
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "The gossip relay to peer {Peer} failed; the next tick retries", peer.NodeId);
+            return 0;
+        }
+        finally
+        {
+            state.EndRun();
         }
     }
 
@@ -144,8 +193,10 @@ public sealed partial class GossipRelayScheduler
             if (!IsRelayable(channel))
                 continue;
 
+            // A 256 counts as seen only once the channel has a relayable update: a 256 flushed alone is dropped (it
+            // never goes out without an update), so marking it seen earlier would send its later 258 without it
             var weAreAnEnd = IsOurs(channel.NodeId1) || IsOurs(channel.NodeId2);
-            if (!weAreAnEnd)
+            if (!weAreAnEnd && HasRelayablePolicy(channel))
                 See(GossipMessageKey.ChannelAnnouncement(channel.ShortChannelId), 1,
                     new RelayItem(MessageTypes.ChannelAnnouncement, channel.ShortChannelId, 0, null, 0,
                                   channel.RawAnnouncement));
@@ -190,9 +241,7 @@ public sealed partial class GossipRelayScheduler
             if (!IsOnOurChain(peer) || !_syncManager!.TryGetPeerFilter(peer.Service, out _))
                 continue;
 
-            var state = GetRelayState(peer, _timeProvider.GetUtcNow());
-            foreach (var item in changed)
-                state.Pending[item.Slot] = item;
+            GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed);
         }
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -215,15 +264,13 @@ public sealed partial class GossipRelayScheduler
 
     private async Task<int> FlushPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter)
     {
-        if (state.Pending.Count == 0)
+        var items = state.TakePending()
+                         .OrderBy(i => i.Rank)
+                         .ThenBy(i => QueryResponder.ToUInt64(i.ShortChannelId))
+                         .ThenBy(i => i.Direction)
+                         .ToList();
+        if (items.Count == 0)
             return 0;
-
-        var items = state.Pending.Values
-                             .OrderBy(i => i.Rank)
-                             .ThenBy(i => QueryResponder.ToUInt64(i.ShortChannelId))
-                             .ThenBy(i => i.Direction)
-                             .ToList();
-        state.Pending.Clear();
 
         var sent = 0;
         foreach (var item in items)
@@ -406,6 +453,9 @@ public sealed partial class GossipRelayScheduler
         return IsOurs(direction == 0 ? channel.NodeId1 : channel.NodeId2) ? null : policy;
     }
 
+    private bool HasRelayablePolicy(GraphChannel channel) =>
+        GetRelayablePolicy(channel, 0) is not null || GetRelayablePolicy(channel, 1) is not null;
+
     private RelayPeerState GetRelayState(GossipPeer peer, DateTimeOffset now) =>
         _relayPeers.GetValue(peer.Service, _ => new RelayPeerState(now + GetRelayPhase(peer.NodeId)));
 
@@ -507,17 +557,51 @@ public sealed partial class GossipRelayScheduler
         };
     }
 
-    /// <summary>The relay state of one connection.</summary>
+    /// <summary>
+    /// The relay state of one connection. The pending set is shared with the collect (under its own lock); the rest
+    /// is touched only by the connection's run (<see cref="TryBeginRun"/>, one at a time).
+    /// </summary>
     private sealed class RelayPeerState(DateTimeOffset nextFlushAt)
     {
+        private readonly Lock _pendingLock = new();
+        private readonly Dictionary<GossipMessageKey, RelayItem> _pending = [];
         private int _backlogRequested;
+        private int _running;
 
         public DateTimeOffset NextFlushAt { get; set; } = nextFlushAt;
-        public Dictionary<GossipMessageKey, RelayItem> Pending { get; } = [];
         public IEnumerator<RelayItem>? Backlog { get; set; }
 
         public void RequestBacklog() => Interlocked.Exchange(ref _backlogRequested, 1);
 
         public bool TakeBacklogRequest() => Interlocked.Exchange(ref _backlogRequested, 0) == 1;
+
+        /// <summary>Marks the connection's run started; false while the previous one is still sending.</summary>
+        public bool TryBeginRun() => Interlocked.CompareExchange(ref _running, 1, 0) == 0;
+
+        public void EndRun() => Volatile.Write(ref _running, 0);
+
+        /// <summary>Queues the newest version per key.</summary>
+        public void AddPending(IEnumerable<RelayItem> items)
+        {
+            lock (_pendingLock)
+                foreach (var item in items)
+                    _pending[item.Slot] = item;
+        }
+
+        public List<RelayItem> TakePending()
+        {
+            lock (_pendingLock)
+            {
+                var items = _pending.Values.ToList();
+                _pending.Clear();
+                return items;
+            }
+        }
+
+        public void ClearPending()
+        {
+            lock (_pendingLock)
+                _pending.Clear();
+        }
     }
 }
