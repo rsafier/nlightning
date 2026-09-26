@@ -71,6 +71,33 @@ public class FeeServiceTests
         Assert.Equal(500, result.Satoshi);
     }
 
+    [Theory]
+    [InlineData("{\"fastestFee\": 10}", 2_500)]
+    [InlineData("{\"fastestFee\": 1}", 253)]
+    [InlineData("{\"fastestFee\": 1.5}", 375)]
+    public async Task Given_EstimateInSatPerVbyte_When_Refreshed_Then_SatPerKwWithBolt3Floor(string body,
+        long expectedPerKw)
+    {
+        // Arrange (NL-288: sat/vB x 250 = sat/kw; 1 sat/vB is 250, below BOLT 3's 253 floor)
+        var handler = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handler.Protected()
+               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
+                                                 ItExpr.IsAny<CancellationToken>())
+               .ReturnsAsync(() => new HttpResponseMessage
+               {
+                   StatusCode = HttpStatusCode.OK,
+                   Content = new StringContent(body)
+               });
+        var feeService = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions()),
+                                        new HttpClient(handler.Object), new Mock<ILogger<FeeService>>().Object);
+
+        // Act
+        await feeService.RefreshFeeRateAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(expectedPerKw, feeService.GetCachedFeeRatePerKw().Satoshi);
+    }
+
     [Fact]
     public async Task GivenApiFails_WhenRefreshFeeRateAsync_ThenUsesCachedValue()
     {

@@ -22,6 +22,13 @@ public class ChannelOpenValidator : IChannelOpenValidator
         (int)Feature.OptionZeroconf - 1
     ];
 
+    /// <summary>
+    /// The lowest <c>feerate_per_kw</c> we accept in <c>open_channel</c>: BOLT 3's 253 sat/kw relay floor
+    /// (<see cref="FeeUpdateOptions.FeeratePerKwFloor"/>, the floor we also apply to <c>update_fee</c>).
+    /// </summary>
+    public static readonly LightningMoney MinAcceptableFeeRatePerKw =
+        LightningMoney.Satoshis(FeeUpdateOptions.FeeratePerKwFloor);
+
     private readonly NodeOptions _nodeOptions;
 
     public ChannelOpenValidator(NodeOptions nodeOptions)
@@ -88,15 +95,16 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.FeeRatePerKw is not null)
         {
-            // Check if we consider fee_rate_per_kw too large
+            // BOLT 2: fail the channel if feerate_per_kw is unreasonably large
             if (parameters.FeeRatePerKw > ChannelConstants.MaxFeePerKw)
                 throw new ChannelErrorException($"Fee rate per kw is too large: {parameters.FeeRatePerKw}");
 
-            // Check if we consider fee_rate_per_kw too small. IE. 20% smaller than our fee rate
-            if (parameters.FeeRatePerKw < ChannelConstants.MinFeePerKw ||
-                parameters.FeeRatePerKw < parameters.CurrentFeeRatePerKw * 0.8M)
+            // BOLT 2: fail the channel if feerate_per_kw is too small for timely processing. The opener chooses and
+            // pays the feerate, and peers open at their own estimate (CLN opens at 253 sat/kw on an idle chain), so
+            // anything from the relay floor up is accepted, whatever our estimate says (NL-289), as LND and CLN do
+            if (parameters.FeeRatePerKw < MinAcceptableFeeRatePerKw)
                 throw new ChannelErrorException(
-                    $"Fee rate per kw is too small: {parameters.FeeRatePerKw}, currentFee{parameters.CurrentFeeRatePerKw}");
+                    $"Fee rate per kw is too small: {parameters.FeeRatePerKw} < {MinAcceptableFeeRatePerKw}");
         }
 
         // Check if the dust limit is greater than the channel reserve amount
