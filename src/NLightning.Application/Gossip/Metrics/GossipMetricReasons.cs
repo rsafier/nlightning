@@ -48,6 +48,9 @@ public static class GossipMetricReasons
     /// <summary>The orphan cache is full.</summary>
     public const string OrphanCacheFull = "orphan_cache_full";
 
+    /// <summary>A rate-limited message not kept for later: the store of them is full.</summary>
+    public const string RateLimitedFull = "rate_limited_full";
+
     /// <summary>A peer's relay backlog is full: its oldest pending message was dropped.</summary>
     public const string RelayBacklogFull = "relay_backlog_full";
 

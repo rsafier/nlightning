@@ -78,9 +78,67 @@ public class GossipIngressLimitsTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ABurstBeyondTheRate_When_ATokenIsRefilled_Then_TheNewestRefusedUpdateIsApplied()
+    {
+        // Arrange: four accepted updates spend the burst; two more are refused by the rate, the newer one last
+        var kit = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer();
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+        for (var i = 1; i <= 4; i++)
+            await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 1_000 + (uint)i, i));
+        var newest = await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 900, 6));
+        var older = await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 950, 5));
+        var forged = await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 800, 7));
+
+        // Act: nothing is replayed before the rate allows it; a minute later the kept update is queued again
+        var tooEarly = kit.Ingress.ReplayRateLimited();
+        kit.Clock.Now += TimeSpan.FromSeconds(60);
+        var replayed = kit.Ingress.ReplayRateLimited();
+        await kit.Ingress.StartAsync();
+        await WaitForAsync(() => kit.Store.TryGetChannel(s_scid, out var c)
+                              && c.GetPolicy(direction)!.Timestamp == s_now - 900);
+        await kit.Ingress.StopAsync();
+
+        // Assert: the newest refused update (not the later-arriving older one, not the forgery) is the policy
+        Assert.Equal(GossipMetricReasons.RateLimited, newest.LimitReason);
+        Assert.Equal(GossipMetricReasons.RateLimited, older.LimitReason);
+        Assert.Equal(GossipIngressOutcome.Warned, forged.Outcome);
+        Assert.Equal(0, tooEarly);
+        Assert.Equal(1, replayed);
+        Assert.Equal(0, kit.Ingress.RateLimitedCount);
+        Assert.True(kit.Store.TryGetChannel(s_scid, out var channel));
+        Assert.Equal(s_now - 900, channel.GetPolicy(direction)!.Timestamp);
+    }
+
+    [Fact]
+    public async Task Given_TheRateLimitedStoreIsFull_When_AnotherKeyIsRefused_Then_ItIsDroppedAndCounted()
+    {
+        // Arrange: room for one kept message
+        var kit = await CreateKitWithChannelAsync(o => o.MaxRateLimited = 1);
+        var peer = GraphTestKit.CreatePeer();
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+        for (var i = 1; i <= 4; i++)
+        {
+            await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 1_000 + (uint)i, i));
+            await ProcessAsync(kit, peer, Update(s_bob, (byte)(1 - direction), s_now - 1_000 + (uint)i, i));
+        }
+
+        // Act
+        await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 900, 5));
+        await ProcessAsync(kit, peer, Update(s_bob, (byte)(1 - direction), s_now - 900, 5));
+        await ProcessAsync(kit, peer, Update(s_alice, direction, s_now - 890, 6));
+
+        // Assert: the first key is kept (and replaced by its newer update), the second key has no room
+        Assert.Equal(1, kit.Ingress.RateLimitedCount);
+        Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.dropped",
+                                      (GossipMetrics.ReasonTag, GossipMetricReasons.RateLimitedFull)));
+        Assert.Equal(1, _recorder.ObserveQueue("rate_limited"));
+    }
+
+    [Fact]
     public async Task Given_ARateLimitedUpdate_When_ItsSignatureIsInvalid_Then_NoTokenIsSpentOnIt()
     {
-        // Arrange (the limit is checked before the signature, and only accepted updates spend a token)
+        // Arrange (the signature is checked before the limit, and only accepted updates spend a token)
         var kit = await CreateKitWithChannelAsync();
         var peer = GraphTestKit.CreatePeer();
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
@@ -286,11 +344,12 @@ public class GossipIngressLimitsTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_APeer_When_ItSendsFiveInvalidSignaturesInTenMinutes_Then_ItIsWarnedDisconnectedAndBannedForAnHour()
+    public async Task Given_AGraphNodePeer_When_ItSendsFiveInvalidSignaturesInTenMinutes_Then_ItIsWarnedDisconnectedAndBannedForAnHour()
     {
-        // Arrange (plan §3.8: 5 invalid signatures or chain mismatches in 10 min → warning, disconnect, 1 h ban)
+        // Arrange (plan §3.8: 5 invalid signatures or chain mismatches in 10 min → warning, disconnect, 1 h ban);
+        // the peer is alice, a node of the graph, so the ban is also persisted and ignores her own gossip
         var kit = await CreateKitWithChannelAsync();
-        var peer = GraphTestKit.CreatePeer(0x66);
+        var peer = GraphTestKit.CreatePeer(1);
         var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
 
         // Act
@@ -302,6 +361,7 @@ public class GossipIngressLimitsTests : IDisposable
         // Assert
         Assert.False(bannedAfterFour);
         Assert.True(kit.Store.IsBanned(peer.Object.PeerPubKey));
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
         peer.Verify(p => p.Disconnect(It.Is<WarningException>(e => e.Message.Contains("Too much invalid gossip"))),
                     Times.Once);
         await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
@@ -315,6 +375,63 @@ public class GossipIngressLimitsTests : IDisposable
         // The ban ends after an hour
         kit.Clock.Now += TimeSpan.FromHours(1);
         Assert.False(kit.Store.IsBanned(peer.Object.PeerPubKey));
+        Assert.False(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
+    }
+
+    [Fact]
+    public async Task Given_ThrowawayNodeIds_When_EachIsBannedForMisbehaviour_Then_NothingIsPersistedAndTheBansAreBoundedAndPruned()
+    {
+        // Arrange: node ids that are not in the graph cost a flooder one handshake each; their bans must cost us
+        // neither a database row nor memory that is never given back
+        var kit = await CreateKitWithChannelAsync(o => o.MaxMisbehaviourBans = 3);
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+
+        // Act: five identities, each banned
+        for (byte identity = 0; identity < 5; identity++)
+        {
+            var peer = GraphTestKit.CreatePeer((byte)(0xA0 + identity));
+            for (var i = 1; i <= 5; i++)
+                await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 100 + (uint)i, identity * 10 + i));
+        }
+
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        var bannedWhileActive = kit.Ingress.BannedPeerCount;
+        var lastStillBanned = kit.Ingress.IsBannedForMisbehaviour(GraphTestKit.CreatePeer(0xA4).Object.PeerPubKey);
+        kit.Clock.Now += TimeSpan.FromHours(1);
+        var pruned = kit.Ingress.PruneBans();
+
+        // Assert
+        Assert.Equal(5, _recorder.Sum("nlightning.gossip.peers.banned"));
+        Assert.Empty(kit.Repository.Bans);
+        Assert.Equal(3, bannedWhileActive);
+        Assert.True(lastStillBanned);
+        Assert.Equal(3, pruned);
+        Assert.Equal(0, kit.Ingress.BannedPeerCount);
+    }
+
+    [Fact]
+    public async Task Given_FourBadEncodings_When_TheFifthOffenceIsAnInvalidSignature_Then_TheOnlyDisconnectCarriesTheBanWarning()
+    {
+        // Arrange: a connection closes once, with the first Disconnect's warning (PeerCommunicationService ignores
+        // later calls), so the ban's text must ride on the disconnect of the offence that reached the threshold
+        var kit = await CreateKitWithChannelAsync();
+        var peer = GraphTestKit.CreatePeer(0x66);
+        Exception? firstDisconnect = null;
+        peer.Setup(p => p.Disconnect(It.IsAny<Exception>())).Callback<Exception>(e => firstDisconnect ??= e);
+        var direction = GraphTestKit.DirectionOf(s_alice, s_bob);
+
+        // Act
+        for (var i = 0; i < 4; i++)
+            await ProcessAsync(kit, peer, ReversedNodeIds(new ShortChannelId(300 + (uint)i, 1, 0)));
+        var fifth = await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 50, 5));
+
+        // Assert
+        var warning = Assert.IsType<WarningException>(firstDisconnect);
+        Assert.Contains("Too much invalid gossip", warning.Message);
+        Assert.Contains("Invalid signature in channel_update", warning.Message);
+        Assert.True(fifth.CloseConnection);
+        peer.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Exactly(4));
+        peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Once);
     }
 
     [Fact]
@@ -332,7 +449,7 @@ public class GossipIngressLimitsTests : IDisposable
         await ProcessAsync(kit, peer, Update(s_mallory, direction, s_now - 50, 5));
 
         // Assert
-        Assert.False(kit.Store.IsBanned(peer.Object.PeerPubKey));
+        Assert.False(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
         Assert.Equal(1, kit.Ingress.Misbehaviour.GetScore(peer.Object.PeerPubKey));
     }
 
@@ -356,7 +473,7 @@ public class GossipIngressLimitsTests : IDisposable
                                                                       s_bob, s_aliceFunding, s_bobFunding));
 
         // Assert
-        Assert.Equal(banned, kit.Store.IsBanned(peer.Object.PeerPubKey));
+        Assert.Equal(banned, kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
         Assert.Equal(5, _recorder.Sum("nlightning.gossip.chain.lookups",
                                       (GossipMetrics.StatusTag, GossipMetrics.TagValue(status))));
     }
@@ -370,19 +487,10 @@ public class GossipIngressLimitsTests : IDisposable
 
         // Act
         for (var i = 0; i < 5; i++)
-        {
-            var ordered = GraphTestKit.SignedChannelAnnouncement(new ShortChannelId(300 + (uint)i, 1, 0), s_alice,
-                                                                 s_bob, s_aliceFunding, s_bobFunding).Payload;
-            await ProcessAsync(kit, peer, new ChannelAnnouncementMessage(
-                                   new Domain.Protocol.Payloads.ChannelAnnouncementPayload(
-                                       ordered.NodeSignature2, ordered.NodeSignature1, ordered.BitcoinSignature2,
-                                       ordered.BitcoinSignature1, ordered.Features, ordered.ChainHash,
-                                       ordered.ShortChannelId, ordered.NodeId2, ordered.NodeId1, ordered.BitcoinKey2,
-                                       ordered.BitcoinKey1)));
-        }
+            await ProcessAsync(kit, peer, ReversedNodeIds(new ShortChannelId(300 + (uint)i, 1, 0)));
 
         // Assert
-        Assert.True(kit.Store.IsBanned(peer.Object.PeerPubKey));
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(peer.Object.PeerPubKey));
         peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Once);
     }
 
@@ -473,6 +581,19 @@ public class GossipIngressLimitsTests : IDisposable
     {
         for (var i = 0; i < 200 && !condition(); i++)
             await Task.Delay(25, TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>A validly signed announcement with its node ids out of order (a bad encoding: a warning only).</summary>
+    internal static ChannelAnnouncementMessage ReversedNodeIds(ShortChannelId shortChannelId)
+    {
+        var ordered = GraphTestKit.SignedChannelAnnouncement(shortChannelId, s_alice, s_bob, s_aliceFunding,
+                                                             s_bobFunding).Payload;
+        return new ChannelAnnouncementMessage(new Domain.Protocol.Payloads.ChannelAnnouncementPayload(
+                                                  ordered.NodeSignature2, ordered.NodeSignature1,
+                                                  ordered.BitcoinSignature2, ordered.BitcoinSignature1,
+                                                  ordered.Features, ordered.ChainHash, ordered.ShortChannelId,
+                                                  ordered.NodeId2, ordered.NodeId1, ordered.BitcoinKey2,
+                                                  ordered.BitcoinKey1));
     }
 
     private static ChannelAnnouncementMessage Announcement() =>

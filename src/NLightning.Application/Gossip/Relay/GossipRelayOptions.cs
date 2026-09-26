@@ -48,7 +48,8 @@ public sealed class GossipRelayOptions
 
     /// <summary>
     /// The most relay messages waiting for one connection's next flush (plan §3.7: <c>Gossip:MaxOutboundQueue</c>,
-    /// 5,000). Beyond it the oldest waiting one is dropped (counted as <c>relay_backlog_full</c>): the peer can ask for
+    /// 5,000). Beyond it the oldest waiting <c>node_announcement</c>, else the oldest channel message (an announcement
+    /// with its updates), is dropped (counted as <c>relay_backlog_full</c>): the peer can ask for
     /// it again with a query, and a peer that drains slowly never makes the relay queue more than this per flush on
     /// its outbox. <c>Gossip:MaxRelayPendingPerPeer</c>.
     /// </summary>

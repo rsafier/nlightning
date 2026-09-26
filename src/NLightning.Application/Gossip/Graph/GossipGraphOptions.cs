@@ -103,10 +103,22 @@ public sealed class GossipGraphOptions
     public TimeSpan MisbehaviourWindow { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
-    /// How long a misbehaving peer is banned (plan §3.8: 1 h; persisted in <c>GraphBannedNodes</c>): its gossip is
-    /// dropped and, at its next message, it is disconnected again.
+    /// How long a misbehaving peer is banned (plan §3.8: 1 h): the gossip it hands over is dropped unvalidated. Kept
+    /// in memory; persisted in <c>GraphBannedNodes</c> (its own gossip ignored too) only when the peer is a graph node.
     /// </summary>
     public TimeSpan MisbehaviourBanDuration { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// The most peers banned for misbehaviour at once (in memory; the ban ending first makes room). A flooder with
+    /// throwaway node ids never grows it beyond this. <c>Gossip:MaxMisbehaviourBans</c>.
+    /// </summary>
+    public int MaxMisbehaviourBans { get; set; } = 10_000;
+
+    /// <summary>
+    /// Validly signed <c>channel_update</c>s and <c>node_announcement</c>s refused by the rate kept (the newest per
+    /// channel direction or node) to be applied once the rate allows it. <c>Gossip:MaxRateLimited</c>.
+    /// </summary>
+    public int MaxRateLimited { get; set; } = 10_000;
 
     /// <summary>Hashes of recently processed messages kept to drop exact duplicates cheaply.</summary>
     public int RecentMessageCacheSize { get; set; } = 50_000;
@@ -207,6 +219,10 @@ public sealed class GossipGraphOptions
             errors.Add($"{nameof(MisbehaviourWindow)} must be positive");
         if (MisbehaviourThreshold > 0 && MisbehaviourBanDuration <= TimeSpan.Zero)
             errors.Add($"{nameof(MisbehaviourBanDuration)} must be positive");
+        if (MaxMisbehaviourBans < 1)
+            errors.Add($"{nameof(MaxMisbehaviourBans)} must be at least 1");
+        if (MaxRateLimited < 0)
+            errors.Add($"{nameof(MaxRateLimited)} must not be negative");
         if (AnnouncementDepth < 1)
             errors.Add($"{nameof(AnnouncementDepth)} must be at least 1");
         if (FlushInterval <= TimeSpan.Zero)
