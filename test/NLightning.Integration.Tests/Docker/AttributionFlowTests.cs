@@ -10,6 +10,7 @@ using Routerrpc;
 namespace NLightning.Integration.Tests.Docker;
 
 using Abcd;
+using Application.Gossip.Interfaces;
 using Application.Payments.Onion;
 using Domain.Bitcoin.Enums;
 using Domain.Channels.Commitments.Events;
@@ -18,6 +19,7 @@ using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
@@ -41,9 +43,10 @@ using Utils;
 /// before with no hold time. The attribution itself is proven between two NLightning nodes: the erring node creates it
 /// with its hold time (measured from the receipt time stored with the HTLC) and the origin's <c>PaymentService</c>
 /// verifies it and records the hold time on the payment's route.</para>
-/// <para>The production switch does not attribute yet (ABCD W7-B wires it); the erring node here runs a test decorator
-/// of <see cref="IHtlcSwitch"/> that fails chosen payment hashes through the attributed
-/// <c>IChannelOperations.FailHtlcAsync</c> overload, exactly the seam the switch uses.</para>
+/// <para>The failure case runs a test decorator of <see cref="IHtlcSwitch"/> on the erring node that fails chosen payment
+/// hashes through the attributed <c>IChannelOperations.FailHtlcAsync</c> overload. The production switch attributes
+/// when the node advertises <c>option_attribution_data</c> (W7 integration): three NLightning nodes with the feature
+/// forward a payment, and the payer verifies the payee's and the forwarding node's hold times from the fulfill.</para>
 /// </remarks>
 [Collection(LightningRegtestNetworkFixtureCollection.Name)]
 public class AttributionFlowTests : IAsyncLifetime
@@ -230,6 +233,71 @@ public class AttributionFlowTests : IAsyncLifetime
         Assert.True((await bob.GetChannelAsync(channel.ChannelId, ct)).IsUsable());
     }
 
+    [Fact]
+    public async Task Given_ThreeNodesAdvertisingAttribution_When_APaymentIsForwarded_Then_ThePayerRecordsEveryHopsHoldTime()
+    {
+        // Arrange: payer -> hop -> payee, production switches with option_attribution_data (experimental) advertised
+        var ct = TestContext.Current.CancellationToken;
+        var payer = await StartAdvertisingNodeAsync("attr-payer", ct);
+        var hop = await StartAdvertisingNodeAsync("attr-hop", ct);
+        var payee = await StartAdvertisingNodeAsync("attr-payee", ct);
+        await payer.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
+        await hop.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
+        await ChainSync.WaitAllAtTipAsync(_fixture, [], [payer, hop, payee], ct);
+        await payer.ConnectToAsync(hop, ct);
+        await hop.ConnectToAsync(payee, ct);
+        var first = await payer.OpenChannelAsync(new OpenChannelClientRequest(hop.Address, s_capacity)
+        {
+            FeeRatePerKw = LightningMoney.Satoshis(10_000)
+        }, ct);
+        var second = await hop.OpenChannelAsync(new OpenChannelClientRequest(payee.Address, s_capacity)
+        {
+            FeeRatePerKw = LightningMoney.Satoshis(10_000)
+        }, ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var usable = (await payer.GetChannelAsync(first.ChannelId, ct)).IsUsable()
+                      && (await hop.GetChannelAsync(first.ChannelId, ct)).IsUsable()
+                      && (await hop.GetChannelAsync(second.ChannelId, ct)).IsUsable()
+                      && (await payee.GetChannelAsync(second.ChannelId, ct)) is { ShortChannelId: not null } theirs
+                      && theirs.IsUsable()
+                      && payee.Services.GetRequiredService<IChannelUpdateService>()
+                              .TryGetRemoteChannelUpdate(second.ChannelId, out _);
+            if (usable)
+                return true;
+
+            await ChainSync.MineAndWaitAsync(_fixture, 1, [], [payer, hop, payee], ct);
+            return false;
+        }, s_timeout, "both channels usable and the hop's channel_update at the payee", ct);
+        await ChainSync.WaitAllAtTipAsync(_fixture, [], [payer, hop, payee], ct);
+        var fulfills = new ConcurrentQueue<UpdateFulfillHtlcMessage>();
+        foreach (var node in new[] { hop, payee })
+            node.Services.GetRequiredService<IChannelManager>().OnResponseMessageReady += (_, args) =>
+            {
+                if (args.ResponseMessage is UpdateFulfillHtlcMessage fulfill)
+                    fulfills.Enqueue(fulfill);
+            };
+
+        // The payee's invoice carries a route hint through the hop (a private channel)
+        var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(25_000), "w7 attributed forward", ct);
+
+        // Act
+        var payment = await payer.PayInvoiceAsync(invoice.Bolt11, ct);
+
+        // Assert: both fulfills carried attribution_data, and the payer verified a hold time for both hops
+        Console.WriteLine($"Payer's payment: {payment.Status}, {payment.FailureCode}: {payment.FailureReason}");
+        Assert.Equal(PaymentStatus.Succeeded, payment.Status);
+        await Poll.UntilAsync(() => Task.FromResult(fulfills.Count >= 2), s_timeout, "both fulfills sent", ct);
+        Assert.All(fulfills, f => Assert.NotNull(f.AttributionDataTlv));
+        var stored = await payer.Services.GetRequiredService<IPaymentService>().GetPaymentAsync(invoice.PaymentHash, ct);
+        Assert.NotNull(stored);
+        Assert.Equal(2, stored.Route.Count);
+        Assert.All(stored.Route, h => Assert.NotNull(h.HoldTime));
+        Assert.True(stored.Route[0].HoldTime >= stored.Route[1].HoldTime,
+                    $"the hop held the HTLC at least as long as the payee ({stored.Route[0].HoldTime} < "
+                  + $"{stored.Route[1].HoldTime})");
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
@@ -260,6 +328,19 @@ public class AttributionFlowTests : IAsyncLifetime
         await node.StartAsync(ct);
         if (attributing)
             node.Services.GetRequiredService<IChannelManager>().OnResponseMessageReady += RecordFail;
+        return node;
+    }
+
+    /// <summary>A fresh production node that advertises <c>option_attribution_data</c> (experimental).</summary>
+    private async Task<NLightningTestNode> StartAdvertisingNodeAsync(string name, CancellationToken ct)
+    {
+        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: options =>
+        {
+            options.Features.AllowExperimentalFeatures = true;
+            options.Features.OptionAttributionData = FeatureSupport.Optional;
+        });
+        _nodes.Add(node);
+        await node.StartAsync(ct);
         return node;
     }
 
