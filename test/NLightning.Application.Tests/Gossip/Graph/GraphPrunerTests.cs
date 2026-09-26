@@ -214,10 +214,10 @@ public class GraphPrunerTests
         // Arrange: our own 256 without any update (stored as Own through the sink)
         var kit = new GraphTestKit();
         var scid = new ShortChannelId(120, 2, 0);
-        await kit.Ingress.SubmitOwnAsync(GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_carol,
-                                                                               new TestGossipKey(11),
-                                                                               new TestGossipKey(13)),
-                                         TestContext.Current.CancellationToken);
+        await kit.Ingress.ApplyOwnAsync(GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_carol,
+                                                                              new TestGossipKey(11),
+                                                                              new TestGossipKey(13)),
+                                        null, TestContext.Current.CancellationToken);
         var pruner = CreatePruner(kit);
         kit.Clock.Now = GraphTestKit.DefaultNow + TimeSpan.FromDays(365);
 
@@ -342,6 +342,160 @@ public class GraphPrunerTests
         Assert.Equal(200u, kit.Repository.Channels[s_bc].SpentAtHeight);
         Assert.True(kit.Store.TryGetChannel(s_bc, out _)); // stopped: block 272 was not applied
         Assert.Equal(200u, pruner.LastHeight);
+    }
+
+    [Fact]
+    public async Task Given_AMonitorWithoutHeightAtStart_When_AChannelWasSpentWhileDown_Then_ItIsMarkedAtTheFirstBlockAndKept72Blocks()
+    {
+        // Arrange: the graph reloaded without txids; the monitor loads its height only when it starts (after us)
+        var before = await GraphStoreTests.CreateGraphAsync();
+        await before.Store.FlushAsync(TestContext.Current.CancellationToken);
+        var kit = new GraphTestKit(before.Repository);
+        kit.FundingLookup.Setup(l => l.LookupAsync(s_ab, It.IsAny<CancellationToken>()))
+           .ReturnsAsync(FundingOutputLookupResult.Failed(FundingOutputStatus.OutputSpentOrMissing));
+        kit.FundingLookup.Setup(l => l.LookupAsync(s_bc, It.IsAny<CancellationToken>()))
+           .ReturnsAsync(FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, GraphTestKit.TxIdFor(s_bc),
+                                                              LightningMoney.Satoshis(1_000_000), [0x00, 0x20], 90));
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(0);
+        var pruner = CreatePruner(kit, monitor: monitor);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        pruner.Start();
+        await pruner.WhenIdleAsync(ct);
+        var lookupsBeforeABlock = kit.FundingLookup.Invocations.Count;
+        monitor.Raise(m => m.OnBlockInputs += null, new BlockInputsEventArgs(250, default, []));
+        await pruner.WhenIdleAsync(ct);
+        var spentAt = kit.Store.TryGetChannel(s_ab, out var ab) ? ab.SpentAtHeight : null;
+        monitor.Raise(m => m.OnBlockInputs += null, new BlockInputsEventArgs(321, default, []));
+        await pruner.WhenIdleAsync(ct);
+        var keptAt321 = kit.Store.TryGetChannel(s_ab, out _);
+        monitor.Raise(m => m.OnBlockInputs += null, new BlockInputsEventArgs(322, default, []));
+        await pruner.WhenIdleAsync(ct);
+        await pruner.StopAsync();
+
+        // Assert: never pinned at block 0 (which would remove it at the first block, skipping BOLT 7's 72 blocks)
+        Assert.Equal(0, lookupsBeforeABlock);
+        Assert.Equal(250u, spentAt);
+        Assert.True(keptAt321);
+        Assert.False(kit.Store.TryGetChannel(s_ab, out _));
+        Assert.True(kit.Store.TryGetChannel(s_bc, out _));
+    }
+
+    [Fact]
+    public async Task Given_AChannelStoredAfterTheBlockThatSpentIt_When_TheNextBlockIsApplied_Then_ItIsMarkedAtTheSpendingBlock()
+    {
+        // Arrange: its chain check ran at tip 199 (unspent); block 200 spends it before the ingress stores it
+        var kit = new GraphTestKit();
+        kit.FundingFound();
+        var pruner = CreatePruner(kit);
+        var scid = new ShortChannelId(150, 1, 0);
+        pruner.ApplyBlock(200, [SpendOf(scid)]);
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
+                                       GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob,
+                                                                              new TestGossipKey(11),
+                                                                              new TestGossipKey(12)), 0,
+                                       TestContext.Current.CancellationToken);
+
+        // Act
+        var marked = pruner.ApplyBlock(201, []);
+
+        // Assert
+        Assert.Equal(1, marked);
+        Assert.True(kit.Store.TryGetChannel(scid, out var channel));
+        Assert.Equal(200u, channel.SpentAtHeight);
+    }
+
+    [Fact]
+    public async Task Given_ASpendOlderThanTheRecentBlocks_When_TheChannelIsStored_Then_ItIsNotMarkedByIt()
+    {
+        // Arrange
+        var kit = new GraphTestKit();
+        kit.FundingFound();
+        var pruner = CreatePruner(kit);
+        var scid = new ShortChannelId(150, 1, 0);
+        pruner.ApplyBlock(200, [SpendOf(scid)]);
+        for (var height = 201u; height <= 200 + GraphPruner.RecentSpendBlocks; height++)
+            pruner.ApplyBlock(height, []);
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
+                                       GraphTestKit.SignedChannelAnnouncement(scid, s_alice, s_bob,
+                                                                              new TestGossipKey(11),
+                                                                              new TestGossipKey(12)), 0,
+                                       TestContext.Current.CancellationToken);
+
+        // Act
+        var marked = pruner.ApplyBlock(210, []);
+
+        // Assert
+        Assert.Equal(0, marked);
+        Assert.True(kit.Store.TryGetChannel(scid, out var channel));
+        Assert.Null(channel.SpentAtHeight);
+    }
+
+    [Fact]
+    public async Task Given_TheFundingBlockReorgedOut_When_TheNewBranchHasAnotherTransactionThere_Then_MarkedSpentAndForgottenAfter72Blocks()
+    {
+        // Arrange: a reorg to 105 disconnects both funding blocks (110 and 115); at the next block the new branch is
+        // not at 115 yet; it has another transaction at alice-bob's position and bob-carol's output where it was
+        var kit = await GraphStoreTests.CreateGraphAsync();
+        var pruner = CreatePruner(kit);
+        var other = new TxId(Enumerable.Repeat((byte)0x42, 32).ToArray());
+        kit.FundingLookup.Setup(l => l.LookupAsync(s_ab, It.IsAny<CancellationToken>()))
+           .ReturnsAsync(FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, other,
+                                                              LightningMoney.Satoshis(5), [0x00, 0x20], 1));
+        kit.FundingLookup.SetupSequence(l => l.LookupAsync(s_bc, It.IsAny<CancellationToken>()))
+           .ReturnsAsync(FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound))
+           .ReturnsAsync(FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, GraphTestKit.TxIdFor(s_bc),
+                                                              LightningMoney.Satoshis(1_000_000), [0x00, 0x20], 1));
+
+        // Act
+        pruner.ApplyDisconnect(105);
+        var first = await pruner.RecheckReorgedFundingAsync(106, TestContext.Current.CancellationToken);
+        var second = await pruner.RecheckReorgedFundingAsync(116, TestContext.Current.CancellationToken);
+        var third = await pruner.RecheckReorgedFundingAsync(117, TestContext.Current.CancellationToken);
+        pruner.ApplyBlock(177, []);
+        var keptAt177 = kit.Store.TryGetChannel(s_ab, out var ab);
+        pruner.ApplyBlock(178, []);
+
+        // Assert
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        Assert.Equal(0, third);
+        Assert.True(keptAt177);
+        Assert.Equal(106u, ab!.SpentAtHeight);
+        Assert.False(kit.Store.TryGetChannel(s_ab, out _));
+        Assert.True(kit.Store.TryGetChannel(s_bc, out var bc));
+        Assert.Null(bc.SpentAtHeight);
+        kit.FundingLookup.Verify(l => l.LookupAsync(s_bc, It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
+    [Theory]
+    [InlineData(FundingOutputStatus.OutputSpentOrMissing, true)]
+    [InlineData(FundingOutputStatus.TransactionIndexOutOfRange, true)]
+    [InlineData(FundingOutputStatus.BlockUnavailable, false)]
+    public async Task Given_AReorgedFundingBlock_When_TheLookupAnswers_Then_OnlyAMissingOutputMarksIt(
+        FundingOutputStatus status, bool marked)
+    {
+        // Arrange
+        var kit = await GraphStoreTests.CreateGraphAsync();
+        var pruner = CreatePruner(kit);
+        kit.FundingLookup.Setup(l => l.LookupAsync(It.IsAny<ShortChannelId>(), It.IsAny<CancellationToken>()))
+           .ReturnsAsync(FundingOutputLookupResult.Failed(status));
+        pruner.ApplyDisconnect(112);
+
+        // Act
+        var count = await pruner.RecheckReorgedFundingAsync(113, TestContext.Current.CancellationToken);
+        await pruner.RecheckReorgedFundingAsync(114, TestContext.Current.CancellationToken);
+
+        // Assert: only bob-carol (block 115) was above the fork; asked once
+        Assert.Equal(marked ? 1 : 0, count);
+        Assert.True(kit.Store.TryGetChannel(s_bc, out var bc));
+        Assert.Equal(marked ? 113u : null, bc.SpentAtHeight);
+        Assert.True(kit.Store.TryGetChannel(s_ab, out var ab));
+        Assert.Null(ab.SpentAtHeight);
+        kit.FundingLookup.Verify(l => l.LookupAsync(s_bc, It.IsAny<CancellationToken>()), Times.Once);
+        kit.FundingLookup.Verify(l => l.LookupAsync(s_ab, It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

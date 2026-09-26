@@ -29,13 +29,18 @@ using Interfaces;
 /// the block at that height plus <see cref="GossipGraphOptions.SpentChannelRetentionBlocks"/> (BOLT 7: 72) is
 /// processed. A reorg (<see cref="Domain.Onchain.Interfaces.IOutpointWatcher.OnBlockDisconnected"/>) clears the
 /// spends above the fork point; the new branch marks them again if it spends the output too. Our own channels follow
-/// the same rule: a spent funding output means the channel is closed.
+/// the same rule: a spent funding output means the channel is closed. The spends of the last
+/// <see cref="RecentSpendBlocks"/> blocks are checked again at every block, so a channel stored just after the block
+/// that spent it (its chain check ran at the previous tip) is marked too. A channel whose funding block a reorg
+/// disconnected is looked up again at the next blocks and marked spent when its output is no longer there (BOLT 7:
+/// "spent or reorganized out").
 /// </para>
 /// <para>
 /// Funding txids are not persisted, so after a restart the pruner looks up the channels without one
 /// (<see cref="IFundingOutputLookup.LookupAsync"/>): found records the txid, an output spent while we were down is
 /// marked spent at the last processed block, a transient answer is retried at the next block, and an answer that
 /// cannot change (pruned block, index out of range) is not asked again. Such a channel is left to the stale rule.
+/// The lookups wait for the first block when the monitor has no height yet (it loads it only when it starts).
 /// </para>
 /// <para>
 /// Stale (B7-PR-02, a local policy): a channel whose newest update of each direction (its announcement's arrival
@@ -71,6 +76,9 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
     });
 
     private readonly HashSet<ShortChannelId> _unresolvable = [];
+    private readonly HashSet<ShortChannelId> _reorgRecheck = [];
+    private readonly LinkedList<(uint Height, IReadOnlyList<(TxId TransactionId, uint OutputIndex)> Spent)>
+        _recentSpends = new();
     private readonly Lock _startLock = new();
     private readonly CancellationTokenSource _stopCts = new();
 
@@ -95,6 +103,13 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
 
     /// <summary>The effective <c>Gossip:Enabled</c> switch.</summary>
     public bool IsEnabled => _options.IsEnabledFor(_nodeOptions.BitcoinNetwork);
+
+    /// <summary>
+    /// Blocks whose spent outpoints are checked again at every block: a channel whose chain check saw its funding
+    /// output unspent at the tip, but that was stored only after the pruner applied the next block (which spent it),
+    /// is still marked spent at that block.
+    /// </summary>
+    internal const int RecentSpendBlocks = 6;
 
     /// <summary>The highest block height applied.</summary>
     public uint LastHeight { get; private set; }
@@ -188,6 +203,30 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
         if (height > LastHeight)
             LastHeight = height;
 
+        // A replayed block replaces its earlier entry; only the last few blocks are kept
+        for (var node = _recentSpends.First; node is not null; node = node.Next)
+        {
+            if (node.Value.Height != height)
+                continue;
+
+            _recentSpends.Remove(node);
+            break;
+        }
+
+        _recentSpends.AddLast((height, spentOutpoints));
+        while (_recentSpends.Count > RecentSpendBlocks)
+            _recentSpends.RemoveFirst();
+
+        // Every recent block (this one included), so a channel stored after its spending block was applied is caught
+        var changes = 0;
+        foreach (var (spentHeight, spent) in _recentSpends)
+            changes += MarkSpentOutpoints(spentHeight, spent);
+
+        return changes + Prune(height);
+    }
+
+    private int MarkSpentOutpoints(uint height, IReadOnlyList<(TxId TransactionId, uint OutputIndex)> spentOutpoints)
+    {
         var changes = 0;
         foreach (var (transactionId, outputIndex) in spentOutpoints)
         {
@@ -201,14 +240,32 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
                                    shortChannelId, height);
         }
 
-        return changes + Prune(height);
+        return changes;
     }
 
-    /// <summary>A reorg to <paramref name="forkHeight"/>: the spends above it are cleared.</summary>
+    /// <summary>
+    /// A reorg to <paramref name="forkHeight"/>: the spends above it are cleared, and every channel whose funding block
+    /// is above it is checked again at the next blocks (<see cref="RecheckReorgedFundingAsync"/>).
+    /// </summary>
     internal int ApplyDisconnect(uint forkHeight)
     {
         if (LastHeight > forkHeight)
             LastHeight = forkHeight;
+
+        for (var node = _recentSpends.First; node is not null;)
+        {
+            var next = node.Next;
+            if (node.Value.Height > forkHeight)
+                _recentSpends.Remove(node);
+            node = next;
+        }
+
+        // BOLT 7: a channel whose funding output was reorganized out is forgotten after 72 blocks like a spent one
+        foreach (var channel in _store.GetSnapshot().Channels)
+        {
+            if (channel.ShortChannelId.BlockHeight > forkHeight && channel.SpentAtHeight is null)
+                _reorgRecheck.Add(channel.ShortChannelId);
+        }
 
         var cleared = _store.ClearSpentAbove(forkHeight);
         if (cleared > 0)
@@ -256,6 +313,54 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
         }
 
         return transient;
+    }
+
+    /// <summary>
+    /// Looks up again the funding output of every channel whose funding block a reorg disconnected: still at its short
+    /// channel id with the same txid → kept; gone (another transaction or no output there, or spent) → marked spent at
+    /// <paramref name="height"/>, so it is forgotten 72 blocks later (BOLT 7 "spent or reorganized out"); a transient
+    /// answer (the new branch is not that high yet, bitcoind down) → asked again at the next block.
+    /// </summary>
+    /// <returns>The number of channels marked spent.</returns>
+    internal async Task<int> RecheckReorgedFundingAsync(uint height, CancellationToken cancellationToken)
+    {
+        var marked = 0;
+        foreach (var shortChannelId in _reorgRecheck.ToList())
+        {
+            if (!_store.TryGetChannel(shortChannelId, out var channel) || channel.SpentAtHeight is not null)
+            {
+                _reorgRecheck.Remove(shortChannelId);
+                continue;
+            }
+
+            var result = await _fundingOutputLookup.LookupAsync(shortChannelId, cancellationToken);
+            if (result.IsTransient)
+                continue;
+
+            _reorgRecheck.Remove(shortChannelId);
+            var gone = result.Status switch
+            {
+                FundingOutputStatus.Found => _store.TryGetFundingTxId(shortChannelId, out var known)
+                                          && result.TransactionId is { } found && found != known,
+                FundingOutputStatus.OutputSpentOrMissing or FundingOutputStatus.TransactionIndexOutOfRange => true,
+                _ => false
+            };
+
+            if (!gone)
+            {
+                if (result is { IsFound: true, TransactionId: { } transactionId })
+                    _store.TrySetFundingTxId(shortChannelId, transactionId);
+                continue;
+            }
+
+            _store.MarkSpent(shortChannelId, height);
+            marked++;
+            _logger.LogInformation(
+                "Graph channel {ShortChannelId}: its funding output left the chain in a reorg ({Status}); marked spent at block {Height}",
+                shortChannelId, result.Status, height);
+        }
+
+        return marked;
     }
 
     private int Prune(uint height)
@@ -342,8 +447,18 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
             {
                 await _store.LoadAsync(cancellationToken);
                 LastHeight = Math.Max(LastHeight, _blockchainMonitor.LastProcessedBlockHeight);
-                retryResolution = await ResolveFundingTxIdsAsync(LastHeight, cancellationToken) > 0;
-                await FlushIfChangedAsync(cancellationToken);
+
+                // The monitor loads its height only when it starts (after us): without a real height a spend found
+                // now would be pinned at block 0 and removed at once, so the lookups wait for the first block
+                if (LastHeight > 0)
+                {
+                    retryResolution = await ResolveFundingTxIdsAsync(LastHeight, cancellationToken) > 0;
+                    await FlushIfChangedAsync(cancellationToken);
+                }
+                else
+                {
+                    retryResolution = true;
+                }
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -367,6 +482,8 @@ public sealed class GraphPruner : IAsyncDisposable, IDisposable
                     {
                         if (retryResolution)
                             retryResolution = await ResolveFundingTxIdsAsync(work.Height, cancellationToken) > 0;
+                        if (_reorgRecheck.Count > 0)
+                            await RecheckReorgedFundingAsync(work.Height, cancellationToken);
                         ApplyBlock(work.Height, work.SpentOutpoints);
 
                         // Channels added since (our own before its txid was known, a restart) get their txid next
