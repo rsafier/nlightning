@@ -422,17 +422,30 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
-    public void Given_OpenInvoice_When_ACommittedPartArrivesPastItsFinalCltvDeltaAndExpiry_Then_Accepted()
+    public void Given_OpenInvoice_When_AMarkedPartArrivesPastItsFinalCltvDelta_Then_0x400F()
     {
-        // Act: committed before a crash that left the invoice Open: its replay is late and after the invoice expiry
-        var result = _processor.Evaluate(CreateInvoice(createdAt: DateTimeOffset.UtcNow.AddHours(-2)), s_paymentHash,
-                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
-                                         CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
+        // Act: marked before a crash that left the invoice Open: the settle is the commit point, so the mark skips no
+        // check (NL-323)
+        var result = _processor.Evaluate(CreateInvoice(), s_paymentHash, LightningMoney.MilliSatoshis(40_000),
+                                         HtlcCltv, CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
                                          acceptMultiPart: true, committedSetMember: true);
 
         // Assert
-        Assert.True(result.IsAccepted, result.Reason);
-        Assert.False(result.InvoiceAlreadySettled);
+        Assert.False(result.IsAccepted);
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, result.Failure!.Code);
+    }
+
+    [Fact]
+    public void Given_OpenExpiredInvoice_When_AMarkedPartArrives_Then_0x400F()
+    {
+        // Act
+        var result = _processor.Evaluate(CreateInvoice(createdAt: DateTimeOffset.UtcNow.AddHours(-2)), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
+                                         CreatePayload(40_000, totalMsat: AmountMsat), Height,
+                                         acceptMultiPart: true, committedSetMember: true);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
     }
 
     [Fact]

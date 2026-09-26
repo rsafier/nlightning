@@ -76,6 +76,29 @@ public sealed class LocalFinalHopClaimTests
     }
 
     [Fact]
+    public async Task Given_AMarkOnAnHtlcOfAnOpenInvoice_When_OurCommitmentConfirms_Then_NoHtlcSuccessAndTheSwitchDecides()
+    {
+        // Arrange (NL-323): a mark left by a set that became incomplete (or a stop before the settle): the invoice is
+        // still Open, so the mark commits to nothing
+        ulong id = 0;
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            id = pair.Add(pair.Bob, ReceivedMsat, s_receivedPreimage, ReceivedCltv);
+            pair.Settle(pair.Bob);
+        });
+        harness.Channel.UpdateCommitments(
+            RemoteFinalHopClaimTests.WithKnownPreimage(harness.Channel.Commitments!, id, s_receivedPreimage));
+        AddInvoice(harness);
+
+        // Act
+        await harness.ResolveAsync();
+
+        // Assert
+        Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        Assert.Contains(harness.Events, e => e.Event is IncomingHtlcLockedIn { Htlc.Id: var htlcId } && htlcId == id);
+    }
+
+    [Fact]
     public async Task Given_ARecordPreimageOfAnotherHash_When_OurCommitmentConfirms_Then_NeverClaimed()
     {
         // Arrange

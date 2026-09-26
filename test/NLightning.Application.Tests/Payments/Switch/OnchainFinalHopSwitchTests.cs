@@ -19,6 +19,7 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Onchain.Resolvers.Remote;
 
 /// <summary>
 /// NL-316 and NL-322 at the HTLC switch, on <see cref="ThreeNodeHarness"/> (real onions and SQLite persistence): an
@@ -139,6 +140,106 @@ public class OnchainFinalHopSwitchTests
     }
 
     [Fact]
+    public async Task Given_AMarkedPartOfAnOpenInvoiceOnAChannelGoneOnChain_When_TheSetTimesOut_Then_TheMarkIsTakenBack()
+    {
+        // Arrange (NL-323): a held part carries the preimage (we stopped between the marks and the settle, or the set
+        // became incomplete after the marks), the invoice is still Open, and the part's channel goes on chain
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        var part = CarolIncoming(harness).Single();
+        await MarkAsync(harness, part.Id, invoice.Preimage);
+        harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).UpdateState(ChannelState.OnchainResolving);
+        var sentBefore = harness.Sent.Count;
+
+        // Act: mpp_timeout
+        _clock.Advance(TimeSpan.FromSeconds(60));
+        await CarolSwitch(harness).WhenIdleAsync();
+
+        // Assert: left to time out on chain without its preimage (memory and database), so no resolver claims it
+        Assert.Null(CarolIncoming(harness).Single().KnownPreimage);
+        Assert.Null((await StoredIncomingAsync(harness, part.Id))!.KnownPreimage);
+        Assert.Equal(sentBefore, harness.Sent.Count);
+        Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
+    }
+
+    [Fact]
+    public async Task Given_AMarkedPartOfAnOpenInvoice_When_TheSetTimesOut_Then_FailedWithoutItsMark()
+    {
+        // Arrange (NL-323): the same leftover mark on an open channel
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        var part = CarolIncoming(harness).Single();
+        await MarkAsync(harness, part.Id, invoice.Preimage);
+
+        // Act
+        _clock.Advance(TimeSpan.FromSeconds(60));
+        await CarolSwitch(harness).WhenIdleAsync();
+
+        // Assert: failed back, and its record (which the engine keeps through the removal) has no preimage
+        var failed = harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!
+                            .GetHtlc(HtlcDirection.Incoming, part.Id)!;
+        Assert.Equal(HtlcRemovalKind.Fail, failed.Removal?.Kind);
+        Assert.Null(failed.KnownPreimage);
+        Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
+    }
+
+    [Fact]
+    public async Task Given_TheSettleOfACompleteSetFails_When_TheSwitchReceivesTheLastPart_Then_TheMarksAreTakenBackAndTheTimerRetries()
+    {
+        // Arrange: both parts locked in; the settle's save fails once, after the other part was marked
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        harness.Carol.SwitchSuspended = true;
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+        harness.Carol.SwitchSuspended = false;
+        var parts = CarolIncoming(harness).OrderBy(h => h.Id).ToList();
+        await harness.Carol.Switch.HandleAsync(new IncomingHtlcLockedIn(ThreeNodeHarness.BobCarolChannelId, parts[0]),
+                                               CancellationToken.None);
+        var failures = 0;
+        harness.Carol.AfterInvoiceRead = _ =>
+        {
+            if (failures == 0 && CarolIncoming(harness).Any(h => h.KnownPreimage is not null))
+            {
+                failures++;
+                throw new InvalidOperationException("simulated settle failure");
+            }
+
+            return Task.CompletedTask;
+        };
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(() => harness.Carol.Switch.HandleAsync(
+                                                                new IncomingHtlcLockedIn(
+                                                                    ThreeNodeHarness.BobCarolChannelId, parts[1]),
+                                                                CancellationToken.None));
+
+        // Assert: nothing settled, no part keeps a mark (memory and database), the set waits with its timer
+        Assert.Equal(1, failures);
+        Assert.All(CarolIncoming(harness), h => Assert.Null(h.KnownPreimage));
+        foreach (var htlc in parts)
+            Assert.Null((await StoredIncomingAsync(harness, htlc.Id))!.KnownPreimage);
+        Assert.Equal(InvoiceStatus.Open, (await GetInvoiceAsync(harness, invoice)).Status);
+        Assert.Contains(invoice.PaymentHash, CarolSwitch(harness).HeldPaymentHashes);
+        Assert.Equal(1, _clock.PendingTimers);
+
+        // The timer finds the set complete and fulfills it
+        _clock.Advance(TimeSpan.FromSeconds(60));
+        await CarolSwitch(harness).WhenIdleAsync();
+        await harness.PumpAsync();
+        var stored = await GetInvoiceAsync(harness, invoice);
+        Assert.Equal(InvoiceStatus.Settled, stored.Status);
+        Assert.Equal(s_amount, stored.AmountReceived);
+        Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
+        Assert.Empty(CarolIncoming(harness));
+    }
+
+    [Fact]
     public async Task Given_AnHtlcWithAnotherSecretOnAChannelGoneOnChain_When_TheSwitchDecides_Then_NotAcceptedNorFailed()
     {
         // Arrange
@@ -216,6 +317,25 @@ public class OnchainFinalHopSwitchTests
         return harness.Carol.InScopeAsync(async u => (await u.ChannelStateDbRepository.LoadAsync(
                                                           channel.ChannelId, channel.Commitments!.Params))!
                                                     .Commitments.GetHtlc(HtlcDirection.Incoming, htlcId));
+    }
+
+    /// <summary>
+    /// Persists <paramref name="preimage"/> on an incoming HTLC's record as the switch's mark does (a leftover mark:
+    /// a stop between the marks and the settle).
+    /// </summary>
+    private static async Task MarkAsync(ThreeNodeHarness harness, ulong htlcId, Secret preimage)
+    {
+        var channel = harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId);
+        var next = RemoteFinalHopClaimTests.WithKnownPreimage(channel.Commitments!, htlcId, preimage);
+        var record = next.GetHtlc(HtlcDirection.Incoming, htlcId)!;
+        await harness.Carol.InScopeAsync(async u =>
+        {
+            await u.ChannelStateDbRepository.ApplyAsync(next, new ChannelTransition([record], [], [], false, false,
+                                                                                    false, false));
+            await u.SaveChangesAsync();
+            return 0;
+        });
+        channel.UpdateCommitments(next);
     }
 
     private static Task<InvoiceModel> GetInvoiceAsync(ThreeNodeHarness harness, InvoiceModel invoice) =>

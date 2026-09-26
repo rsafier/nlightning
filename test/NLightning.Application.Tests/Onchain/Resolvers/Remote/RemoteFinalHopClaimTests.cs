@@ -128,6 +128,51 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
         Assert.Equal(OutputResolutionState.Ignored, _context.HtlcRow(id).State);
     }
 
+    [Fact]
+    public async Task Given_AMarkOnAnHtlcOfAnOpenInvoice_When_Resolved_Then_NotClaimedAndTheSwitchIsAskedAgain()
+    {
+        // Arrange (NL-323): the switch marked this part of a set that then became incomplete (or it stopped before
+        // the settle): the invoice is still Open, so the mark commits to nothing
+        var preimage = RealSigningCommitmentPair.Preimage(3);
+        var id = Pair.Add(Pair.Bob, AmountMsat, preimage, Cltv);
+        Pair.Settle(Pair.Bob);
+        _context.UseSnapshot(WithKnownPreimage(Pair.Alice.State, id, preimage));
+        AddInvoice(preimage);
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+
+        // Act
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 1);
+
+        // Assert: no claim; the switch decides again every round
+        Assert.DoesNotContain(_context.Published, b => b.Purpose == BroadcastPurpose.HtlcClaim);
+        Assert.Equal(2, _context.SwitchEvents.OfType<IncomingHtlcLockedIn>().Count());
+        Assert.Equal(OutputResolutionState.Waiting, _context.HtlcRow(id).State);
+    }
+
+    [Fact]
+    public async Task Given_AMarkOnAnHtlcWeFailedOffChain_When_ItsCommitmentConfirms_Then_NeverClaimed()
+    {
+        // Arrange (NL-323): the part kept its mark through our off-chain fail (the engine keeps KnownPreimage on the
+        // removal); the invoice was settled later by another set, and the peer's commitment still holds the HTLC
+        var preimage = RealSigningCommitmentPair.Preimage(3);
+        var id = Pair.Add(Pair.Bob, AmountMsat, preimage, Cltv);
+        Pair.Settle(Pair.Bob);
+        Pair.Fail(Pair.Alice, id);
+        _context.UseSnapshot(WithKnownPreimage(Pair.Alice.State, id, preimage));
+        var invoice = AddInvoice(preimage);
+        invoice.Accept(LightningMoney.MilliSatoshis(AmountMsat));
+        invoice.Settle(DateTimeOffset.UtcNow);
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+
+        // Act
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 1);
+
+        // Assert
+        Assert.DoesNotContain(_context.Published, b => b.Purpose == BroadcastPurpose.HtlcClaim);
+    }
+
     [Theory]
     [InlineData("unknown")]
     [InlineData("settled")]
@@ -187,10 +232,14 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
     }
 
     /// <summary>The snapshot with the preimage the switch persists on an incoming HTLC it accepted as final hop.</summary>
-    internal static ChannelCommitments WithKnownPreimage(ChannelCommitments state, ulong htlcId, Secret preimage)
+    internal static ChannelCommitments WithKnownPreimage(ChannelCommitments state, ulong htlcId, Secret preimage) =>
+        WithRecord(state, htlcId, r => r with { KnownPreimage = preimage });
+
+    /// <summary>The snapshot with the incoming HTLC's record changed by <paramref name="change"/>.</summary>
+    internal static ChannelCommitments WithRecord(ChannelCommitments state, ulong htlcId,
+                                                  Func<HtlcRecord, HtlcRecord> change)
     {
-        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)!;
-        var updated = record with { KnownPreimage = preimage };
+        var updated = change(state.GetHtlc(HtlcDirection.Incoming, htlcId)!);
         return ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat, state.RemoteBalanceMsat,
                                           state.Htlcs.SetItem(updated.Key, updated).Values, state.FeeUpdates,
                                           state.LocalNextHtlcId, state.RemoteNextHtlcId, state.LocalCommit,

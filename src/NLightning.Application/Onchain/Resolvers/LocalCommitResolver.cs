@@ -514,7 +514,7 @@ public sealed class LocalCommitResolver : IOutputResolver
             return null;
 
         // Accepted as our final hop by the switch (NL-316/NL-322): the preimage it persisted on this HTLC's record
-        if (FinalHopClaims.AcceptedPreimage(record) is { } accepted)
+        if (await FinalHopClaims.GetAcceptedPreimageAsync(context.UnitOfWork, record) is { } accepted)
             return accepted;
 
         var forwards = await context.UnitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
