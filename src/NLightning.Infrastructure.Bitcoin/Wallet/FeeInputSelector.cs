@@ -218,34 +218,14 @@ public sealed class FeeInputSelector : IFeeInputSelector
         throw new InsufficientFundsException(LightningMoney.Satoshis(required), LightningMoney.Satoshis(total));
     }
 
-    private async Task<HashSet<(TxId, uint)>> GetOutpointsSpentByPendingBroadcastsAsync()
+    private async Task<HashSet<(TxId TxId, uint Index)>> GetOutpointsSpentByPendingBroadcastsAsync()
     {
         using var scope = _scopeFactory.CreateScope();
         var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-
-        var spent = new HashSet<(TxId, uint)>();
-        foreach (var broadcast in await uow.BroadcastTransactionDbRepository.GetPendingAsync())
-        {
-            Transaction tx;
-            try
-            {
-                tx = Transaction.Load(broadcast.RawTransaction, _network);
-            }
-            catch (Exception e) when (e is FormatException or ArgumentException or EndOfStreamException)
-            {
-                _logger.LogWarning(e, "Pending broadcast {TxId} does not parse; its inputs are not excluded",
-                                   broadcast.TransactionId);
-                continue;
-            }
-
-            foreach (var input in tx.Inputs)
-                spent.Add((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
-        }
-
-        return spent;
+        return await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
     }
 
-    private List<WalletInput> GetCandidates(HashSet<(TxId, uint)> spentByPendingBroadcasts)
+    private List<WalletInput> GetCandidates(HashSet<(TxId TxId, uint Index)> spentByPendingBroadcasts)
     {
         var candidates = new List<WalletInput>();
         foreach (var utxo in _utxoMemoryRepository.GetUnreservedUtxos())

@@ -109,6 +109,12 @@ public class NodeOptions
     /// <see cref="FeeUpdateOptions"/>
     public FeeUpdateOptions FeeUpdates { get; set; } = new();
 
+    /// <summary>
+    /// The on-chain wallet reserve kept for <c>option_anchors</c> channels (NL-379), from <c>Node:Anchors</c>.
+    /// </summary>
+    /// <see cref="AnchorReserveOptions"/>
+    public AnchorReserveOptions Anchors { get; set; } = new();
+
     /// <summary>The longest <see cref="Alias"/> in UTF-8 bytes (the <c>alias</c> field of <c>node_announcement</c>).</summary>
     public const int AliasMaxBytes = 32;
 
@@ -165,7 +171,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="Anchors"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -189,6 +195,7 @@ public class NodeOptions
 
         errors.AddRange(Routing.GetValidationErrors());
         errors.AddRange(FeeUpdates.GetValidationErrors());
+        errors.AddRange(Anchors.GetValidationErrors());
         if (CustomSignet is not null)
             errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
         return errors;

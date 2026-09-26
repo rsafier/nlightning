@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Channels.Handlers;
 
 using Domain.Bitcoin.Constants;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -17,6 +18,7 @@ using Interfaces;
 
 public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Message>
 {
+    private readonly IAnchorReserveService? _anchorReserveService;
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelFactory _channelFactory;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -29,12 +31,16 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     /// default yes, and on mainnet only with <see cref="GossipOptions.AllowPublicChannelsOnMainnet"/>).</param>
     /// <param name="nodeOptions">The node's network for the mainnet gate (plan D12); without it the handler assumes
     /// mainnet, the safe default.</param>
+    /// <param name="anchorReserveService">Refuses an <c>option_anchors</c> channel the wallet could not back with its
+    /// anchors reserve (NL-379); registered by <c>AddBitcoinInfrastructure</c>.</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
                                       IBlockchainMonitor? blockchainMonitor = null,
                                       IOptions<GossipOptions>? gossipOptions = null,
-                                      IOptions<NodeOptions>? nodeOptions = null)
+                                      IOptions<NodeOptions>? nodeOptions = null,
+                                      IAnchorReserveService? anchorReserveService = null)
     {
+        _anchorReserveService = anchorReserveService;
         _blockchainMonitor = blockchainMonitor;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
@@ -91,6 +97,23 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
 
         _logger.LogTrace("Created Channel with fundingPubKey: {fundingPubKey}",
                          channel.LocalKeySet.FundingCompactPubKey);
+
+        // NL-379: as fundee of an anchors channel we still pay the CPFP child of our commitment and the fee inputs of
+        // our HTLC transactions from the wallet, so refuse the channel when the confirmed balance can't keep the anchors
+        // reserve with it (LND does the same). The channel type decided the anchors, as it does in the factory
+        if (channel.ChannelParams.OptionAnchorOutputs && _anchorReserveService is not null)
+        {
+            try
+            {
+                await _anchorReserveService.EnsureCanAcceptAnchorsChannelAsync();
+            }
+            catch (AnchorReserveException e)
+            {
+                throw new ChannelErrorException(e.Message, payload.ChannelId,
+                                                "Not enough on-chain funds to keep the anchors reserve for this "
+                                              + "channel");
+            }
+        }
 
         // Add the channel to dictionaries
         _channelMemoryRepository.AddTemporaryChannel(peerPubKey, channel);

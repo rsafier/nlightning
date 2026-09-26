@@ -7,6 +7,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Exceptions;
 using Domain.Money;
 
 public class UtxoMemoryRepository : IUtxoMemoryRepository
@@ -68,19 +69,65 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
             _utxoSet.TryAdd((utxoModel.TxId, utxoModel.Index), utxoModel);
     }
 
+    public LightningMoney GetAvailableConfirmedBalance(uint currentBlockHeight,
+                                                       IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints)
+    {
+        ArgumentNullException.ThrowIfNull(excludedOutpoints);
+
+        lock (_reservationLock)
+        {
+            return LightningMoney.Satoshis(GetUnreservedUtxosLocked()
+                                          .Where(x => x.BlockHeight + 3 <= currentBlockHeight
+                                                   && !excludedOutpoints.Contains((x.TxId, x.Index)))
+                                          .Sum(x => x.Amount.Satoshi));
+        }
+    }
+
     public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId)
     {
         lock (_reservationLock)
-            return LockUtxosToSpendOnChannelLocked(requestFundingAmount, channelId);
+            return LockUtxosToSpendOnChannelLocked(requestFundingAmount, channelId, LightningMoney.Zero,
+                                                   new HashSet<(TxId, uint)>());
     }
 
-    private List<UtxoModel> LockUtxosToSpendOnChannelLocked(LightningMoney requestFundingAmount, ChannelId channelId)
+    public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId,
+                                                     LightningMoney reserveToKeep,
+                                                     IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints)
     {
-        // Get available UTXOs (not already locked for other channels nor reserved for a fee)
-        var availableUtxos = GetUnreservedUtxosLocked().OrderByDescending(utxo => utxo.Amount.Satoshi).ToList();
+        ArgumentNullException.ThrowIfNull(requestFundingAmount);
+        ArgumentNullException.ThrowIfNull(reserveToKeep);
+        ArgumentNullException.ThrowIfNull(excludedOutpoints);
+
+        lock (_reservationLock)
+            return LockUtxosToSpendOnChannelLocked(requestFundingAmount, channelId, reserveToKeep, excludedOutpoints);
+    }
+
+    private List<UtxoModel> LockUtxosToSpendOnChannelLocked(LightningMoney requestFundingAmount, ChannelId channelId,
+                                                            LightningMoney reserveToKeep,
+                                                            IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints)
+    {
+        // Get available UTXOs (not already locked for other channels, reserved for a fee nor spent by one of our
+        // pending broadcasts, NL-385)
+        var availableUtxos = GetUnreservedUtxosLocked()
+                            .Where(utxo => !excludedOutpoints.Contains((utxo.TxId, utxo.Index)))
+                            .OrderByDescending(utxo => utxo.Amount.Satoshi)
+                            .ToList();
 
         if (availableUtxos.Count == 0)
             throw new InvalidOperationException("No available UTXOs");
+
+        // NL-379: what stays in the wallet (the outputs not picked plus the funding's change) must cover the anchors
+        // reserve, so the CPFP child and the anchors HTLC transactions can still find fee inputs
+        var availableSat = availableUtxos.Sum(utxo => utxo.Amount.Satoshi);
+        if (availableSat >= requestFundingAmount.Satoshi
+         && availableSat - requestFundingAmount.Satoshi < reserveToKeep.Satoshi)
+        {
+            var available = LightningMoney.Satoshis(availableSat);
+            throw new AnchorReserveException(
+                $"Funding {requestFundingAmount.Satoshi} sat would leave the wallet below the anchors reserve of "
+              + $"{reserveToKeep.Satoshi} sat (available {availableSat} sat)",
+                requestFundingAmount + reserveToKeep, available, reserveToKeep);
+        }
 
         // Try Branch and Bound to find an exact match or minimize inputs
         var selectedUtxos = BranchAndBound(availableUtxos, requestFundingAmount);

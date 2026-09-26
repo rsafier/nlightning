@@ -5,6 +5,7 @@ namespace NLightning.Daemon.Handlers;
 
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -30,6 +31,7 @@ using Interfaces;
 public sealed class OpenChannelClientHandler
     : IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>
 {
+    private readonly IAnchorReserveService? _anchorReserveService;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelManager _channelManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -52,8 +54,10 @@ public sealed class OpenChannelClientHandler
                                     ILogger<OpenChannelClientHandler> logger, IMessageFactory messageFactory,
                                     IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository,
                                     IOptions<GossipOptions>? gossipOptions = null,
-                                    IOptions<NodeOptions>? nodeOptions = null)
+                                    IOptions<NodeOptions>? nodeOptions = null,
+                                    IAnchorReserveService? anchorReserveService = null)
     {
+        _anchorReserveService = anchorReserveService;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
         _blockchainMonitor = blockchainMonitor;
@@ -114,8 +118,27 @@ public sealed class OpenChannelClientHandler
             _logger.LogTrace("Created Temporary Channel {id} with fundingPubKey: {fundingPubKey}", channel.ChannelId,
                              channel.LocalKeySet.FundingCompactPubKey);
 
-        // Select UTXOs and mark them as toSpend for this channel
-        _utxoMemoryRepository.LockUtxosToSpendOnChannel(request.FundingAmount, channel.ChannelId);
+        // Select UTXOs and mark them as toSpend for this channel: through the reserve service the funding keeps the
+        // anchors reserve (NL-379), counting this channel when it has anchors, and skips outputs our own pending
+        // broadcasts spend (NL-385)
+        if (_anchorReserveService is not null)
+        {
+            var anchorsChannel = channel.ChannelParams.OptionAnchorOutputs;
+            try
+            {
+                await _anchorReserveService.EnsureCanFundAsync(request.FundingAmount, anchorsChannel, ct);
+                await _anchorReserveService.LockFundingUtxosAsync(request.FundingAmount, channel.ChannelId,
+                                                                  anchorsChannel, ct);
+            }
+            catch (InsufficientFundsException e)
+            {
+                throw new ClientException(ErrorCodes.NotEnoughBalance, e.Message);
+            }
+        }
+        else
+        {
+            _utxoMemoryRepository.LockUtxosToSpendOnChannel(request.FundingAmount, channel.ChannelId);
+        }
 
         // Create a task completion source for the response
         var tsc = new TaskCompletionSource<OpenChannelClientResponse>(

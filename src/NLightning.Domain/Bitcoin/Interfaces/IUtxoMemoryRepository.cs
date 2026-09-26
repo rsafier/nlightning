@@ -16,7 +16,33 @@ public interface IUtxoMemoryRepository
     LightningMoney GetUnconfirmedBalance(uint currentBlockHeight);
     LightningMoney GetLockedBalance();
     void Load(List<UtxoModel> utxoSet);
+    /// <summary>
+    /// Locks outputs worth at least <paramref name="requestFundingAmount"/> for the funding of
+    /// <paramref name="channelId"/>, with no reserve and no excluded outpoints. The node funds channels through
+    /// <c>IAnchorReserveService.LockFundingUtxosAsync</c>, which uses the overload that keeps the anchors reserve
+    /// (NL-379) and skips outputs spent by our pending broadcasts (NL-385).
+    /// </summary>
     List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId);
+
+    /// <summary>
+    /// Locks outputs worth at least <paramref name="requestFundingAmount"/> for the funding of
+    /// <paramref name="channelId"/>, from the outputs neither locked, reserved for a fee nor in
+    /// <paramref name="excludedOutpoints"/> (outputs our own pending broadcasts spend, NL-385), and only when those
+    /// outputs minus the funding amount still cover <paramref name="reserveToKeep"/> (the anchors reserve, NL-379; the
+    /// funding's change returns to the wallet and counts toward it). Atomic against the other lock and reservation
+    /// calls. Throws <see cref="InvalidOperationException"/> when there are no free outputs or they do not cover the
+    /// amount, and <see cref="Exceptions.AnchorReserveException"/> when they do but not with the reserve.
+    /// </summary>
+    List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId,
+                                              LightningMoney reserveToKeep,
+                                              IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints);
+
+    /// <summary>
+    /// The confirmed balance (the rule of <see cref="GetConfirmedBalance"/>) of the outputs neither locked to a channel,
+    /// reserved for a fee nor in <paramref name="excludedOutpoints"/>.
+    /// </summary>
+    LightningMoney GetAvailableConfirmedBalance(uint currentBlockHeight,
+                                                IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints);
     List<UtxoModel> GetLockedUtxosForChannel(ChannelId channelId);
     List<UtxoModel> ReturnUtxosNotSpentOnChannel(ChannelId channelId);
     void ConfirmSpendOnChannel(ChannelId channelId);
