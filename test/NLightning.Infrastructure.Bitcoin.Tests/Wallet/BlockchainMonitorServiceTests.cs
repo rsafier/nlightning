@@ -253,6 +253,7 @@ public class BlockchainMonitorServiceTests
         _mockBlockchainStateRepository.Verify(x => x.Update(It.IsAny<BlockchainState>()), Times.Exactly(3));
         Assert.Equal(100u, service.LastProcessedBlockHeight);
         Assert.True(service.IsChainProcessingHalted);
+        Assert.Equal("block 100 failed 3 times in a row", service.ChainProcessingHaltReason); // NL-216 (chainstatus)
         Assert.Empty(processedHeights);
         Assert.Equal(0, raised);
 
@@ -265,6 +266,7 @@ public class BlockchainMonitorServiceTests
         Assert.Equal([100u, 101u, 102u, 103u], processedHeights);
         Assert.Equal(103u, service.LastProcessedBlockHeight);
         Assert.False(service.IsChainProcessingHalted);
+        Assert.Null(service.ChainProcessingHaltReason);
         Assert.Equal(4, raised);
     }
 
@@ -418,6 +420,132 @@ public class BlockchainMonitorServiceTests
         Assert.Equal(blockHash, args.BlockHash);
         _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(fundingTxId, 1, spendTxId, 111, blockHash),
                                               Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_MempoolSpendOfWatchedOutpoint_When_Announced_Then_RaisedOnceAndNothingConfirmed()
+    {
+        // Arrange (BOLT 5 plan O8, NL-098)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 1);
+        var spend = CreateSpend(fundingTxId, 1);
+        var mempool = new List<MempoolSpendEventArgs>();
+        var confirmed = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, args) => mempool.Add(args);
+        _service.OnWatchedOutpointSpent += (_, _) => confirmed++;
+
+        // Act: bitcoind announces the transaction twice (mempool acceptance, then again for a block)
+        var first = _service.ProcessMempoolTransaction(spend);
+        var second = _service.ProcessMempoolTransaction(spend);
+
+        // Assert: one event with the spent outpoint; no spend recorded, no confirmed spend raised
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        var args = Assert.Single(mempool);
+        Assert.Equal(channelId, args.ChannelId);
+        Assert.Equal(new TxId(spend.GetHash().ToBytes()), args.SpendingTransaction.TxId);
+        Assert.Equal(spend.ToBytes(), args.SpendingTransaction.RawTxBytes);
+        Assert.Equal(fundingTxId, args.SpentTransactionId);
+        Assert.Equal(1u, args.SpentOutputIndex);
+        Assert.False(args.SpendsUnconfirmedParent);
+        Assert.Equal(0, confirmed);
+        _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(It.IsAny<TxId>(), It.IsAny<uint>(),
+                                                                    It.IsAny<TxId>(), It.IsAny<uint>(),
+                                                                    It.IsAny<Hash>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_MempoolSpendReported_When_ItIsMinedLater_Then_TheBlockStillRecordsAndRaisesTheSpend()
+    {
+        // Arrange: the mempool sighting must not stand in for the confirmation (O8)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var spend = CreateSpend(fundingTxId, 0);
+        var confirmed = new List<OutpointSpentEventArgs>();
+        _service.OnWatchedOutpointSpent += (_, args) => confirmed.Add(args);
+        _service.ProcessMempoolTransaction(spend);
+
+        // Act
+        await _service.ProcessNewBlockAsync(_chain.Mine(spend), 111);
+
+        // Assert
+        Assert.Equal(111u, Assert.Single(confirmed).BlockHeight);
+        _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(fundingTxId, 0,
+                                                                    new TxId(spend.GetHash().ToBytes()), 111,
+                                                                    It.IsAny<Hash>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_TransactionSpendingAReportedMempoolTransaction_When_Announced_Then_RaisedForItsParent()
+    {
+        // Arrange: a commitment in the mempool, then the HTLC-success spending it before either is mined
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var commitment = CreateSpend(fundingTxId, 0);
+        var htlcSuccess = CreateSpend(commitment, 0);
+        var grandChild = CreateSpend(htlcSuccess, 0);
+        var unrelatedChild = CreateSpend(CreateTransaction(0x33), 0);
+        var mempool = new List<MempoolSpendEventArgs>();
+        _service.OnWatchedOutpointSpentInMempool += (_, args) => mempool.Add(args);
+
+        // Act
+        _service.ProcessMempoolTransaction(commitment);
+        _service.ProcessMempoolTransaction(htlcSuccess);
+        _service.ProcessMempoolTransaction(unrelatedChild);
+        _service.ProcessMempoolTransaction(grandChild);
+
+        // Assert: the child is reported with its unconfirmed parent (and so is the grandchild, one level each)
+        Assert.Equal(3, mempool.Count);
+        Assert.False(mempool[0].SpendsUnconfirmedParent);
+        Assert.True(mempool[1].SpendsUnconfirmedParent);
+        Assert.Equal(new TxId(commitment.GetHash().ToBytes()), mempool[1].SpentTransactionId);
+        Assert.Equal(channelId, mempool[1].ChannelId);
+        Assert.Equal(new TxId(htlcSuccess.GetHash().ToBytes()), mempool[2].SpentTransactionId);
+    }
+
+    [Fact]
+    public void Given_MoreTransactionsThanRemembered_When_AnOldOneIsAnnouncedAgain_Then_ItIsRaisedAgain()
+    {
+        // Arrange: the memory of seen txids is bounded
+        _service.MaxRememberedMempoolTransactions = 2;
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var spend = CreateSpend(fundingTxId, 0);
+        var raised = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => raised++;
+        _service.ProcessMempoolTransaction(spend);
+
+        // Act: two other transactions push it out, then it is announced again (e.g. re-broadcast after eviction)
+        _service.ProcessMempoolTransaction(CreateTransaction(0x41));
+        _service.ProcessMempoolTransaction(CreateTransaction(0x42));
+        _service.ProcessMempoolTransaction(spend);
+
+        // Assert
+        Assert.Equal(2, raised);
+    }
+
+    [Fact]
+    public void Given_ThrowingMempoolHandler_When_Announced_Then_OtherHandlersStillRun()
+    {
+        // Arrange
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(new ChannelId(new byte[32]), fundingTxId, 0);
+        var raised = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => throw new InvalidOperationException("handler bug");
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => raised++;
+
+        // Act
+        var count = _service.ProcessMempoolTransaction(CreateSpend(fundingTxId, 0));
+
+        // Assert: the monitor catches a handler's failure and still calls the next handler
+        Assert.Equal(1, count);
+        Assert.Equal(1, raised);
     }
 
     [Fact]
@@ -808,6 +936,14 @@ public class BlockchainMonitorServiceTests
         var transaction = Network.RegTest.CreateTransaction();
         transaction.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat(seed, 32).ToArray()), seed));
         transaction.Outputs.Add(Money.Satoshis(100_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return transaction;
+    }
+
+    private static Transaction CreateSpend(TxId spentTxId, uint outputIndex)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(new uint256((byte[])spentTxId), outputIndex));
+        transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
         return transaction;
     }
 

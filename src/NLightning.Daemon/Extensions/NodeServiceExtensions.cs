@@ -36,6 +36,7 @@ using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Services;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence;
 using Infrastructure.Repositories;
 using Infrastructure.Serialization;
@@ -120,7 +121,8 @@ public static class NodeServiceExtensions
             new CreateInvoiceClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                            sp.GetRequiredService<TimeProvider>()));
         services.AddScoped<IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>>(sp =>
-            new PayInvoiceClientHandler(GetPaymentLayerService<IPaymentService>(sp)));
+            new PayInvoiceClientHandler(GetPaymentLayerService<IPaymentService>(sp),
+                                        sp.GetService<IBlockchainMonitor>()));
         services.AddScoped<IClientCommandHandler<ListInvoicesClientRequest, ListInvoicesClientResponse>>(sp =>
             new ListInvoicesClientHandler(GetPaymentLayerService<IInvoiceService>(sp),
                                           sp.GetRequiredService<TimeProvider>()));
@@ -137,6 +139,10 @@ public static class NodeServiceExtensions
             ForceCloseChannelClientHandler>();
         services.AddScoped<IClientCommandHandler<PendingSweepsClientRequest, PendingSweepsClientResponse>,
             PendingSweepsClientHandler>();
+
+        // NL-216: whether chain processing is halted and what is refused meanwhile (ClientCommand 16)
+        services.AddScoped<IClientCommandHandler<ChainStatusClientRequest, ChainStatusClientResponse>,
+            ChainStatusClientHandler>();
 
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
@@ -157,6 +163,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ChainStatusIpcHandler>();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

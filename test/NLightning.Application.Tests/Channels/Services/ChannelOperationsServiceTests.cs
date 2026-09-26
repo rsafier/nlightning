@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Services;
 
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
+using Domain.Bitcoin.Constants;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
@@ -18,6 +19,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.ValueObjects;
 using Handlers;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using static Handlers.NormalOperationTestContext;
 
 /// <summary>
@@ -368,7 +370,49 @@ public class ChannelOperationsServiceTests
         Assert.Empty(_published);
     }
 
-    private ChannelOperationsService CreateService()
+    [Fact]
+    public async Task Given_ChainProcessingHalted_When_Offering_Then_RefusedWithNothingPersistedOrSent()
+    {
+        // Arrange - NL-216: a node blind to the chain takes no HTLC it would have to time out on chain
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        var service = CreateService(monitor.Object);
+        var hash = HashOf(SecretOf(1));
+
+        // Act
+        var offer = service.OfferHtlcAsync(TestChannelId, LightningMoney.MilliSatoshis(40_000_000), hash, 600,
+                                           s_onion, null, HtlcOrigin.Local(hash),
+                                           TestContext.Current.CancellationToken);
+
+        // Assert
+        var refused = await Assert.ThrowsAsync<CommitmentRefusedException>(() => offer);
+        Assert.Equal(ChainProcessingHalt.RequirementId, refused.RequirementId);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
+        _scheduler.Verify(s => s.Schedule(It.IsAny<ChannelId>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ChainProcessingHalted_When_FulfillingOrFailing_Then_StillSent()
+    {
+        // Arrange - NL-216: removals only lower the risk (a forwarded fulfill claims money we are owed)
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        var preimage = SecretOf(9);
+        var fulfilled = _context.LockIn(HtlcDirection.Incoming, 30_000_000, preimage);
+        var failed = _context.LockIn(HtlcDirection.Incoming, 20_000_000, SecretOf(10));
+        var service = CreateService(monitor.Object);
+
+        // Act
+        await service.FulfillHtlcAsync(TestChannelId, fulfilled.Id, preimage, TestContext.Current.CancellationToken);
+        await service.FailHtlcAsync(TestChannelId, failed.Id, new byte[292], TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.IsType<UpdateFulfillHtlcMessage>(_published[0]);
+        Assert.IsType<UpdateFailHtlcMessage>(_published[1]);
+    }
+
+    private ChannelOperationsService CreateService(IBlockchainMonitor? blockchainMonitor = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -380,6 +424,7 @@ public class ChannelOperationsServiceTests
                                             _publisher.Object, _scheduler.Object,
                                             NullLogger<ChannelOperationsService>.Instance,
                                             Options.Create(_context.NodeOptions), _probe.Object,
-                                            provider.GetRequiredService<IServiceScopeFactory>());
+                                            provider.GetRequiredService<IServiceScopeFactory>(),
+                                            blockchainMonitor);
     }
 }
