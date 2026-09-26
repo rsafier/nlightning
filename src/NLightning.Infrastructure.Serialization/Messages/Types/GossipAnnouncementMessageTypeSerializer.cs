@@ -5,20 +5,24 @@ using NLightning.Domain.Serialization.Interfaces;
 namespace NLightning.Infrastructure.Serialization.Messages.Types;
 
 using Domain.Protocol.Messages;
-using Domain.Protocol.Payloads;
 using Exceptions;
 
 /// <summary>
-/// Serializer for the BOLT 7 gossip messages, which are kept as raw bytes (see <see cref="GossipMessage"/>).
+/// Serializer for the BOLT 7 announcements <see cref="ChannelAnnouncementMessage"/> (256) and
+/// <see cref="NodeAnnouncementMessage"/> (257). Neither has a TLV extension: bytes after the known fields are unknown
+/// fields of the payload (covered by the signatures), kept by the Domain codec.
 /// </summary>
-/// <typeparam name="TMessage">The concrete gossip message type.</typeparam>
-public class GossipMessageTypeSerializer<TMessage> : IMessageTypeSerializer<TMessage> where TMessage : GossipMessage
+/// <typeparam name="TMessage">The message type.</typeparam>
+/// <typeparam name="TPayload">The payload type.</typeparam>
+public class GossipAnnouncementMessageTypeSerializer<TMessage, TPayload> : IMessageTypeSerializer<TMessage>
+    where TMessage : class, IMessage
+    where TPayload : class, IMessagePayload
 {
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
-    private readonly Func<GossipPayload, TMessage> _messageFactory;
+    private readonly Func<TPayload, TMessage> _messageFactory;
 
-    public GossipMessageTypeSerializer(IPayloadSerializerFactory payloadSerializerFactory,
-                                       Func<GossipPayload, TMessage> messageFactory)
+    public GossipAnnouncementMessageTypeSerializer(IPayloadSerializerFactory payloadSerializerFactory,
+                                                   Func<TPayload, TMessage> messageFactory)
     {
         _payloadSerializerFactory = payloadSerializerFactory;
         _messageFactory = messageFactory;
@@ -38,7 +42,7 @@ public class GossipMessageTypeSerializer<TMessage> : IMessageTypeSerializer<TMes
     {
         try
         {
-            var payloadSerializer = _payloadSerializerFactory.GetSerializer<GossipPayload>()
+            var payloadSerializer = _payloadSerializerFactory.GetSerializer<TPayload>()
                                  ?? throw new SerializationException("No serializer found for payload type");
             var payload = await payloadSerializer.DeserializeAsync(stream)
                        ?? throw new SerializationException("Error serializing payload");

@@ -9,6 +9,7 @@ using Domain.Enums;
 using Domain.Money;
 using Domain.Node;
 using Domain.Node.Options;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Tlv;
 
 public class MessageFactoryTests
@@ -117,5 +118,27 @@ public class MessageFactoryTests
         // Act & Assert
         Assert.Throws<ArgumentException>(
             () => _messageFactory.CreateUpdateFailHtlcMessage(ChannelId.Zero, 7, new byte[292], new byte[length]));
+    }
+
+    [Fact]
+    public void Given_Signatures_When_CreatingAnnouncementSignatures_Then_ChannelMessageCarriesThem()
+    {
+        // Arrange
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x42, 32).ToArray());
+        var scid = new ShortChannelId(108, 1, 0);
+        var nodeSignature = new CompactSignature(Enumerable.Repeat((byte)1, 64).ToArray());
+        var bitcoinSignature = new CompactSignature(Enumerable.Repeat((byte)2, 64).ToArray());
+
+        // Act
+        var message = _messageFactory.CreateAnnouncementSignaturesMessage(channelId, scid, nodeSignature,
+                                                                          bitcoinSignature);
+
+        // Assert
+        Assert.Equal(MessageTypes.AnnouncementSignatures, message.Type);
+        Assert.Equal(channelId, message.Payload.ChannelId);
+        Assert.Equal(scid, message.Payload.ShortChannelId);
+        Assert.Equal(nodeSignature, message.Payload.NodeSignature);
+        Assert.Equal(bitcoinSignature, message.Payload.BitcoinSignature);
+        Assert.True(message.Payload.ExtraData.IsEmpty);
     }
 }

@@ -350,10 +350,12 @@ public sealed class PeerService : IPeerService
             // We never relay gossip (and generate none yet), so there is nothing to filter: accept and ignore
             _logger.LogDebug("Ignoring gossip_timestamp_filter from peer {peer}", PeerPubKey);
         }
-        else if (message is GossipMessage or ReplyChannelRangeMessage or ReplyShortChannelIdsEndMessage)
+        else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage or ReplyChannelRangeMessage
+                         or ReplyShortChannelIdsEndMessage)
         {
-            // BOLT 7 gossip is not implemented yet (and we never query): accept the message so the connection stays
-            // up, and drop it
+            // BOLT 7 graph gossip is not implemented yet (and we never query): accept the message so the connection
+            // stays up, and drop it. announcement_signatures (259) is a channel message: it takes the
+            // IChannelMessage arm above to the channel manager (plan G0-T2)
             _logger.LogDebug("Dropping gossip message ({messageType}) from peer {peer}",
                              Enum.GetName(message.Type), PeerPubKey);
         }
