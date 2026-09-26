@@ -52,8 +52,7 @@ public sealed class ChannelMessageRecorder : IDisposable
     public void Detach()
     {
         var channelManager = Interlocked.Exchange(ref _channelManager, null);
-        if (channelManager is not null)
-            channelManager.OnResponseMessageReady -= OnSent;
+        channelManager?.OnResponseMessageReady -= OnSent;
     }
 
     /// <summary>

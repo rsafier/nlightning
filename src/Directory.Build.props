@@ -1,7 +1,22 @@
 <Project>
+    <!--
+      Target frameworks (docs/agents/NET11_PLAN.md; test/Directory.Build.props mirrors this, keep them in sync).
+      net10.0 (LTS) is the primary target. net11.0 is added only when the SDK building is 11 or newer, so SDK 10 keeps
+      working; -p:NltgTargetNet11=false (or -f net10.0) builds net10.0 only with SDK 11. NETCoreSdkVersion is not set
+      yet when Directory.Build.props is imported, so the SDK version comes from the directory MSBuild runs from
+      (<dotnet>/sdk/<version>); anything that does not look like a version (e.g. Visual Studio's MSBuild) builds
+      net10.0 only. Only one of TargetFramework/TargetFrameworks may be set: the SDK multi-targets only when
+      TargetFramework is empty. LangVersion is pinned because with "latest" SDK 11 compiles net10.0 as C# 15.
+    -->
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
-        <LangVersion>latest</LangVersion>
+        <NltgSdkVersion>$([System.IO.Path]::GetFileName($([System.IO.Path]::GetDirectoryName($([MSBuild]::EnsureTrailingSlash('$(MSBuildBinPath)'))))))</NltgSdkVersion>
+        <NltgTargetNet11 Condition="'$(NltgTargetNet11)' == '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(NltgSdkVersion)', '^\d+\.\d+\.\d+'))">$([MSBuild]::VersionGreaterThanOrEquals('$(NltgSdkVersion)', '11.0'))</NltgTargetNet11>
+        <TargetFrameworks Condition="'$(NltgTargetNet11)' == 'true'">net10.0;net11.0</TargetFrameworks>
+        <TargetFramework Condition="'$(NltgTargetNet11)' != 'true'">net10.0</TargetFramework>
+    </PropertyGroup>
+
+    <PropertyGroup>
+        <LangVersion>14</LangVersion>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <Platforms>AnyCPU</Platforms>
