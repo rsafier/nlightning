@@ -58,9 +58,20 @@ public sealed class GossipGraphOptions
 
     /// <summary>
     /// Confirmations a funding output needs before its announcement is accepted (BOLT 7: 6). An announcement below
-    /// it is retried later.
+    /// it is retried later. The same key sets the depth at which we announce our own channels (G1), and both read it
+    /// the same way: only regtest may lower it, elsewhere it is at least <see cref="MinimumAnnouncementDepth"/>
+    /// (<see cref="GetAnnouncementDepth"/>).
     /// </summary>
-    public uint AnnouncementDepth { get; set; } = 6;
+    public uint AnnouncementDepth { get; set; } = MinimumAnnouncementDepth;
+
+    /// <summary>BOLT 7's announcement depth, the floor outside regtest.</summary>
+    public const uint MinimumAnnouncementDepth = 6;
+
+    /// <summary>
+    /// Short channel ids of dropped or given-up announcements and updates kept for the next sync to ask for again
+    /// (<see cref="GossipIngress.TakeMissedShortChannelIds"/>).
+    /// </summary>
+    public int MaxMissedShortChannelIds { get; set; } = 100_000;
 
     /// <summary>What to do when a funding block cannot be read.</summary>
     public FundingValidationMode FundingValidation { get; set; } = FundingValidationMode.Full;
@@ -101,6 +112,16 @@ public sealed class GossipGraphOptions
     /// <summary>The effective switch: <see cref="Enabled"/> when set, otherwise true on every chain but mainnet.</summary>
     public bool IsEnabledFor(BitcoinNetwork network) =>
         Enabled ?? !string.Equals(network.Name, NetworkConstants.Mainnet, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The depth in effect on <paramref name="network"/>: <see cref="AnnouncementDepth"/> (at least 1) on regtest,
+    /// else at least <see cref="MinimumAnnouncementDepth"/>, so a regtest-style setting never lowers the receive
+    /// depth on a real chain.
+    /// </summary>
+    public uint GetAnnouncementDepth(BitcoinNetwork network) =>
+        string.Equals(network.Name, NetworkConstants.Regtest, StringComparison.OrdinalIgnoreCase)
+            ? Math.Max(1U, AnnouncementDepth)
+            : Math.Max(MinimumAnnouncementDepth, AnnouncementDepth);
 
     /// <summary>The number of workers to start.</summary>
     public int GetWorkerCount() => Workers > 0 ? Workers : Math.Max(1, Environment.ProcessorCount / 2);

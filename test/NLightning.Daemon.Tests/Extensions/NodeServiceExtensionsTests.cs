@@ -90,6 +90,8 @@ public class NodeServiceExtensionsTests
 
         // BOLT 7 G2-T5/G2-T6: the graph pruner and the graph listings
         Assert.Same(provider.GetRequiredService<GraphPruner>(), provider.GetRequiredService<GraphPruner>());
+        // Our own 256/258/257 reach the graph, never a no-op default sink (whatever registered one first)
+        Assert.Same(provider.GetRequiredService<GossipIngress>(), provider.GetRequiredService<IOwnGossipSink>());
         Assert.Contains(ClientCommand.ListNodes, commands);
         Assert.Contains(ClientCommand.ListGraphChannels, commands);
         Assert.NotNull(scope.ServiceProvider

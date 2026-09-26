@@ -98,11 +98,11 @@ public class GraphStoreTests
         var restarted = new GraphTestKit(kit.Repository);
         restarted.FundingFound();
         var newer = GraphTestKit.SignedNodeAnnouncement(s_carol, s_now + 100, "newer");
-        await restarted.Ingress.SubmitOwnAsync(
+        await restarted.Ingress.ApplyOwnAsync(
             GraphTestKit.SignedChannelAnnouncement(new ShortChannelId(120, 1, 0), s_carol, s_alice,
                                                    new TestGossipKey(13), new TestGossipKey(11)),
-            TestContext.Current.CancellationToken);
-        await restarted.Ingress.SubmitOwnAsync(newer, TestContext.Current.CancellationToken);
+            null, TestContext.Current.CancellationToken);
+        await restarted.Ingress.ApplyOwnAsync(newer, null, TestContext.Current.CancellationToken);
 
         // Act
         await restarted.Store.LoadAsync(TestContext.Current.CancellationToken);

@@ -76,15 +76,30 @@ public class GossipIngressTests
     }
 
     [Fact]
-    public async Task Given_AStoredChannel_When_ItsFundingKeysSignAnotherNodePair_Then_AllFourNodesAreBanned()
+    public async Task Given_AStoredChannel_When_ItsFundingKeysSignAnotherNodePair_Then_AllFourNodesAreBannedAndTheirChannelsForgotten()
     {
-        // Arrange: the same funding output (same bitcoin keys, which signed both) announced for other nodes
+        // Arrange: the same funding output (same bitcoin keys, which signed both) announced for other nodes; alice
+        // also has another channel (with eve), and two unrelated nodes have one
         var kit = CreateKit();
         var peer = GraphTestKit.CreatePeer();
         await kit.Ingress.ProcessAsync(peer.Object,
                                        GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
                                                                               s_bobFunding), 0,
                                        TestContext.Current.CancellationToken);
+        var eve = new TestGossipKey(5);
+        var aliceEve = new ShortChannelId(111, 1, 0);
+        var unrelated = new ShortChannelId(112, 1, 0);
+        await kit.Ingress.ProcessAsync(peer.Object,
+                                       GraphTestKit.SignedChannelAnnouncement(aliceEve, s_alice, eve,
+                                                                              new TestGossipKey(21),
+                                                                              new TestGossipKey(22)), 0,
+                                       TestContext.Current.CancellationToken);
+        await kit.Ingress.ProcessAsync(peer.Object,
+                                       GraphTestKit.SignedChannelAnnouncement(unrelated, eve, new TestGossipKey(6),
+                                                                              new TestGossipKey(23),
+                                                                              new TestGossipKey(24)), 0,
+                                       TestContext.Current.CancellationToken);
+        Assert.Equal(3, kit.Store.ChannelCount);
         var carol = new TestGossipKey(3);
         var dave = new TestGossipKey(4);
         var (fundingCarol, fundingDave) = GraphTestKit.DirectionOf(carol, dave) == 0
@@ -101,13 +116,55 @@ public class GossipIngressTests
         // Assert
         Assert.Equal(GossipRejectReason.ConflictingAnnouncement, result.RejectReason);
         Assert.All(new[] { s_alice, s_bob, carol, dave }, k => Assert.True(kit.Store.IsBanned(k.PubKey)));
+        Assert.False(kit.Store.IsBanned(eve.PubKey));
+
+        // BOLT 7: "blacklist ... AND forget any channels connected to them"
+        Assert.False(kit.Store.TryGetChannel(s_scid, out _));
+        Assert.False(kit.Store.TryGetChannel(aliceEve, out _));
+        Assert.True(kit.Store.TryGetChannel(unrelated, out _));
         var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
                                                       s_now);
-        Assert.Equal(GossipIngressOutcome.Ignored,
-                     (await kit.Ingress.ProcessAsync(peer.Object, update, 0,
-                                                     TestContext.Current.CancellationToken)).Outcome);
+        Assert.NotEqual(GossipIngressOutcome.Accepted,
+                        (await kit.Ingress.ProcessAsync(peer.Object, update, 0,
+                                                        TestContext.Current.CancellationToken)).Outcome);
+        // (attempt 1 skips the exact-duplicate filter: the validator itself refuses the banned nodes)
+        Assert.Equal(GossipRejectReason.BlacklistedNode,
+                     (await kit.Ingress.ProcessAsync(peer.Object,
+                                                     GraphTestKit.SignedChannelAnnouncement(
+                                                         s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding), 1,
+                                                     TestContext.Current.CancellationToken)).RejectReason);
         await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
         Assert.Equal(4, kit.Repository.Bans.Count);
+        Assert.DoesNotContain(s_scid, kit.Repository.Channels.Keys);
+        Assert.DoesNotContain(aliceEve, kit.Repository.Channels.Keys);
+    }
+
+    [Fact]
+    public async Task Given_OurFundingKeysSignAConflictingAnnouncement_When_Processed_Then_WeAreNotBannedAndOurChannelStays()
+    {
+        // Arrange: alice is our node; our channel with bob is ours (Own)
+        var kit = new GraphTestKit(ourNodeId: s_alice.PubKey);
+        kit.FundingFound();
+        await kit.Ingress.ApplyOwnAsync(
+            GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding),
+            LightningMoney.Satoshis(1_000), TestContext.Current.CancellationToken);
+        var carol = new TestGossipKey(3);
+        var dave = new TestGossipKey(4);
+        var (fundingCarol, fundingDave) = GraphTestKit.DirectionOf(carol, dave) == 0
+                                              ? (s_aliceFunding, s_bobFunding)
+                                              : (s_bobFunding, s_aliceFunding);
+
+        // Act
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
+                                       GraphTestKit.SignedChannelAnnouncement(s_scid, carol, dave, fundingCarol,
+                                                                              fundingDave), 0,
+                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(kit.Store.IsBanned(s_alice.PubKey));
+        Assert.True(kit.Store.IsBanned(s_bob.PubKey));
+        Assert.True(kit.Store.IsBanned(carol.PubKey));
+        Assert.True(kit.Store.TryGetChannel(s_scid, out _));
     }
 
     [Fact]
@@ -260,7 +317,7 @@ public class GossipIngressTests
     }
 
     [Fact]
-    public async Task Given_OwnChannelAnnouncement_When_Submitted_Then_StoredAsOwnWithTheChannelCapacityAndNoChainLookup()
+    public async Task Given_OwnChannelAnnouncement_When_Added_Then_StoredAsOwnWithTheGivenCapacityAndNoChainLookup()
     {
         // Arrange
         var memory = new Mock<IChannelMemoryRepository>();
@@ -271,49 +328,124 @@ public class GossipIngressTests
         var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
                                                       s_now);
 
-        // Act: our update first (it waits), then the announcement
-        await kit.Ingress.SubmitOwnAsync(update, TestContext.Current.CancellationToken);
-        await kit.Ingress.SubmitOwnAsync(
-            GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding),
-            TestContext.Current.CancellationToken);
+        // Act: our update first (it waits), then the announcement, through the sink the G1 services call
+        IOwnGossipSink sink = kit.Ingress;
+        sink.AddOwnChannelUpdate(update.Payload);
+        sink.AddOwnChannelAnnouncement(
+            GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding, s_bobFunding).Payload,
+            LightningMoney.Satoshis(400_000));
+        await kit.Ingress.WhenOwnGossipAppliedAsync(TestContext.Current.CancellationToken);
 
         // Assert
         Assert.True(kit.Store.TryGetChannel(s_scid, out var stored));
         Assert.Equal(GraphChannelVerification.Own, stored.Verification);
-        Assert.Equal(500_000UL, stored.CapacitySat);
+        Assert.Equal(400_000UL, stored.CapacitySat);
         Assert.NotNull(stored.GetPolicy(GraphTestKit.DirectionOf(s_alice, s_bob)));
-        Assert.True(kit.Store.TryGetFundingTxId(s_scid, out _));
+        Assert.True(kit.Store.TryGetFundingTxId(s_scid, out var fundingTxId));
+        Assert.Equal(GraphTestKit.TxIdFor(s_scid), fundingTxId);
         kit.FundingLookup.VerifyNoOtherCalls();
+        await kit.Ingress.StopAsync();
     }
 
     [Fact]
-    public async Task Given_OwnNodeAnnouncement_When_Submitted_Then_ItIsPersistedBeforeTheCallReturns()
+    public async Task Given_OwnGossipAddedTwice_When_Applied_Then_TheGraphIsTheSame()
     {
-        // Arrange
+        // Arrange: B1 repeats its messages after a restart or a reconnection
+        var kit = CreateKit();
+        IOwnGossipSink sink = kit.Ingress;
+        var announcement = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                  s_bobFunding).Payload;
+        var update = GraphTestKit.SignedChannelUpdate(s_scid, s_alice, GraphTestKit.DirectionOf(s_alice, s_bob),
+                                                      s_now).Payload;
+
+        // Act
+        for (var i = 0; i < 2; i++)
+        {
+            sink.AddOwnChannelAnnouncement(announcement, LightningMoney.Satoshis(1_000));
+            sink.AddOwnChannelUpdate(update);
+            sink.AddOwnNodeAnnouncement(GraphTestKit.SignedNodeAnnouncement(s_alice, s_now).Payload);
+        }
+
+        await kit.Ingress.WhenOwnGossipAppliedAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, kit.Store.ChannelCount);
+        Assert.Equal(1, kit.Store.NodeCount);
+        Assert.True(kit.Store.TryGetChannel(s_scid, out var stored));
+        Assert.Equal(s_now, stored.GetPolicy(GraphTestKit.DirectionOf(s_alice, s_bob))!.Timestamp);
+        await kit.Ingress.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_OwnNodeAnnouncement_When_Added_Then_ItIsInTheGraphButTheStoreNeverWritesItsRow()
+    {
+        // Arrange: a peer relayed an older announcement of ours, still waiting for the write-behind; the node
+        // announcement service (G1-T6) writes our row itself before it publishes
         var kit = await CreateKitWithChannelAsync();
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
+                                       GraphTestKit.SignedNodeAnnouncement(s_alice, s_now - 10, "older"), 0,
+                                       TestContext.Current.CancellationToken);
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object,
+                                       GraphTestKit.SignedNodeAnnouncement(s_alice, s_now - 5, "relayed"), 0,
+                                       TestContext.Current.CancellationToken);
         var announcement = GraphTestKit.SignedNodeAnnouncement(s_alice, s_now, "our node");
 
         // Act
-        await kit.Ingress.SubmitOwnAsync(announcement, TestContext.Current.CancellationToken);
+        await kit.Ingress.ApplyOwnAsync(announcement, null, TestContext.Current.CancellationToken);
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
 
-        // Assert
-        Assert.True(kit.Repository.Nodes.TryGetValue(s_alice.PubKey, out var stored));
-        Assert.Equal(announcement.Payload.GetBytes(), stored.RawAnnouncement);
+        // Assert: the graph shows ours; the older relayed one pending before it is never written over the row
         Assert.Equal("our node", kit.Store.GetSnapshot().Nodes.Single().AliasText);
+        Assert.True(kit.Repository.Nodes.TryGetValue(s_alice.PubKey, out var row));
+        Assert.Equal(s_now - 10, row.Timestamp);
+        Assert.Equal(0, kit.Store.PendingChanges);
     }
 
     [Fact]
-    public async Task Given_NotGraphGossip_When_SubmittedAsOwn_Then_Throws()
+    public async Task Given_NotGraphGossip_When_AppliedAsOwn_Then_Throws()
     {
         // Arrange
         var kit = CreateKit();
 
         // Act + Assert
-        await Assert.ThrowsAsync<ArgumentException>(() => kit.Ingress.SubmitOwnAsync(
+        await Assert.ThrowsAsync<ArgumentException>(() => kit.Ingress.ApplyOwnAsync(
                                                         new GossipTimestampFilterMessage(
                                                             new GossipTimestampFilterPayload(
                                                                 ChainConstants.Regtest, 0, 1)),
-                                                        TestContext.Current.CancellationToken));
+                                                        null, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void Given_GraphDisabled_When_OwnGossipIsAdded_Then_NothingStarts()
+    {
+        // Arrange
+        var (ingress, store) = CreateIngressOverBlockedStore(network: "mainnet");
+
+        // Act
+        ((IOwnGossipSink)ingress).AddOwnNodeAnnouncement(GraphTestKit.SignedNodeAnnouncement(s_alice, s_now).Payload);
+
+        // Assert
+        store.Verify(s => s.LoadAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AStoreStillLoading_When_OwnGossipIsAdded_Then_TheCallReturnsAtOnce()
+    {
+        // Arrange: the load never ends; the caller may hold a channel lock and must not wait for it
+        var (ingress, _) = CreateIngressOverBlockedStore();
+        IOwnGossipSink sink = ingress;
+
+        // Act
+        var call = Task.Run(() => sink.AddOwnChannelAnnouncement(
+                                GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                       s_bobFunding).Payload,
+                                LightningMoney.Satoshis(1)), TestContext.Current.CancellationToken);
+
+        // Assert
+        var completed = await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(5),
+                                                            TestContext.Current.CancellationToken));
+        Assert.Same(call, completed);
     }
 
     [Theory]
@@ -365,6 +497,90 @@ public class GossipIngressTests
         Assert.Equal([true, true, false], results);
         Assert.True(other);
         Assert.Equal(3, ingress.QueuedCount);
+    }
+
+    [Fact]
+    public void Given_APeerOverItsQueueLimit_When_AnAnnouncementIsDropped_Then_ItsScidIsKeptForTheNextSync()
+    {
+        // Arrange: no worker drains the queue
+        var (ingress, _) = CreateIngressOverBlockedStore(maxPerPeer: 1);
+        var peer = GraphTestKit.CreatePeer();
+        var dropped = new ShortChannelId(111, 1, 0);
+
+        // Act
+        Assert.True(ingress.TryEnqueue(peer.Object,
+                                       GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                              s_bobFunding)));
+        Assert.False(ingress.TryEnqueue(peer.Object,
+                                        GraphTestKit.SignedChannelAnnouncement(dropped, s_alice, s_bob,
+                                                                               s_aliceFunding, s_bobFunding)));
+        Assert.False(ingress.TryEnqueue(peer.Object, GraphTestKit.SignedNodeAnnouncement(s_alice, s_now)));
+        var missed = ingress.TakeMissedShortChannelIds();
+
+        // Assert
+        Assert.Equal([dropped], missed);
+        Assert.Empty(ingress.TakeMissedShortChannelIds());
+        Assert.Equal(2, ingress.DroppedCount);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncementGivenUpAfterItsRetries_When_ItArrivesAgainLater_Then_ItIsMissedUntilStored()
+    {
+        // Arrange: bitcoind is down and no retry is allowed
+        var kit = new GraphTestKit(configure: o => o.MaxRetries = 0);
+        kit.FundingFails(FundingOutputStatus.ChainUnavailable);
+        await kit.Ingress.StartAsync();
+        var announcement = GraphTestKit.SignedChannelAnnouncement(s_scid, s_alice, s_bob, s_aliceFunding,
+                                                                  s_bobFunding);
+
+        // Act
+        Assert.True(kit.Ingress.TryEnqueue(GraphTestKit.CreatePeer().Object, announcement));
+        await WaitUntilAsync(() => kit.Ingress.DroppedCount == 1);
+        kit.FundingFound();
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, announcement, 1,
+                                       TestContext.Current.CancellationToken);
+        await kit.Ingress.StopAsync();
+
+        // Assert: stored by the later attempt, so nothing is left to ask for
+        Assert.Equal(1, kit.Store.ChannelCount);
+        Assert.Empty(kit.Ingress.TakeMissedShortChannelIds());
+    }
+
+    [Theory]
+    [InlineData("regtest", 1U, 1U)]
+    [InlineData("regtest", 0U, 1U)]
+    [InlineData("signet", 1U, 6U)]
+    [InlineData("mainnet", 3U, 6U)]
+    [InlineData("signet", 10U, 10U)]
+    public void Given_AnAnnouncementDepth_When_ReadForANetwork_Then_OnlyRegtestMayLowerIt(string network, uint configured,
+                                                                                          uint expected)
+    {
+        // Arrange
+        var options = new GossipGraphOptions { AnnouncementDepth = configured };
+
+        // Act
+        var depth = options.GetAnnouncementDepth(BitcoinNetwork.Resolve(network));
+
+        // Assert
+        Assert.Equal(expected, depth);
+    }
+
+    [Fact]
+    public async Task Given_AStartedIngress_When_DisposedSynchronously_Then_ItStopsWithoutThrowing()
+    {
+        // Arrange: a container disposed with Dispose() (not DisposeAsync) must not throw for the ingress
+        var kit = CreateKit();
+        await kit.Ingress.StartAsync();
+
+        var fresh = new GraphTestKit().Ingress;
+
+        // Act
+        kit.Ingress.Dispose();
+        await kit.Ingress.StopAsync();
+        fresh.Dispose();
+
+        // Assert: a disposed ingress never starts
+        Assert.Same(Task.CompletedTask, fresh.StartAsync());
     }
 
     [Fact]

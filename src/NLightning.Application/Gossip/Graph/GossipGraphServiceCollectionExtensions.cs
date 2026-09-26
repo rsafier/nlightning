@@ -9,10 +9,10 @@ using Interfaces;
 public static class GossipGraphServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the graph (plan BOLT7 G2-T4) as singletons (TryAdd, so idempotent): <see cref="IGraphStore"/>
+    /// Registers the graph (plan BOLT7 G2-T4) as singletons (idempotent): <see cref="IGraphStore"/>
     /// (<see cref="GraphStore"/>, persisted through the scoped <c>IUnitOfWork</c>), and <see cref="GossipIngress"/> as
     /// itself, <see cref="IGossipIngress"/> (the peer service's entry point) and <see cref="IOwnGossipSink"/> (our own
-    /// announcements). It needs <c>IGossipSignatureVerifier</c> and <c>IFundingOutputLookup</c>
+    /// announcements; it replaces any sink registered before, such as the no-op default of the G1 services). It needs <c>IGossipSignatureVerifier</c> and <c>IFundingOutputLookup</c>
     /// (<c>AddBitcoinInfrastructure</c>) and <c>IOptions&lt;NodeOptions&gt;</c>; bind
     /// <see cref="GossipGraphOptions"/> from the <c>Gossip</c> section. The host should start the ingress
     /// (<see cref="GossipIngress.StartAsync"/>, otherwise it starts with the first message) and stop it on shutdown
@@ -26,7 +26,8 @@ public static class GossipGraphServiceCollectionExtensions
         services.TryAddSingleton<IGraphStore, GraphStore>();
         services.TryAddSingleton<GossipIngress>();
         services.TryAddSingleton<IGossipIngress>(sp => sp.GetRequiredService<GossipIngress>());
-        services.TryAddSingleton<IOwnGossipSink>(sp => sp.GetRequiredService<GossipIngress>());
+        // Replaces the no-op default of the announcement services (G1), whichever registration ran first
+        services.Replace(ServiceDescriptor.Singleton<IOwnGossipSink>(sp => sp.GetRequiredService<GossipIngress>()));
         services.TryAddSingleton<GraphPruner>();
         return services;
     }
