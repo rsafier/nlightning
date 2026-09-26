@@ -18,6 +18,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
@@ -73,7 +74,8 @@ internal sealed class GraphTestKit
 
     public GraphTestKit(InMemoryGraphDbRepository? repository = null, DateTimeOffset? now = null,
                         Action<GossipGraphOptions>? configure = null,
-                        IChannelMemoryRepository? channelMemoryRepository = null)
+                        IChannelMemoryRepository? channelMemoryRepository = null,
+                        CompactPubKey? ourNodeId = null)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
         Clock = new SettableTimeProvider(now ?? DefaultNow);
@@ -95,10 +97,18 @@ internal sealed class GraphTestKit
                                Clock);
         FundingLookup = new Mock<IFundingOutputLookup>();
         var nodeOptions = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve("regtest") };
+        ISecureKeyManager? keyManager = null;
+        if (ourNodeId is { } nodeId)
+        {
+            var mock = new Mock<ISecureKeyManager>();
+            mock.Setup(k => k.GetNodePubKey()).Returns(nodeId);
+            keyManager = mock.Object;
+        }
+
         Ingress = new GossipIngress(Store, new GossipSignatureVerifier(), FundingLookup.Object,
                                     Microsoft.Extensions.Options.Options.Create(Options),
                                     Microsoft.Extensions.Options.Options.Create(nodeOptions),
-                                    NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository);
+                                    NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository, keyManager);
     }
 
     public InMemoryGraphDbRepository Repository { get; }

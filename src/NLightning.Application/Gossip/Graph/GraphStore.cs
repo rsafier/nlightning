@@ -393,6 +393,24 @@ public sealed class GraphStore : IGraphStore
     }
 
     /// <inheritdoc />
+    public bool TryApplyOwnNode(GraphNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        lock (_lock)
+        {
+            if (_nodes.TryGetValue(node.NodeId, out var current) && current.Timestamp >= node.Timestamp)
+                return false;
+
+            _nodes[node.NodeId] = node;
+            _nodeReceivedAt[node.NodeId] = _timeProvider.GetUtcNow();
+            _deletedNodes.Remove(node.NodeId);
+            _dirtyNodes.Remove(node.NodeId);
+            _version++;
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
     public void Ban(CompactPubKey nodeId, string reason, DateTimeOffset until)
     {
         lock (_lock)

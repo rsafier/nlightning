@@ -1,19 +1,29 @@
 namespace NLightning.Domain.Gossip.Interfaces;
 
-using Protocol.Interfaces;
+using Money;
+using Protocol.Payloads;
 
 /// <summary>
-/// Takes the gossip our node generates (plan BOLT7 §3.2 step 5): the assembled <c>channel_announcement</c> of one of
-/// our public channels, our <c>channel_update</c>s for it and our <c>node_announcement</c>. They go into the graph
-/// without a chain lookup (our own channels need none) and without the ingress queue.
+/// Receives the gossip the node generates itself for its public channels (BOLT 7 plan §3.2 step 5): the assembled
+/// <c>channel_announcement</c>, our public <c>channel_update</c>s and our <c>node_announcement</c>. The graph store
+/// implements it (G2-T4) to add our channels without a chain lookup; the default registration ignores everything.
 /// </summary>
+/// <remarks>
+/// Callers may hold a channel's lock, so implementations only record or enqueue and never block. Every call can be
+/// repeated with the same message (after a restart, a reconnection or a retransmission): implementations must be
+/// idempotent and keep the newer of two messages for the same channel direction or node.
+/// </remarks>
 public interface IOwnGossipSink
 {
     /// <summary>
-    /// Applies <paramref name="message"/> (a <c>ChannelAnnouncementMessage</c>, <c>ChannelUpdateMessage</c> or
-    /// <c>NodeAnnouncementMessage</c>) to the graph. A <c>node_announcement</c> is persisted before the task completes
-    /// (its timestamp must increase across restarts).
+    /// A <c>channel_announcement</c> of one of our channels with all four signatures (verified), and the channel's
+    /// capacity (the funding amount; our own funding output needs no chain lookup).
     /// </summary>
-    /// <exception cref="ArgumentException">The message is not one of the three.</exception>
-    Task SubmitOwnAsync(IMessage message, CancellationToken cancellationToken = default);
+    void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity);
+
+    /// <summary>Our signed <c>channel_update</c> for one of our announced channels (<c>dont_forward</c> clear).</summary>
+    void AddOwnChannelUpdate(ChannelUpdatePayload update);
+
+    /// <summary>Our signed <c>node_announcement</c> (only sent once we have an announced channel).</summary>
+    void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement);
 }

@@ -94,6 +94,13 @@ public interface IGraphStore
     /// </summary>
     bool TryApplyNode(GraphNode node);
 
+    /// <summary>
+    /// Stores our own node announcement in memory only: its row is written by the node announcement service before it
+    /// is published (plan G1-T6), so the write-behind never writes it (an older pending write of it is dropped, so it
+    /// can never overwrite the newer row); false when the stored one is not older.
+    /// </summary>
+    bool TryApplyOwnNode(GraphNode node);
+
     /// <summary>Ignores the gossip of <paramref name="nodeId"/> until <paramref name="until"/>.</summary>
     void Ban(CompactPubKey nodeId, string reason, DateTimeOffset until);
 

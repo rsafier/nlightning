@@ -7,6 +7,7 @@ namespace NLightning.Application.Gossip.Graph;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
@@ -15,6 +16,7 @@ using Domain.Gossip.Graph;
 using Domain.Gossip.Interfaces;
 using Domain.Gossip.Models;
 using Domain.Gossip.Validation;
+using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
@@ -28,7 +30,8 @@ using Interfaces;
 /// message, the pure checks (<see cref="GossipValidator"/>), an exact-duplicate filter
 /// (<see cref="RecentMessageCache"/>), the signatures (<see cref="IGossipSignatureVerifier"/>), for a
 /// <c>channel_announcement</c> the funding output (<see cref="IFundingOutputLookup"/>, 6 confirmations), and apply the
-/// result to the <see cref="IGraphStore"/>. Also the sink of our own gossip (<see cref="IOwnGossipSink"/>).
+/// result to the <see cref="IGraphStore"/>. Also the sink of our own gossip (<see cref="IOwnGossipSink"/>: queued and
+/// applied in order by one loop, so the callers, which may hold a channel lock, never wait).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -47,7 +50,7 @@ using Interfaces;
 /// <see cref="StopAsync"/> stops them and writes what is pending.
 /// </para>
 /// </remarks>
-public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDisposable
+public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDisposable, IDisposable
 {
     private readonly IGraphStore _store;
     private readonly IGossipSignatureVerifier _signatureVerifier;
@@ -66,17 +69,25 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private readonly Lock _startLock = new();
     private readonly CancellationTokenSource _stopCts = new();
     private readonly List<Task> _loops = [];
+    private readonly Channel<OwnGossipItem> _ownQueue = Channel.CreateUnbounded<OwnGossipItem>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+    private readonly ConcurrentDictionary<ShortChannelId, byte> _missed = new();
+    private readonly CompactPubKey? _ourNodeId;
 
     private Task? _startTask;
     private int _pendingRetries;
     private int _flushRequested;
+    private int _pendingOwn;
+    private long _droppedCount;
 
     public GossipIngress(IGraphStore store, IGossipSignatureVerifier signatureVerifier,
                          IFundingOutputLookup fundingOutputLookup, IOptions<GossipGraphOptions> options,
                          IOptions<NodeOptions> nodeOptions, ILogger<GossipIngress> logger,
                          TimeProvider? timeProvider = null,
-                         IChannelMemoryRepository? channelMemoryRepository = null)
+                         IChannelMemoryRepository? channelMemoryRepository = null,
+                         ISecureKeyManager? secureKeyManager = null)
     {
+        _ourNodeId = secureKeyManager?.GetNodePubKey();
         _store = store;
         _signatureVerifier = signatureVerifier;
         _fundingOutputLookup = fundingOutputLookup;
@@ -122,6 +133,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             ReleasePeerSlot(peer);
             _logger.LogDebug("Dropping {MessageType} from peer {Peer}: its gossip queue is full",
                              Enum.GetName(message.Type), peer);
+            RecordMissed(message);
             return false;
         }
 
@@ -131,6 +143,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         ReleasePeerSlot(peer);
         _logger.LogDebug("Dropping {MessageType} from peer {Peer}: the gossip queue is full",
                          Enum.GetName(message.Type), peer);
+        RecordMissed(message);
         return false;
     }
 
@@ -193,29 +206,100 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         _stopCts.Dispose();
     }
 
+    /// <summary>
+    /// Stops the workers without waiting for them or writing the pending changes (a container disposed
+    /// synchronously; the host stops the ingress with <see cref="StopAsync"/> first).
+    /// </summary>
+    public void Dispose()
+    {
+        lock (_startLock)
+        {
+            if (!_stopCts.IsCancellationRequested)
+                _stopCts.Cancel();
+        }
+    }
+
     /// <inheritdoc />
-    public async Task SubmitOwnAsync(IMessage message, CancellationToken cancellationToken = default)
+    public void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        ArgumentNullException.ThrowIfNull(capacity);
+        EnqueueOwn(new OwnGossipItem(new ChannelAnnouncementMessage(announcement), capacity));
+    }
+
+    /// <inheritdoc />
+    public void AddOwnChannelUpdate(ChannelUpdatePayload update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        EnqueueOwn(new OwnGossipItem(new ChannelUpdateMessage(update), null));
+    }
+
+    /// <inheritdoc />
+    public void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement)
+    {
+        ArgumentNullException.ThrowIfNull(announcement);
+        EnqueueOwn(new OwnGossipItem(new NodeAnnouncementMessage(announcement), null));
+    }
+
+    /// <summary>Completes once every queued own message is applied (tests).</summary>
+    internal async Task WhenOwnGossipAppliedAsync(CancellationToken cancellationToken = default)
+    {
+        while (Volatile.Read(ref _pendingOwn) > 0)
+            await Task.Delay(10, cancellationToken);
+    }
+
+    /// <summary>
+    /// The short channel ids whose <c>channel_announcement</c> or <c>channel_update</c> was dropped (a full queue) or
+    /// given up on (transient chain answers until <see cref="GossipGraphOptions.MaxRetries"/>) and not stored since,
+    /// taken (cleared) by the caller: what the G3 sync should ask for again with <c>query_short_channel_ids</c>. At
+    /// most <see cref="GossipGraphOptions.MaxMissedShortChannelIds"/> are kept.
+    /// </summary>
+    public IReadOnlyList<ShortChannelId> TakeMissedShortChannelIds()
+    {
+        var taken = new List<ShortChannelId>(_missed.Count);
+        foreach (var shortChannelId in _missed.Keys)
+        {
+            if (_missed.TryRemove(shortChannelId, out _))
+                taken.Add(shortChannelId);
+        }
+
+        return taken;
+    }
+
+    /// <summary>The number of graph messages dropped so far (full queues, retries given up).</summary>
+    public long DroppedCount => Interlocked.Read(ref _droppedCount);
+
+    /// <summary>
+    /// Applies one of our own messages to the graph (the own-gossip loop calls it in submission order; tests call it
+    /// directly): a <c>channel_announcement</c> is stored as <see cref="GraphChannelVerification.Own"/> with
+    /// <paramref name="capacity"/> and, when our channel is loaded, its funding txid (no chain lookup); a
+    /// <c>channel_update</c> is applied or waits for its announcement; a <c>node_announcement</c> is applied in memory
+    /// only (its row is written by the node announcement service before it publishes it, plan G1-T6).
+    /// </summary>
+    /// <exception cref="ArgumentException">The message is not graph gossip.</exception>
+    internal async Task ApplyOwnAsync(IMessage message, LightningMoney? capacity,
+                                      CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);
         switch (message)
         {
             case ChannelAnnouncementMessage { Payload: var announcement }:
                 {
-                    ulong? capacitySat = null;
                     TxId? fundingTxId = null;
                     var ours = _channelMemoryRepository?
                               .FindChannels(c => c.ShortChannelId == announcement.ShortChannelId)
                               .FirstOrDefault();
                     if (ours?.FundingOutput is { } fundingOutput)
                     {
-                        capacitySat = (ulong)fundingOutput.Amount.Satoshi;
                         fundingTxId = fundingOutput.TransactionId;
+                        capacity ??= fundingOutput.Amount;
                     }
 
                     var channel = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1,
                                                    announcement.NodeId2, announcement.BitcoinKey1,
-                                                   announcement.BitcoinKey2, capacitySat, announcement.Features,
-                                                   GraphChannelVerification.Own)
+                                                   announcement.BitcoinKey2,
+                                                   capacity is null ? null : (ulong)capacity.Satoshi,
+                                                   announcement.Features, GraphChannelVerification.Own)
                     {
                         RawAnnouncement = announcement.GetBytes()
                     };
@@ -245,15 +329,75 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                     {
                         RawAnnouncement = announcement.GetBytes()
                     };
-                    _store.TryApplyNode(node);
-
-                    // Our timestamp must increase across restarts: persist before the caller sends it
-                    await _store.FlushAsync(cancellationToken);
+                    _store.TryApplyOwnNode(node);
                     break;
                 }
             default:
                 throw new ArgumentException($"{message.GetType().Name} is not graph gossip", nameof(message));
         }
+    }
+
+    private void EnqueueOwn(OwnGossipItem item)
+    {
+        // Idempotent and never blocking (the caller may hold a channel lock): queue, and let one loop apply in order
+        if (!IsEnabled)
+            return;
+
+        Interlocked.Increment(ref _pendingOwn);
+        if (!_ownQueue.Writer.TryWrite(item))
+        {
+            Interlocked.Decrement(ref _pendingOwn);
+            return;
+        }
+
+        _ = StartAsync();
+    }
+
+    private async Task OwnLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var item in _ownQueue.Reader.ReadAllAsync(cancellationToken))
+            {
+                try
+                {
+                    await ApplyOwnAsync(item.Message, item.Capacity, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception e)
+                {
+                    _logger.LogWarning(e, "Failed to add our own {MessageType} to the graph",
+                                       Enum.GetName(item.Message.Type));
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _pendingOwn);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Stopping
+        }
+    }
+
+    private void RecordMissed(IMessage message)
+    {
+        var dropped = Interlocked.Increment(ref _droppedCount);
+        if (dropped == 1 || dropped % 1_000 == 0)
+            _logger.LogWarning("{Count} graph gossip messages dropped so far (full queues or chain lookups given up); "
+                             + "their channels wait for the next sync", dropped);
+
+        if (_missed.Count >= _options.MaxMissedShortChannelIds)
+            return;
+
+        if (message is ChannelAnnouncementMessage announcement)
+            _missed.TryAdd(announcement.Payload.ShortChannelId, 0);
+        else if (message is ChannelUpdateMessage update)
+            _missed.TryAdd(update.Payload.ShortChannelId, 0);
     }
 
     /// <summary>
@@ -326,12 +470,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         var verification = GraphChannelVerification.Verified;
         switch (lookup.Status)
         {
-            case FundingOutputStatus.Found when lookup.Confirmations >= _options.AnnouncementDepth:
+            case FundingOutputStatus.Found when lookup.Confirmations >= AnnouncementDepth:
                 capacitySat = (ulong)lookup.Amount!.Satoshi;
                 break;
             case FundingOutputStatus.Found:
                 return GossipIngressResult.Deferred(
-                    $"the funding output has {lookup.Confirmations} confirmations, {_options.AnnouncementDepth} needed");
+                    $"the funding output has {lookup.Confirmations} confirmations, {AnnouncementDepth} needed");
             case FundingOutputStatus.BlockUnavailable
                 when _options.FundingValidation == FundingValidationMode.SkipUnavailable:
                 capacitySat = null;
@@ -497,6 +641,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             if (!_store.TryAddChannel(channel, fundingTxId))
                 return false;
 
+            _missed.TryRemove(channel.ShortChannelId, out _);
+
             updates = _orphans.TakeUpdates(channel.ShortChannelId);
             foreach (var nodeId in (ReadOnlySpan<CompactPubKey>)[channel.NodeId1, channel.NodeId2])
             {
@@ -559,14 +705,35 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return;
 
         var until = _timeProvider.GetUtcNow() + _options.ConflictBanDuration;
+        var banned = new HashSet<CompactPubKey>();
         foreach (var nodeId in (ReadOnlySpan<CompactPubKey>)
                  [announcement.NodeId1, announcement.NodeId2, known.NodeId1, known.NodeId2])
+        {
+            // Never ourselves: our own channels stay (the channel layer decides about them)
+            if (nodeId == _ourNodeId || !banned.Add(nodeId))
+                continue;
+
             _store.Ban(nodeId, $"conflicting channel_announcement for {announcement.ShortChannelId}", until);
+        }
+
+        // BOLT 7: blacklist the nodes AND forget every channel connected to them (never one of ours)
+        var forgotten = 0;
+        foreach (var channel in _store.GetSnapshot().Channels)
+        {
+            if (channel.Verification == GraphChannelVerification.Own
+             || channel.NodeId1 == _ourNodeId || channel.NodeId2 == _ourNodeId
+             || (!banned.Contains(channel.NodeId1) && !banned.Contains(channel.NodeId2)))
+                continue;
+
+            if (_store.RemoveChannel(channel.ShortChannelId))
+                forgotten++;
+        }
 
         _logger.LogWarning("Conflicting channel_announcement for {ShortChannelId} signed by its funding keys: "
-                         + "nodes {Node1}, {Node2}, {Known1} and {Known2} are ignored until {Until}",
+                         + "nodes {Node1}, {Node2}, {Known1} and {Known2} are ignored until {Until}, and their "
+                         + "{Count} channels forgotten",
                            announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2, known.NodeId1,
-                           known.NodeId2, until);
+                           known.NodeId2, until, forgotten);
     }
 
     private async Task<GossipIngressResult> WarnAsync(IPeerService? origin, GossipRejectReason reason, string text,
@@ -595,10 +762,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private GossipValidationContext CreateContext() =>
         new(_nodeOptions.BitcoinNetwork.ChainHash, (ulong)_timeProvider.GetUtcNow().ToUnixTimeSeconds())
         {
-            MinConfirmations = _options.AnnouncementDepth,
+            MinConfirmations = AnnouncementDepth,
             StaleAfter = _options.StaleAfter,
             IsBlacklisted = _store.IsBanned
         };
+
+    private uint AnnouncementDepth => _options.GetAnnouncementDepth(_nodeOptions.BitcoinNetwork);
 
     private void Remember(MessageTypes type, byte[] raw) => _recentMessages.Add((ushort)type, raw);
 
@@ -610,6 +779,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
     private async Task StartCoreAsync(CancellationToken cancellationToken)
     {
+        // Never load the graph on the caller's thread (a peer's read loop, or a caller holding a channel lock)
+        await Task.Yield();
         try
         {
             await _store.LoadAsync(cancellationToken);
@@ -626,6 +797,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             for (var i = 0; i < workers; i++)
                 _loops.Add(Task.Run(() => WorkerLoopAsync(cancellationToken), CancellationToken.None));
             _loops.Add(Task.Run(() => FlushLoopAsync(cancellationToken), CancellationToken.None));
+            _loops.Add(Task.Run(() => OwnLoopAsync(cancellationToken), CancellationToken.None));
         }
 
         _logger.LogInformation("Gossip ingress started with {Workers} workers", workers);
@@ -682,6 +854,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         {
             _logger.LogDebug("Giving up on {MessageType} after {Attempts} attempts: {Reason}",
                              Enum.GetName(item.Message.Type), item.Attempt + 1, reason);
+            RecordMissed(item.Message);
             return;
         }
 
@@ -690,6 +863,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             Interlocked.Decrement(ref _pendingRetries);
             _logger.LogDebug("Dropping deferred {MessageType}: too many retries pending",
                              Enum.GetName(item.Message.Type));
+            RecordMissed(item.Message);
             return;
         }
 
@@ -699,8 +873,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             {
                 await Task.Delay(_options.RetryDelay, _timeProvider, cancellationToken);
                 if (!_queue.Writer.TryWrite(item with { Attempt = item.Attempt + 1 }))
+                {
                     _logger.LogDebug("Dropping deferred {MessageType}: the gossip queue is full",
                                      Enum.GetName(item.Message.Type));
+                    RecordMissed(item.Message);
+                }
             }
             catch (OperationCanceledException)
             {
@@ -735,4 +912,6 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     private sealed record IngressItem(IPeerService? Origin, IMessage Message, int Attempt);
+
+    private sealed record OwnGossipItem(IMessage Message, LightningMoney? Capacity);
 }
