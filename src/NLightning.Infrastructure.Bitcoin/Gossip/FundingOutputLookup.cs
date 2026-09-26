@@ -238,21 +238,30 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
 
     private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(uint height)
     {
-        var blockHash = await _chain.GetBlockHashAsync(height);
+        bool cached;
         lock (_cacheGate)
-        {
-            if (_cache.TryGetValue(height, out var node))
-            {
-                if (node.Value.BlockHash == blockHash)
-                {
-                    _lru.Remove(node);
-                    _lru.AddFirst(node);
-                    return (node.Value.BlockHash, node.Value.TxIds);
-                }
+            cached = _cache.ContainsKey(height);
 
-                // Another block at this height now: a reorg the monitor has not reported yet
-                _cache.Remove(height);
-                _lru.Remove(node);
+        // A cached list is used only while getblockhash still names its block; a height not cached needs no separate
+        // getblockhash, since GetBlockTxIdsAsync reads the hash it lists (one RPC less per miss, NL-411)
+        if (cached)
+        {
+            var blockHash = await _chain.GetBlockHashAsync(height);
+            lock (_cacheGate)
+            {
+                if (_cache.TryGetValue(height, out var node))
+                {
+                    if (node.Value.BlockHash == blockHash)
+                    {
+                        _lru.Remove(node);
+                        _lru.AddFirst(node);
+                        return (node.Value.BlockHash, node.Value.TxIds);
+                    }
+
+                    // Another block at this height now: a reorg the monitor has not reported yet
+                    _cache.Remove(height);
+                    _lru.Remove(node);
+                }
             }
         }
 
@@ -260,10 +269,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         if (block is not { } fetched)
             return null;
 
-        // Cache only the list of the block getblockhash named; a list of a newer block is still the chain's answer
-        if (fetched.BlockHash == blockHash)
-            Store(new CachedBlock(height, fetched.BlockHash, fetched.TxIds));
-
+        Store(new CachedBlock(height, fetched.BlockHash, fetched.TxIds));
         return fetched;
     }
 
