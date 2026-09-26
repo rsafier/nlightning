@@ -121,6 +121,8 @@ A note on layers. A BOLT 2 message can be complete at the wire layer (Domain mes
 
 ## BOLT 7: P2P node and channel discovery
 
+Plan: [`BOLT7_GOSSIP_PLAN.md`](BOLT7_GOSSIP_PLAN.md) (G0 wire, G1 public channels, G2 validation + graph store, G3 sync/relay, G4 pathfinding, G5 hardening; waves G-A..G-D). New gaps found while planning: NL-341 (fundee ignores `announce_channel`), NL-342 (`announcement_signatures` dropped as gossip).
+
 | Feature | Status | Files | Notes |
 |---|---|---|---|
 | channel_announcement (256), node_announcement (257), announcement_signatures (259) | stub | `src/NLightning.Domain/Protocol/Messages/{ChannelAnnouncement,NodeAnnouncement,AnnouncementSignatures}Message.cs` (raw `GossipPayload`) | Parsed as raw bytes and dropped in `PeerService` (NL-100). No validation, no graph (NL-099). |

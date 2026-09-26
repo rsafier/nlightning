@@ -58,12 +58,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 1 | 6 | 25 | 77 | 109 |
+| open | 1 | 6 | 27 | 77 | 111 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 13 | 46 | 100 | 65 | 224 |
 | wontfix | 0 | 0 | 2 | 4 | 6 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **52** | **128** | **146** | **340** |
+| **Total** | **14** | **52** | **130** | **146** | **342** |
 
 ### Epics
 
@@ -2165,7 +2165,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** No messages, no validation, no graph storage, no pathfinding; `channel_update` in failure messages must be empty. Sub-issues: NL-100, NL-101, NL-102, NL-103, NL-008. Update: 256-259 parse as raw `GossipMessage` and are dropped (156c375, NL-100); 261/263/265 are typed and queries get empty `reply_channel_range`/`reply_short_channel_ids_end` (9e17af2, NL-205). Remaining: announcements, channel_update, graph. Update (ABCD wave 0, `0b7e617`): `channel_update` (258) is typed (`ChannelUpdateMessage`/`ChannelUpdatePayload`, unknown trailing fields kept for the signature) and signed/verified with the node key (`ILightningSigner.SignNodeMessage`/`VerifyNodeMessage`); an LND-captured update parses byte-exact and verifies; `FailureChannelUpdateFactory` takes the typed update (e7b5269, 3ba2e4f). Remaining: sending/storing updates (ABCD W1-E), announcements, graph. Update (ABCD wave 1, `342d22e`): direct `channel_update` exchange with the channel peer (W1-E): `Application/Gossip/ChannelUpdateService` sends our signed update once a channel with a scid turns Open (under the channel lock, so it follows channel_ready) and again, unchanged, on every new connection to that peer; option_scid_alias channels use the peer's alias, no update when htlc_minimum exceeds capacity; inbound 258 is kept only if it is for our chain, names a channel with that peer, has the peer's direction, verifies with the peer's node key, is newer, not far in the future and not above capacity (b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed). Docker `ChannelUpdateExchangeTests`: LND `GetChanInfo` shows our fee/CLTV policy and we store alice's. Remaining: announcements, graph, relay; LND never puts us into `addinvoice --private` hints without a node_announcement (NL-255).
 - **Fix sketch:** Wire types first (so they stop killing peers), then announcement_signatures for public channels, graph store, gossip_queries.
 - **Blocks/Blocked-by:** Blocks multi-hop sending in NL-073
-- **Plan ref:** BOLT_COVERAGE roadmap steps 2, 12
+- **Plan ref:** `docs/agents/BOLT7_GOSSIP_PLAN.md` (milestones G0-G5, waves G-A..G-D); BOLT_COVERAGE roadmap steps 2, 12
 
 ### NL-100 Incoming even gossip types (256, 258, 262, 264) throw and kill the peer
 - **Status:** fixed (156c375)
@@ -2238,6 +2238,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ABCD W1-E
 
 ---
+
+### NL-341 The fundee ignores `announce_channel` in open_channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs` (no `ChannelFlags` handling), `ChannelModel` (flag not stored)
+- **Evidence:** An LND-opened public channel (`channel_flags.announce_channel = 1`) is treated as private; the flag is never persisted, so neither side can later exchange `announcement_signatures` (BOLT 2 / BOLT 7).
+- **Fix sketch:** Store the flag per channel (migration, all 3 providers), honour it on both roles, refuse `announce_channel` together with `option_scid_alias` per BOLT 2.
+- **Blocks/Blocked-by:** Blocks BOLT7 G1
+- **Plan ref:** BOLT7_GOSSIP_PLAN G1-T1 (GG3)
+
+### NL-342 `announcement_signatures` (259) is dropped as peer gossip instead of routed to its channel
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (gossip branch), `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (no case)
+- **Evidence:** 259 carries a `channel_id` and belongs to the channel, but it parses as raw `GossipMessage` and is dropped, so public channels can never be announced.
+- **Fix sketch:** Typed message + `ChannelManager` case; invalid signatures -> warning + close (BOLT7 plan D10).
+- **Blocks/Blocked-by:** Blocks BOLT7 G1
+- **Plan ref:** BOLT7_GOSSIP_PLAN G0/G1 (GG2)
 
 ## BOLT 8: Transport
 
