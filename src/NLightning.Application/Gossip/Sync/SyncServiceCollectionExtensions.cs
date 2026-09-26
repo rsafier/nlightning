@@ -23,7 +23,8 @@ public static class SyncServiceCollectionExtensions
     /// takes the tip
     /// from <see cref="IBlockchainMonitor"/> when one is registered. Bind <see cref="GossipSyncOptions"/> from the
     /// <c>Gossip</c> section. Idempotent. Nothing needs starting: the timers start with the first peer and stop when the
-    /// container disposes the manager.
+    /// container disposes the manager. Also binds <see cref="IGossipScidRefresher"/> to
+    /// <see cref="GossipSyncScidRefresher"/> (G3-T5), replacing the payment layer's no-op default in either order.
     /// </summary>
     public static IServiceCollection AddGossipSyncServices(this IServiceCollection services)
     {
@@ -48,6 +49,8 @@ public static class SyncServiceCollectionExtensions
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());
+        // G3-T5: the payment retry path's refresh goes to the sync (replaces AddPaymentSendServices' no-op default)
+        services.Replace(ServiceDescriptor.Singleton<IGossipScidRefresher, GossipSyncScidRefresher>());
         return services;
     }
 }

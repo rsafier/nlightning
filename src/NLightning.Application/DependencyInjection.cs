@@ -21,6 +21,7 @@ using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Validators;
 using Domain.Crypto.Hashes;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
@@ -104,6 +105,8 @@ public static class DependencyInjection
         services.AddRemoteCommitResolutionServices();
         services.AddRevokedCommitResolver();
         services.AddSingleton<IPeerManager, PeerManager>();
+        // NL-351: own and relayed gossip goes through the peer's outbox (PeerGossipSender resolves it lazily)
+        services.AddSingleton<IPeerGossipOutbox>(sp => (IPeerGossipOutbox)sp.GetRequiredService<IPeerManager>());
 
         // Automatically register all channel message handlers
         services.AddChannelMessageHandlers();

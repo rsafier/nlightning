@@ -14,6 +14,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Constants;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -50,7 +51,7 @@ using Services;
 /// peer's are handed to that service (BOLT 7 direct exchange, W1-E).
 /// </remarks>
 /// <seealso cref="IPeerManager" />
-public sealed class PeerManager : IPeerManager
+public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
 {
     /// <summary>
     /// Channel messages waiting for the inbound loop of one peer. When full, the transport read loop waits, which
@@ -1054,6 +1055,15 @@ public sealed class PeerManager : IPeerManager
         KeptExisting,
         Stopping
     }
+
+    /// <summary>
+    /// Queues gossip on the outbox of <paramref name="connection"/> (NL-351): only while it is still the peer's current
+    /// connection, so our own and relayed gossip keeps FIFO order with that connection's channel messages.
+    /// </summary>
+    public bool TryEnqueueGossip(IPeerService connection, IMessage message) =>
+        _peers.TryGetValue(connection.PeerPubKey, out var session)
+        && ReferenceEquals(session.PeerService, connection)
+        && session.Outbox.TryEnqueueGossip(message);
 
     /// <summary>
     /// One connection to a peer: its model, its service, its ordered inbound queue and loop, and its outbox.

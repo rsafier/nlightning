@@ -25,6 +25,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -1032,6 +1033,33 @@ public class PeerManagerTests
         Assert.True(peerManager.GetPeer(_compactPubKey)!.TryGetPeerService(out var current));
         Assert.Same(newPeerService.Object, current);
         newPeerService.Verify(p => p.SendMessageAsync(reply), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AReplacedConnection_When_GossipIsQueued_Then_OnlyTheCurrentConnectionsOutboxSendsIt()
+    {
+        // Arrange (NL-351: own and relayed gossip goes through the current connection's outbox)
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        RaiseInboundConnection();
+        var oldPeerService = _mockPeerService;
+        var newPeerService = CreateMockPeerService();
+        newPeerService.Setup(p => p.SendGossipMessageAsync(It.IsAny<IMessage>())).Returns(Task.CompletedTask);
+        SetupInboundPeerService(newPeerService);
+        RaiseInboundConnection();
+        var gossip = new Mock<IMessage>().Object;
+        IPeerGossipOutbox outbox = peerManager;
+
+        // Act
+        var queuedOnOld = outbox.TryEnqueueGossip(oldPeerService.Object, gossip);
+        var queuedOnNew = outbox.TryEnqueueGossip(newPeerService.Object, gossip);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(queuedOnOld);
+        Assert.True(queuedOnNew);
+        newPeerService.Verify(p => p.SendGossipMessageAsync(gossip), Times.Once);
+        oldPeerService.Verify(p => p.SendGossipMessageAsync(gossip), Times.Never);
     }
 
     [Theory]

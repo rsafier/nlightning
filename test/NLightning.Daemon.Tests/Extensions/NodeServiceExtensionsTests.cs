@@ -114,7 +114,11 @@ public class NodeServiceExtensionsTests
         Assert.True(provider.GetRequiredService<GraphPathSource>().IsAvailable);
         Assert.Same(provider.GetRequiredService<MissionControl>(),
                     provider.GetRequiredService<GraphPathSource>().MissionControl);
-        Assert.NotNull(provider.GetRequiredService<IGossipScidRefresher>());
+        // G3-T5: a payment's gossip refresh goes to the sync manager, not the no-op default
+        Assert.IsType<GossipSyncScidRefresher>(provider.GetRequiredService<IGossipScidRefresher>());
+        // NL-351: own and relayed gossip goes through the peer manager's per-connection outbox
+        Assert.Same(provider.GetRequiredService<IPeerManager>(), provider.GetRequiredService<IPeerGossipOutbox>());
+        Assert.True(Assert.IsType<PeerGossipSender>(provider.GetRequiredService<IGossipPeerSender>()).UsesOutbox);
     }
 
     [Fact]
