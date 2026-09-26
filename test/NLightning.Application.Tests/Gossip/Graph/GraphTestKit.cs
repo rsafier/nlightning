@@ -75,7 +75,8 @@ internal sealed class GraphTestKit
     public GraphTestKit(InMemoryGraphDbRepository? repository = null, DateTimeOffset? now = null,
                         Action<GossipGraphOptions>? configure = null,
                         IChannelMemoryRepository? channelMemoryRepository = null,
-                        CompactPubKey? ourNodeId = null)
+                        CompactPubKey? ourNodeId = null, int writeBatchSize = GraphStore.DefaultWriteBatchSize,
+                        int loadBatchSize = GraphStore.DefaultLoadBatchSize)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
         Clock = new SettableTimeProvider(now ?? DefaultNow);
@@ -94,7 +95,11 @@ internal sealed class GraphTestKit
         var provider = services.BuildServiceProvider();
 
         Store = new GraphStore(provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<GraphStore>.Instance,
-                               Clock);
+                               Clock)
+        {
+            WriteBatchSize = writeBatchSize,
+            LoadBatchSize = loadBatchSize
+        };
         FundingLookup = new Mock<IFundingOutputLookup>();
         var nodeOptions = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve("regtest") };
         ISecureKeyManager? keyManager = null;

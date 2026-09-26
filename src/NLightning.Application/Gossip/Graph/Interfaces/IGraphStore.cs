@@ -23,6 +23,9 @@ public interface IGraphStore
     /// <summary>The number of announced nodes.</summary>
     int NodeCount { get; }
 
+    /// <summary>The number of stored <c>channel_update</c> directions.</summary>
+    int PolicyCount { get; }
+
     /// <summary>Changes not written to the database yet.</summary>
     int PendingChanges { get; }
 
@@ -37,11 +40,20 @@ public interface IGraphStore
     /// </summary>
     Task LoadAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>Writes the pending changes in one unit of work. On failure they stay pending.</summary>
+    /// <summary>
+    /// Writes the pending changes, in batches of their own unit of work (G5-T3). On failure the batch that failed and
+    /// the ones after it stay pending; the batches before it are written.
+    /// </summary>
     Task FlushAsync(CancellationToken cancellationToken = default);
 
     /// <summary>An immutable snapshot for pathfinding and listings (rebuilt only after a change).</summary>
     IGraphView GetSnapshot();
+
+    /// <summary>
+    /// The counts and the estimated memory of the graph (G5-T1 budget, G5-T4 <c>describegraph</c>); O(1), kept up to
+    /// date on every change.
+    /// </summary>
+    GraphMemoryEstimate GetMemoryEstimate();
 
     /// <summary>The channel with <paramref name="shortChannelId"/>.</summary>
     bool TryGetChannel(ShortChannelId shortChannelId, [NotNullWhen(true)] out GraphChannel? channel);
