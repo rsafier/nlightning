@@ -404,8 +404,19 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 if (message.Type == MessageTypes.ChannelReestablish)
                     reestablished = await CompleteReestablishAsync(scope, channelId, peerPubKey);
 
+                // BOLT 7 (G1-T4): our announcement_signatures after the reestablish (retransmission on reconnection)
+                // or when the channel just turned Open at the announcement depth
+                var announcementDue = message.Type == MessageTypes.ChannelReestablish
+                                          ? reestablished || GetTracker() is null
+                                          : !wasOpen && IsOpen(channelId);
+                if (announcementDue)
+                    replies = await AppendAnnouncementSignaturesAsync(scope, channelId, peerPubKey, replies);
+
                 replies = await AdvanceCloseAsync(scope, channelId, replies);
                 RaiseResponseMessages(peerPubKey, replies);
+
+                if (announcementDue)
+                    CompleteAnnouncement(channelId);
             }
 
             if (reestablished)
@@ -1366,6 +1377,122 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         // BOLT 5: the resolution round of every channel whose funding output was spent (O2-T5)
         _serviceProvider.GetService<IOnchainResolutionExecutor>()?.ScheduleRound(args.Height);
+
+        // BOLT 7: public channels that reached the announcement depth send their announcement_signatures (G1-T4)
+        ScheduleAnnouncementRound();
+    }
+
+    /// <summary>
+    /// The last announcement round started by a block (for tests).
+    /// </summary>
+    internal Task AnnouncementRound { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// BOLT 7 plan G1-T4: every Open public channel whose announcement is not complete in this process gets its
+    /// <c>announcement_signatures</c> sent when due (<see cref="IChannelAnnouncementService.PrepareOwnAnnouncementSignaturesAsync"/>),
+    /// each under its own lock, and its announcement assembled once both halves are in. With an announced channel our
+    /// <c>node_announcement</c> is refreshed when it is due.
+    /// </summary>
+    private void ScheduleAnnouncementRound()
+    {
+        if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcementService)
+            return;
+
+        var pending = _channelMemoryRepository
+                     .FindChannels(c => c.AnnounceChannel && c.State == ChannelState.Open
+                                     && !announcementService.IsAnnouncementComplete(c.ChannelId))
+                     .Select(c => c.ChannelId)
+                     .ToList();
+        if (_channelMemoryRepository.FindChannels(c => announcementService.IsAnnouncementComplete(c.ChannelId))
+                                    .Count > 0)
+            _serviceProvider.GetService<INodeAnnouncementService>()?.RequestAnnouncement();
+
+        if (pending.Count == 0)
+            return;
+
+        AnnouncementRound = Task.Run(async () =>
+        {
+            foreach (var channelId in pending)
+                await SendDueAnnouncementSignaturesAsync(announcementService, channelId);
+        });
+    }
+
+    /// <summary>
+    /// Sends the channel's <c>announcement_signatures</c> when due and completes its announcement, under its lock. A
+    /// channel not reestablished on its peer's current connection is left to the reestablish (channel_reestablish goes
+    /// first on a connection).
+    /// </summary>
+    private async Task SendDueAnnouncementSignaturesAsync(IChannelAnnouncementService announcementService,
+                                                          ChannelId channelId)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+             || channel.State != ChannelState.Open)
+                return;
+
+            if (GetTracker() is { } tracker && !tracker.IsReestablished(channelId))
+                return;
+
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var own = await announcementService.PrepareOwnAnnouncementSignaturesAsync(channel, channel.RemoteNodeId,
+                                                                                     unitOfWork);
+            if (own is not null)
+                Publish(channel.RemoteNodeId, [own]);
+
+            announcementService.CompleteAnnouncement(channel);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not send the announcement_signatures of channel {ChannelId}", channelId);
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="replies"/> followed by our <c>announcement_signatures</c> when one is due on this connection.
+    /// Call it under the channel's lock. A failure is logged: the next block or reconnection retries.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AppendAnnouncementSignaturesAsync(
+        IServiceScope scope, ChannelId channelId, CompactPubKey peerPubKey, IReadOnlyList<IChannelMessage> replies)
+    {
+        if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcementService
+         || !_channelMemoryRepository.TryGetChannel(channelId, out var channel) || !channel.AnnounceChannel)
+            return replies;
+
+        try
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var own = await announcementService.PrepareOwnAnnouncementSignaturesAsync(channel, peerPubKey,
+                                                                                     unitOfWork);
+            return own is null ? replies : [.. replies, own];
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not prepare the announcement_signatures of channel {ChannelId}", channelId);
+            return replies;
+        }
+    }
+
+    /// <summary>
+    /// Assembles and hands on the channel's announcement when both halves are in (after a restart, or when ours went
+    /// out after the peer's arrived). Call it under the channel's lock, after the replies were raised.
+    /// </summary>
+    private void CompleteAnnouncement(ChannelId channelId)
+    {
+        if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcementService
+         || !_channelMemoryRepository.TryGetChannel(channelId, out var channel) || !channel.AnnounceChannel)
+            return;
+
+        try
+        {
+            announcementService.CompleteAnnouncement(channel);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not complete the announcement of channel {ChannelId}", channelId);
+        }
     }
 
     /// <summary>

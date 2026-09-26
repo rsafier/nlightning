@@ -3,6 +3,7 @@ namespace NLightning.Application.Gossip.Announcements.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 
@@ -12,9 +13,10 @@ using Domain.Protocol.Payloads;
 /// connection, and assembling the <c>channel_announcement</c> once both halves are in.
 /// </summary>
 /// <remarks>
-/// Every member that takes a <see cref="ChannelModel"/> must be called under that channel's lock. Nothing here
-/// persists: the caller marks <see cref="ChannelModel.MarkAnnouncementSignaturesSent"/> and saves the channel before the
-/// message goes out.
+/// Every member that takes a <see cref="ChannelModel"/> must be called under that channel's lock. Only
+/// <see cref="PrepareOwnAnnouncementSignaturesAsync"/> persists (the sent time, before the message goes out); with
+/// <see cref="CreateAnnouncementSignatures"/> the caller marks <see cref="ChannelModel.MarkAnnouncementSignaturesSent"/>
+/// and saves the channel itself.
 /// </remarks>
 public interface IChannelAnnouncementService
 {
@@ -66,7 +68,30 @@ public interface IChannelAnnouncementService
     ChannelAnnouncementPayload? TryAssembleAnnouncement(ChannelModel channel);
 
     /// <summary>
-    /// Hands a complete announcement of the channel on (graph store, relay of our own gossip). Idempotent.
+    /// Hands a complete announcement of the channel on: to the graph store and the relay of our own gossip, then our
+    /// now public <c>channel_update</c> (to the peer and the relay) and a request for our <c>node_announcement</c>.
+    /// Idempotent (per process).
     /// </summary>
     void OnChannelAnnounced(ChannelModel channel, ChannelAnnouncementPayload announcement);
+
+    /// <summary>Whether the channel's announcement was handed on in this process.</summary>
+    bool IsAnnouncementComplete(ChannelId channelId);
+
+    /// <summary>
+    /// Our <c>announcement_signatures</c> when one is due on <paramref name="peerPubKey"/>'s current connection (BOLT 7
+    /// plan G1-T4): the channel may be announced now (<see cref="CanSendAnnouncementSignatures"/>), ours did not go out
+    /// on this connection yet, and the halves were not both exchanged before (sent once at the depth, and again on each
+    /// reconnection until the peer's half is stored). The sent time is saved through <paramref name="unitOfWork"/>
+    /// before the message is returned, and the message is recorded as sent on this connection: the caller must raise
+    /// it now, under the channel's lock. Null when nothing is due.
+    /// </summary>
+    Task<AnnouncementSignaturesMessage?> PrepareOwnAnnouncementSignaturesAsync(ChannelModel channel,
+                                                                              CompactPubKey peerPubKey,
+                                                                              IUnitOfWork unitOfWork);
+
+    /// <summary>
+    /// Assembles and hands on the channel's announcement when both halves are in and it was not handed on in this
+    /// process yet (for example after a restart, or when ours went out after the peer's arrived).
+    /// </summary>
+    void CompleteAnnouncement(ChannelModel channel);
 }

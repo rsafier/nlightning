@@ -7,7 +7,10 @@ using NLightning.Tests.Utils.Channels;
 
 namespace NLightning.Application.Tests.Gossip;
 
+using Announcements;
+
 using Application.Channels.Services;
+using Application.Gossip.Announcements;
 using Application.Gossip.Events;
 using Application.Gossip.Services;
 using Domain.Bitcoin.Interfaces;
@@ -582,13 +585,161 @@ public class ChannelUpdateServiceTests
         Assert.False(service.HandleRemoteChannelUpdate(otherPeer, CreatePeerUpdate(timestamp: 100)));
     }
 
-    private ChannelUpdateService CreateService(out ILightningSigner ourSigner)
+    [Fact]
+    public void Given_AnAnnouncedChannel_When_CreatingUpdate_Then_DontForwardIsClearAndTheUpdateIsPublished()
+    {
+        // Arrange (BOLT 7: dont_forward only for an update not preceded by the channel's announcement)
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out var ourSigner, new OwnGossipPublisher(sink, relay));
+        var channel = AddAnnouncedChannel();
+
+        // Act
+        var update = service.CreateChannelUpdate(channel).Payload;
+
+        // Assert
+        Assert.Equal(ChannelUpdatePayload.MessageFlagMustBeOne, update.MessageFlags);
+        Assert.False(update.DontForward);
+        Assert.Equal(s_shortChannelId, update.ShortChannelId);
+        Assert.True(ourSigner.VerifyNodeMessage(update.GetSignatureHash(), update.Signature, OurNodeId));
+        Assert.Same(update, Assert.Single(sink.ChannelUpdates));
+        Assert.Same(update, Assert.Single(relay.Queued));
+    }
+
+    [Fact]
+    public void Given_AnAnnouncedChannelWithScidAliasNegotiated_When_CreatingUpdate_Then_ItNamesTheRealScid()
+    {
+        // Arrange (the announcement names the real short channel id, so must the public update)
+        var service = CreateService(out _);
+        var channel = AddAnnouncedChannel(useScidAlias: FeatureSupport.Optional);
+        channel.RemoteAlias = new ShortChannelId(16_000_000, 7, 0);
+
+        // Act
+        var update = service.CreateChannelUpdate(channel).Payload;
+
+        // Assert
+        Assert.Equal(s_shortChannelId, update.ShortChannelId);
+        Assert.False(update.DontForward);
+    }
+
+    [Fact]
+    public void Given_APublicChannelNotAnnouncedYet_When_CreatingUpdate_Then_DontForwardStaysSetAndNothingIsPublished()
+    {
+        // Arrange (BOLT 7: an update sent before the peers exchanged announcement_signatures is for the peer only)
+        var sink = new RecordingOwnGossipSink();
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(sink, relay));
+        var channel = AddAnnouncedChannel(exchanged: false);
+
+        // Act
+        var update = service.CreateChannelUpdate(channel).Payload;
+
+        // Assert
+        Assert.True(update.DontForward);
+        Assert.Empty(sink.ChannelUpdates);
+        Assert.Empty(relay.Queued);
+    }
+
+    [Fact]
+    public void Given_AChannelJustAnnounced_When_OnChannelAnnounced_Then_ANewerPublicUpdateGoesToThePeer()
+    {
+        // Arrange: the private update of the open went out first
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay));
+        var channel = AddAnnouncedChannel(exchanged: false);
+        var atOpen = service.CreateChannelUpdate(channel).Payload;
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x01, 64).ToArray());
+        channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(signature, signature));
+        channel.MarkAnnouncementSignaturesSent(s_now);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        var announced = service.OnChannelAnnounced(channel);
+
+        // Assert
+        Assert.NotNull(announced);
+        var args = Assert.Single(raised);
+        Assert.Equal(PeerNodeId, args.PeerPubKey);
+        Assert.Same(announced, args.Message);
+        Assert.False(announced.Payload.DontForward);
+        Assert.True(announced.Payload.Timestamp > atOpen.Timestamp);
+        Assert.Same(announced.Payload, Assert.Single(relay.Queued));
+    }
+
+    [Fact]
+    public void Given_APrivateChannel_When_OnChannelAnnounced_Then_Nothing()
+    {
+        // Arrange
+        var service = CreateService(out _);
+        var channel = AddChannel(ChannelState.Open);
+
+        // Act / Assert
+        Assert.Null(service.OnChannelAnnounced(channel));
+        Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_AnAnnouncedChannelShuttingDown_When_Updated_Then_ADisabledUpdateIsRelayedOnce()
+    {
+        // Arrange (BOLT 7: MAY send a disabled update prior to an on-chain settlement)
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay));
+        var channel = AddAnnouncedChannel(ChannelState.ShuttingDown);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        RaiseChannelUpdated(channel);
+        RaiseChannelUpdated(channel);
+
+        // Assert: relayed, not sent to the peer
+        var update = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        Assert.True(update.IsDisabled);
+        Assert.False(update.DontForward);
+        Assert.Empty(raised);
+    }
+
+    [Fact]
+    public void Given_APrivateChannelShuttingDown_When_Updated_Then_NothingIsRelayed()
+    {
+        // Arrange
+        var relay = new RecordingRelayScheduler();
+        var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay));
+        var channel = AddChannel(ChannelState.ShuttingDown);
+
+        // Act
+        RaiseChannelUpdated(channel);
+
+        // Assert
+        Assert.Empty(relay.Queued);
+        Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+    }
+
+    private ChannelUpdateService CreateService(out ILightningSigner ourSigner, OwnGossipPublisher? publisher = null)
     {
         ourSigner = CreateSigner(_ourKey);
         var keyManager = CreateKeyManager(_ourKey);
         return new ChannelUpdateService(_channelMemoryRepository.Object, _channelLockProvider, ourSigner,
                                         keyManager.Object, Options.Create(_nodeOptions),
-                                        NullLogger<ChannelUpdateService>.Instance, _timeProvider);
+                                        NullLogger<ChannelUpdateService>.Instance, _timeProvider, publisher);
+    }
+
+    /// <summary>
+    /// A public channel whose <c>announcement_signatures</c> were exchanged (both halves; the signatures' bytes do not
+    /// matter to the update service).
+    /// </summary>
+    private ChannelModel AddAnnouncedChannel(ChannelState state = ChannelState.Open,
+                                             FeatureSupport useScidAlias = FeatureSupport.No, bool exchanged = true)
+    {
+        var channel = AddChannel(state, useScidAlias: useScidAlias, announce: true);
+        if (!exchanged)
+            return channel;
+
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x01, 64).ToArray());
+        channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(signature, signature));
+        channel.MarkAnnouncementSignaturesSent(s_now);
+        return channel;
     }
 
     private ChannelUpdateMessage CreatePeerUpdate(uint timestamp, ShortChannelId? scid = null, uint feeBase = 1_000,
@@ -608,7 +759,7 @@ public class ChannelUpdateServiceTests
     }
 
     private ChannelModel AddChannel(ChannelState state, LightningMoney? capacity = null,
-                                    FeatureSupport useScidAlias = FeatureSupport.No)
+                                    FeatureSupport useScidAlias = FeatureSupport.No, bool announce = false)
     {
         var channelIdBytes = new byte[32];
         channelIdBytes[0] = (byte)(_channels.Count + 1);
@@ -616,7 +767,10 @@ public class ChannelUpdateServiceTests
                                                      LightningMoney.MilliSatoshis(5_000),
                                                      LightningMoney.Satoshis(354), 30,
                                                      LightningMoney.MilliSatoshis(800_000_000), 3, false,
-                                                     LightningMoney.Satoshis(354), 144, useScidAlias);
+                                                     LightningMoney.Satoshis(354), 144, useScidAlias) with
+        {
+            AnnounceChannel = announce
+        };
         var keySet = new ChannelKeySetModel(0, OurNodeId, OurNodeId, OurNodeId, OurNodeId, OurNodeId, OurNodeId);
         var fundingOutput = new FundingOutputInfo(capacity ?? LightningMoney.Satoshis(1_000_000), OurNodeId,
                                                   PeerNodeId);
