@@ -57,8 +57,9 @@ internal sealed class CloseHarness : IDisposable
             var published = _published[node.Name];
 
             var feeService = new Mock<IFeeService>();
-            feeService.Setup(f => f.GetCachedFeeRatePerKw())
-                      .Returns(LightningMoney.Satoshis(isAlice ? aliceFeeratePerKw : bobFeeratePerKw));
+            var feerate = LightningMoney.Satoshis(isAlice ? aliceFeeratePerKw : bobFeeratePerKw);
+            feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(feerate);
+            feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>())).ReturnsAsync(feerate);
             services.AddSingleton(feeService.Object);
 
             var monitor = new Mock<IBlockchainMonitor>();

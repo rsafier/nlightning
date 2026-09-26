@@ -240,25 +240,37 @@ public sealed class ClnChannelSession : IAsyncDisposable
         }
     }
 
-    private static async Task<ClnChannelSession> BuildAsync(ClnFixture fixture, CancellationToken cancellationToken)
+    private static Task<ClnChannelSession> BuildAsync(ClnFixture fixture, CancellationToken cancellationToken) =>
+        BuildOurFundedAsync(fixture, "nltg", Capacity, Push, cancellationToken);
+
+    /// <summary>
+    /// A separate node <paramref name="nodeName"/> that funds a private channel of <paramref name="capacity"/> to CLN
+    /// (pushing <paramref name="push"/>) at our default feerate, followed until both ends are usable. The caller
+    /// disposes the session (and so the node).
+    /// </summary>
+    public static async Task<ClnChannelSession> BuildOurFundedAsync(ClnFixture fixture, string nodeName,
+                                                                    LightningMoney capacity, LightningMoney push,
+                                                                    CancellationToken cancellationToken)
     {
-        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, "nltg");
+        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
         var session = new ClnChannelSession(fixture, node);
         try
         {
             await session.StartNodeAsync(cancellationToken);
-            await node.FundWalletAsync(LightningMoney.Satoshis(2_500_000), AddressType.P2Wpkh, cancellationToken);
+            await node.FundWalletAsync(LightningMoney.Satoshis(capacity.Satoshi * 5 / 2), AddressType.P2Wpkh,
+                                       cancellationToken);
             await fixture.WaitAllAtTipAsync([node], cancellationToken);
             await session.ConnectAsync(cancellationToken);
 
             // No explicit feerate: our estimate, the test node's fixed fee answer (fastestFee 10 sat/vB) as sat/kw
             // (OpenFeeRatePerKw), inside CLN's acceptable range (NL-288)
-            var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(fixture.ClnAddress, Capacity)
+            var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(fixture.ClnAddress, capacity)
             {
-                PushAmount = Push
+                PushAmount = push
             }, cancellationToken);
             session.ChannelId = channel.ChannelId;
-            Console.WriteLine($"[cln] opened {channel.ChannelId} ({channel.ChannelPoint()}), state {channel.ChannelState}");
+            Console.WriteLine($"[cln] {nodeName} opened {channel.ChannelId} ({channel.ChannelPoint()}), "
+                            + $"state {channel.ChannelState}");
 
             await session.MineUntilUsableAsync(cancellationToken);
             return session;
