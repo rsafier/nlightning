@@ -270,13 +270,17 @@ public interface ILightningSigner
     /// <c>IFeeInputSelector</c> are signed: a wallet input that is not reserved, or is locked to a channel funding (see
     /// <see cref="SignFundingTransaction"/>), fails the call before anything is signed. P2WPKH and P2TR (key path) inputs
     /// are supported; keys are derived from the output's wallet address index and never leave the signer. Other inputs
-    /// are left untouched, for their own signer. Every signature is checked with the script interpreter before it is
-    /// returned. Equivalent to the overload with no other spent outputs, so a P2TR wallet input needs every input to be
-    /// the wallet's.
+    /// are left untouched, for their own signer. The key derived for a wallet input must give the scriptPubKey of the
+    /// output's recorded wallet address, else the call fails; every signature is then checked with the script
+    /// interpreter before it is returned (for P2TR against the caller's other spent outputs, which that check cannot
+    /// validate: a wrong one gives an invalid transaction, never a loss). This overload accepts inputs of any fee
+    /// reservation: prefer the one that takes the reservation id. Equivalent to the overload with no other spent
+    /// outputs, so a P2TR wallet input needs every input to be the wallet's.
     /// </remarks>
     /// <returns>True when every wallet input is signed; false when the transaction has no wallet input.</returns>
     /// <exception cref="Exceptions.SignerException">A wallet input cannot be signed (not reserved, locked to a channel,
-    /// unsupported type, P2TR without every spent output), or the transaction does not parse.</exception>
+    /// unsupported type, no wallet address or a derived key that does not match it, P2TR without every spent output),
+    /// or the transaction does not parse.</exception>
     bool SignWalletTransaction(SignedTransaction unsignedTransaction);
 
     /// <summary>
@@ -284,6 +288,14 @@ public interface ILightningSigner
     /// wallet's, which a P2TR (BIP 341) signature commits to.
     /// </summary>
     bool SignWalletTransaction(SignedTransaction unsignedTransaction,
+                               IReadOnlyList<Wallet.Models.SpentOutput> otherSpentOutputs);
+
+    /// <summary>
+    /// <see cref="SignWalletTransaction(SignedTransaction, IReadOnlyList{Wallet.Models.SpentOutput})"/> for the spend of
+    /// one fee reservation: every wallet input must belong to the reservation <paramref name="reservationId"/>
+    /// (<c>FeeInputReservation.Id</c>), else the call fails before anything is signed.
+    /// </summary>
+    bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId,
                                IReadOnlyList<Wallet.Models.SpentOutput> otherSpentOutputs);
 
     /// <summary>

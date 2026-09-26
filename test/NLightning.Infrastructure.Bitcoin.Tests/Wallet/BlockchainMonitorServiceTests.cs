@@ -130,7 +130,9 @@ public class BlockchainMonitorServiceTests
         // Arrange: a reservation made before a restart must keep its outputs from other spends (BOLT 5 plan O7-T1)
         var reservationId = Guid.NewGuid();
         var txId = new TxId(Enumerable.Repeat((byte)7, 32).ToArray());
-        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                             .ReturnsAsync([new UtxoModel(txId, 1, LightningMoney.Satoshis(10_000), 90, 0, false,
+                                                          AddressType.P2Wpkh)]);
         _mockFeeInputReservationRepository.Setup(x => x.GetReservedOutpointsAsync())
                                           .ReturnsAsync([(txId, 1u, reservationId)]);
         var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
@@ -145,6 +147,46 @@ public class BlockchainMonitorServiceTests
         mockUtxoMemoryRepository.Verify(
             x => x.LoadFeeReservations(
                 It.Is<IEnumerable<(TxId TxId, uint Index, Guid ReservationId)>>(r => r.Single().Equals(expected))),
+            Times.Once);
+        _mockFeeInputReservationRepository.Verify(x => x.DeleteAsync(It.IsAny<Guid>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AReservationWhoseInputsAreAllSpent_When_Starting_Then_ItIsDeletedAndNotRestored()
+    {
+        // Arrange: reservation A's only input was spent in a processed block and never confirmed or released (the
+        // caller crashed); reservation B still has one of its two inputs in the wallet
+        var reservationA = Guid.NewGuid();
+        var reservationB = Guid.NewGuid();
+        var spentTxId = new TxId(Enumerable.Repeat((byte)7, 32).ToArray());
+        var unspentTxId = new TxId(Enumerable.Repeat((byte)8, 32).ToArray());
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                             .ReturnsAsync([new UtxoModel(unspentTxId, 0, LightningMoney.Satoshis(10_000), 90, 0, false,
+                                                          AddressType.P2Wpkh)]);
+        _mockFeeInputReservationRepository.Setup(x => x.GetReservedOutpointsAsync())
+                                          .ReturnsAsync([
+                                               (spentTxId, 0u, reservationA),
+                                               (spentTxId, 1u, reservationB),
+                                               (unspentTxId, 0u, reservationB)
+                                           ]);
+        _mockFeeInputReservationRepository.Setup(x => x.DeleteAsync(reservationA))
+                                          .Callback(() => _steps.Add("delete reservation"))
+                                          .ReturnsAsync(true);
+        var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), mockUtxoMemoryRepository.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert: A is deleted in the startup save, B is kept and restored
+        _mockFeeInputReservationRepository.Verify(x => x.DeleteAsync(reservationA), Times.Once);
+        _mockFeeInputReservationRepository.Verify(x => x.DeleteAsync(reservationB), Times.Never);
+        Assert.True(_steps.IndexOf("delete reservation") < _steps.IndexOf("save"));
+        mockUtxoMemoryRepository.Verify(
+            x => x.LoadFeeReservations(
+                It.Is<IEnumerable<(TxId TxId, uint Index, Guid ReservationId)>>(
+                    r => r.Count() == 2 && r.All(e => e.ReservationId == reservationB))),
             Times.Once);
     }
 

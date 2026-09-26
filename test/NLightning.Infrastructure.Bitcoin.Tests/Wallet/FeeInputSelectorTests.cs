@@ -13,6 +13,9 @@ using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Infrastructure.Bitcoin.Wallet;
@@ -30,6 +33,7 @@ public class FeeInputSelectorTests
     private readonly FakeWalletUtxoRepository _utxos = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<IFeeInputReservationDbRepository> _reservations = new();
+    private readonly Mock<IBroadcastTransactionDbRepository> _broadcasts = new();
     private readonly Mock<IBitcoinWalletService> _walletService = new();
     private readonly List<FeeInputReservation> _added = [];
     private readonly BitcoinAddress _changeAddress = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
@@ -39,6 +43,8 @@ public class FeeInputSelectorTests
     public FeeInputSelectorTests()
     {
         _unitOfWork.Setup(u => u.FeeInputReservationDbRepository).Returns(_reservations.Object);
+        _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(_broadcasts.Object);
+        _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync([]);
         _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
         _reservations.Setup(r => r.Add(It.IsAny<FeeInputReservation>(), It.IsAny<DateTimeOffset>()))
                      .Callback<FeeInputReservation, DateTimeOffset>((r, _) =>
@@ -210,7 +216,7 @@ public class FeeInputSelectorTests
     }
 
     [Fact]
-    public async Task Given_AReservation_When_Confirmed_Then_InputsSpentAndRowDeletedInOneSave()
+    public async Task Given_AReservationWhoseInputsTheChainMonitorSpent_When_Confirmed_Then_OnlyTheRowIsDeleted()
     {
         // Arrange
         var utxo = AddUtxo(90_000);
@@ -218,15 +224,70 @@ public class FeeInputSelectorTests
                                                        TestContext.Current.CancellationToken);
         _reservations.Setup(r => r.GetByIdAsync(reservation.Id)).ReturnsAsync(reservation);
         _reservations.Setup(r => r.DeleteAsync(reservation.Id)).ReturnsAsync(true);
+        _utxos.Spend(utxo); // the chain monitor processed the block that spends it
 
         // Act
-        await _selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken);
+        var confirmed = await _selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken);
 
-        // Assert
-        _unitOfWork.Verify(u => u.TrySpendUtxo(utxo.TxId, utxo.Index), Times.Once);
+        // Assert: wallet outputs are the chain monitor's to remove (no second delete of the same rows)
+        Assert.True(confirmed);
+        _unitOfWork.Verify(u => u.TrySpendUtxo(It.IsAny<TxId>(), It.IsAny<uint>()), Times.Never);
         _reservations.Verify(r => r.DeleteAsync(reservation.Id), Times.Once);
         _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Exactly(2));
         Assert.False(_utxos.TryGetFeeReservation(utxo.TxId, utxo.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_AReservationWithAnInputStillInTheWallet_When_Confirmed_Then_RefusesAndKeepsIt()
+    {
+        // Arrange: a caller that confirms too early, or the wrong reservation after an RBF that used other inputs
+        var utxo = AddUtxo(90_000);
+        var reservation = await _selector.ReserveAsync(LightningMoney.Satoshis(1_000), s_feeRate, 0, "cpfp:test",
+                                                       TestContext.Current.CancellationToken);
+        _reservations.Setup(r => r.GetByIdAsync(reservation.Id)).ReturnsAsync(reservation);
+
+        // Act
+        var confirmed = await _selector.ConfirmAsync(reservation.Id, TestContext.Current.CancellationToken);
+
+        // Assert: the coin stays in the wallet and reserved
+        Assert.False(confirmed);
+        Assert.True(_utxos.TryGetUtxo(utxo.TxId, utxo.Index, out _));
+        Assert.True(_utxos.TryGetFeeReservation(utxo.TxId, utxo.Index, out var id));
+        Assert.Equal(reservation.Id, id);
+        _unitOfWork.Verify(u => u.TrySpendUtxo(It.IsAny<TxId>(), It.IsAny<uint>()), Times.Never);
+        _reservations.Verify(r => r.DeleteAsync(It.IsAny<Guid>()), Times.Never);
+        _unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_APendingBroadcastSpendingTheLargestOutput_When_Reserving_Then_ItIsNotPicked()
+    {
+        // Arrange: after a restart our unconfirmed funding transaction's inputs carry no channel lock; only its
+        // persisted broadcast row says they are spent
+        var funded = AddUtxo(500_000, seed: 1);
+        var free = AddUtxo(50_000, seed: 2);
+        _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync([CreateBroadcastSpending(funded)]);
+
+        // Act
+        var reservation = await _selector.ReserveAsync(LightningMoney.Satoshis(1_000), s_feeRate, 500, "cpfp:test",
+                                                       TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(free.TxId, Assert.Single(reservation.Inputs).TxId);
+        Assert.False(_utxos.TryGetFeeReservation(funded.TxId, funded.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_OnlyOutputsSpentByPendingBroadcasts_When_Reserving_Then_InsufficientFunds()
+    {
+        // Arrange
+        var funded = AddUtxo(500_000);
+        _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync([CreateBroadcastSpending(funded)]);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InsufficientFundsException>(
+            () => _selector.ReserveAsync(LightningMoney.Satoshis(1_000), s_feeRate, 0, "cpfp:test",
+                                         TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -265,6 +326,15 @@ public class FeeInputSelectorTests
         var utxo = new UtxoModel(CreateTxId(seed), 0, LightningMoney.Satoshis(amountSat), 100, CreateAddress(seed));
         _utxos.Add(utxo);
         return utxo;
+    }
+
+    private static BroadcastTransactionModel CreateBroadcastSpending(UtxoModel utxo)
+    {
+        var tx = Network.RegTest.CreateTransaction();
+        tx.Inputs.Add(new TxIn(new OutPoint(new uint256((byte[])utxo.TxId), utxo.Index)));
+        tx.Outputs.Add(Money.Satoshis(utxo.Amount.Satoshi - 1_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return new BroadcastTransactionModel(new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes()),
+                                             BroadcastPurpose.Funding, null, 100);
     }
 
     private static TxId CreateTxId(byte seed) => new(Enumerable.Repeat(seed, 32).ToArray());

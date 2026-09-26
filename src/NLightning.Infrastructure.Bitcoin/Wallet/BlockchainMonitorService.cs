@@ -1571,6 +1571,23 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         // The fee input reservations (BOLT 5 plan O7-T1), before anything can select or lock wallet outputs
         var reserved = await uow.FeeInputReservationDbRepository.GetReservedOutpointsAsync();
+
+        // A reservation none of whose inputs is still in the wallet was spent in a processed block (its caller never
+        // confirmed or released it: a crash, or another spend won): its rows are deleted in the startup save. One with
+        // an input still in the wallet is kept, as the spend may still confirm.
+        var unspent = utxoSet.Select(u => (u.TxId, u.Index)).ToHashSet();
+        var ended = reserved.GroupBy(r => r.ReservationId)
+                            .Where(g => g.All(r => !unspent.Contains((r.TxId, r.Index))))
+                            .Select(g => g.Key)
+                            .ToHashSet();
+        foreach (var reservationId in ended)
+            await uow.FeeInputReservationDbRepository.DeleteAsync(reservationId);
+        if (ended.Count > 0)
+        {
+            _logger.LogInformation("Ending {Count} fee input reservation(s) whose inputs are all spent", ended.Count);
+            reserved = reserved.Where(r => !ended.Contains(r.ReservationId)).ToList();
+        }
+
         if (reserved.Count > 0)
         {
             GetUtxoMemoryRepository().LoadFeeReservations(reserved);

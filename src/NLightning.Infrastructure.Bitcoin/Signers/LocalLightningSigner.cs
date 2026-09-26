@@ -648,11 +648,20 @@ public class LocalLightningSigner : ILightningSigner
 
     /// <inheritdoc />
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction) =>
-        SignWalletTransaction(unsignedTransaction, []);
+        SignWalletTransactionCore(unsignedTransaction, null, []);
 
     /// <inheritdoc />
     public bool SignWalletTransaction(SignedTransaction unsignedTransaction,
-                                      IReadOnlyList<SpentOutput> otherSpentOutputs)
+                                      IReadOnlyList<SpentOutput> otherSpentOutputs) =>
+        SignWalletTransactionCore(unsignedTransaction, null, otherSpentOutputs);
+
+    /// <inheritdoc />
+    public bool SignWalletTransaction(SignedTransaction unsignedTransaction, Guid reservationId,
+                                      IReadOnlyList<SpentOutput> otherSpentOutputs) =>
+        SignWalletTransactionCore(unsignedTransaction, reservationId, otherSpentOutputs);
+
+    private bool SignWalletTransactionCore(SignedTransaction unsignedTransaction, Guid? expectedReservationId,
+                                           IReadOnlyList<SpentOutput> otherSpentOutputs)
     {
         ArgumentNullException.ThrowIfNull(unsignedTransaction);
         ArgumentNullException.ThrowIfNull(otherSpentOutputs);
@@ -684,10 +693,16 @@ public class LocalLightningSigner : ILightningSigner
                 throw new SignerException(
                     $"Wallet input {i} ({prevOut}) is locked to the funding of channel {channelId}", channelId,
                     "Signing error");
-            if (!_utxoMemoryRepository.TryGetFeeReservation(txId, prevOut.N, out _))
-                throw new SignerException($"Wallet input {i} ({prevOut}) is not reserved for this spend");
+            if (!_utxoMemoryRepository.TryGetFeeReservation(txId, prevOut.N, out var reservationId))
+                throw new SignerException($"Wallet input {i} ({prevOut}) is not reserved for a fee spend");
+            if (expectedReservationId is { } expected && reservationId != expected)
+                throw new SignerException(
+                    $"Wallet input {i} ({prevOut}) belongs to fee reservation {reservationId}, not {expected}");
             if (utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
                 throw new SignerException($"Wallet input {i} ({prevOut}) has unsupported type {utxo.AddressType}");
+            if (utxo.WalletAddress is null)
+                throw new SignerException(
+                    $"Wallet input {i} ({prevOut}) has no wallet address to check its derived key against");
 
             walletUtxos[i] = utxo;
             hasWalletInput = true;
@@ -711,6 +726,12 @@ public class LocalLightningSigner : ILightningSigner
                 if (walletUtxos[i] is { } utxo)
                 {
                     prevOuts[i] = DeriveWalletPrevOut(utxo, out signingKeys[i], out taprootKeyPairs[i]);
+
+                    // The derived key must be the one of the output's recorded address: a wrong address index or
+                    // change flag would sign, and self-verify, against a script the output does not have
+                    if (prevOuts[i]!.ScriptPubKey != GetWalletAddressScript(utxo, i))
+                        throw new SignerException($"Wallet input {i} ({tx.Inputs[i].PrevOut}): the key derived from "
+                                                + "its address index does not match its address");
                     continue;
                 }
 
@@ -1443,6 +1464,19 @@ public class LocalLightningSigner : ILightningSigner
             throw new SignerException($"HTLC signature {index} is not low S", channelId, "Signature is malleable");
 
         return ecdsaSignature;
+    }
+
+    /// <summary>The scriptPubKey of a wallet UTXO's recorded address.</summary>
+    private Script GetWalletAddressScript(UtxoModel utxo, int inputIndex)
+    {
+        try
+        {
+            return BitcoinAddress.Create(utxo.WalletAddress!.Address, _network).ScriptPubKey;
+        }
+        catch (FormatException e)
+        {
+            throw new SignerException($"Wallet input {inputIndex} has an address of another network", e);
+        }
     }
 
     /// <summary>
