@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Payments.Switch;
 
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
+using Application.Onchain;
 using Application.Payments.FinalHop;
 using Application.Payments.Onion;
 using Application.Payments.Policy;
@@ -234,6 +235,33 @@ public class OnchainEventsTests
                                                 It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task Given_ConfiguredReasonableDepth_When_OfferedCircuitOnAClosedChannelReplayed_Then_ThatDepthApplies()
+    {
+        // Arrange (NL-320 review): Node:Onchain:ReasonableDepth = 10, as the resolvers use it; cltv_expiry is 600
+        var status = ForwardCircuitStatus.Offered;
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id)).ReturnsAsync(() => Circuit(status));
+        _circuits.Setup(r => r.UpdateAsync(It.IsAny<ForwardCircuitModel>()))
+                 .Callback((ForwardCircuitModel c) => status = c.Status)
+                 .Returns(Task.CompletedTask);
+        var closed = new NormalOperationTestContext(state: ChannelState.Closed).Channel;
+        _context.ChannelDbRepository.Setup(r => r.GetByIdAsync(s_downstreamChannelId)).ReturnsAsync(closed);
+        var onchainOptions = new OnchainOptions { ReasonableDepth = 10 };
+
+        // Act: 606 (the default depth) and 609 wait
+        await CreateSwitch(606, onchainOptions).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                                            TestContext.Current.CancellationToken);
+        await CreateSwitch(609, onchainOptions).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                                            TestContext.Current.CancellationToken);
+        Assert.Empty(_createdFailures);
+        await CreateSwitch(610, onchainOptions).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FailureCode.PermanentChannelFailure, Assert.Single(_createdFailures).Code);
+        Assert.Equal(ForwardCircuitStatus.Failed, status);
+    }
+
     [Theory]
     [InlineData(ChannelState.OnchainResolving)]
     [InlineData(ChannelState.Failed)]
@@ -255,7 +283,7 @@ public class OnchainEventsTests
                            Times.Never);
     }
 
-    private HtlcSwitch CreateSwitch(uint? height = null)
+    private HtlcSwitch CreateSwitch(uint? height = null, OnchainOptions? onchainOptions = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -269,7 +297,8 @@ public class OnchainEventsTests
                               _failureOnions.Object, new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance),
                               new HtlcForwardingPolicy(options), NullLogger<HtlcSwitch>.Instance, onionProcessor,
                               new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>(),
-                              blockchainMonitor: height is { } tip ? Monitor(tip) : null);
+                              blockchainMonitor: height is { } tip ? Monitor(tip) : null,
+                              onchainOptions: onchainOptions is null ? null : Options.Create(onchainOptions));
     }
 
     private static IBlockchainMonitor Monitor(uint height)

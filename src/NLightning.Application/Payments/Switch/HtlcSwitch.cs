@@ -32,6 +32,7 @@ using Domain.Protocol.Onion.Models;
 using FinalHop;
 using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Onchain;
 using Onion;
 
 /// <summary>
@@ -117,6 +118,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private readonly IForwardingPolicy _forwardingPolicy;
     private readonly IReadOnlyList<ILocalPaymentHtlcHandler> _localPaymentHandlers;
     private readonly ILogger<HtlcSwitch> _logger;
+    private readonly uint _reasonableDepth;
     private readonly IncomingOnionProcessor _onionProcessor;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -147,7 +149,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                       IChannelUpdateService? channelUpdateService = null,
                       IEnumerable<ILocalPaymentHtlcHandler>? localPaymentHandlers = null,
                       IOptions<NodeOptions>? nodeOptions = null, IOptions<HtlcSwitchOptions>? switchOptions = null,
-                      IAttributionDataService? attributionDataService = null)
+                      IAttributionDataService? attributionDataService = null,
+                      IOptions<OnchainOptions>? onchainOptions = null)
     {
         _attributionDataService = attributionDataService;
         _blockchainMonitor = blockchainMonitor;
@@ -169,6 +172,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                               != FeatureSupport.No;
         var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
         _mppTimeout = mppTimeout > TimeSpan.Zero ? mppTimeout : HtlcSwitchOptions.DefaultMppTimeout;
+        _reasonableDepth = onchainOptions?.Value.ReasonableDepth ?? OutputResolutionFacts.DefaultReasonableDepth;
     }
 
     /// <summary>Waits until no <c>mpp_timeout</c> round runs in the background (tests).</summary>
@@ -1045,7 +1049,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                     }
 
                     if (!resolved && closedOutgoing && CurrentHeight is var height and > 0
-                     && height >= (ulong)circuit.OutgoingCltvExpiry + OutputResolutionFacts.DefaultReasonableDepth)
+                     && height >= (ulong)circuit.OutgoingCltvExpiry + _reasonableDepth)
                     {
                         // NL-320: the outgoing channel closed on chain and its record shows no preimage, and the
                         // outgoing HTLC expired reasonably deep ago (its resolver's event was lost, or it closed before
@@ -1109,20 +1113,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return (false, null);
 
         using var scope = _serviceScopeFactory.CreateScope();
-        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
-        if (channel is not { State: ChannelState.Closed })
-            return (false, null);
-
-        if (channel.Commitments is not { } commitments)
-            return (true, null);
-
-        var key = new HtlcKey(HtlcDirection.Outgoing, htlcId);
-        if (commitments.GetHtlc(key.Direction, key.Id) is { } live)
-            return (true, live);
-
-        var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channelId, commitments.Params);
-        return (true, persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == key));
+        return await ClosedChannelHtlcs.FindAsync(scope.ServiceProvider.GetRequiredService<IUnitOfWork>(), channelId,
+                                                  new HtlcKey(HtlcDirection.Outgoing, htlcId));
     }
 
     /// <summary>The channel HTLC that carries the forward's origin, when its add was persisted.</summary>

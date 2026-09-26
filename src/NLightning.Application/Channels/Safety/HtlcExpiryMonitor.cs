@@ -22,6 +22,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain;
 using Onchain.Resolvers;
 using Payments.Onion;
 
@@ -44,7 +45,8 @@ using Payments.Onion;
 /// that carries its origin (its <see cref="HtlcRecord.KnownPreimage"/>) and, for a final hop, its own record and our
 /// invoice (<see cref="FinalHopClaims.GetAcceptedPreimageAsync"/>); it is looked up
 /// only for HTLCs whose deadline is near. An HTLC continued downstream is never failed upstream here (the outgoing
-/// HTLC's own deadline protects it). Rounds never overlap; blocks that arrive during a round are coalesced into one
+/// HTLC's own deadline protects it), unless every outgoing HTLC of it is on a channel closed on chain whose stored
+/// record has no preimage (NL-320: failed back at the fail-back deadline). Rounds never overlap; blocks that arrive during a round are coalesced into one
 /// more round at the latest height.</para>
 /// <para>A channel failed by this monitor is not failed again in the same process unless its publish failed (then
 /// every block retries). A refused fail-back (peer away, not reestablished) is retried on the next block.</para>
@@ -335,13 +337,32 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
         if (circuit is { OutgoingChannelId: { } outChannel, OutgoingHtlcId: { } outId })
             outgoingKeys.Add((outChannel, new HtlcKey(HtlcDirection.Outgoing, outId)));
 
+        var closedWithoutPreimage = 0;
         foreach (var (outgoingChannelId, outgoingKey) in outgoingKeys)
         {
-            if (_channelMemoryRepository.TryGetChannel(outgoingChannelId, out var outgoingChannel)
-             && outgoingChannel.Commitments?.GetHtlc(outgoingKey.Direction, outgoingKey.Id) is
-             { KnownPreimage: not null })
+            if (_channelMemoryRepository.TryGetChannel(outgoingChannelId, out var outgoingChannel))
+            {
+                if (outgoingChannel.Commitments?.GetHtlc(outgoingKey.Direction, outgoingKey.Id) is
+                    { KnownPreimage: not null })
+                    return IncomingHtlcResolution.PreimageKnown;
+                continue;
+            }
+
+            // NL-320: an outgoing channel that is no longer loaded because it closed on chain resolves nothing any
+            // more; its stored record tells whether the resolvers found the preimage
+            var (closed, record) = await ClosedChannelHtlcs.FindAsync(unitOfWork, outgoingChannelId, outgoingKey);
+            if (record is { KnownPreimage: not null })
                 return IncomingHtlcResolution.PreimageKnown;
+            if (closed)
+                closedWithoutPreimage++;
         }
+
+        // Every outgoing HTLC of the forward sits on a channel closed on chain without a preimage (the switch fails
+        // such a forward at its replay, NL-320, but a link that stays up never replays it): nothing downstream can
+        // resolve it, so the fail-back deadline applies instead of waiting for the downstream forever
+        if (circuit is not { Status: ForwardCircuitStatus.Pending } && outgoingKeys.Count > 0
+         && closedWithoutPreimage == outgoingKeys.Count)
+            return IncomingHtlcResolution.Unresolved;
 
         // A forward in progress (Pending/Offered circuit, or an outgoing HTLC with its origin): the downstream decides
         if (circuit is not null || outgoingKeys.Count > 0)
