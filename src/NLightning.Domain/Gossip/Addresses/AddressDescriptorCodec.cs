@@ -89,7 +89,8 @@ public static class AddressDescriptorCodec
     ///   (<see cref="AddressListDecodeResult.StoppedAtUnknownType"/>);</item>
     ///   <item>a known type whose bytes do not fit (<c>addrlen</c> too short) stops the parse and sets
     ///   <see cref="AddressListDecodeResult.IsMalformed"/> (the receiver SHOULD send a <c>warning</c>);</item>
-    ///   <item>port-0 descriptors, Tor v2 descriptors and a hostname that is not ASCII are dropped;</item>
+    ///   <item>port-0 descriptors, Tor v2 descriptors and a hostname that is not ASCII letters, digits, '-', '_' and '.'
+    ///   are dropped;</item>
     ///   <item>DNS descriptors after the first are dropped and
     ///   <see cref="AddressListDecodeResult.HasMultipleDns"/> is set (the announcement MUST NOT be forwarded).</item>
     /// </list>

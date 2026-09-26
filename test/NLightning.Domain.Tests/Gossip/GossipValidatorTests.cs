@@ -171,18 +171,65 @@ public class GossipValidatorTests
     }
 
     [Fact]
-    public void Given_DifferentAnnouncementForSameFunding_When_Validating_Then_IgnoredAndMayBlacklist()
+    public void Given_DifferentBitcoinKeyForSameFunding_When_Validating_Then_ConflictWithoutBlacklist()
     {
-        // Arrange: same SCID, another bitcoin key
+        // Arrange: same SCID and nodes, another bitcoin key (BOLT 7 blacklists only on different node ids)
         var fields = Announcement() with { BitcoinKey2 = (byte[])Key(0x02, 99) };
 
         // Act
+        var unverified = GossipValidator.ValidateChannelAnnouncement(fields, s_context, KnownChannel());
+        var verified = GossipValidator.ValidateChannelAnnouncement(fields, s_context, KnownChannel(),
+                                                                   signaturesVerified: true);
+
+        // Assert
+        AssertRejected(unverified, GossipValidationOutcome.Ignore, GossipRejectReason.ConflictingAnnouncement,
+                       "B7-CA-04");
+        Assert.False(unverified.MayBlacklist);
+        Assert.Equal(GossipRejectReason.ConflictingAnnouncement, verified.Reason);
+        Assert.False(verified.MayBlacklist);
+    }
+
+    [Fact]
+    public void Given_DifferentNodeIdsForSameFunding_When_SignaturesNotVerified_Then_ConflictWithoutBlacklist()
+    {
+        // Arrange: a forged, unsigned announcement reusing a known SCID with another node id
+        var fields = Announcement() with { NodeId2 = (byte[])Key(0x03, 77) };
+
+        // Act
         var result = GossipValidator.ValidateChannelAnnouncement(fields, s_context, KnownChannel());
+
+        // Assert: stage 1 runs before the signatures, so it must never ask for a blacklist
+        AssertRejected(result, GossipValidationOutcome.Ignore, GossipRejectReason.ConflictingAnnouncement,
+                       "B7-CA-04");
+        Assert.False(result.MayBlacklist);
+    }
+
+    [Fact]
+    public void Given_DifferentNodeIdsForSameFunding_When_SignaturesVerified_Then_IgnoredAndMayBlacklist()
+    {
+        // Arrange
+        var fields = Announcement() with { NodeId2 = (byte[])Key(0x03, 77) };
+
+        // Act
+        var result = GossipValidator.ValidateChannelAnnouncement(fields, s_context, KnownChannel(),
+                                                                 signaturesVerified: true);
 
         // Assert
         AssertRejected(result, GossipValidationOutcome.Ignore, GossipRejectReason.ConflictingAnnouncement,
                        "B7-CA-04");
         Assert.True(result.MayBlacklist);
+    }
+
+    [Fact]
+    public void Given_SameAnnouncementKnown_When_SignaturesVerified_Then_NeverBlacklists()
+    {
+        // Act
+        var result = GossipValidator.ValidateChannelAnnouncement(Announcement(), s_context, KnownChannel(),
+                                                                 signaturesVerified: true);
+
+        // Assert
+        Assert.Equal(GossipRejectReason.AlreadyKnown, result.Reason);
+        Assert.False(result.MayBlacklist);
     }
 
     #endregion
@@ -384,7 +431,23 @@ public class GossipValidatorTests
     }
 
     [Fact]
-    public void Given_SameTimestampDifferentFields_When_Validating_Then_IgnoredAndMayBlacklist()
+    public void Given_SameTimestampDifferentFields_When_SignatureVerified_Then_IgnoredAndMayBlacklist()
+    {
+        // Arrange
+        var stored = KnownChannel().WithPolicy(GraphPolicy.FromChannelUpdate(Update()));
+
+        // Act
+        var result = GossipValidator.ValidateChannelUpdate(Update(feeBase: 2), s_context, stored,
+                                                           signaturesVerified: true);
+
+        // Assert
+        AssertRejected(result, GossipValidationOutcome.Ignore, GossipRejectReason.ConflictingSameTimestamp,
+                       "B7-CU-02");
+        Assert.True(result.MayBlacklist);
+    }
+
+    [Fact]
+    public void Given_SameTimestampDifferentFields_When_SignatureNotVerified_Then_IgnoredWithoutBlacklist()
     {
         // Arrange
         var stored = KnownChannel().WithPolicy(GraphPolicy.FromChannelUpdate(Update()));
@@ -395,7 +458,34 @@ public class GossipValidatorTests
         // Assert
         AssertRejected(result, GossipValidationOutcome.Ignore, GossipRejectReason.ConflictingSameTimestamp,
                        "B7-CU-02");
-        Assert.True(result.MayBlacklist);
+        Assert.False(result.MayBlacklist);
+    }
+
+    [Fact]
+    public void Given_SameTimestampDifferentTrailingData_When_Validating_Then_Conflict()
+    {
+        // Arrange: the stored policy came from an update without extra data
+        var stored = KnownChannel().WithPolicy(GraphPolicy.FromChannelUpdate(Update()));
+        var withExtra = Update(extraData: [0x01, 0x02]);
+
+        // Act
+        var result = GossipValidator.ValidateChannelUpdate(withExtra, s_context, stored);
+
+        // Assert
+        Assert.Equal(GossipRejectReason.ConflictingSameTimestamp, result.Reason);
+    }
+
+    [Fact]
+    public void Given_SameTimestampSameTrailingData_When_Validating_Then_Duplicate()
+    {
+        // Arrange
+        var stored = KnownChannel().WithPolicy(GraphPolicy.FromChannelUpdate(Update(extraData: [0x01, 0x02])));
+
+        // Act
+        var result = GossipValidator.ValidateChannelUpdate(Update(extraData: [0x01, 0x02]), s_context, stored);
+
+        // Assert
+        Assert.Equal(GossipRejectReason.DuplicateUpdate, result.Reason);
     }
 
     [Fact]
@@ -487,15 +577,20 @@ public class GossipValidatorTests
     {
         // Arrange: capacity 1,000,000 sat = 1,000,000,000 msat
         var result = GossipValidator.ValidateChannelUpdate(Update(htlcMax: 1_000_000_001), s_context,
-                                                           KnownChannel());
-        var atCapacity = GossipValidator.ValidateChannelUpdate(Update(htlcMax: 1_000_000_000), s_context,
+                                                           KnownChannel(), signaturesVerified: true);
+        var unverified = GossipValidator.ValidateChannelUpdate(Update(htlcMax: 1_000_000_001), s_context,
                                                                KnownChannel());
+        var atCapacity = GossipValidator.ValidateChannelUpdate(Update(htlcMax: 1_000_000_000), s_context,
+                                                               KnownChannel(), signaturesVerified: true);
 
         // Assert
         Assert.True(result.IsAccepted);
         Assert.False(result.Routable);
         Assert.True(result.MayBlacklist);
+        Assert.False(unverified.Routable);
+        Assert.False(unverified.MayBlacklist);
         Assert.True(atCapacity.Routable);
+        Assert.False(atCapacity.MayBlacklist);
     }
 
     [Fact]
@@ -556,7 +651,7 @@ public class GossipValidatorTests
     private static ChannelUpdatePayload Update(uint timestamp = (uint)Now - 100, byte messageFlags = 1,
                                                byte channelFlags = 0, ulong htlcMin = 1_000,
                                                ulong htlcMax = 100_000_000, uint feeBase = 1,
-                                               ChainHash? chain = null) =>
+                                               ChainHash? chain = null, byte[]? extraData = null) =>
         new(ChannelUpdatePayload.EmptySignature, chain ?? s_chain, s_scid, timestamp, messageFlags, channelFlags, 40,
-            htlcMin, feeBase, 10, htlcMax);
+            htlcMin, feeBase, 10, htlcMax, extraData ?? []);
 }

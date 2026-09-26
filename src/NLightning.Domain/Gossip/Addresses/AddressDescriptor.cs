@@ -41,7 +41,7 @@ public sealed class AddressDescriptor : IEquatable<AddressDescriptor>
     /// Creates a descriptor from its raw address bytes.
     /// </summary>
     /// <exception cref="ArgumentException">The type is not 1-5, or the bytes do not fit the type (wrong length, an
-    /// empty or non-ASCII hostname).</exception>
+    /// empty hostname or one with a character other than ASCII letters, digits, '-', '_' and '.').</exception>
     public AddressDescriptor(AddressDescriptorType type, ReadOnlySpan<byte> address, ushort port)
     {
         if (!TryValidate(type, address, out var error))
@@ -178,7 +178,8 @@ public sealed class AddressDescriptor : IEquatable<AddressDescriptor>
                 "A Tor v3 onion address is 35 bytes.",
             AddressDescriptorType.Dns when address.Length is 0 or > MaxDnsHostnameLength =>
                 "A DNS hostname is 1 to 255 bytes.",
-            AddressDescriptorType.Dns when !IsAscii(address) => "A DNS hostname must be ASCII (Punycode).",
+            AddressDescriptorType.Dns when !IsHostname(address) =>
+                "A DNS hostname must be ASCII (Punycode) letters, digits, '-', '_' and '.'.",
             AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6 or AddressDescriptorType.TorV2
                 or AddressDescriptorType.TorV3 or AddressDescriptorType.Dns => null,
             _ => $"Unknown address descriptor type {(byte)type}."
@@ -207,10 +208,16 @@ public sealed class AddressDescriptor : IEquatable<AddressDescriptor>
         return hash.ToHashCode();
     }
 
-    private static bool IsAscii(ReadOnlySpan<byte> bytes)
+    /// <summary>
+    /// BOLT 7 hostnames are ASCII (Punycode for internationalized names). Only the LDH characters (letters, digits,
+    /// '-') plus '.' and '_' are accepted, so control characters, spaces, '/' and ':' never reach a log line or a
+    /// connect string.
+    /// </summary>
+    private static bool IsHostname(ReadOnlySpan<byte> bytes)
     {
         foreach (var b in bytes)
-            if (b >= 0x80)
+            if (b is not ((>= (byte)'a' and <= (byte)'z') or (>= (byte)'A' and <= (byte)'Z')
+                          or (>= (byte)'0' and <= (byte)'9') or (byte)'-' or (byte)'.' or (byte)'_'))
                 return false;
 
         return true;

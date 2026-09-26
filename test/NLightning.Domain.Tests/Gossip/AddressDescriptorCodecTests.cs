@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 
 namespace NLightning.Domain.Tests.Gossip;
 
@@ -86,6 +87,11 @@ public class AddressDescriptorCodecTests
     [InlineData("05" + "0c" + "6578616d706c652e636f6d" + "2607")] // DNS length one too long
     [InlineData("05" + "00" + "2607")] // DNS empty hostname
     [InlineData("05" + "02" + "c3a9" + "2607")] // DNS non-ASCII
+    [InlineData("05" + "03" + "610062" + "2607")] // DNS with NUL
+    [InlineData("05" + "03" + "610a62" + "2607")] // DNS with a line feed
+    [InlineData("05" + "03" + "612062" + "2607")] // DNS with a space
+    [InlineData("05" + "03" + "612f62" + "2607")] // DNS with '/'
+    [InlineData("05" + "03" + "613a62" + "2607")] // DNS with ':'
     [InlineData("00" + "2607")] // type 0
     [InlineData("06" + "0102")] // unknown type
     [InlineData("")] // empty
@@ -209,6 +215,37 @@ public class AddressDescriptorCodecTests
         // Assert
         Assert.True(result.IsMalformed);
         Assert.Single(result.Addresses);
+    }
+
+    [Fact]
+    public void Given_ControlCharacterHostname_When_DecodingList_Then_DroppedAsInvalidAndTheRestKept()
+    {
+        // Arrange: an IPv4 descriptor, then a DNS descriptor "a\r\nb"
+        var bytes = Convert.FromHexString("01" + "7f000001" + "2607" + "05" + "04" + "610d0a62" + "2607");
+
+        // Act
+        var result = AddressDescriptorCodec.DecodeList(bytes);
+
+        // Assert
+        Assert.False(result.IsMalformed);
+        Assert.Equal(1, result.IgnoredInvalid);
+        Assert.Single(result.Addresses);
+        Assert.Equal(AddressDescriptorType.IPv4, result.Addresses[0].Type);
+    }
+
+    [Theory]
+    [InlineData("node-1.example.org")]
+    [InlineData("_service.example")]
+    [InlineData("XN--BCHER-KVA.EXAMPLE")]
+    public void Given_LdhHostname_When_Validating_Then_Accepted(string hostname)
+    {
+        // Act
+        var valid = AddressDescriptor.TryValidate(AddressDescriptorType.Dns, Encoding.ASCII.GetBytes(hostname),
+                                                  out var error);
+
+        // Assert
+        Assert.True(valid);
+        Assert.Null(error);
     }
 
     [Fact]

@@ -84,7 +84,9 @@ public enum GossipRejectReason
 /// </param>
 /// <param name="RequirementId">The plan requirement id (<c>B7-…</c>) the decision implements.</param>
 /// <param name="CloseConnection">With <see cref="GossipValidationOutcome.Warn"/>: close the connection too.</param>
-/// <param name="MayBlacklist">BOLT 7 allows blacklisting the origin node(s) for this.</param>
+/// <param name="MayBlacklist">BOLT 7 allows blacklisting the origin node(s) for this. Set only when the caller
+/// told the validator the message's signatures were verified: never act on a stage-1 result of an unverified
+/// message.</param>
 /// <param name="Forwardable">An accepted message may be queued for rebroadcast.</param>
 /// <param name="Routable">An accepted channel or update may be used for routing.</param>
 public sealed record GossipValidationResult(

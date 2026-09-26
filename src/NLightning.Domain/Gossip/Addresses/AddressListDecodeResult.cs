@@ -10,7 +10,8 @@ namespace NLightning.Domain.Gossip.Addresses;
 /// NOT be forwarded.</param>
 /// <param name="IgnoredPortZero">Descriptors dropped for port 0.</param>
 /// <param name="IgnoredTorV2">Tor v2 descriptors dropped.</param>
-/// <param name="IgnoredInvalid">Descriptors dropped for invalid content (a non-ASCII or empty hostname).</param>
+/// <param name="IgnoredInvalid">Descriptors dropped for invalid content (an empty hostname, or one with a character
+/// other than ASCII letters, digits, '-', '_' and '.').</param>
 public sealed record AddressListDecodeResult(
     IReadOnlyList<AddressDescriptor> Addresses,
     bool IsMalformed,
