@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq.Protected;
@@ -130,12 +131,13 @@ public class FeeServiceSourceTests
     }
 
     [Fact]
-    public async Task Given_BitcoindWithoutEstimate_When_Refreshed_Then_NoRateIsCached()
+    public async Task Given_BitcoindWithoutEstimate_When_Refreshed_Then_TheFallbackRateIsReturnedNotZero()
     {
-        // Arrange
+        // Arrange: estimatesmartfee has no data on a young signet; 0 sat/kw went into open_channel before the fix
         var service = new FeeService(new FeeEstimationOptions
         {
             Source = FeeEstimationOptions.SourceBitcoind,
+            FallbackFeeRatePerKw = 3_000,
             CacheFile = "fee-source-test.bin"
         }, new HttpClient(new Mock<HttpMessageHandler>().Object),
                                      NullLogger<FeeService>.Instance,
@@ -145,7 +147,96 @@ public class FeeServiceSourceTests
         var feeRate = await service.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.True(feeRate.IsZero);
+        Assert.Equal(3_000, feeRate.Satoshi);
+        Assert.Equal(3_000, service.GetCachedFeeRatePerKw().Satoshi);
+    }
+
+    [Fact]
+    public void Given_ANeverStartedService_When_ReadingTheCachedRate_Then_ItIsTheDefaultFallback()
+    {
+        // Arrange
+        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" },
+                                    new Mock<HttpMessageHandler>(MockBehavior.Strict).Object);
+
+        // Act
+        var feeRate = service.GetCachedFeeRatePerKw();
+
+        // Assert
+        Assert.Equal(2_500, feeRate.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_AnHttpTimeout_When_Refreshed_Then_ItIsLoggedAndTheFallbackIsUsed()
+    {
+        // Arrange: HttpClient reports its own timeout as a TaskCanceledException while our token is not cancelled
+        var handler = new Mock<HttpMessageHandler>(MockBehavior.Strict);
+        handler.Protected()
+               .Setup<Task<HttpResponseMessage>>("SendAsync", ItExpr.IsAny<HttpRequestMessage>(),
+                                                 ItExpr.IsAny<CancellationToken>())
+               .ThrowsAsync(new TaskCanceledException("The request was canceled due to the configured timeout."));
+        var logger = new Mock<ILogger<FeeService>>();
+        logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        var service = new FeeService(new OptionsWrapper<FeeEstimationOptions>(new FeeEstimationOptions
+        {
+            FallbackFeeRatePerKw = 1_000,
+            CacheFile = "fee-source-test.bin"
+        }), new HttpClient(handler.Object), logger.Object);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1_000, feeRate.Satoshi);
+        logger.Verify(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(),
+                                 It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains("timed out")),
+                                 It.IsAny<TaskCanceledException>(),
+                                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AnEarlierEstimate_When_ALaterRefreshFails_Then_TheEstimateIsKept()
+    {
+        // Arrange
+        var answers = new Queue<decimal?>([12m, null]);
+        var service = new FeeService(new FeeEstimationOptions
+        {
+            Source = FeeEstimationOptions.SourceBitcoind,
+            FallbackFeeRatePerKw = 253,
+            CacheFile = "fee-source-test.bin"
+        }, new HttpClient(new Mock<HttpMessageHandler>().Object),
+                                     NullLogger<FeeService>.Instance,
+                                     (_, _, _) => Task.FromResult(answers.Dequeue()));
+        await service.RefreshFeeRateAsync(TestContext.Current.CancellationToken);
+
+        // Act
+        await service.RefreshFeeRateAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(3_000, service.GetCachedFeeRatePerKw().Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_OurTokenIsCancelled_When_Refreshed_Then_NothingIsLogged()
+    {
+        // Arrange
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var logger = new Mock<ILogger<FeeService>>();
+        logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        var service = new FeeService(new FeeEstimationOptions
+        {
+            Source = FeeEstimationOptions.SourceBitcoind,
+            CacheFile = "fee-source-test.bin"
+        }, new HttpClient(new Mock<HttpMessageHandler>().Object), logger.Object,
+                                     (_, _, ct) => Task.FromCanceled<decimal?>(ct));
+
+        // Act
+        await service.RefreshFeeRateAsync(cts.Token);
+
+        // Assert
+        logger.Verify(l => l.Log(It.IsIn(LogLevel.Warning, LogLevel.Error), It.IsAny<EventId>(),
+                                 It.IsAny<It.IsAnyType>(), It.IsAny<Exception?>(),
+                                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
     }
 
     [Fact]
@@ -171,18 +262,26 @@ public class FeeServiceSourceTests
         }), new HttpClient(new Mock<HttpMessageHandler>().Object),
                                      NullLogger<FeeService>.Instance, bitcoinOptions, nodeOptions);
 
-        // Assert
-        Assert.True(service.GetCachedFeeRatePerKw().IsZero);
+        // Assert: no estimate yet, so the fallback
+        Assert.Equal(2_500, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
     [Theory]
-    [InlineData("Esplora", "sat/vB", 2_500u)]
-    [InlineData("Http", "sat/B", 2_500u)]
-    [InlineData("Fixed", "sat/vB", 100u)]
-    public void Given_InvalidOptions_When_Constructed_Then_ItFailsFast(string source, string unit, uint fixedRate)
+    [InlineData("Esplora", "sat/vB", 2_500u, 2_500u)]
+    [InlineData("Http", "sat/B", 2_500u, 2_500u)]
+    [InlineData("Fixed", "sat/vB", 100u, 2_500u)]
+    [InlineData("Http", "sat/vB", 2_500u, 252u)]
+    public void Given_InvalidOptions_When_Constructed_Then_ItFailsFast(string source, string unit, uint fixedRate,
+                                                                       uint fallbackRate)
     {
         // Arrange
-        var options = new FeeEstimationOptions { Source = source, RateUnit = unit, FixedFeeRatePerKw = fixedRate };
+        var options = new FeeEstimationOptions
+        {
+            Source = source,
+            RateUnit = unit,
+            FixedFeeRatePerKw = fixedRate,
+            FallbackFeeRatePerKw = fallbackRate
+        };
 
         // Act / Assert
         Assert.NotEmpty(options.GetValidationErrors());
@@ -204,8 +303,8 @@ public class FeeServiceSourceTests
         var copy = service.GetCachedFeeRatePerKw();
         copy.Satoshi = 99_999;
 
-        // Assert
-        Assert.True(service.GetCachedFeeRatePerKw().IsZero);
+        // Assert: still the fallback (never refreshed), untouched by the change
+        Assert.Equal(2_500, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
     private static FeeService CreateService(FeeEstimationOptions options, HttpMessageHandler handler)
