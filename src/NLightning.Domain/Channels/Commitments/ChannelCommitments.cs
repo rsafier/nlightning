@@ -647,7 +647,10 @@ public sealed record ChannelCommitments
             RemoteNextCommit = null,
             RemoteNextPerCommitmentPoint = nextPerCommitmentPoint
         };
-        return Result(next, [], settled);
+        var result = Result(next, [], settled);
+
+        // The commitment the peer just revoked goes to the revocation log (BOLT 5 plan O1-T1)
+        return result with { Transition = result.Transition with { RevokedRemoteCommit = RemoteCommit } };
     }
 
     /// <summary>

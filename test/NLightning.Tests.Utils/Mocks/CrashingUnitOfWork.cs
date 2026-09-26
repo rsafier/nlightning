@@ -48,6 +48,8 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IBroadcastTransactionDbRepository BroadcastTransactionDbRepository =>
         inner.BroadcastTransactionDbRepository;
     public IBlockHeaderDbRepository BlockHeaderDbRepository => inner.BlockHeaderDbRepository;
+    public IRevokedCommitmentDbRepository RevokedCommitmentDbRepository => inner.RevokedCommitmentDbRepository;
+    public IOnchainResolutionDbRepository OnchainResolutionDbRepository => inner.OnchainResolutionDbRepository;
     public IChannelConfigDbRepository ChannelConfigDbRepository => inner.ChannelConfigDbRepository;
     public IChannelDbRepository ChannelDbRepository => inner.ChannelDbRepository;
     public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;

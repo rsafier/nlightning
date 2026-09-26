@@ -5,10 +5,12 @@ namespace NLightning.Infrastructure.Persistence.Contexts;
 using Entities.Bitcoin;
 using Entities.Channel;
 using Entities.Node;
+using Entities.Onchain;
 using Entities.Payment;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
 using EntityConfiguration.Node;
+using EntityConfiguration.Onchain;
 using EntityConfiguration.Payment;
 using Enums;
 using Providers;
@@ -41,6 +43,11 @@ public class NLightningDbContext : DbContext
     public DbSet<RemoteShachainEntity> RemoteShachains { get; set; }
     public DbSet<CommitmentEntity> Commitments { get; set; }
     public DbSet<FeeUpdateEntity> FeeUpdates { get; set; }
+    public DbSet<RevokedCommitmentEntity> RevokedCommitments { get; set; }
+
+    // On-chain resolution DbSets
+    public DbSet<ChannelCloseEntity> ChannelCloses { get; set; }
+    public DbSet<OutputResolutionEntity> OutputResolutions { get; set; }
 
     // Node DbSets
     public DbSet<PeerEntity> Peers { get; set; }
@@ -73,6 +80,11 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureRemoteShachainEntity(_databaseType);
         modelBuilder.ConfigureCommitmentEntity(_databaseType);
         modelBuilder.ConfigureFeeUpdateEntity(_databaseType);
+        modelBuilder.ConfigureRevokedCommitmentEntity(_databaseType);
+
+        // On-chain resolution entities
+        modelBuilder.ConfigureChannelCloseEntity(_databaseType);
+        modelBuilder.ConfigureOutputResolutionEntity(_databaseType);
 
         // Node entities
         modelBuilder.ConfigurePeerEntity(_databaseType);

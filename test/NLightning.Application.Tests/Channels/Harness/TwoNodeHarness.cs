@@ -672,6 +672,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private ChannelStateExtras? _stagedExtras;
     private readonly List<HtlcRecord> _stagedSettled = [];
     private readonly List<HtlcRecord> _settled = [];
+    private readonly List<RemoteCommit> _stagedRevoked = [];
     private int _saveAttempts;
 
     private readonly Dictionary<HtlcKey, Secret> _onionSecrets = [];
@@ -699,13 +700,29 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     public IReadOnlyList<ShachainEntry> CommittedShachain { get; private set; } = [];
     public int Saves { get; private set; }
 
+    /// <summary>
+    /// Every peer commitment a saved transition reported as revoked (<see cref="ChannelTransition.RevokedRemoteCommit"/>),
+    /// in save order, including the ones without HTLCs (BOLT 5 plan O1-T1).
+    /// </summary>
+    public List<RemoteCommit> CommittedRevocations { get; private set; } = [];
+
+    /// <summary>
+    /// The saved revocation log, by number: what <c>ChannelStateDbRepository.ApplyAsync</c> writes (the revoked peer
+    /// commitments with at least one HTLC), committed in the same save as the revoke_and_ack and the shachain.
+    /// </summary>
+    public SortedDictionary<ulong, RemoteCommit> CommittedRevocationLog { get; private set; } = [];
+
     public void Seed(ChannelCommitments commitments) => Committed = commitments;
 
     /// <summary>A copy of what is saved now.</summary>
     public sealed record Backup(ChannelCommitments? Committed, ReadOnlyMemory<byte>? SentCommitDiff,
-                                LastSentCommitmentMessage LastSent, IReadOnlyList<ShachainEntry> Shachain);
+                                LastSentCommitmentMessage LastSent, IReadOnlyList<ShachainEntry> Shachain,
+                                IReadOnlyList<RemoteCommit> Revocations,
+                                IReadOnlyDictionary<ulong, RemoteCommit> RevocationLog);
 
-    public Backup TakeBackup() => new(Committed, CommittedSentCommitDiff, CommittedLastSent, CommittedShachain);
+    public Backup TakeBackup() => new(Committed, CommittedSentCommitDiff, CommittedLastSent, CommittedShachain,
+                                      CommittedRevocations.ToList(), new SortedDictionary<ulong, RemoteCommit>(
+                                          CommittedRevocationLog));
 
     /// <summary>Replaces everything saved with <paramref name="backup"/> (the settled archive is dropped).</summary>
     public void RestoreBackup(Backup backup)
@@ -714,6 +731,9 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         CommittedSentCommitDiff = backup.SentCommitDiff;
         CommittedLastSent = backup.LastSent;
         CommittedShachain = backup.Shachain;
+        CommittedRevocations = backup.Revocations.ToList();
+        CommittedRevocationLog = new SortedDictionary<ulong, RemoteCommit>(
+            backup.RevocationLog.ToDictionary(e => e.Key, e => e.Value));
         _settled.Clear();
     }
 
@@ -751,6 +771,13 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _settled.RemoveAll(h => _stagedPrunes.Contains(h.Key));
         if (_stagedShachain is not null)
             CommittedShachain = _stagedShachain;
+        foreach (var revoked in _stagedRevoked)
+        {
+            CommittedRevocations.Add(revoked);
+            if (revoked.Spec.Htlcs.Count > 0)
+                CommittedRevocationLog[revoked.Number] = revoked;
+        }
+
         Pruned.AddRange(_stagedPrunes);
         DiscardStaged();
         Saves++;
@@ -763,6 +790,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _stagedExtras = null;
         _stagedSettled.Clear();
         _stagedPrunes.Clear();
+        _stagedRevoked.Clear();
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)
@@ -776,6 +804,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _staged = next;
         _stagedExtras = extras;
         _stagedSettled.AddRange(transition.SettledHtlcs);
+        if (transition.RevokedRemoteCommit is { } revoked)
+            _stagedRevoked.Add(revoked);
         if (extras?.RemoteShachain is { } shachain)
             _stagedShachain = shachain;
         return Task.CompletedTask;

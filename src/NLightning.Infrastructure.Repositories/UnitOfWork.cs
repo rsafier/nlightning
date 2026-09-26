@@ -39,6 +39,8 @@ public class UnitOfWork : IUnitOfWork
     private WatchedOutpointDbRepository? _watchedOutpointDbRepository;
     private BroadcastTransactionDbRepository? _broadcastTransactionDbRepository;
     private BlockHeaderDbRepository? _blockHeaderDbRepository;
+    private RevokedCommitmentDbRepository? _revokedCommitmentDbRepository;
+    private OnchainResolutionDbRepository? _onchainResolutionDbRepository;
 
     // Channel repositories
     private ChannelConfigDbRepository? _channelConfigDbRepository;
@@ -74,6 +76,12 @@ public class UnitOfWork : IUnitOfWork
 
     public IBlockHeaderDbRepository BlockHeaderDbRepository =>
         _blockHeaderDbRepository ??= new BlockHeaderDbRepository(_context);
+
+    public IRevokedCommitmentDbRepository RevokedCommitmentDbRepository =>
+        _revokedCommitmentDbRepository ??= new RevokedCommitmentDbRepository(_context);
+
+    public IOnchainResolutionDbRepository OnchainResolutionDbRepository =>
+        _onchainResolutionDbRepository ??= new OnchainResolutionDbRepository(_context);
 
     public IChannelConfigDbRepository ChannelConfigDbRepository =>
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);

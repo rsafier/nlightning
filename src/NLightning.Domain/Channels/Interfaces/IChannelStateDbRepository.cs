@@ -36,7 +36,8 @@ public interface IChannelStateDbRepository
     /// Stages what <paramref name="transition"/> says changed, taking the values from <paramref name="next"/>:
     /// upserted and settled HTLCs are upserted (settled ones keep their final state as an archive), dropped HTLCs are
     /// deleted, the fee updates are synchronized when they changed, and the commitments when they changed. The channel
-    /// scalars and <paramref name="extras"/> are always written.
+    /// scalars and <paramref name="extras"/> are always written. A <see cref="ChannelTransition.RevokedRemoteCommit"/>
+    /// with at least one HTLC is added to the revocation log in the same save (BOLT 5 plan O1-T1).
     /// </summary>
     /// <exception cref="InvalidOperationException">The channel does not exist.</exception>
     Task ApplyAsync(ChannelCommitments next, ChannelTransition transition, ChannelStateExtras? extras = null);

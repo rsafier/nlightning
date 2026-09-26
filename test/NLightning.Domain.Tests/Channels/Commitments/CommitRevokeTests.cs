@@ -261,4 +261,38 @@ public class CommitRevokeTests
         Assert.True(result.Transition.RemoteCommitChanged);
         Assert.True(result.Transition.ScalarsChanged);
     }
+
+    [Fact]
+    public void Given_ValidRevoke_When_Received_Then_TheRevokedRemoteCommitIsReportedForTheRevocationLog()
+    {
+        // Arrange (BOLT 5 plan O1-T1: the RAA transition carries the commitment the peer revoked)
+        var c = Create(600_000, 400_000).Add(10_000 * Sat).Next;
+        c = c.SendCommit(SignerFor(c)).Next;
+        var revoked = c.RemoteCommit;
+
+        // Act
+        var result = c.ReceiveRevoke(SecretFor(BobTag, 0), Point(BobTag, 2), new FakeRevocationVerifier());
+
+        // Assert
+        Assert.Same(revoked, result.Transition.RevokedRemoteCommit);
+        Assert.Equal(0UL, result.Transition.RevokedRemoteCommit!.Number);
+        Assert.False(result.Transition.IsEmpty);
+    }
+
+    [Fact]
+    public void Given_OperationsOtherThanReceiveRevoke_When_Applied_Then_NoRevokedRemoteCommitIsReported()
+    {
+        // Arrange
+        var c = Create(600_000, 400_000);
+
+        // Act
+        var add = c.Add(10_000 * Sat);
+        var commit = add.Next.SendCommit(SignerFor(add.Next));
+        var reverted = commit.Next.RevertUncommitted();
+
+        // Assert
+        Assert.Null(add.Transition.RevokedRemoteCommit);
+        Assert.Null(commit.Transition.RevokedRemoteCommit);
+        Assert.Null(reverted.Transition.RevokedRemoteCommit);
+    }
 }

@@ -44,7 +44,10 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         nameof(ChannelEntity.RemoteNextPerCommitmentPoint),
         nameof(ChannelEntity.SentCommitDiff),
         nameof(ChannelEntity.LastSentOrder),
-        nameof(ChannelEntity.MaxDustHtlcExposureMsat)
+        nameof(ChannelEntity.MaxDustHtlcExposureMsat),
+
+        // Set by migration AddOnchainResolution only (BOLT 5 plan O1-T3)
+        nameof(ChannelEntity.RevocationLogFromNumber)
     ];
 
     /// <summary>

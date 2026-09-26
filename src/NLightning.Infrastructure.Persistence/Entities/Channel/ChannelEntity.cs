@@ -161,6 +161,14 @@ public class ChannelEntity
     public ulong? MaxDustHtlcExposureMsat { get; set; }
 
     /// <summary>
+    /// The first revoked peer commitment number the revocation log (<see cref="RevokedCommitmentEntity"/>) covers, or
+    /// null when it covers every one (channels created after migration <c>AddOnchainResolution</c>). The migration sets
+    /// it to <c>RemoteCommitmentNumber</c> for channels that already had revoked commitments, whose HTLC sets were not
+    /// kept (BOLT 5 plan §8 risk 5). Never written by <c>ChannelDbRepository.UpdateAsync</c>.
+    /// </summary>
+    public ulong? RevocationLogFromNumber { get; set; }
+
+    /// <summary>
     /// The script of the <c>shutdown</c> we sent (persisted before it is sent, re-sent on reconnection), or null
     /// (migration <c>AddShutdownState</c>, BOLT2 plan N10).
     /// </summary>

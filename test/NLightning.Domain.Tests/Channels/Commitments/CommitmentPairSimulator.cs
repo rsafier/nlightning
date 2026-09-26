@@ -637,6 +637,8 @@ internal sealed class CommitmentPairSimulator
               $"{to.Name} remote commitment went {to.State.RemoteCommit.Number} -> {result.Next.RemoteCommit.Number}");
         Check(result.Next.RemoteCommit.Number == from.State.LocalCommit.Number,
               $"{to.Name} now holds remote #{result.Next.RemoteCommit.Number}, {from.Name} is at #{from.State.LocalCommit.Number}");
+        Check(ReferenceEquals(result.Transition.RevokedRemoteCommit, to.State.RemoteCommit),
+              $"{to.Name} revoke_and_ack does not report remote #{to.State.RemoteCommit.Number} for the revocation log");
         to.RevokedByPeer = Math.Max(to.RevokedByPeer, result.Next.RemoteCommit.Number);
         Apply(to, result, $"{to.Name} <- revoke_and_ack (remote now #{result.Next.RemoteCommit.Number})");
         Stats.Revocations++;
