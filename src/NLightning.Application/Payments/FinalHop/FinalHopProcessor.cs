@@ -33,13 +33,16 @@ using Domain.Protocol.Onion.Models;
 /// list; since the HTLC-vs-onion errors carry no invoice information, reporting them first leaks nothing.</para>
 /// <para>Multi-part (<c>acceptMultiPart</c>): an accepted HTLC is one part of the payment's HTLC set
 /// (<see cref="FinalHopResult.TotalMsat"/>, <see cref="FinalHopResult.PartAmount"/>); the caller (HTLC switch) holds
-/// the parts until their <c>amt_to_forward</c> reach <c>total_msat</c>. A multi-part HTLC
-/// (<c>total_msat</c> &gt; <c>amt_to_forward</c>) for a <c>Settled</c> invoice with the right secret, whose
-/// <c>total_msat</c> is covered by the amount received, is accepted with
+/// the parts until their <c>amt_to_forward</c> reach <c>total_msat</c>. An HTLC for a <c>Settled</c> invoice with the
+/// right secret, whose <c>total_msat</c> is covered by the amount received, is accepted with
 /// <see cref="FinalHopResult.InvoiceAlreadySettled"/>: the invoice settles in the save of the set's first fulfill, so a
 /// crash or a refused fulfill can leave other parts of the same set held, and BOLT 4 then requires them to be
-/// fulfilled too. A single-part HTLC for a settled invoice is still unknown (its fulfill and the settle share one
-/// save).</para>
+/// fulfilled too ("if it fulfills any HTLCs in the HTLC set: MUST fulfill the entire HTLC set"). Nothing persisted
+/// tells a held part from a new HTLC of the same hash, so this does not depend on <c>total_msat</c> &gt;
+/// <c>amt_to_forward</c> (a part that alone covers <c>total_msat</c> can belong to the set too) and skips the checks
+/// that depend on the time of the replay (the <c>cltv_expiry</c> against the current height): the preimage is already
+/// out, and fulfilling only claims funds. BOLT 4 lets a node accept an HTLC for a hash that is already paid (MAY), so a
+/// duplicate payment with the right secret is fulfilled too.</para>
 /// <para>Stateless: <see cref="Evaluate"/> is pure; <see cref="ProcessAsync"/> only reads the invoice through the
 /// caller's repository (its unit of work). Neither mutates the invoice.</para>
 /// <para>Concurrency: the invoice check here is a read, not a check-and-mark. The caller (HTLC switch) runs it under a
@@ -142,7 +145,7 @@ public sealed class FinalHopProcessor
         {
             case InvoiceStatus.Canceled:
                 return Unknown("The invoice is canceled.");
-            case InvoiceStatus.Settled when acceptMultiPart && isMultiPart:
+            case InvoiceStatus.Settled when acceptMultiPart:
                 // Possibly a part of the set whose first fulfill settled the invoice (checked below)
                 alreadySettled = true;
                 break;
@@ -176,7 +179,8 @@ public sealed class FinalHopProcessor
                              + $"{expected.MilliSatoshi} msat.");
         }
 
-        if ((ulong)htlcCltvExpiry < (ulong)currentBlockHeight + invoice.MinFinalCltvExpiry)
+        // A part of a settled set must be fulfilled whatever the height of its replay (BOLT 4 MUST)
+        if (!alreadySettled && (ulong)htlcCltvExpiry < (ulong)currentBlockHeight + invoice.MinFinalCltvExpiry)
             return Unknown($"cltv_expiry {htlcCltvExpiry} is below height {currentBlockHeight} + "
                          + $"min_final_cltv_expiry_delta {invoice.MinFinalCltvExpiry}.");
 

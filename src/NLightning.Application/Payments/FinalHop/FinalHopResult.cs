@@ -55,8 +55,8 @@ public sealed record FinalHopResult
     public bool IsMultiPart => PartAmount is not null && TotalMsat is not null && TotalMsat != PartAmount;
 
     /// <summary>
-    /// True when the invoice is already <c>Settled</c> and this multi-part HTLC is fulfilled without touching it (a
-    /// part of the set whose first fulfill settled the invoice).
+    /// True when the invoice is already <c>Settled</c> and this HTLC is fulfilled without touching it (possibly a part
+    /// of the set whose first fulfill settled the invoice; BOLT 4 requires the whole set to be fulfilled).
     /// </summary>
     public bool InvoiceAlreadySettled { get; }
 
