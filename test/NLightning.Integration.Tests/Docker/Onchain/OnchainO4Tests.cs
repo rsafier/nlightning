@@ -1,6 +1,7 @@
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
@@ -15,6 +16,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Payments.Enums;
@@ -37,11 +39,14 @@ using Utils;
 ///   <item>(d) david force-closes with the commitment we signed while its <c>revoke_and_ack</c> is unacked on our side
 ///   (our database is put back to the moment our <c>commitment_signed</c> was saved): we classify
 ///   <c>RemoteNextCommitment</c> and resolve it with that commitment's point (B5-RMT-01).</item>
+///   <item>(e) alice pays david through us; alice force-closes while david holds the HTLC, then david settles: the
+///   upstream fulfill can no longer be sent, so we claim alice's HTLC on chain with the preimage the downstream
+///   fulfill revealed, before its <c>cltv_expiry</c> (B5-RMT-RO-01 for a forward).</item>
 /// </list>
 /// </summary>
 /// <remarks>
-/// Needs the BOLT 5 on-chain watcher (plan O2-T5) wired into the node: it classifies the funding spend and drives
-/// <c>IRemoteCommitResolver</c> (O4, ABCD W5-C). The assertions read what the resolver persists
+/// Needs the BOLT 5 on-chain watcher and resolution executor (plan O2-T5) wired into the node: it classifies the
+/// funding spend and drives the <c>IOutputResolver</c> <c>RemoteCommitResolver</c> (O4, ABCD W5-C). The assertions read what the resolver persists
 /// (<c>ChannelCloses</c>, <c>OutputResolutions</c>, <c>BroadcastTransactions</c>) and what bitcoind, our wallet and
 /// our invoices/payments show. Run with <c>scripts/run-onchain.sh</c> (own process, own fixture).
 /// </remarks>
@@ -320,13 +325,93 @@ public class OnchainO4Tests : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Proof O4 (e): alice -> us -> david; alice force-closes while david holds the HTLC, then david settles. Our
+    /// upstream fulfill is refused (the channel is on chain), so the downstream preimage is the only one left: we claim
+    /// alice's HTLC with it before its expiry.
+    /// </summary>
+    [Fact]
+    public async Task Given_ForwardFulfilledAfterUpstreamForceClose_When_Resolved_Then_UpstreamHtlcClaimedWithPreimage()
+    {
+        // Arrange: alice -> us -> david, both channels funded by us (alice gets a push so she can pay through us)
+        var ct = TestContext.Current.CancellationToken;
+        var alice = _fixture.GetLndNode("alice");
+        var david = GetDavid();
+        var upstream = await OpenUsableChannelAsync(alice, s_push, ct);
+        var downstream = await OpenUsableChannelAsync(david, null, ct);
+        var upstreamLnd = await LndTestHelpers.GetChannelByPointAsync(alice, upstream.ChannelPoint(), ct);
+        Assert.NotNull(upstreamLnd);
+        var downstreamScid = (await Node.GetChannelAsync(downstream.ChannelId, ct)).ShortChannelId;
+        Assert.NotNull(downstreamScid);
+        var routing = Node.Services.GetRequiredService<IOptions<NodeOptions>>().Value.Routing;
+        var (preimage, paymentHash) = LndTestHelpers.NewPreimage();
+        var hint = LndTestHelpers.RouteHint(LndTestHelpers.HopHint(Node.NodeIdHex, downstreamScid.Value.ToUInt64(),
+                                                                   routing.FeeBaseMsat,
+                                                                   routing.FeeProportionalMillionths,
+                                                                   routing.CltvExpiryDelta));
+        var holdInvoice = await LndTestHelpers.AddHoldInvoiceAsync(david, paymentHash, 50_000_000, [hint], ct,
+                                                                   "o4 (e) claim after downstream fulfill",
+                                                                   HoldInvoiceCltvExpiry);
+        try
+        {
+            await LndTestHelpers.ResetMissionControlAsync(alice, ct);
+            _ = LndTestHelpers.SendPaymentV2Async(
+                alice, LndTestHelpers.PinnedPayment(holdInvoice.PaymentRequest, [upstreamLnd.ChanId]), ct,
+                TimeSpan.FromMinutes(5));
+            await LndTestHelpers.WaitForInvoiceStateAsync(david, paymentHash, Invoice.Types.InvoiceState.Accepted,
+                                                          s_timeout, ct);
+            var incoming = await WaitForHtlcInBothCommitmentsAsync(upstream.ChannelId, HtlcDirection.Incoming, ct);
+            await WaitForHtlcInBothCommitmentsAsync(downstream.ChannelId, HtlcDirection.Outgoing, ct);
+            Console.WriteLine($"Incoming HTLC {incoming.Id}: cltv_expiry {incoming.CltvExpiry}");
+
+            // Act: alice force-closes; her commitment (with her HTLC to us) confirms; nothing can be claimed yet
+            var commitmentTxId = await ForceCloseAsync(alice, upstream, ct);
+            await ChainSync.MineAndWaitAsync(_fixture, 1, [alice, david], [Node], ct);
+            var close = await WaitForCloseAsync(upstream.ChannelId, ct);
+            Assert.Equal(ChannelCloseKind.RemoteCommitment, close.Kind);
+            Assert.Equal(commitmentTxId, new uint256((byte[])close.CommitmentTransactionId));
+            var row = await WaitForOutputAsync(upstream.ChannelId,
+                                               o => o.Descriptor == OutputDescriptorKind.RemoteOfferedHtlc,
+                                               "alice's HTLC output row", ct);
+            Assert.Equal(incoming.Id, row.HtlcId);
+            Assert.Null(row.ResolvingTransactionId);
+
+            // Then david settles: the downstream fulfill reaches us, the upstream fulfill cannot go out
+            await LndTestHelpers.SettleInvoiceAsync(david, preimage, ct);
+            await Poll.UntilAsync(async () =>
+            {
+                using var scope = Node.Services.CreateScope();
+                var circuit = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().ForwardCircuitDbRepository
+                                         .GetByIncomingAsync(upstream.ChannelId, incoming.Id);
+                return circuit?.Status == ForwardCircuitStatus.Fulfilled;
+            }, s_timeout, "the forward fulfilled downstream", ct);
+            await ChainSync.MineAndWaitAsync(_fixture, 1, [alice, david], [Node], ct);
+
+            // Assert: claimed with <sig> <preimage> before cltv_expiry
+            var claimed = await WaitForOutputAsync(upstream.ChannelId,
+                                                   o => o.OutputIndex == row.OutputIndex
+                                                     && o.ResolvingTransactionId is not null,
+                                                   "our preimage claim of alice's HTLC saved", ct);
+            var claim = await MineUntilConfirmedAsync(claimed.ResolvingTransactionId!.Value, [alice, david], ct);
+            var confirmedAt = (uint)await _fixture.Bitcoin.GetBlockCountAsync(ct);
+            Assert.True(confirmedAt < incoming.CltvExpiry, $"claimed at {confirmedAt}, expiry {incoming.CltvExpiry}");
+            Assert.Equal(0U, claim.LockTime.Value);
+            Assert.Equal(preimage, claim.Inputs[0].WitScript.Pushes.ElementAt(1));
+            await WaitForOutputStateAsync(upstream.ChannelId, row.OutputIndex, OutputResolutionState.Resolved, ct);
+        }
+        finally
+        {
+            await CancelHoldInvoiceQuietlyAsync(david, paymentHash);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (DockerDiagnostics.CurrentTestFailed)
         {
             foreach (var line in _node?.NodeLog.TakeLast(300) ?? [])
                 Console.WriteLine(line);
-            await DockerDiagnostics.DumpContainerLogsAsync(["david"]);
+            await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
         }
 
         if (_node is not null)

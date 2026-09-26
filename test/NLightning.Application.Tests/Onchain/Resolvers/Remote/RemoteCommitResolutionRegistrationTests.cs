@@ -7,10 +7,13 @@ namespace NLightning.Application.Tests.Onchain.Resolvers.Remote;
 
 using Application.Onchain.Resolvers;
 using Application.Onchain.Resolvers.Remote;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
-using Domain.Channels.Interfaces;
+using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
+using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -18,7 +21,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 public class RemoteCommitResolutionRegistrationTests
 {
     [Fact]
-    public void Given_NodeServices_When_ResolverResolvedInAScope_Then_ScopedWithSharedMemory()
+    public void Given_NodeServices_When_Registered_Then_OneSingletonOutputResolverForPeerCommitments()
     {
         // Arrange
         var services = new ServiceCollection();
@@ -28,11 +31,10 @@ public class RemoteCommitResolutionRegistrationTests
         services.AddSingleton(new Mock<ISweepTransactionBuilder>().Object);
         services.AddSingleton(new Mock<ILightningSigner>().Object);
         services.AddSingleton(new Mock<IFeeService>().Object);
-        services.AddSingleton(new Mock<IChainBroadcaster>().Object);
-        services.AddSingleton(new Mock<IOutpointWatcher>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
-        services.AddSingleton(new Mock<IHtlcSwitch>().Object);
         services.AddScoped(_ => new Mock<IBitcoinWalletService>().Object);
+        services.AddScoped(_ => new Mock<IUnitOfWork>().Object);
 
         // Act
         services.AddRemoteCommitResolutionServices();
@@ -42,19 +44,42 @@ public class RemoteCommitResolutionRegistrationTests
             ValidateOnBuild = true,
             ValidateScopes = true
         });
-        using var scope1 = provider.CreateScope();
-        using var scope2 = provider.CreateScope();
-        var first = scope1.ServiceProvider.GetRequiredService<IRemoteCommitResolver>();
-        var second = scope2.ServiceProvider.GetRequiredService<IRemoteCommitResolver>();
+        var resolvers = provider.GetServices<IOutputResolver>().ToList();
 
         // Assert
-        Assert.IsType<RemoteCommitResolver>(first);
-        Assert.NotSame(first, second);
-        Assert.Same(first, scope1.ServiceProvider.GetRequiredService<IRemoteCommitResolver>());
-        Assert.IsType<WalletRemoteSweepDestination>(scope1.ServiceProvider
-                                                          .GetRequiredService<IRemoteSweepDestination>());
-        Assert.Same(scope1.ServiceProvider.GetRequiredService<RemoteResolutionMemory>(),
-                    scope2.ServiceProvider.GetRequiredService<RemoteResolutionMemory>());
-        Assert.Single(services, d => d.ServiceType == typeof(IRemoteCommitResolver));
+        var resolver = Assert.IsType<RemoteCommitResolver>(Assert.Single(resolvers));
+        Assert.Same(resolver, provider.GetRequiredService<RemoteCommitResolver>());
+        Assert.IsType<WalletRemoteSweepDestination>(provider.GetRequiredService<IRemoteSweepDestination>());
+        Assert.IsType<ChainRemoteCommitmentSource>(provider.GetRequiredService<IRemoteCommitmentSource>());
+    }
+
+    [Fact]
+    public async Task Given_WalletDestination_When_ScriptAsked_Then_TheWalletIsUsedInAScopeOfItsOwn()
+    {
+        // Arrange (finding 5): the wallet may save new addresses; that save must not be the round's unit of work
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+              .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, false,
+                                                   "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"));
+        var scopes = 0;
+        var services = new ServiceCollection();
+        services.AddScoped(_ =>
+        {
+            scopes++;
+            return wallet.Object;
+        });
+        await using var provider = services.BuildServiceProvider();
+        var destination = new WalletRemoteSweepDestination(
+            Options.Create(new NodeOptions { BitcoinNetwork = "regtest" }),
+            provider.GetRequiredService<IServiceScopeFactory>());
+
+        // Act
+        var first = await destination.GetScriptAsync(ChannelId.Zero, TestContext.Current.CancellationToken);
+        var second = await destination.GetScriptAsync(ChannelId.Zero, TestContext.Current.CancellationToken);
+
+        // Assert: a P2WPKH script, and one wallet service per call, each from a fresh scope
+        Assert.Equal(22, first.Length);
+        Assert.Equal(first, second);
+        Assert.Equal(2, scopes);
     }
 }
