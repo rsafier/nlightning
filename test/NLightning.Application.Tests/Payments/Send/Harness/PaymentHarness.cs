@@ -17,6 +17,7 @@ using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Payments;
 using Application.Payments.Routing;
+using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
 using Application.Protocol.Factories;
@@ -353,6 +354,7 @@ internal sealed class PaymentHarnessNode : IDisposable
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
     public MissionControl MissionControl => _provider.GetRequiredService<MissionControl>();
+    public IRouteQueryService RouteQuery => _provider.GetRequiredService<IRouteQueryService>();
 
     /// <summary>The peers' <c>channel_update</c>s the invoice service reads (route hints).</summary>
     public Mock<IChannelUpdateService> ChannelUpdates { get; } = new();

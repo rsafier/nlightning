@@ -177,6 +177,14 @@ internal static class ClientApp
                     var graphChannels = await client.ListGraphChannelsAsync(graphScid, graphNode, cancellationToken);
                     new ListGraphChannelsPrinter().Print(graphChannels);
                     break;
+                case "getroute":
+                case "get-route":
+                    var routeArgs = ParseGetRouteOptions(commandArgs, out _)!;
+                    var route = await client.GetRouteAsync(routeArgs.NodeId, routeArgs.AmountMsat,
+                                                           routeArgs.MaxFeeMsat, routeArgs.FinalCltvDelta,
+                                                           cancellationToken);
+                    new GetRoutePrinter().Print(route);
+                    break;
                 case "pendingsweeps":
                 case "pending-sweeps":
                     var (sweepChannel, includeClosed) = ParsePendingSweepsOptions(commandArgs);
@@ -303,6 +311,9 @@ internal static class ClientApp
                 }
 
                 return null;
+            case "getroute":
+            case "get-route":
+                return ParseGetRouteOptions(commandArgs, out var routeError) is null ? routeError : null;
             case "pendingsweeps":
             case "pending-sweeps":
                 foreach (var argument in commandArgs)
@@ -568,6 +579,95 @@ internal static class ClientApp
     }
 
     /// <summary>
+    /// The arguments of getroute: <c>&lt;node_id&gt; &lt;amount_msat&gt;</c> and the options
+    /// <c>--max-fee-msat &lt;msat&gt;</c> (0 to <see cref="MaxPayFeeMsat"/>) and <c>--final-cltv &lt;blocks&gt;</c> (the
+    /// destination's <c>min_final_cltv_expiry_delta</c>, 1 to 65535), each also as <c>--option=value</c>.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static GetRouteArguments? ParseGetRouteOptions(string[] commandArgs, out string? error)
+    {
+        const string usage = "Usage: getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]";
+        var positional = new List<string>();
+        ulong? maxFeeMsat = null;
+        ushort? finalCltv = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            var separator = argument.IndexOf('=');
+            var name = separator < 0 ? argument : argument[..separator];
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            switch (name.ToLowerInvariant())
+            {
+                case "--max-fee-msat":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var fee)
+                     || fee > MaxPayFeeMsat)
+                    {
+                        error = $"Invalid fee limit '{value}': expected a number of msat from 0 to {MaxPayFeeMsat}.";
+                        return null;
+                    }
+
+                    maxFeeMsat = fee;
+                    break;
+                case "--final-cltv":
+                    if (!ushort.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var blocks)
+                     || blocks == 0)
+                    {
+                        error = $"Invalid final CLTV delta '{value}': expected 1 to {ushort.MaxValue} blocks.";
+                        return null;
+                    }
+
+                    finalCltv = blocks;
+                    break;
+                default:
+                    error = $"Unknown option '{name}': expected --max-fee-msat or --final-cltv.";
+                    return null;
+            }
+        }
+
+        if (positional.Count != 2)
+        {
+            error = positional.Count < 2 ? $"Missing arguments. {usage}" : $"Unexpected argument '{positional[2]}'.";
+            return null;
+        }
+
+        if (!TryParseNodeId(positional[0], out var nodeId))
+        {
+            error = $"Invalid node id '{positional[0]}': expected 66 hex characters.";
+            return null;
+        }
+
+        if (!ulong.TryParse(positional[1], NumberStyles.None, CultureInfo.InvariantCulture, out var amount)
+         || amount == 0 || amount > MaxPayFeeMsat)
+        {
+            error = $"Invalid amount '{positional[1]}': expected a positive number of msat.";
+            return null;
+        }
+
+        error = null;
+        return new GetRouteArguments(nodeId, amount, maxFeeMsat, finalCltv);
+    }
+
+    /// <summary>
     /// <c>[channel_id] [all]</c> of pendingsweeps, in any order: one channel only, and the closed channels too.
     /// </summary>
     internal static (ChannelId? ChannelId, bool IncludeClosed) ParsePendingSweepsOptions(string[] commandArgs)
@@ -598,6 +698,12 @@ internal static class ClientApp
         return (take, skip);
     }
 }
+
+/// <summary>
+/// The parsed arguments of getroute.
+/// </summary>
+internal sealed record GetRouteArguments(CompactPubKey NodeId, ulong AmountMsat, ulong? MaxFeeMsat,
+                                         ushort? FinalCltvDelta);
 
 /// <summary>
 /// The parsed arguments of payinvoice.
