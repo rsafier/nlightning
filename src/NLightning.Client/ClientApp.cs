@@ -5,6 +5,7 @@ namespace NLightning.Client;
 using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Handlers;
@@ -163,6 +164,19 @@ internal static class ClientApp
                     if (chainStatus.IsChainProcessingHalted)
                         return Failure;
                     break;
+                case "listnodes":
+                case "list-nodes":
+                    var nodes = await client.ListNodesAsync(
+                        commandArgs.Length > 0 && TryParseNodeId(commandArgs[0], out var onlyNode) ? onlyNode : null,
+                        cancellationToken);
+                    new ListNodesPrinter().Print(nodes);
+                    break;
+                case "listgraphchannels":
+                case "list-graph-channels":
+                    var (graphScid, graphNode) = ParseGraphChannelFilters(commandArgs);
+                    var graphChannels = await client.ListGraphChannelsAsync(graphScid, graphNode, cancellationToken);
+                    new ListGraphChannelsPrinter().Print(graphChannels);
+                    break;
                 case "pendingsweeps":
                 case "pending-sweeps":
                     var (sweepChannel, includeClosed) = ParsePendingSweepsOptions(commandArgs);
@@ -272,6 +286,23 @@ internal static class ClientApp
                 return TryParseChannelId(commandArgs[0], out _)
                            ? null
                            : $"Invalid channel id '{commandArgs[0]}': expected 64 hex characters.";
+            case "listnodes":
+            case "list-nodes":
+                if (commandArgs.Length > 1)
+                    return $"Too many arguments. Usage: {cmd} [node_id]";
+                return commandArgs.Length == 1 && !TryParseNodeId(commandArgs[0], out _)
+                           ? $"Invalid node id '{commandArgs[0]}': expected 66 hex characters."
+                           : null;
+            case "listgraphchannels":
+            case "list-graph-channels":
+                foreach (var argument in commandArgs)
+                {
+                    if (!TryParseShortChannelId(argument, out _) && !TryParseNodeId(argument, out _))
+                        return $"Invalid argument '{argument}': expected a short channel id (BLOCKxTXxOUTPUT) or a "
+                             + "node id (66 hex characters).";
+                }
+
+                return null;
             case "pendingsweeps":
             case "pending-sweeps":
                 foreach (var argument in commandArgs)
@@ -346,6 +377,60 @@ internal static class ClientApp
         {
             return false;
         }
+    }
+
+    /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
+    internal static bool TryParseNodeId(string value, out CompactPubKey nodeId)
+    {
+        nodeId = default;
+        if (value.Length != 66 || !(value.StartsWith("02", StringComparison.Ordinal)
+                                 || value.StartsWith("03", StringComparison.Ordinal)))
+            return false;
+
+        try
+        {
+            nodeId = new CompactPubKey(Convert.FromHexString(value));
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// A short channel id as <c>BLOCKxTXxOUTPUT</c> (as listgraphchannels prints it), as a number.
+    /// </summary>
+    internal static bool TryParseShortChannelId(string value, out ulong shortChannelId)
+    {
+        shortChannelId = 0;
+        var parts = value.Split('x');
+        if (parts.Length != 3
+         || !uint.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var block) || block > 0xFFFFFF
+         || !uint.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var tx) || tx > 0xFFFFFF
+         || !ushort.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var output))
+            return false;
+
+        shortChannelId = ((ulong)block << 40) | ((ulong)tx << 16) | output;
+        return true;
+    }
+
+    /// <summary>
+    /// <c>[short_channel_id] [node_id]</c> of listgraphchannels, in any order.
+    /// </summary>
+    internal static (ulong? ShortChannelId, CompactPubKey? NodeId) ParseGraphChannelFilters(string[] commandArgs)
+    {
+        ulong? shortChannelId = null;
+        CompactPubKey? nodeId = null;
+        foreach (var argument in commandArgs)
+        {
+            if (TryParseShortChannelId(argument, out var scid))
+                shortChannelId = scid;
+            else if (TryParseNodeId(argument, out var node))
+                nodeId = node;
+        }
+
+        return (shortChannelId, nodeId);
     }
 
     private static ChannelId ParseChannelId(string value) =>

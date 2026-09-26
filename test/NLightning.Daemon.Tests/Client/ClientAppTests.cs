@@ -267,4 +267,28 @@ public class ClientAppTests
         Assert.Null(ClientApp.ValidateArguments("pendingsweeps", []));
         Assert.Null(ClientApp.ValidateArguments("forceclosechannel", [id]));
     }
+
+    [Fact]
+    public void GivenGraphListingArguments_WhenValidatedAndParsed_ThenScidAndNodeInAnyOrder()
+    {
+        // Arrange
+        const string node = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        // Act
+        var (scid, nodeId) = ClientApp.ParseGraphChannelFilters([node, "110x1x0"]);
+        var none = ClientApp.ParseGraphChannelFilters([]);
+
+        // Assert
+        Assert.Equal((110UL << 40) | (1UL << 16), scid);
+        Assert.Equal(node, Convert.ToHexString((byte[])nodeId!.Value).ToLowerInvariant());
+        Assert.Equal((null, null), none);
+        Assert.Null(ClientApp.ValidateArguments("listnodes", []));
+        Assert.Null(ClientApp.ValidateArguments("list-nodes", [node]));
+        Assert.Null(ClientApp.ValidateArguments("listgraphchannels", []));
+        Assert.Null(ClientApp.ValidateArguments("list-graph-channels", ["110x1x0", node]));
+        Assert.NotNull(ClientApp.ValidateArguments("listnodes", ["04" + node[2..]]));
+        Assert.NotNull(ClientApp.ValidateArguments("listnodes", [node, node]));
+        Assert.NotNull(ClientApp.ValidateArguments("listgraphchannels", ["110x1"]));
+        Assert.NotNull(ClientApp.ValidateArguments("listgraphchannels", ["16777216x0x0"]));
+    }
 }

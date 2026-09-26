@@ -45,6 +45,11 @@ public static class ClientUtils
         Console.WriteLine("                               pending-sweeps); all includes the closed ones");
         Console.WriteLine("  chainstatus                  Show whether chain processing is halted and what is refused");
         Console.WriteLine("                               meanwhile (alias: chain-status); exit code 1 if halted");
+        Console.WriteLine("  listnodes [node_id]          List the announced nodes of the gossip graph (alias:");
+        Console.WriteLine("                               list-nodes)");
+        Console.WriteLine("  listgraphchannels [scid] [node_id]");
+        Console.WriteLine("                               List the gossip graph's channels with both policies (alias:");
+        Console.WriteLine("                               list-graph-channels); scid as BLOCKxTXxOUTPUT");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

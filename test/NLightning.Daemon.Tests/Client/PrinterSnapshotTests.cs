@@ -10,7 +10,7 @@ using NLightning.Client.Printers;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// Snapshots of the CLI output for the invoice/payment commands and <c>listchannels</c>. The output is
+/// Snapshots of the CLI output for the invoice/payment commands, <c>listchannels</c> and the graph listings. The output is
 /// culture-invariant, so scripts can parse it; change a snapshot only on purpose.
 /// </summary>
 public class PrinterSnapshotTests
@@ -302,6 +302,91 @@ public class PrinterSnapshotTests
                          "  HTLCs (out/in):     0/1",
                          "  Fee (base/ppm):     1000 msat/100",
                          Separator), output);
+    }
+
+    [Fact]
+    public void Given_GraphNodesAndChannels_When_Printed_Then_MatchesSnapshot()
+    {
+        // Arrange (BOLT 7 G2-T6)
+        var nodes = new ListNodesIpcResponse
+        {
+            Nodes =
+            [
+                new GraphNodeIpcInfo
+                {
+                    NodeId = s_payee,
+                    Alias = "alice",
+                    Color = "#0a0b0c",
+                    Addresses = ["127.0.0.1:9735", "[::1]:9736"],
+                    Features = "0102",
+                    Timestamp = 1_700_000_000,
+                    ChannelCount = 2
+                }
+            ]
+        };
+        var channels = new ListGraphChannelsIpcResponse
+        {
+            Channels =
+            [
+                new GraphChannelIpcInfo
+                {
+                    ShortChannelId = (110UL << 40) | (1UL << 16),
+                    NodeId1 = s_payee,
+                    NodeId2 = s_payee,
+                    CapacitySat = 1_000_000,
+                    Verification = "Verified",
+                    SpentAtHeight = 250,
+                    Features = "",
+                    Policy1 = new GraphPolicyIpcInfo
+                    {
+                        Timestamp = 1_700_000_100,
+                        ChannelFlags = 0,
+                        CltvExpiryDelta = 40,
+                        HtlcMinimumMsat = 1_000,
+                        HtlcMaximumMsat = 990_000_000,
+                        FeeBaseMsat = 1_000,
+                        FeeProportionalMillionths = 100
+                    },
+                    Policy2 = new GraphPolicyIpcInfo { Timestamp = 1_700_000_200, ChannelFlags = 3, CltvExpiryDelta = 80 }
+                }
+            ]
+        };
+
+        // Act
+        var nodesOutput = Print(w => new ListNodesPrinter(w).Print(nodes));
+        var channelsOutput = Print(w => new ListGraphChannelsPrinter(w).Print(channels));
+        var emptyOutput = Print(w => new ListGraphChannelsPrinter(w).Print(new ListGraphChannelsIpcResponse
+        {
+            Channels = []
+        }));
+
+        // Assert
+        Assert.Equal(Lines(
+                         "Graph nodes: 1",
+                         Separator,
+                         $"  Node Id:            02{Hex(0x11)}",
+                         "  Alias:              alice",
+                         "  Color:              #0a0b0c",
+                         "  Addresses:          127.0.0.1:9735, [::1]:9736",
+                         "  Features:           0102",
+                         "  Timestamp:          1700000000 (2023-11-14 22:13:20 UTC)",
+                         "  Channels:           2",
+                         Separator), nodesOutput);
+        Assert.Equal(Lines(
+                         "Graph channels: 1",
+                         Separator,
+                         "  Short Channel Id:   110x1x0",
+                         $"  Node 1:             02{Hex(0x11)}",
+                         $"  Node 2:             02{Hex(0x11)}",
+                         "  Capacity (sat):     1000000",
+                         "  Verification:       Verified",
+                         "  Spent at block:     250 (closed)",
+                         "  Policy 1 -> 2:      fee 1000 msat + 100 ppm, cltv delta 40, htlc 1000-990000000 msat, "
+                       + "updated 1700000100 (2023-11-14 22:15:00 UTC)",
+                         "  Policy 2 -> 1:      fee 0 msat + 0 ppm, cltv delta 80, htlc 0-0 msat, DISABLED, "
+                       + "updated 1700000200 (2023-11-14 22:16:40 UTC)",
+                         Separator), channelsOutput);
+        Assert.Equal(Lines("Graph channels: 0"), emptyOutput);
     }
 
     private static string Print(Action<TextWriter> print)
