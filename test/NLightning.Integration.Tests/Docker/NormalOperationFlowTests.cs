@@ -152,6 +152,14 @@ public class NormalOperationFlowTests : IAsyncLifetime
             HopPubkeys = { ByteString.CopyFrom(_node.NodeId) }
         }, cancellationToken: ct);
 
+        // BOLT 4: a final payload without payment_data (total_msat) is invalid_onion_payload before the hash is looked
+        // up. BuildRoute cannot attach a payment address for a node outside LND's graph, so set the MPP record here.
+        route.Route.Hops[^1].MppRecord = new MPPRecord
+        {
+            PaymentAddr = ByteString.CopyFrom(RandomNumberGenerator.GetBytes(32)),
+            TotalAmtMsat = amountMsat
+        };
+
         // Act
         var attempt = await alice.RouterClient.SendToRouteV2Async(new Routerrpc.SendToRouteRequest
         {
