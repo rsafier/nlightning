@@ -22,6 +22,9 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
@@ -37,6 +40,7 @@ public class FundingSignedMessageHandlerTests
     private readonly Mock<IFundingTransactionBuilder> _mockFundingTransactionBuilder = new();
     private readonly Mock<ILightningSigner> _mockLightningSigner = new();
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
+    private readonly Mock<IBroadcastTransactionDbRepository> _mockBroadcastRepository = new();
     private readonly FundingSignedMessageHandler _handler;
     private readonly ChannelModel _channel;
     private readonly FundingSignedMessage _message;
@@ -118,6 +122,12 @@ public class FundingSignedMessageHandlerTests
            .Setup(x => x.SignFundingTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
            .Returns(true);
         mockUnitOfWork.Setup(x => x.ChannelDbRepository).Returns(_mockChannelDbRepository.Object);
+        mockUnitOfWork.Setup(x => x.WatchedTransactionDbRepository)
+                      .Returns(new Mock<IWatchedTransactionDbRepository>().Object);
+        mockUnitOfWork.Setup(x => x.BroadcastTransactionDbRepository).Returns(_mockBroadcastRepository.Object);
+        mockUnitOfWork.Setup(x => x.WatchedOutpointDbRepository)
+                      .Returns(new Mock<IWatchedOutpointDbRepository>().Object);
+        _mockBlockchainMonitor.Setup(x => x.PublishAsync(It.IsAny<BroadcastTransactionModel>())).ReturnsAsync(true);
         _mockChannelDbRepository
            .Setup(x => x.GetByIdAsync(It.IsAny<ChannelId>()))
            .ReturnsAsync((ChannelModel?)null);
@@ -149,8 +159,13 @@ public class FundingSignedMessageHandlerTests
         Assert.Empty(result);
         _mockLightningSigner.Verify(x => x.SignFundingTransaction(_channel.ChannelId, fundingTransaction),
                                     Times.Once);
+        _mockBroadcastRepository.Verify(
+            x => x.Add(It.Is<BroadcastTransactionModel>(b => b.TransactionId == _fundingTxId
+                                                          && b.Purpose == BroadcastPurpose.Funding)), Times.Once);
         _mockBlockchainMonitor.Verify(
-            x => x.PublishAndWatchTransactionAsync(_channel.ChannelId, fundingTransaction, It.IsAny<uint>()),
+            x => x.PublishAsync(It.Is<BroadcastTransactionModel>(b => b.TransactionId == _fundingTxId
+                                                                   && b.RawTransaction.SequenceEqual(
+                                                                          fundingTransaction.RawTxBytes))),
             Times.Once);
         Assert.Equal(ChannelState.V1FundingSigned, _channel.State);
     }
@@ -191,9 +206,7 @@ public class FundingSignedMessageHandlerTests
         Assert.Equal("Rebuilt funding transaction does not match the channel funding outpoint", exception.Message);
         _mockLightningSigner.Verify(
             x => x.SignFundingTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()), Times.Never);
-        _mockBlockchainMonitor.Verify(
-            x => x.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                   It.IsAny<uint>()), Times.Never);
+        _mockBlockchainMonitor.Verify(x => x.PublishAsync(It.IsAny<BroadcastTransactionModel>()), Times.Never);
         _mockChannelDbRepository.Verify(x => x.AddAsync(It.IsAny<ChannelModel>()), Times.Never);
         Assert.Equal(ChannelState.V1FundingCreated, _channel.State);
     }

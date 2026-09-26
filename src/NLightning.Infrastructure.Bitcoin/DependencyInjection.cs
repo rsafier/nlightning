@@ -10,6 +10,7 @@ using Crypto.Functions;
 using Domain.Bitcoin.Interfaces;
 using Domain.Crypto.Interfaces;
 using Domain.Node.Options;
+using Domain.Onchain.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Infrastructure.Crypto.Interfaces;
@@ -34,6 +35,11 @@ public static class DependencyInjection
         // Register Singletons
         services.AddSingleton<IBitcoinChainService, BitcoinChainService>();
         services.AddSingleton<IBlockchainMonitor, BlockchainMonitorService>();
+
+        // The monitor is also the broadcaster and the outpoint watcher (BOLT 5 plan O0; Domain ports)
+        services.AddSingleton<IChainBroadcaster>(sp => sp.GetRequiredService<IBlockchainMonitor>());
+        services.AddSingleton<IOutpointWatcher>(sp => sp.GetRequiredService<IBlockchainMonitor>());
+
         services.AddSingleton<IClosingTransactionBuilder, ClosingTransactionBuilder>();
         services.AddSingleton<ICommitmentKeyDerivationService, CommitmentKeyDerivationService>();
         services.AddSingleton<ICommitmentTransactionBuilder, CommitmentTransactionBuilder>();

@@ -19,7 +19,9 @@ public class BitcoinChainService : IBitcoinChainService
                                IOptions<NodeOptions> nodeOptions)
     {
         _logger = logger;
-        var network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ?? Network.Main;
+        var network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork)
+                   ?? throw new InvalidOperationException(
+                          $"Unknown bitcoin network '{nodeOptions.Value.BitcoinNetwork}'");
 
         var rpcCredentials = new RPCCredentialString
         {
@@ -92,6 +94,19 @@ public class BitcoinChainService : IBitcoinChainService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to get block at height {Height}", height);
+            throw;
+        }
+    }
+
+    public async Task<uint256> GetBlockHashAsync(uint height)
+    {
+        try
+        {
+            return await _rpcClient.GetBlockHashAsync((int)height);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get the hash of block {Height}", height);
             throw;
         }
     }
