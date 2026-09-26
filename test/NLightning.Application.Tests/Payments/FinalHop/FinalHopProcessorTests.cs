@@ -366,10 +366,50 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
-    public void Given_SettledInvoice_When_SinglePartArrives_Then_0x400F()
+    public void Given_SettledInvoice_When_PartCoveringTotalMsatAloneArrives_Then_AcceptedAsAlreadySettled()
     {
-        // Act: a single-part fulfill and the settle share one save, so this cannot be a held part
+        // Act: amt_to_forward = total_msat, yet it can be a part of the settled set (a payer that overpaid with parts
+        // of 40,000 and 100,000 msat); BOLT 4 also lets a paid hash be accepted (MAY)
         var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled), CreatePayload(), AmountMsat);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.True(result.InvoiceAlreadySettled);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_APartIsReplayedPastItsFinalCltvDelta_Then_StillAcceptedAsAlreadySettled()
+    {
+        // Act: the replay comes at a height where cltv_expiry < height + min_final_cltv_expiry_delta; the preimage is
+        // already out, so the part must be fulfilled anyway (BOLT 4: MUST fulfill the entire HTLC set)
+        var result = _processor.Evaluate(CreateInvoice(status: InvoiceStatus.Settled), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
+                                         CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
+                                         acceptMultiPart: true);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.True(result.InvoiceAlreadySettled);
+    }
+
+    [Fact]
+    public void Given_OpenInvoice_When_APartArrivesPastItsFinalCltvDelta_Then_0x400F()
+    {
+        // Act: the height check still applies before anything is revealed
+        var result = _processor.Evaluate(CreateInvoice(), s_paymentHash, LightningMoney.MilliSatoshis(40_000),
+                                         HtlcCltv, CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
+                                         acceptMultiPart: true);
+
+        // Assert
+        Assert.False(result.IsAccepted);
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, result.Failure!.Code);
+    }
+
+    [Fact]
+    public void Given_SettledInvoiceAndNoMultiPartSupport_When_SinglePartArrives_Then_0x400F()
+    {
+        // Act: without basic_mpp a fulfill and the settle always share one save, so nothing can be held
+        var result = Evaluate(CreateInvoice(status: InvoiceStatus.Settled), CreatePayload());
 
         // Assert
         AssertUnknownPaymentDetails(result);

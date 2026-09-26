@@ -20,6 +20,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.Tlv;
 using Domain.Serialization.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// ABCD W6-B lane proof: Carol receives multi-part payments (BOLT 4 <c>basic_mpp</c>) through the production
@@ -33,6 +34,13 @@ public class MppReceiveTests
     private static readonly LightningMoney s_secondPart = LightningMoney.MilliSatoshis(35_000_000);
 
     private readonly SteppedTimeProvider _clock = new();
+    private readonly Mock<IBlockchainMonitor> _carolMonitor = new();
+    private uint _carolHeight = ThreeNodeHarness.BlockHeight;
+
+    public MppReceiveTests()
+    {
+        _carolMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(() => _carolHeight);
+    }
 
     [Fact]
     public async Task Given_TwoParts_When_TheSecondArrives_Then_BothFulfilledAndInvoiceSettledOnce()
@@ -274,8 +282,103 @@ public class MppReceiveTests
         AssertNoHtlcs(harness);
     }
 
+    [Theory]
+    [InlineData(ThreeNodeHarness.BlockHeight + 10)] // past cltv_expiry - min_final_cltv_expiry_delta (543 - 40)
+    [InlineData(0u)] // the chain monitor has no height yet (a startup replay)
+    public async Task Given_SetSettledButOneFulfillRefused_When_TheLinkComesBackAtAnotherHeight_Then_FulfilledToo(
+        uint heightAtReplay)
+    {
+        // Arrange: the second fulfill is refused after the first settled the invoice
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        await PayPartRefusingAllButTheFirstFulfillAsync(harness, invoice, s_secondPart, s_amount);
+
+        // Act: blocks pass (or the height is unknown) before the link comes back and replays the held part
+        _carolHeight = heightAtReplay;
+        await harness.ReconnectLinkAsync(harness.Carol, harness.Bob);
+        await harness.PumpAsync();
+
+        // Assert: the held part is fulfilled anyway, the preimage being out already (BOLT 4 MUST)
+        Assert.Equal(2, harness.Sent.Count(s => s is { From: "Carol", To: "Bob" }
+                                            && s.Message is UpdateFulfillHtlcMessage));
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        AssertNoHtlcs(harness);
+    }
+
     [Fact]
-    public async Task Given_SingleHtlcForASettledInvoice_When_Received_Then_FailedAsAlreadyPaid()
+    public async Task Given_SettledSetWithAPartCoveringTotalMsatAlone_When_ItsRefusedFulfillIsReplayed_Then_Fulfilled()
+    {
+        // Arrange: the payer overpays: 25,000 sat then 60,000 sat, both promising total_msat 60,000 sat. The second
+        // part alone has amt_to_forward = total_msat but belongs to the set
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        await PayPartRefusingAllButTheFirstFulfillAsync(harness, invoice, s_amount, s_amount);
+
+        // The invoice received what the set carried
+        var stored = await GetInvoiceAsync(harness, invoice);
+        Assert.Equal(s_firstPart + s_amount, stored.AmountReceived);
+
+        // Act
+        await harness.ReconnectLinkAsync(harness.Carol, harness.Bob);
+        await harness.PumpAsync();
+
+        // Assert
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_ReplayOfAHeldPartWaitingForTheHashLock_When_TheSetIsFulfilledMeanwhile_Then_NotHandledTwice()
+    {
+        // Arrange: the first part is held
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+        var held = Assert.Single(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values,
+                                 h => h.Direction == HtlcDirection.Incoming);
+        var replay = new IncomingHtlcLockedIn(ThreeNodeHarness.BobCarolChannelId, held);
+
+        // While the last part's handler holds the payment hash lock (reading the invoice), a replay of the held part's
+        // lock-in starts (a link-up) and waits for that lock
+        var reads = 0;
+        Task? replayTask = null;
+        harness.Carol.AfterInvoiceRead = async _ =>
+        {
+            if (Interlocked.Increment(ref reads) > 1)
+                return;
+
+            using (ExecutionContext.SuppressFlow())
+                replayTask = Task.Run(() => harness.Carol.Switch.HandleAsync(replay, CancellationToken.None),
+                                      CancellationToken.None);
+            await Task.Delay(TimeSpan.FromMilliseconds(500), CancellationToken.None);
+        };
+
+        // Act
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+        await replayTask!;
+        harness.Carol.AfterInvoiceRead = null;
+        await harness.PumpAsync();
+
+        // Assert: the replay saw its HTLC resolved once it got the lock and stopped (no evaluation of its own, no
+        // second fulfill, no new set): the only reads are the last part's check and its settle
+        Assert.Equal(2, reads);
+        Assert.Equal(2, harness.Sent.Count(s => s is { From: "Carol", To: "Bob" }
+                                            && s.Message is UpdateFulfillHtlcMessage));
+        Assert.Empty(CarolSwitch(harness).HeldPaymentHashes);
+        Assert.Equal(0, _clock.PendingTimers);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_SingleHtlcForASettledInvoice_When_Received_Then_FulfilledAsBolt4Allows()
     {
         // Arrange: the invoice is paid in two parts
         await using var harness = await CreateHarnessAsync();
@@ -285,8 +388,32 @@ public class MppReceiveTests
         await harness.PumpAsync();
         Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
 
-        // Act: a single-part payment of the same hash (only multi-part HTLCs can belong to a settled set)
-        var onion = await PayPartAsync(harness, invoice, s_amount, s_amount);
+        // Act: a single-part payment of the same hash with the right secret. Nothing persisted tells it from a held
+        // part of the settled set, which must be fulfilled; BOLT 4 lets us accept a paid hash (MAY)
+        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        await harness.PumpAsync();
+
+        // Assert: fulfilled, the invoice untouched
+        Assert.Equal(3, harness.Alice.PaymentHandler.Fulfilled.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        var stored = await GetInvoiceAsync(harness, invoice);
+        Assert.Equal(InvoiceStatus.Settled, stored.Status);
+        Assert.Equal(s_amount, stored.AmountReceived);
+    }
+
+    [Fact]
+    public async Task Given_SingleHtlcWithAnotherSecretForASettledInvoice_When_Received_Then_FailedAsUnknown()
+    {
+        // Arrange
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+
+        // Act: whoever pays with another payment_secret never saw the invoice
+        var onion = await PayPartAsync(harness, invoice, s_amount, s_amount,
+                                       new Secret(Enumerable.Repeat((byte)7, 32).ToArray()));
         await harness.PumpAsync();
 
         // Assert
@@ -317,9 +444,11 @@ public class MppReceiveTests
     }
 
     private Task<ThreeNodeHarness> CreateHarnessAsync() =>
-        ThreeNodeHarness.CreateAsync(h => h.Carol.ConfigureServices =
-                                              services => services.Replace(
-                                                  ServiceDescriptor.Singleton<TimeProvider>(_clock)));
+        ThreeNodeHarness.CreateAsync(h => h.Carol.ConfigureServices = services =>
+        {
+            services.Replace(ServiceDescriptor.Singleton<TimeProvider>(_clock));
+            services.Replace(ServiceDescriptor.Singleton(_carolMonitor.Object));
+        });
 
     private static Task<InvoiceModel> CreateInvoiceAsync(ThreeNodeHarness harness) =>
         harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "mpp", null, TestContext.Current.CancellationToken);
@@ -339,9 +468,10 @@ public class MppReceiveTests
     /// <paramref name="total"/> (<c>payment_data.total_msat</c>).
     /// </summary>
     private static async Task<PaymentOnion> PayPartAsync(ThreeNodeHarness harness, InvoiceModel invoice,
-                                                         LightningMoney part, LightningMoney total)
+                                                         LightningMoney part, LightningMoney total,
+                                                         Secret? paymentSecret = null)
     {
-        var route = harness.RouteToCarol(part, invoice.PaymentHash, invoice.PaymentSecret);
+        var route = harness.RouteToCarol(part, invoice.PaymentHash, paymentSecret ?? invoice.PaymentSecret);
         var serializer = harness.Alice.Services.GetRequiredService<IHopPayloadSerializer>();
         var hops = new List<OnionHop>();
         foreach (var hop in route.Hops)
@@ -366,6 +496,28 @@ public class MppReceiveTests
                                                       route.PaymentHash, route.FirstHopCltvExpiry, onion.Packet,
                                                       null, HtlcOrigin.Local(route.PaymentHash));
         return onion;
+    }
+
+    /// <summary>
+    /// Pays the part that completes the set while the Bob-Carol link drops right after Carol publishes her first
+    /// fulfill (the one that settles the invoice): the other fulfills are refused and their parts stay locked in.
+    /// </summary>
+    private static async Task PayPartRefusingAllButTheFirstFulfillAsync(ThreeNodeHarness harness, InvoiceModel invoice,
+                                                                        LightningMoney part, LightningMoney total)
+    {
+        harness.Carol.OnPublish = message =>
+        {
+            if (message is UpdateFulfillHtlcMessage)
+                harness.Carol.Probe.MarkLinkDown(ThreeNodeHarness.BobCarolChannelId);
+        };
+        await PayPartAsync(harness, invoice, part, total);
+        await harness.PumpAsync();
+        harness.Carol.OnPublish = null;
+
+        Assert.Single(harness.Sent, s => s is { From: "Carol", To: "Bob" } && s.Message is UpdateFulfillHtlcMessage);
+        Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, invoice)).Status);
+        Assert.Contains(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values,
+                        h => h is { Direction: HtlcDirection.Incoming, Removal: null });
     }
 
     private static Task<InvoiceModel> GetInvoiceAsync(ThreeNodeHarness harness, InvoiceModel invoice) =>

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Payments.Switch;
 
+using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Services;
 using Application.Channels.Switch;
@@ -191,11 +192,50 @@ public class HtlcSwitchTests
         // Act
         services.AddHtlcSwitchServices();
 
-        // Assert
+        // Assert: IHtlcSwitch is the container's own HtlcSwitch singleton
         var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IHtlcSwitch));
-        Assert.Equal(typeof(HtlcSwitch), descriptor.ImplementationType);
         Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        Assert.NotNull(descriptor.ImplementationFactory);
         Assert.NotEqual(typeof(LocalOnlyHtlcSwitch), descriptor.ImplementationType);
+        var own = Assert.Single(services, d => d.ServiceType == typeof(HtlcSwitch));
+        Assert.Equal(typeof(HtlcSwitch), own.ImplementationType);
+        Assert.Equal(ServiceLifetime.Singleton, own.Lifetime);
+    }
+
+    [Fact]
+    public async Task Given_SwitchDecoratedByTheDustExposureSwitch_When_TheProviderIsDisposed_Then_TheSwitchIsDisposed()
+    {
+        // Arrange: the production order, AddHtlcSwitchServices then AddChannelFeeServices (whose decorator is not
+        // IDisposable): the mpp_timeout timers must still stop with the host
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(new Mock<IPeerLivenessProbe>().Object);
+        services.AddChannelOperationsServices();
+        services.AddSingleton<IChannelLockProvider>(new ChannelLockProvider());
+        services.AddSingleton(_context.ChannelMemoryRepository.Object);
+        services.AddSingleton(_operations.Object);
+        services.AddSingleton(new Mock<IFailureOnionService>().Object);
+        services.AddSingleton(new Mock<Domain.Bitcoin.Interfaces.IFeeService>().Object);
+        services.AddSingleton(new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance));
+        services.AddSingleton<IForwardingPolicy>(
+            new HtlcForwardingPolicy(Options.Create(new NodeOptions { EnableHtlcs = true })));
+        services.AddSingleton(Options.Create(new NodeOptions { EnableHtlcs = true }));
+        services.AddSingleton(new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
+                                                         new Mock<IHopPayloadSerializer>().Object,
+                                                         new Mock<IOnionReplayCache>().Object,
+                                                         NullLogger<IncomingOnionProcessor>.Instance));
+        services.AddHtlcSwitchServices();
+        services.AddChannelFeeServices();
+        var provider = services.BuildServiceProvider();
+        var decorated = Assert.IsType<DustExposureHtlcSwitch>(provider.GetRequiredService<IHtlcSwitch>());
+        var htlcSwitch = Assert.IsType<HtlcSwitch>(decorated.Inner);
+        Assert.Same(provider.GetRequiredService<HtlcSwitch>(), htlcSwitch);
+
+        // Act
+        await provider.DisposeAsync();
+
+        // Assert
+        Assert.True(htlcSwitch.IsDisposed);
     }
 
     [Fact]

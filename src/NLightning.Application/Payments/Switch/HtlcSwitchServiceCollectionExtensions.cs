@@ -32,7 +32,10 @@ public static class HtlcSwitchServiceCollectionExtensions
     public static IServiceCollection AddHtlcSwitchServices(this IServiceCollection services)
     {
         services.TryAddSingleton(TimeProvider.System);
-        services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch, HtlcSwitch>());
+        // The switch is the container's own singleton, so the container disposes it (its mpp_timeout timers) also when
+        // a decorator (DustExposureHtlcSwitch) wraps the IHtlcSwitch registration
+        services.TryAddSingleton<HtlcSwitch>();
+        services.Replace(ServiceDescriptor.Singleton<IHtlcSwitch>(sp => sp.GetRequiredService<HtlcSwitch>()));
 
         if (services.Any(d => d.ServiceType == typeof(LinkUpEventReplayer)))
             return services;

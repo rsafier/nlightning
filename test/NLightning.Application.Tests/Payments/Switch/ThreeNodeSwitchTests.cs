@@ -327,8 +327,11 @@ public class ThreeNodeSwitchTests
     [Fact]
     public async Task Given_TwoHtlcsForOneInvoice_When_HandledConcurrently_Then_OnlyOneIsFulfilled()
     {
-        // Arrange: two payments of the same invoice locked in at Carol before her switch acts (NL-253)
-        await using var harness = await ThreeNodeHarness.CreateAsync();
+        // Arrange: two payments of the same invoice locked in at Carol before her switch acts (NL-253). Without
+        // basic_mpp: with it, an HTLC with the right secret for a settled invoice may be a held part of its set and is
+        // fulfilled (MppReceiveTests)
+        await using var harness = await ThreeNodeHarness.CreateAsync(
+                                      h => h.Carol.Options.Features.BasicMpp = Domain.Enums.FeatureSupport.No);
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "once", null,
                                                                       TestContext.Current.CancellationToken);
         harness.Carol.SwitchSuspended = true;
