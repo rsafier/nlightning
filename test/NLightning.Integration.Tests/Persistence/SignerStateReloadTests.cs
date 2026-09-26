@@ -174,9 +174,45 @@ public sealed class SignerStateReloadTests : IDisposable
         Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(unknown, 0));
     }
 
+    [Theory]
+    [InlineData(ChannelState.Closed)]
+    [InlineData(ChannelState.Stale)]
+    public async Task Given_ClosedOrStaleChannel_When_SignerRestarts_Then_ItIsNotLoaded(ChannelState state)
+    {
+        // Arrange: the funding output is irrevocably spent (or never confirmed): nothing to sign any more
+        var (channel, _) = await PersistChannelAsync(state: state);
+        await using var node = BuildRestartedNode();
+        var signer = node.GetRequiredService<ILightningSigner>();
+
+        // Act & Assert: refused as before NL-067, no new remote commitment signature for a closed channel
+        Assert.Throws<InvalidOperationException>(() => signer.SignChannelTransaction(
+                                                     channel.ChannelId, CreateUnsignedCommitment(channel)));
+        Assert.Throws<SignerException>(() => signer.GetChannelBasepoints(channel.ChannelId));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PersistedAnnounceFlag_When_SignerLoadsTheChannel_Then_TheFlagIsLoaded(bool announce)
+    {
+        // Arrange
+        var (channel, _) = await PersistChannelAsync(announceChannel: announce);
+
+        // Act
+        await using var context = _database.CreateContext();
+        var signingInfo = await new ChannelSigningInfoDbRepository(context).GetAsync(channel.ChannelId);
+        var all = await new ChannelSigningInfoDbRepository(context).GetAllAsync();
+
+        // Assert: the signer refuses a channel announcement unless the channel is public (BOLT 7)
+        Assert.NotNull(signingInfo);
+        Assert.Equal(announce, signingInfo.Value.AnnounceChannel);
+        Assert.Equal(announce, all[channel.ChannelId].AnnounceChannel);
+        Assert.Equal(channel.GetSigningInfo().AnnounceChannel, signingInfo.Value.AnnounceChannel);
+    }
+
     /// <summary>A channel we opened with the node's first channel key, saved as the node would.</summary>
     private async Task<(ChannelModel Channel, LocalLightningSigner Signer)> PersistChannelAsync(
-        bool markDataLoss = false)
+        bool markDataLoss = false, ChannelState state = ChannelState.Open, bool announceChannel = false)
     {
         var signer = CreateSigner(null);
         var keyIndex = signer.CreateNewChannel(out var basepoints, out var firstPoint);
@@ -193,13 +229,16 @@ public sealed class SignerStateReloadTests : IDisposable
                                                      LightningMoney.MilliSatoshis(1_000),
                                                      LightningMoney.Satoshis(546), 483,
                                                      LightningMoney.Satoshis(500_000), 3, false,
-                                                     LightningMoney.Satoshis(546), 144, FeatureSupport.No);
+                                                     LightningMoney.Satoshis(546), 144, FeatureSupport.No) with
+        {
+            AnnounceChannel = announceChannel
+        };
         var channel = new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x5D, 32).ToArray()),
                                        new CommitmentNumber(local.PaymentCompactBasepoint,
                                                             remote.PaymentCompactBasepoint, new Sha256()),
                                        fundingOutput, true, null, null, LightningMoney.Satoshis(FundingSats), local,
                                        0, LocalCommitmentNumber, LightningMoney.Zero, remote, 0,
-                                       new Key().PubKey.ToBytes(), LocalCommitmentNumber, ChannelState.Open,
+                                       new Key().PubKey.ToBytes(), LocalCommitmentNumber, state,
                                        ChannelVersion.V1, localCommitmentNumber: LocalCommitmentNumber,
                                        remoteCommitmentNumber: LocalCommitmentNumber)
         {

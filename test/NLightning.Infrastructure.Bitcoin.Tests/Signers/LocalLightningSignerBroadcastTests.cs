@@ -362,6 +362,31 @@ public class LocalLightningSignerBroadcastTests
         Assert.Throws<ArgumentOutOfRangeException>(() => signer.MarkBroadcastSigned(s_channelId, 1UL << 48));
     }
 
+    [Fact]
+    public void Given_RegisteredChannel_When_RegisteredWithOtherKeys_Then_RefusedAndNoGuardMoves()
+    {
+        // Arrange: another channel's data (other funding outpoint) under the same channel id, with guards of its own
+        var signer = new NodeASigner(withChannelKey: true);
+        signer.RegisterChannel(s_channelId, SigningInfo(false, localCommitmentNumber: 1));
+        var other = SigningInfo(true, localCommitmentNumber: 7) with
+        {
+            FundingOutputIndex = 1,
+            BroadcastSignedCommitmentNumber = 2
+        };
+
+        // Act
+        var exception = Record.Exception(() => signer.RegisterChannel(s_channelId, other));
+
+        // Assert: refused, and the channel's revocation guard, S1 mark and data-loss flag are untouched
+        Assert.IsType<SignerException>(exception);
+        Assert.False(signer.TryGetBroadcastSignedCommitment(s_channelId, out _));
+        Assert.Null(Record.Exception(() => signer.SignChannelTransaction(s_channelId, UnsignedCommitTx0().Unsigned)));
+        Assert.Equal(32, ((byte[])signer.RevealPerCommitmentSecret(s_channelId, 0)).Length);
+        Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(s_channelId, 1));
+        signer.AdvanceLocalCommitment(s_channelId, 2);
+        Assert.Equal(32, ((byte[])signer.RevealPerCommitmentSecret(s_channelId, 1)).Length);
+    }
+
     private static NodeASigner CreateNodeASigner(bool dataLossDetected = false, bool withChannelKey = false)
     {
         var signer = new NodeASigner(withChannelKey);

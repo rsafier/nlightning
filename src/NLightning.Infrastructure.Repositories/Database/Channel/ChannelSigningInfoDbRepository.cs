@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
+using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -14,8 +15,18 @@ using Persistence.Entities.Channel;
 /// broadcast rows. Nothing secret is stored: the local key set holds the channel key index the signer derives every key
 /// from.
 /// </summary>
+/// <remarks>
+/// A <see cref="ChannelState.Closed"/> or <see cref="ChannelState.Stale"/> channel is not served: its funding output is
+/// irrevocably spent (or was never confirmed), so the signer, which loads what this repository returns, keeps refusing
+/// it after a restart as it did before NL-067. Every other state is served, also a channel that
+/// <c>ChannelDbRepository.GetByIdAsync</c> refuses (legacy HTLC rows), because its commitment may still have to be
+/// broadcast and resolved.
+/// </remarks>
 public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
 {
+    private const byte ClosedState = (byte)ChannelState.Closed;
+    private const byte StaleState = (byte)ChannelState.Stale;
+
     private readonly NLightningDbContext _context;
 
     public ChannelSigningInfoDbRepository(NLightningDbContext context)
@@ -28,6 +39,8 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
     {
         var channel = await _context.Channels.AsNoTracking()
                                     .Include(c => c.KeySets)
+                                    .Include(c => c.Config)
+                                    .Where(c => c.State != ClosedState && c.State != StaleState)
                                     .SingleOrDefaultAsync(c => c.ChannelId == channelId);
         if (channel is null)
             return null;
@@ -47,6 +60,8 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
     {
         var channels = await _context.Channels.AsNoTracking()
                                      .Include(c => c.KeySets)
+                                     .Include(c => c.Config)
+                                     .Where(c => c.State != ClosedState && c.State != StaleState)
                                      .ToListAsync();
         var broadcasts = await _context.BroadcastTransactions.AsNoTracking()
                                        .Where(b => b.ChannelId != null
@@ -91,7 +106,8 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
         {
             BroadcastSignedCommitmentNumber = broadcastNumbers.Count == 0 ? null : (ulong)broadcastNumbers.Min(),
             RemoteNodeId = channel.RemoteNodeId,
-            ShortChannelId = channel.ShortChannelId
+            ShortChannelId = channel.ShortChannelId,
+            AnnounceChannel = channel.Config?.AnnounceChannel ?? false
         };
     }
 }
