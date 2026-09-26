@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -5,10 +6,12 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain;
 
+using Channels.Safety;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
@@ -19,6 +22,7 @@ using Fees;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Reorg;
 
 /// <summary>
 /// The on-chain resolution loop (BOLT 5 plan §3.2 steps 4-5, O6-T2): for every channel in
@@ -43,6 +47,18 @@ using Interfaces;
 /// processed height read before the round) up to bitcoind's tip are scanned through <see cref="IBitcoinChainService"/>
 /// (when registered) for a spend already mined, which is handled like a monitor event and recorded on the watch
 /// (<see cref="CatchUpSpendsAsync(ChannelId, IReadOnlyList{WatchedOutpointModel}, uint, CancellationToken)"/>).</para>
+/// <para>Reorgs (BOLT 5 plan §3.8, O6-T3, NL-292): every block round first checks the chain facts the rows rely on. An
+/// output recorded <see cref="OutputResolutionState.Resolved"/> whose watched spend the chain monitor rolled back is
+/// unresolved again (<see cref="OutputResolutionState.Broadcast"/> when our transaction resolves it, which is made
+/// pending again if it was abandoned, else <see cref="OutputResolutionState.Pending"/>), so it is never aged to
+/// irrevocable from a disconnected block. When the funding spend's block is no longer in the active chain the channel
+/// is paused (no aging, no resolver, no bumping, never Closed) and stays <see cref="ChannelState.OnchainResolving"/>:
+/// never back to Open. Its funding outpoint stays watched, so the spend is classified again when it confirms (the same
+/// transaction moves the close to its new block; another one replaces the close, the watcher ignores the old rows). Our
+/// own commitment is made pending again (rebroadcast every block); after the peer's commitment has been gone for
+/// <see cref="OnchainOptions.ReorgGraceBlocks"/> blocks our latest local commitment is broadcast (its stored row made
+/// pending again, else signed through <see cref="LocalCommitmentBroadcastBuilder"/>; never after data loss, and the
+/// signer refuses a revoked one).</para>
 /// </remarks>
 public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
 {
@@ -54,6 +70,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly IOutpointWatcher _outpointWatcher;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly HashSet<ChannelCloseKind> _missingResolverLogged = [];
+    private readonly ConcurrentDictionary<ChannelId, uint> _fundingSpendGoneSince = new();
+    private readonly ConcurrentDictionary<ChannelId, byte> _graceBroadcastDone = new();
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -73,6 +91,15 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         _outpointWatcher = outpointWatcher;
         _serviceScopeFactory = serviceScopeFactory;
         _options = options?.Value ?? new OnchainOptions();
+
+        // NL-292: a funding transaction confirmed again after a reorg moves its channel's short channel id
+        if (outpointWatcher is IBlockchainMonitor blockchainMonitor)
+        {
+            var fundingReconfirmation = new FundingReconfirmationHandler(channelLockProvider, channelMemoryRepository,
+                                                                         logger, serviceScopeFactory);
+            blockchainMonitor.OnTransactionConfirmed += (_, args) =>
+                _ = fundingReconfirmation.HandleAsync(args.WatchedTransaction);
+        }
     }
 
     /// <inheritdoc />
@@ -267,6 +294,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         // Read before any row: a watch on a transaction not confirmed by then can only be spent in a later block
         var lastProcessedBefore = scope.ServiceProvider.GetService<IBlockchainMonitor>()?.LastProcessedBlockHeight;
         Applied applied;
+        WatchedOutpointModel? rewatch = null;
         List<(WatchedOutpointModel, uint)> catchUp = [];
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
@@ -287,6 +315,29 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                          .ToDictionary(o => (o.TransactionId, o.OutputIndex));
             var actions = new List<OutputResolverAction>();
             var resolver = GetResolver(scope, close.Kind);
+
+            if (spent is null)
+            {
+                // O6-T3: a spend the chain monitor rolled back is no longer a resolution
+                await RevertReorgedSpendsAsync(unitOfWork, channelId, outputs, actions);
+
+                if (!await IsFundingSpendOnChainAsync(scope, close))
+                {
+                    var paused = await HandleFundingSpendGoneAsync(scope, unitOfWork, channel, close, height, actions,
+                                                                   cancellationToken);
+                    applied = paused.Applied;
+                    rewatch = paused.FundingWatch;
+                    goto afterLock;
+                }
+
+                if (_fundingSpendGoneSince.TryRemove(channelId, out _))
+                {
+                    _graceBroadcastDone.TryRemove(channelId, out _);
+                    _logger.LogWarning("The funding spend {TxId} of channel {ChannelId} is on chain again at height "
+                                     + "{Height}; resolving it", Display(close.CommitmentTransactionId), channelId,
+                                       close.SpentAtHeight);
+                }
+            }
 
             // A confirmed spend of one of the outputs: resolved at that height (whoever spent it)
             if (spent is not null
@@ -390,10 +441,176 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 _logger.LogWarning("Channel {ChannelId} is closed: its funding spend and every output are "
                                  + "irrevocably resolved at height {Height}", channelId, height);
             }
+
+        afterLock:;
         }
+
+        if (rewatch is not null)
+            _outpointWatcher.TrackWatchedOutpoint(rewatch);
 
         await AfterSaveAsync(scope, channelId, applied);
         await CatchUpSpendsAsync(channelId, catchUp, cancellationToken);
+    }
+
+    /// <summary>
+    /// O6-T3: rows <see cref="OutputResolutionState.Resolved"/> by a spend the chain monitor rolled back (their watch is
+    /// no longer spent) are unresolved again; a spend confirmed again at another height moves the resolution there.
+    /// </summary>
+    private async Task RevertReorgedSpendsAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                Dictionary<(TxId, uint), OutputResolutionModel> outputs,
+                                                List<OutputResolverAction> actions)
+    {
+        foreach (var output in outputs.Values.Where(o => o.State == OutputResolutionState.Resolved).ToList())
+        {
+            var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(output.TransactionId, output.OutputIndex);
+            if (watch is null)
+                continue;
+
+            if (watch.SpentAtHeight is { } spentAt)
+            {
+                if (spentAt != output.ResolvedHeight)
+                    Upsert(outputs, actions, output with { ResolvedHeight = spentAt });
+                continue;
+            }
+
+            _logger.LogWarning("The spend of output {Vout} of {TxId} (channel {ChannelId}) resolved at height "
+                             + "{Height} was reorged out; it is unresolved again", output.OutputIndex,
+                               Display(output.TransactionId), channelId, output.ResolvedHeight);
+            Upsert(outputs, actions, output with
+            {
+                State = output.ResolvingTransactionId is null
+                            ? OutputResolutionState.Pending
+                            : OutputResolutionState.Broadcast,
+                ResolvedHeight = null
+            });
+
+            // Our transaction that lost the output to the reorged-out spend may confirm now: send it again
+            if (output.ResolvingTransactionId is { } ours)
+                actions.Add(new StageWriteAction($"revive {Display(ours)}",
+                                                 (uow, _) => uow.BroadcastTransactionDbRepository
+                                                                .MarkPendingAsync(ours)));
+        }
+    }
+
+    /// <summary>
+    /// True when the block that holds the funding spend is still bitcoind's block at that height (or the close has no
+    /// recorded block, or the chain can't be asked).
+    /// </summary>
+    private async Task<bool> IsFundingSpendOnChainAsync(IServiceScope scope, ChannelCloseModel close)
+    {
+        if (close.BlockHash.Equals(Hash.Empty)
+         || scope.ServiceProvider.GetService<IBitcoinChainService>() is not { } chain)
+            return true;
+
+        try
+        {
+            if (await chain.GetCurrentBlockHeightAsync() < close.SpentAtHeight)
+                return false;
+
+            var hash = await chain.GetBlockHashAsync(close.SpentAtHeight);
+            return close.BlockHash.Equals(new Hash(hash.ToBytes()));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "Could not check that the funding spend of channel {ChannelId} is still on chain",
+                               close.ChannelId);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The funding spend of <paramref name="close"/> was reorged out (O6-T3, §3.8): the channel stays
+    /// <see cref="ChannelState.OnchainResolving"/>, its funding outpoint stays watched, our commitment is pending again,
+    /// and after <see cref="OnchainOptions.ReorgGraceBlocks"/> without the peer's commitment our latest local
+    /// commitment is broadcast. Stages and saves under the caller's lock.
+    /// </summary>
+    private async Task<(Applied Applied, WatchedOutpointModel? FundingWatch)> HandleFundingSpendGoneAsync(
+        IServiceScope scope, IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close, uint height,
+        List<OutputResolverAction> actions, CancellationToken cancellationToken)
+    {
+        var channelId = channel.ChannelId;
+        var first = false;
+        var since = _fundingSpendGoneSince.GetOrAdd(channelId, _ =>
+        {
+            first = true;
+            return height;
+        });
+
+        WatchedOutpointModel? fundingWatch = null;
+        if (first)
+        {
+            _logger.LogCritical("The funding spend {TxId} ({Kind}) of channel {ChannelId}, recorded at height "
+                              + "{Height}, is no longer in the chain (reorg); the channel stays resolving on chain and "
+                              + "waits for a funding spend to confirm again", Display(close.CommitmentTransactionId),
+                                close.Kind, channelId, close.SpentAtHeight);
+            if (channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex })
+                fundingWatch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(fundingTxId, fundingIndex);
+        }
+
+        var revive = new List<TxId>();
+        if (close.Kind == ChannelCloseKind.LocalCommitment)
+        {
+            // Our commitment: it is ours to get back into a block
+            revive.Add(close.CommitmentTransactionId);
+        }
+        else if (height >= since + _options.ReorgGraceBlocks && !_graceBroadcastDone.ContainsKey(channelId))
+        {
+            var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
+            var ours = broadcasts.Where(b => b is { Purpose: BroadcastPurpose.LocalCommitment, CommitmentNumber: not null })
+                                 .OrderByDescending(b => b.CommitmentNumber)
+                                 .FirstOrDefault();
+            if (ours is not null)
+            {
+                revive.Add(ours.TransactionId);
+                _graceBroadcastDone[channelId] = 0;
+            }
+            else if (channel.DataLossDetected)
+            {
+                _logger.LogCritical("The peer's commitment of channel {ChannelId} is gone after a reorg, but we lost "
+                                  + "data: our commitment is not broadcast (the peer must close)", channelId);
+                _graceBroadcastDone[channelId] = 0;
+            }
+            else if (scope.ServiceProvider.GetService<LocalCommitmentBroadcastBuilder>() is { } builder)
+            {
+                try
+                {
+                    var signed = builder.Build(channel);
+                    actions.Add(new BroadcastAction(new BroadcastTransactionModel(
+                                                        signed.Transaction, BroadcastPurpose.LocalCommitment,
+                                                        channelId, height, commitmentNumber: signed.CommitmentNumber)));
+                    _graceBroadcastDone[channelId] = 0;
+                    _logger.LogCritical("The peer's commitment {TxId} of channel {ChannelId} has been out of the chain "
+                                      + "for {Blocks} blocks; broadcasting our latest commitment {Number} ({OurTxId})",
+                                        Display(close.CommitmentTransactionId), channelId, height - since,
+                                        signed.CommitmentNumber, Display(signed.Transaction.TxId));
+                }
+                catch (Exception e) when (e is InvalidOperationException or Domain.Exceptions.SignerException)
+                {
+                    _logger.LogCritical(e, "Cannot sign our commitment of channel {ChannelId} after the peer's was "
+                                         + "reorged out", channelId);
+                    _graceBroadcastDone[channelId] = 0;
+                }
+            }
+        }
+
+        foreach (var txId in revive)
+            actions.Add(new StageWriteAction($"revive {Display(txId)}",
+                                             (uow, _) => uow.BroadcastTransactionDbRepository.MarkPendingAsync(txId)));
+
+        var applied = await StageAndSaveAsync(unitOfWork, actions, null, cancellationToken);
+
+        // A revived row is published after the save (the monitor then sends it again after every block)
+        var toPublish = applied.ToPublish.ToList();
+        foreach (var txId in revive)
+        {
+            if (toPublish.Any(t => t.TransactionId == txId))
+                continue;
+            if (await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txId) is
+                { State: BroadcastState.Pending } pending)
+                toPublish.Add(pending);
+        }
+
+        return (applied with { ToPublish = toPublish }, fundingWatch);
     }
 
     /// <summary>

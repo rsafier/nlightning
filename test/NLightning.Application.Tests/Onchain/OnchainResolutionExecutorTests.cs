@@ -87,9 +87,11 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         services.AddSingleton<IBitcoinChainService>(_chain);
         _provider = services.BuildServiceProvider();
 
+        // No recorded block: these tests are not about reorgs (OnchainReorgTests are), so the executor does not compare
+        // the close's block with the fake chain
         _store.Closes[_channel.ChannelId] = new ChannelCloseModel(_channel.ChannelId,
                                                                   ChannelCloseKind.LocalCommitment, s_commitmentTxId,
-                                                                  3, SpentAt, OnchainTestStore.BlockHash(1),
+                                                                  3, SpentAt, Hash.Empty,
                                                                   DateTimeOffset.UtcNow);
     }
 
