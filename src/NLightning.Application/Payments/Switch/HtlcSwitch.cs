@@ -18,6 +18,7 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -1000,6 +1001,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                     // removal refused while the peer was away, or a crash before it): resolve it from the outgoing
                     // record, live or archived (it is not pruned before the upstream HTLC has its removal)
                     var record = await FindOutgoingRecordAsync(outgoingChannelId, outgoingHtlcId);
+                    var closedOutgoing = false;
+                    if (record is null && circuit.Status == ForwardCircuitStatus.Offered)
+                        (closedOutgoing, record) = await FindClosedOutgoingRecordAsync(outgoingChannelId,
+                                                                                       outgoingHtlcId);
                     var resolutions = record is null
                                           ? []
                                           : ChannelDomainEvents.DerivePending(outgoingChannelId, [record]);
@@ -1033,6 +1038,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                         // OnchainTimeout is never persisted as a removal) and the upstream fail was refused, or the
                         // outgoing channel is no longer loaded. The resolver stops raising its event once the output
                         // is irrevocable, so fail upstream here with our own permanent_channel_failure
+                        var failed = new OutgoingHtlcFailed(outgoingChannelId, outgoingHtlcId, circuit.PaymentHash,
+                                                            HtlcRemoval.OnchainTimeout());
+                        await FailForwardLockedAsync(incomingChannelId, incomingHtlcId, failed, cancellationToken);
+                        return;
+                    }
+
+                    if (!resolved && closedOutgoing && CurrentHeight is var height and > 0
+                     && height >= (ulong)circuit.OutgoingCltvExpiry + OutputResolutionFacts.DefaultReasonableDepth)
+                    {
+                        // NL-320: the outgoing channel closed on chain and its record shows no preimage, and the
+                        // outgoing HTLC expired reasonably deep ago (its resolver's event was lost, or it closed before
+                        // the resolver failed such HTLCs): nothing downstream can resolve it any more
+                        _logger.LogWarning("Failing upstream HTLC {HtlcId} of channel {ChannelId}: its forward on the "
+                                         + "closed channel {OutgoingChannelId} expired at {CltvExpiry} without a "
+                                         + "preimage", incomingHtlcId, incomingChannelId, outgoingChannelId,
+                                           circuit.OutgoingCltvExpiry);
                         var failed = new OutgoingHtlcFailed(outgoingChannelId, outgoingHtlcId, circuit.PaymentHash,
                                                             HtlcRemoval.OnchainTimeout());
                         await FailForwardLockedAsync(incomingChannelId, incomingHtlcId, failed, cancellationToken);
@@ -1075,6 +1096,33 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channelId, commitments.Params);
         var key = new HtlcKey(HtlcDirection.Outgoing, htlcId);
         return persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == key);
+    }
+
+    /// <summary>
+    /// NL-320: the record of an HTLC we offered on a channel that is not loaded because it is <c>Closed</c> (live in its
+    /// stored snapshot, else archived). <c>Closed</c> is false when the channel is loaded, unknown or not closed.
+    /// </summary>
+    private async Task<(bool Closed, HtlcRecord? Record)> FindClosedOutgoingRecordAsync(ChannelId channelId,
+                                                                                       ulong htlcId)
+    {
+        if (_channelMemoryRepository.TryGetChannel(channelId, out _))
+            return (false, null);
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel is not { State: ChannelState.Closed })
+            return (false, null);
+
+        if (channel.Commitments is not { } commitments)
+            return (true, null);
+
+        var key = new HtlcKey(HtlcDirection.Outgoing, htlcId);
+        if (commitments.GetHtlc(key.Direction, key.Id) is { } live)
+            return (true, live);
+
+        var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channelId, commitments.Params);
+        return (true, persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == key));
     }
 
     /// <summary>The channel HTLC that carries the forward's origin, when its add was persisted.</summary>
