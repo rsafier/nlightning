@@ -146,6 +146,35 @@ public interface ILightningSigner
     CompactSignature SignLocalHtlcTransaction(ChannelId channelId, HtlcSigningContext htlcTransaction);
 
     /// <summary>
+    /// Fully sign our latest local commitment transaction for broadcast (fail the channel, BOLT2 plan N9-T4): checks
+    /// the peer's <paramref name="remoteSignature"/>, adds ours and returns the transaction with its 2-of-2 witness
+    /// (<c>0 &lt;sig1&gt; &lt;sig2&gt; &lt;funding script&gt;</c>, signatures in funding-script key order).
+    /// </summary>
+    /// <remarks>
+    /// Guards (invariants I4 and I12): refuses a commitment older than the signer's current local commitment number
+    /// (it is revoked: broadcasting it lets the peer take every output), and refuses everything after
+    /// <see cref="MarkDataLoss"/> (the peer holds a newer state; broadcasting ours would be a revoked broadcast).
+    /// </remarks>
+    /// <param name="channelId">The registered channel.</param>
+    /// <param name="commitmentNumber">The number of the local commitment <paramref name="unsignedCommitment"/> is.</param>
+    /// <param name="unsignedCommitment">The unsigned commitment transaction (built for the local side).</param>
+    /// <param name="remoteSignature">The peer's signature of that commitment (from its <c>commitment_signed</c>).</param>
+    /// <returns>The fully signed transaction, ready to publish.</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not registered, data loss was detected, the
+    /// commitment is revoked, or the peer's signature does not verify.</exception>
+    SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber,
+                                                      SignedTransaction unsignedCommitment,
+                                                      CompactSignature remoteSignature);
+
+    /// <summary>
+    /// Tell the signer that <c>channel_reestablish</c> proved we lost data on this channel (B2-RE-23): from now on it
+    /// refuses to sign anything for the channel (commitment and HTLC signatures for new updates, and our own commitment
+    /// for broadcast; invariant I12). Sticky: it is never cleared, and a registration with
+    /// <see cref="ChannelSigningInfo.DataLossDetected"/> sets it too.
+    /// </summary>
+    void MarkDataLoss(ChannelId channelId);
+
+    /// <summary>
     /// Sign a general transaction using the wallet signing context
     /// </summary>
     bool SignWalletTransaction(SignedTransaction unsignedTransaction);

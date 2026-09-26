@@ -40,6 +40,9 @@ public class LocalLightningSigner : ILightningSigner
 
     // Current local commitment number per channel: the revocation guard of RevealPerCommitmentSecret (NL-189)
     private readonly ConcurrentDictionary<ChannelId, ulong> _localCommitmentNumbers = new();
+
+    // Channels whose channel_reestablish proved data loss: nothing is signed for them any more (I12, N9-T4)
+    private readonly ConcurrentDictionary<ChannelId, bool> _dataLossChannels = new();
     private readonly ILogger<LocalLightningSigner> _logger;
     private readonly Network _network;
 
@@ -219,6 +222,81 @@ public class LocalLightningSigner : ILightningSigner
         // The guard only ever moves forward, also when a channel is registered again (e.g. reloaded from the database)
         _localCommitmentNumbers.AddOrUpdate(channelId, signingInfo.LocalCommitmentNumber,
                                             (_, current) => Math.Max(current, signingInfo.LocalCommitmentNumber));
+
+        // Data loss is sticky: a registration never clears it
+        if (signingInfo.DataLossDetected)
+            _dataLossChannels[channelId] = true;
+    }
+
+    /// <inheritdoc />
+    public void MarkDataLoss(ChannelId channelId)
+    {
+        _logger.LogCritical("Data loss on channel {ChannelId}: the signer refuses every further signature for it",
+                            channelId);
+        _dataLossChannels[channelId] = true;
+    }
+
+    /// <inheritdoc />
+    public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber,
+                                                             SignedTransaction unsignedCommitment,
+                                                             CompactSignature remoteSignature)
+    {
+        ArgumentNullException.ThrowIfNull(unsignedCommitment);
+        ArgumentNullException.ThrowIfNull(remoteSignature);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfDataLoss(channelId, "broadcast our commitment");
+
+        // I4: never sign a revoked commitment for broadcast (the peer holds its revocation secret)
+        var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
+        if (commitmentNumber < localCommitmentNumber)
+            throw new SignerException(
+                $"Refusing to sign revoked local commitment {commitmentNumber} for broadcast (current local "
+              + $"commitment is {localCommitmentNumber})", channelId, "Internal error");
+
+        Transaction tx;
+        try
+        {
+            tx = Transaction.Load(unsignedCommitment.RawTxBytes, _network);
+        }
+        catch (Exception e)
+        {
+            throw new SignerException("Failed to load the commitment transaction", channelId, e, "Internal error");
+        }
+
+        if (tx.Inputs.Count != 1)
+            throw new SignerException("A commitment transaction has exactly one input", channelId, "Internal error");
+
+        // The peer's signature must be valid for exactly this transaction, or the broadcast would be rejected
+        ValidateSignature(channelId, remoteSignature, unsignedCommitment);
+        var localCompact = SignChannelTransaction(channelId, unsignedCommitment);
+
+        var fundingOutput = _fundingOutputBuilder.Build(new FundingOutputInfo(signingInfo.FundingSatoshis,
+                                                                              signingInfo.LocalFundingPubKey,
+                                                                              signingInfo.RemoteFundingPubKey,
+                                                                              signingInfo.FundingTxId,
+                                                                              signingInfo.FundingOutputIndex));
+        var fundingScript = fundingOutput.RedeemScript;
+
+        if (!ECDSASignature.TryParseFromCompact(localCompact, out var localSignature)
+         || !ECDSASignature.TryParseFromCompact(remoteSignature, out var remoteEcdsa))
+            throw new SignerException("Failed to parse a commitment signature", channelId, "Internal error");
+
+        var localSig = new TransactionSignature(localSignature, SigHash.All).ToBytes();
+        var remoteSig = new TransactionSignature(remoteEcdsa, SigHash.All).ToBytes();
+
+        // BOLT 3 funding witness: 0 <pubkey1_signature> <pubkey2_signature> <funding script>, in the script's key order
+        var localFirst = IsFirstFundingKey(fundingScript, signingInfo.LocalFundingPubKey);
+        tx.Inputs[0].WitScript = new WitScript(new[]
+        {
+            Array.Empty<byte>(), localFirst ? localSig : remoteSig, localFirst ? remoteSig : localSig,
+            fundingScript.ToBytes()
+        });
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Signed local commitment {CommitmentNumber} ({TxId}) of channel {ChannelId} for "
+                                 + "broadcast", commitmentNumber, tx.GetHash(), channelId);
+
+        return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
     }
 
     /// <inheritdoc />
@@ -265,6 +343,7 @@ public class LocalLightningSigner : ILightningSigner
     {
         ArgumentNullException.ThrowIfNull(htlcTransactions);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfDataLoss(channelId, "sign HTLC transactions of a new commitment");
 
         if (htlcTransactions.Count == 0)
             return [];
@@ -322,6 +401,7 @@ public class LocalLightningSigner : ILightningSigner
     {
         ArgumentNullException.ThrowIfNull(htlcTransaction);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        ThrowIfDataLoss(channelId, "sign our HTLC transaction");
 
         // The holder's own signature on its HTLC transaction is always SIGHASH_ALL
         using var htlcBasepointSecret = GetHtlcBasepointSecret(signingInfo.ChannelKeyIndex);
@@ -541,6 +621,8 @@ public class LocalLightningSigner : ILightningSigner
         if (!_channelSigningInfo.TryGetValue(channelId, out var signingInfo))
             throw new InvalidOperationException($"Channel {channelId} not registered with signer");
 
+        ThrowIfDataLoss(channelId, "sign a commitment");
+
         Transaction nBitcoinTx;
         try
         {
@@ -692,6 +774,26 @@ public class LocalLightningSigner : ILightningSigner
             throw new SignerException($"Channel {channelId} not registered with signer", channelId, "Internal error");
 
         return signingInfo;
+    }
+
+    private void ThrowIfDataLoss(ChannelId channelId, string what)
+    {
+        if (_dataLossChannels.ContainsKey(channelId))
+            throw new SignerException($"Refusing to {what}: data loss was detected on the channel", channelId,
+                                      "Internal error");
+    }
+
+    /// <summary>
+    /// True when <paramref name="pubKey"/> is the first key of the 2-of-2 funding script
+    /// (<c>OP_2 &lt;pubkey1&gt; &lt;pubkey2&gt; OP_2 OP_CHECKMULTISIG</c>).
+    /// </summary>
+    private static bool IsFirstFundingKey(Script fundingScript, CompactPubKey pubKey)
+    {
+        var ops = fundingScript.ToOps().ToList();
+        if (ops.Count != 5 || ops[1].PushData is null)
+            throw new InvalidOperationException("The funding script is not a 2-of-2 multisig");
+
+        return ops[1].PushData.AsSpan().SequenceEqual((byte[])pubKey);
     }
 
     private static SigHash GetCounterpartyHtlcSigHash(bool hasAnchors) =>

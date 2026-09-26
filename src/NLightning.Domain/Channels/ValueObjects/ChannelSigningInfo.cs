@@ -28,10 +28,16 @@ public record struct ChannelSigningInfo
     /// </summary>
     public ulong LocalCommitmentNumber { get; init; }
 
+    /// <summary>
+    /// True when <c>channel_reestablish</c> proved we lost data on the channel (<c>ChannelModel.DataLossDetected</c>):
+    /// the signer then refuses every signature for it (invariant I12, BOLT2 plan N9-T4).
+    /// </summary>
+    public bool DataLossDetected { get; init; }
+
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
                               uint channelKeyIndex, CompactPubKey? remoteHtlcBasepoint = null,
-                              ulong localCommitmentNumber = 0)
+                              ulong localCommitmentNumber = 0, bool dataLossDetected = false)
     {
         FundingTxId = fundingTxId;
         FundingOutputIndex = fundingOutputIndex;
@@ -41,5 +47,6 @@ public record struct ChannelSigningInfo
         ChannelKeyIndex = channelKeyIndex;
         RemoteHtlcBasepoint = remoteHtlcBasepoint;
         LocalCommitmentNumber = localCommitmentNumber;
+        DataLossDetected = dataLossDetected;
     }
 }

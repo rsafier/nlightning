@@ -295,6 +295,6 @@ public class ChannelModel
         return new ChannelSigningInfo(FundingOutput!.TransactionId!.Value, FundingOutput.Index!.Value,
                                       FundingOutput.Amount, LocalKeySet.FundingCompactPubKey,
                                       RemoteKeySet!.FundingCompactPubKey, LocalKeySet.KeyIndex,
-                                      RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber);
+                                      RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected);
     }
 }
