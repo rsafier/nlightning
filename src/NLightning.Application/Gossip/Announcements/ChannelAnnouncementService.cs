@@ -141,6 +141,15 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     }
 
     /// <inheritdoc />
+    public void OnShortChannelIdChanged(ChannelId channelId)
+    {
+        _sentOnConnection.TryRemove(channelId, out _);
+        if (_announced.TryRemove(channelId, out _))
+            _logger.LogInformation("The short channel id of announced channel {ChannelId} moved; it is announced again "
+                                 + "once the new funding block is deep enough", channelId);
+    }
+
+    /// <inheritdoc />
     public ChannelAnnouncementPayload? TryAssembleAnnouncement(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);

@@ -339,6 +339,64 @@ public class ChannelAnnouncementServiceTests
     }
 
     [Fact]
+    public async Task Given_AnAnnouncedChannelWhoseScidMoved_When_TheNewBlockIsDeep_Then_ItIsAnnouncedAgainUnderIt()
+    {
+        // Arrange (NL-350): the channel is announced at its first short channel id on both ends
+        using var pair = new AnnouncementTestPair();
+        await ExchangeHalvesAndCompleteAsync(pair);
+        Assert.True(pair.Alice.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+        var moved = new ShortChannelId(AnnouncementTestPair.FundingHeight + 3, 9,
+                                       AnnouncementTestPair.FundingOutputIndex);
+
+        // Act: a reorg moves the funding transaction (what FundingReconfirmationHandler does on each end, on the same
+        // connection), then the new funding block gets 5, then 6 confirmations
+        foreach (var node in new[] { pair.Alice, pair.Bob })
+        {
+            node.Channel.ShortChannelId = moved;
+            node.Channel.ResetAnnouncementSignatures();
+            node.Service.OnShortChannelIdChanged(AnnouncementTestPair.ChannelId);
+            node.Signer.RegisterChannel(AnnouncementTestPair.ChannelId, node.Channel.GetSigningInfo());
+            node.Tip = moved.BlockHeight + GossipOptions.MinimumAnnouncementDepth - 2;
+        }
+
+        var belowDepth = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(
+                             pair.Alice.Channel, pair.Bob.NodeId, pair.Alice.UnitOfWork.Object);
+        pair.Alice.Tip = pair.Bob.Tip = moved.BlockHeight + GossipOptions.MinimumAnnouncementDepth - 1;
+        await ExchangeHalvesAndCompleteAsync(pair);
+
+        // Assert: nothing public or complete in between, then both halves for the new short channel id and a second
+        // announcement naming it, on both ends
+        Assert.Null(belowDepth);
+        foreach (var node in new[] { pair.Alice, pair.Bob })
+        {
+            Assert.True(node.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+            Assert.Equal([AnnouncementTestPair.ShortChannelId, moved],
+                         node.Sink.ChannelAnnouncements.Select(a => a.Announcement.ShortChannelId));
+            Assert.True(ChannelAnnouncementService.IsAnnounced(node.Channel));
+        }
+
+        Assert.Equal(pair.Alice.Sink.ChannelAnnouncements[1].Announcement.GetBytes(),
+                     pair.Bob.Sink.ChannelAnnouncements[1].Announcement.GetBytes());
+    }
+
+    [Fact]
+    public async Task Given_ScidMoved_When_Checked_Then_TheOldAnnouncementNoLongerCountsAndOursIsDueOnTheConnection()
+    {
+        // Arrange (NL-350)
+        using var pair = new AnnouncementTestPair();
+        await ExchangeHalvesAndCompleteAsync(pair);
+        Assert.True(pair.Alice.Service.WasSentOnConnection(AnnouncementTestPair.ChannelId));
+
+        // Act
+        pair.Alice.Service.OnShortChannelIdChanged(AnnouncementTestPair.ChannelId);
+
+        // Assert
+        Assert.False(pair.Alice.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+        Assert.False(pair.Alice.Service.WasSentOnConnection(AnnouncementTestPair.ChannelId));
+        Assert.True(pair.Bob.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+    }
+
+    [Fact]
     public void Given_OurOwnNodeId_When_Ordered_Then_Refused()
     {
         // Arrange
@@ -346,5 +404,23 @@ public class ChannelAnnouncementServiceTests
 
         // Act / Assert
         Assert.Throws<InvalidOperationException>(() => ChannelAnnouncementBuilder.IsNode1(key, key));
+    }
+
+    /// <summary>Both ends send their half on the current connection, store the other's, and complete.</summary>
+    private static async Task ExchangeHalvesAndCompleteAsync(AnnouncementTestPair pair)
+    {
+        var fromAlice = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(
+                            pair.Alice.Channel, pair.Bob.NodeId, pair.Alice.UnitOfWork.Object);
+        var fromBob = await pair.Bob.Service.PrepareOwnAnnouncementSignaturesAsync(
+                          pair.Bob.Channel, pair.Alice.NodeId, pair.Bob.UnitOfWork.Object);
+        Assert.NotNull(fromAlice);
+        Assert.NotNull(fromBob);
+        Assert.Equal(pair.Alice.Channel.ShortChannelId, fromAlice.Payload.ShortChannelId);
+        pair.Alice.Channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(fromBob.Payload.NodeSignature, fromBob.Payload.BitcoinSignature));
+        pair.Bob.Channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(fromAlice.Payload.NodeSignature, fromAlice.Payload.BitcoinSignature));
+        await pair.Alice.Service.CompleteAnnouncementAsync(pair.Alice.Channel, pair.Alice.UnitOfWork.Object);
+        await pair.Bob.Service.CompleteAnnouncementAsync(pair.Bob.Channel, pair.Bob.UnitOfWork.Object);
     }
 }

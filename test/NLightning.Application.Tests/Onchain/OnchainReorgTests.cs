@@ -9,7 +9,9 @@ namespace NLightning.Application.Tests.Onchain;
 
 using Application.Channels.Safety;
 using Application.Channels.Services;
+using Application.Gossip.Announcements.Interfaces;
 using Application.Gossip.Interfaces;
+using Application.Gossip.Services;
 using Application.Onchain;
 using Application.Onchain.Reorg;
 using Channels.Services;
@@ -311,6 +313,78 @@ public sealed class OnchainReorgTests : IDisposable
         Assert.Equal(501u, open.FundingCreatedAtBlockHeight);
         unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
         Assert.Equal([expected], scidWhenUpdateSent);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_AnnouncedChannel_When_ItsScidMoves_Then_AnnouncementStateIsResetInTheSaveAndSignerRefreshed(
+        bool signerHasSource)
+    {
+        // Arrange (NL-350): both halves of announcement_signatures were exchanged for 500x3
+        var open = _pair.Bob.Channel;
+        open.ShortChannelId = new ShortChannelId(500, 3, open.FundingOutput!.Index!.Value);
+        open.FundingCreatedAtBlockHeight = 500;
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x41, 64).ToArray());
+        open.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(signature, signature));
+        open.MarkAnnouncementSignaturesSent(DateTimeOffset.UtcNow);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+              .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
+               {
+                   channel = id == open.ChannelId ? open : null;
+                   return channel is not null;
+               }));
+
+        // The pair has one model per node, so the database copy is the shared one here; the save records what it holds
+        var dbCopy = open;
+        var storedCopies = new List<(ShortChannelId Scid, bool HasRemoteHalf, bool HasSentAt)>();
+        var unitOfWork = new Mock<IUnitOfWork>();
+        var channels = new Mock<IChannelDbRepository>();
+        channels.Setup(r => r.GetByIdAsync(open.ChannelId)).ReturnsAsync(dbCopy);
+        channels.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
+                .Callback<ChannelModel>(c => storedCopies.Add((c.ShortChannelId, c.RemoteAnnouncementSignatures is not null,
+                                                              c.LocalAnnouncementSignaturesSentAt is not null)))
+                .Returns(Task.CompletedTask);
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channels.Object);
+        var announcements = new Mock<IChannelAnnouncementService>();
+        var signer = new Mock<ILightningSigner>();
+        var registered = new List<ShortChannelId?>();
+        signer.Setup(s => s.RegisterChannel(open.ChannelId, It.IsAny<ChannelSigningInfo>()))
+              .Callback<ChannelId, ChannelSigningInfo>((_, info) => registered.Add(info.ShortChannelId));
+        var channelUpdates = new Mock<IChannelUpdateService>();
+        var publicWhenUpdateSent = new List<bool>();
+        channelUpdates.Setup(c => c.SendChannelUpdateAsync(open.ChannelId, It.IsAny<CancellationToken>()))
+                      .Callback(() => publicWhenUpdateSent.Add(ChannelUpdateService.IsPublic(open)))
+                      .Returns(Task.CompletedTask);
+        var services = new ServiceCollection();
+        services.AddScoped(_ => unitOfWork.Object);
+        services.AddSingleton(channelUpdates.Object);
+        services.AddSingleton(announcements.Object);
+        services.AddSingleton(signer.Object);
+        if (signerHasSource)
+            services.AddSingleton(new Mock<IChannelSigningInfoSource>().Object);
+        using var provider = services.BuildServiceProvider();
+        var handler = new FundingReconfirmationHandler(new ChannelLockProvider(), memory.Object,
+                                                       NullLogger.Instance,
+                                                       provider.GetRequiredService<IServiceScopeFactory>());
+        var watch = new WatchedTransactionModel(open.ChannelId, open.FundingOutput.TransactionId!.Value, 3);
+        watch.SetHeightAndIndex(501, 7);
+
+        // Act
+        var moved = await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
+
+        // Assert: the reset is in the save that moves the scid, then on the shared model; the announcement service
+        // forgets the old announcement; a source-less signer learns the new scid; the channel_update sent after the
+        // move is private (dont_forward), not a public update naming a scid nobody announced
+        var expected = new ShortChannelId(501, 7, open.FundingOutput.Index.Value);
+        Assert.True(moved);
+        Assert.Equal([(expected, false, false)], storedCopies);
+        Assert.Null(open.RemoteAnnouncementSignatures);
+        Assert.Null(open.LocalAnnouncementSignaturesSentAt);
+        announcements.Verify(a => a.OnShortChannelIdChanged(open.ChannelId), Times.Once);
+        Assert.Equal(signerHasSource ? [] : [expected], registered);
+        Assert.Equal([false], publicWhenUpdateSent);
     }
 
     [Fact]

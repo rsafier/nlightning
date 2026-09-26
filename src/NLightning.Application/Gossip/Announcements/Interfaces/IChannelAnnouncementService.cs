@@ -60,6 +60,14 @@ public interface IChannelAnnouncementService
     void OnPeerConnectionChanged(CompactPubKey peer);
 
     /// <summary>
+    /// Forgets what this process sent and handed on for the channel: a reorg moved its short channel id (NL-350), so
+    /// the announcement of the old one is void, and ours for the new one is due again once the new funding block has
+    /// the announcement depth, also on the current connection. The caller resets and persists the model's
+    /// announcement state (<see cref="ChannelModel.ResetAnnouncementSignatures"/>) under the channel's lock.
+    /// </summary>
+    void OnShortChannelIdChanged(ChannelId channelId);
+
+    /// <summary>
     /// The channel's <c>channel_announcement</c> with all four signatures, once we sent ours and hold the peer's
     /// (BOLT 7: "has sent AND received a valid <c>announcement_signatures</c>") and the funding transaction has the
     /// announcement depth; null otherwise, or when the stored peer signatures don't verify for the channel's current
