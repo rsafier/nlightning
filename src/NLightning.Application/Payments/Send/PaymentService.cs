@@ -18,6 +18,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
@@ -31,9 +32,11 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Interpreters;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
+using Domain.Routing.Pathfinding;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Routing;
+using Routing.Interfaces;
 
 /// <summary>
 /// Sends our payments (BOLT2 plan N8-T3, ONION M4-T6 through route hints; <see cref="IPaymentService"/>), retries and
@@ -102,7 +105,7 @@ using Routing;
 /// of another hash. Persistence goes through a fresh DI scope per step (scoped <see cref="IPaymentDbRepository"/>
 /// sharing the scope's <see cref="IUnitOfWork"/>).</para>
 /// </remarks>
-public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
+public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IRouteQueryService
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -119,6 +122,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
     private readonly IAttributionDataService? _attributionDataService;
+    private readonly GraphPathSource? _graphPathSource;
 
     /// <summary>
     /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
@@ -127,6 +131,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     /// </summary>
     private static readonly HashSet<string> s_liquidityRules =
         ["B2-ADD-S01", "B2-ADD-S02", "B2-ADD-S03", "B2-ADD-S04", "B2-ADD-S09", "B2-DUST-03", "B2-DUST-04"];
+
+    /// <summary>
+    /// BOLT 11's <c>min_final_cltv_expiry_delta</c> when an invoice has no <c>c</c> field (the <c>getroute</c> default).
+    /// </summary>
+    private const ushort DefaultFinalCltvDelta = 18;
 
     private readonly Dictionary<Hash, HashLock> _hashLocks = [];
     private readonly Lock _hashLocksSync = new();
@@ -141,9 +150,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                           IPeerLivenessProbe peerLivenessProbe, PaymentRoutePlanner planner,
                           ISecureKeyManager secureKeyManager, IOptions<PaymentSendOptions> sendOptions,
                           IServiceScopeFactory serviceScopeFactory, TimeProvider timeProvider,
-                          IAttributionDataService? attributionDataService = null)
+                          IAttributionDataService? attributionDataService = null,
+                          GraphPathSource? graphPathSource = null, IGossipScidRefresher? scidRefresher = null)
     {
         _attributionDataService = attributionDataService;
+        _graphPathSource = graphPathSource;
         _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
         _channelOperations = channelOperations;
@@ -158,7 +169,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         _serviceScopeFactory = serviceScopeFactory;
         _timeProvider = timeProvider;
         _retryPolicy = new PaymentRetryPolicy(lightningSigner, nodeOptions.Value.BitcoinNetwork.ChainHash,
-                                              sendOptions.Value.ExpiryTooSoonExtraBlocks);
+                                              sendOptions.Value.ExpiryTooSoonExtraBlocks,
+                                              graphPathSource?.MissionControl, scidRefresher);
     }
 
     private enum OutcomeMatch
@@ -254,6 +266,64 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         var payment = await GetPaymentAsync(paymentHash, CancellationToken.None)
                    ?? throw new InvalidOperationException($"Payment {paymentHash} was not stored.");
         return new PayInvoiceResult(payment, session.Attempts, session.MaxPartsInFlight);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Planned by <see cref="PaymentRoutePlanner"/> as a payment's first round with one part (no shadow CLTV offset, so
+    /// the answer is stable), over the same usable channels and the same graph; nothing is stored or sent.
+    /// </remarks>
+    public async Task<RouteQuote> QuoteRouteAsync(CompactPubKey payee, LightningMoney amount, LightningMoney? maxFee,
+                                                  ushort? finalCltvDelta,
+                                                  CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(amount);
+        if (amount.IsZero)
+            throw new ArgumentException("The amount must be positive.", nameof(amount));
+        var ourNodeId = _secureKeyManager.GetNodePubKey();
+        if (payee == ourNodeId)
+            throw new ArgumentException("The destination is this node.", nameof(payee));
+
+        var height = _blockchainMonitor.LastProcessedBlockHeight;
+        if (height == 0)
+            throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
+
+        var channels = await GetUsableChannelsAsync(cancellationToken);
+        var graph = _graphPathSource?.CreateContext(0);
+        var target = new PaymentTarget(payee, new Hash(new byte[32]), new Secret(new byte[32]), amount,
+                                       finalCltvDelta ?? DefaultFinalCltvDelta, []);
+        var request = new PaymentPlanRequest(target, amount.MilliSatoshi, amount.MilliSatoshi,
+                                             (maxFee ?? _sendOptions.Value.GetMaxFee(amount)).MilliSatoshi, 1, height,
+                                             ourNodeId, channels.Select(ToCandidate).ToList(),
+                                             CreateLiquidityProbe(channels, height), new RouteConstraints(),
+                                             _sendOptions.Value.MinPartMsat, null, graph);
+        if (!_planner.TryPlan(request, out var planned, out var reason))
+            throw new InvalidOperationException(reason);
+
+        var part = planned[0];
+        return new RouteQuote(part.Route, part.Channel, EstimateProbability(part.Route, graph), height,
+                              part.Description);
+    }
+
+    /// <summary>
+    /// The product of the success probabilities of the channels after our first one (see <see cref="RouteQuote"/>).
+    /// </summary>
+    private static double EstimateProbability(PaymentRoute route, GraphRoutingContext? graph)
+    {
+        var aprioriProbability = (graph?.CostModel ?? PathCostModel.Default).AprioriProbability;
+        var probability = 1.0;
+        for (var i = 0; i < route.Hops.Count - 1; i++)
+        {
+            var hop = route.Hops[i];
+            var scid = hop.OutgoingShortChannelId!.Value;
+            var capacity = graph?.Graph.TryGetChannel(scid, out var channel) == true ? channel.CapacityMsat : null;
+            probability *= graph?.Liquidity.GetSuccessProbability(
+                               DirectedChannel.Between(scid, hop.NodeId, route.Hops[i + 1].NodeId),
+                               hop.AmountToForward.MilliSatoshi, capacity, graph.NowUnixSeconds, aprioriProbability)
+                        ?? aprioriProbability;
+        }
+
+        return probability;
     }
 
     /// <inheritdoc />
@@ -512,13 +582,21 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                               : 0;
             var height = _blockchainMonitor.LastProcessedBlockHeight;
             var channels = await GetUsableChannelsAsync(CancellationToken.None);
+            GraphRoutingContext? graph = null;
+            if (_graphPathSource is { IsAvailable: true })
+            {
+                // One shadow offset per payment, so its rounds and parts all end at the same payee CLTV
+                session.ShadowCltvOffset ??= _graphPathSource.ComputeShadowCltvOffset(session.Target.PayeeNodeId);
+                graph = _graphPathSource.CreateContext(session.ShadowCltvOffset.Value);
+            }
+
             var request = new PaymentPlanRequest(session.Target, remaining, session.Amount.MilliSatoshi, feeLeft,
                                                  partsAllowed, height, _secureKeyManager.GetNodePubKey(),
                                                  channels.Select(ToCandidate).ToList(),
                                                  CreateLiquidityProbe(channels, height), session.Constraints,
                                                  _sendOptions.Value.MinPartMsat,
                                                  PaymentRoutePlanner.SumHintForwards(
-                                                     session.InFlightParts.Select(p => p.Route)));
+                                                     session.InFlightParts.Select(p => p.Route)), graph);
             if (!_planner.TryPlan(request, out var planned, out var noRouteReason))
             {
                 if (session.HasPartsInFlight)
@@ -958,6 +1036,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         part?.Status = PaymentPartStatus.Succeeded;
+        if (part is not null)
+            _graphPathSource?.MissionControl.RecordSuccess(part.Route);
         LogSucceeded(payment);
         CompleteSession(session);
         return true;

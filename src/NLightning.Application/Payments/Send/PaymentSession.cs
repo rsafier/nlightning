@@ -49,6 +49,12 @@ internal sealed class PaymentSession
 
     public RouteConstraints Constraints { get; } = new();
 
+    /// <summary>
+    /// The BOLT 7 shadow CLTV offset of the payment's graph routes, chosen at its first round with a graph (null
+    /// before).
+    /// </summary>
+    public uint? ShadowCltvOffset { get; set; }
+
     public List<PaymentPart> Parts { get; } = [];
 
     /// <summary>HTLCs offered, plus offers the engine refused.</summary>

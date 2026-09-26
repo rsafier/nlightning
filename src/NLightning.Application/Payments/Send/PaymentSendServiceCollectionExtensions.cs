@@ -3,9 +3,11 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace NLightning.Application.Payments.Send;
 
+using Domain.Gossip.Interfaces;
 using Domain.Payments.Interfaces;
 using Interfaces;
 using Routing;
+using Routing.Interfaces;
 using Switch;
 
 /// <summary>
@@ -27,14 +29,23 @@ public static class PaymentSendServiceCollectionExtensions
     /// and <c>IBlockchainMonitor</c>, and a Scoped <c>IPaymentDbRepository</c> sharing the
     /// scope's <c>IUnitOfWork</c> (<c>AddRepositoriesInfrastructureServices</c>). <c>IAttributionDataService</c>
     /// (<c>AddBitcoinInfrastructure</c>) is optional: with it the origin verifies <c>attribution_data</c> (NL-326).
+    /// <para>Graph routing (BOLT 7 plan G4-T2..T4, G3-T5): <see cref="MissionControl"/>, <see cref="GraphPathSource"/>
+    /// (it reads the <c>IGraphStore</c> of <c>AddGossipGraphServices</c> when registered; without it payments route
+    /// only over direct channels and route hints), <see cref="IRouteQueryService"/> (the payment service, for
+    /// <c>getroute</c>) and a no-op <see cref="IGossipScidRefresher"/> (<see cref="NullGossipScidRefresher"/>) that the
+    /// host replaces with the gossip sync manager.</para>
     /// </remarks>
     public static IServiceCollection AddPaymentSendServices(this IServiceCollection services)
     {
         services.AddOptions<PaymentSendOptions>();
         services.TryAddSingleton(TimeProvider.System);
         services.TryAddSingleton<PaymentRoutePlanner>();
+        services.TryAddSingleton<MissionControl>();
+        services.TryAddSingleton<GraphPathSource>();
+        services.TryAddSingleton<IGossipScidRefresher, NullGossipScidRefresher>();
         services.TryAddSingleton<PaymentService>();
         services.TryAddSingleton<IPaymentService>(sp => sp.GetRequiredService<PaymentService>());
+        services.TryAddSingleton<IRouteQueryService>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddSingleton<IPaymentOutcomeHandler>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<ILocalPaymentHtlcHandler, PaymentOutcomeSwitchHandler>());
 

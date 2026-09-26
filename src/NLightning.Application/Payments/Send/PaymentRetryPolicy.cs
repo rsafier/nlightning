@@ -4,10 +4,13 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
+using Domain.Gossip.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
+using Domain.Routing.Pathfinding;
 using Routing;
 
 /// <summary>
@@ -31,6 +34,12 @@ using Routing;
 ///   <item>An error no hop authenticated, or <c>update_fail_malformed_htlc</c> from our peer: our channel of that part is
 ///   avoided. An HTLC timed out on chain: that channel is closed and avoided.</item>
 /// </list>
+/// <para>Beyond the payment (BOLT 7 plan G4-T2, G3-T5): every attributed failure is also handed to
+/// <see cref="MissionControl"/>, so later payments and this payment's later rounds avoid the failed edge or node for a
+/// while; an intermediate hop's UPDATE failure asks the gossip sync for the channel's current gossip
+/// (<see cref="IGossipScidRefresher"/>). The failure's <c>channel_update</c> is used only by this payment
+/// (<see cref="RouteConstraints.PolicyOverrides"/>, <see cref="RouteConstraints.GraphPolicyOverrides"/>) and never
+/// written to the graph (BOLT 4 MUST NOT, plan D9).</para>
 /// Retries are bounded by the caller (attempts, fee limit, timeout).
 /// </remarks>
 internal sealed class PaymentRetryPolicy
@@ -38,12 +47,17 @@ internal sealed class PaymentRetryPolicy
     private readonly ILightningSigner _lightningSigner;
     private readonly ChainHash _chainHash;
     private readonly uint _expiryTooSoonExtraBlocks;
+    private readonly MissionControl? _missionControl;
+    private readonly IGossipScidRefresher? _scidRefresher;
 
-    public PaymentRetryPolicy(ILightningSigner lightningSigner, ChainHash chainHash, uint expiryTooSoonExtraBlocks)
+    public PaymentRetryPolicy(ILightningSigner lightningSigner, ChainHash chainHash, uint expiryTooSoonExtraBlocks,
+                              MissionControl? missionControl = null, IGossipScidRefresher? scidRefresher = null)
     {
         _lightningSigner = lightningSigner;
         _chainHash = chainHash;
         _expiryTooSoonExtraBlocks = expiryTooSoonExtraBlocks;
+        _missionControl = missionControl;
+        _scidRefresher = scidRefresher;
     }
 
     /// <summary>
@@ -82,6 +96,9 @@ internal sealed class PaymentRetryPolicy
 
         var hops = part.Route.Hops;
         var index = interpretation.ErringHopIndex!.Value;
+        if (index < hops.Count)
+            _missionControl?.RecordFailure(part.Route, index, interpretation.Code);
+
         if (interpretation.IsFinalNode)
         {
             if (interpretation.Code == FailureCode.MppTimeout)
@@ -103,6 +120,12 @@ internal sealed class PaymentRetryPolicy
         // The failure is about the hop's outgoing channel
         var shortChannelId = hops[index].OutgoingShortChannelId!.Value;
         var nextNode = hops[index + 1].NodeId;
+
+        // The graph's policy of the channel may be stale: ask the gossip sync (the failure's update stays here, D9)
+        if (interpretation.Code is { } failureCode
+         && ((FailureCodeFlags)((ushort)failureCode & 0xF000)).HasFlag(FailureCodeFlags.Update))
+            _scidRefresher?.RequestRefresh(shortChannelId);
+
         switch (interpretation.Code)
         {
             case FailureCode.FeeInsufficient or FailureCode.IncorrectCltvExpiry or FailureCode.AmountBelowMinimum:
@@ -184,6 +207,8 @@ internal sealed class PaymentRetryPolicy
         constraints.PolicyOverrides[shortChannelId] =
             new HintChannelPolicy(update.FeeBaseMsat, update.FeeProportionalMillionths, update.CltvExpiryDelta,
                                   update.HtlcMinimumMsat, update.HtlcMaximumMsat, update.Timestamp);
+        constraints.GraphPolicyOverrides[DirectedChannel.Between(shortChannelId, erringNode, nextNode)] =
+            GraphPolicy.FromChannelUpdate(update);
         reason = string.Empty;
         return true;
     }
