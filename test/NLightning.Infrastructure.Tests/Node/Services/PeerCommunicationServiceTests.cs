@@ -426,6 +426,44 @@ public class PeerCommunicationServiceTests
     }
 
     [Fact]
+    public async Task Given_NewService_When_PingIsRaisedBeforeAndAfterInit_Then_OnlyTheOneAfterInitIsSent()
+    {
+        // Arrange - the ping handler is subscribed from the start, so a PingAsync right after the ping loop is marked
+        // started never records a ping that nobody sends (it would time out and disconnect a healthy peer)
+        _messageFactoryMock.Setup(x => x.CreateInitMessage())
+                           .Returns(new InitMessage(new InitPayload(new FeatureSet())));
+        var service = new PeerCommunicationService(NullLogger<PeerCommunicationService>.Instance,
+                                                   _messageServiceMock.Object, _messageFactoryMock.Object,
+                                                   _peerPubKey, _pingPongServiceMock.Object,
+                                                   _serviceProviderMock.Object);
+        Listen(service);
+        _pingPongServiceMock.VerifyAdd(x => x.OnPingMessageReady += It.IsAny<EventHandler<IMessage>>(), Times.Once);
+
+        // Act - before the peer's init no ping may go out (BOLT 1)
+        _pingPongServiceMock.Raise(x => x.OnPingMessageReady += null, _pingPongServiceMock.Object,
+                                   new PingMessage());
+
+        // Assert
+        _messageServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<PingMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        // Act - after both inits the ping is sent, and the loop start subscribes nothing a second time
+        await service.InitializeAsync(TimeSpan.FromSeconds(30));
+        RaiseMessage(new InitMessage(new InitPayload(new FeatureSet())));
+        _pingPongServiceMock.Raise(x => x.OnPingMessageReady += null, _pingPongServiceMock.Object,
+                                   new PingMessage());
+
+        // Assert
+        _messageServiceMock.Verify(
+            x => x.SendMessageAsync(It.IsAny<PingMessage>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+            Times.Once);
+        _pingPongServiceMock.VerifyAdd(x => x.OnPingMessageReady += It.IsAny<EventHandler<IMessage>>(), Times.Once);
+
+        service.Disconnect();
+    }
+
+    [Fact]
     public async Task Given_RealPingPongService_When_PingingAfterInit_Then_ThePeersPongAnswersIt()
     {
         // Arrange
