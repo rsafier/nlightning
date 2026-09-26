@@ -762,8 +762,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     /// <summary>
     /// True when <paramref name="spend"/> has the shape of a BOLT 3 mutual close of <paramref name="channel"/>: its only
-    /// input is the funding outpoint with sequence 0xFFFFFFFF, lock time 0, and every output pays one of the two
-    /// shutdown scripts.
+    /// input is the funding outpoint, and every output pays one of the two shutdown scripts; legacy
+    /// (<c>closing_signed</c>): sequence 0xFFFFFFFF and lock time 0; <c>option_simple_close</c>: sequence 0xFFFFFFFD
+    /// and any lock time (the closer's choice, N11).
     /// </summary>
     internal static bool IsMutualCloseOf(ChannelModel channel, SignedTransaction spend)
     {
@@ -781,12 +782,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             return false;
         }
 
-        if (transaction.Inputs.Count != 1 || transaction.LockTime != LockTime.Zero || transaction.Outputs.Count == 0)
+        if (transaction.Inputs.Count != 1 || transaction.Outputs.Count == 0)
             return false;
 
         var input = transaction.Inputs[0];
-        if (input.PrevOut != new OutPoint(new uint256((byte[])fundingTxId), fundingIndex)
-         || input.Sequence != Sequence.Final)
+        var isLegacy = input.Sequence == Sequence.Final && transaction.LockTime == LockTime.Zero;
+        var isSimple = (uint)input.Sequence
+                    == Infrastructure.Bitcoin.Builders.ClosingTransactionBuilder.SimpleCloseSequence;
+        if (input.PrevOut != new OutPoint(new uint256((byte[])fundingTxId), fundingIndex) || !(isLegacy || isSimple))
             return false;
 
         byte[] local = localScript;
@@ -1180,6 +1183,19 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                           .HandleAsync(Cast<ClosingSignedMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
 
+            // BOLT 2 option_simple_close (plan N11)
+            case MessageTypes.ClosingComplete:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<ClosingCompleteMessage>(scope)
+                          .HandleAsync(Cast<ClosingCompleteMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
+            case MessageTypes.ClosingSig:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<ClosingSigMessage>(scope)
+                          .HandleAsync(Cast<ClosingSigMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
@@ -1187,7 +1203,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     private static bool IsCloseMessage(MessageTypes messageType) =>
-        messageType is MessageTypes.Shutdown or MessageTypes.ClosingSigned;
+        messageType is MessageTypes.Shutdown or MessageTypes.ClosingSigned or MessageTypes.ClosingComplete
+                    or MessageTypes.ClosingSig;
 
     private static bool IsNormalOperationMessage(MessageTypes messageType) =>
         messageType is MessageTypes.UpdateAddHtlc or MessageTypes.UpdateFulfillHtlc or MessageTypes.UpdateFailHtlc
