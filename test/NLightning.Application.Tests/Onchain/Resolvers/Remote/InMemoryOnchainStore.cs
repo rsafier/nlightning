@@ -28,6 +28,7 @@ internal sealed class InMemoryOnchainStore
     public Dictionary<(ChannelId, HtlcKey), HtlcOrigin> Origins { get; } = [];
     public List<ForwardCircuitModel> Circuits { get; } = [];
     public Dictionary<Hash, PaymentModel> Payments { get; } = [];
+    public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
     public int Saves { get; private set; }
 
     public (IUnitOfWork UnitOfWork, Func<Task> Save) CreateUnitOfWork()
@@ -72,6 +73,11 @@ internal sealed class InMemoryOnchainStore
         payments.Setup(p => p.GetByPaymentHashAsync(It.IsAny<Hash>()))
                 .ReturnsAsync((Hash hash) => Payments.GetValueOrDefault(hash));
         unitOfWork.SetupGet(u => u.PaymentDbRepository).Returns(payments.Object);
+
+        var invoices = new Mock<IInvoiceDbRepository>();
+        invoices.Setup(i => i.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                .ReturnsAsync((Hash hash) => Invoices.GetValueOrDefault(hash));
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(invoices.Object);
 
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(SaveAsync);
         return (unitOfWork.Object, SaveAsync);

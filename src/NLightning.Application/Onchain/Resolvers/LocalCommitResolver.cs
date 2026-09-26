@@ -372,6 +372,13 @@ public sealed class LocalCommitResolver : IOutputResolver
         else if (spend is { ByUs: false } && descriptor.Kind == OutputDescriptorKind.LocalReceivedHtlc)
             spend = spend with { Path = HtlcSpendPath.TimeoutClaim }; // alerts come from the witness, at spend time
 
+        // NL-316/NL-322: an HTLC of the peer that pays one of our invoices and has no preimage we may use yet: the switch
+        // decides as final hop (it persists the preimage on the record, which the next round claims with)
+        if (spend is null && descriptor.Kind == OutputDescriptorKind.LocalReceivedHtlc
+                          && await FinalHopClaims.GetFinalHopDecisionAsync(context.UnitOfWork, context.Channel.ChannelId,
+                                                                          record, context.Height) is { } decision)
+            actions.Add(new RaiseChannelEventAction(decision));
+
         var facts = new OutputResolutionFacts(context.Height, context.Close.SpentAtHeight, spend, secondLevelSpend,
                                               await GetAllowedPreimageAsync(context, descriptor, record),
                                               record is { Direction: HtlcDirection.Incoming, State: var state }
@@ -487,7 +494,8 @@ public sealed class LocalCommitResolver : IOutputResolver
 
     /// <summary>
     /// The preimage we may use for an HTLC (B5-LCL-RO-02): for ours, the one the peer revealed (off chain or on chain,
-    /// both persisted in the record); for the peer's, our own persisted fulfill, or the preimage the forward of it learnt
+    /// both persisted in the record); for the peer's, our own persisted fulfill, the preimage the switch persisted on it
+    /// when it accepted it as our final hop (<see cref="FinalHopClaims"/>), or the preimage the forward of it learnt
     /// downstream (the switch's upstream fulfill is refused once the channel is closed).
     /// </summary>
     private async Task<byte[]?> GetAllowedPreimageAsync(LocalCommitContext context,
@@ -504,6 +512,10 @@ public sealed class LocalCommitResolver : IOutputResolver
 
         if (descriptor.Kind != OutputDescriptorKind.LocalReceivedHtlc)
             return null;
+
+        // Accepted as our final hop by the switch (NL-316/NL-322): the preimage it persisted on this HTLC's record
+        if (FinalHopClaims.AcceptedPreimage(record) is { } accepted)
+            return accepted;
 
         var forwards = await context.UnitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
                            HtlcOrigin.Forwarded(context.Channel.ChannelId, record.Id));
