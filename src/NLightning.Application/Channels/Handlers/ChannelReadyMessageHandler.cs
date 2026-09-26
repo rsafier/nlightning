@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Handlers;
 
@@ -22,14 +23,22 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
 {
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<ChannelReadyMessageHandler> _logger;
+    private readonly ulong? _maxDustHtlcExposureMsat;
     private readonly IUnitOfWork _unitOfWork;
 
+    /// <param name="channelMemoryRepository">The channels in memory.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="unitOfWork">The scope's unit of work.</param>
+    /// <param name="nodeOptions">Gives the dust exposure policy stored with the first commitment state
+    /// (<see cref="NodeOptions.MaxDustHtlcExposureMsat"/>, NL-254); without it the state has none.</param>
     public ChannelReadyMessageHandler(IChannelMemoryRepository channelMemoryRepository,
-                                      ILogger<ChannelReadyMessageHandler> logger, IUnitOfWork unitOfWork)
+                                      ILogger<ChannelReadyMessageHandler> logger, IUnitOfWork unitOfWork,
+                                      IOptions<NodeOptions>? nodeOptions = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _unitOfWork = unitOfWork;
+        _maxDustHtlcExposureMsat = nodeOptions?.Value.MaxDustHtlcExposureMsat;
     }
 
     public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
@@ -158,7 +167,7 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
         try
         {
             return ChannelStateTransitionService.CreateInitialCommitments(channel, remoteCurrentPoint,
-                                                                          remoteNextPoint);
+                                                                          remoteNextPoint, _maxDustHtlcExposureMsat);
         }
         catch (Exception e) when (e is ArgumentException or InvalidOperationException or OverflowException)
         {

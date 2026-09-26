@@ -94,8 +94,33 @@ public class NodeOptions
     public RoutingOptions Routing { get; set; } = new();
 
     /// <summary>
-    /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/> and the
-    /// reconnect delays); empty when valid. Feature errors are reported by <see cref="FeatureOptions.GetValidationErrors"/>.
+    /// Our <c>update_fee</c> policy for the channels we fund (BOLT2 plan N9-T1).
+    /// </summary>
+    /// <see cref="FeeUpdateOptions"/>
+    public FeeUpdateOptions FeeUpdates { get; set; } = new();
+
+    /// <summary>
+    /// The default <see cref="MaxDustHtlcExposureMsat"/>: 50,000 sat, as CLN and Eclair.
+    /// </summary>
+    public const ulong DefaultMaxDustHtlcExposureMsat = 50_000_000;
+
+    /// <summary>
+    /// BOLT 2 <c>max_dust_htlc_exposure_msat</c>: the most (msat) that trimmed HTLCs, which would go to miners if the
+    /// channel closed on chain, may hold on either commitment of a channel (BOLT2 plan N9-T3, NL-254). We don't offer an
+    /// HTLC that would push a commitment over it (the forward then fails upstream with
+    /// <c>temporary_channel_failure</c>), we fail an incoming trimmed HTLC that pushed one over it once it is locked in
+    /// (no preimage is revealed), and we don't raise the feerate of a channel without <c>option_anchors</c> when that
+    /// would trim HTLCs over it. Null (an empty configuration value) disables the check.
+    /// </summary>
+    /// <remarks>Configuration key <c>Node:MaxDustHtlcExposureMsat</c>. The value is stored with a channel's first
+    /// commitment state and kept with it (NL-242); channels whose state has none use this value for the receive and fee
+    /// checks.</remarks>
+    public ulong? MaxDustHtlcExposureMsat { get; set; } = DefaultMaxDustHtlcExposureMsat;
+
+    /// <summary>
+    /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
+    /// <see cref="FeeUpdates"/> and the reconnect delays); empty when valid. Feature errors are reported by
+    /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
     {
@@ -106,6 +131,7 @@ public class NodeOptions
             errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
 
         errors.AddRange(Routing.GetValidationErrors());
+        errors.AddRange(FeeUpdates.GetValidationErrors());
         return errors;
     }
 }
