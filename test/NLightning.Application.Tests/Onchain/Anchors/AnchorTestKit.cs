@@ -248,12 +248,29 @@ internal sealed class FakeAnchorChain : IBitcoinChainService
     public Task<uint> GetCurrentBlockHeightAsync() =>
         Throws ? throw new InvalidOperationException("bitcoind down") : Task.FromResult(Tip);
 
+    /// <summary>Whole transactions <c>getrawtransaction</c> returns (the peer's commitment in the mempool).</summary>
+    public Dictionary<uint256, Transaction> Transactions { get; } = [];
+
+    /// <summary>The blocks <c>getblock</c> serves, by height.</summary>
+    public Dictionary<uint, Block> Blocks { get; } = [];
+
+    /// <summary>How many times <c>getrawtransaction</c> was asked.</summary>
+    public int TransactionLookups { get; private set; }
+
     public Task<uint256> SendTransactionAsync(Transaction transaction) => throw new NotSupportedException();
-    public Task<Transaction?> GetTransactionAsync(uint256 txId) =>
-        Throws
-            ? throw new InvalidOperationException("bitcoind down")
-            : Task.FromResult(Mempool.Contains(txId) ? Network.Main.CreateTransaction() : null);
-    public Task<Block?> GetBlockAsync(uint height) => Task.FromResult<Block?>(null);
+
+    public Task<Transaction?> GetTransactionAsync(uint256 txId)
+    {
+        TransactionLookups++;
+        if (Throws)
+            throw new InvalidOperationException("bitcoind down");
+        if (Transactions.TryGetValue(txId, out var transaction))
+            return Task.FromResult<Transaction?>(transaction);
+        return Task.FromResult(Mempool.Contains(txId) ? Network.Main.CreateTransaction() : null);
+    }
+
+    public Task<Block?> GetBlockAsync(uint height) =>
+        Task.FromResult(Blocks.TryGetValue(height, out var block) ? block : null);
     public Task<uint256> GetBlockHashAsync(uint height) => Task.FromResult(uint256.Zero);
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) => Task.FromResult(0u);
 

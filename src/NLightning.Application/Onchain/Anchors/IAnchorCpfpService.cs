@@ -1,5 +1,6 @@
 namespace NLightning.Application.Onchain.Anchors;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 
 /// <summary>
@@ -35,4 +36,12 @@ public interface IAnchorCpfpService
     /// <paramref name="height"/> (what a new block triggers after <see cref="Start"/>).
     /// </summary>
     Task RunOnceAsync(uint height, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The peer's commitment (its current one, or the next one when <paramref name="isNextCommitment"/>) spends the
+    /// channel's funding output in bitcoind's mempool (the O8 mempool reactor saw it; NL-381): it is remembered (memory
+    /// only) and the channel's round is scheduled, which fee-bumps it through our anchor on it when it carries HTLCs
+    /// with a deadline. Returns at once.
+    /// </summary>
+    void OnPeerCommitmentInMempool(ChannelId channelId, SignedTransaction commitment, bool isNextCommitment);
 }

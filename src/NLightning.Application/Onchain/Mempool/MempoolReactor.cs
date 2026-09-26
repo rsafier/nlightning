@@ -8,6 +8,7 @@ using NBitcoin;
 
 namespace NLightning.Application.Onchain.Mempool;
 
+using Anchors;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
@@ -44,13 +45,16 @@ using Resolvers;
 /// recorded: the close, its rows and the channel's state wait for the confirmation, when the watcher links the rows
 /// to these penalties or abandons them (another transaction confirmed). A penalty whose commitment bitcoind no longer
 /// knows for <see cref="OnchainMempoolOptions.EvictionGraceBlocks"/> blocks in a row (evicted or replaced) is
-/// abandoned. Any other commitment kind is only logged.</item>
+/// abandoned. The peer's current or next commitment of an anchor channel is handed to the anchor CPFP
+/// (<see cref="IAnchorCpfpService.OnPeerCommitmentInMempool"/>, NL-381), which bumps it through our anchor on it when
+/// its HTLCs have a deadline. Any other commitment kind is only logged.</item>
 /// </list>
 /// Work runs one item at a time on a background loop (the monitor's handlers only enqueue), and every step is
 /// idempotent: the monitor reports a transaction once, but a restart, a replacement or a new block may bring it back.
 /// </remarks>
 public sealed class MempoolReactor : IMempoolReactor, IDisposable
 {
+    private readonly IAnchorCpfpService? _anchorCpfpService;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IBitcoinChainService? _chainService;
     private readonly IChannelLockProvider _channelLockProvider;
@@ -74,8 +78,9 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                           IChannelMemoryRepository channelMemoryRepository, ILogger<MempoolReactor> logger,
                           IOptions<OnchainOptions> options, IServiceScopeFactory serviceScopeFactory,
                           OnchainChannelWatcher watcher, RevokedCommitResolver? revokedCommitResolver = null,
-                          IBitcoinChainService? chainService = null)
+                          IBitcoinChainService? chainService = null, IAnchorCpfpService? anchorCpfpService = null)
     {
+        _anchorCpfpService = anchorCpfpService;
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -164,6 +169,13 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
          && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
          && args.SpentTransactionId == fundingTxId && args.SpentOutputIndex == fundingIndex)
             (kind, penalties) = await HandleFundingSpendAsync(args.ChannelId, spend, cancellationToken);
+
+        // The peer's commitment of an anchor channel: fee-bumped through our anchor on it when its HTLCs have a
+        // deadline (NL-381); the CPFP service decides in a round of its own
+        if (kind is FundingSpendKind.RemoteCommit or FundingSpendKind.RemoteNextCommit
+         && _anchorCpfpService is not null && channel.ChannelParams.OptionAnchorOutputs)
+            _anchorCpfpService.OnPeerCommitmentInMempool(args.ChannelId, args.SpendingTransaction,
+                                                         kind == FundingSpendKind.RemoteNextCommit);
 
         return new MempoolReaction(fulfilled, kind, penalties);
     }

@@ -41,6 +41,13 @@ public sealed class AnchorCpfpOptions
     public uint ConfirmedCommitmentChildWaitBlocks { get; set; } = 2016;
 
     /// <summary>
+    /// How many blocks in a row (default 6) the peer's unconfirmed commitment may be missing from bitcoind (evicted,
+    /// or replaced by ours) before our pending children of it are abandoned (NL-381). Counted only while the chain
+    /// monitor is at bitcoind's tip.
+    /// </summary>
+    public int PeerCommitmentMissingBlocks { get; set; } = 6;
+
+    /// <summary>
     /// Sweep the anchors of our confirmed commitment once anyone may spend them (16 blocks), when that pays for itself
     /// (default true; see <see cref="AnchorCpfpPolicy.DecideAnchorSweep"/>).
     /// </summary>
