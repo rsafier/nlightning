@@ -206,6 +206,52 @@ public class SimpleCloseHarnessTests
         Assert.Equal(2, close.Bob.Received.OfType<ClosingSigMessage>().Count());
     }
 
+    [Fact]
+    public async Task Given_ReconnectedBeforeTheShutdownsAreResent_When_FeeBumpRequested_Then_RefusedWithAReason()
+    {
+        // Arrange - regression: the registry's flag is reset by the new connection and set again only by the peer's
+        // shutdown; a bump asked in between used to be dropped silently (the Closing channel only reported)
+        using var close = new CloseHarness(simpleClose: true);
+        var ct = TestContext.Current.CancellationToken;
+        await CloseAsync(close);
+        await close.Harness.DisconnectAsync();
+        await close.Harness.ReconnectAsync();
+        var sentBefore = close.Published(close.Alice).Count;
+
+        // Act
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+                          () => close.CloseService(close.Alice)
+                                     .CloseChannelAsync(TwoNodeHarness.ChannelId,
+                                                        new ChannelCloseRequest(FeeRatePerKw: 10_000), ct));
+
+        // Assert
+        Assert.Contains("option_simple_close is not active", refused.Message);
+        Assert.Equal(ChannelState.Closing, close.Alice.Channel.State);
+        Assert.Equal(sentBefore, close.Published(close.Alice).Count);
+    }
+
+    [Fact]
+    public async Task Given_LegacyClosingChannel_When_FeeBumpRequested_Then_RefusedWithAReason()
+    {
+        // Arrange: without option_simple_close the agreed closing transaction can't be replaced
+        using var close = new CloseHarness();
+        var ct = TestContext.Current.CancellationToken;
+        await CloseAsync(close);
+        Assert.Equal(ChannelState.Closing, close.Alice.Channel.State);
+
+        // Act
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(
+                          () => close.CloseService(close.Alice)
+                                     .CloseChannelAsync(TwoNodeHarness.ChannelId,
+                                                        new ChannelCloseRequest(FeeRatePerKw: 10_000), ct));
+
+        // Assert: a request without a feerate still only reports
+        Assert.Contains("can't bump its closing fee", refused.Message);
+        var result = await close.CloseService(close.Alice)
+                                .CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(), ct);
+        Assert.Equal(ChannelState.Closing, result.State);
+    }
+
     #endregion
 
     #region closing_complete receiver (B2-SC-E*)
@@ -308,6 +354,31 @@ public class SimpleCloseHarnessTests
         close.Bob.DropOutbox();
         var bobComplete = Assert.Single(close.Bob.Lost.OfType<ClosingCompleteMessage>());
         Assert.Equal(s_aliceNewScript, bobComplete.Payload.CloseeScriptPubKey);
+    }
+
+    [Fact]
+    public async Task Given_PeerRbfsWithANewScript_When_AnEarlierClosingTxIsChecked_Then_StillAMutualCloseOfTheChannel()
+    {
+        // Arrange - regression: every transaction Bob signed before Alice's new closer_scriptpubkey pays her old
+        // script; whichever of them confirms must still be recognised as a mutual close (ChannelManager records it and
+        // the channel reaches Closed)
+        using var close = new CloseHarness(simpleClose: true);
+        await CloseAsync(close);
+        var earlier = close.Published(close.Bob).ToList();
+        Assert.Equal(2, earlier.Count);
+        var message = CraftAliceClosingComplete(close, 3_000, s_aliceNewScript, CloseHarness.BobScript, 777);
+
+        // Act
+        await close.Bob.ChannelManager.HandleChannelMessageAsync(message, CloseHarness.SimpleCloseFeatures(),
+                                                                 close.Alice.NodeId);
+        close.Bob.DropOutbox();
+
+        // Assert
+        Assert.Equal(s_aliceNewScript, close.Bob.Channel.RemoteShutdownScript);
+        Assert.NotEqual(earlier[0].TxId, close.Bob.Channel.ClosingTransaction!.TxId);
+        Assert.NotEqual(earlier[1].TxId, close.Bob.Channel.ClosingTransaction!.TxId);
+        Assert.All(earlier, tx => Assert.True(ChannelManager.IsMutualCloseOf(close.Bob.Channel, tx)));
+        Assert.True(ChannelManager.IsMutualCloseOf(close.Bob.Channel, close.Bob.Channel.ClosingTransaction!));
     }
 
     [Fact]

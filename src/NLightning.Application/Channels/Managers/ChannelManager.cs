@@ -762,9 +762,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     /// <summary>
     /// True when <paramref name="spend"/> has the shape of a BOLT 3 mutual close of <paramref name="channel"/>: its only
-    /// input is the funding outpoint, and every output pays one of the two shutdown scripts; legacy
-    /// (<c>closing_signed</c>): sequence 0xFFFFFFFF and lock time 0; <c>option_simple_close</c>: sequence 0xFFFFFFFD
-    /// and any lock time (the closer's choice, N11).
+    /// input is the funding outpoint. Legacy (<c>closing_signed</c>): sequence 0xFFFFFFFF, lock time 0 and every output
+    /// pays one of the two shutdown scripts. <c>option_simple_close</c> (N11): sequence 0xFFFFFFFD, any lock time (the
+    /// closer's choice), one or two outputs of which at most one pays a script other than ours: the peer may have
+    /// replaced its script since (a later <c>closing_complete</c>'s <c>closer_scriptpubkey</c>, or its
+    /// <c>shutdown</c> after a reconnection), so an earlier transaction we signed (the peer's proposal we answered,
+    /// ours it completed, or our unanswered one it holds our signatures for) pays a script we no longer store. The
+    /// funding output needs our signature and we sign that sequence only on a simple closing transaction (commitments
+    /// carry 0x80 in the upper byte, the legacy close 0xFFFFFFFF), and our script never changes.
     /// </summary>
     internal static bool IsMutualCloseOf(ChannelModel channel, SignedTransaction spend)
     {
@@ -794,6 +799,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         byte[] local = localScript;
         byte[] remote = remoteScript;
+        if (isSimple)
+            return transaction.Outputs.Count <= 2
+                && transaction.Outputs.Count(o => !o.ScriptPubKey.ToBytes().AsSpan().SequenceEqual(local)) <= 1;
+
         return transaction.Outputs.All(o =>
         {
             var script = o.ScriptPubKey.ToBytes();
