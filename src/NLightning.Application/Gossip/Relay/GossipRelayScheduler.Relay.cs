@@ -14,6 +14,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Graph.Interfaces;
 using Interfaces;
+using Metrics;
 using Sync;
 using Sync.Interfaces;
 
@@ -45,6 +46,11 @@ using Sync.Interfaces;
 /// <b>Runs:</b> each connection's share of a tick runs on its own task; the tick waits at most
 /// <see cref="GossipRelayOptions.RelaySendWait"/> for them, and a connection whose run is still sending (a stalled
 /// transport write) is skipped by the later ticks until it ends, so one slow peer never stops the relay to the others.
+/// </para>
+/// <para>
+/// <b>Bound:</b> each connection keeps at most <see cref="GossipRelayOptions.MaxRelayPendingPerPeer"/> messages
+/// waiting for its flush; a new one beyond it drops the oldest waiting one (counted in <see cref="GossipMetrics"/>), so
+/// a peer that drains slowly never gets more than that queued on its outbox per flush.
 /// </para>
 /// <para>
 /// <b>Backlog:</b> a new filter asks for the graph inside it: one pass over the snapshot taken at the next tick (per
@@ -241,7 +247,13 @@ public sealed partial class GossipRelayScheduler
             if (!IsOnOurChain(peer) || !_syncManager!.TryGetPeerFilter(peer.Service, out _))
                 continue;
 
-            GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed);
+            var dropped = GetRelayState(peer, _timeProvider.GetUtcNow()).AddPending(changed);
+            if (dropped > 0)
+            {
+                _metrics?.RecordDropped(GossipMetricReasons.RelayBacklogFull, dropped);
+                _logger.LogDebug("Dropped the {Count} oldest gossip messages waiting for peer {Peer}: its relay "
+                               + "backlog holds {Max}", dropped, peer.NodeId, _relayOptions.MaxRelayPendingPerPeer);
+            }
         }
 
         if (_logger.IsEnabled(LogLevel.Debug))
@@ -410,7 +422,11 @@ public sealed partial class GossipRelayScheduler
 
         try
         {
-            return await _sender.SendAsync(peer, message) ? SendResult.Sent : SendResult.ConnectionGone;
+            if (!await _sender.SendAsync(peer, message))
+                return SendResult.ConnectionGone;
+
+            _metrics?.RecordRelayed(item.Type, "others");
+            return SendResult.Sent;
         }
         catch (Exception e)
         {
@@ -457,7 +473,8 @@ public sealed partial class GossipRelayScheduler
         GetRelayablePolicy(channel, 0) is not null || GetRelayablePolicy(channel, 1) is not null;
 
     private RelayPeerState GetRelayState(GossipPeer peer, DateTimeOffset now) =>
-        _relayPeers.GetValue(peer.Service, _ => new RelayPeerState(now + GetRelayPhase(peer.NodeId)));
+        _relayPeers.GetValue(peer.Service, _ => new RelayPeerState(now + GetRelayPhase(peer.NodeId),
+                                                                   _relayOptions.MaxRelayPendingPerPeer));
 
     /// <summary>The connection's offset in the flush interval (staggered flushes), stable per node id.</summary>
     internal TimeSpan GetRelayPhase(CompactPubKey nodeId)
@@ -559,12 +576,15 @@ public sealed partial class GossipRelayScheduler
 
     /// <summary>
     /// The relay state of one connection. The pending set is shared with the collect (under its own lock); the rest
-    /// is touched only by the connection's run (<see cref="TryBeginRun"/>, one at a time).
+    /// is touched only by the connection's run (<see cref="TryBeginRun"/>, one at a time). The pending set holds at
+    /// most <c>maxPending</c> messages, the oldest dropped first (a replaced key counts as new).
     /// </summary>
-    private sealed class RelayPeerState(DateTimeOffset nextFlushAt)
+    private sealed class RelayPeerState(DateTimeOffset nextFlushAt, int maxPending)
     {
         private readonly Lock _pendingLock = new();
-        private readonly Dictionary<GossipMessageKey, RelayItem> _pending = [];
+        private readonly Dictionary<GossipMessageKey, (RelayItem Item, long Sequence)> _pending = [];
+        private readonly Queue<(GossipMessageKey Slot, long Sequence)> _order = new();
+        private long _sequence;
         private int _backlogRequested;
         private int _running;
 
@@ -580,20 +600,49 @@ public sealed partial class GossipRelayScheduler
 
         public void EndRun() => Volatile.Write(ref _running, 0);
 
-        /// <summary>Queues the newest version per key.</summary>
-        public void AddPending(IEnumerable<RelayItem> items)
+        /// <summary>The number of waiting messages.</summary>
+        public int PendingCount
+        {
+            get
+            {
+                lock (_pendingLock)
+                    return _pending.Count;
+            }
+        }
+
+        /// <summary>Queues the newest version per key; returns how many old ones were dropped to stay in bounds.</summary>
+        public int AddPending(IEnumerable<RelayItem> items)
         {
             lock (_pendingLock)
+            {
+                var dropped = 0;
                 foreach (var item in items)
-                    _pending[item.Slot] = item;
+                {
+                    var sequence = ++_sequence;
+                    _pending[item.Slot] = (item, sequence);
+                    _order.Enqueue((item.Slot, sequence));
+                    while (_pending.Count > maxPending && _order.TryDequeue(out var oldest))
+                    {
+                        // A stale order entry (its key was replaced since) removes nothing
+                        if (_pending.TryGetValue(oldest.Slot, out var live) && live.Sequence == oldest.Sequence)
+                        {
+                            _pending.Remove(oldest.Slot);
+                            dropped++;
+                        }
+                    }
+                }
+
+                CompactOrder();
+                return dropped;
+            }
         }
 
         public List<RelayItem> TakePending()
         {
             lock (_pendingLock)
             {
-                var items = _pending.Values.ToList();
-                _pending.Clear();
+                var items = _pending.Values.Select(p => p.Item).ToList();
+                ClearLocked();
                 return items;
             }
         }
@@ -601,7 +650,25 @@ public sealed partial class GossipRelayScheduler
         public void ClearPending()
         {
             lock (_pendingLock)
-                _pending.Clear();
+                ClearLocked();
+        }
+
+        private void ClearLocked()
+        {
+            _pending.Clear();
+            _order.Clear();
+        }
+
+        /// <summary>Drops the stale order entries once they outnumber the live ones (replaced keys).</summary>
+        private void CompactOrder()
+        {
+            if (_order.Count <= 2 * Math.Max(_pending.Count, 16))
+                return;
+
+            var live = _order.Where(o => _pending.TryGetValue(o.Slot, out var p) && p.Sequence == o.Sequence).ToList();
+            _order.Clear();
+            foreach (var entry in live)
+                _order.Enqueue(entry);
         }
     }
 }

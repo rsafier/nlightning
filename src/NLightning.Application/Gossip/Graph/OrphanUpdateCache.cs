@@ -48,9 +48,16 @@ public sealed class OrphanUpdateCache
     /// Keeps <paramref name="message"/> until its channel arrives, replacing an older one of the same direction.
     /// </summary>
     /// <returns>False when it was not kept (full, or an equal or newer one is kept).</returns>
-    public bool AddUpdate(ChannelUpdateMessage message, IPeerService? origin)
+    public bool AddUpdate(ChannelUpdateMessage message, IPeerService? origin) => AddUpdate(message, origin, out _);
+
+    /// <summary>
+    /// Keeps <paramref name="message"/> until its channel arrives; <paramref name="full"/> tells a refusal for lack of
+    /// room (a metric) from one for a kept equal or newer message.
+    /// </summary>
+    public bool AddUpdate(ChannelUpdateMessage message, IPeerService? origin, out bool full)
     {
         ArgumentNullException.ThrowIfNull(message);
+        full = false;
         var key = (message.Payload.ShortChannelId, message.Payload.Direction ? (byte)1 : (byte)0);
         lock (_lock)
         {
@@ -64,7 +71,10 @@ public sealed class OrphanUpdateCache
             }
 
             if (!HasRoom())
+            {
+                full = true;
                 return false;
+            }
 
             _updates[key] = new OrphanEntry<ChannelUpdateMessage>(message, origin, _timeProvider.GetUtcNow());
             return true;
@@ -73,9 +83,17 @@ public sealed class OrphanUpdateCache
 
     /// <summary>Keeps <paramref name="message"/> until its node has a channel, replacing an older one.</summary>
     /// <returns>False when it was not kept (full, or an equal or newer one is kept).</returns>
-    public bool AddNodeAnnouncement(NodeAnnouncementMessage message, IPeerService? origin)
+    public bool AddNodeAnnouncement(NodeAnnouncementMessage message, IPeerService? origin) =>
+        AddNodeAnnouncement(message, origin, out _);
+
+    /// <summary>
+    /// Keeps <paramref name="message"/> until its node has a channel; <paramref name="full"/> tells a refusal for lack
+    /// of room from one for a kept equal or newer message.
+    /// </summary>
+    public bool AddNodeAnnouncement(NodeAnnouncementMessage message, IPeerService? origin, out bool full)
     {
         ArgumentNullException.ThrowIfNull(message);
+        full = false;
         var key = message.Payload.NodeId;
         lock (_lock)
         {
@@ -89,7 +107,10 @@ public sealed class OrphanUpdateCache
             }
 
             if (!HasRoom())
+            {
+                full = true;
                 return false;
+            }
 
             _nodes[key] = new OrphanEntry<NodeAnnouncementMessage>(message, origin, _timeProvider.GetUtcNow());
             return true;

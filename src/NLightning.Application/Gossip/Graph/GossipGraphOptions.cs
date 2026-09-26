@@ -53,6 +53,61 @@ public sealed class GossipGraphOptions
     /// <summary>How long an orphan is kept (plan §3.8: 10 minutes).</summary>
     public TimeSpan OrphanTtl { get; set; } = TimeSpan.FromMinutes(10);
 
+    /// <summary>
+    /// The graph's channel limit (plan §3.8: 200,000): a new channel beyond it is refused (logged, metric). Our own
+    /// channels are always stored. <c>Gossip:MaxChannels</c>.
+    /// </summary>
+    public int MaxChannels { get; set; } = 200_000;
+
+    /// <summary>
+    /// The graph's announced-node limit (plan §3.8: 100,000): a new node's announcement beyond it is refused.
+    /// <c>Gossip:MaxNodes</c>.
+    /// </summary>
+    public int MaxNodes { get; set; } = 100_000;
+
+    /// <summary>
+    /// A <c>channel_update</c> channel direction gets one accepted update per this interval once its burst is spent
+    /// (plan §3.8: 60 s). Zero turns the limit off. <c>Gossip:ChannelUpdateRateInterval</c>.
+    /// </summary>
+    public TimeSpan ChannelUpdateRateInterval { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>The updates of one channel direction accepted in a row before the rate applies (plan §3.8: 4).</summary>
+    public int ChannelUpdateBurst { get; set; } = 4;
+
+    /// <summary>
+    /// A <c>channel_update</c> with the same fields as the stored one (a keep-alive) is accepted only when its
+    /// timestamp is more than this newer (plan §3.8: 24 h, as LND). Zero turns the rule off.
+    /// </summary>
+    public TimeSpan KeepAliveMinInterval { get; set; } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// A node gets one accepted <c>node_announcement</c> per this interval (plan §3.8: 10 minutes). Zero turns the
+    /// limit off. <c>Gossip:NodeAnnouncementRateInterval</c>.
+    /// </summary>
+    public TimeSpan NodeAnnouncementRateInterval { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Gossip whose timestamp is more than this ahead of our clock is dropped (plan §3.8: 14 days, the same as
+    /// <c>ChannelUpdateService.MaxFutureTimestamp</c>).
+    /// </summary>
+    public TimeSpan MaxFutureTimestamp { get; set; } = Services.ChannelUpdateService.MaxFutureTimestamp;
+
+    /// <summary>
+    /// Invalid signatures, bad encodings or contradicted funding outputs from one peer inside
+    /// <see cref="MisbehaviourWindow"/> that get it a <c>warning</c>, a disconnection and a ban (plan §3.8: 5). Zero
+    /// turns the score off. <c>Gossip:MisbehaviourThreshold</c>.
+    /// </summary>
+    public int MisbehaviourThreshold { get; set; } = 5;
+
+    /// <summary>The window of <see cref="MisbehaviourThreshold"/> (plan §3.8: 10 minutes).</summary>
+    public TimeSpan MisbehaviourWindow { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// How long a misbehaving peer is banned (plan §3.8: 1 h; persisted in <c>GraphBannedNodes</c>): its gossip is
+    /// dropped and, at its next message, it is disconnected again.
+    /// </summary>
+    public TimeSpan MisbehaviourBanDuration { get; set; } = TimeSpan.FromHours(1);
+
     /// <summary>Hashes of recently processed messages kept to drop exact duplicates cheaply.</summary>
     public int RecentMessageCacheSize { get; set; } = 50_000;
 
@@ -138,6 +193,20 @@ public sealed class GossipGraphOptions
             errors.Add($"{nameof(Workers)} must not be negative");
         if (MaxOrphans < 0)
             errors.Add($"{nameof(MaxOrphans)} must not be negative");
+        if (MaxChannels < 1)
+            errors.Add($"{nameof(MaxChannels)} must be at least 1");
+        if (MaxNodes < 1)
+            errors.Add($"{nameof(MaxNodes)} must be at least 1");
+        if (ChannelUpdateBurst < 1)
+            errors.Add($"{nameof(ChannelUpdateBurst)} must be at least 1");
+        if (MaxFutureTimestamp <= TimeSpan.Zero)
+            errors.Add($"{nameof(MaxFutureTimestamp)} must be positive");
+        if (MisbehaviourThreshold < 0)
+            errors.Add($"{nameof(MisbehaviourThreshold)} must not be negative");
+        if (MisbehaviourThreshold > 0 && MisbehaviourWindow <= TimeSpan.Zero)
+            errors.Add($"{nameof(MisbehaviourWindow)} must be positive");
+        if (MisbehaviourThreshold > 0 && MisbehaviourBanDuration <= TimeSpan.Zero)
+            errors.Add($"{nameof(MisbehaviourBanDuration)} must be positive");
         if (AnnouncementDepth < 1)
             errors.Add($"{nameof(AnnouncementDepth)} must be at least 1");
         if (FlushInterval <= TimeSpan.Zero)

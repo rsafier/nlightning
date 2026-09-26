@@ -7,6 +7,7 @@ namespace NLightning.Application.Gossip.Relay;
 using Domain.Gossip.Interfaces;
 using Graph;
 using Interfaces;
+using Metrics;
 
 public static class RelayServiceCollectionExtensions
 {
@@ -17,11 +18,12 @@ public static class RelayServiceCollectionExtensions
     /// registered, NL-351) and, unless one is registered already, the <see cref="IGossipPeerDirectory"/> over the peer
     /// manager. The scheduler relays other nodes' gossip when the graph (<c>AddGossipGraphServices</c>) and the sync
     /// manager (<c>AddGossipSyncServices</c>) are registered too. Bind <see cref="GossipRelayOptions"/> from the
-    /// <c>Gossip</c> section. Idempotent.
+    /// <c>Gossip</c> section. Idempotent. Also registers <see cref="GossipMetrics"/>, which the scheduler records into.
     /// </summary>
     public static IServiceCollection AddGossipRelayServices(this IServiceCollection services)
     {
         services.AddOptions<GossipRelayOptions>();
+        services.AddGossipMetrics();
         services.TryAddSingleton<IGossipPeerDirectory, PeerManagerGossipPeerDirectory>();
         services.TryAddSingleton<IGossipPeerSender>(sp => new PeerGossipSender(sp));
         services.TryAddSingleton(sp => new GossipOriginTracker(
