@@ -986,7 +986,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             _blocksToProcess.Clear();
             var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
-            _catchUpHeight = Math.Max(_catchUpHeight, tip + 1);
+            // The new branch may be shorter than the old one: never fetch above its tip
+            _catchUpHeight = tip + 1;
             await FillQueueFromChainAsync();
 
             foreach (var header in disconnected)

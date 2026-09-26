@@ -133,6 +133,9 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} was not accepted yet; it is sent "
                              + "again after every block", unsignedFundingTransaction.TxId, channel.ChannelId);
 
+        // Announce V1FundingSigned (the open subscription) only once the funding transaction was sent
+        _channelMemoryRepository.UpdateChannel(channel);
+
         return [];
     }
 
@@ -144,9 +147,6 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
     {
         try
         {
-            // Update the channel in memory first
-            _channelMemoryRepository.UpdateChannel(channel);
-
             // Check if we are adding or if we need to update the channel
             var existingChannel = await _unitOfWork.ChannelDbRepository.GetByIdAsync(channel.ChannelId);
             if (existingChannel is not null)

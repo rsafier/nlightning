@@ -335,6 +335,33 @@ public class ChainMonitorPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ShorterCompetingBranch_When_ItsTipArrives_Then_RewoundToItWithoutHalting()
+    {
+        // Arrange (invalidateblock plus one new block: the active chain is shorter than what we processed)
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        await harness.MineAndDeliverAsync();
+        var disconnected = new List<uint>();
+        harness.Monitor.OnBlockDisconnected += (_, args) => disconnected.Add(args.Height);
+
+        // Act
+        harness.Chain.Reorg(100, 1);
+        await harness.DeliverTipAsync();
+
+        // Assert
+        Assert.Equal([103u, 102u, 101u], disconnected);
+        Assert.Equal(101u, harness.Monitor.LastProcessedBlockHeight);
+        Assert.False(harness.Monitor.IsChainProcessingHalted);
+        await using (var context = harness.Context())
+        {
+            var state = await context.BlockchainStates.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(harness.Chain[101].GetHash().ToBytes(), (byte[])state.LastProcessedBlockHash);
+        }
+    }
+
+    [Fact]
     public async Task Given_TheSameBlocksDeliveredAgain_When_Processed_Then_NothingIsRewound()
     {
         // Arrange (reconsiderblock reconnects blocks we already processed)
