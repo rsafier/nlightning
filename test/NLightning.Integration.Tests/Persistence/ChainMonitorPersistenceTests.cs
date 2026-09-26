@@ -617,20 +617,26 @@ public class ChainMonitorPersistenceTests
                                                 NullLogger<OnionReplayBlockPruner>.Instance);
         pruner.Start();
 
-        // Act: 101 and 102 (the chain has not passed 102 yet), then 103 (passes 102) and 104 (passes 103)
-        await harness.MineAndDeliverAsync();
-        await harness.MineAndDeliverAsync();
-        await pruner.WhenIdleAsync();
+        // Act: 101 and 102 (the chain has not passed 102 yet), then 103 (passes 102) and 104 (passes 103). The
+        // harness shares one SQLite connection between every context, so each block waits for its prune before the
+        // next block's save (a prune overlapping that transaction fails on the shared connection).
+        await MineAndPruneAsync();
+        await MineAndPruneAsync();
         var afterBlock102 = await LoadReplayExpiriesAsync(harness);
-        await harness.MineAndDeliverAsync();
-        await harness.MineAndDeliverAsync();
-        await pruner.WhenIdleAsync();
+        await MineAndPruneAsync();
+        await MineAndPruneAsync();
         var afterBlock104 = await LoadReplayExpiriesAsync(harness);
         await pruner.StopAsync();
 
         // Assert
         Assert.Equal([102u, 103u, 104u], afterBlock102);
         Assert.Equal([104u], afterBlock104);
+
+        async Task MineAndPruneAsync()
+        {
+            await harness.MineAndDeliverAsync();
+            await pruner.WhenIdleAsync();
+        }
     }
 
     private static async Task<List<uint>> LoadReplayExpiriesAsync(ChainMonitorHarness harness)

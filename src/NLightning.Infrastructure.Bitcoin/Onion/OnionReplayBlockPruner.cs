@@ -16,8 +16,9 @@ using Wallet.Interfaces;
 /// save, so the handler only records the height and returns: the prune runs on its own task. Prunes run one at a time
 /// and coalesce: blocks that arrive while one runs are covered by a single prune at the highest height seen. A lower
 /// height (a replayed block at start, or a reorg) prunes nothing new and is ignored; the entries already pruned are
-/// not brought back, as with the store's lazy pruning. A failed prune is logged and retried by the next block (the
-/// store's lazy prune in <c>TryAddAsync</c> still runs too).
+/// not brought back, as with the store's lazy pruning. A failed prune is logged; a higher block that arrived while it
+/// ran is pruned right after, otherwise the next block retries (the store's lazy prune in <c>TryAddAsync</c> still
+/// runs too).
 /// </para>
 /// <para>
 /// Lifecycle: <see cref="Start"/> after the chain monitor is started, <see cref="StopAsync"/> before it is stopped
@@ -161,11 +162,14 @@ public sealed class OnionReplayBlockPruner
             }
             catch (Exception ex)
             {
-                // Retried by the next block
                 _logger.LogError(ex, "Failed to prune the onion replay set at block {Height}", height);
                 lock (_gate)
                 {
-                    _requestedHeight = _prunedHeight;
+                    // A higher block that arrived during the failed prune is pruned now; otherwise the next block
+                    // retries (the requested height is kept, so it is not forgotten)
+                    if (_requestedHeight > height)
+                        continue;
+
                     _roundScheduled = false;
                 }
 
