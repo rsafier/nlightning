@@ -26,7 +26,7 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 ## Mocking conventions
 - Moq cannot mock `Span`/`ReadOnlySpan` parameters. Use the Fake* class + virtual `byte[]` `ITest*` interface pattern in `Tests.Utils/Mocks`.
 - For HttpClient, mock `HttpMessageHandler` with `.Protected().Setup("SendAsync", ...)` (see Daemon.Tests/Services/FeeServiceTests.cs).
-- `FakeSha256` computes a real SHA-256 over the appended data by default; override its virtual `GetHashAndReset()` via Moq to force a fixed digest. `FakeServiceProvider` throws KeyNotFoundException for unregistered types.
+- `FakeSha256` computes a real SHA-256 over the appended data by default; override its virtual `GetHashAndReset()` via Moq to force a fixed digest. `FakeServiceProvider` returns null for unregistered types like the real provider (NL-249); `new FakeServiceProvider { Strict = true }` throws KeyNotFoundException instead.
 - Tests that must run serially need `[CollectionDefinition(Name, DisableParallelization = true)]` plus `[Collection(Name)]`.
 
 ## Dependency rules
