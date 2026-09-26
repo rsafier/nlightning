@@ -254,6 +254,25 @@ internal sealed class TwoNodeHarness : IDisposable
         return restarted;
     }
 
+    /// <summary>
+    /// Stops <paramref name="node"/> and starts a new process on its store (only what was saved survives), link down;
+    /// <see cref="ReconnectAsync"/> brings the link back.
+    /// </summary>
+    /// <returns>The restarted node (also set as <see cref="Alice"/>/<see cref="Bob"/>).</returns>
+    public async Task<HarnessNode> RestartNodeAsync(HarnessNode node)
+    {
+        await DisconnectAsync();
+        var restarted = await RestartAsync(node);
+        if (node == Alice)
+            Alice = restarted;
+        else
+            Bob = restarted;
+
+        Alice.Peer = Bob;
+        Bob.Peer = Alice;
+        return restarted;
+    }
+
     private async Task<HarnessNode> RestartAsync(HarnessNode crashed)
     {
         Restarts++;
@@ -267,7 +286,9 @@ internal sealed class TwoNodeHarness : IDisposable
             Peer = crashed.Peer,
             PeerAlive = false
         };
-        await restarted.RestoreAsync(CreateChannelFor(restarted));
+        var channel = CreateChannelFor(restarted);
+        restarted.Store.RestoreAnnouncement(channel);
+        await restarted.RestoreAsync(channel);
         return restarted;
     }
 
@@ -463,6 +484,9 @@ internal sealed class HarnessNode : IDisposable
         var channelDb = new Mock<IChannelDbRepository>();
         channelDb.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
                  .ReturnsAsync((ChannelId id) => _channels.TryGetChannel(id, out var channel) ? channel : null);
+        channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
+                 .Callback<ChannelModel>(Store.StageChannel)
+                 .Returns(Task.CompletedTask);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
         unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(WatchedTransactions.Object);
         unitOfWork.SetupGet(u => u.GraphDbRepository).Returns(GraphDb.Object);
@@ -734,8 +758,37 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private readonly Dictionary<HtlcKey, Secret> _onionSecrets = [];
     private readonly Dictionary<(ChannelId, HtlcKey), HtlcOrigin> _origins = [];
     private readonly List<HtlcKey> _stagedPrunes = [];
+    private AnnouncementState? _stagedAnnouncement;
 
     public ChannelCommitments? Committed { get; private set; }
+
+    /// <summary>
+    /// The channel row's BOLT 7 announcement fields as last saved (NL-355): the peer's
+    /// <c>announcement_signatures</c> and when we sent ours; null while the row was never updated.
+    /// </summary>
+    public AnnouncementState? CommittedAnnouncement { get; private set; }
+
+    /// <summary>The announcement fields of the channel row (<c>ChannelDbRepository.UpdateAsync</c>).</summary>
+    public sealed record AnnouncementState(ChannelAnnouncementSignatures? RemoteSignatures,
+                                           DateTimeOffset? LocalSentAt);
+
+    /// <summary>Stages the announcement fields of the channel row, saved by the next <see cref="Commit"/>.</summary>
+    public void StageChannel(ChannelModel channel) =>
+        _stagedAnnouncement = new AnnouncementState(channel.RemoteAnnouncementSignatures,
+                                                    channel.LocalAnnouncementSignaturesSentAt);
+
+    /// <summary>Puts the saved announcement fields on a channel model rebuilt by a restart.</summary>
+    public void RestoreAnnouncement(ChannelModel channel)
+    {
+        if (CommittedAnnouncement is not { } saved)
+            return;
+
+        channel.ResetAnnouncementSignatures();
+        if (saved.RemoteSignatures is { } remote)
+            channel.SetRemoteAnnouncementSignatures(remote);
+        if (saved.LocalSentAt is { } sentAt)
+            channel.MarkAnnouncementSignaturesSent(sentAt);
+    }
 
     /// <summary>The saved <c>SentCommitDiff</c> (cleared once the peer revoked, as the repository does).</summary>
     public ReadOnlyMemory<byte>? CommittedSentCommitDiff { get; private set; }
@@ -774,11 +827,12 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     public sealed record Backup(ChannelCommitments? Committed, ReadOnlyMemory<byte>? SentCommitDiff,
                                 LastSentCommitmentMessage LastSent, IReadOnlyList<ShachainEntry> Shachain,
                                 IReadOnlyList<RemoteCommit> Revocations,
-                                IReadOnlyDictionary<ulong, RemoteCommit> RevocationLog);
+                                IReadOnlyDictionary<ulong, RemoteCommit> RevocationLog,
+                                AnnouncementState? Announcement);
 
     public Backup TakeBackup() => new(Committed, CommittedSentCommitDiff, CommittedLastSent, CommittedShachain,
                                       CommittedRevocations.ToList(), new SortedDictionary<ulong, RemoteCommit>(
-                                          CommittedRevocationLog));
+                                          CommittedRevocationLog), CommittedAnnouncement);
 
     /// <summary>Replaces everything saved with <paramref name="backup"/> (the settled archive is dropped).</summary>
     public void RestoreBackup(Backup backup)
@@ -790,6 +844,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         CommittedRevocations = backup.Revocations.ToList();
         CommittedRevocationLog = new SortedDictionary<ulong, RemoteCommit>(
             backup.RevocationLog.ToDictionary(e => e.Key, e => e.Value));
+        CommittedAnnouncement = backup.Announcement;
         _settled.Clear();
     }
 
@@ -835,6 +890,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         }
 
         Pruned.AddRange(_stagedPrunes);
+        if (_stagedAnnouncement is not null)
+            CommittedAnnouncement = _stagedAnnouncement;
         DiscardStaged();
         Saves++;
     }
@@ -847,6 +904,7 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _stagedSettled.Clear();
         _stagedPrunes.Clear();
         _stagedRevoked.Clear();
+        _stagedAnnouncement = null;
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)

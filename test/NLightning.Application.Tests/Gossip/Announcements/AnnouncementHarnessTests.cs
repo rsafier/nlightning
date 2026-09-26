@@ -197,6 +197,48 @@ public class AnnouncementHarnessTests
                           p => Assert.IsType<NodeAnnouncementPayload>(p));
     }
 
+    [Fact]
+    public async Task Given_BothNodesRestartBetweenTheHalves_When_BobReachesTheDepth_Then_TheSavedHalvesComplete()
+    {
+        // Arrange (NL-355): Alice is 6 deep and sends her half, Bob (5 deep) stores it and cannot answer yet
+        using var harness = CreateHarness();
+        harness.Bob.SetTip(Depth5);
+        await harness.Alice.RaiseBlockAsync(Depth6);
+        await harness.PumpAsync();
+        var aliceHalf = harness.Bob.Channel.RemoteAnnouncementSignatures;
+        var aliceSentAt = harness.Alice.Channel.LocalAnnouncementSignaturesSentAt;
+        Assert.NotNull(aliceHalf);
+        Assert.NotNull(aliceSentAt);
+        Assert.Equal(1, CountAnnouncementSignatures(harness.Bob.Received));
+
+        // Act 1: both processes restart from what they saved
+        var alice = await harness.RestartNodeAsync(harness.Alice);
+        var bob = await harness.RestartNodeAsync(harness.Bob);
+
+        // Assert 1: the fresh channel models carry the saved announcement state
+        Assert.Equal(aliceHalf, bob.Channel.RemoteAnnouncementSignatures);
+        Assert.Null(bob.Channel.LocalAnnouncementSignaturesSentAt);
+        Assert.Equal(aliceSentAt, alice.Channel.LocalAnnouncementSignaturesSentAt);
+        Assert.Null(alice.Channel.RemoteAnnouncementSignatures);
+
+        // Act 2: reconnection (Alice lacks Bob's half, so she sends hers again), then Bob's sixth block
+        await harness.ReconnectAsync();
+        await harness.PumpAsync();
+        Assert.Empty(Sink(bob).ChannelAnnouncements);
+        await bob.RaiseBlockAsync(Depth6);
+        await harness.PumpAsync();
+
+        // Assert 2: Bob's half answers with the stored one of Alice's, and both assemble the same announcement
+        Assert.Equal(2, CountAnnouncementSignatures(bob.Received));
+        Assert.Equal(1, CountAnnouncementSignatures(alice.Received));
+        var (atAlice, _) = Assert.Single(Sink(alice).ChannelAnnouncements);
+        var (atBob, _) = Assert.Single(Sink(bob).ChannelAnnouncements);
+        Assert.Equal(atAlice.GetBytes(), atBob.GetBytes());
+        Assert.Equal(TwoNodeHarness.ShortChannelId, atBob.ShortChannelId);
+        Assert.Equal(harness.Bob.Channel.LocalAnnouncementSignaturesSentAt,
+                     harness.Bob.Store.CommittedAnnouncement?.LocalSentAt);
+    }
+
     private static TwoNodeHarness CreateHarness() =>
         new(announceChannel: true, configureServices: (node, services) =>
         {
