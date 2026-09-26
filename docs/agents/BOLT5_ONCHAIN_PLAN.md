@@ -5,7 +5,8 @@ This is the plan for BOLT 5 "Recommendations for On-chain Transaction Handling":
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-25: `05-onchain.md` (whole document) and `03-transactions.md` (§Commitment Transaction Outputs, §HTLC-Timeout and HTLC-Success Transactions, §Keys, Appendix A weights, Appendix C secrets). Re-read the requirement block before you implement a resolver.
 - **Relation to the other plans:** BOLT2 plan ([`BOLT2_NORMAL_OPERATION_PLAN.md`](BOLT2_NORMAL_OPERATION_PLAN.md)) §"After N10" points here. BOLT2 **N9-T4** (`ChannelFailureService`, the only broadcast path) is milestone **O2** of this plan: one work item, implemented once. BOLT2 **N9-T2** (`HtlcExpiryMonitor`, ABCD lane W3-C) is the trigger that sends HTLCs on-chain; this plan consumes it. BOLT2 **N11-T3** (enable `option_anchors`) depends on **O7**.
 - **Issue ledger:** the epic is NL-094 ([`ISSUES.md`](ISSUES.md)); sub-issues NL-095 (revocation watch stub), NL-096 (reorgs), NL-098 (mempool), NL-214/NL-215/NL-216 (block processing), NL-258 (no rebroadcast), NL-067 (wallet signing). New gaps found while writing this plan are listed in §2.2 as `OG#` rows with "new" in the NL column; the ledger agent files them. Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-26, `wip/fafo` @ `4c37998`, after ABCD wave 7):** O0-O6-T3 done; O6-T4 still **open** but no longer blocked by NL-316/NL-322: W7-B made final-hop HTLCs of our invoices claimable on chain (the switch accepts a final-hop HTLC of a Failed/OnchainResolving channel and commits it with the preimage on the incoming `HtlcRecord.KnownPreimage` in the invoice's settle save; `FinalHopClaims.GetAcceptedPreimageAsync` lets `LocalCommitResolver`/`RemoteCommitResolver` claim only with a Settled invoice's preimage and no fail removal, keeping B5-LCL-RO-02) and proved it with Docker `Onchain/OnchainFinalHopTests` (see "ABCD wave 7 record"). HTLCs stay regtest-only by default. Remaining before O6-T4: NL-311, NL-320, NL-337.
+- **Status (2026-09-26, `wip/fafo` @ `164289a`, after gossip wave G-A):** **O8 done** (lane M1; NL-098 fixed): ZMQ `rawtx` in the chain monitor, `Application/Onchain/Mempool/MempoolReactor` (preimage from the mempool fulfilled upstream at once; penalty behind a revoked commitment broadcast before it confirms), proven by Docker `Onchain/OnchainMempoolTests`; the chain-processing halt is on IPC (`chainstatus`) and gates new HTLCs and channels (NL-216 fixed). NL-067 first half (signer data reloaded from the DB) landed in lane A2. O6-T4 still waits on NL-311, NL-320, NL-337; O7 not started. See "Gossip wave G-A record" in §5.
+- Status after ABCD wave 7 (superseded by the line above; `wip/fafo` @ `4c37998`): O0-O6-T3 done; O6-T4 still **open** but no longer blocked by NL-316/NL-322: W7-B made final-hop HTLCs of our invoices claimable on chain (the switch accepts a final-hop HTLC of a Failed/OnchainResolving channel and commits it with the preimage on the incoming `HtlcRecord.KnownPreimage` in the invoice's settle save; `FinalHopClaims.GetAcceptedPreimageAsync` lets `LocalCommitResolver`/`RemoteCommitResolver` claim only with a Settled invoice's preimage and no fail removal, keeping B5-LCL-RO-02) and proved it with Docker `Onchain/OnchainFinalHopTests` (see "ABCD wave 7 record"). HTLCs stay regtest-only by default. Remaining before O6-T4: NL-311, NL-320, NL-337.
 - Status after ABCD wave 6 (superseded by the line above): **O0-O6-T3 are done, wired and proven against LND.** Wave 6 (W6-F) added O6-T1 (per-target fee estimates, NL-296; `SweepScheduler` RBF of sweeps, claims and penalties, NL-317) and O6-T3 (rewind of completed watches and wallet UTXOs, re-resolution after reorgs, SCID move of a reconfirmed funding tx; NL-292, NL-293, NL-096) with **Proof O6** `Docker/Onchain/OnchainO6Tests` (a)-(c) green on net10.0 and net11.0. **O6-T4 (mainnet gate) is still closed**: opened in 09052d0 and reverted in 0c0d5c8 until NL-316 (and NL-311, NL-320, NL-322) are fixed. O7 and O8 not started. See "ABCD wave 6 record" in §5.
 - Status after ABCD wave 5 (superseded by the line above): **O0-O5 are done, wired and proven against LND** (Docker Proofs O2, O3 (a)-(d), O4 (a)-(e), O5 (a) LND channel.db rollback and (b) deterministic NLightning cheater, green on net10.0 and net11.0). O6-T2 (100-block rule and Closed) is done; O6-T1 has the policy but no `SweepScheduler` (NL-317, NL-296); O6-T3 reorg re-resolution (NL-292, NL-293) and O6-T4 (mainnet gate) are open; O7 and O8 not started. See "ABCD wave 5 record" in §5.
 - Status after ABCD wave 4 (superseded by the line above): O0 and O1 are done and wired; the pure/builder pieces of O2-O6 (O2-T1 partial, O2-T3, O2-T4, O3-T1, O3-T2, O3-T5, O4-T1, O4-T2, O5-T1, the O5-T2 planner rows, the O6-T1 policy) are done but **not wired**: no watcher acts on a funding spend yet, so nothing is swept and no penalty is sent. Next: O2-T2 remainder (NL-271, NL-297) and O2-T5 `OnchainChannelWatcher` (NL-272), then O3-T3/T4, O4-T3, O5-T2/T3 execution, O6. See "ABCD wave 4 record" in §5.
@@ -140,7 +141,7 @@ All verified in code unless marked. "Gate" = the task that fixes it.
 | OG12 | `IFeeService` returns one feerate; deadline-driven sweeps and penalties need a rate per confirmation target. | `IFeeService.cs` | NL-296 | O6-T1 |
 | OG13 | No trigger sends an HTLC on chain: `HtlcExpiryMonitor` (BOLT2 N9-T2) does not exist yet (ABCD W3-C). | — | NL-094 | BOLT2 N9-T2 (consumed by O3) |
 | OG14 | `CommitmentNumber` cannot decode an obscured number from a tx; `CommitmentEntity` stores no commitment txid (it is rebuilt from the spec). | `CommitmentNumber.cs`, `CommitmentEntity.cs` | new (decode done 5926d0c; no stored txid) | O2-T4 |
-| OG15 | No mempool monitoring. | `BlockchainMonitorService.cs:271-279` | NL-098 | O8 |
+| OG15 | No mempool monitoring. | `BlockchainMonitorService.cs:271-279` | NL-098 (fixed in gossip wave G-A) | O8 |
 | OG16 | Anchors: no CPFP, `SignWalletTransaction` throws, HTLC txs with `SINGLE\|ANYONECANPAY` cannot get fee inputs. | `LocalLightningSigner.cs:331-334` | NL-067, NL-094 | O7 |
 
 ### 2.3 Assumptions checked against the code
@@ -286,6 +287,16 @@ Repositories: `IRevokedCommitmentDbRepository` is written by `ChannelStateDbRepo
 ---
 
 ## 5. Milestones
+
+### Gossip wave G-A record (status 2026-09-26, `wip/fafo` @ `164289a`)
+
+Lane M1 chain safety (no migration); lane SHAs mapped to `wip/fafo` through the `-x` footers.
+- **O8 done, NL-098 fixed** (567197f/30fde1f, 7fde9bf/e2445a2, d51f6ec/8e8bacc, 99ba3ac/054b545): the chain monitor follows ZMQ `rawtx` on its own loop (`Bitcoin:WatchMempool`, default on) and raises `OnWatchedOutpointSpentInMempool` once per transaction (nothing saved or marked spent). `MempoolReactor` (`AddOnchainMempoolServices`, started before the chain monitor): a witness preimage of one of our offered HTLCs is staged into the record (`KnownPreimage`, one save under the channel lock) and `OutgoingHtlcFulfilled` goes to the switch at once; a funding spend is classified as the watcher does, and a revoked commitment gets its penalties prepared (`RevokedCommitResolver.PrepareUnconfirmedPenaltiesAsync`), stored as pending broadcasts and published. The watcher links a prepared penalty (also one mined in the same block as the commitment) as the resolving transaction, abandons one after `Node:Onchain:Mempool:EvictionGraceBlocks` (3) blocks without its commitment (counted only at bitcoind's tip) and revives it when the commitment returns or a resolver rebuilds it.
+- **NL-216 fixed** (567197f): `chainstatus` (`ClientCommand` 16); while halted the node refuses `openchannel`/`payinvoice`, a peer's `open_channel`, every HTLC offer and new final-hop acceptances; fulfills, fails, fee updates, closes and broadcasts continue.
+- **Proof** (d51f6ec): Docker `Onchain/OnchainMempoolTests` (a) upstream fulfilled from david's unconfirmed preimage claim, (b) the victim's penalty in the mempool behind k before any block, one block confirms both, no second penalty. Integration seam (2138eae): `OnchainO6Tests` (b) runs its victim with `WatchMempool = false` so its penalty stays unconfirmed until the restart; any proof that needs an unconfirmed penalty or claim behind a mempool commitment must do the same.
+- Also this wave (lane A2): NL-067 first half, the signer reloads channel signing data from the DB (a49e166, 709030c, 910d085); `SignWalletTransaction` remains for O7-T1.
+
+Next: O6-T4 after NL-311, NL-320, NL-337; follow-ups NL-307..NL-309, NL-312..NL-315, NL-318, NL-329, NL-330, NL-335, NL-336; O7 anchors (NL-314, NL-067 second half).
 
 ### ABCD wave 7 record (status 2026-09-26, `wip/fafo` @ `4c37998`)
 
@@ -435,7 +446,7 @@ Deviations accepted in wave 4:
 - `zero_fee_commitments` (v3/TRUC, `shared_anchor`) is out of scope for this plan.
 
 ### O8 (optional): Mempool
-- ZMQ `rawtx` (NL-098): preimage extraction and penalty reaction from unconfirmed txs; never treat a mempool tx as a confirmation.
+- ZMQ `rawtx` (NL-098): preimage extraction and penalty reaction from unconfirmed txs; never treat a mempool tx as a confirmation. **Done** in gossip wave G-A (567197f, 7fde9bf, d51f6ec, 99ba3ac; see the wave record).
 
 ---
 
@@ -452,7 +463,7 @@ Status: **MISSING** everywhere at `b38ec28` unless noted. Test prefixes: `DT/` D
 | B5-GEN-04 | Funding spent while open → fail | MISSING | O2-T5 | `AT/Onchain/OnchainChannelWatcherTests` |
 | B5-GEN-05 | Ignore invalid txs | N/A by design (only confirmed txs are seen) | O0-T2 | — |
 | B5-GEN-06 | Unknown funding spend → warn | MISSING | O2-T3, O2-T5 | classifier Unknown row |
-| B5-GEN-07 | Mempool MAY | MISSING (NL-098) | O8 | — |
+| B5-GEN-07 | Mempool MAY | DONE (NL-098; 567197f, 7fde9bf, d51f6ec, 99ba3ac) | O8 | `AT/Onchain/Mempool/MempoolReactorTests`, `BT/Wallet/BlockchainMonitorServiceTests` (rawtx), Docker `Onchain/OnchainMempoolTests` |
 | B5-FAIL-01/02 | Forget / wait when nothing at stake | MISSING | O2-T2 | `ChannelFailureServiceTests.Given_NoToLocalNoHtlc_…` |
 | B5-FAIL-04 | No broadcast when outdated | PARTIAL (flag persisted, nothing broadcasts) | O2-T1 | `…Given_DataLoss_Then_Refused` |
 | B5-FAIL-05 | Broadcast latest signed commitment | MISSING | O2-T2 | DK O2 |

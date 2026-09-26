@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip wave G-A (`164289a`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -17,6 +17,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - Penalties, including a real LND channel-database rollback breach.
   - On-chain preimage handling, including final-hop claims (NL-316).
   - RBF sweeps and reorgs.
+  - O8 mempool reaction: preimages and penalties from unconfirmed transactions (NL-098), and the `chainstatus` halt gate (NL-216), gossip wave G-A.
 - **Live Mutinynet smoke test.** Open, pay, receive, restart, cooperative close ([`MUTINYNET.md`](MUTINYNET.md)).
 - **Platform.** net10.0 + net11.0; SQLite, Postgres and SQL Server schemas kept in sync.
 
@@ -27,10 +28,8 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - CPFP of our commitment and fee inputs for HTLC txs (BOLT5 plan O7).
   - Wallet signing: `SignWalletTransaction` still throws (NL-067).
   - Until then anchors stay experimental and channels are `static_remotekey` only.
-- **Mempool awareness (O8).** Preimage extraction and penalty reaction from unconfirmed transactions via ZMQ `rawtx` (NL-098).
-- **Signer and key persistence.** Channel key data is still memory-only and re-registered at startup (NL-067).
+- **Signer and key persistence.** Done for channel signing data: the signer reloads it from the DB on first use (NL-067 first half, gossip wave G-A); `ChannelManager` still registers by hand (NL-343). Wallet signing remains (above).
 - **Operational hardening.**
-  - Chain-processing halt exposed over IPC and gating channel operations (NL-216 remainder).
   - Watchtower-free safety review.
   - Backup and restore story for channel state.
   - Real mainnet soak.
@@ -43,7 +42,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - Validation and a graph store.
   - Gossip sync and relay.
   - Graph pathfinding in `PaymentService`: pay any node without route hints.
-  - Two gaps found while planning: NL-341 (fundee ignores `announce_channel`) and NL-342 (`announcement_signatures` dropped).
+  - Wave G-A done (`164289a`): typed 256/257/259 with LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, address descriptors (NL-008), Domain graph, validator and pathfinder; none wired yet.
+  - Next, wave G-B: public channels end to end (NL-341 handlers, NL-342 handler), graph ingress/store/pruner and IPC, Docker proofs G0-G2.
+  - Follow-ups: NL-343..NL-346.
 - **Attribution data** (M3b). Wired end to end but kept experimental: LND 0.20 does not implement it, so it can't be proven against LND (NL-332). Follow-ups:
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).

@@ -13,7 +13,8 @@ Every repo claim cites a repo-relative path, with line numbers where they are us
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-26: `07-routing-gossip.md` (whole document); `04-onion-routing.md` (§Failure Messages: the `channel_update` field and the origin rules); `09-features.md` (bits 6/7 `gossip_queries`, 10/11 `gossip_queries_ex`, 46/47 `option_scid_alias`); `02-peer-protocol.md` (`channel_flags.announce_channel`, the rule forbidding `option_scid_alias` together with `announce_channel`, the `channel_ready` alias). Re-read the requirement block before you implement a handler.
 - **Relation to the other plans:** ABCD roadmap §1.1 picked option B (route hints) and deferred option A (public channels plus BOLT 7) as "2-3 more waves on NL-099". This plan is option A. It builds on the W1-E `channel_update` exchange (`Application/Gossip/ChannelUpdateService`) and on BOLT 5 O0 (the chain monitor's per-block input scan and reorg ring). It feeds `PaymentRoutePlanner` (ABCD W6-C) with graph paths.
 - **Issue ledger:** the epic is NL-099. Related entries: NL-008 (address descriptors), NL-054 (routing-table TODOs), NL-236 (no public-channel option), NL-255 (LND never hints through us without a `node_announcement`); NL-100, NL-101, NL-102, NL-103, NL-205 and NL-209 are already fixed. New gaps found while writing this plan are listed in §2.2 as `GG#` rows marked "new" in the NL column; the ledger agent files them (the next free ID at `368a057` is **NL-332**). Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-26, `wip/fafo` @ `368a057`, ABCD wave 7 in progress, with uncommitted W7 changes in the main checkout):**
+- **Status (2026-09-26, `wip/fafo` @ `164289a`, after gossip wave G-A):** wave G-A is done (see "Gossip wave G-A record" in §5). G0 complete (G0-T1..T5), G1-T1 storage half and G1-T2, G2-T1..T3 and G4-T1 landed as library code with tests; **nothing is wired into the node yet**: 256/257 are typed and dropped, 259 reaches `ChannelManager` and gets a channel-scoped "not supported yet" warning until G1-T3. Next: wave G-B (B1 public channels, B2 graph ingress/store/pruner/IPC, B3 Docker proofs).
+- Status before wave G-A (superseded by the line above; `wip/fafo` @ `368a057`, ABCD wave 7 in progress, with uncommitted W7 changes in the main checkout):
   - Nothing of G0-G5 exists beyond the W1-E subset.
   - `channel_announcement` (256), `node_announcement` (257) and `announcement_signatures` (259) are parsed as raw bytes and dropped.
   - Queries get empty replies (`full_information=0`).
@@ -206,13 +207,13 @@ Requirement IDs (`B7-…`) are used by the tasks and by the traceability matrix 
 | # | Gap | Evidence | NL | Gate |
 |---|---|---|---|---|
 | GG1 | 256, 257 and 259 are untyped; nothing verifies them | `GossipMessage.cs`, `PeerService.cs:353-358` | NL-099 | G0-T1..T3 |
-| GG2 | 259 is a **channel** message (`channel_id`) but is dispatched as peer gossip and dropped: no `ChannelManager` case, no lock | `PeerService.cs:353` | new | G0-T2, G1-T3 |
-| GG3 | No way to request a public channel. The fundee ignores `announce_channel` (not stored), so an LND-opened **public** channel is silently treated as private and LND never gets our `announcement_signatures` | `OpenChannelClientHandler.cs:110-112`; no `ChannelFlags` use in `Application/Channels/Handlers/OpenChannel1MessageHandler.cs` (grep) | NL-236 + new | G1-T1 |
-| GG4 | No funding-key signature API for `bitcoin_signature` | `ILightningSigner.cs` | new | G1-T2 |
-| GG5 | Address descriptors: Tor v3 decodes 36 bytes, DNS length off by one; only IPv4 is tested | `src/NLightning.Infrastructure/Protocol/Tlv/Converters/RemoteAddressTlvConverter.cs:51-54,95-103` | NL-008 | G0-T4 |
+| GG2 | 259 is a **channel** message (`channel_id`) but is dispatched as peer gossip and dropped: no `ChannelManager` case, no lock | `PeerService.cs:353` | NL-342 (routed in G-A, handler open) | G0-T2, G1-T3 |
+| GG3 | No way to request a public channel. The fundee ignores `announce_channel` (not stored), so an LND-opened **public** channel is silently treated as private and LND never gets our `announcement_signatures` | `OpenChannelClientHandler.cs:110-112`; no `ChannelFlags` use in `Application/Channels/Handlers/OpenChannel1MessageHandler.cs` (grep) | NL-236 + NL-341 (storage done in G-A) | G1-T1 |
+| GG4 | No funding-key signature API for `bitcoin_signature` | `ILightningSigner.cs` | closed in G-A (`SignChannelAnnouncement`, 709030c) | G1-T2 |
+| GG5 | Address descriptors: Tor v3 decodes 36 bytes, DNS length off by one; only IPv4 is tested | `src/NLightning.Infrastructure/Protocol/Tlv/Converters/RemoteAddressTlvConverter.cs:51-54,95-103` | NL-008 (fixed in G-A) | G0-T4 |
 | GG6 | Our updates always set `dont_forward`; a public channel needs it clear and the real SCID | `ChannelUpdateService.cs:335-340` | new | G1-T5 |
 | GG7 | The peer's updates live in memory only and are never relayed | `ChannelUpdateService.cs:52-53,73` | NL-099 | G2-T4 |
-| GG8 | No SCID → funding-output lookup (height → txid list → `gettxout`) | `IBitcoinChainService.cs` | new | G2-T2 |
+| GG8 | No SCID → funding-output lookup (height → txid list → `gettxout`) | `IBitcoinChainService.cs` | closed in G-A (`FundingOutputLookup`, 79debc3, c1bb630) | G2-T2 |
 | GG9 | Query replies are always empty with `full_information=0` | `GossipQueryResponder.cs:11-15` | NL-205 note | G3-T1 |
 | GG10 | Path candidates come from hints only; `RoutingInfo` has no HTLC limits | `PaymentRoutePlanner.cs:301-372` | new | G4-T3 |
 | GG11 | `init.networks` of the peer is not consulted before forwarding gossip **(unverified: check `PeerService` init handling)** | — | new | G3-T3 |
@@ -414,6 +415,33 @@ Requirement IDs (`B7-…`) are used by the tasks and by the traceability matrix 
 - CLN proofs use `ClnClient` (`listchannels`, `listnodes`).
 - Each proof logs the LND/CLN version and every value it reads.
 
+### Gossip wave G-A record (status 2026-09-26, `wip/fafo` @ `164289a`)
+
+Five lanes, each with a review step; lane SHAs mapped to `wip/fafo` through the `-x` footers (lane → `wip/fafo`). Integrate commits: b515155 (registers `AddGossipBitcoinServices()` in `AddBitcoinInfrastructure`, binds `FundingOutputLookupOptions` to the `Gossip` section, fixes the `using Domain.Enums;` seam in `GossipFeatures`), 2138eae (O6 (b) Docker victim with `WatchMempool = false`), 164289a (guides).
+
+| Task | Status | `wip/fafo` SHAs (lane) | Notes |
+|---|---|---|---|
+| G0-T1 typed 256/257 | done | 57bb15b (335056a) | Domain codecs `ChannelAnnouncementPayload`/`NodeAnnouncementPayload` (Parse/TryParse/GetBytes/GetSignedData/GetSignatureHash, trailing bytes signed and kept); `GossipCodecPayloadSerializer<T>`; `GossipMessage`/`GossipPayload` deleted. Address bytes stay raw in the payload (decoded through G0-T4). A key without a 02/03 prefix → warning + close (compliant; G2 may prefer to ignore relayed gossip). |
+| G0-T2 typed 259 as a channel message | done | 57bb15b, 0c6a9c3 (335056a, 860594a) | `PeerService` raises it with the channel messages; interim `ChannelManager` outcome (channel-scoped "not supported yet" warning, connection kept; unknown channel → error; Failed → stored error) pinned by tests. Test name: `PeerServiceTests.Given_InitializedPeer_When_AnnouncementSignaturesReceived_Then_RaisedAsChannelMessage`. |
+| G0-T3 signature helpers | done | c5c7b5d (ea50cf3) | `IGossipSignatureVerifier` (Domain) + `Infrastructure.Bitcoin/Gossip/GossipSignatureVerifier` (high-S normalized, malformed → false, batch `VerifyAll`); `LocalLightningSigner.VerifyNodeMessage` delegates; internal `GossipSignedRanges` for raw payloads. 256/257 range tests are self-signed (NL-345). |
+| G0-T4 address descriptors | done | 70744d6, caf8ee7 (8d408da, 8e1d39a) | NL-008 fixed. Files under `Domain/Gossip/Addresses/` (subfolder instead of the flat layout of §3.1). Vectors inline in the tests (no LND `lnwire` hex copied). |
+| G0-T5 captured vectors | done | 7d318b5 (5bd2560) | LND 0.20: 3×256, 3×257, 7×258, 1×259; CLN v26.06.8: 1×256, 1×257, 2×258, 1×259 in `Tests.Utils/Vectors/Bolt7Vectors.cs`; `BOLT7/Bolt7CapturedVectorTests` byte-exact and every 256/257/258 signature verified (259 layout only). Explicit capture tests `Docker/Gossip/Capture/` (run in their own process). Observation: the fixture's LND channels are public and LND 0.20 dumps its graph only after our `gossip_timestamp_filter` (resolves Risk 5's "unverified"). |
+| G1-T1 announce flag | partial (storage) | a49e166 (1593811) | `ChannelConfigs.AnnounceChannel`, `ChannelParams`/`ChannelModel.AnnounceChannel`, peer announcement signatures and our send time on `Channels`. Handlers, IPC `--public` and `Gossip:AcceptPublicChannels` are wave G-B (B1). NL-341 partial. |
+| G1-T2 `SignChannelAnnouncement` | done | 709030c, 910d085 (6d0bff1, 1dadf00) | Implemented by lane A2 (the waves table had A3). Returns `ChannelAnnouncementSignatures(NodeSignature, BitcoinSignature)`, not a tuple; input is the payload from offset 256. Refuses private channels, other chains, SCID mismatches, unordered node ids, foreign keys, data loss, unknown channels. Not yet checked against a captured 256 (G1-T3/T4). Also NL-067 first half: the signer loads channels from the DB (NL-343 follow-up). |
+| G2-T1 graph model + validator | done | 78e5b23, caf8ee7 (c6d05e0, 8e1d39a) | `Domain/Gossip/{Graph,Validation}/`. `MayBlacklist` only with `signaturesVerified: true` and only for differing node ids; `GraphPolicy.ExtraData` compared at the same timestamp. |
+| G2-T2 funding output lookup | done | 79debc3, c1bb630 (b163c77, 8cce2eb) | `IFundingOutputLookup` (Domain) + `Infrastructure.Bitcoin/Gossip/FundingOutputLookup`; `IBitcoinChainService.GetBlockTxIdsAsync`, `GetConfirmedUnspentOutputAsync`. Transient statuses (requeue, never score): `BlockNotFound`, `ChainMoved`, `ChainUnavailable`, `OutputSpentInMempool`. No depth check: G2-T4 enforces 6 confirmations. NL-346. |
+| G2-T3 `AddGossipGraph` + `IGraphDbRepository` | done | a49e166 (1593811) | Tables `GraphNodes`, `GraphChannels`, `GraphChannelPolicies`, `GraphBannedNodes` on all three providers; storage records in `Domain/Gossip/Persistence` (separate from the A4 read model; G2-T4's `GraphStore` maps them). Postgres seeded upgrade 9/9. |
+| G4-T1 pathfinder | done | fd92d5d, 0bf7baf (1645852, 007d39d) | `Domain/Routing/Pathfinding/`. BOLT 7 Routing Example exact; limit-pruned searches rerun ordered by the limit; our stale first hop routes by its live state; 50k channels ≈ 5.6 ms per query (asserted < 50 ms Release). The `HintRouteBuilder.BuildAlong` cross-check moves to G4-T3 (Domain.Tests cannot reference Application). |
+
+Deviations (spec wins, accepted):
+- `GossipValidator` accepts a 256 with unknown even features as **not routable** (BOLT 7 only forbids routing through it); §1.2 B7-CA-03 said ignore.
+- A malformed `node_announcement` addrlen gives Warn (no close) and is not applied; confirm the policy in G2-T4.
+- `SignChannelAnnouncement` returns a record and lives in lane A2's commits; A3's `VerifyNodeMessage` delegation shares the file (merged at integration).
+
+New ledger items: NL-343 (redundant hand registration with the signer), NL-344 (the peer's `remote_addr` stored as its address; undecodable one fails init), NL-345 (self-signed 256/257 range tests), NL-346 (lookup rate limit per lookup; pruned path unproven), NL-347 (Postgres case of the multi-node theory not run).
+
+Next (wave G-B): B1 G1-T1 handlers/IPC (NL-341), G1-T3 handler + `ChannelManager` case (NL-342), G1-T4..T7; B2 G2-T4..T6 (`GossipIngress`, `GraphStore`, `GraphPruner`, `listnodes`/`listgraphchannels`; `ClientCommand` numbers from 17, since 16 is `chainstatus`); B3 Docker Proofs G0/G1/G2 and `scripts/run-gossip.sh`. Carry: NL-343, NL-344, NL-345.
+
 ### G0: Wire completeness (no behaviour change except typing)
 | Task | Files | Acceptance |
 |---|---|---|
@@ -515,23 +543,23 @@ Seams to reconcile at integration:
 
 ## 6. Requirements traceability matrix
 
-Status is **MISSING** at `368a057` unless noted. Test prefixes: `DT/` Domain.Tests, `AT/` Application.Tests, `BT/` Infrastructure.Bitcoin.Tests, `ST/` Serialization.Tests, `IT/` Integration.Tests, `DK/` `IT/Docker/Gossip`, `CLN/` `IT/Docker/Interop/Cln/ClnGossipTests`.
+Status is **MISSING** at `368a057` unless noted; updated at `164289a` after wave G-A (PARTIAL = library code with tests, not wired). Test prefixes: `DT/` Domain.Tests, `AT/` Application.Tests, `BT/` Infrastructure.Bitcoin.Tests, `ST/` Serialization.Tests, `IT/` Integration.Tests, `DK/` `IT/Docker/Gossip`, `CLN/` `IT/Docker/Interop/Cln/ClnGossipTests`.
 
 ### 6.1 Announcements
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B7-AS-01 | send 259 at 6 confirmations after channel_ready; not if private or after shutdown | MISSING | G1-T4 | `AT/Gossip/ChannelAnnouncementServiceTests`, DK G1 (a)(b) |
 | B7-AS-02 | retransmit on reconnect; reply with ours | MISSING | G1-T4 | harness link-drop test, DK G1 (c) |
-| B7-AS-03 | SCID mismatch warning; bad signatures; defer | MISSING (dropped, GG2) | G1-T3 | `AT/Channels/Handlers/AnnouncementSignaturesMessageHandlerTests` |
+| B7-AS-03 | SCID mismatch warning; bad signatures; defer | PARTIAL (typed and routed to the channel, G-A; handler G1-T3) | G1-T3 | `AT/Channels/Handlers/AnnouncementSignaturesMessageHandlerTests` |
 | B7-AS-04 | queue 256 once both signature pairs are in | MISSING | G1-T4 | identical-bytes harness test |
-| B7-CA-01 | layout, ordering, hash from offset 256 | MISSING | G0-T1, G1-T4 | `ST/…ChannelAnnouncementPayloadTests`, vectors |
+| B7-CA-01 | layout, ordering, hash from offset 256 | PARTIAL (codec + vectors G-A; sending G1-T4) | G0-T1, G1-T4 | `ST/…ChannelAnnouncementPayloadTests`, vectors |
 | B7-CA-02 | not before 6 confirmations; P2WSH | MISSING | G1-T4, G2-T2 | depth test |
-| B7-CA-03 | receiver checks (sigs, chain, features, unspent P2WSH, depth) | MISSING | G2-T1, G2-T2, G2-T4 | `DT/Gossip/GossipValidatorTests`, `BT/Gossip/FundingOutputLookupTests` |
+| B7-CA-03 | receiver checks (sigs, chain, features, unspent P2WSH, depth) | PARTIAL (validator, verifier, lookup in G-A; ingress G2-T4) | G2-T1, G2-T2, G2-T4 | `DT/Gossip/GossipValidatorTests`, `BT/Gossip/FundingOutputLookupTests` |
 | B7-CA-04 | blacklist conflicting announcements | MISSING | G2-T4, G5-T2 | ingress test |
 | B7-CA-05 | rebroadcast; stop when spent; forget at +72 | MISSING | G2-T5, G3-T3 | pruner tests, DK G2 (c) |
-| B7-NA-01/02 | node_announcement fields and sender rules | MISSING | G0-T1, G0-T4, G1-T6 | codec tests, DK G1 (a) |
-| B7-NA-03 | receiver rules | MISSING | G2-T1, G2-T4 | validator table |
-| B7-NA-04 | unknown even features: no connect/route/pay | MISSING | G4-T1 | pathfinder table |
+| B7-NA-01/02 | node_announcement fields and sender rules | PARTIAL (codec, address sender rules G-A) | G0-T1, G0-T4, G1-T6 | codec tests, DK G1 (a) |
+| B7-NA-03 | receiver rules | PARTIAL (validator G-A) | G2-T1, G2-T4 | validator table |
+| B7-NA-04 | unknown even features: no connect/route/pay | PARTIAL (pathfinder G-A) | G4-T1 | pathfinder table |
 
 ### 6.2 channel_update
 | ID | Requirement | Status | Task | Test |
@@ -539,7 +567,7 @@ Status is **MISSING** at `368a057` unless noted. Test prefixes: `DT/` Domain.Tes
 | B7-CU-01 | sender rules | PARTIAL (W1-E, private only) | G1-T5 | `ChannelUpdateServiceTests` + public cases |
 | B7-CU-01b | accept old fee for 10 min | MISSING **(check `HtlcForwardingPolicy`)** | G1-T5 | forwarding-policy test |
 | B7-CU-02 | receiver rules incl. spent/disable, same-timestamp blacklist | PARTIAL (own channels, memory only) | G2-T4 | ingress tests |
-| B7-CU-03 | min/max/capacity in routing | MISSING | G4-T1 | pathfinder table |
+| B7-CU-03 | min/max/capacity in routing | PARTIAL (pathfinder G-A; planner G4-T3) | G4-T1 | pathfinder table |
 
 ### 6.3 Queries, relay, pruning, routing
 | ID | Requirement | Status | Task | Test |
@@ -552,7 +580,7 @@ Status is **MISSING** at `368a057` unless noted. Test prefixes: `DT/` Domain.Tes
 | B7-RL-01 | no relay before filter; 60 s staggered flush; origin suppression; networks | MISSING | G3-T3 | relay tests, DK G3 (c) |
 | B7-PR-01 | spent + 72 removal; node pruning | MISSING | G2-T5 | DK G2 (c) |
 | B7-PR-02 | 2-week stale MAY prune | MISSING | G2-T5 | mocked-clock test, DK G2 (d) |
-| B7-RT-01 | fees + CLTV + random offset | MISSING | G4-T1, G4-T3 | pathfinder tests, DK G4 |
+| B7-RT-01 | fees + CLTV + random offset | PARTIAL (pathfinder, `ShadowCltv` G-A) | G4-T1, G4-T3 | pathfinder tests, DK G4 |
 | B7-FEE-01 | fee formula | DONE (`HtlcForwardingPolicy`) | — | existing |
 | B4-CU-01 | failure update not applied to the graph | DONE (per payment, `RouteConstraints`) | G3-T5 keeps it | DK G4 (c) |
 

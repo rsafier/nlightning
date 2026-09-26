@@ -1,6 +1,42 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 7 @ `4c37998`).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-A @ `164289a`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Gossip wave G-A: integrated into `wip/fafo` @ `164289a` (2026-09-26), gates GREEN
+
+First wave of the BOLT 7 plan (`BOLT7_GOSSIP_PLAN.md`, goal: pay and get paid over public channels without route hints) plus the BOLT 5 O8 lane toward the mainnet gate. Five lanes, each with a review/fix step; the 18 lane commits were cherry-picked with `-x` in the order A2 → A1 → A3 → A4 → M1. Integrator commits:
+- b515155: `AddGossipBitcoinServices()` in `AddBitcoinInfrastructure`, `FundingOutputLookupOptions` bound to the `Gossip` section in `AddNltgNodeServices`, and the seam fix in `Domain/Gossip/GossipFeatures.cs` (`using Enums;` resolved to A2's new `Domain.Gossip.Enums`; now `using Domain.Enums;`).
+- 2138eae: `OnchainO6Tests` (b) timed out because O8 now penalizes the revoked commitment from the mempool (no `Pending` penalty left for the restart); `NLightningTestNode.WatchMempool` (default true, `Bitcoin:WatchMempool`) and the O6 (b) victim runs with it off.
+- 164289a: root `CLAUDE.md` and `test/CLAUDE.md` (typed 256/257/259, `ChainStatus` = 16 (next free 17), O8, baselines).
+- Conflicts resolved: `LocalLightningSigner.cs` (A2's `SignChannelAnnouncement` + A3's `VerifyNodeMessage` delegation), the Domain and Infrastructure.Bitcoin `CLAUDE.md` files.
+
+Gates at `164289a`:
+- Build: Release and Release.Native under SDK 10.0.103 and SDK 11 rc.1 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean; `check-sln-configs.py` OK.
+- Tests (net10.0, Release and Release.Native): **6522** non-Docker, 0 failures, 0 skips (Domain 2321, Application 1176, Integration 644, Serialization 518, Infrastructure 395, Infrastructure.Bitcoin 870, Bolt11 278, Daemon 320). Long simulator 1/1. `HasPendingModelChanges()` false for all three providers after `AddGossipGraph`.
+- Docker (in-container runner, `--network host`, net10.0, SQL Server skipped): gossip capture 4/4 (`-explicit on`), on-chain 21/21 after the O6 fix (2 `Explicit` not run; `OnchainMempoolTests` 2/2), LND suite 57/57 (without `SqlServerTests` and the whole `MultiNodeHarnessTests` server-database theory, NL-347), CLN 17/17, ABCD **3 × 10/10**. Postgres seeded upgrade 9/9 (lane A2). **120** Docker tests in total.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| A2 schema + signer (migration owner) | done: migration `AddGossipGraph` (3 providers; `GraphNodes`, `GraphChannels`, `GraphChannelPolicies`, `GraphBannedNodes`; `IGraphDbRepository`), announce flag and announcement-signature columns (G1-T1 storage), signer loads channels from the DB (`ChannelSigningInfoSource`), `SignChannelAnnouncement` (G1-T2). Review: private channels refused, mismatched registration throws before any guard moves, Closed/Stale not loaded | a49e166, 709030c, 910d085 | NL-067 partial, NL-341 partial, NL-099 partial; new NL-343 |
+| A1 wire | done: G0-T1 typed 256/257 codecs, G0-T2 259 as a channel message, G0-T5 LND 0.20 + CLN v26.06.8 captures byte-exact with verified signatures. Review: interim `ChannelManager` 259 outcome pinned | 57bb15b, 7d318b5, 0c6a9c3 | NL-342 partial, NL-099 partial |
+| A3 crypto + chain | done: G0-T3 `GossipSignatureVerifier`, G2-T2 `FundingOutputLookup` (LRU, rate limit, reorg-safe). Review: transient `BlockNotFound`/`OutputSpentInMempool`, block recheck after `gettxout`, only "pruned" -1 errors read as pruned | c5c7b5d, 79debc3, c1bb630 | NL-099 partial; new NL-345, NL-346 |
+| A4 addresses + pure | done: G0-T4 address descriptors, G2-T1 graph model + `GossipValidator`, G4-T1 `GraphPathfinder`. Review: blacklist only after signature verification, stale own first hop, limit-ordered reruns, LDH DNS, trailing-field compare, 50 ms budget | 70744d6, 78e5b23, fd92d5d, caf8ee7, 0bf7baf | NL-008 fixed, NL-099 partial; new NL-344 |
+| M1 chain safety | done: `chainstatus` (IPC 16) and the halt gate, ZMQ `rawtx`, `MempoolReactor` (preimage + penalty from the mempool), Docker `OnchainMempoolTests` | 567197f, 7fde9bf, d51f6ec, 99ba3ac | NL-098 fixed, NL-216 fixed |
+| Integration | DI registration, `Gossip` options, enum seam, O6 (b) `WatchMempool = false`, guides | b515155, 2138eae, 164289a | new NL-347 |
+
+Deviations accepted in wave G-A:
+- G1-T2 landed in lane A2 (the plan's waves table had A3); `SignChannelAnnouncement` returns a `ChannelAnnouncementSignatures` record.
+- `GossipValidator` accepts a 256 with unknown even features as not routable (BOLT 7), not ignored as plan §1.2 said; a malformed addrlen in 257 gives Warn without close.
+- Address vectors are inline in the tests (no LND `lnwire` hex); `Domain/Gossip` uses subfolders `Addresses`, `Graph`, `Validation`, `Persistence`, `Interfaces`.
+- The pathfinder's `HintRouteBuilder.BuildAlong` cross-check moves to G4-T3.
+- Out-of-lane touch: A3 edited `LocalLightningSigner.VerifyNodeMessage` (3-line delegation).
+
+### Carried into the next wave (G-B, plus the mainnet gate)
+
+- **BOLT 7 G-B:** B1 public channels (G1-T1 handlers, IPC `--public`, `Gossip:AcceptPublicChannels`, NL-341; G1-T3 `AnnouncementSignaturesMessageHandler` + `ChannelManager` case, NL-342; G1-T4..T7 announcement, public `channel_update`, `node_announcement`, own-gossip relay); B2 graph (G2-T4 ingress + `GraphStore` using `IFundingOutputLookup` with 6-confirmation depth and transient requeue, G2-T5 pruner, G2-T6 IPC from `ClientCommand` 17); B3 Docker proofs G0/G1/G2 and `scripts/run-gossip.sh`.
+- **G-A follow-ups:** NL-343 (drop `ChannelManager`'s hand signer registration; whoever owns `ChannelManager` in B1), NL-344 (remote_addr stored as the peer's address, undecodable one fails init), NL-345 (captured vectors in the signed-range tests), NL-346 (per-RPC rate limit, pruned path), NL-347 (split the multi-node server-database theory).
+- **Mainnet gate (NL-094 O6-T4):** NL-311, NL-320, NL-337; then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- Still open from wave 7 (below): NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
 
 ### Wave 7: integrated into `wip/fafo` @ `4c37998` (2026-09-26), gates GREEN
 

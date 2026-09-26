@@ -24,6 +24,8 @@ Updated 2026-09-26 after ABCD wave 6 (W6-A persistent onion replay set (migratio
 
 Updated 2026-09-26 after ABCD wave 7 (W7-A attribution_data wiring (migration owner), W7-B final-hop on-chain claims and HTLC-set commitment, W7-C flakes and gates) was integrated into `wip/fafo` (at `4c37998`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `4751a26`, `672ed61` and `4c37998` are `integrate:` commits), and NL-332..NL-340 record the lanes' and the integrator's new findings (the lanes' proposed NL-331/NL-332 collided with existing or other lanes' IDs and were renumbered: W7-B's expiry gap is NL-335, its dust-exposure case NL-336, its `HtlcExpiryMonitor` item NL-337; W7-C's NativeAOT failure is NL-338). The Docker suite (114 tests) ran from SDK containers on net10.0 and net11.0.
 
+Updated 2026-09-26 after gossip wave G-A (A1 wire, A2 schema and signer (migration owner, `AddGossipGraph`), A3 crypto and chain, A4 addresses, graph model and pathfinder, M1 BOLT 5 O8 mempool and the halt gate) was integrated into `wip/fafo` (at `164289a`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `b515155`, `2138eae` and `164289a` are `integrate:` commits), and NL-343..NL-347 record the lanes' and the integrator's new findings. The Docker suites ran from SDK containers on net10.0 only (SQL Server container tests skipped).
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -58,12 +60,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 1 | 6 | 27 | 77 | 111 |
+| open | 1 | 6 | 25 | 81 | 113 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 13 | 46 | 100 | 65 | 224 |
+| fixed | 13 | 46 | 103 | 65 | 227 |
 | wontfix | 0 | 0 | 2 | 4 | 6 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **52** | **130** | **146** | **342** |
+| **Total** | **14** | **52** | **131** | **150** | **347** |
 
 ### Epics
 
@@ -74,8 +76,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
-- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); next: O6-T4 mainnet gate (pending NL-311, NL-320, NL-337), O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-312..NL-315, NL-318, NL-320, NL-329, NL-330, NL-335, NL-336)
-- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done)
+- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); next: O6-T4 mainnet gate (pending NL-311, NL-320, NL-337), O7 anchors (NL-314), follow-ups NL-307..NL-309, NL-312..NL-315, NL-318, NL-320, NL-329, NL-330, NL-335, NL-336)
+- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder, none wired yet)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
 - NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments, HTLC origins and the persistent replay set (wave 6, NL-078) done; forward failure reasons, SCID map and per-part MPP send rows (NL-321) remain)
 
@@ -154,11 +156,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-008 remote_addr / address descriptor conversion broken for Tor v3 and DNS
-- **Status:** open
+- **Status:** fixed (70744d6, caf8ee7)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure/Protocol/Tlv/Converters/RemoteAddressTlvConverter.cs:51-54,95-103`, `src/NLightning.Domain/Protocol/Tlv/RemoteAddressTlv.cs:32`
-- **Evidence:** Tor v3 decode reads `Value[1..37]` (36 bytes, spec 35). DNS (type 5): Domain length `3 + len` (spec `4 + len`) and encode overwrites `customAddressBytes[1]`. Only IPv4 is tested.
+- **Evidence:** Tor v3 decode reads `Value[1..37]` (36 bytes, spec 35). DNS (type 5): Domain length `3 + len` (spec `4 + len`) and encode overwrites `customAddressBytes[1]`. Only IPv4 is tested. Update (gossip wave G-A, `164289a`): fixed. `Domain/Gossip/Addresses/{AddressDescriptor,AddressDescriptorCodec}` decode types 1-5 with exact lengths (Tor v3 35 + 2, DNS 1 + len + 2), `EncodeList` enforces the sender rules and `DecodeList` the receiver rules (stop at the first unknown type, drop port 0 and Tor v2, keep the first DNS); DNS hostnames are LDH plus `.` and `_` (caf8ee7). `RemoteAddressTlvConverter` delegates to the codec and `RemoteAddressTlv.Value` now holds the wire bytes; Tor addresses read `<base32>.onion`. All five types tested (70744d6). The remote_addr handling in init is NL-344.
 - **Fix sketch:** Fix offsets/lengths per BOLT 7 address descriptors; add tests for all 5 types.
 - **Blocks/Blocked-by:** Blocks NL-099 (node_announcement addresses)
 - **Plan ref:** —
@@ -169,9 +171,19 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs:241`
 - **Evidence:** Commented out with `TODO: Review this when implementing BOLT7`.
-- **Fix sketch:** Send the peer's observed address once NL-008 is fixed.
+- **Fix sketch:** Send the peer's observed address once NL-008 is fixed. Update (gossip wave G-A): NL-008 is fixed; the address we see for a peer is not kept separately yet (NL-344).
 - **Blocks/Blocked-by:** Blocked-by NL-008
 - **Plan ref:** —
+
+### NL-344 The peer's init `remote_addr` is stored as that peer's address, and an undecodable one fails init
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (remote_addr handling, about lines 489-515), `src/NLightning.Application/Node/Managers/PeerManager.cs`, `src/NLightning.Infrastructure.Serialization/Messages/Types/InitMessageTypeSerializer.cs`
+- **Evidence:** BOLT 1: `remote_addr` is the address the **sender** sees for **us**. `PeerService` stores it as the peer's `PreferredHost`/`PreferredPort`, and `PeerManager` then uses it as that peer's address. Since the strict codec (NL-008, 70744d6) a `remote_addr` the converter rejects (odd, advisory TLV) throws `InvalidCastException` and fails the whole init (malformed-message warning and close); whether `InitMessageTypeSerializer` wraps it for the NL-207 path is unverified. Found by lane A4's review (gossip wave G-A).
+- **Fix sketch:** Keep it only as an "our observed address" hint (NL-009, node_announcement addresses); log and drop an undecodable one instead of failing init.
+- **Blocks/Blocked-by:** Related NL-008, NL-009
+- **Plan ref:** BOLT7 G1-T6 (announced addresses)
 
 ### NL-010 peer_storage / peer_storage_retrieval messages missing
 - **Status:** open
@@ -1216,14 +1228,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N3-T4
 
 ### NL-067 LocalLightningSigner: channel info memory-only; SignWalletTransaction not implemented
-- **Status:** open
+- **Status:** open (partial: a49e166, 709030c, 910d085)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Signers/LocalLightningSigner.cs:52,189`
-- **Evidence:** `TODO: Load channel key data from database`; after a restart channels must be re-registered by hand. `SignWalletTransaction` throws. Update: registration now carries `LocalCommitmentNumber` and `RemoteHtlcBasepoint` (615395c), and startup awaits it for every active channel before connecting (NL-201). Key data is still memory-only and `SignWalletTransaction` still throws.
+- **Evidence:** `TODO: Load channel key data from database`; after a restart channels must be re-registered by hand. `SignWalletTransaction` throws. Update: registration now carries `LocalCommitmentNumber` and `RemoteHtlcBasepoint` (615395c), and startup awaits it for every active channel before connecting (NL-201). Key data is still memory-only and `SignWalletTransaction` still throws. Update (gossip wave G-A, `164289a`): first half done. `ChannelSigningInfoDbRepository` reads every signing field from the `Channels`/`ChannelKeySets`/`ChannelConfigs`/`BroadcastTransactions` rows (no private key stored; Closed and Stale channels are not loaded) and `LocalLightningSigner` loads and registers an unknown channel on first use through `IChannelSigningInfoSource` (one scope per lookup, read outside the commitment lock, no negative cache), with the revocation guard, data-loss flag and S1 broadcast mark restored (a49e166, 709030c; proof `SignerStateReloadTests`); a re-registration with other keys or another funding outpoint throws `SignerException` before any guard moves (910d085). The redundant hand registration in `ChannelManager` is NL-343. Remaining: `SignWalletTransaction` (BOLT5 O7-T1).
 - **Fix sketch:** Load channel key data from the DB on demand; implement wallet signing.
 - **Blocks/Blocked-by:** Blocks NL-035, NL-094
 - **Plan ref:** BOLT2 N1-T6 (re-registration only)
+
+### NL-343 ChannelManager still registers every channel with the signer by hand
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`RegisterExistingChannelLockedAsync`, the `GetBroadcastSignedCommitmentNumberAsync` lookup, `ConfirmFundingAsync`)
+- **Evidence:** Since NL-067's first half (709030c) the signer loads an unknown channel from the DB on first use, so the startup registration and the one at funding confirmation are redundant (harmless: registration is idempotent and a mismatch throws before any guard moves, 910d085). A signer without an `IChannelSigningInfoSource` (tests only) would still need a re-registration after a reorg moves the SCID. Also: the lazy load has no negative cache (each lookup of an unknown id is a synchronous DB read, deliberately), and a DB failure surfaces as "not registered" (logged as an error by `ChannelSigningInfoSource`); `SignChannelTransaction` on an unregistered channel throws `InvalidOperationException`, not `SignerException`.
+- **Fix sketch:** A lane that owns `ChannelManager` drops the hand registration (keep the SCID refresh if a source-less signer must know it).
+- **Blocks/Blocked-by:** Related NL-067
+- **Plan ref:** —
 
 ### NL-068 DustService is not registered in DI
 - **Status:** fixed (3805db9)
@@ -1748,7 +1770,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs`, `src/NLightning.Domain/Onchain/`, `src/NLightning.Infrastructure.Bitcoin/Onchain/`, `src/NLightning.Infrastructure.Bitcoin/Builders/{Sweep,Penalty}TransactionBuilder.cs`
-- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists). Update (ABCD wave 3, `c92d837`): N9-T4 done: `ChannelFailureService` is the only broadcast path; under the lock it persists Failed + the error, signs the latest local commitment with the stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, refuses a revoked number), saves the watch and publishes after the lock, retries a refused publish every block and resumes interrupted broadcasts at start (06da54b); the signer refuses every signature after `MarkDataLoss` (also set at registration from `DataLossDetected`). `ChannelManager` hands a `MustBroadcast` failure to it after the lock, and the daemon starts it (983b2b4). Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) passed in the lane, not re-run at integration (NL-276). The design for the rest is `docs/agents/BOLT5_ONCHAIN_PLAN.md` (3b02972, 6290443). Still open: sweeps (to_local after the delay, HTLC outputs), HTLC-timeout/success broadcasts, detecting the peer's commitment on chain (NL-272), a persisted broadcast intent (NL-271), penalty (NL-095). An upstream HTLC forwarded onto a force-closed channel stays AwaitingDownstream until BOLT 5 resolves the downstream HTLC. Update (ABCD wave 4, `6b5d50e`): `BOLT5_ONCHAIN_PLAN.md` O0 and O1 are done and wired: persisted broadcasts with per-block rebroadcast (`IChainBroadcaster`), persisted outpoint watches with every channel's funding output watched (`IOutpointWatcher`), one unit of work per block, the reorg header ring and rewind (7b4a173, f251dde, 5bedf44, a9e33a7; Docker `Onchain/OnchainSmokeTests`); the revocation log written in the revoke_and_ack save, the `ChannelCloses`/`OutputResolutions` tables, `ChannelState.OnchainResolving = 37`, migration `AddOnchainResolution` (4fd3617). The O2-O6 building blocks exist but are **not wired**: signer invariant S1 (dbe4cc8, 0761773; not restored after a restart, NL-297), `FundingSpendClassifier` + `CommitmentNumber.Decode` (5926d0c), `CommitmentOutputMapper` (263ab8f), preimage extraction (d7a4c73), `SignSweepInput` + `SweepTransactionBuilder` (7394f19, ff7f6cc), `PenaltyTransactionBuilder` (0df889a), `OutputResolutionPlanner` (36e8797), `SweepFeePolicy` (369314d), all against the Appendix C/F vectors; `AddOnchainBitcoinServices()` is registered (960cf05). Still open: the watcher that classifies funding spends and drives the planner (O2-T5, NL-272), the sweep scheduler (O6-T1), HTLC resolution into the switch (O3-T3/T4), penalty execution (O5-T2/T3), anchors CPFP (O7), reorg rollback of completed watches (O6-T3, NL-292), a confirmation-target fee estimate (NL-296). Update (ABCD wave 5, `1a5ab49`): `BOLT5_ONCHAIN_PLAN.md` O2-O5 are done, wired and proven against LND. O2 (W5-A): the `IOutputResolver` port and action model (152144c); the commitment `BroadcastTransactions` row with its commitment number in the Failed save and S1 restored at registration (d040654, 41f5fc2; NL-271, NL-297); `OnchainChannelWatcher` classifies every non-mutual funding spend, persists `ChannelCloses`/`OutputResolutions` + watches and moves the channel to `OnchainResolving` (41f5fc2; NL-272); `OnchainResolutionExecutor` runs the resolvers every block in one save, marks outputs Irrevocable at 100 blocks and closes the channel (O6-T2), and catches up spends mined before a watch was tracked (cbd99c6); `forceclosechannel` (ClientCommand 14) and `pendingsweeps` (15) IPC (c2ae40a); a Closing channel is never force-failed (7f6ebd9). O3 (W5-B): `LocalCommitResolver` (to_local after the CSV, HTLC-timeout/success, second-level sweeps; 7d3a6b3, 037c04b) and `HtlcRemovalKind.OnchainTimeout = 4` failing upstream with our own `permanent_channel_failure` (5af263f). O4 (W5-C): `RemoteCommitResolver` (to_remote, timeout and preimage claims at the peer's point incl. a forward's downstream preimage, remote-next and future commitments; 3794c0d, 202341b). O5 (W5-D): `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched, single and split penalties, second-level penalties; e5a556d, f4b83ff, 7189b71). Integration dd2d64f registers the three resolvers in `AddApplicationServices` and binds their options from `Node:Onchain`. Docker `Docker/Onchain/` O2 (2), O3 (4), O4 (5), O5 (2 end to end incl. an LND channel.db rollback, + 2 `Explicit` by-hand variants) green on net10.0 and net11.0 (567a3c1, cc207a8, 6bd3645, bbc51b4, a5b24e3). Still open: O6-T1 sweep scheduler and fee bumping (NL-317, NL-296), O6-T3 reorg re-resolution (NL-292, NL-293), O6-T4 mainnet gate, O7 anchors (NL-314), O8 mempool (NL-098), and the wave 5 follow-ups NL-307..NL-309, NL-311..NL-313, NL-315, NL-316, NL-318, NL-320. Update (ABCD wave 6, `3ce3cad`): `BOLT5_ONCHAIN_PLAN.md` O6-T1 and O6-T3 are done with Docker Proof O6: per-target fee estimates (6a4eb7d, NL-296), `SweepScheduler` RBF-bumps unconfirmed sweeps, claims and penalties every block and retires broadcasts that can no longer confirm (7c437b3, cde5ebb; NL-317, NL-294 partial); the chain-monitor rewind rolls back completed watches and wallet UTXOs (e8bb45b, 30584cf, 7dcf472; NL-293); the executor re-resolves after a reorg (pauses a channel whose funding spend left the chain, unresolves rolled-back spends, rebroadcasts our commitment, broadcasts it after `ReorgGraceBlocks` when the peer's is gone, moves a reconfirmed funding tx's SCID and sends a new channel_update, retires a replaced close; b330d8c, 8fcea62, 70cbd33, 6d4b625; NL-292); Docker `OnchainO6Tests` (a) reorged sweep rebroadcast, (b) penalty rebroadcast after restart, (c) RBF-bumped sweep, and the stale-SCID reproducer is a regular test (d3dfff8). The Onchain suite (18 + 2 Explicit) is green on net10.0 and net11.0. O6-T4 mainnet gate: opened (09052d0) and reverted (0c0d5c8): HTLCs stay regtest-only until NL-316 (and NL-311, NL-320, NL-322) are fixed. Still open: O6-T4, O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-311..NL-316, NL-318, NL-320, NL-322, NL-329, NL-330. Update (ABCD wave 7, `4c37998`): NL-316 and NL-322 are fixed (W7-B; Docker `OnchainFinalHopTests`), so O6-T4 is no longer blocked by them; the gate stays closed (HTLCs regtest-only) pending NL-311, NL-320 and the new NL-337. New follow-ups NL-335, NL-336.
+- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists). Update (ABCD wave 3, `c92d837`): N9-T4 done: `ChannelFailureService` is the only broadcast path; under the lock it persists Failed + the error, signs the latest local commitment with the stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, refuses a revoked number), saves the watch and publishes after the lock, retries a refused publish every block and resumes interrupted broadcasts at start (06da54b); the signer refuses every signature after `MarkDataLoss` (also set at registration from `DataLossDetected`). `ChannelManager` hands a `MustBroadcast` failure to it after the lock, and the daemon starts it (983b2b4). Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) passed in the lane, not re-run at integration (NL-276). The design for the rest is `docs/agents/BOLT5_ONCHAIN_PLAN.md` (3b02972, 6290443). Still open: sweeps (to_local after the delay, HTLC outputs), HTLC-timeout/success broadcasts, detecting the peer's commitment on chain (NL-272), a persisted broadcast intent (NL-271), penalty (NL-095). An upstream HTLC forwarded onto a force-closed channel stays AwaitingDownstream until BOLT 5 resolves the downstream HTLC. Update (ABCD wave 4, `6b5d50e`): `BOLT5_ONCHAIN_PLAN.md` O0 and O1 are done and wired: persisted broadcasts with per-block rebroadcast (`IChainBroadcaster`), persisted outpoint watches with every channel's funding output watched (`IOutpointWatcher`), one unit of work per block, the reorg header ring and rewind (7b4a173, f251dde, 5bedf44, a9e33a7; Docker `Onchain/OnchainSmokeTests`); the revocation log written in the revoke_and_ack save, the `ChannelCloses`/`OutputResolutions` tables, `ChannelState.OnchainResolving = 37`, migration `AddOnchainResolution` (4fd3617). The O2-O6 building blocks exist but are **not wired**: signer invariant S1 (dbe4cc8, 0761773; not restored after a restart, NL-297), `FundingSpendClassifier` + `CommitmentNumber.Decode` (5926d0c), `CommitmentOutputMapper` (263ab8f), preimage extraction (d7a4c73), `SignSweepInput` + `SweepTransactionBuilder` (7394f19, ff7f6cc), `PenaltyTransactionBuilder` (0df889a), `OutputResolutionPlanner` (36e8797), `SweepFeePolicy` (369314d), all against the Appendix C/F vectors; `AddOnchainBitcoinServices()` is registered (960cf05). Still open: the watcher that classifies funding spends and drives the planner (O2-T5, NL-272), the sweep scheduler (O6-T1), HTLC resolution into the switch (O3-T3/T4), penalty execution (O5-T2/T3), anchors CPFP (O7), reorg rollback of completed watches (O6-T3, NL-292), a confirmation-target fee estimate (NL-296). Update (ABCD wave 5, `1a5ab49`): `BOLT5_ONCHAIN_PLAN.md` O2-O5 are done, wired and proven against LND. O2 (W5-A): the `IOutputResolver` port and action model (152144c); the commitment `BroadcastTransactions` row with its commitment number in the Failed save and S1 restored at registration (d040654, 41f5fc2; NL-271, NL-297); `OnchainChannelWatcher` classifies every non-mutual funding spend, persists `ChannelCloses`/`OutputResolutions` + watches and moves the channel to `OnchainResolving` (41f5fc2; NL-272); `OnchainResolutionExecutor` runs the resolvers every block in one save, marks outputs Irrevocable at 100 blocks and closes the channel (O6-T2), and catches up spends mined before a watch was tracked (cbd99c6); `forceclosechannel` (ClientCommand 14) and `pendingsweeps` (15) IPC (c2ae40a); a Closing channel is never force-failed (7f6ebd9). O3 (W5-B): `LocalCommitResolver` (to_local after the CSV, HTLC-timeout/success, second-level sweeps; 7d3a6b3, 037c04b) and `HtlcRemovalKind.OnchainTimeout = 4` failing upstream with our own `permanent_channel_failure` (5af263f). O4 (W5-C): `RemoteCommitResolver` (to_remote, timeout and preimage claims at the peer's point incl. a forward's downstream preimage, remote-next and future commitments; 3794c0d, 202341b). O5 (W5-D): `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched, single and split penalties, second-level penalties; e5a556d, f4b83ff, 7189b71). Integration dd2d64f registers the three resolvers in `AddApplicationServices` and binds their options from `Node:Onchain`. Docker `Docker/Onchain/` O2 (2), O3 (4), O4 (5), O5 (2 end to end incl. an LND channel.db rollback, + 2 `Explicit` by-hand variants) green on net10.0 and net11.0 (567a3c1, cc207a8, 6bd3645, bbc51b4, a5b24e3). Still open: O6-T1 sweep scheduler and fee bumping (NL-317, NL-296), O6-T3 reorg re-resolution (NL-292, NL-293), O6-T4 mainnet gate, O7 anchors (NL-314), O8 mempool (NL-098), and the wave 5 follow-ups NL-307..NL-309, NL-311..NL-313, NL-315, NL-316, NL-318, NL-320. Update (ABCD wave 6, `3ce3cad`): `BOLT5_ONCHAIN_PLAN.md` O6-T1 and O6-T3 are done with Docker Proof O6: per-target fee estimates (6a4eb7d, NL-296), `SweepScheduler` RBF-bumps unconfirmed sweeps, claims and penalties every block and retires broadcasts that can no longer confirm (7c437b3, cde5ebb; NL-317, NL-294 partial); the chain-monitor rewind rolls back completed watches and wallet UTXOs (e8bb45b, 30584cf, 7dcf472; NL-293); the executor re-resolves after a reorg (pauses a channel whose funding spend left the chain, unresolves rolled-back spends, rebroadcasts our commitment, broadcasts it after `ReorgGraceBlocks` when the peer's is gone, moves a reconfirmed funding tx's SCID and sends a new channel_update, retires a replaced close; b330d8c, 8fcea62, 70cbd33, 6d4b625; NL-292); Docker `OnchainO6Tests` (a) reorged sweep rebroadcast, (b) penalty rebroadcast after restart, (c) RBF-bumped sweep, and the stale-SCID reproducer is a regular test (d3dfff8). The Onchain suite (18 + 2 Explicit) is green on net10.0 and net11.0. O6-T4 mainnet gate: opened (09052d0) and reverted (0c0d5c8): HTLCs stay regtest-only until NL-316 (and NL-311, NL-320, NL-322) are fixed. Still open: O6-T4, O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-311..NL-316, NL-318, NL-320, NL-322, NL-329, NL-330. Update (ABCD wave 7, `4c37998`): NL-316 and NL-322 are fixed (W7-B; Docker `OnchainFinalHopTests`), so O6-T4 is no longer blocked by them; the gate stays closed (HTLCs regtest-only) pending NL-311, NL-320 and the new NL-337. New follow-ups NL-335, NL-336. Update (gossip wave G-A, `164289a`): O8 done (NL-098 fixed: ZMQ `rawtx`, `MempoolReactor` preimage and penalty reaction, Docker `OnchainMempoolTests`) and the chain-processing halt is surfaced and gates new HTLCs and channels (NL-216 fixed). Signer channel data now reloads from the DB (NL-067 partial). Still open: O6-T4 (NL-311, NL-320, NL-337), O7 anchors (NL-314, `SignWalletTransaction` NL-067).
 - **Fix sketch:** Watch funding outpoints, classify spends, sweep to_local/to_remote/HTLC outputs, justice txs. Sub-issues: NL-095, NL-096, NL-097, NL-098.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-056, NL-066, NL-136, NL-067
 - **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (done); `BOLT5_ONCHAIN_PLAN.md` O0-O8
@@ -1784,11 +1806,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-098 No mempool (rawtx) monitoring
-- **Status:** open
+- **Status:** fixed (567197f, 7fde9bf, d51f6ec, 99ba3ac)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs:248,400`
-- **Evidence:** `TODO: Check for new transactions`, `TODO: Check for revocation transactions in mempool`. Update (ABCD wave 5, `1a5ab49`): still open; the BOLT 5 resolvers act on confirmed spends only (plan O8).
+- **Evidence:** `TODO: Check for new transactions`, `TODO: Check for revocation transactions in mempool`. Update (ABCD wave 5, `1a5ab49`): still open; the BOLT 5 resolvers act on confirmed spends only (plan O8). Update (gossip wave G-A, `164289a`): fixed (BOLT5 O8). The chain monitor subscribes to ZMQ `rawtx` (`Bitcoin:WatchMempool`, default on) and raises `OnWatchedOutpointSpentInMempool` for spends of watched outputs (567197f); `Application/Onchain/Mempool/MempoolReactor` stages a preimage found in the mempool on the HTLC record and fulfills upstream at once, and broadcasts the penalty behind a revoked commitment before it confirms (`RevokedCommitResolver.PrepareUnconfirmedPenaltiesAsync`); the watcher links a prepared penalty to the close when the block arrives, abandons it after `Node:Onchain:Mempool:EvictionGraceBlocks` (3) blocks without its commitment and revives it when the commitment comes back (7fde9bf, 99ba3ac). A mempool tx is never treated as a confirmation. Docker `Onchain/OnchainMempoolTests` (2) against bitcoind and LND (d51f6ec).
 - **Fix sketch:** Subscribe to ZMQ rawtx.
 - **Blocks/Blocked-by:** Part of NL-094
 - **Plan ref:** —
@@ -1814,11 +1836,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-216 Halted chain processing is only logged
-- **Status:** open (partial: f251dde, a9e33a7)
+- **Status:** fixed (f251dde, a9e33a7, 567197f)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`IsChainProcessingHalted`), `IBlockchainMonitor`
-- **Evidence:** After NL-097 a poisoned block sets `IsChainProcessingHalted` and logs Critical; `IBlockchainMonitor` does not expose it and nothing fails the node or stops channel operations. Update (ABCD wave 4, `6b5d50e`): `IsChainProcessingHalted` is on `IBlockchainMonitor` and is also set by a reorg deeper than the header ring; pending broadcasts are still sent while halted (a9e33a7). Not done: an IPC surface and refusing channel operations while halted.
+- **Evidence:** After NL-097 a poisoned block sets `IsChainProcessingHalted` and logs Critical; `IBlockchainMonitor` does not expose it and nothing fails the node or stops channel operations. Update (ABCD wave 4, `6b5d50e`): `IsChainProcessingHalted` is on `IBlockchainMonitor` and is also set by a reorg deeper than the header ring; pending broadcasts are still sent while halted (a9e33a7). Not done: an IPC surface and refusing channel operations while halted. Update (gossip wave G-A, `164289a`): fixed. `chainstatus` (`ClientCommand` 16) reports the halt with its `ChainProcessingHaltReason`, the last processed block and bitcoind's tip; while halted the node refuses `openchannel` and `payinvoice` over IPC, a peer's `open_channel` (error), every HTLC offer (payments and forwards fail back with `temporary_channel_failure`) and new final-hop acceptances (`temporary_node_failure`); fulfills, fails, fee updates, closes and broadcasts go on (567197f).
 - **Fix sketch:** Expose the flag, surface it over IPC and refuse new channel operations (or stop the node) while halted.
 - **Blocks/Blocked-by:** Related NL-097, NL-094
 - **Plan ref:** —
@@ -2158,11 +2180,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 7: Gossip
 
 ### NL-099 [EPIC] BOLT 7 gossip: announcements, channel_update, queries, graph
-- **Status:** open (partial: e7b5269, 3ba2e4f, b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed, 5f2a3ee)
+- **Status:** open (partial: e7b5269, 3ba2e4f, b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed, 5f2a3ee, a49e166, 709030c, 910d085, 57bb15b, 7d318b5, 0c6a9c3, c5c7b5d, 79debc3, c1bb630, 70744d6, 78e5b23, fd92d5d, caf8ee7, 0bf7baf, b515155)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs` (256-259 enum only; 261-265 absent)
-- **Evidence:** No messages, no validation, no graph storage, no pathfinding; `channel_update` in failure messages must be empty. Sub-issues: NL-100, NL-101, NL-102, NL-103, NL-008. Update: 256-259 parse as raw `GossipMessage` and are dropped (156c375, NL-100); 261/263/265 are typed and queries get empty `reply_channel_range`/`reply_short_channel_ids_end` (9e17af2, NL-205). Remaining: announcements, channel_update, graph. Update (ABCD wave 0, `0b7e617`): `channel_update` (258) is typed (`ChannelUpdateMessage`/`ChannelUpdatePayload`, unknown trailing fields kept for the signature) and signed/verified with the node key (`ILightningSigner.SignNodeMessage`/`VerifyNodeMessage`); an LND-captured update parses byte-exact and verifies; `FailureChannelUpdateFactory` takes the typed update (e7b5269, 3ba2e4f). Remaining: sending/storing updates (ABCD W1-E), announcements, graph. Update (ABCD wave 1, `342d22e`): direct `channel_update` exchange with the channel peer (W1-E): `Application/Gossip/ChannelUpdateService` sends our signed update once a channel with a scid turns Open (under the channel lock, so it follows channel_ready) and again, unchanged, on every new connection to that peer; option_scid_alias channels use the peer's alias, no update when htlc_minimum exceeds capacity; inbound 258 is kept only if it is for our chain, names a channel with that peer, has the peer's direction, verifies with the peer's node key, is newer, not far in the future and not above capacity (b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed). Docker `ChannelUpdateExchangeTests`: LND `GetChanInfo` shows our fee/CLTV policy and we store alice's. Remaining: announcements, graph, relay; LND never puts us into `addinvoice --private` hints without a node_announcement (NL-255).
+- **Evidence:** No messages, no validation, no graph storage, no pathfinding; `channel_update` in failure messages must be empty. Sub-issues: NL-100, NL-101, NL-102, NL-103, NL-008. Update: 256-259 parse as raw `GossipMessage` and are dropped (156c375, NL-100); 261/263/265 are typed and queries get empty `reply_channel_range`/`reply_short_channel_ids_end` (9e17af2, NL-205). Remaining: announcements, channel_update, graph. Update (ABCD wave 0, `0b7e617`): `channel_update` (258) is typed (`ChannelUpdateMessage`/`ChannelUpdatePayload`, unknown trailing fields kept for the signature) and signed/verified with the node key (`ILightningSigner.SignNodeMessage`/`VerifyNodeMessage`); an LND-captured update parses byte-exact and verifies; `FailureChannelUpdateFactory` takes the typed update (e7b5269, 3ba2e4f). Remaining: sending/storing updates (ABCD W1-E), announcements, graph. Update (ABCD wave 1, `342d22e`): direct `channel_update` exchange with the channel peer (W1-E): `Application/Gossip/ChannelUpdateService` sends our signed update once a channel with a scid turns Open (under the channel lock, so it follows channel_ready) and again, unchanged, on every new connection to that peer; option_scid_alias channels use the peer's alias, no update when htlc_minimum exceeds capacity; inbound 258 is kept only if it is for our chain, names a channel with that peer, has the peer's direction, verifies with the peer's node key, is newer, not far in the future and not above capacity (b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed). Docker `ChannelUpdateExchangeTests`: LND `GetChanInfo` shows our fee/CLTV policy and we store alice's. Remaining: announcements, graph, relay; LND never puts us into `addinvoice --private` hints without a node_announcement (NL-255). Update (gossip wave G-A, `164289a`): the library half of G0-G4 landed, nothing is wired into the node yet. G0-T1/T2: 256/257 are typed Domain codecs (`ChannelAnnouncementPayload`, `NodeAnnouncementPayload`; `GossipMessage`/`GossipPayload` deleted) and dropped in `PeerService`; 259 is a typed `AnnouncementSignaturesMessage` on the channel path that gets a channel-scoped "not supported yet" warning until G1-T3 (57bb15b, 0c6a9c3). G0-T3 `IGossipSignatureVerifier`/`GossipSignatureVerifier` (c5c7b5d). G0-T4 address descriptors (NL-008). G0-T5 LND 0.20 and CLN v26.06.8 captures in `Tests.Utils/Vectors/Bolt7Vectors.cs`, byte-exact with every signature verified (7d318b5). G1-T1 storage half (NL-341). G1-T2 `ILightningSigner.SignChannelAnnouncement` with refusals (709030c, 910d085). G2-T1 Domain graph model and `GossipValidator` (78e5b23, caf8ee7). G2-T2 `IFundingOutputLookup` (79debc3, c1bb630). G2-T3 migration `AddGossipGraph` and `IGraphDbRepository` (a49e166). G4-T1 `GraphPathfinder` (fd92d5d, 0bf7baf). Registration of the Bitcoin gossip services and `Gossip` options binding: b515155. Remaining: G1-T1 handlers/IPC, G1-T3..T7, G2-T4..T6, G3, G4-T2..T4, G5.
 - **Fix sketch:** Wire types first (so they stop killing peers), then announcement_signatures for public channels, graph store, gossip_queries.
 - **Blocks/Blocked-by:** Blocks multi-hop sending in NL-073
 - **Plan ref:** `docs/agents/BOLT7_GOSSIP_PLAN.md` (milestones G0-G5, waves G-A..G-D); BOLT_COVERAGE roadmap steps 2, 12
@@ -2175,7 +2197,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Unregistered even type → `InvalidMessageException`. `gossip_queries` is advertised, so real peers send these.
 - **Fix sketch:** Register message classes + serializers (both factory dictionaries) and route to a no-op/logging handler; keep gossip_queries advertised meanwhile.
 - **Blocks/Blocked-by:** Part of NL-099
-- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T5
+- **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T5. Note (gossip wave G-A): the raw `GossipMessage`/`GossipPayload` types were replaced by typed 256/257/259 messages (57bb15b, NL-099).
 
 ### NL-101 ShortChannelId(ulong) uses wrong masks
 - **Status:** fixed (83d529d)
@@ -2240,24 +2262,44 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ---
 
 ### NL-341 The fundee ignores `announce_channel` in open_channel
-- **Status:** open
+- **Status:** open (partial: a49e166, 910d085)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Handlers/OpenChannel1MessageHandler.cs` (no `ChannelFlags` handling), `ChannelModel` (flag not stored)
-- **Evidence:** An LND-opened public channel (`channel_flags.announce_channel = 1`) is treated as private; the flag is never persisted, so neither side can later exchange `announcement_signatures` (BOLT 2 / BOLT 7).
+- **Evidence:** An LND-opened public channel (`channel_flags.announce_channel = 1`) is treated as private; the flag is never persisted, so neither side can later exchange `announcement_signatures` (BOLT 2 / BOLT 7). Update (gossip wave G-A, `164289a`): storage half done: `ChannelConfigs.AnnounceChannel` (existing rows false), `ChannelParams.AnnounceChannel`/`ChannelModel.AnnounceChannel`, and the columns for the peer's announcement signatures and our send time (a49e166); the signer refuses to sign an announcement for a channel without the flag (910d085). Remaining: `OpenChannel1MessageHandler` still ignores `channel_flags`, and nothing sets the flag on our opens (G1-T1 handlers, lane B1).
 - **Fix sketch:** Store the flag per channel (migration, all 3 providers), honour it on both roles, refuse `announce_channel` together with `option_scid_alias` per BOLT 2.
 - **Blocks/Blocked-by:** Blocks BOLT7 G1
 - **Plan ref:** BOLT7_GOSSIP_PLAN G1-T1 (GG3)
 
 ### NL-342 `announcement_signatures` (259) is dropped as peer gossip instead of routed to its channel
-- **Status:** open
+- **Status:** open (partial: 57bb15b, 0c6a9c3)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (gossip branch), `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (no case)
-- **Evidence:** 259 carries a `channel_id` and belongs to the channel, but it parses as raw `GossipMessage` and is dropped, so public channels can never be announced.
+- **Evidence:** 259 carries a `channel_id` and belongs to the channel, but it parses as raw `GossipMessage` and is dropped, so public channels can never be announced. Update (gossip wave G-A, `164289a`): typed and routed. `AnnouncementSignaturesMessage` is an `IChannelMessage` and reaches `ChannelManager` (57bb15b); until the G1-T3 handler exists a 259 on a known channel gets a channel-scoped "announcement_signatures is not supported yet" warning and the connection stays up (LND and CLN resend 259 on every reconnect of a public channel, so the warning repeats), an unknown channel gets an error, a Failed channel its stored error (tests 0c6a9c3). Remaining: the handler and the `ChannelManager` case (G1-T3).
 - **Fix sketch:** Typed message + `ChannelManager` case; invalid signatures -> warning + close (BOLT7 plan D10).
 - **Blocks/Blocked-by:** Blocks BOLT7 G1
 - **Plan ref:** BOLT7_GOSSIP_PLAN G0/G1 (GG2)
+
+### NL-345 Gossip signature tests for 256/257 only check self-signed messages
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Infrastructure.Bitcoin.Tests/Gossip/GossipSignatureVerifierTests.cs`, `src/NLightning.Infrastructure.Bitcoin/Gossip/GossipSignedRanges.cs`
+- **Evidence:** The `GossipSignedRanges` 256/257 tests sign their own messages, so a wrong signed range would pass (circular). The captured LND/CLN vectors (`Tests.Utils/Vectors/Bolt7Vectors.cs`, 7d318b5) landed in another lane of the same wave and are not used there; `Bolt7CapturedVectorTests` checks them through the typed payloads only. The 259 captures cannot be verified without the completed announcement.
+- **Fix sketch:** Run every captured 256/257 through `GossipSignedRanges` + `GossipSignatureVerifier`; add a 259 vector from our own two-node exchange once G1-T3/T4 land.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G0-T3, G0-T5
+
+### NL-346 Funding output lookup: rate limit counts lookups, not RPCs; pruned path unproven live
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`, `src/NLightning.Infrastructure.Bitcoin/Services/BitcoinChainService.cs`
+- **Evidence:** One lookup costs 3-5 RPCs (getblockcount, getblockhash, getblock on a miss, gettxout, the post-gettxout getblockhash recheck, a second gettxout for a mempool-only spend), so `ChainLookupsPerSecond=50` can mean about 250 RPC/s. `GetUnspentOutputAsync` derives the height from two RPCs and can be off by one when the tip moves (absorbed by one retry, then `ChainMoved`). The `getblock` pruned (-1 "pruned") branch runs only against the fake chain, never a `-prune` regtest bitcoind.
+- **Fix sketch:** Rate-limit per RPC (G5 tuning); add a pruned-node case to the Explicit `FundingOutputLookupBitcoindTests`.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G2-T2, G5-T1
 
 ## BOLT 8: Transport
 
@@ -3510,6 +3552,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `NET11_PLAN.md` step 6
 
 ---
+
+### NL-347 The Postgres case of the multi-node server-database theory is not run in the standard Docker cycle
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/MultiNodeHarnessTests.cs` (`Given_ServerDatabase_When_NodeRestarts_Then_ItReconnectsToTheStoredPeer`)
+- **Evidence:** The standard cycle skips SQL Server containers, but the in-container xunit runner cannot exclude one case of a theory, so the gossip wave G-A integration excluded the whole theory and its Postgres case did not run.
+- **Fix sketch:** Split the theory into one test per provider (or tag the SqlServer case with a trait) so the Postgres case runs with `!~SqlServer`.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
 
 ## Docs
 
