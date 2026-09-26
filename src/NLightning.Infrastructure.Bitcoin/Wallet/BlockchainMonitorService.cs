@@ -1094,9 +1094,11 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
     /// <summary>
     /// The wallet outputs that inputs of the disconnected blocks spent and that are unspent in the active chain again
-    /// (NL-293). A spent wallet row is deleted, so the output is read back from bitcoind (<c>gettxout</c> without the
-    /// mempool: the spend usually waits there again). Candidates: P2WPKH inputs whose key is a wallet address, and every
-    /// taproot key-path input (its witness names no key); bitcoind confirms the script.
+    /// (NL-293). A spent wallet row is deleted, so the output is read back from bitcoind (<c>gettxout</c> with the
+    /// mempool). An output whose spend is back in the mempool (the usual case) is not restored: coin selection would
+    /// otherwise double-spend our own pending transaction (a funding transaction replaced by full-RBF); it is left to
+    /// that spend confirming again. Candidates: P2WPKH inputs whose key is a wallet address, and every taproot key-path
+    /// input (its witness names no key); bitcoind confirms the script.
     /// </summary>
     private async Task<List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)>>
         FindWalletOutputsUnspentAgainAsync(IReadOnlyList<BlockHeaderModel> disconnected)
