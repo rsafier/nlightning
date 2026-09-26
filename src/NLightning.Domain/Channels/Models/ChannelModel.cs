@@ -402,7 +402,8 @@ public class ChannelModel
                                       RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected)
         {
             RemoteNodeId = RemoteNodeId,
-            ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null
+            ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null,
+            AnnounceChannel = AnnounceChannel
         };
     }
 }

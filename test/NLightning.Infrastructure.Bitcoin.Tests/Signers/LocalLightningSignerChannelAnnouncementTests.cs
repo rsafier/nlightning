@@ -270,16 +270,31 @@ public class LocalLightningSignerChannelAnnouncementTests
     {
         // Arrange: a registration with another funding key must not replace the channel's keys
         var (signer, ourFundingKey) = CreateRegisteredSigner();
-        signer.RegisterChannel(s_channelId, SigningInfo(ourFundingKey) with
+        var rejected = Record.Exception(() => signer.RegisterChannel(s_channelId, SigningInfo(ourFundingKey) with
         {
             RemoteFundingPubKey = new Key().PubKey.ToBytes()
-        });
+        }));
 
         // Act
         var signatures = signer.SignChannelAnnouncement(s_channelId, BuildAnnouncement(ourFundingKey), s_scid);
 
-        // Assert
+        // Assert: the caller learns about the rejected registration, and the channel still signs with its own keys
+        Assert.IsType<SignerException>(rejected);
         Assert.NotNull(signatures);
+    }
+
+    [Fact]
+    public void Given_PrivateChannel_When_Signing_Then_Refused()
+    {
+        // Arrange: BOLT 7 forbids announcement_signatures without announce_channel
+        var signer = CreateSigner();
+        var ourFundingKey = signer.GetChannelBasepoints(ChannelKeyIndex).FundingPubKey;
+        signer.RegisterChannel(s_channelId, SigningInfo(ourFundingKey) with { AnnounceChannel = false });
+
+        // Act & Assert
+        var exception = Assert.Throws<SignerException>(() => signer.SignChannelAnnouncement(
+                                                           s_channelId, BuildAnnouncement(ourFundingKey), s_scid));
+        Assert.Contains("private channel", exception.Message);
     }
 
     [Fact]
@@ -340,7 +355,8 @@ public class LocalLightningSignerChannelAnnouncementTests
             ourFundingKey, _peerFundingKey.PubKey.ToBytes(), ChannelKeyIndex)
         {
             RemoteNodeId = peerNodeId ?? _peerNodeKey.PubKey.ToBytes(),
-            ShortChannelId = s_scid
+            ShortChannelId = s_scid,
+            AnnounceChannel = true
         };
 
     private LocalLightningSigner CreateSigner(IChannelSigningInfoSource? source = null) =>

@@ -67,7 +67,9 @@ public interface ILightningSigner
     /// must also be the channel's real short channel id when the signer knows it, and point at the channel's funding
     /// output index), our node id and the peer's (when known) as <c>node_id_1</c>/<c>node_id_2</c> in ascending order,
     /// and the channel's funding keys as the matching <c>bitcoin_key_1</c>/<c>bitcoin_key_2</c>. Refused as well after
-    /// data loss. Signatures are RFC 6979, low-S, 64-byte compact.
+    /// data loss and for a private channel (<see cref="ChannelSigningInfo.AnnounceChannel"/> false: BOLT 7 forbids
+    /// <c>announcement_signatures</c> without <c>announce_channel</c>). Signatures are RFC 6979, low-S, 64-byte
+    /// compact.
     /// </remarks>
     /// <param name="channelId">The registered (or persisted) channel.</param>
     /// <param name="unsignedAnnouncement">
@@ -104,7 +106,9 @@ public interface ILightningSigner
     /// are only ever added: <see cref="ChannelSigningInfo.DataLossDetected"/> applies <see cref="MarkDataLoss"/> and
     /// <see cref="ChannelSigningInfo.BroadcastSignedCommitmentNumber"/> applies <see cref="MarkBroadcastSigned"/>
     /// (invariant S1 across restarts). Registering a channel again refreshes what may have become known since (the
-    /// real short channel id, the peer's node id and htlc_basepoint), but never its keys or funding outpoint.
+    /// real short channel id, the peer's node id and htlc_basepoint), but never its keys or funding outpoint: a
+    /// registration with other keys or another funding outpoint under a registered id throws a
+    /// <see cref="Exceptions.SignerException"/> and changes nothing (no guard, no mark).
     /// </summary>
     /// <remarks>
     /// Registration is optional for a persisted channel (NL-067): a signer built with an

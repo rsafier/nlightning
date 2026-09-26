@@ -54,6 +54,13 @@ public record struct ChannelSigningInfo
     /// </summary>
     public ShortChannelId? ShortChannelId { get; init; }
 
+    /// <summary>
+    /// The channel's <c>announce_channel</c> bit (<c>ChannelParams.AnnounceChannel</c>). BOLT 7 forbids
+    /// <c>announcement_signatures</c> for a private channel, so <c>ILightningSigner.SignChannelAnnouncement</c> refuses
+    /// a channel where it is false.
+    /// </summary>
+    public bool AnnounceChannel { get; init; }
+
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
                               uint channelKeyIndex, CompactPubKey? remoteHtlcBasepoint = null,

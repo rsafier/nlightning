@@ -208,6 +208,12 @@ public class LocalLightningSigner : ILightningSigner
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign a channel announcement");
 
+        // BOLT 7: announcement_signatures only for a channel opened with announce_channel set; a private channel's
+        // announcement would reveal which node owns its funding output
+        if (!signingInfo.AnnounceChannel)
+            throw new SignerException("Refusing to sign a channel announcement for a private channel", channelId,
+                                      "Internal error");
+
         var announcement = ParseUnsignedAnnouncement(channelId, unsignedAnnouncement.Span);
         if (announcement.ChainHash != _chainHash)
             throw new SignerException("Refusing to sign a channel announcement for another chain", channelId,
@@ -316,16 +322,21 @@ public class LocalLightningSigner : ILightningSigner
         _logger.LogTrace("Registering channel {ChannelId} with signing info", channelId);
 
         // A registration again (e.g. once the funding confirmed) refreshes what may have become known since: the real
-        // short channel id, the peer's node id and htlc_basepoint. It never swaps the keys or the funding outpoint.
+        // short channel id, the peer's node id and htlc_basepoint. It never swaps the keys or the funding outpoint: a
+        // registration of another channel under this id is refused before it can touch any guard of this one.
+        var mismatch = false;
         _channelSigningInfo.AddOrUpdate(channelId, signingInfo, (_, current) =>
         {
-            if (IsSameChannel(current, signingInfo))
-                return signingInfo;
-
+            mismatch = !IsSameChannel(current, signingInfo);
+            return mismatch ? current : signingInfo;
+        });
+        if (mismatch)
+        {
             _logger.LogError("Channel {ChannelId} is registered with other keys or another funding outpoint; the "
                            + "first registration is kept", channelId);
-            return current;
-        });
+            throw new SignerException("The channel is already registered with other keys or another funding outpoint",
+                                      channelId, "Internal error");
+        }
 
         lock (GetCommitmentLock(channelId))
         {
@@ -437,6 +448,9 @@ public class LocalLightningSigner : ILightningSigner
                                                              SignedTransaction unsignedCommitment,
                                                              CompactSignature remoteSignature)
     {
+        // A channel that is not registered is loaded (a database read) before the lock is taken, not while holding it
+        _ = TryGetSigningInfo(channelId, out _);
+
         // S1 is a signer invariant: the I4/S1 checks, the signature and the mark hold the channel's commitment lock, so
         // no AdvanceLocalCommitment/RevealPerCommitmentSecret can revoke the commitment in between
         lock (GetCommitmentLock(channelId))
