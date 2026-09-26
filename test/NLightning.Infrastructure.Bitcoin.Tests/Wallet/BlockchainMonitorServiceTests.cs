@@ -102,6 +102,22 @@ public class BlockchainMonitorServiceTests
         _mockBlockchainStateRepository.Verify(x => x.Add(It.IsAny<BlockchainState>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Given_StoredUtxos_When_Starting_Then_LoadedWithTheirWalletAddresses()
+    {
+        // Arrange: without the wallet address the signer cannot derive the key of a UTXO received before a restart
+        // and the funding transaction fails to sign (NL-302, found on Mutinynet)
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(true), Times.Once);
+        _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(false), Times.Never);
+    }
+
     [Theory]
     [InlineData(0u)]
     [InlineData(50u)]
