@@ -76,6 +76,69 @@ public class OpenChannelIpcHandlerTests
         Assert.Equal(push, received.PushAmount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_PublicFlag_When_OpenChannelHandleAsync_Then_ClientRequestCarriesIt(bool isPublic)
+    {
+        // Arrange (G1-T1: key 4 of OpenChannelIpcRequest)
+        OpenChannelClientRequest? received = null;
+        var clientHandlerMock =
+            new Mock<IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>>();
+        clientHandlerMock.Setup(x => x.HandleAsync(It.IsAny<OpenChannelClientRequest>(),
+                                                   It.IsAny<CancellationToken>()))
+                         .Callback<OpenChannelClientRequest, CancellationToken>((r, _) => received = r)
+                         .ReturnsAsync(new OpenChannelClientResponse(ChannelId.Zero));
+        var handler = new OpenChannelIpcHandler(NullLogger<OpenChannelIpcHandler>.Instance,
+                                                BuildProvider(clientHandlerMock.Object));
+        var request = new OpenChannelIpcRequest
+        {
+            NodeInfo = "02abc@127.0.0.1:9735",
+            Amount = LightningMoney.Satoshis(100_000),
+            IsPublic = isPublic
+        };
+        var envelope = new IpcEnvelope
+        {
+            Version = 1,
+            Command = ClientCommand.OpenChannel,
+            CorrelationId = Guid.NewGuid(),
+            Kind = IpcEnvelopeKind.Request,
+            Payload = MessagePackSerializer.Serialize(request, s_options, TestContext.Current.CancellationToken)
+        };
+
+        // Act
+        await handler.HandleAsync(envelope, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotNull(received);
+        Assert.Equal(isPublic, received.IsPublic);
+    }
+
+    [Fact]
+    public void Given_ARequestWithoutKey4_When_Deserialized_Then_ItIsPrivate()
+    {
+        // Arrange (an older client: keys 0, 2 and 3 only): the same request without its last array element
+        var current = MessagePackSerializer.Serialize(
+            new OpenChannelIpcRequest
+            {
+                NodeInfo = "02abc@127.0.0.1:9735",
+                Amount = LightningMoney.Satoshis(1_000),
+                PushAmount = LightningMoney.Satoshis(10)
+            }, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(0x95, current[0]); // fixarray of 5 (keys 0-4)
+        Assert.Equal(0xC2, current[^1]); // key 4: false
+        byte[] older = [0x94, .. current[1..^1]];
+
+        // Act
+        var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
+            older, s_options, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(request.IsPublic);
+        Assert.Equal("02abc@127.0.0.1:9735", request.NodeInfo);
+        Assert.Equal(LightningMoney.Satoshis(10), request.PushAmount);
+    }
+
     [Fact]
     public async Task GivenClientException_WhenOpenChannelHandleAsync_ThenErrorCodeIsTheExceptionCode()
     {

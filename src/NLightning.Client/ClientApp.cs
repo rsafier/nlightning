@@ -218,15 +218,18 @@ internal static class ClientApp
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
             case "openchannel":
             case "open-channel":
-                if (commandArgs.Length < 2)
-                    return $"Missing arguments. Usage: {cmd} <node> <amount_sats> [push_sats]";
-                if (!ulong.TryParse(commandArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var fundingSats)
+                var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out var openError);
+                if (openError is not null)
+                    return openError;
+                if (openArgs.Length < 2)
+                    return $"Missing arguments. Usage: {cmd} {OpenChannelMessageHandler.Usage}";
+                if (!ulong.TryParse(openArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var fundingSats)
                  || fundingSats == 0 || fundingSats > MaxOpenChannelSats)
-                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of sats up to {MaxOpenChannelSats}.";
-                if (commandArgs.Length > 2
-                 && !(ulong.TryParse(commandArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
+                    return $"Invalid amount '{openArgs[1]}': expected a positive number of sats up to {MaxOpenChannelSats}.";
+                if (openArgs.Length > 2
+                 && !(ulong.TryParse(openArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
                    && pushSats < fundingSats))
-                    return $"Invalid push '{commandArgs[2]}': expected a number of sats below the channel amount.";
+                    return $"Invalid push '{openArgs[2]}': expected a number of sats below the channel amount.";
                 return null;
             case "createinvoice":
             case "create-invoice":
