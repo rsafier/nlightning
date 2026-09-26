@@ -96,7 +96,7 @@ internal sealed class GraphTestKit
         var provider = services.BuildServiceProvider();
 
         Store = new GraphStore(provider.GetRequiredService<IServiceScopeFactory>(), NullLogger<GraphStore>.Instance,
-                               Clock)
+                               Clock, metrics)
         {
             WriteBatchSize = writeBatchSize,
             LoadBatchSize = loadBatchSize

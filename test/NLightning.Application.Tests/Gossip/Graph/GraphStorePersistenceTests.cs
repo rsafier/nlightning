@@ -1,8 +1,10 @@
 namespace NLightning.Application.Tests.Gossip.Graph;
 
 using Application.Gossip.Graph;
+using Application.Gossip.Metrics;
 using Domain.Channels.ValueObjects;
 using Domain.Gossip.Graph;
+using Metrics;
 
 /// <summary>
 /// BOLT 7 plan G5-T3 in the store: the batched write-behind flush, the batched startup load and the memory estimate
@@ -32,6 +34,30 @@ public class GraphStorePersistenceTests
         Assert.Equal(2, kit.Repository.Channels.Count);
         Assert.Equal(3, kit.Repository.Policies.Count);
         Assert.Equal(2, kit.Repository.Nodes.Count);
+    }
+
+    [Fact]
+    public async Task Given_GossipMetrics_When_TheStoreFlushesAndLoads_Then_ItRecordsBothAndItsWriteBehindDepth()
+    {
+        // Arrange (G-D seam: the D2 store paths record into the D1 meter)
+        using var metrics = new GossipMetrics();
+        using var recorder = new GossipMetricsRecorder(metrics);
+        var kit = await GraphStoreTests.CreateGraphAsync(new GraphTestKit(metrics: metrics));
+        var pendingBeforeFlush = recorder.ObserveQueue("graph_write_behind");
+
+        // Act
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        var pendingAfterFlush = recorder.ObserveQueue("graph_write_behind");
+        var restarted = new GraphTestKit(kit.Repository, metrics: metrics);
+        await restarted.Store.LoadAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(7, pendingBeforeFlush);
+        Assert.Equal(0, pendingAfterFlush);
+        Assert.Equal(1, recorder.Count("nlightning.gossip.store.duration", (GossipMetrics.OperationTag, "flush"),
+                                       (GossipMetrics.OutcomeTag, "completed")));
+        Assert.Equal(1, recorder.Count("nlightning.gossip.store.duration", (GossipMetrics.OperationTag, "load"),
+                                       (GossipMetrics.OutcomeTag, "completed")));
     }
 
     [Fact]

@@ -34,8 +34,10 @@ internal sealed class GossipMetricsRecorder : IDisposable
                               && tags.All(t => m.Tags.TryGetValue(t.Key, out var v) && Equals(v, t.Value)))
                      .Sum(m => m.Value);
 
-    /// <summary>How many measurements <paramref name="instrument"/> recorded.</summary>
-    public int Count(string instrument) => _measurements.Count(m => m.Instrument == instrument);
+    /// <summary>How many measurements <paramref name="instrument"/> recorded with every given tag pair.</summary>
+    public int Count(string instrument, params (string Key, string Value)[] tags) =>
+        _measurements.Count(m => m.Instrument == instrument
+                              && tags.All(t => m.Tags.TryGetValue(t.Key, out var v) && Equals(v, t.Value)));
 
     /// <summary>The latest observed value of the queue gauge for <paramref name="queue"/>.</summary>
     public double ObserveQueue(string queue)

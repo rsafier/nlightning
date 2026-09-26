@@ -54,6 +54,9 @@ public sealed class GossipMetrics : IDisposable
     /// <summary>The <c>path</c> tag of the relayed messages.</summary>
     public const string PathTag = "path";
 
+    /// <summary>The tag naming a graph store operation (<c>load</c>, <c>flush</c>).</summary>
+    public const string OperationTag = "operation";
+
     private static readonly ConcurrentDictionary<Enum, string> s_tagValues = new();
 
     private readonly Counter<long> _received;
@@ -65,6 +68,7 @@ public sealed class GossipMetrics : IDisposable
     private readonly Counter<long> _chainLookups;
     private readonly Counter<long> _banned;
     private readonly Histogram<double> _syncDuration;
+    private readonly Histogram<double> _storeDuration;
     private readonly Lock _queuesLock = new();
     private readonly Dictionary<string, Func<long>> _queues = new(StringComparer.Ordinal);
 
@@ -89,6 +93,8 @@ public sealed class GossipMetrics : IDisposable
                                             "Peers banned for gossip misbehaviour");
         _syncDuration = Meter.CreateHistogram<double>("nlightning.gossip.sync.duration", "s",
                                                       "Duration of a range sync with a peer");
+        _storeDuration = Meter.CreateHistogram<double>("nlightning.gossip.store.duration", "s",
+                                                       "Duration of a graph store load or write-behind flush");
         Meter.CreateObservableGauge("nlightning.gossip.queue.depth", ObserveQueues, "{message}",
                                     "Messages waiting in the gossip queues");
     }
@@ -131,6 +137,15 @@ public sealed class GossipMetrics : IDisposable
     public void RecordSyncDuration(TimeSpan duration, bool completed) =>
         _syncDuration.Record(Math.Max(0, duration.TotalSeconds),
                              new KeyValuePair<string, object?>(OutcomeTag, completed ? "completed" : "failed"));
+
+    /// <summary>
+    /// A graph store <paramref name="operation"/> (<c>load</c> or <c>flush</c>) ended after
+    /// <paramref name="duration"/>; <paramref name="completed"/> is false when it failed or kept work pending.
+    /// </summary>
+    public void RecordStoreDuration(string operation, TimeSpan duration, bool completed) =>
+        _storeDuration.Record(Math.Max(0, duration.TotalSeconds),
+                              new KeyValuePair<string, object?>(OperationTag, operation),
+                              new KeyValuePair<string, object?>(OutcomeTag, completed ? "completed" : "failed"));
 
     /// <summary>
     /// Reports <paramref name="read"/> as the depth of <paramref name="queue"/> (replacing an earlier source of that

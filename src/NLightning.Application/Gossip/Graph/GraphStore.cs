@@ -14,6 +14,7 @@ using Domain.Gossip.Persistence;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Payloads;
 using Interfaces;
+using Metrics;
 using GraphVerification = Domain.Gossip.Graph.GraphChannelVerification;
 using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 
@@ -61,6 +62,8 @@ public sealed class GraphStore : IGraphStore
     private readonly HashSet<CompactPubKey> _deletedNodes = [];
     private readonly HashSet<CompactPubKey> _dirtyBans = [];
 
+    private readonly GossipMetrics? _metrics;
+
     private int _policyCount;
     private long _variableBytes;
     private long _version;
@@ -71,11 +74,14 @@ public sealed class GraphStore : IGraphStore
     /// <inheritdoc />
     public event EventHandler<GraphChannel>? ChannelAdded;
 
-    public GraphStore(IServiceScopeFactory scopeFactory, ILogger<GraphStore> logger, TimeProvider? timeProvider = null)
+    public GraphStore(IServiceScopeFactory scopeFactory, ILogger<GraphStore> logger, TimeProvider? timeProvider = null,
+                      GossipMetrics? metrics = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _metrics = metrics;
+        metrics?.RegisterQueue("graph_write_behind", () => PendingChanges);
     }
 
     /// <inheritdoc />
@@ -216,6 +222,7 @@ public sealed class GraphStore : IGraphStore
                 }
             }
 
+            _metrics?.RecordStoreDuration("load", stopwatch.Elapsed, true);
             _logger.LogInformation(
                 "Loaded the graph in {Elapsed} ms: {Channels} channels, {Policies} policies, {Nodes} nodes{Skipped}",
                 stopwatch.ElapsedMilliseconds, counts.ChannelRows - counts.SkippedChannels, counts.PolicyRows,
@@ -245,6 +252,7 @@ public sealed class GraphStore : IGraphStore
 
             var batches = work.ToBatches(WriteBatchSize);
             var written = 0;
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 for (; written < batches.Count; written++)
@@ -253,6 +261,8 @@ public sealed class GraphStore : IGraphStore
                     await WriteBatchAsync(batches[written], cancellationToken);
                 }
 
+                _metrics?.RecordStoreDuration("flush", stopwatch.Elapsed, true);
+
                 _logger.LogDebug(
                     "Graph flushed in {Batches} batches: {Channels} channels, {Policies} policies, {Nodes} nodes, " +
                     "{Deleted} deletions", batches.Count, work.Channels.Count, work.Policies.Count, work.Nodes.Count,
@@ -260,6 +270,7 @@ public sealed class GraphStore : IGraphStore
             }
             catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
+                _metrics?.RecordStoreDuration("flush", stopwatch.Elapsed, false);
                 _logger.LogWarning(e, "Failed to write the graph; {Pending} of {Batches} batches stay pending",
                                    batches.Count - written, batches.Count);
                 lock (_lock)
