@@ -17,6 +17,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Models;
 using Domain.Money;
+using Domain.Node;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
@@ -33,7 +34,8 @@ using Routing;
 /// <para><see cref="CreateInvoiceAsync"/>: the preimage and the payment secret are 32 bytes each from the OS CSPRNG;
 /// the payment hash is SHA256(preimage). The invoice is encoded with <c>NLightning.Bolt11</c>'s node path (W0-D:
 /// <c>Invoice.Encode()</c> signs with <see cref="ISecureKeyManager"/>'s node key and validates the BOLT 11 writer
-/// rules first; <c>var_onion_optin</c> and <c>payment_secret</c> compulsory, no <c>basic_mpp</c>), with <c>s</c>,
+/// rules first; <c>var_onion_optin</c> and <c>payment_secret</c> compulsory, <c>basic_mpp</c> optional unless
+/// <c>Features:BasicMpp</c> is <c>No</c>), with <c>s</c>,
 /// <c>c</c> = <see cref="RoutingOptions.InvoiceMinFinalCltvExpiry"/> and <c>x</c>. It is persisted before it is
 /// returned, so a payment never arrives for an invoice we forgot.</para>
 /// <para>Persistence goes through a fresh DI scope per call: <see cref="IInvoiceDbRepository"/> stages, the scope's
@@ -122,6 +124,15 @@ public sealed class InvoiceService : IInvoiceService
         {
             MinFinalCltvExpiry = routing.InvoiceMinFinalCltvExpiry
         };
+        if (nodeOptions.Features.BasicMpp != FeatureSupport.No)
+        {
+            // var_onion_optin (8) and payment_secret (14) compulsory, as the encoder would add them, plus basic_mpp
+            // (17) optional: the HTLC switch receives multi-part payments (ABCD W6-B)
+            var features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+            features.SetFeature(Feature.BasicMpp, false);
+            invoice.Features = features;
+        }
+
         invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + expiry);
         foreach (var routeHint in await BuildRouteHintsAsync(amount, cancellationToken))
             invoice.AddRouteHint(routeHint);

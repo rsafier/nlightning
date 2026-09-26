@@ -121,11 +121,14 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
         Carol = new SwitchNode(this, "Carol", 0xC0, Path.Combine(directory, "carol.db"), new RoutingOptions());
     }
 
-    public static async Task<ThreeNodeHarness> CreateAsync()
+    /// <param name="beforeStart">Runs before the nodes start, e.g. to set <see cref="SwitchNode.ConfigureServices"/>.
+    /// </param>
+    public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         var harness = new ThreeNodeHarness(directory);
+        beforeStart?.Invoke(harness);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
 
@@ -450,6 +453,9 @@ internal sealed class SwitchNode
     /// incoming HTLC's shared secret); throwing from it fails that save, as a crash right before it would.</summary>
     public Action<ChannelId, HtlcKey>? BeforeSetOnionSharedSecret { get; set; }
 
+    /// <summary>Last changes to the node's services, applied on every start (e.g. a manual clock).</summary>
+    public Action<IServiceCollection>? ConfigureServices { get; set; }
+
     public bool IsRunning => _provider is not null;
     public IServiceProvider Services => _provider ?? throw new InvalidOperationException($"{Name} is stopped");
     public ChannelManager ChannelManager { get; private set; } = null!;
@@ -640,6 +646,7 @@ internal sealed class SwitchNode
         services.AddScoped<IChannelMessageHandler<CommitmentSignedMessage>, CommitmentSignedMessageHandler>();
         services.AddScoped<IChannelMessageHandler<RevokeAndAckMessage>, RevokeAndAckMessageHandler>();
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
+        ConfigureServices?.Invoke(services);
         return services.BuildServiceProvider();
     }
 

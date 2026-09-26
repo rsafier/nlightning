@@ -10,8 +10,8 @@ using Domain.Payments.Models;
 using Domain.Protocol.Onion.Models;
 
 /// <summary>
-/// Decides whether an HTLC whose onion ends at us pays one of our invoices (ONION M4-T3, BOLT 4 final-node rules,
-/// no multi-part payments).
+/// Decides whether an HTLC whose onion ends at us pays one of our invoices (ONION M4-T3, BOLT 4 final-node rules),
+/// alone or as one part of a multi-part payment (<c>basic_mpp</c>, ABCD W6-B).
 /// </summary>
 /// <remarks>
 /// <para>Checks, first failure wins:</para>
@@ -23,25 +23,28 @@ using Domain.Protocol.Onion.Models;
 ///   <item>Everything about the invoice → <c>incorrect_or_unknown_payment_details</c> (PERM|15) with
 ///   (HTLC <c>amount_msat</c>, current height), so a probe cannot tell the cases apart: no <c>payment_data</c>;
 ///   unknown <c>payment_hash</c>; invoice canceled, expired, or already accepted/settled (BOLT 4 lets us treat a paid
-///   hash as unknown); <c>payment_secret</c> mismatch; <c>total_msat</c> != <c>amt_to_forward</c> (we do not
-///   support <c>basic_mpp</c>, so BOLT 4 requires the HTLC to be failed); amount paid below the invoice amount or
-///   more than twice it; <c>cltv_expiry</c> &lt; current height + the invoice's <c>min_final_cltv_expiry_delta</c>.</item>
+///   hash as unknown; the one exception is below); <c>payment_secret</c> mismatch; <c>total_msat</c> !=
+///   <c>amt_to_forward</c> when multi-part payments are off (BOLT 4: a node without <c>basic_mpp</c> MUST fail it);
+///   amount paid (<c>total_msat</c>, BOLT 4 "Basic Multi-Part Payments") below the invoice amount or more than twice
+///   it; <c>cltv_expiry</c> &lt; current height + the invoice's <c>min_final_cltv_expiry_delta</c>.</item>
 /// </list>
 /// <para>The first two checks run before the invoice lookup, as LND and CLN do: they detect a penultimate hop that
 /// tampered with the HTLC and reveal nothing about our invoices. BOLT 4 lists 15 before 18/19 in its failure-code
 /// list; since the HTLC-vs-onion errors carry no invoice information, reporting them first leaks nothing.</para>
+/// <para>Multi-part (<c>acceptMultiPart</c>): an accepted HTLC is one part of the payment's HTLC set
+/// (<see cref="FinalHopResult.TotalMsat"/>, <see cref="FinalHopResult.PartAmount"/>); the caller (HTLC switch) holds
+/// the parts until their <c>amt_to_forward</c> reach <c>total_msat</c>. A multi-part HTLC
+/// (<c>total_msat</c> &gt; <c>amt_to_forward</c>) for a <c>Settled</c> invoice with the right secret, whose
+/// <c>total_msat</c> is covered by the amount received, is accepted with
+/// <see cref="FinalHopResult.InvoiceAlreadySettled"/>: the invoice settles in the save of the set's first fulfill, so a
+/// crash or a refused fulfill can leave other parts of the same set held, and BOLT 4 then requires them to be
+/// fulfilled too. A single-part HTLC for a settled invoice is still unknown (its fulfill and the settle share one
+/// save).</para>
 /// <para>Stateless: <see cref="Evaluate"/> is pure; <see cref="ProcessAsync"/> only reads the invoice through the
 /// caller's repository (its unit of work). Neither mutates the invoice.</para>
-/// <para>Replays: an HTLC that already accepted its invoice fails here as "already paid" if processed again; the
-/// caller (HTLC switch) must process each incoming HTLC once, and after a restart act on the HTLC's persisted
-/// state (a fulfill already staged) instead of re-running the final hop.</para>
-/// <para>Concurrency: the invoice check here is a read, not a check-and-mark. Two HTLCs for the same
-/// <c>payment_hash</c> evaluated concurrently (a payer retry, or a malicious payer) would both see the invoice Open
-/// and both be accepted. The caller (W2-B HTLC switch) MUST therefore, under a per-payment-hash lock and inside the
-/// same unit of work that stages the fulfill: re-read the invoice, run this processor, call
-/// <c>invoice.Accept(result.AmountReceived)</c> + <c>UpdateAsync</c>, and save before releasing the lock (or use an
-/// equivalent compare-and-set on the invoice status), so a second concurrent HTLC sees Accepted and is failed with
-/// <c>incorrect_or_unknown_payment_details</c> (PERM|15).</para>
+/// <para>Concurrency: the invoice check here is a read, not a check-and-mark. The caller (HTLC switch) runs it under a
+/// per-payment-hash lock and settles the invoice in the same unit of work that stages the fulfill, re-checking that
+/// it is still <c>Open</c> there.</para>
 /// </remarks>
 public sealed class FinalHopProcessor
 {
@@ -63,9 +66,12 @@ public sealed class FinalHopProcessor
     /// <param name="htlcCltvExpiry">The HTLC's <c>cltv_expiry</c>.</param>
     /// <param name="payload">The validated final hop payload (<c>IncomingOnionFinal.Payload</c>).</param>
     /// <param name="currentBlockHeight">Our best block height.</param>
+    /// <param name="acceptMultiPart">Whether we support <c>basic_mpp</c>: an HTLC may then be one part of the
+    /// payment (<c>total_msat</c> &gt; <c>amt_to_forward</c>).</param>
     public async Task<FinalHopResult> ProcessAsync(IInvoiceDbRepository invoices, Hash paymentHash,
                                                    LightningMoney htlcAmount, uint htlcCltvExpiry,
-                                                   HopPayload payload, uint currentBlockHeight)
+                                                   HopPayload payload, uint currentBlockHeight,
+                                                   bool acceptMultiPart = false)
     {
         ArgumentNullException.ThrowIfNull(invoices);
 
@@ -74,7 +80,8 @@ public sealed class FinalHopProcessor
             return Log(paymentHash, onionFailure);
 
         var invoice = await invoices.GetByPaymentHashAsync(paymentHash);
-        return Evaluate(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight);
+        return Evaluate(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
+                        acceptMultiPart);
     }
 
     /// <summary>
@@ -82,13 +89,15 @@ public sealed class FinalHopProcessor
     /// </summary>
     /// <inheritdoc cref="ProcessAsync" path="/param"/>
     public FinalHopResult Evaluate(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
-                                   uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight)
+                                   uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
+                                   bool acceptMultiPart = false)
     {
         ArgumentNullException.ThrowIfNull(htlcAmount);
         ArgumentNullException.ThrowIfNull(payload);
 
         var result = CheckHtlcAgainstOnion(htlcAmount, htlcCltvExpiry, payload)
-                  ?? CheckInvoice(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight);
+                  ?? CheckInvoice(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
+                                 acceptMultiPart);
 
         return Log(paymentHash, result);
     }
@@ -110,7 +119,8 @@ public sealed class FinalHopProcessor
     }
 
     private FinalHopResult CheckInvoice(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
-                                        uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight)
+                                        uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
+                                        bool acceptMultiPart)
     {
         FinalHopResult Unknown(string reason) =>
             FinalHopResult.Fail(FailureMessage.IncorrectOrUnknownPaymentDetails(htlcAmount, currentBlockHeight),
@@ -125,10 +135,17 @@ public sealed class FinalHopProcessor
         if (invoice is null || invoice.PaymentHash != paymentHash)
             return Unknown("Unknown payment hash.");
 
+        var totalMsat = paymentData.TotalMsat;
+        var isMultiPart = totalMsat.MilliSatoshi != amtToForward.MilliSatoshi;
+        var alreadySettled = false;
         switch (invoice.Status)
         {
             case InvoiceStatus.Canceled:
                 return Unknown("The invoice is canceled.");
+            case InvoiceStatus.Settled when acceptMultiPart && isMultiPart:
+                // Possibly a part of the set whose first fulfill settled the invoice (checked below)
+                alreadySettled = true;
+                break;
             case InvoiceStatus.Accepted or InvoiceStatus.Settled:
                 return Unknown($"The invoice is already {invoice.Status}.");
         }
@@ -139,11 +156,14 @@ public sealed class FinalHopProcessor
         if (!paymentData.PaymentSecret.Equals(invoice.PaymentSecret))
             return Unknown("The payment_secret does not match.");
 
-        // We do not support basic_mpp: total_msat must be exactly amt_to_forward
-        var totalMsat = paymentData.TotalMsat;
-        if (totalMsat.MilliSatoshi != amtToForward.MilliSatoshi)
+        // Without basic_mpp, total_msat must be exactly amt_to_forward (BOLT 4)
+        if (isMultiPart && !acceptMultiPart)
             return Unknown($"total_msat {totalMsat.MilliSatoshi} differs from amt_to_forward "
                          + $"{amtToForward.MilliSatoshi} (multi-part payments are not supported).");
+
+        if (alreadySettled && (invoice.AmountReceived is not { } received || totalMsat > received))
+            return Unknown($"The invoice is already Settled for {invoice.AmountReceived?.MilliSatoshi} msat, which "
+                         + $"does not cover this part's total_msat {totalMsat.MilliSatoshi}.");
 
         if (invoice.Amount is { } expected)
         {
@@ -160,7 +180,7 @@ public sealed class FinalHopProcessor
             return Unknown($"cltv_expiry {htlcCltvExpiry} is below height {currentBlockHeight} + "
                          + $"min_final_cltv_expiry_delta {invoice.MinFinalCltvExpiry}.");
 
-        return FinalHopResult.Accept(invoice, htlcAmount);
+        return FinalHopResult.Accept(invoice, htlcAmount, amtToForward, totalMsat, alreadySettled);
     }
 
     private FinalHopResult Log(Hash paymentHash, FinalHopResult result)

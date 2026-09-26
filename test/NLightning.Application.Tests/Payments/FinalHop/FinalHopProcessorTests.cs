@@ -15,7 +15,7 @@ using Domain.Protocol.Onion.Tlv;
 using Domain.Protocol.Tlv;
 
 /// <summary>
-/// ONION M4-T3: BOLT 4 final-node rules, no MPP. Every invoice-related failure is
+/// ONION M4-T3: BOLT 4 final-node rules, with and without <c>basic_mpp</c> (ABCD W6-B). Every invoice-related failure is
 /// <c>incorrect_or_unknown_payment_details</c> (0x400F) with (HTLC amount, current height); HTLC-vs-onion mismatches
 /// are <c>final_incorrect_cltv_expiry</c> (0x0012) and <c>final_incorrect_htlc_amount</c> (0x0013).
 /// </summary>
@@ -278,5 +278,137 @@ public class FinalHopProcessorTests
             Assert.True(result.IsAccepted, result.Reason);
         else
             AssertUnknownPaymentDetails(result);
+    }
+
+    private FinalHopResult EvaluateMultiPart(InvoiceModel? invoice, HopPayload payload, ulong htlcAmountMsat) =>
+        _processor.Evaluate(invoice, s_paymentHash, LightningMoney.MilliSatoshis(htlcAmountMsat), HtlcCltv, payload,
+                            Height, acceptMultiPart: true);
+
+    [Fact]
+    public void Given_MultiPartSupported_When_PartOfTotalArrives_Then_AcceptedWithPartAndTotal()
+    {
+        // Act: 40,000 of 100,000 msat (BOLT 4 basic_mpp)
+        var result = EvaluateMultiPart(CreateInvoice(), CreatePayload(40_000, totalMsat: AmountMsat), 40_000);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.True(result.IsMultiPart);
+        Assert.False(result.InvoiceAlreadySettled);
+        Assert.Equal(40_000UL, result.PartAmount!.MilliSatoshi);
+        Assert.Equal(AmountMsat, result.TotalMsat!.MilliSatoshi);
+        Assert.Equal(40_000UL, result.AmountReceived!.MilliSatoshi);
+        Assert.Equal(s_preimage, (byte[])result.Preimage!.Value);
+    }
+
+    [Fact]
+    public void Given_MultiPartSupported_When_SinglePart_Then_NotMultiPart()
+    {
+        // Act
+        var result = EvaluateMultiPart(CreateInvoice(), CreatePayload(), AmountMsat);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.False(result.IsMultiPart);
+        Assert.Equal(result.PartAmount, result.TotalMsat);
+    }
+
+    [Theory]
+    [InlineData(AmountMsat - 1, false)]
+    [InlineData(AmountMsat, true)]
+    [InlineData(2 * AmountMsat, true)]
+    [InlineData(2 * AmountMsat + 1, false)]
+    public void Given_MultiPartTotal_When_Evaluated_Then_TotalMsatIsTheAmountPaid(ulong totalMsat, bool accepted)
+    {
+        // Act: a 10,000 msat part; the invoice bounds apply to total_msat (BOLT 4: "amount paid" is total_msat)
+        var result = EvaluateMultiPart(CreateInvoice(), CreatePayload(10_000, totalMsat: totalMsat), 10_000);
+
+        // Assert
+        if (accepted)
+            Assert.True(result.IsAccepted, result.Reason);
+        else
+            AssertUnknownPaymentDetails(result, 10_000);
+    }
+
+    [Fact]
+    public void Given_MultiPartWithWrongSecret_When_Evaluated_Then_0x400F()
+    {
+        // Act: BOLT 4 MUST require payment_secret for all HTLCs in the set
+        var result = EvaluateMultiPart(CreateInvoice(),
+                                       CreatePayload(40_000, totalMsat: AmountMsat,
+                                                     paymentSecret: Enumerable.Repeat((byte)1, 32).ToArray()),
+                                       40_000);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
+    }
+
+    [Fact]
+    public void Given_MultiPartWithoutPaymentData_When_Evaluated_Then_0x400F()
+    {
+        // Act
+        var result = EvaluateMultiPart(CreateInvoice(), CreatePayload(withPaymentData: false), AmountMsat);
+
+        // Assert
+        AssertUnknownPaymentDetails(result);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_MultiPartOfItsSetArrives_Then_AcceptedAsAlreadySettled()
+    {
+        // Act: the first fulfill settled the invoice for 100,000 msat; this part was held when it did
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
+                                       CreatePayload(40_000, totalMsat: AmountMsat), 40_000);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.True(result.InvoiceAlreadySettled);
+        Assert.Equal(s_preimage, (byte[])result.Preimage!.Value);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_SinglePartArrives_Then_0x400F()
+    {
+        // Act: a single-part fulfill and the settle share one save, so this cannot be a held part
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled), CreatePayload(), AmountMsat);
+
+        // Assert
+        AssertUnknownPaymentDetails(result);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_PartTotalAboveAmountReceived_Then_0x400F()
+    {
+        // Act: the settled set received 100,000 msat, this part promises 150,000
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
+                                       CreatePayload(40_000, totalMsat: 150_000), 40_000);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_PartWithWrongSecret_Then_0x400F()
+    {
+        // Act
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
+                                       CreatePayload(40_000, totalMsat: AmountMsat,
+                                                     paymentSecret: Enumerable.Repeat((byte)1, 32).ToArray()),
+                                       40_000);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
+    }
+
+    [Theory]
+    [InlineData(InvoiceStatus.Canceled)]
+    [InlineData(InvoiceStatus.Accepted)]
+    public void Given_CanceledOrAcceptedInvoice_When_MultiPartArrives_Then_0x400F(InvoiceStatus status)
+    {
+        // Act
+        var result = EvaluateMultiPart(CreateInvoice(status: status), CreatePayload(40_000, totalMsat: AmountMsat),
+                                       40_000);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
     }
 }

@@ -40,24 +40,59 @@ public sealed record FinalHopResult
     public bool IsAccepted => Failure is null;
 
     /// <summary>
+    /// The onion's <c>amt_to_forward</c> (this part's contribution to the HTLC set), when accepted.
+    /// </summary>
+    public LightningMoney? PartAmount { get; }
+
+    /// <summary>
+    /// The onion's <c>total_msat</c> (what the whole HTLC set pays), when accepted.
+    /// </summary>
+    public LightningMoney? TotalMsat { get; }
+
+    /// <summary>
+    /// True when the HTLC is one part of a multi-part payment (<c>total_msat</c> &gt; <c>amt_to_forward</c>).
+    /// </summary>
+    public bool IsMultiPart => PartAmount is not null && TotalMsat is not null && TotalMsat != PartAmount;
+
+    /// <summary>
+    /// True when the invoice is already <c>Settled</c> and this multi-part HTLC is fulfilled without touching it (a
+    /// part of the set whose first fulfill settled the invoice).
+    /// </summary>
+    public bool InvoiceAlreadySettled { get; }
+
+    /// <summary>
     /// The preimage to fulfill with, when accepted.
     /// </summary>
     public Secret? Preimage => Invoice?.Preimage;
 
     private FinalHopResult(InvoiceModel? invoice, LightningMoney? amountReceived, FailureMessage? failure,
-                           string? reason)
+                           string? reason, LightningMoney? partAmount = null, LightningMoney? totalMsat = null,
+                           bool invoiceAlreadySettled = false)
     {
         Invoice = invoice;
         AmountReceived = amountReceived;
         Failure = failure;
         Reason = reason;
+        PartAmount = partAmount;
+        TotalMsat = totalMsat;
+        InvoiceAlreadySettled = invoiceAlreadySettled;
     }
 
-    public static FinalHopResult Accept(InvoiceModel invoice, LightningMoney amountReceived)
+    /// <param name="invoice">The invoice being paid.</param>
+    /// <param name="amountReceived">The HTLC's <c>amount_msat</c>.</param>
+    /// <param name="partAmount">The onion's <c>amt_to_forward</c>; defaults to <paramref name="amountReceived"/>.</param>
+    /// <param name="totalMsat">The onion's <c>total_msat</c>; defaults to <paramref name="partAmount"/> (a single-part
+    /// payment).</param>
+    /// <param name="invoiceAlreadySettled">See <see cref="InvoiceAlreadySettled"/>.</param>
+    public static FinalHopResult Accept(InvoiceModel invoice, LightningMoney amountReceived,
+                                        LightningMoney? partAmount = null, LightningMoney? totalMsat = null,
+                                        bool invoiceAlreadySettled = false)
     {
         ArgumentNullException.ThrowIfNull(invoice);
         ArgumentNullException.ThrowIfNull(amountReceived);
-        return new FinalHopResult(invoice, amountReceived, null, null);
+        var part = partAmount ?? amountReceived;
+        return new FinalHopResult(invoice, amountReceived, null, null, part, totalMsat ?? part,
+                                  invoiceAlreadySettled);
     }
 
     public static FinalHopResult Fail(FailureMessage failure, string reason)

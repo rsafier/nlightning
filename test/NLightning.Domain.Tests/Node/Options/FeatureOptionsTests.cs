@@ -67,7 +67,6 @@ public class FeatureOptionsTests
 
     [Theory]
     [InlineData(Feature.GossipQueriesEx)]
-    [InlineData(Feature.BasicMpp)]
     [InlineData(Feature.OptionRouteBlinding)]
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
@@ -187,8 +186,37 @@ public class FeatureOptionsTests
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
         Feature.OptionAnchors, Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionRouteBlinding,
-        Feature.OptionAttributionData, Feature.OptionSimpleClose, Feature.BasicMpp
+        Feature.OptionAttributionData, Feature.OptionSimpleClose
     ];
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_BasicMppIsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (ABCD W6-B: the final hop receives multi-part payments)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.DoesNotContain(Feature.BasicMpp, FeatureOptions.ExperimentalFeatures);
+        Assert.True(features.IsFeatureSet(Feature.BasicMpp, false));
+        Assert.False(features.IsFeatureSet(Feature.BasicMpp, true));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_BasicMppNo_When_GetNodeFeatures_Then_NotAdvertised()
+    {
+        // Arrange
+        var options = new FeatureOptions { BasicMpp = FeatureSupport.No };
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.False(features.HasFeature(Feature.BasicMpp));
+    }
 
     [Theory]
     [MemberData(nameof(RequiredExperimentalFeatures))]
