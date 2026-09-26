@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Channels.Safety;
 
 using Application.Channels.Safety;
 using Application.Channels.Safety.Interfaces;
+using Channels.Handlers;
 using Domain.Bitcoin.Events;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -50,6 +51,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     private readonly Mock<IForwardCircuitDbRepository> _circuits = new();
     private readonly Mock<IChannelStateDbRepository> _stateDb = new();
     private readonly Mock<IInvoiceDbRepository> _invoices = new();
+    private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly ServiceProvider _provider;
     private readonly byte[] _errorPacket = [0xEE, 0x01];
     private ChannelModel _channel;
@@ -78,6 +80,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(_circuits.Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(_stateDb.Object);
         unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(_invoices.Object);
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         _provider = services.BuildServiceProvider();
@@ -419,6 +422,58 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_OfferedCircuitOnAClosedOutgoingChannelWithoutPreimage_When_FailBackDue_Then_FailedBack()
+    {
+        // Arrange (NL-320 review): Bob forwarded Alice's HTLC over another channel that has closed on chain (Closed,
+        // no longer loaded) without a preimage; the switch fails such a forward only when the lock-in is replayed, and
+        // the link to Alice stays up
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var closed = new NormalOperationTestContext(state: ChannelState.Closed).Channel;
+        Assert.NotEqual(_channel.ChannelId, closed.ChannelId);
+        _channelDb.Setup(r => r.GetByIdAsync(closed.ChannelId)).ReturnsAsync(closed);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, 7, closed.ChannelId));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+
+        // Assert (B2-FWD-03): failed back at the fail-back deadline, the channel is not failed
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, incomingId, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_OfferedCircuitOnAnUnloadedOutgoingChannelNotClosed_When_PastEveryIncomingDeadline_Then_NeverFailedBack(
+        ChannelState state)
+    {
+        // Arrange (NL-320 review): only a Closed outgoing channel can no longer resolve the forward
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        var outgoing = new NormalOperationTestContext(state: state).Channel;
+        _channelDb.Setup(r => r.GetByIdAsync(outgoing.ChannelId)).ReturnsAsync(outgoing);
+        _circuits.Setup(r => r.GetByIncomingAsync(_channel.ChannelId, incomingId))
+                 .ReturnsAsync(Circuit(incomingId, ForwardCircuitStatus.Offered, 7, outgoing.ChannelId));
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var height in new[] { Cltv - Delta, Cltv - 18, Cltv })
+            await monitor.CheckAsync(height, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
     public async Task Given_FailedCircuit_When_FailBackDue_Then_FailedBack()
     {
         // Arrange: the forward failed (refused offer or irrevocable downstream failure)
@@ -536,11 +591,14 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
             _failureOnion.Object, NullLogger<HtlcExpiryMonitor>.Instance, Options.Create(new NodeOptions()),
             _provider.GetRequiredService<IServiceScopeFactory>());
 
-    private ForwardCircuitModel Circuit(ulong incomingId, ForwardCircuitStatus status, ulong? outgoingHtlcId) =>
+    private ForwardCircuitModel Circuit(ulong incomingId, ForwardCircuitStatus status, ulong? outgoingHtlcId,
+                                        ChannelId? outgoingChannelId = null) =>
         ForwardCircuitModel.Restore(_channel.ChannelId, incomingId, LightningMoney.MilliSatoshis(20_000_000), Cltv,
                                     new Hash(new byte[32]), new Secret(new byte[32]), new ShortChannelId(1, 2, 3),
                                     LightningMoney.MilliSatoshis(19_000_000), Cltv - Delta, DateTimeOffset.UnixEpoch,
-                                    status, outgoingHtlcId is null ? (ChannelId?)null : _channel.ChannelId, outgoingHtlcId,
+                                    status,
+                                    outgoingHtlcId is null ? (ChannelId?)null : outgoingChannelId ?? _channel.ChannelId,
+                                    outgoingHtlcId,
                                     status is ForwardCircuitStatus.Failed or ForwardCircuitStatus.Fulfilled
                                         ? DateTimeOffset.UnixEpoch
                                         : null);
