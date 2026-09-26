@@ -11,6 +11,8 @@ using Persistence.Entities.Bitcoin;
 public class WatchedTransactionDbRepository(NLightningDbContext context)
     : BaseDbRepository<WatchedTransactionEntity>(context), IWatchedTransactionDbRepository
 {
+    private readonly NLightningDbContext _context = context;
+
     public void Add(WatchedTransactionModel watchedTransactionModel)
     {
         var watchedTransactionEntity = MapDomainToEntity(watchedTransactionModel);
@@ -25,6 +27,38 @@ public class WatchedTransactionDbRepository(NLightningDbContext context)
     {
         var watchedTransactionEntity = MapDomainToEntity(watchedTransactionModel);
         Update(watchedTransactionEntity);
+
+        // The model does not carry the creation time: keep the stored one
+        var entry = _context.Entry(DbSet.Local.FirstOrDefault(e => e.TransactionId == watchedTransactionEntity
+                                                                                         .TransactionId)
+                                ?? watchedTransactionEntity);
+        if (entry.State == EntityState.Modified)
+            entry.Property(e => e.CreatedAt).IsModified = false;
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ResetPendingFirstSeenAboveAsync(uint height)
+    {
+        var entities = await DbSet.Where(x => x.CompletedAt == null && x.FirstSeenAtHeight != null
+                                           && x.FirstSeenAtHeight > height)
+                                  .ToListAsync();
+        foreach (var entity in entities)
+        {
+            entity.FirstSeenAtHeight = null;
+            entity.TransactionIndex = null;
+        }
+
+        return entities.Count;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<WatchedTransactionModel>> GetCompletedFirstSeenAboveAsync(uint height)
+    {
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(x => x.CompletedAt != null && x.FirstSeenAtHeight != null
+                                           && x.FirstSeenAtHeight > height)
+                                  .ToListAsync();
+        return entities.Select(MapEntityToDomain).ToList();
     }
 
     public async Task<IEnumerable<WatchedTransactionModel>> GetAllPendingAsync()

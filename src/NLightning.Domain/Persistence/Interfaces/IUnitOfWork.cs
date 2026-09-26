@@ -6,6 +6,7 @@ using Bitcoin.Wallet.Models;
 using Channels.Interfaces;
 using Node.Interfaces;
 using Node.Models;
+using Onchain.Interfaces;
 using Payments.Interfaces;
 
 public interface IUnitOfWork : IDisposable
@@ -15,6 +16,11 @@ public interface IUnitOfWork : IDisposable
     IWatchedTransactionDbRepository WatchedTransactionDbRepository { get; }
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
     IUtxoDbRepository UtxoDbRepository { get; }
+
+    // On-chain repositories (BOLT 5 plan O0)
+    IWatchedOutpointDbRepository WatchedOutpointDbRepository { get; }
+    IBroadcastTransactionDbRepository BroadcastTransactionDbRepository { get; }
+    IBlockHeaderDbRepository BlockHeaderDbRepository { get; }
 
     // Chanel repositories
     IChannelConfigDbRepository ChannelConfigDbRepository { get; }

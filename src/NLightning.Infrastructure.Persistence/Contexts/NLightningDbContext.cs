@@ -28,6 +28,9 @@ public class NLightningDbContext : DbContext
     public DbSet<WatchedTransactionEntity> WatchedTransactions { get; set; }
     public DbSet<WalletAddressEntity> WalletAddresses { get; set; }
     public DbSet<UtxoEntity> Utxos { get; set; }
+    public DbSet<WatchedOutpointEntity> WatchedOutpoints { get; set; }
+    public DbSet<BroadcastTransactionEntity> BroadcastTransactions { get; set; }
+    public DbSet<BlockHeaderEntity> BlockHeaders { get; set; }
 
     // Channel DbSets
     public DbSet<ChannelEntity> Channels { get; set; }
@@ -57,6 +60,9 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureWatchedTransactionEntity(_databaseType);
         modelBuilder.ConfigureWalletAddressEntity(_databaseType);
         modelBuilder.ConfigureUtxoEntity(_databaseType);
+        modelBuilder.ConfigureWatchedOutpointEntity(_databaseType);
+        modelBuilder.ConfigureBroadcastTransactionEntity(_databaseType);
+        modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
 
         // Channel entities
         modelBuilder.ConfigureChannelEntity(_databaseType);

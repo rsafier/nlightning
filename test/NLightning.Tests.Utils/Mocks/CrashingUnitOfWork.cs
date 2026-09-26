@@ -4,6 +4,7 @@ using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
+using NLightning.Domain.Onchain.Interfaces;
 using NLightning.Domain.Payments.Interfaces;
 using NLightning.Domain.Persistence.Interfaces;
 
@@ -43,6 +44,10 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IWatchedTransactionDbRepository WatchedTransactionDbRepository => inner.WatchedTransactionDbRepository;
     public IWalletAddressesDbRepository WalletAddressesDbRepository => inner.WalletAddressesDbRepository;
     public IUtxoDbRepository UtxoDbRepository => inner.UtxoDbRepository;
+    public IWatchedOutpointDbRepository WatchedOutpointDbRepository => inner.WatchedOutpointDbRepository;
+    public IBroadcastTransactionDbRepository BroadcastTransactionDbRepository =>
+        inner.BroadcastTransactionDbRepository;
+    public IBlockHeaderDbRepository BlockHeaderDbRepository => inner.BlockHeaderDbRepository;
     public IChannelConfigDbRepository ChannelConfigDbRepository => inner.ChannelConfigDbRepository;
     public IChannelDbRepository ChannelDbRepository => inner.ChannelDbRepository;
     public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;

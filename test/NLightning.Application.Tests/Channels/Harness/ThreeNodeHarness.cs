@@ -40,6 +40,7 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
@@ -691,6 +692,10 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IWatchedTransactionDbRepository WatchedTransactionDbRepository => inner.WatchedTransactionDbRepository;
     public IWalletAddressesDbRepository WalletAddressesDbRepository => inner.WalletAddressesDbRepository;
     public IUtxoDbRepository UtxoDbRepository => inner.UtxoDbRepository;
+    public IWatchedOutpointDbRepository WatchedOutpointDbRepository => inner.WatchedOutpointDbRepository;
+    public IBroadcastTransactionDbRepository BroadcastTransactionDbRepository =>
+        inner.BroadcastTransactionDbRepository;
+    public IBlockHeaderDbRepository BlockHeaderDbRepository => inner.BlockHeaderDbRepository;
     public IChannelConfigDbRepository ChannelConfigDbRepository => inner.ChannelConfigDbRepository;
     public IChannelDbRepository ChannelDbRepository => inner.ChannelDbRepository;
     public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;

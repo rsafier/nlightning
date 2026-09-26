@@ -70,6 +70,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresChannelsFromBeforeAddChainWatchAndBroadcasts_When_Migrated_Then_FundingOutputsAreWatchedAndTheNewTablesRoundTrip()
+    {
+        // Arrange (BOLT 5 plan O0-T4: the funding-outpoint backfill runs on real rows; watched outpoints, broadcasts
+        // and block headers round-trip on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_chain_watch");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await ChainWatchSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                    DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforePersistCommitmentNumbers_When_Migrated_Then_EveryChannelDataStepRuns()
     {
         // Arrange (NL-237: the data steps of PersistCommitmentNumbers, SplitChannelParams,
