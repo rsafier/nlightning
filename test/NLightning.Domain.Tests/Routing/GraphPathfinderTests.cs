@@ -341,6 +341,78 @@ public class GraphPathfinderTests
     }
 
     [Fact]
+    public void Given_MaxHops_When_TheCheapestLabelIsTooLong_Then_TheShorterCostlierPathIsFound()
+    {
+        // Arrange: M reaches T through a free 3-channel chain (cheapest) or one 5,000 msat channel; S -> M
+        var kit = new GraphTestKit();
+        kit.Channel("S", "M", GraphTestKit.Policy());
+        kit.Channel("M", "P2", GraphTestKit.Policy());
+        kit.Channel("P2", "P1", GraphTestKit.Policy());
+        kit.Channel("P1", "T", GraphTestKit.Policy());
+        kit.Channel("M", "T", GraphTestKit.Policy(5_000));
+        var request = new PathfindingRequest(kit["S"], kit["T"], 1_000_000, 18);
+
+        // Act
+        var unlimited = _pathfinder.FindPath(kit.Build(), request);
+        var limited = _pathfinder.FindPath(kit.Build(), request with { MaxHops = 3 });
+
+        // Assert: without the limit the chain wins; with it, S -> M -> T (2 hops) still exists and is found
+        Assert.Equal(4, unlimited!.Hops.Count);
+        Assert.NotNull(limited);
+        Assert.Equal([kit["M"], kit["T"]], limited.Hops.Select(h => h.NodeId));
+        Assert.Equal(5_000UL, limited.FeeMsat);
+    }
+
+    [Fact]
+    public void Given_CltvLimit_When_TheCheapestLabelExceedsItUpstream_Then_TheLowerCltvPathIsFound()
+    {
+        // Arrange: M reaches T through X (free, 1500 blocks, cheapest) or Y (30,000 msat, 40 blocks); S -> N -> M
+        var kit = new GraphTestKit();
+        kit.Channel("S", "N", GraphTestKit.Policy());
+        kit.Channel("N", "M", GraphTestKit.Policy());
+        kit.Channel("M", "X", GraphTestKit.Policy());
+        kit.Channel("X", "T", GraphTestKit.Policy(cltvDelta: 1_500));
+        kit.Channel("M", "Y", GraphTestKit.Policy());
+        kit.Channel("Y", "T", GraphTestKit.Policy(30_000));
+        var request = new PathfindingRequest(kit["S"], kit["T"], 1_000_000, 18);
+
+        // Act: through X, M needs 18 + 1500 + 40 = 1558 (fits) and N 1598 (does not)
+        var unlimited = _pathfinder.FindPath(kit.Build(), request);
+        var limited = _pathfinder.FindPath(kit.Build(), request with { MaxTotalCltvDelta = 1_560 });
+
+        // Assert
+        Assert.Equal(kit["X"], unlimited!.Hops[2].NodeId);
+        Assert.NotNull(limited);
+        Assert.Equal(kit["Y"], limited.Hops[2].NodeId);
+        Assert.Equal(18u + 40 + 40 + 40, limited.TotalCltvDelta);
+    }
+
+    [Fact]
+    public void Given_FeeLimit_When_TheCheapestLabelExceedsItUpstream_Then_TheLowerFeePathIsFound()
+    {
+        // Arrange: M reaches T through X (100 msat, 1500 blocks) or Y (5,000 msat, 40 blocks, cheapest by cost);
+        // S -> N (charges 1,000 msat) -> M
+        var kit = new GraphTestKit();
+        kit.Channel("S", "N", GraphTestKit.Policy());
+        kit.Channel("N", "M", GraphTestKit.Policy(1_000));
+        kit.Channel("M", "X", GraphTestKit.Policy());
+        kit.Channel("X", "T", GraphTestKit.Policy(100, cltvDelta: 1_500));
+        kit.Channel("M", "Y", GraphTestKit.Policy());
+        kit.Channel("Y", "T", GraphTestKit.Policy(5_000));
+        var request = new PathfindingRequest(kit["S"], kit["T"], 1_000_000, 18);
+
+        // Act: through Y the fee is 5,000 at M (fits) and 6,000 at N (does not)
+        var unlimited = _pathfinder.FindPath(kit.Build(), request);
+        var limited = _pathfinder.FindPath(kit.Build(), request with { MaxFeeMsat = 5_500 });
+
+        // Assert
+        Assert.Equal(kit["Y"], unlimited!.Hops[2].NodeId);
+        Assert.NotNull(limited);
+        Assert.Equal(kit["X"], limited.Hops[2].NodeId);
+        Assert.Equal(1_100UL, limited.FeeMsat);
+    }
+
+    [Fact]
     public void Given_MaxFee_When_OnlyRouteCostsMore_Then_NoPath()
     {
         // Arrange
@@ -596,6 +668,51 @@ public class GraphPathfinderTests
     }
 
     [Fact]
+    public void Given_OurStaleChannel_When_LocalStateSaysUsable_Then_TheLiveStateWins()
+    {
+        // Arrange: both policies of our channel are older than two weeks
+        var kit = new GraphTestKit();
+        var ours = kit.Channel("S", "T", GraphTestKit.Policy(timestamp: 1_000_000),
+                               GraphTestKit.Policy(timestamp: 1_000_000));
+        var request = new PathfindingRequest(kit["S"], kit["T"], 1_000, 18)
+        {
+            NowUnixSeconds = 1_000_000 + 1_209_601,
+            StaleAfter = TimeSpan.FromDays(14)
+        };
+
+        // Act
+        var withoutLocal = _pathfinder.FindPath(kit.Build(), request);
+        var withLocal = _pathfinder.FindPath(kit.Build(), request with
+        {
+            LocalChannels = new Dictionary<ShortChannelId, LocalChannelState> { [ours] = new(true, 10_000_000) }
+        });
+
+        // Assert
+        Assert.Null(withoutLocal);
+        Assert.NotNull(withLocal);
+        Assert.Equal(1.0, withLocal.Hops[0].Probability);
+    }
+
+    [Fact]
+    public void Given_StaleChannelBeyondOurFirstHop_When_LocalStateSaysUsable_Then_ItIsStillSkipped()
+    {
+        // Arrange: our channel is fresh, the next one is stale
+        var kit = new GraphTestKit();
+        const uint now = 1_000_000 + 1_209_601;
+        var ours = kit.Channel("S", "X", GraphTestKit.Policy(timestamp: now), GraphTestKit.Policy(timestamp: now));
+        kit.Channel("X", "T", GraphTestKit.Policy(timestamp: 1_000_000), GraphTestKit.Policy(timestamp: 1_000_000));
+        var request = new PathfindingRequest(kit["S"], kit["T"], 1_000, 18)
+        {
+            NowUnixSeconds = now,
+            StaleAfter = TimeSpan.FromDays(14),
+            LocalChannels = new Dictionary<ShortChannelId, LocalChannelState> { [ours] = new(true, 10_000_000) }
+        };
+
+        // Act / Assert
+        Assert.Null(_pathfinder.FindPath(kit.Build(), request));
+    }
+
+    [Fact]
     public void Given_PrivatePayeeWithRouteHint_When_Finding_Then_CombinesGraphAndHintEdge()
     {
         // Arrange: S - X public, X -> P only in the invoice's route hint
@@ -792,11 +909,16 @@ public class GraphPathfinderTests
         var found = requests.Count(r => pathfinder.FindPath(graph, r) is not null);
         stopwatch.Stop();
 
-        // Assert: the plan's budget is 50 ms per query in Release; allow slack for shared CI machines and Debug
+        // Assert: the plan's budget (G4-T1) is 50 ms per query in Release; a Debug build gets 5x
         var perQuery = stopwatch.Elapsed.TotalMilliseconds / requests.Count;
         TestContext.Current.TestOutputHelper?.WriteLine($"{perQuery:F1} ms per query, {found}/{requests.Count} found");
         Assert.True(found > 0);
-        Assert.True(perQuery < 500, $"{perQuery:F1} ms per query");
+#if DEBUG
+        const double budgetMs = 250;
+#else
+        const double budgetMs = 50;
+#endif
+        Assert.True(perQuery < budgetMs, $"{perQuery:F1} ms per query, budget {budgetMs} ms");
     }
 
     private static GraphPolicy RandomPolicy(Random random, byte direction) =>

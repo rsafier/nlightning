@@ -54,8 +54,8 @@ public sealed record PathfindingRequest(CompactPubKey Source, CompactPubKey Targ
     /// <summary>
     /// The live state of our own channels, by short channel id (real or alias). When set, an edge from
     /// <see cref="Source"/> is used only if its channel is listed and usable and can carry the amount; its
-    /// <c>disable</c> bit is ignored (the live state wins) and its probability is 1. When null, our edges are
-    /// treated like any other.
+    /// <c>disable</c> bit and the <see cref="StaleAfter"/> check are ignored (the live state wins) and its
+    /// probability is 1. When null, our edges are treated like any other.
     /// </summary>
     public IReadOnlyDictionary<ShortChannelId, LocalChannelState>? LocalChannels { get; init; }
 
