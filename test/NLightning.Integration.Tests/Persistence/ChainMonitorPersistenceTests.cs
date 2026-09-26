@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using NBitcoin;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -529,6 +531,69 @@ public class ChainMonitorPersistenceTests
         Assert.True(((Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor)harness.Monitor)
                        .IsChainProcessingHalted);
         Assert.Equal(100u, harness.Monitor.LastProcessedBlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_ABlockAboveTheNodesTip_When_Delivered_Then_ItIsDroppedAndTheChainIsStillFollowed()
+    {
+        // Arrange (NL-310: a ZMQ endpoint of another chain, e.g. a local signet bitcoind on 28332, delivers its blocks)
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var foreign = new FakeBitcoinChain(3_000);
+        var processed = new List<uint>();
+        harness.Monitor.OnNewBlockDetected += (_, args) => processed.Add(args.Height);
+
+        // Act
+        await harness.Monitor.ProcessNewBlockAsync(foreign[3_000], 3_000);
+
+        // Assert: nothing processed, nothing halted
+        Assert.Empty(processed);
+        Assert.Equal(100u, harness.Monitor.LastProcessedBlockHeight);
+        Assert.False(harness.Monitor.IsChainProcessingHalted);
+
+        // Act: the node's own next block
+        await harness.MineAndDeliverAsync();
+
+        // Assert: only it is processed (the foreign height did not leave a catch-up target behind)
+        Assert.Equal([101u], processed);
+        Assert.Equal(101u, harness.Monitor.LastProcessedBlockHeight);
+        await using var context = harness.Context();
+        var state = await context.BlockchainStates.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(101u, state.LastProcessedHeight);
+        Assert.Equal(harness.Chain[101].GetHash().ToBytes(), (byte[])state.LastProcessedBlockHash);
+    }
+
+    [Fact]
+    public async Task Given_BlocksDeliveredConcurrently_When_Processed_Then_EachHeightIsProcessedOnceInOrder()
+    {
+        // Arrange (NL-310: a block handed in directly while the ZMQ loop delivers another)
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var blocks = new List<(Block Block, uint Height)>();
+        for (var i = 0; i < 8; i++)
+            blocks.Add((harness.Chain.Mine(), harness.Chain.TipHeight));
+        var processed = new ConcurrentQueue<uint>();
+        harness.Monitor.OnNewBlockDetected += (_, args) => processed.Enqueue(args.Height);
+
+        // Act
+        using var start = new ManualResetEventSlim();
+        var deliveries = blocks.Select(b => Task.Run(async () =>
+                                {
+                                    start.Wait(TestContext.Current.CancellationToken);
+                                    await harness.Monitor.ProcessNewBlockAsync(b.Block, b.Height);
+                                }, TestContext.Current.CancellationToken))
+                               .ToList();
+        start.Set();
+        await Task.WhenAll(deliveries);
+
+        // Assert
+        Assert.Equal(Enumerable.Range(101, 8).Select(h => (uint)h), processed);
+        Assert.Equal(108u, harness.Monitor.LastProcessedBlockHeight);
+        Assert.False(harness.Monitor.IsChainProcessingHalted);
+        await using var context = harness.Context();
+        var headers = await context.BlockHeaders.AsNoTracking().Where(h => h.Height > 100).OrderBy(h => h.Height)
+                                   .ToListAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(Enumerable.Range(101, 8).Select(h => (uint)h), headers.Select(h => h.Height));
     }
 
     private static async Task<BroadcastTransactionModel> LoadBroadcastAsync(ChainMonitorHarness harness,

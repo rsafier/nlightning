@@ -33,6 +33,9 @@ using Options;
 /// </summary>
 public class BlockchainMonitorServiceTests
 {
+    // Never 28332: a local signet bitcoind publishes real blocks there (NL-310)
+    private static readonly SilentZmqEndpoint s_zmq = new();
+
     private readonly FakeBitcoinChain _chain = new(110);
     private readonly FakeServiceProvider _fakeServiceProvider;
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
@@ -785,9 +788,9 @@ public class BlockchainMonitorServiceTests
             RpcEndpoint = "",
             RpcUser = "",
             RpcPassword = "",
-            ZmqHost = "127.0.0.1",
-            ZmqBlockPort = 28332,
-            ZmqTxPort = 28333
+            ZmqHost = s_zmq.Host,
+            ZmqBlockPort = s_zmq.BlockPort,
+            ZmqTxPort = s_zmq.TxPort
         });
         var nodeOptions = new Mock<IOptions<NodeOptions>>();
         nodeOptions.Setup(x => x.Value).Returns(new NodeOptions { BitcoinNetwork = network });
