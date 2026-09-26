@@ -1011,8 +1011,19 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             var rewoundState = new BlockchainState(forkHeight, forkHash, DateTime.UtcNow) { Id = _blockchainState.Id };
 
-            // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again
-            var restoredUtxos = await FindWalletOutputsUnspentAgainAsync(disconnected);
+            // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again (a
+            // failed lookup restores nothing: the rewind itself must not fail over it)
+            List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)> restoredUtxos;
+            try
+            {
+                restoredUtxos = await FindWalletOutputsUnspentAgainAsync(disconnected);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Could not look up the wallet outputs spent in the disconnected blocks; they are "
+                                   + "not restored");
+                restoredUtxos = [];
+            }
 
             IReadOnlyList<WatchedTransactionModel> completedInDisconnected;
             using (var scope = _serviceProvider.CreateScope())
@@ -1189,11 +1200,50 @@ public class BlockchainMonitorService : IBlockchainMonitor
         return (removed, count);
     }
 
-    /// <summary>Sends every pending broadcast again (after every processing round and at startup).</summary>
+    /// <summary>
+    /// Sends every pending broadcast again (after every processing round and at startup), after dropping those whose
+    /// stored row is no longer pending (replaced by an RBF bump, abandoned, NL-294).
+    /// </summary>
     private async Task RebroadcastPendingAsync()
     {
+        await DropSettledBroadcastsAsync();
         foreach (var broadcast in _pendingBroadcasts.Values.ToList())
             await TrySendAsync(broadcast);
+    }
+
+    /// <summary>
+    /// Forgets the in-memory pending broadcasts whose stored row another component moved out of
+    /// <see cref="BroadcastState.Pending"/> (the sweep scheduler's <see cref="BroadcastState.Replaced"/>, the watcher's
+    /// or scheduler's <see cref="BroadcastState.Abandoned"/>): they are never sent again. A transaction without a row is
+    /// kept. A failed read keeps them all (they are sent once more).
+    /// </summary>
+    private async Task DropSettledBroadcastsAsync()
+    {
+        if (_pendingBroadcasts.IsEmpty)
+            return;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            foreach (var txId in _pendingBroadcasts.Keys.ToList())
+            {
+                var stored = await uow.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
+                                 new TxId(txId.ToBytes()));
+                if (stored is null || stored.State == BroadcastState.Pending)
+                    continue;
+
+                _pendingBroadcasts.TryRemove(txId, out _);
+                _refusals.TryRemove(txId, out _);
+                if (_logger.IsEnabled(LogLevel.Information))
+                    _logger.LogInformation("{Purpose} transaction {TxId} is {State}; it is no longer rebroadcast",
+                                           Enum.GetName(stored.Purpose), txId, Enum.GetName(stored.State));
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not check the stored state of the pending broadcasts");
+        }
     }
 
     /// <summary>
