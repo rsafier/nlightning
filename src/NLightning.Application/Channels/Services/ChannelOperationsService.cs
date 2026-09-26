@@ -34,7 +34,8 @@ using Interfaces;
 /// <see cref="ICommitScheduler"/> to sign once the lock is released.
 /// </para>
 /// <para>
-/// Preconditions: HTLCs enabled (<see cref="NodeOptions.HtlcsEnabled"/>), channel <see cref="ChannelState.Open"/>
+/// Preconditions: HTLCs enabled (<see cref="NodeOptions.HtlcsEnabled"/>), channel <see cref="ChannelState.Open"/> (or
+/// <see cref="ChannelState.ShuttingDown"/> for removals, and for fee updates while HTLCs are left; never for an add)
 /// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules, and the channel's link
 /// is up (<see cref="IPeerLivenessProbe"/>: the peer is connected on the connection the channel was opened or
 /// reestablished on). Every operation needs the link, removals and fee updates too: a message raised for a peer that
@@ -52,6 +53,9 @@ using Interfaces;
 /// </remarks>
 public sealed class ChannelOperationsService : IChannelOperations
 {
+    private const string AddOperation = "update_add_htlc";
+    private const string FeeOperation = "update_fee";
+
     private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -92,7 +96,7 @@ public sealed class ChannelOperationsService : IChannelOperations
             throw new ArgumentException("The onion is empty", nameof(onion));
 
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
-        var result = await RunAsync(channelId, "update_add_htlc",
+        var result = await RunAsync(channelId, AddOperation,
                                     c => c.SendAdd(amount.MilliSatoshi, paymentHash, cltvExpiry, onion.ToBytes(),
                                                    pathKey?.PathKey, height is > 0 ? height : null),
                                     cancellationToken,
@@ -143,7 +147,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     public async Task UpdateFeeAsync(ChannelId channelId, uint feeratePerKw,
                                      CancellationToken cancellationToken = default)
     {
-        await RunAsync(channelId, "update_fee", c => c.SendFee(feeratePerKw), cancellationToken);
+        await RunAsync(channelId, FeeOperation, c => c.SendFee(feeratePerKw), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -228,9 +232,18 @@ public sealed class ChannelOperationsService : IChannelOperations
         if (channel.State == ChannelState.Failed)
             throw new CommitmentRefusedException("B2-NO-02", $"{operationName} refused: channel {channelId} failed");
 
-        if (channel.State != ChannelState.Open)
+        if (!ChannelStateTransitionService.CarriesUpdates(channel.State))
             throw new CommitmentRefusedException("B2-NO-02",
                                                  $"{operationName} refused: channel {channelId} is {Enum.GetName(channel.State)}");
+
+        // BOLT 2 after shutdown: no new HTLC (B2-ADD-S13), and once no HTLC is left no update at all (B2-SHUT-S07)
+        if (channel.State == ChannelState.ShuttingDown && operationName == AddOperation)
+            throw new CommitmentRefusedException("B2-ADD-S13",
+                                                 $"{operationName} refused: channel {channelId} is shutting down");
+        if (channel.State == ChannelState.ShuttingDown && operationName == FeeOperation
+         && channel.Commitments is { Htlcs.IsEmpty: true })
+            throw new CommitmentRefusedException("B2-SHUT-S07",
+                                                 $"{operationName} refused: channel {channelId} is shutting down with no HTLC left");
 
         if (channel.DataLossDetected)
             throw new CommitmentRefusedException("B2-RE-DL",

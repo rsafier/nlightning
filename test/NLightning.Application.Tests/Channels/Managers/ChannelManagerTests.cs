@@ -300,13 +300,13 @@ public class ChannelManagerTests
     }
 
     [Theory]
-    [InlineData(MessageTypes.Shutdown)]
-    [InlineData(MessageTypes.ClosingSigned)]
     [InlineData(MessageTypes.TxAddInput)]
+    [InlineData(MessageTypes.TxComplete)]
     public async Task Given_NotImplementedChannelMessage_When_Handled_Then_ChannelScopedWarningIsRaised(
         MessageTypes messageType)
     {
-        // Arrange (interim until BOLT2 plan N7/N10: never fail a known channel, or all channels, for these)
+        // Arrange (interim for the dual-funding messages: never fail a known channel, or all channels, for these;
+        // shutdown and closing_signed have handlers since N10)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x44);
         MarkChannelKnownInMemory(channelId);
@@ -357,7 +357,7 @@ public class ChannelManagerTests
         var channel = CreateChannel(ChannelState.Stale, false, 0x48, 100);
         _channels.Add(channel);
         var channelManager = CreateChannelManager();
-        var messageMock = CreateChannelMessageMock(MessageTypes.Shutdown, channel.ChannelId);
+        var messageMock = CreateChannelMessageMock(MessageTypes.TxAddInput, channel.ChannelId);
 
         // Act
         var exception = await Assert.ThrowsAsync<ChannelWarningException>(

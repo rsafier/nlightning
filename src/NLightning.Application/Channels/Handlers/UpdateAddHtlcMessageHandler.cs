@@ -38,6 +38,15 @@ public class UpdateAddHtlcMessageHandler : IChannelMessageHandler<UpdateAddHtlcM
         var payload = message.Payload;
         var channel = _transitions.GetUpdatableChannel(payload.ChannelId, currentState, "update_add_htlc");
 
+        // B2-SHUT-R06: BOLT 2 forbids an update_add_htlc after the sender's own shutdown (one that crosses ours is fine)
+        if (channel is { State: ChannelState.ShuttingDown, RemoteShutdownScript: not null })
+            throw new ChannelWarningException(
+                $"[B2-SHUT-R06] update_add_htlc {payload.Id} on channel {payload.ChannelId} after the peer's shutdown",
+                payload.ChannelId, "update_add_htlc after shutdown")
+            {
+                CloseConnection = true
+            };
+
         CommitmentsResult result;
         try
         {
