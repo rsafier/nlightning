@@ -24,7 +24,8 @@ using Domain.Node.Options;
 /// <para>An amount fits a path when the fee is within the remaining fee limit, our HTLC is at most what the engine
 /// lets us send on that channel (<see cref="PaymentPlanRequest.MaxSendableMsat"/>, given the parts already planned on
 /// it) and below its learnt bound, and every hint channel forwards at least its <c>htlc_minimum_msat</c>, at most its
-/// <c>htlc_maximum_msat</c> and, with the parts already planned over it, less than its learnt liquidity bound.</para>
+/// <c>htlc_maximum_msat</c> and, with the parts already planned over it and the payment's parts still in flight over it
+/// (<see cref="PaymentPlanRequest.HintForwardsInFlightMsat"/>), less than its learnt liquidity bound.</para>
 /// <para>One part: the first path, in order (direct paths first, then hints in invoice order; each by what its channel
 /// can send, largest first), that fits the whole amount. Split (only with <see cref="PaymentTarget.SupportsMpp"/> and
 /// at least two parts allowed): paths by fee for the whole amount, cheapest first, then by what they can send; each
@@ -62,6 +63,7 @@ public sealed class PaymentRoutePlanner
         if (request.MaxParts < 1)
             throw new ArgumentException("At least one part must be allowed.", nameof(request));
 
+        var inFlight = request.HintForwardsInFlightMsat ?? s_noHintAssigned;
         var reasons = new List<string>();
         var paths = BuildPaths(request, reasons);
         if (paths.Count == 0)
@@ -77,7 +79,7 @@ public sealed class PaymentRoutePlanner
         var singleReasons = new List<string>();
         foreach (var path in paths)
         {
-            if (TryFit(request, path, request.AmountMsat, request.MaxFeeMsat, [], s_noHintAssigned, out var route,
+            if (TryFit(request, path, request.AmountMsat, request.MaxFeeMsat, [], inFlight, out var route,
                        out var reason))
             {
                 parts = [new PlannedPart(path.Channel, route, path.Description)];
@@ -99,7 +101,7 @@ public sealed class PaymentRoutePlanner
             return false;
         }
 
-        if (TrySplit(request, paths, out parts, out var splitReason))
+        if (TrySplit(request, paths, inFlight, out parts, out var splitReason))
         {
             failureReason = null;
             return true;
@@ -110,6 +112,7 @@ public sealed class PaymentRoutePlanner
     }
 
     private bool TrySplit(PaymentPlanRequest request, List<CandidatePath> paths,
+                          IReadOnlyDictionary<ShortChannelId, ulong> inFlight,
                           [NotNullWhen(true)] out IReadOnlyList<PlannedPart>? parts, out string failureReason)
     {
         var finalCltv = FinalCltv(request);
@@ -128,7 +131,8 @@ public sealed class PaymentRoutePlanner
 
         var planned = new List<PlannedPart>();
         var localAssigned = new Dictionary<ChannelId, List<ulong>>();
-        var hintAssigned = new Dictionary<ShortChannelId, ulong>();
+        // A hint channel's liquidity bound covers every HTLC of the payment over it, the parts in flight included
+        var hintAssigned = new Dictionary<ShortChannelId, ulong>(inFlight);
         var remaining = request.AmountMsat;
         var feeLeft = request.MaxFeeMsat;
         foreach (var path in ordered)
@@ -270,6 +274,27 @@ public sealed class PaymentRoutePlanner
         return true;
     }
 
+    /// <summary>
+    /// What <paramref name="routes"/> forward over each route-hint channel, together (for
+    /// <see cref="PaymentPlanRequest.HintForwardsInFlightMsat"/>).
+    /// </summary>
+    public static Dictionary<ShortChannelId, ulong> SumHintForwards(IEnumerable<PaymentRoute> routes)
+    {
+        ArgumentNullException.ThrowIfNull(routes);
+
+        var sums = new Dictionary<ShortChannelId, ulong>();
+        foreach (var route in routes)
+        {
+            foreach (var hop in route.Hops)
+            {
+                if (hop.OutgoingShortChannelId is { } scid)
+                    sums[scid] = checked(sums.GetValueOrDefault(scid) + hop.AmountToForward.MilliSatoshi);
+            }
+        }
+
+        return sums;
+    }
+
     private uint FinalCltv(PaymentPlanRequest request) =>
         checked(request.Height + request.Target.MinFinalCltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
               + request.Constraints.ExtraCltvDelta);
@@ -386,6 +411,9 @@ public sealed record PlannedPart(LocalChannelCandidate Channel, PaymentRoute Rou
 /// were added to it.</param>
 /// <param name="Constraints">What the payment learnt so far.</param>
 /// <param name="MinPartMsat">The smallest part the split plans, unless it is all that is left.</param>
+/// <param name="HintForwardsInFlightMsat">What the payment's HTLCs still in flight forward over each route-hint channel
+/// (by short channel id; <see cref="PaymentRoutePlanner.SumHintForwards"/>): counted against that channel's
+/// <see cref="RouteConstraints.ChannelLiquidityBoundsMsat"/>. Null: none in flight.</param>
 public sealed record PaymentPlanRequest(
     PaymentTarget Target,
     ulong AmountMsat,
@@ -397,4 +425,5 @@ public sealed record PaymentPlanRequest(
     IReadOnlyList<LocalChannelCandidate> Channels,
     Func<ChannelId, IReadOnlyList<ulong>, ulong> MaxSendableMsat,
     RouteConstraints Constraints,
-    ulong MinPartMsat);
+    ulong MinPartMsat,
+    IReadOnlyDictionary<ShortChannelId, ulong>? HintForwardsInFlightMsat = null);
