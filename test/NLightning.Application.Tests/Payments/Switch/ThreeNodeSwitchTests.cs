@@ -468,7 +468,7 @@ public class ThreeNodeSwitchTests
     }
 
     [Fact]
-    public async Task Given_CarolsLinkDownWhenSheWouldFulfill_When_TheLinkComesBack_Then_TheInvoiceStaysOpenUntilItIsPaidOnce()
+    public async Task Given_CarolsLinkDownWhenSheWouldFulfill_When_TheLinkComesBack_Then_TheCommittedHtlcIsFulfilledOnce()
     {
         // Arrange - the HTLC is locked in at Carol, whose link to Bob drops before her switch acts
         await using var harness = await ThreeNodeHarness.CreateAsync();
@@ -480,17 +480,29 @@ public class ThreeNodeSwitchTests
         harness.Disconnect(harness.Bob, harness.Carol);
         harness.Carol.SwitchSuspended = false;
 
-        // Act 1: the fulfill is refused (peer away)
+        // Act 1: the fulfill is refused (peer away): the set is committed instead (NL-322/NL-323), the preimage on
+        // the HTLC's record and the invoice settled in that save
         await harness.Carol.ReplayPendingEventsAsync();
         var whileAway = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
                                                                .GetByPaymentHashAsync(invoice.PaymentHash));
+        var committed = Assert.Single(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs
+                                                     .Values, h => h.Direction == HtlcDirection.Incoming);
+        var carolChannel = harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId);
+        var stored = await harness.Carol.InScopeAsync(async u => (await u.ChannelStateDbRepository.LoadAsync(
+                                                                      carolChannel.ChannelId,
+                                                                      carolChannel.Commitments!.Params))!
+                                                                .Commitments.GetHtlc(HtlcDirection.Incoming,
+                                                                                     committed.Id));
 
         // Act 2: the link is reestablished (N7 marks it up; nothing else replays)
         await harness.ReconnectLinkAsync(harness.Bob, harness.Carol);
         await harness.PumpAsync();
 
-        // Assert: nothing was persisted while away, then one fulfill and the invoice settled
-        Assert.Equal(InvoiceStatus.Open, whileAway!.Status);
+        // Assert: committed while away (nothing sent), then one fulfill
+        Assert.Equal(InvoiceStatus.Settled, whileAway!.Status);
+        Assert.Equal(invoice.Preimage, committed.KnownPreimage);
+        Assert.Equal(invoice.Preimage, stored!.KnownPreimage);
+        Assert.Null(committed.Removal);
         Assert.DoesNotContain(harness.Carol.Dropped, m => m is UpdateFulfillHtlcMessage);
         Assert.Single(harness.Sent, m => m is { From: "Carol", To: "Bob" } && m.Message is UpdateFulfillHtlcMessage);
         Assert.Equal(invoice.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
