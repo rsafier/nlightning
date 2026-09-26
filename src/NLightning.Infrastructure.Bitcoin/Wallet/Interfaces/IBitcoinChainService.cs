@@ -2,6 +2,8 @@ using NBitcoin;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet.Interfaces;
 
+using Models;
+
 public interface IBitcoinChainService
 {
     Task<uint256> SendTransactionAsync(Transaction transaction);
@@ -12,6 +14,17 @@ public interface IBitcoinChainService
     /// <summary>The hash of the active chain's block at <paramref name="height"/>.</summary>
     Task<uint256> GetBlockHashAsync(uint height);
     Task<uint> GetTransactionConfirmationsAsync(uint256 txId);
+
+    /// <summary>
+    /// Sends <paramref name="parent"/> and its <paramref name="child"/> as one package (<c>submitpackage</c>, Bitcoin
+    /// Core 28+ one-parent-one-child package relay; NL-380): the pair is judged at its package feerate, so a parent
+    /// below the mempool minimum fee (a commitment signed before a fee spike) gets in with a child paying for both.
+    /// Never throws: a node without a usable <c>submitpackage</c> answers <see cref="PackageSubmitStatus.Unsupported"/>
+    /// (send the transactions one by one), a call that fails <see cref="PackageSubmitStatus.Failed"/>. The default
+    /// supports no package.
+    /// </summary>
+    Task<PackageSubmitResult> SubmitPackageAsync(Transaction parent, Transaction child) =>
+        Task.FromResult(PackageSubmitResult.Unsupported("this chain service has no package relay"));
 
     /// <summary>
     /// The block with <paramref name="blockHash"/>, also when it is no longer in the active chain (a disconnected

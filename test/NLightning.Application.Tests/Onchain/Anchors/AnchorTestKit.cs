@@ -14,6 +14,7 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Models;
 
 /// <summary>
 /// An in-memory <c>BroadcastTransactions</c> table for the anchor CPFP tests: writes apply at once, and
@@ -204,6 +205,42 @@ internal sealed class FakeAnchorChain : IBitcoinChainService
     public uint Tip { get; set; } = 500;
     public bool Throws { get; set; }
 
+    /// <summary>The txids <c>getrawtransaction</c> finds (bitcoind's mempool).</summary>
+    public HashSet<uint256> Mempool { get; } = [];
+
+    /// <summary>Every <c>submitpackage</c> call, in order.</summary>
+    public List<(Transaction Parent, Transaction Child)> Packages { get; } = [];
+
+    /// <summary>bitcoind's answer to a package (default: no package relay).</summary>
+    public Func<Transaction, Transaction, PackageSubmitResult> PackageAnswer { get; set; } =
+        (_, _) => PackageSubmitResult.Unsupported("Method not found");
+
+    /// <summary>An answer that takes the package into <see cref="Mempool"/>.</summary>
+    public PackageSubmitResult AcceptPackage(Transaction parent, Transaction child)
+    {
+        Mempool.Add(parent.GetHash());
+        Mempool.Add(child.GetHash());
+        return new PackageSubmitResult(PackageSubmitStatus.Accepted, "success",
+                                       [
+                                           new PackageTransactionResult(parent.GetHash(), true, null, 0.0001m),
+                                           new PackageTransactionResult(child.GetHash(), true, null, 0.0001m)
+                                       ], 0.0001m);
+    }
+
+    /// <summary>bitcoind's answer when the package pays less than its mempool minimum.</summary>
+    public static PackageSubmitResult RefuseForFee(Transaction parent, Transaction child) =>
+        new(PackageSubmitStatus.Rejected, "transaction failed",
+            [
+                new PackageTransactionResult(parent.GetHash(), false, "mempool min fee not met, 300 < 1200", null),
+                new PackageTransactionResult(child.GetHash(), false, "unevaluated", null)
+            ]);
+
+    public Task<PackageSubmitResult> SubmitPackageAsync(Transaction parent, Transaction child)
+    {
+        Packages.Add((parent, child));
+        return Task.FromResult(PackageAnswer(parent, child));
+    }
+
     public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) => Answer(outPoint);
 
     public Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) => Answer(outPoint);
@@ -212,7 +249,10 @@ internal sealed class FakeAnchorChain : IBitcoinChainService
         Throws ? throw new InvalidOperationException("bitcoind down") : Task.FromResult(Tip);
 
     public Task<uint256> SendTransactionAsync(Transaction transaction) => throw new NotSupportedException();
-    public Task<Transaction?> GetTransactionAsync(uint256 txId) => Task.FromResult<Transaction?>(null);
+    public Task<Transaction?> GetTransactionAsync(uint256 txId) =>
+        Throws
+            ? throw new InvalidOperationException("bitcoind down")
+            : Task.FromResult(Mempool.Contains(txId) ? Network.Main.CreateTransaction() : null);
     public Task<Block?> GetBlockAsync(uint height) => Task.FromResult<Block?>(null);
     public Task<uint256> GetBlockHashAsync(uint height) => Task.FromResult(uint256.Zero);
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) => Task.FromResult(0u);
