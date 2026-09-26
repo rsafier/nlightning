@@ -38,7 +38,8 @@ using Domain.Protocol.Onion.Models;
 /// persists the preimage on every part of the complete set whose removal is not persisted with the settle
 /// (<c>HtlcRecord.KnownPreimage</c> of the incoming HTLC). Such a part must be fulfilled (off chain, or claimed on
 /// chain) whatever happens next (BOLT 4: "if it fulfills any HTLCs in the HTLC set: MUST fulfill the entire HTLC
-/// set"), so for it the checks that depend on the time of its replay (invoice expiry, <c>cltv_expiry</c> against the
+/// set") once the invoice is <c>Settled</c> (the commit point; a mark on a part of an invoice in any other status is
+/// ignored), so for it the checks that depend on the time of its replay (invoice expiry, <c>cltv_expiry</c> against the
 /// current height) are skipped, and a <c>Settled</c> invoice is accepted with
 /// <see cref="FinalHopResult.InvoiceAlreadySettled"/> (with or without <c>basic_mpp</c>). Any other HTLC for a
 /// <c>Settled</c> invoice (a duplicate, or a late part of an already paid set) is failed with
@@ -140,6 +141,10 @@ public sealed class FinalHopProcessor
 
         if (invoice is null || invoice.PaymentHash != paymentHash)
             return Unknown("Unknown payment hash.");
+
+        // Only a Settled invoice commits to its set (the settle is the commit point): for any other status a mark
+        // skips no check
+        committedSetMember &= invoice.Status == InvoiceStatus.Settled;
 
         var totalMsat = paymentData.TotalMsat;
         var isMultiPart = totalMsat.MilliSatoshi != amtToForward.MilliSatoshi;

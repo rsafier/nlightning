@@ -792,10 +792,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
             return fulfilled;
 
         // Accepted as our final hop by the switch (NL-316/NL-322): the preimage it persisted on this HTLC's record
-        if (FinalHopClaims.AcceptedPreimage(record) is { } accepted)
+        var unitOfWork = context.UnitOfWork;
+        if (await FinalHopClaims.GetAcceptedPreimageAsync(unitOfWork, record) is { } accepted)
             return accepted;
 
-        var unitOfWork = context.UnitOfWork;
         var channelId = context.Channel.ChannelId;
         var outgoing = (await unitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
                             HtlcOrigin.Forwarded(channelId, record.Id))).ToList();

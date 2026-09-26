@@ -376,8 +376,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
 
-            // NL-323: a part of a set we committed to carries the invoice's preimage in its record
-            var committed = current.KnownPreimage is { } known && invoice is not null && known == invoice.Preimage;
+            // NL-323: a part of a set we committed to carries the invoice's preimage in its record, and the invoice is
+            // Settled (the settle is the commit point: a mark on a part of an Open invoice, left by a set that became
+            // incomplete or by a stop before the settle, commits to nothing and keeps every check)
+            var committed = current.KnownPreimage is { } known && invoice is { Status: InvoiceStatus.Settled }
+                         && known == invoice.Preimage;
             decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, amount, htlc.CltvExpiry,
                                                    final.Payload, height, _acceptMultiPart, committed);
         }
@@ -486,15 +489,18 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// its mark's. So a <c>Settled</c> invoice means every part of its set is fulfilled or carries the preimage, and an
     /// HTLC for a <c>Settled</c> invoice without it is not a part of the set (failed, NL-323). The other parts are then
     /// fulfilled (a refused one on its replay; one on chain is claimed by the resolver).</para>
-    /// <para>Until the invoice settles, a set that is no longer complete (a part was resolved elsewhere meanwhile) is
-    /// held again, and an invoice that left <c>Open</c> (canceled) fails the set: the marks are taken back and every
-    /// part that can still be failed off chain is. Under the payment hash lock.</para>
+    /// <para>The invoice's <c>Settled</c> save is the commit point: a mark counts (for the replay and for the on-chain
+    /// claim) only once the invoice is <c>Settled</c> with its preimage. Until then, a set that is no longer complete
+    /// (a part was resolved elsewhere meanwhile) has its marks taken back and is held again; an invoice that left
+    /// <c>Open</c> (canceled) fails the set: the marks are taken back and every part that can still be failed off
+    /// chain is; any other failure takes the marks back and holds the set with its timer (which tries again). Under
+    /// the payment hash lock.</para>
     /// </remarks>
     private async Task FulfillSetAsync(HtlcSet set, Secret preimage, uint height, CancellationToken cancellationToken)
     {
         set.Timer?.Dispose();
         set.Timer = null;
-        var marked = new List<HtlcSetPart>();
+        var marked = new Dictionary<(ChannelId, ulong), HtlcSetPart>();
         HtlcSetPart? settledBy = null;
         try
         {
@@ -503,6 +509,9 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 set.Prune(IsPartWaiting);
                 if (!set.IsComplete)
                 {
+                    // Nothing was settled, so the marks commit to nothing: take them back before the set waits again
+                    // (a part that is later failed or left to time out must never be fulfilled or claimed, NL-323)
+                    await UnmarkPartsAsync(marked.Values, preimage, cancellationToken);
                     HoldIncompleteSet(set);
                     return;
                 }
@@ -511,14 +520,29 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                 var complete = true;
                 foreach (var other in set.Parts.Skip(1).ToList())
                 {
-                    if (!await MarkPartAsync(other.ChannelId, other.HtlcId, preimage, null, cancellationToken))
+                    bool waiting;
+                    try
+                    {
+                        waiting = await MarkPartAsync(other.ChannelId, other.HtlcId, preimage, null,
+                                                      cancellationToken);
+                    }
+                    catch (KeyNotFoundException e)
+                    {
+                        // Its channel was unloaded meanwhile: the part no longer waits (pruned on the next check)
+                        _logger.LogWarning("Could not commit HTLC {HtlcId} of channel {ChannelId} to the set of "
+                                         + "{PaymentHash}: {Reason}", other.HtlcId, other.ChannelId, set.PaymentHash,
+                                           e.Message);
+                        waiting = false;
+                    }
+
+                    if (!waiting)
                     {
                         // Resolved elsewhere meanwhile: check the set again
                         complete = false;
                         break;
                     }
 
-                    marked.Add(other);
+                    marked[other.Key] = other;
                 }
 
                 if (complete && await SettleWithAsync(candidate, set, preimage, cancellationToken))
@@ -531,12 +555,21 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             _logger.LogInformation("Invoice {PaymentHash} changed before its HTLC set was fulfilled: {Reason}",
                                    set.PaymentHash, e.Message);
             RemoveHtlcSet(set);
-            foreach (var part in marked)
-                await UnmarkPartAsync(part, preimage, cancellationToken);
+            await UnmarkPartsAsync(marked.Values, preimage, cancellationToken);
             foreach (var member in set.Parts.ToList())
                 await FailPartAsync(member, FailureMessage.IncorrectOrUnknownPaymentDetails(member.HtlcAmount, height),
                                     cancellationToken);
             return;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Nothing was settled (the settle is the last write): take the marks back and keep the set waiting with
+            // its timer, so its parts are not left without an mpp_timeout
+            _logger.LogError(e, "Could not fulfill the HTLC set of {PaymentHash}: holding it", set.PaymentHash);
+            await UnmarkPartsAsync(marked.Values, preimage, cancellationToken);
+            if (_htlcSets.TryGetValue(set.PaymentHash, out var registered) && ReferenceEquals(registered, set))
+                HoldIncompleteSet(set);
+            throw;
         }
 
         RemoveHtlcSet(set);
@@ -650,12 +683,26 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         return true;
     }
 
-    /// <summary>Takes a mark back (the invoice left <c>Open</c> before it settled); best effort.</summary>
-    private async Task UnmarkPartAsync(HtlcSetPart part, Secret preimage, CancellationToken cancellationToken)
+    /// <summary>
+    /// Takes the marks of <paramref name="parts"/> back: nothing was settled (the set became incomplete, the invoice
+    /// left <c>Open</c>, or the settle failed). Best effort: a mark left behind is neither honored by a replay nor
+    /// claimed on chain while the invoice is not <c>Settled</c>.
+    /// </summary>
+    private async Task UnmarkPartsAsync(IEnumerable<HtlcSetPart> parts, Secret preimage,
+                                        CancellationToken cancellationToken)
+    {
+        foreach (var part in parts.ToList())
+            await UnmarkPartAsync(part, preimage, cancellationToken);
+    }
+
+    /// <summary>Takes the mark of <paramref name="part"/> back (only <paramref name="preimage"/>'s, or any one when
+    /// null); best effort.</summary>
+    private async Task UnmarkPartAsync(HtlcSetPart part, Secret? preimage, CancellationToken cancellationToken)
     {
         try
         {
-            if (GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is { } record && record.KnownPreimage == preimage)
+            if (GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is { KnownPreimage: { } known }
+             && (preimage is null || known == preimage))
                 await MarkPartAsync(part.ChannelId, part.HtlcId, null, null, cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -722,8 +769,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
     /// <summary>
     /// The <c>mpp_timeout</c> of a set (BOLT 4: fail all HTLCs of an incomplete set after a reasonable timeout, at
-    /// least 60 s after the first, with <c>mpp_timeout</c>). A set that completed meanwhile (its fulfills waiting for
-    /// the link) is never failed. A part whose failure is refused is failed again on its replay.
+    /// least 60 s after the first, with <c>mpp_timeout</c>). A set still registered complete (its fulfill failed before
+    /// the settle) is fulfilled again instead. A part whose failure is refused is failed again on its replay.
     /// </summary>
     private async Task ExpireHtlcSetAsync(HtlcSet set)
     {
@@ -737,7 +784,21 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         set.Prune(IsPartWaiting);
         if (set.IsComplete)
-            return;
+        {
+            // Only a set whose fulfill failed before the settle is still registered complete: try it again
+            Secret? preimage;
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                preimage = (await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(set.PaymentHash))?.Preimage;
+            }
+
+            if (preimage is { } known)
+            {
+                await FulfillSetAsync(set, known, CurrentHeight, cancellationToken);
+                return;
+            }
+        }
 
         _logger.LogInformation("HTLC set of {PaymentHash} incomplete after {Timeout} ({PartsMsat} of {TotalMsat} msat "
                              + "in {Parts} part(s)): failing it with mpp_timeout", set.PaymentHash, _mppTimeout,
@@ -751,10 +812,16 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         }
     }
 
-    /// <summary>Fails one held part; a refusal is logged (the part stays locked in for a replay).</summary>
+    /// <summary>
+    /// Fails one held part; a refusal is logged (the part stays locked in for a replay). A mark left on its record (a
+    /// stop between the marks and the settle) is taken back first: a part we fail, or leave to time out on chain, is
+    /// never fulfilled or claimed (NL-323).
+    /// </summary>
     private async Task<bool> FailPartAsync(HtlcSetPart part, FailureMessage failure,
                                            CancellationToken cancellationToken)
     {
+        await UnmarkPartAsync(part, null, cancellationToken);
+
         if (IsOnchain(part.ChannelId))
         {
             // No failure can be sent any more: the HTLC times out on chain (the resolver claims nothing unmarked)
