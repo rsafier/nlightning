@@ -4,6 +4,9 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 mkdir -p "$NLTG_DIR"
+# The template's relative paths (Database "Data Source=nltg.db", Serilog "logs/log-.txt") resolve against the
+# working directory, not the configuration directory (NL-306), so run from the configuration directory
+cd "$NLTG_DIR"
 if [[ ! -f "$NLTG_PASSWORD_FILE" ]]; then
     (umask 077; openssl rand -hex 24 > "$NLTG_PASSWORD_FILE")
 fi
