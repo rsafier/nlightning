@@ -203,8 +203,6 @@ public class PeerServiceGossipTests
         await peerService.WaitForInitAsync(TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.Null(peerService.PreferredHost);
-        Assert.Null(peerService.PreferredPort);
         Assert.NotNull(peerService.ObservedAddress);
         Assert.Equal(AddressDescriptorType.IPv4, peerService.ObservedAddress.Type);
         Assert.Equal("203.0.113.7", peerService.ObservedAddress.Host);
@@ -228,7 +226,6 @@ public class PeerServiceGossipTests
 
         // Assert
         Assert.Null(peerService.ObservedAddress);
-        Assert.Null(peerService.PreferredHost);
         _communication.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 

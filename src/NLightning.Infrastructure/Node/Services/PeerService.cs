@@ -155,13 +155,6 @@ public sealed class PeerService : IPeerService
     public CompactPubKey PeerPubKey => _peerCommunicationService.PeerCompactPubKey;
 
     /// <inheritdoc />
-    /// <remarks>Never set (NL-344): <c>remote_addr</c> is our address, see <see cref="ObservedAddress"/>.</remarks>
-    public string? PreferredHost => null;
-
-    /// <inheritdoc />
-    public ushort? PreferredPort => null;
-
-    /// <inheritdoc />
     public AddressDescriptor? ObservedAddress { get; private set; }
 
     public FeatureOptions Features { get; private set; }

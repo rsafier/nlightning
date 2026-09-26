@@ -1247,7 +1247,6 @@ public class PeerManagerTests
         var initReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var peerService = CreateMockPeerService();
         peerService.Setup(p => p.WaitForInitAsync(It.IsAny<CancellationToken>())).Returns(initReceived.Task);
-        peerService.SetupGet(p => p.PreferredHost).Returns(RemoteHost);
         _mockPeerServiceFactory.Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
                                .ReturnsAsync(peerService.Object);
         _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
@@ -1261,10 +1260,10 @@ public class PeerManagerTests
         initReceived.SetResult();
         var peer = await connect.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
 
-        // Assert: the preferred address from the peer's init is used
+        // Assert: the address we connected to is kept (init remote_addr is our address, NL-344)
         Assert.False(installedBeforeInit);
         Assert.False(connect.IsFaulted);
-        Assert.Equal(RemoteHost, peer.Host);
+        Assert.Equal(ExpectedHost, peer.Host);
         Assert.NotNull(peerManager.GetPeer(_compactPubKey));
     }
 

@@ -456,17 +456,8 @@ public sealed class PeerManager : IPeerManager
         // The peer's preferred address and features come with its init
         await WaitForInitAsync(peerService);
 
-        var preferredHost = connectedPeer.Host;
-        var preferredPort = connectedPeer.Port;
-
-        // Check if the node has set it's preferred address
-        if (peerService.PreferredHost is not null)
-            preferredHost = peerService.PreferredHost;
-
-        if (peerService.PreferredPort is not null)
-            preferredPort = peerService.PreferredPort.Value;
-
-        var peer = new PeerModel(connectedPeer.CompactPubKey, preferredHost, preferredPort,
+        // BOLT 1 has no preferred address (init remote_addr is our address, NL-344): keep the one we connected to
+        var peer = new PeerModel(connectedPeer.CompactPubKey, connectedPeer.Host, connectedPeer.Port,
                                  connectedPeer.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
         {
             LastSeenAt = DateTime.UtcNow
@@ -567,17 +558,9 @@ public sealed class PeerManager : IPeerManager
             // Only a connection whose init exchange is done may become (or replace) the peer's session
             await WaitForInitAsync(peerService);
 
-            var preferredHost = args.Host;
-            var preferredPort = NodeConstants.DefaultPort;
-
-            // Check if the node has set it's preferred address
-            if (peerService.PreferredHost is not null)
-                preferredHost = peerService.PreferredHost;
-
-            if (peerService.PreferredPort is not null)
-                preferredPort = peerService.PreferredPort.Value;
-
-            var peer = new PeerModel(peerService.PeerPubKey, preferredHost, preferredPort,
+            // An inbound peer's listening address is unknown (init remote_addr is our address, NL-344): keep its
+            // host with the default port
+            var peer = new PeerModel(peerService.PeerPubKey, args.Host, NodeConstants.DefaultPort,
                                      args.TcpClient.Client.ProtocolType == ProtocolType.IPv6 ? "IPv6" : "IPv4")
             {
                 LastSeenAt = DateTime.UtcNow
@@ -600,7 +583,7 @@ public sealed class PeerManager : IPeerManager
                     return;
             }
 
-            if (preferredHost != "127.0.0.1")
+            if (args.Host != "127.0.0.1")
             {
                 // Get a context to save the peer to the database
                 using var scope = _serviceProvider.CreateScope();
