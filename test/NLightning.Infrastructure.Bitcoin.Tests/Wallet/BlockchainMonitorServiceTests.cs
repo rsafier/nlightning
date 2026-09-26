@@ -623,6 +623,32 @@ public class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_APendingBroadcastReplacedByRbf_When_TheNextBlockArrives_Then_ItIsNotSentAgain()
+    {
+        // Arrange (NL-294, O6-T1): a sweep sent once, then replaced by the sweep scheduler (its row is Replaced)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var original = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x36)), BroadcastPurpose.Sweep, null,
+                                                     110);
+        var other = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x37)), BroadcastPurpose.Sweep, null, 110);
+        Assert.True(await _service.PublishAsync(original));
+        Assert.True(await _service.PublishAsync(other));
+        var stored = BroadcastTransactionModel.Restore(original.TransactionId, original.RawTransaction,
+                                                       original.Purpose, null, 0, null, 110, BroadcastState.Replaced,
+                                                       null, null, DateTimeOffset.UtcNow);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(original.TransactionId)).ReturnsAsync(stored);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(other.TransactionId)).ReturnsAsync(other);
+        var sendsBefore = _chain.SendAttempts.Count;
+
+        // Act: a block that holds neither (both left the mempool of the fake chain's miner)
+        _chain.Mempool.Clear();
+        await _service.ProcessNewBlockAsync(_chain.Mine(), 111);
+
+        // Assert: only the still pending one is sent again
+        var sent = _chain.SendAttempts.Skip(sendsBefore).Select(t => new TxId(t.GetHash().ToBytes())).ToList();
+        Assert.Equal([other.TransactionId], sent);
+    }
+
+    [Fact]
     public async Task Given_WatchCompletedInADisconnectedBlock_When_Reorged_Then_ItIsPendingAgainAndConfirmedFromTheNewBranch()
     {
         // Arrange (NL-292): a funding transaction reached its depth in block 111, which a reorg disconnects; the new
