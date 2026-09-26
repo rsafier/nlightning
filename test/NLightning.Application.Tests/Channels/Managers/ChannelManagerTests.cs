@@ -8,6 +8,7 @@ using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Managers;
 using Application.Channels.Services;
+using Application.Gossip.Announcements.Interfaces;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
@@ -390,30 +391,48 @@ public class ChannelManagerTests
     }
 
     [Fact]
-    public async Task Given_KnownOpenChannel_When_AnnouncementSignaturesReceived_Then_ChannelScopedWarningKeepsConnection()
+    public async Task Given_KnownOpenChannel_When_AnnouncementSignaturesReceived_Then_TheHandlersReplyGoesToThePeer()
     {
-        // Arrange (interim until the announcement_signatures handler, G1-T3: LND and CLN send and retransmit 259 on
-        // every reconnect of a public channel; BOLT 1 only logs a warning, so the channel and connection stay up)
-        var channelManager = CreateChannelManager();
+        // Arrange (G1-T3, NL-342: 259 is dispatched to its handler under the channel's lock)
         var channelId = CreateChannelId(0x4A);
+        var message = CreateAnnouncementSignatures(channelId);
+        var reply = CreateAnnouncementSignatures(channelId);
+        var handler = new Mock<IChannelMessageHandler<AnnouncementSignaturesMessage>>();
+        handler.Setup(h => h.HandleAsync(message, ChannelState.Open, It.IsAny<FeatureOptions>(), s_emptyPubKey))
+               .ReturnsAsync([reply]);
+        var channelManager =
+            CreateChannelManager((typeof(IChannelMessageHandler<AnnouncementSignaturesMessage>), handler.Object));
         _mockChannelMemoryRepository.Setup(r => r.TryGetChannelState(channelId, out It.Ref<ChannelState>.IsAny))
                                     .Returns(new TryGetStateDelegate((ChannelId _, out ChannelState state) =>
                                      {
                                          state = ChannelState.Open;
                                          return true;
                                      }));
-        var message = CreateAnnouncementSignatures(channelId);
+        var raised = new List<IChannelMessage>();
+        channelManager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
 
         // Act
-        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
-                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
-                                                                           s_emptyPubKey));
+        await channelManager.HandleChannelMessageAsync(message, new FeatureOptions(), s_emptyPubKey);
 
         // Assert
-        Assert.Equal(channelId, exception.ChannelId);
-        Assert.False(exception.CloseConnection);
-        Assert.Contains("not supported yet", exception.PeerMessage);
-        _mockChannelDbRepository.Verify(r => r.UpdateAsync(It.IsAny<ChannelModel>()), Times.Never);
+        handler.Verify(h => h.HandleAsync(message, ChannelState.Open, It.IsAny<FeatureOptions>(), s_emptyPubKey),
+                       Times.Once);
+        Assert.Same(reply, Assert.Single(raised));
+    }
+
+    [Fact]
+    public async Task Given_APeer_When_ItsConnectionChanges_Then_TheAnnouncementServiceForgetsWhatWasSentToIt()
+    {
+        // Arrange (BOLT 7: announcement_signatures are sent again on every reconnection)
+        var announcementService = new Mock<IChannelAnnouncementService>();
+        var channelManager = CreateChannelManager((typeof(IChannelAnnouncementService), announcementService.Object));
+
+        // Act
+        channelManager.OnPeerConnectionChanged(s_emptyPubKey);
+        await channelManager.OnPeerConnectedAsync(s_emptyPubKey);
+
+        // Assert
+        announcementService.Verify(s => s.OnPeerConnectionChanged(s_emptyPubKey), Times.Exactly(2));
     }
 
     [Fact]

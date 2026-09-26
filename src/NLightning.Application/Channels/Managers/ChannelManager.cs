@@ -28,6 +28,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Serialization.Interfaces;
+using Gossip.Announcements.Interfaces;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -447,6 +448,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var tracker = GetTracker();
         tracker?.ResetPeer(peerPubKey);
 
+        // BOLT 7: announcement_signatures are sent again on every reconnection (G1-T4)
+        _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
+
         var errors = new List<ErrorMessage>();
         foreach (var channel in GetPeerChannels(peerPubKey))
         {
@@ -516,6 +520,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     {
         lock (_connectionGate)
             GetTracker()?.ResetPeer(peerPubKey);
+
+        _serviceProvider.GetService<IChannelAnnouncementService>()?.OnPeerConnectionChanged(peerPubKey);
     }
 
     private List<ChannelModel> GetPeerChannels(CompactPubKey peerPubKey) =>
@@ -1204,6 +1210,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return await GetChannelMessageHandler<ClosingSigMessage>(scope)
                           .HandleAsync(Cast<ClosingSigMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
+
+            // BOLT 7 announcement_signatures of a public channel (plan G1-T3, NL-342)
+            case MessageTypes.AnnouncementSignatures:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<AnnouncementSignaturesMessage>(scope)
+                          .HandleAsync(Cast<AnnouncementSignaturesMessage>(message), currentState,
+                                       negotiatedFeatures, peerPubKey);
 
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
