@@ -26,4 +26,22 @@ public interface IBitcoinChainService
     /// </summary>
     Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>
         Task.FromResult<(TxOut Output, uint Height)?>(null);
+
+    /// <summary>
+    /// The hash and the transaction ids, in block order, of the active chain's block at <paramref name="height"/>
+    /// (<c>getblockhash</c> + <c>getblock &lt;hash&gt; 1</c>: txids only, no txindex needed; BOLT 7 plan §3.4). Null
+    /// when the height is above the tip or the block's data is not available (a pruned node). The default reads the
+    /// whole block through <see cref="GetBlockAsync(uint)"/>.
+    /// </summary>
+    async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetBlockTxIdsAsync(uint height)
+    {
+        if (height > await GetCurrentBlockHeightAsync())
+            return null;
+
+        var block = await GetBlockAsync(height);
+        if (block is null)
+            return null;
+
+        return (block.GetHash(), block.Transactions.Select(t => t.GetHash()).ToList());
+    }
 }

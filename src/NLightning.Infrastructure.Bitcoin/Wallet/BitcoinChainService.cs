@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.RPC;
+using Newtonsoft.Json.Linq;
 
 namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
@@ -142,6 +143,47 @@ public class BitcoinChainService : IBitcoinChainService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to get the unspent output {OutPoint}", outPoint);
+            throw;
+        }
+    }
+
+    public async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetBlockTxIdsAsync(uint height)
+    {
+        uint256 blockHash;
+        try
+        {
+            blockHash = await _rpcClient.GetBlockHashAsync((int)height);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_PARAMETER)
+        {
+            return null; // "Block height out of range"
+        }
+
+        try
+        {
+            // Verbosity 1: the header fields plus the txids (about 64 hex characters per transaction)
+            var response = await _rpcClient.SendCommandAsync(RPCOperations.getblock, blockHash.ToString(), 1);
+            if (response.Result?["tx"] is not JArray txs)
+                throw new InvalidOperationException($"getblock {blockHash} 1 returned no tx array");
+
+            var txIds = new List<uint256>(txs.Count);
+            foreach (var tx in txs)
+                txIds.Add(uint256.Parse(tx.Value<string>()
+                                     ?? throw new InvalidOperationException($"getblock {blockHash} 1: null txid")));
+
+            return (blockHash, txIds);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_MISC_ERROR)
+        {
+            // "Block not available (pruned data)"
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Block {Height} ({BlockHash}) is not available: {Message}", height, blockHash,
+                                 ex.Message);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get the transaction ids of block {Height}", height);
             throw;
         }
     }
