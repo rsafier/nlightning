@@ -61,6 +61,14 @@ public sealed class GossipOptions
     public TimeSpan NodeAnnouncementRefreshInterval { get; set; } = TimeSpan.FromDays(13);
 
     /// <summary>
+    /// How long the peer of an announced channel may stay away (its link down) before our <c>channel_update</c> for the
+    /// channel is published again with the <c>disable</c> bit, so payers stop routing through it (BOLT 7 plan G1-T5,
+    /// NL-349; LND and CLN use 20 minutes). A newer enabled update follows once the peer is back. Zero or less turns it
+    /// off. Default 20 minutes.
+    /// </summary>
+    public TimeSpan DisableAfter { get; set; } = TimeSpan.FromMinutes(20);
+
+    /// <summary>
     /// The depth in effect on <paramref name="network"/>: <see cref="AnnouncementDepth"/> (at least 1) on regtest,
     /// else at least <see cref="MinimumAnnouncementDepth"/>.
     /// </summary>
