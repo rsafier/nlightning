@@ -37,7 +37,7 @@ The xUnit v3 + Moq suite. There is one test project per src layer, plus cross-cu
 ## Commands (repo root)
 - All tests, as CI runs them (`.github/workflows/dotnet.yml`, minus logger/coverage flags): `dotnet build -c Release -p:MSBuildWarningsAsMessages=MSB4121 && dotnet test --no-build -c Release --filter 'FullyQualifiedName!~Docker'`
 - One class: `dotnet test test/NLightning.Domain.Tests/NLightning.Domain.Tests.csproj --filter "FullyQualifiedName~NLightning.Domain.Tests.ValueObjects.BigSizeTests"`
-- Application.Tests and Daemon.Tests run under `dotnet test` like the rest. The xunit v3 runner also works: `dotnet run --project test/NLightning.Application.Tests -- -class <FQN>` (or `-method '*Name*'`).
+- Application.Tests and Daemon.Tests run under `dotnet test` like the rest. The xunit v3 runner also works: `dotnet run --project test/NLightning.Application.Tests -f net10.0 -- -class <FQN>` (or `-method '*Name*'`); with SDK 11 installed `dotnet run` fails without `-f` ("Your project targets multiple frameworks"). `scripts/run-abcd.sh` runs the ABCD suite on `ABCD_FRAMEWORK` (default net10.0) only.
 - Native crypto: repeat with `-c Release.Native`. Formatting gate: `dotnet format --verify-no-changes --exclude "**/BlazorTests/**"`.
 - Docker tests (need the Docker daemon and internet on first build): `dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker"`. The inbound test uses `HOST_ADDRESS`.
 

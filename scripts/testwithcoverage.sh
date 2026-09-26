@@ -28,9 +28,11 @@ do
   fi
 
   echo "Running tests in $project_name"
+  # No fixed TRX LogFileName: with SDK 11 each project also runs on net11.0, and a fixed name would let one
+  # framework's TRX overwrite the other's. The default name is unique per run.
   # Add this when running Docker tests
   # export HOST_ADDRESS=$(ip route | awk 'NR==1 {print $3}')
-  dotnet test "$project" -c "$config" --filter 'FullyQualifiedName!~Docker' "${settings[@]}" --no-build --verbosity normal -l "console;verbosity=detailed" --collect:"XPlat Code Coverage" --logger "trx;LogFileName=$project_name.trx" --results-directory "$root_dir"/coverage
+  dotnet test "$project" -c "$config" --filter 'FullyQualifiedName!~Docker' "${settings[@]}" --no-build --verbosity normal -l "console;verbosity=detailed" --collect:"XPlat Code Coverage" --logger trx --results-directory "$root_dir"/coverage
 
   # Capture the exit code
   exit_code=$?
