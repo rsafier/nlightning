@@ -105,11 +105,19 @@ public class AnchorCpfpPolicyTests
     }
 
     [Fact]
-    public void Given_Stake_When_GettingTheCap_Then_HalfOfItWithAFloor()
+    public void Given_StakeWithADeadline_When_GettingTheCap_Then_HalfOfItWithAFloor()
     {
         // Assert
-        Assert.Equal(400_000UL, _policy.GetFeeCap(800_000));
-        Assert.Equal(20_000UL, _policy.GetFeeCap(1_000));
+        Assert.Equal(400_000UL, _policy.GetFeeCap(800_000, hasDeadline: true));
+        Assert.Equal(20_000UL, _policy.GetFeeCap(1_000, hasDeadline: true));
+    }
+
+    [Fact]
+    public void Given_SmallStakeWithoutDeadline_When_GettingTheCap_Then_NoFloor()
+    {
+        // Assert: a 5,000 sat to_local without HTLCs never justifies 20,000 sat of wallet money
+        Assert.Equal(2_500UL, _policy.GetFeeCap(5_000, hasDeadline: false));
+        Assert.Equal(400_000UL, _policy.GetFeeCap(800_000, hasDeadline: false));
     }
 
     [Theory]

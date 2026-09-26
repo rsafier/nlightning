@@ -53,8 +53,16 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     private readonly List<SignedTransaction> _sweeps = [];
     private readonly byte[] _walletScript = new Key(Enumerable.Repeat((byte)0x33, 32).ToArray())
                                             .PubKey.WitHash.ScriptPubKey.ToBytes();
+    private readonly FakeAnchorChain _chain = new();
+    private readonly List<uint> _estimateTargets = [];
+    private readonly List<ServiceProvider> _restarted = [];
     private uint _estimate = 10_000;
     private bool _walletSigns = true;
+    private bool _failNextSave;
+    private Mock<IFeeService> _feeService = null!;
+    private Mock<ISweepDestinationProvider> _destination = null!;
+    private Mock<IUnitOfWork> _unitOfWork = null!;
+    private ILightningSigner _signer = null!;
 
     public AnchorCpfpServiceTests()
     {
@@ -87,41 +95,58 @@ public sealed class AnchorCpfpServiceTests : IDisposable
                 .Callback<SignedTransaction>(_sweeps.Add)
                 .Returns(Task.CompletedTask);
 
-        var feeService = new Mock<IFeeService>();
-        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
-        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
-        var destination = new Mock<ISweepDestinationProvider>();
-        destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
+        _feeService = new Mock<IFeeService>();
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+                   .Callback<uint, CancellationToken>((target, _) => _estimateTargets.Add(target))
+                   .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
+        _feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                   .ReturnsAsync(() => LightningMoney.Satoshis(_estimate));
+        _destination = new Mock<ISweepDestinationProvider>();
+        _destination.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(_walletScript);
 
-        var unitOfWork = new Mock<IUnitOfWork>();
-        unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_store);
-        unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _store.Saves++).Returns(Task.CompletedTask);
+        _unitOfWork = new Mock<IUnitOfWork>();
+        _unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(_store);
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
+        {
+            if (_failNextSave)
+            {
+                _failNextSave = false;
+                throw new InvalidOperationException("database down");
+            }
 
-        var signer = WalletSigningProxy.Create(_pair.Alice.Signer,
-                                               tx => _walletSigns
-                                                         ? _wallet.SignWalletInputs(tx)
-                                                         : throw new NotImplementedException());
+            _store.Saves++;
+            return Task.CompletedTask;
+        });
 
+        _signer = WalletSigningProxy.Create(_pair.Alice.Signer,
+                                            tx => _walletSigns
+                                                      ? _wallet.SignWalletInputs(tx)
+                                                      : throw new NotImplementedException());
+        _provider = BuildProvider();
+    }
+
+    /// <summary>A node's service graph over the shared store, wallet and chain (a second call is a restart).</summary>
+    private ServiceProvider BuildProvider()
+    {
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
         services.AddSingleton(Options.Create(new NodeOptions()));
         services.AddSingleton(new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddBitcoinInfrastructure();
-        services.AddSingleton(signer);
+        services.AddSingleton<IBitcoinChainService>(_chain);
+        services.AddSingleton(_signer);
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
         services.AddSingleton(_monitor.Object);
         services.AddSingleton(_memory.Object);
         services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
-        services.AddSingleton(feeService.Object);
-        services.AddSingleton(destination.Object);
+        services.AddSingleton(_feeService.Object);
+        services.AddSingleton(_destination.Object);
         services.AddSingleton<IAnchorFeeInputSource>(_wallet);
         services.AddSingleton(new SweepFeePolicy());
-        services.AddScoped(_ => unitOfWork.Object);
+        services.AddScoped(_ => _unitOfWork.Object);
         services.AddAnchorCpfpServices();
-        _provider = services.BuildServiceProvider();
+        return services.BuildServiceProvider();
     }
 
     private AnchorCpfpService Service => _provider.GetRequiredService<AnchorCpfpService>();
@@ -248,29 +273,165 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.Single(_published);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Given_CommitmentConfirmed_When_Round_Then_PendingChildAbandonedAndReservationReleasedOnce(
-        bool childConfirmed)
+    [Fact]
+    public async Task Given_CommitmentAndChildConfirmed_When_Round_Then_ReservationReleasedOnce()
     {
         // Arrange
         var commitment = BroadcastCommitment();
         await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
         var child = Assert.Single(_store.Children);
         commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
-        if (childConfirmed)
-            child.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        child.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
 
         // Act
         await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
         await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.Equal(childConfirmed ? BroadcastState.Confirmed : BroadcastState.Abandoned, child.State);
+        Assert.Equal(BroadcastState.Confirmed, child.State);
         Assert.Equal(1, _wallet.ReleaseCount);
         Assert.Empty(_wallet.Reserved(_channel.ChannelId));
         Assert.Single(_store.Children);
+    }
+
+    [Fact]
+    public async Task Given_CommitmentConfirmedWithoutItsChild_When_AnchorUnspent_Then_ChildKeptPendingAndInputsReserved()
+    {
+        // Arrange: the commitment confirmed alone; its child is still valid (it spends a confirmed output) and may
+        // confirm, so a funding transaction must not take its wallet inputs (it would conflict under BIP 125)
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        var reserved = _wallet.Reserved(_channel.ChannelId).ToList();
+        commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        _estimate = 50_000;
+
+        // Act
+        for (uint height = 501; height < 520; height++)
+            await Service.RunOnceAsync(height, TestContext.Current.CancellationToken);
+
+        // Assert: kept, never bumped, nothing released or swept
+        Assert.Equal(BroadcastState.Pending, child.State);
+        Assert.Single(_store.Children);
+        Assert.Equal(0, _wallet.ReleaseCount);
+        Assert.Equal(reserved, _wallet.Reserved(_channel.ChannelId));
+        Assert.Empty(_sweeps);
+    }
+
+    [Fact]
+    public async Task Given_CommitmentConfirmedAndAnchorSpentOnChain_When_MonitorCaughtUp_Then_ChildAbandonedAndReleased()
+    {
+        // Arrange: a replaced child (the monitor stops tracking it) confirmed; the pending one can never confirm
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        var commitmentTx = Load(commitment);
+        _chain.Spent.Add(new OutPoint(commitmentTx.GetHash(), FindOurAnchor(commitmentTx)));
+        _chain.Tip = 503;
+
+        // Act: seen spent at 502 with bitcoind at 503: the monitor may not have processed that block yet
+        await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+        var stateAt502 = child.State;
+        var releasesAt502 = _wallet.ReleaseCount;
+        await Service.RunOnceAsync(503, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(BroadcastState.Pending, stateAt502);
+        Assert.Equal(0, releasesAt502);
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_CommitmentConfirmedAndChildNeverConfirms_When_WaitPassed_Then_ChildAbandonedAndReleased()
+    {
+        // Arrange: bitcoind is unreachable, so only the wait ends it
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        commitment.MarkConfirmed(501, OnchainTestStore.BlockHash(1));
+        _chain.Throws = true;
+        var wait = new AnchorCpfpOptions().ConfirmedCommitmentChildWaitBlocks;
+
+        // Act
+        await Service.RunOnceAsync(501 + wait - 1, TestContext.Current.CancellationToken);
+        var releasedBefore = _wallet.ReleaseCount;
+        await Service.RunOnceAsync(501 + wait, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, releasedBefore);
+        Assert.Equal(BroadcastState.Abandoned, child.State);
+        Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_PendingChildBeforeARestart_When_BumpIsDue_Then_ReplacementReusesTheDurableReservation()
+    {
+        // Arrange: the port keeps its reservations across the restart (IAnchorFeeInputSource's contract)
+        BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var first = Assert.Single(_store.Children);
+        var reserved = _wallet.Reserved(_channel.ChannelId).ToList();
+        var restarted = BuildProvider();
+        _restarted.Add(restarted);
+        var service = restarted.GetRequiredService<AnchorCpfpService>();
+        _estimate = 20_000;
+
+        // Act
+        await service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+
+        // Assert: the replacement spends the same wallet inputs (plus more if needed), nothing was released
+        Assert.Equal(BroadcastState.Replaced, first.State);
+        var replacement = Load(_store.Children.Single(c => c.State == BroadcastState.Pending));
+        var spent = replacement.Inputs.Skip(1).Select(i => i.PrevOut).ToHashSet();
+        Assert.All(reserved, r => Assert.Contains(new OutPoint(new uint256(r.TxId), r.OutputIndex), spent));
+        Assert.Equal(0, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_FirstChildSaveFails_When_Round_Then_ReservationReleasedAndNothingPublished()
+    {
+        // Arrange
+        BroadcastCommitment();
+        _failNextSave = true;
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_published);
+        Assert.Equal(1, _wallet.ReleaseCount);
+        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_OnlyATrimmedHtlc_When_Round_Then_NoDeadlineTargetIsUsed()
+    {
+        // Arrange: a 500 sat HTLC has no output on Alice's commitment (dust limit 546 sat)
+        BroadcastCommitment(htlcMsat: 500_000);
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(new AnchorCpfpOptions().NoDeadlineConfTarget, _estimateTargets[0]);
+    }
+
+    [Fact]
+    public async Task Given_AnUntrimmedHtlc_When_Round_Then_ItsDeadlineSetsTheTarget()
+    {
+        // Arrange
+        BroadcastCommitment();
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert
+        var expected = new SweepFeePolicy().GetConfirmationTarget(500, HtlcExpiry);
+        Assert.NotEqual(new AnchorCpfpOptions().NoDeadlineConfTarget, expected);
+        Assert.Equal(expected, _estimateTargets[0]);
     }
 
     [Fact]
@@ -353,6 +514,22 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AnchorCommitment_When_RoundScheduled_Then_ChildMadeInTheBackground()
+    {
+        // Arrange
+        BroadcastCommitment();
+        var service = Service;
+
+        // Act: returns at once (the fail-the-channel path must not wait for it)
+        service.ScheduleCommitmentRound(_channel.ChannelId);
+        await service.WhenIdleAsync();
+
+        // Assert
+        Assert.Single(_store.Children);
+        Assert.Single(_published);
+    }
+
+    [Fact]
     public async Task Given_CommitmentConfirmed16BlocksAgo_When_FeesAreLow_Then_BothAnchorsSweptOnce()
     {
         // Arrange: a commitment that paid its way (no child), confirmed at 500
@@ -379,6 +556,47 @@ public sealed class AnchorCpfpServiceTests : IDisposable
                         error.ToString());
         Assert.Equal(_walletScript, sweep.Outputs.Single().ScriptPubKey.ToBytes());
         Assert.Empty(_store.Children);
+    }
+
+    [Fact]
+    public async Task Given_OurAnchorSpentOnChain_When_SweepIsDue_Then_SpentAnchorNeverSwept()
+    {
+        // Arrange: a child the monitor no longer tracked (replaced, or confirmed after its round) spent our anchor;
+        // the peer's anchor alone never pays for its sweep
+        _estimate = 2_000;
+        var commitment = BroadcastCommitment();
+        commitment.MarkConfirmed(500, OnchainTestStore.BlockHash(1));
+        _estimate = 253;
+        var commitmentTx = Load(commitment);
+        _chain.Spent.Add(new OutPoint(commitmentTx.GetHash(), FindOurAnchor(commitmentTx)));
+
+        // Act
+        await Service.RunOnceAsync(515, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(516, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_sweeps);
+    }
+
+    [Fact]
+    public async Task Given_ChainUnreachable_When_SweepIsDue_Then_SweptAtTheNextBlock()
+    {
+        // Arrange
+        _estimate = 2_000;
+        var commitment = BroadcastCommitment();
+        commitment.MarkConfirmed(500, OnchainTestStore.BlockHash(1));
+        _estimate = 253;
+        _chain.Throws = true;
+
+        // Act
+        await Service.RunOnceAsync(515, TestContext.Current.CancellationToken);
+        var before = _sweeps.Count;
+        _chain.Throws = false;
+        await Service.RunOnceAsync(516, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, before);
+        Assert.Equal(2, Transaction.Load(Assert.Single(_sweeps).RawTxBytes, Network.Main).Inputs.Count);
     }
 
     [Fact]
@@ -417,15 +635,20 @@ public sealed class AnchorCpfpServiceTests : IDisposable
 
     public void Dispose()
     {
+        foreach (var restarted in _restarted)
+            restarted.Dispose();
+        _restarted.Clear();
         _provider.Dispose();
         _pair.Dispose();
     }
 
-    /// <summary>Alice offers an HTLC (expiry 600), the dance settles, and she fails the channel: our commitment row.
+    /// <summary>
+    /// Alice offers an HTLC (expiry 600; 20,000 sat unless given, below her 546 sat dust limit it is trimmed), the
+    /// dance settles, and she fails the channel: our commitment row.
     /// </summary>
-    private BroadcastTransactionModel BroadcastCommitment()
+    private BroadcastTransactionModel BroadcastCommitment(ulong htlcMsat = 20_000_000)
     {
-        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), HtlcExpiry);
+        _pair.Add(_pair.Alice, htlcMsat, RealSigningCommitmentPair.Preimage(1), HtlcExpiry);
         _pair.Settle(_pair.Alice);
         _channel.UpdateCommitments(_pair.Alice.State);
         _channel.UpdateState(ChannelState.Failed);

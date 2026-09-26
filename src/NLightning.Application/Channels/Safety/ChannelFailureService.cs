@@ -255,19 +255,20 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         if (sendError && prepared is { Channel: { } channel, Error: { } error })
             await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
 
-        // BOLT 5 plan O7-T2 (B5-FAIL-06): an anchor commitment gets its CPFP child at once, not only at the next block;
-        // after the error, outside the lock, never failing the failure
+        // BOLT 5 plan O7-T2 (B5-FAIL-06): an anchor commitment gets its CPFP child at once, not only at the next block.
+        // Only scheduled: this path may run on the peer's inbound loop (ChannelManager's MustBroadcast path sends the
+        // error after it returns), which must not wait for a block round's fee estimates and wallet selection
         if (_anchorCpfpService is not null && prepared.Commitment is not null
                                            && prepared.Channel is { ChannelParams.OptionAnchorOutputs: true })
         {
             try
             {
-                await _anchorCpfpService.OnCommitmentBroadcastAsync(channelId, cancellationToken);
+                _anchorCpfpService.ScheduleCommitmentRound(channelId);
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e)
             {
-                _logger.LogError(e, "The anchor CPFP of failed channel {ChannelId} failed; retried at the next block",
-                                 channelId);
+                _logger.LogError(e, "The anchor CPFP of failed channel {ChannelId} could not be scheduled; retried at "
+                                  + "the next block", channelId);
             }
         }
 

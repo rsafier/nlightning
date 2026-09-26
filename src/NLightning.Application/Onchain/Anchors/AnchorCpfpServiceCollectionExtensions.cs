@@ -24,9 +24,12 @@ public static class AnchorCpfpServiceCollectionExtensions
     /// Call it after <c>AddOnchainServices</c> (the shared <see cref="SweepFeePolicy"/>) and
     /// <c>AddLocalCommitResolutionServices</c> (the <see cref="ISweepDestinationProvider"/> for change and anchor
     /// sweeps). <see cref="IAnchorFeeInputSource"/> (the wallet's fee inputs, O7-T1) is optional: without it no child is
-    /// built and a warning is logged at start. Nothing for the host to start: <c>ChannelFailureService.Start</c>/<c>Stop</c>
-    /// start and stop it, and its publish path calls <see cref="IAnchorCpfpService.OnCommitmentBroadcastAsync"/>. The host
-    /// binds <see cref="AnchorCpfpOptions"/> from <see cref="AnchorCpfpOptions.SectionName"/>.
+    /// built and a warning is logged at start; it must keep its reservations durably. <see cref="IBitcoinChainService"/>
+    /// is optional too: with it the reservation of a confirmed commitment's pending child goes back as soon as the
+    /// anchor is spent on chain and the sweep skips spent anchors. Nothing for the host to start:
+    /// <c>ChannelFailureService.Start</c>/<c>Stop</c> start and stop it, and its publish path calls
+    /// <see cref="IAnchorCpfpService.ScheduleCommitmentRound"/>. The host binds <see cref="AnchorCpfpOptions"/> from
+    /// <see cref="AnchorCpfpOptions.SectionName"/>.
     /// </remarks>
     public static IServiceCollection AddAnchorCpfpServices(this IServiceCollection services)
     {
@@ -45,7 +48,8 @@ public static class AnchorCpfpServiceCollectionExtensions
                                                              sp.GetRequiredService<IServiceScopeFactory>(),
                                                              sp.GetRequiredService<ISweepDestinationProvider>(),
                                                              sp.GetService<IAnchorFeeInputSource>(),
-                                                             sp.GetService<IOptions<AnchorCpfpOptions>>()?.Value));
+                                                             sp.GetService<IOptions<AnchorCpfpOptions>>()?.Value,
+                                                             sp.GetService<IBitcoinChainService>()));
         services.TryAddSingleton<IAnchorCpfpService>(sp => sp.GetRequiredService<AnchorCpfpService>());
         return services;
     }
