@@ -100,6 +100,38 @@ public sealed record Bolt4ReturningErrorsTraceVector(
     IReadOnlyList<Bolt4ReturningErrorsTraceHop> Hops);
 
 /// <summary>
+/// One hop of the inline BOLT 4 "Test Vector &gt; Returning success" trace.
+/// </summary>
+/// <param name="Node">The index of the node in the route (4 = final node, 0 = first hop)</param>
+/// <param name="SharedSecret">The node's shared secret (same as in the Returning Errors trace)</param>
+/// <param name="AttributionDataWithoutPayload">The attribution data after this node, without a fulfillment_payload</param>
+/// <param name="FulfillmentPayload">The fulfillment_payload after this node</param>
+/// <param name="AttributionDataWithPayload">The attribution data after this node, with the fulfillment_payload</param>
+[ExcludeFromCodeCoverage]
+public sealed record Bolt4ReturningSuccessTraceHop(
+    int Node,
+    byte[] SharedSecret,
+    byte[] AttributionDataWithoutPayload,
+    byte[] FulfillmentPayload,
+    byte[] AttributionDataWithPayload);
+
+/// <summary>
+/// The inline BOLT 4 "Test Vector &gt; Returning success" trace, transcribed to <c>returning-success-trace.json</c>.
+/// </summary>
+/// <param name="HoldTimesByNode">The hold time each node reports, indexed by node (node 0 = first hop)</param>
+/// <param name="RecordType">The type of the non-padding fulfillment_payload_tlvs record (65537)</param>
+/// <param name="RecordValue">Its value (070809)</param>
+/// <param name="PaddingLength">The value length of the padding record (245)</param>
+/// <param name="Hops">In return order: the final node first, the first hop last</param>
+[ExcludeFromCodeCoverage]
+public sealed record Bolt4ReturningSuccessTraceVector(
+    IReadOnlyList<uint> HoldTimesByNode,
+    ulong RecordType,
+    byte[] RecordValue,
+    int PaddingLength,
+    IReadOnlyList<Bolt4ReturningSuccessTraceHop> Hops);
+
+/// <summary>
 /// Loader and shared constants for the official BOLT 4 JSON test vectors.
 /// </summary>
 /// <remarks>
@@ -120,6 +152,12 @@ public static class Bolt4Vectors
     /// <c>04-onion-routing.md</c>).
     /// </summary>
     public const string ReturningErrorsTracePath = "BOLT4/Vectors/returning-errors-trace.json";
+
+    /// <summary>
+    /// The inline BOLT 4 "Test Vector &gt; Returning success" trace (attribution data and fulfillment_payload per hop;
+    /// transcribed from <c>04-onion-routing.md</c>).
+    /// </summary>
+    public const string ReturningSuccessTracePath = "BOLT4/Vectors/returning-success-trace.json";
 
     /// <summary>
     /// The session key used by <c>onion-test.json</c> and <c>onion-error-test.json</c> (0x41 repeated 32 times).
@@ -193,6 +231,29 @@ public static class Bolt4Vectors
                                                    GetHex(root, "um_key"),
                                                    GetHex(root, "raw_error_packet"),
                                                    hops);
+    }
+
+    public static Bolt4ReturningSuccessTraceVector LoadReturningSuccessTrace(string path = ReturningSuccessTracePath)
+    {
+        using var document = LoadDocument(path);
+        var root = document.RootElement;
+
+        var hops = GetRequired(root, "hops")
+                  .EnumerateArray()
+                  .Select(hop => new Bolt4ReturningSuccessTraceHop(GetRequired(hop, "node").GetInt32(),
+                                                                   GetHex(hop, "shared_secret"),
+                                                                   GetHex(hop, "attribution_data_without_payload"),
+                                                                   GetHex(hop, "fulfillment_payload"),
+                                                                   GetHex(hop, "attribution_data_with_payload")))
+                  .ToList();
+
+        var holdTimes = GetRequired(root, "hold_times_by_node").EnumerateArray().Select(e => e.GetUInt32()).ToList();
+
+        return new Bolt4ReturningSuccessTraceVector(holdTimes,
+                                                    GetRequired(root, "fulfillment_record_type").GetUInt64(),
+                                                    GetHex(root, "fulfillment_record_value"),
+                                                    GetRequired(root, "fulfillment_padding_length").GetInt32(),
+                                                    hops);
     }
 
     /// <summary>
