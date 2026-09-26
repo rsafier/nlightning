@@ -47,6 +47,13 @@ using Reorg;
 /// processed height read before the round) up to bitcoind's tip are scanned through <see cref="IBitcoinChainService"/>
 /// (when registered) for a spend already mined, which is handled like a monitor event and recorded on the watch
 /// (<see cref="CatchUpSpendsAsync(ChannelId, IReadOnlyList{WatchedOutpointModel}, uint, CancellationToken)"/>).</para>
+/// <para>After a restart (NL-311) the monitor tracks every saved watch again, but a crash between a save and the
+/// tracking (or between the monitor's block save and the executor's handling of the spend) leaves blocks it already
+/// processed unscanned for those watches. So before a channel's first round in this process the saved watch of every
+/// unresolved output (<see cref="OutputResolutionState.Pending"/>, <see cref="OutputResolutionState.Waiting"/>,
+/// <see cref="OutputResolutionState.Broadcast"/>) is caught up the same way, from its parent's height (or from the
+/// spend recorded on it) (<see cref="CatchUpSavedWatchesAsync"/>); a scan that could not reach bitcoind's tip is tried
+/// again in the next round.</para>
 /// <para>Reorgs (BOLT 5 plan §3.8, O6-T3, NL-292): every block round first checks the chain facts the rows rely on. An
 /// output recorded <see cref="OutputResolutionState.Resolved"/> whose watched spend the chain monitor rolled back is
 /// unresolved again (<see cref="OutputResolutionState.Broadcast"/> when our transaction resolves it, which is made
@@ -72,6 +79,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly HashSet<ChannelCloseKind> _missingResolverLogged = [];
     private readonly ConcurrentDictionary<ChannelId, uint> _fundingSpendGoneSince = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _graceBroadcastDone = new();
+    private readonly ConcurrentDictionary<ChannelId, byte> _savedWatchesCaughtUp = new();
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -142,6 +150,12 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
+                // NL-311: the first round of this process scans for spends of the channel's saved watches that the
+                // chain monitor processed before they were tracked (a crash between a save and the tracking)
+                if (!_savedWatchesCaughtUp.ContainsKey(channel.ChannelId)
+                 && await CatchUpSavedWatchesCoreAsync(channel.ChannelId, cancellationToken))
+                    _savedWatchesCaughtUp[channel.ChannelId] = 0;
+
                 await ResolveChannelAsync(channel.ChannelId, height, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -178,23 +192,80 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         await CatchUpSpendsAsync(channelId, watches.Select(w => (w, fromHeight)).ToList(), cancellationToken);
     }
 
+    /// <inheritdoc />
+    public async Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default)
+    {
+        if (await CatchUpSavedWatchesCoreAsync(channelId, cancellationToken))
+            _savedWatchesCaughtUp[channelId] = 0;
+    }
+
+    /// <summary>
+    /// NL-311: the saved watch of every output of the channel that is not resolved yet (<c>Pending</c>,
+    /// <c>Waiting</c>, <c>Broadcast</c>) is caught up from its parent's height (the commitment's height, our
+    /// broadcast's confirmation, else the commitment's height); a watch whose spend the chain monitor recorded while the
+    /// row stayed unresolved (a crash after the block's save) from that spend's height. Returns false when the scan did
+    /// not reach bitcoind's tip (it is tried again in the next round).
+    /// </summary>
+    private async Task<bool> CatchUpSavedWatchesCoreAsync(ChannelId channelId, CancellationToken cancellationToken)
+    {
+        var watches = new List<(WatchedOutpointModel Watch, uint FromHeight)>();
+        using (var scope = _serviceScopeFactory.CreateScope())
+        {
+            using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
+            {
+                if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+                 || channel.State != ChannelState.OnchainResolving)
+                    return true;
+
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var close = await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId);
+                if (close is null)
+                    return true;
+
+                var outputs = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
+                foreach (var output in outputs)
+                {
+                    if (output.State is not (OutputResolutionState.Pending or OutputResolutionState.Waiting
+                                             or OutputResolutionState.Broadcast))
+                        continue;
+
+                    var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(output.TransactionId,
+                                                                                    output.OutputIndex);
+                    if (watch is null)
+                        continue;
+
+                    var from = watch.SpentAtHeight
+                            ?? await CatchUpFromAsync(unitOfWork, close, null, watch, null);
+                    watches.Add((watch, from));
+                }
+            }
+        }
+
+        if (watches.Count > 0)
+            _logger.LogInformation("Checking {Count} saved resolution watches of channel {ChannelId} for spends "
+                                 + "mined before they were tracked", watches.Count, channelId);
+
+        return await CatchUpSpendsAsync(channelId, watches, cancellationToken);
+    }
+
     /// <summary>
     /// Scans the blocks from each watch's lower bound up to bitcoind's tip for a spend of a tracked watch that the
     /// chain monitor may have processed before the watch was tracked; a spend found is handled as the monitor's event
     /// would be and recorded on the watch in the same save. Harmless when the monitor raises it too (idempotent).
+    /// Returns false when the scan stopped before the tip (the chain could not be read).
     /// </summary>
-    private async Task CatchUpSpendsAsync(ChannelId channelId,
+    private async Task<bool> CatchUpSpendsAsync(ChannelId channelId,
                                           IReadOnlyList<(WatchedOutpointModel Watch, uint FromHeight)> watches,
                                           CancellationToken cancellationToken)
     {
         if (watches.Count == 0)
-            return;
+            return true;
 
         IBitcoinChainService? chain;
         using (var scope = _serviceScopeFactory.CreateScope())
             chain = scope.ServiceProvider.GetService<IBitcoinChainService>();
         if (chain is null)
-            return;
+            return true;
 
         var remaining = new Dictionary<OutPoint, uint>();
         foreach (var (watch, from) in watches)
@@ -212,7 +283,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         {
             _logger.LogError(e, "Could not check the new watches of channel {ChannelId} for spends already mined",
                              channelId);
-            return;
+            return false;
         }
 
         for (var height = remaining.Values.Min(); height <= tip && remaining.Count > 0; height++)
@@ -227,11 +298,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             {
                 _logger.LogError(e, "Could not read block {Height} to check the new watches of channel {ChannelId}",
                                  height, channelId);
-                return;
+                return false;
             }
 
             if (block is null)
-                return;
+                return false;
 
             var blockHash = new Hash(block.GetHash().ToBytes());
             for (var index = 0; index < block.Transactions.Count && remaining.Count > 0; index++)
@@ -256,6 +327,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 }
             }
         }
+
+        return true;
     }
 
     private async Task LoopAsync()

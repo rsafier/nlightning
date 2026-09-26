@@ -370,6 +370,95 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_SavedWatchNeverTrackedBeforeACrash_When_FirstRoundAfterTheRestart_Then_TheSpendIsResolved()
+    {
+        // Arrange (NL-311): the watcher saved output 1 and its watch, then the process died before tracking it; the
+        // monitor processed the block holding its spend without the watch, and processes only new blocks after the
+        // restart (it tracks the saved watch again, but never rescans that block)
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF2, 32).ToArray()), 0, outputs: 2);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend1 = CreateTransaction(commitmentTxId, 1);
+        _chain.Mine(commitment);
+        _chain.Mine(spend1);
+        _chain.Mine();
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, txId: commitmentTxId);
+        AddOutput(1, OutputDescriptorKind.LocalReceivedHtlc, txId: commitmentTxId);
+        AddWatch(commitmentTxId, 0);
+        AddWatch(commitmentTxId, 1);
+
+        // Act: the restarted process's first block round
+        var executor = CreateExecutor();
+        await executor.RunRoundAsync(SpentAt + 3, TestContext.Current.CancellationToken);
+
+        // Assert: the spend was found in the block processed before the crash, resolved there and recorded on the
+        // watch; the unspent output is untouched; the executor tracks nothing (the monitor loaded the watches)
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 1)].State);
+        Assert.Equal(SpentAt + 1, _store.Outputs[(commitmentTxId, 1)].ResolvedHeight);
+        Assert.Equal((new TxId(spend1.GetHash().ToBytes()), SpentAt + 1), _store.WatchSpends[(commitmentTxId, 1)]);
+        Assert.Equal(OutputResolutionState.Pending, _store.Outputs[(commitmentTxId, 0)].State);
+        Assert.Equal(new uint256(spend1.GetHash()), new uint256(Assert.Single(_resolver.Spends).Spender.TxId));
+        _outpointWatcher.Verify(w => w.TrackWatchedOutpoint(It.IsAny<WatchedOutpointModel>()), Times.Never);
+
+        // Act: the next round of the same process
+        await executor.RunRoundAsync(SpentAt + 4, TestContext.Current.CancellationToken);
+
+        // Assert: the resolution stays at its block (not reverted as a rolled-back spend), the spend handled once
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 1)].State);
+        Assert.Equal(SpentAt + 1, _store.Outputs[(commitmentTxId, 1)].ResolvedHeight);
+        Assert.Single(_resolver.Spends);
+    }
+
+    [Fact]
+    public async Task Given_WatchSpendRecordedButOutputUnresolvedAtACrash_When_FirstRound_Then_ResolvedAtThatSpend()
+    {
+        // Arrange (NL-311): the monitor's block save recorded the spend on the watch, then the process died before the
+        // executor handled the event, so the row is still pending
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF3, 32).ToArray()), 0, outputs: 1);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend0 = CreateTransaction(commitmentTxId, 0);
+        _chain.Mine(commitment);
+        _chain.Mine();
+        var spendBlock = _chain.Mine(spend0);
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, txId: commitmentTxId);
+        AddWatch(commitmentTxId, 0).MarkSpent(new TxId(spend0.GetHash().ToBytes()), SpentAt + 2,
+                                              new Hash(spendBlock.GetHash().ToBytes()));
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 2, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(OutputResolutionState.Resolved, _store.Outputs[(commitmentTxId, 0)].State);
+        Assert.Equal(SpentAt + 2, _store.Outputs[(commitmentTxId, 0)].ResolvedHeight);
+        Assert.Equal(new uint256(spend0.GetHash()), new uint256(Assert.Single(_resolver.Spends).Spender.TxId));
+    }
+
+    [Fact]
+    public async Task Given_ResolvedAndIgnoredOutputs_When_FirstRound_Then_TheirWatchesAreNotCaughtUp()
+    {
+        // Arrange: only unresolved rows need the scan; a resolved row keeps its recorded spend
+        var commitment = CreateTransaction(new TxId(Enumerable.Repeat((byte)0xF4, 32).ToArray()), 0, outputs: 2);
+        var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
+        var spend0 = CreateTransaction(commitmentTxId, 0);
+        var spend1 = CreateTransaction(commitmentTxId, 1);
+        _chain.Mine(commitment, spend0, spend1);
+        UseClose(commitmentTxId, SpentAt);
+        AddOutput(0, OutputDescriptorKind.LocalOfferedHtlc, OutputResolutionState.Ignored, txId: commitmentTxId);
+        AddOutput(1, OutputDescriptorKind.LocalReceivedHtlc, OutputResolutionState.Irrevocable, SpentAt,
+                  commitmentTxId);
+        AddWatch(commitmentTxId, 0);
+        AddWatch(commitmentTxId, 1);
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 1, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_resolver.Spends);
+        Assert.Empty(_store.WatchSpends);
+    }
+
+    [Fact]
     public async Task Given_ScheduledRounds_When_Idle_Then_TheLatestHeightRan()
     {
         // Arrange
@@ -396,6 +485,13 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
             CommitmentTransactionId = commitmentTxId,
             SpentAtHeight = height
         };
+
+    private WatchedOutpointModel AddWatch(TxId txId, uint vout)
+    {
+        var watch = new WatchedOutpointModel(txId, vout, _channel.ChannelId, WatchedOutpointPurpose.ResolutionOutput);
+        _store.Watches[(txId, vout)] = watch;
+        return watch;
+    }
 
     private static Transaction CreateTransaction(TxId spent, uint vout, int outputs = 1)
     {
