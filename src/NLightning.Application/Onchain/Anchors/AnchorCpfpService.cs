@@ -23,6 +23,7 @@ using Fees;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Models;
 using Resolvers.Local;
 
 /// <summary>
@@ -71,10 +72,19 @@ using Resolvers.Local;
 /// signatures when <see cref="AnchorCpfpPolicy.DecideAnchorSweep"/> says it pays for itself, else skipped (logged).
 /// The sweep is published once per commitment and process and never stored: anyone may take those outputs first, and a
 /// refused send is not retried.</para>
-/// <para>Not covered (O7-T3/T4 and later): anchors of the peer's commitment, the fee inputs of our anchor HTLC
-/// transactions, package relay for a commitment below the mempool minimum fee (the child is then refused as an orphan
-/// together with it; both rows stay pending and are rebroadcast every block, so B5-FAIL-06 is not met there until the
-/// pair goes through <c>submitpackage</c>).</para>
+/// <para>Package relay (NL-380): a commitment below bitcoind's mempool minimum fee (a fee spike after the last
+/// <c>update_fee</c>) is refused alone, and its child as an orphan. When a new child is refused, and every round when the
+/// newest pending child is not in bitcoind's mempool (<see cref="IBitcoinChainService.GetTransactionAsync"/>, which
+/// finds mempool transactions without txindex), the commitment and that child go out together through
+/// <see cref="IBitcoinChainService.SubmitPackageAsync"/> (Bitcoin Core 28+ 1p1c), judged at their package feerate. The
+/// rows are the persisted <c>BroadcastTransactions</c>, so after a restart the first round sends the pair as a package
+/// again (the monitor's own rebroadcast keeps sending them one by one). A package refused for its fee marks the child
+/// (memory only), and the next round replaces it at once, even without a deadline and while the package pays the
+/// estimate: the estimate is then below what the mempool takes, and each replacement adds at least the BIP 125
+/// increment, up to the cap. Without <c>submitpackage</c> (older node, or no chain service) this is logged once and the
+/// pair is only sent one by one.</para>
+/// <para>Not covered: anchors of the peer's commitment (NL-381); a commitment that alone pays the estimate but not the
+/// mempool minimum gets no child, so it is not packaged either.</para>
 /// </remarks>
 public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 {
@@ -98,6 +108,7 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly HashSet<string> _loggedOnce = [];
     private readonly HashSet<TxId> _sweptCommitments = [];
     private readonly HashSet<ChannelId> _released = [];
+    private readonly HashSet<TxId> _feeRefusedChildren = [];
     private readonly Dictionary<ChannelId, uint> _anchorSpentSeenAtTip = [];
 
     private CancellationTokenSource _stopping = new();
@@ -321,9 +332,15 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return result;
         }
 
+        // Whatever this round decides, the commitment and its newest child go together into a mempool (NL-380)
+        result.PackageParent = commitment;
+
         var pending = await PlanChildAsync(channel, commitment, pendingChildren, height, cancellationToken);
         if (pending is null)
+        {
+            result.CheckChild = LatestChild(pendingChildren);
             return result;
+        }
 
         repository.Add(pending.Row);
         if (pending.Replaces is { } replaced)
@@ -359,10 +376,17 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     {
         if (result.Publish is { } row)
         {
+            // A refused child is an orphan when its commitment is not in the mempool (below its minimum fee): the pair
+            // goes in as a package
             var accepted = await _blockchainMonitor.PublishAsync(row);
-            if (!accepted)
+            if (!accepted && !(result.PackageParent is { } parent
+                            && await TrySubmitPackageAsync(channelId, parent, row, cancellationToken)))
                 _logger.LogWarning("Anchor child {TxId} of channel {ChannelId} was refused; it is sent again after "
                                  + "every block", Display(row.TransactionId), channelId);
+        }
+        else if (result is { PackageParent: { } parent, CheckChild: { } child })
+        {
+            await EnsureChildInMempoolAsync(channelId, parent, child, cancellationToken);
         }
 
         if (result.Release && _feeInputSource is not null)
@@ -394,6 +418,114 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// A pending child that was not replaced this round: when bitcoind does not have it (<c>getrawtransaction</c> finds
+    /// no mempool transaction), its commitment is not in the mempool either, or the child was evicted; the pair is sent
+    /// again as a package. This is also the rebroadcast after a restart: the rows come back from the database and the
+    /// first round sends them together (the monitor's own rebroadcast sends them one by one, which a commitment below
+    /// the mempool minimum never passes).
+    /// </summary>
+    private async Task EnsureChildInMempoolAsync(ChannelId channelId, BroadcastTransactionModel commitment,
+                                                 BroadcastTransactionModel child, CancellationToken cancellationToken)
+    {
+        if (_chainService is null)
+            return;
+
+        try
+        {
+            if (await _chainService.GetTransactionAsync(new uint256(child.TransactionId)) is not null)
+            {
+                lock (_feeRefusedChildren)
+                    _feeRefusedChildren.Remove(child.TransactionId);
+                return;
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            LogOnce($"{channelId}:{child.TransactionId}:lookup", e,
+                    "Cannot check whether bitcoind has anchor child {TxId} of channel {ChannelId}; it is sent as a "
+                  + "package", Display(child.TransactionId), channelId);
+        }
+
+        await TrySubmitPackageAsync(channelId, commitment, child, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends the commitment and its child with <see cref="IBitcoinChainService.SubmitPackageAsync"/> (Bitcoin Core 28+
+    /// 1p1c package relay, NL-380). True when both are in bitcoind's mempool. A package refused for its fee marks the
+    /// child so the next round replaces it without waiting for the RBF interval; a node without package relay is
+    /// logged once (the monitor keeps sending both one by one).
+    /// </summary>
+    private async Task<bool> TrySubmitPackageAsync(ChannelId channelId, BroadcastTransactionModel commitment,
+                                                   BroadcastTransactionModel child, CancellationToken cancellationToken)
+    {
+        if (_chainService is null)
+        {
+            LogOnce("package:nochain", "No chain service is registered: an anchor commitment below the mempool minimum "
+                                     + "fee cannot be sent with its CPFP child as a package (channel {ChannelId})",
+                    channelId);
+            return false;
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        PackageSubmitResult outcome;
+        try
+        {
+            outcome = await _chainService.SubmitPackageAsync(Transaction.Load(commitment.RawTransaction, Network.Main),
+                                                             Transaction.Load(child.RawTransaction, Network.Main));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            outcome = PackageSubmitResult.Failed(e.Message);
+        }
+
+        switch (outcome.Status)
+        {
+            case PackageSubmitStatus.Accepted:
+                lock (_feeRefusedChildren)
+                    _feeRefusedChildren.Remove(child.TransactionId);
+                _logger.LogWarning("Commitment {CommitmentTxId} of channel {ChannelId} entered the mempool with its "
+                                 + "anchor child {TxId} as a package (package feerate {Feerate} BTC/kvB)",
+                                   Display(commitment.TransactionId), channelId, Display(child.TransactionId),
+                                   outcome.PackageFeerateBtcPerKvb);
+                return true;
+            case PackageSubmitStatus.Unsupported:
+                LogOnce("package:unsupported",
+                        "bitcoind cannot take the anchor child {TxId} of channel {ChannelId} with its commitment as a "
+                      + "package ({Reason}); both are sent one by one, so a commitment below the mempool minimum fee "
+                      + "stays out (Bitcoin Core 28 or newer is needed)", Display(child.TransactionId), channelId,
+                        outcome.Message);
+                return false;
+            case PackageSubmitStatus.Rejected:
+                if (outcome.IsFeeRefusal)
+                    lock (_feeRefusedChildren)
+                        _feeRefusedChildren.Add(child.TransactionId);
+                LogOnce($"{channelId}:{child.TransactionId}:package",
+                        "bitcoind refused commitment {CommitmentTxId} of channel {ChannelId} with its anchor child "
+                      + "{TxId} as a package ({Reason}){Next}", Display(commitment.TransactionId), channelId,
+                        Display(child.TransactionId), outcome.Describe(),
+                        outcome.IsFeeRefusal ? "; the child is replaced with a higher fee at the next block" : "");
+                return false;
+            default:
+                LogOnce($"{channelId}:{child.TransactionId}:package-failed",
+                        "Cannot send commitment {CommitmentTxId} of channel {ChannelId} with its anchor child {TxId} as "
+                      + "a package ({Reason}); retried at the next block", Display(commitment.TransactionId),
+                        channelId, Display(child.TransactionId), outcome.Message);
+                return false;
+        }
+    }
+
+    private bool IsFeeRefused(TxId childTxId)
+    {
+        lock (_feeRefusedChildren)
+            return _feeRefusedChildren.Contains(childTxId);
+    }
+
+    private static BroadcastTransactionModel? LatestChild(IEnumerable<BroadcastTransactionModel> pendingChildren) =>
+        pendingChildren.OrderByDescending(b => b.FirstBroadcastHeight)
+                       .ThenByDescending(b => b.CreatedAt)
+                       .FirstOrDefault();
 
     /// <summary>
     /// The first child or a replacement for a pending commitment, or null when none is due or possible. Called under the
@@ -445,17 +577,19 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var cap = _policy.GetFeeCap(stakeSat, deadline is not null);
         var anchor = new AnchorOutpoint(commitment.TransactionId, anchorVout, fundingPubKey);
 
-        var latest = pendingChildren.OrderByDescending(b => b.FirstBroadcastHeight)
-                                    .ThenByDescending(b => b.CreatedAt)
-                                    .FirstOrDefault();
+        var latest = LatestChild(pendingChildren);
         if (latest is null)
             return await PlanFirstChildAsync(channel, anchor, commitmentFee, commitmentWeight, estimate, cap, deadline,
                                              height, cancellationToken);
 
+        // A package bitcoind refused for its fee is in no mempool: waiting for the RBF interval gains nothing, and the
+        // estimate it paid is below what the mempool takes (NL-380)
+        var refusedForFee = IsFeeRefused(latest.TransactionId);
+
         // Past the deadline the commitment still has to confirm (to_local, the HTLC transactions): keep bumping every
         // RbfIntervalBlocks, as just before it (SweepFeePolicy stops at a sweep's deadline)
         var bumpDeadline = deadline is { } d && height >= d ? height + 1 : deadline;
-        if (!_policy.FeePolicy.ShouldBump(latest.FirstBroadcastHeight, height, bumpDeadline))
+        if (!refusedForFee && !_policy.FeePolicy.ShouldBump(latest.FirstBroadcastHeight, height, bumpDeadline))
             return null;
 
         var oldTx = Transaction.Load(latest.RawTransaction, Network.Main);
@@ -464,7 +598,8 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
         // With a deadline (an untrimmed HTLC) a package still unconfirmed after RbfIntervalBlocks is bumped by at least
         // the BIP 125 minimum even when it pays the estimate, as SweepScheduler does for claims: the estimate lags when
         // blocks keep leaving the package out, and the cap bounds the escalation. Without one it is kept while it pays
-        if (deadline is null && _policy.PackagePays(commitmentFee, commitmentWeight, oldFeeLower, oldWeight, estimate))
+        if (!refusedForFee && deadline is null
+                           && _policy.PackagePays(commitmentFee, commitmentWeight, oldFeeLower, oldWeight, estimate))
             return null;
 
         var oldFeeUpper = ((ulong)latest.FeeratePerKw + 1) * (ulong)oldWeight / 1000 + 1;
@@ -886,6 +1021,13 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private sealed class RoundResult
     {
         public BroadcastTransactionModel? Publish { get; set; }
+
+        /// <summary>The pending commitment a child is sent with as a package when bitcoind refuses the child.</summary>
+        public BroadcastTransactionModel? PackageParent { get; set; }
+
+        /// <summary>The newest pending child, not replaced this round, to check in bitcoind's mempool.</summary>
+        public BroadcastTransactionModel? CheckChild { get; set; }
+
         public bool Release { get; set; }
         public SignedTransaction? Sweep { get; set; }
     }

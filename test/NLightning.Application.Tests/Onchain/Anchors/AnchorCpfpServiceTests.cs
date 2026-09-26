@@ -30,6 +30,7 @@ using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Models;
 
 /// <summary>
 /// BOLT 5 plan O7-T2 (B5-FAIL-06): <see cref="AnchorCpfpService"/> over a <b>real</b> anchor commitment of a
@@ -656,6 +657,194 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         Assert.Single(_store.Children);
     }
 
+    [Fact]
+    public async Task Given_ChildRefusedAsAnOrphan_When_Round_Then_CommitmentAndChildSubmittedAsAPackage()
+    {
+        // Arrange: the commitment is below bitcoind's mempool minimum, so the child alone is an orphan (NL-380)
+        var commitment = BroadcastCommitment();
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert: parent first, the child row stays pending (the monitor keeps it for rebroadcast)
+        var child = Assert.Single(_store.Children);
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(Load(commitment).GetHash(), parent.GetHash());
+        Assert.Equal(Load(child).GetHash(), packaged.GetHash());
+        Assert.Equal(commitment.RawTransaction, parent.ToBytes());
+        Assert.Equal(child.RawTransaction, packaged.ToBytes());
+        Assert.Equal(BroadcastState.Pending, child.State);
+        Assert.Equal(child, Assert.Single(_published));
+    }
+
+    [Fact]
+    public async Task Given_ChildAccepted_When_Round_Then_NoPackage()
+    {
+        // Arrange: the monitor's publish succeeds, so the commitment is in the mempool with it
+        BroadcastCommitment();
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Single(_store.Children);
+        Assert.Empty(_chain.Packages);
+    }
+
+    [Fact]
+    public async Task Given_PendingChildMissingFromTheMempool_When_NextRound_Then_PairSentAgainAsAPackage()
+    {
+        // Arrange: accepted at 500, then evicted with its commitment (bitcoind no longer has the child); only a trimmed
+        // HTLC, so no deadline bump replaces the child meanwhile
+        var commitment = BroadcastCommitment(htlcMsat: 500_000);
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act: no bump is due at 501; the round checks the child and sends the pair
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+        var afterFirst = _chain.Packages.Count;
+        await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+
+        // Assert: once; at 502 bitcoind has it (the package made it in) and it still pays the estimate
+        Assert.Equal(1, afterFirst);
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(Load(commitment).GetHash(), parent.GetHash());
+        Assert.Equal(Load(child).GetHash(), packaged.GetHash());
+        Assert.Equal(BroadcastState.Pending, child.State);
+    }
+
+    [Fact]
+    public async Task Given_PendingChildInTheMempool_When_NextRound_Then_NoPackage()
+    {
+        // Arrange
+        BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        _chain.Mempool.Add(Load(Assert.Single(_store.Children)).GetHash());
+
+        // Act
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_chain.Packages);
+    }
+
+    [Fact]
+    public async Task Given_NodeWithoutPackageRelay_When_ChildRefused_Then_RowsStayPendingForTheMonitorsRebroadcast()
+    {
+        // Arrange: submitpackage is missing (older bitcoind): the fallback is the one-by-one rebroadcast
+        var commitment = BroadcastCommitment();
+        RefuseChildrenAlone();
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: asked, nothing changed; the child was handed to the monitor, which resends every pending row
+        Assert.NotEmpty(_chain.Packages);
+        var child = Assert.Single(_store.Children);
+        Assert.Equal(BroadcastState.Pending, child.State);
+        Assert.Equal(BroadcastState.Pending, commitment.State);
+        Assert.Contains(child, _published);
+        Assert.Equal(0, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_PairStoredBeforeARestart_When_FirstRoundAfterIt_Then_RebroadcastAsAPackage()
+    {
+        // Arrange: before the restart bitcoind refused the child and had no package relay; after it, it has
+        var commitment = BroadcastCommitment();
+        RefuseChildrenAlone();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var child = Assert.Single(_store.Children);
+        _chain.Packages.Clear();
+        var restarted = BuildProvider();
+        _restarted.Add(restarted);
+        var service = restarted.GetRequiredService<AnchorCpfpService>();
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act: the rows come back from the store; no bump is due at 501
+        await service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: the persisted pair, byte for byte, as one package; nothing new signed or reserved
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(commitment.RawTransaction, parent.ToBytes());
+        Assert.Equal(child.RawTransaction, packaged.ToBytes());
+        Assert.Single(_store.Children);
+        Assert.Contains(Load(child).GetHash(), _chain.Mempool);
+    }
+
+    [Fact]
+    public async Task Given_PackageRefusedForFee_When_NextBlock_Then_ChildReplacedWithoutWaitingForTheInterval()
+    {
+        // Arrange: the estimate is below bitcoind's mempool minimum; the first package is refused for its fee
+        var commitment = BroadcastCommitment();
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = FakeAnchorChain.RefuseForFee;
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var first = Assert.Single(_store.Children);
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act: one block later (the RBF interval is 2 blocks), same estimate
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert: replaced at the BIP 125 minimum at least, and the replacement went in with the commitment
+        Assert.Equal(BroadcastState.Replaced, first.State);
+        var replacement = _store.Children.Single(c => c.TransactionId != first.TransactionId);
+        Assert.Equal(first.TransactionId, replacement.ReplacesTransactionId);
+        var oldFee = AnchorTx.ChildFee(Load(first), _wallet);
+        var newChild = Load(replacement);
+        var newFee = AnchorTx.ChildFee(newChild, _wallet);
+        Assert.True(newFee >= oldFee * 5 / 4, $"{newFee} < 1.25 x {oldFee}");
+        Assert.True(newFee >= oldFee + (ulong)newChild.GetVirtualSize(), $"{newFee} below the relay increment");
+        AnchorTx.AssertScriptsValid(newChild, Load(commitment), _wallet);
+        Assert.Equal(2, _chain.Packages.Count);
+        Assert.Equal(newChild.GetHash(), _chain.Packages[1].Child.GetHash());
+    }
+
+    [Fact]
+    public async Task Given_PackageWithoutDeadlineRefusedForFee_When_NextBlock_Then_ReplacedAlthoughItPaysTheEstimate()
+    {
+        // Arrange: only a trimmed HTLC (no deadline); a package that pays the estimate is normally kept
+        BroadcastCommitment(htlcMsat: 500_000);
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = FakeAnchorChain.RefuseForFee;
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var first = Assert.Single(_store.Children);
+
+        // Act
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(BroadcastState.Replaced, first.State);
+        Assert.Equal(2, _store.Children.Count);
+    }
+
+    [Fact]
+    public async Task Given_PackageRefusedForAnotherReason_When_NextBlock_Then_ChildKeptUntilTheBumpIsDue()
+    {
+        // Arrange: the funding output is spent (not a fee problem): nothing to gain from a replacement
+        BroadcastCommitment();
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = (parent, child) => new PackageSubmitResult(
+            PackageSubmitStatus.Rejected, "transaction failed",
+            [
+                new PackageTransactionResult(parent.GetHash(), false, "bad-txns-inputs-missingorspent", null),
+                new PackageTransactionResult(child.GetHash(), false, "unevaluated", null)
+            ]);
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var first = Assert.Single(_store.Children);
+
+        // Act
+        await Service.RunOnceAsync(501, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(BroadcastState.Pending, first.State);
+        Assert.Single(_store.Children);
+    }
+
     public void Dispose()
     {
         foreach (var restarted in _restarted)
@@ -685,6 +874,13 @@ public sealed class AnchorCpfpServiceTests : IDisposable
         _store.Add(row);
         return row;
     }
+
+    /// <summary>bitcoind refuses every child sent alone (its commitment is not in the mempool).</summary>
+    private void RefuseChildrenAlone() =>
+        _monitor.Setup(m => m.PublishAsync(It.Is<BroadcastTransactionModel>(b => b.Purpose
+                                                                               == BroadcastPurpose.AnchorCpfp)))
+                .Callback<BroadcastTransactionModel>(_published.Add)
+                .ReturnsAsync(false);
 
     private uint FindOurAnchor(Transaction commitment) =>
         new AnchorChildTransactionBuilder().FindAnchorOutput(commitment.ToBytes(),
