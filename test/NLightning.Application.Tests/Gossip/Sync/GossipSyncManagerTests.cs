@@ -234,7 +234,7 @@ public class GossipSyncManagerTests : IDisposable
                                   new BaseTlv(TlvConstants.ReplyChannelRangeTimestamps,
                                               GossipQueryCodec.EncodeTimestamps(
                                                   [new(1_700_000_000, 1_700_000_050), new(1_700_000_000, 1_700_000_001),
-                                                   new(1_700_000_100, 0)]))));
+                                                   new(Now - 60, 0)]))));
         var scidQuery = await peer.NextAsync<QueryShortChannelIdsMessage>();
 
         // Assert
@@ -245,6 +245,37 @@ public class GossipSyncManagerTests : IDisposable
         Assert.NotNull(scidQuery.QueryFlagsTlv);
         Assert.Equal([GossipQueryCodec.QueryFlagChannelUpdate2, GossipQueryCodec.QueryFlagAll],
                      GossipQueryCodec.DecodeQueryFlags(scidQuery.QueryFlagsTlv.Value, 2));
+    }
+
+    [Theory]
+    [InlineData(0, false)] // the option off: every unknown channel is asked for
+    [InlineData(1_209_600, true)]
+    public async Task Given_UnknownChannelsWhoseUpdatesThePeerReportsStale_When_Synced_Then_OnlyFreshOnesAreAsked(
+        int skipStaleSeconds, bool skipped)
+    {
+        // Arrange: NL-404, an unknown channel with a fresh update, one with both updates older than two weeks, one
+        // with none (both timestamps 0)
+        var fresh = new ShortChannelId(100, 0, 0);
+        var stale = new ShortChannelId(101, 0, 0);
+        var withoutUpdates = new ShortChannelId(102, 0, 0);
+        var manager = CreateManager(o => o.SkipChannelsStaleFor = TimeSpan.FromSeconds(skipStaleSeconds));
+        var peer = new FakeGossipPeer(1, gossipQueriesEx: true);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+
+        // Act
+        manager.HandleMessage(peer, new ReplyChannelRangeMessage(
+                                  new ReplyChannelRangePayload(
+                                      s_chain, 0, Tip + 1, true,
+                                      GossipQueryCodec.EncodeShortChannelIds([fresh, stale, withoutUpdates])),
+                                  new BaseTlv(TlvConstants.ReplyChannelRangeTimestamps,
+                                              GossipQueryCodec.EncodeTimestamps(
+                                                  [new(Now - 1_209_000, 0), new(Now - 1_210_000, Now - 1_300_000),
+                                                   new(0, 0)]))));
+        var scidQuery = await peer.NextAsync<QueryShortChannelIdsMessage>();
+
+        // Assert
+        Assert.Equal(skipped ? [fresh] : [fresh, stale, withoutUpdates], Ids(scidQuery));
     }
 
     [Fact]
