@@ -1,8 +1,10 @@
+using System.Globalization;
 using Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
 using Abcd;
+using Application.Payments.Invoices;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
@@ -37,6 +39,7 @@ public class PublicPaymentFlowTests
     private const ulong AmountBaseMsat = 25_000_000;
     private static readonly TimeSpan s_settleTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan s_routeTimeout = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan s_hintGracePeriod = TimeSpan.FromSeconds(5);
 
     private readonly LightningRegtestNetworkFixture _fixture;
 
@@ -99,16 +102,27 @@ public class PublicPaymentFlowTests
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
         var carol = _fixture.GetLndNode("carol");
-        await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-pay-c", "nltg-pay-c", ct);
+        // Node:Invoices:RouteHints stays Auto (the default); only its grace period (10 min by default: how long our
+        // announced channel must be in our graph with both policies before hints are left out) is shortened
+        await using var node = await GossipTestNodes.StartGossipNodeAsync(
+                                   _fixture, "gossip-pay-c", "nltg-pay-c", ct,
+                                   n => n.ExtraConfiguration[$"{InvoiceOptions.SectionName}:"
+                                                           + $"{nameof(InvoiceOptions.PublicChannelGracePeriod)}"] =
+                                            s_hintGracePeriod.ToString("c", CultureInfo.InvariantCulture));
         var channel = await PublicTopology.OpenPublicChannelToAliceAsync(
                           _fixture, node, LightningMoney.Satoshis(400_000), [alice, carol], ct);
         await Poll.ForAsync(() => GossipGraphProbe.TryGetNodeInfoAsync(carol, node.NodeIdHex, ct), s_routeTimeout,
                             "carol has our node_announcement", ct, GossipGraphProbe.PollInterval);
         var amountMsat = PublicTopology.UniqueAmountMsat(AmountBaseMsat);
-        var invoice = await node.CreateInvoiceAsync(LightningMoney.MilliSatoshis(amountMsat), "goal (c)", ct);
-        Console.WriteLine($"Our invoice {invoice.Bolt11}");
-        // Needs lane C2's Node:Invoices:RouteHints = Auto (the default): no hint once an announced channel can receive
-        // the payment (wip/fafo still hints every usable channel, NL-245)
+        // No hint once our announced channel can receive the payment and has been in our graph for the grace period
+        var invoice = await Poll.ForAsync(async () =>
+        {
+            var created = await node.CreateInvoiceAsync(LightningMoney.MilliSatoshis(amountMsat), "goal (c)", ct);
+            var decoded = await carol.LightningClient.DecodePayReqAsync(new PayReqString { PayReq = created.Bolt11 },
+                                                                        cancellationToken: ct);
+            Console.WriteLine($"Our invoice {created.Bolt11}: {decoded.RouteHints.Count} route hints");
+            return decoded.RouteHints.Count == 0 ? created : null;
+        }, s_routeTimeout, "our invoice without route hints", ct, TimeSpan.FromSeconds(2));
         await LndRoutingProbe.AssertNoRouteHintsAsync(carol, invoice.Bolt11, ct);
         await LndRoutingProbe.AssertNoChannelWithAsync(carol, node.NodeIdHex, ct);
         var before = await PublicTopology.WaitSettledAsync(node, channel.ChannelId, ct);
