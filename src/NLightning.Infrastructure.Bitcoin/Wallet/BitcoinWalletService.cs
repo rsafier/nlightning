@@ -11,6 +11,7 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Interfaces;
+using Networks;
 
 public class BitcoinWalletService : IBitcoinWalletService
 {
@@ -29,10 +30,10 @@ public class BitcoinWalletService : IBitcoinWalletService
         _secureKeyManager = secureKeyManager;
         _uow = uow;
 
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork)
-                ?? throw new InvalidOperationException(
-                       $"Unknown bitcoin network '{nodeOptions.Value.BitcoinNetwork}'");
-        _logger.LogInformation("BitcoinWalletService network: {Network} (config: {ConfigNetwork})", _network, nodeOptions.Value.BitcoinNetwork);
+        // Fails on an unknown network: never derive addresses for a network we are not on
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
+        _logger.LogInformation("BitcoinWalletService network: {Network} (config: {ConfigNetwork})", _network,
+                               nodeOptions.Value.BitcoinNetwork);
     }
 
     public async Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange)
@@ -47,15 +48,15 @@ public class BitcoinWalletService : IBitcoinWalletService
         if (addressModel is not null)
             return addressModel;
 
-        // If there's none, get the last used index from db
-        var lastUsedIndex = await _uow.WalletAddressesDbRepository.GetLastUsedAddressIndex(addressType, isChange);
+        // If there's none, continue after the highest index we generated (NL-283)
+        var firstIndex = await GetNextAddressIndexAsync(addressType, isChange);
 
         _logger.LogInformation("Generating 10 new {addressType} {change}addresses and saving to the database.",
                                Enum.GetName(addressType), isChange ? "change " : string.Empty);
 
         // Generate 10 new addresses
         var addressList = new List<WalletAddressModel>(10);
-        for (var i = lastUsedIndex; i < lastUsedIndex + 10; i++)
+        for (var i = firstIndex; i < firstIndex + 10; i++)
         {
             ExtPrivKey extPrivKey;
             if (addressType == AddressType.P2Tr)
@@ -86,5 +87,21 @@ public class BitcoinWalletService : IBitcoinWalletService
         }
 
         return addressList[0];
+    }
+
+    /// <summary>
+    /// The first index of a new batch: one past the highest stored index, or 0 when this address type and chain have no
+    /// address yet. The repository reports 0 both for "no address" and for "only index 0", so the empty case is checked
+    /// separately.
+    /// </summary>
+    private async Task<uint> GetNextAddressIndexAsync(AddressType addressType, bool isChange)
+    {
+        var highestIndex = await _uow.WalletAddressesDbRepository.GetLastUsedAddressIndex(addressType, isChange);
+        if (highestIndex > 0)
+            return highestIndex + 1;
+
+        var hasAny = _uow.WalletAddressesDbRepository.GetAllAddresses()
+                         .Any(a => a.AddressType == addressType && a.IsChange == isChange);
+        return hasAny ? 1u : 0u;
     }
 }
