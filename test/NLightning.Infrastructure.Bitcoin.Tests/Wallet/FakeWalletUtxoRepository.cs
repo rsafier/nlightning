@@ -47,6 +47,15 @@ internal sealed class FakeWalletUtxoRepository : IUtxoMemoryRepository
     public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId) =>
         throw new NotSupportedException();
 
+    public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId,
+                                                     LightningMoney reserveToKeep,
+                                                     IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints) =>
+        throw new NotSupportedException();
+
+    public LightningMoney GetAvailableConfirmedBalance(uint currentBlockHeight,
+                                                       IReadOnlySet<(TxId TxId, uint Index)> excludedOutpoints) =>
+        throw new NotSupportedException();
+
     public List<UtxoModel> GetLockedUtxosForChannel(ChannelId channelId) => throw new NotSupportedException();
     public List<UtxoModel> ReturnUtxosNotSpentOnChannel(ChannelId channelId) => throw new NotSupportedException();
     public void ConfirmSpendOnChannel(ChannelId channelId) => throw new NotSupportedException();

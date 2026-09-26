@@ -5,6 +5,7 @@ namespace NLightning.Daemon.Tests.Handlers;
 
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -584,6 +585,109 @@ public class OpenChannelClientHandlerTests
         var ex = await Assert.ThrowsAsync<ChannelErrorException>(() => handleTask);
         Assert.Same(expectedException, ex);
         _utxoMemoryRepositoryMock.Verify(x => x.ReturnUtxosNotSpentOnChannel(channelModel.ChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task GivenAnAnchorsChannelThatWouldBreakTheReserve_WhenHandleAsync_ThenRefusedBeforeAnythingIsLocked()
+    {
+        // Arrange (NL-379 as opener)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var reserveMock = new Mock<IAnchorReserveService>();
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
+        reserveMock.Setup(x => x.EnsureCanFundAsync(fundingAmount, true, It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new AnchorReserveException("Funding would leave the wallet below the anchors reserve",
+                                                           fundingAmount + LightningMoney.Satoshis(10_000),
+                                                           LightningMoney.Satoshis(105_000),
+                                                           LightningMoney.Satoshis(10_000)));
+        var handler = CreateHandlerWithReserve(reserveMock.Object);
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ClientException>(() => handler.HandleAsync(request, CancellationToken.None));
+
+        // Assert
+        Assert.Equal(ErrorCodes.NotEnoughBalance, ex.ErrorCode);
+        Assert.Contains("anchors reserve", ex.Message);
+        reserveMock.Verify(x => x.LockFundingUtxosAsync(It.IsAny<LightningMoney>(), It.IsAny<ChannelId>(),
+                                                        It.IsAny<bool>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+        _utxoMemoryRepositoryMock.Verify(x => x.LockUtxosToSpendOnChannel(It.IsAny<LightningMoney>(),
+                                                                          It.IsAny<ChannelId>()), Times.Never);
+        _channelManagerMock.Verify(x => x.StartOpeningChannelAsync(peerId, channelModel, It.IsAny<IChannelMessage>()),
+                                   Times.Never);
+    }
+
+    [Fact]
+    public async Task GivenTheReserveService_WhenHandleAsync_ThenTheFundingIsLockedThroughItWithTheAnchorsFlag()
+    {
+        // Arrange (NL-379, NL-385: the funding keeps the reserve and skips outputs of pending broadcasts)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var reserveMock = new Mock<IAnchorReserveService>();
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
+        reserveMock.Setup(x => x.LockFundingUtxosAsync(fundingAmount, channelModel.ChannelId, true,
+                                                       It.IsAny<CancellationToken>()))
+                   .ReturnsAsync([]);
+        var handler = CreateHandlerWithReserve(reserveMock.Object);
+        var finalChannelId = CreateRandomChannelId();
+
+        // Act
+        var handleTask = handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        _channelMemoryRepositoryMock.Raise(x => x.OnChannelUpgraded += null, null!,
+                                           new ChannelUpgradedEventArgs(channelModel.ChannelId, finalChannelId));
+        var response = await handleTask;
+
+        // Assert
+        Assert.Equal(finalChannelId, response.ChannelId);
+        reserveMock.Verify(x => x.EnsureCanFundAsync(fundingAmount, true, It.IsAny<CancellationToken>()), Times.Once);
+        reserveMock.Verify(x => x.LockFundingUtxosAsync(fundingAmount, channelModel.ChannelId, true,
+                                                        It.IsAny<CancellationToken>()), Times.Once);
+        _utxoMemoryRepositoryMock.Verify(x => x.LockUtxosToSpendOnChannel(It.IsAny<LightningMoney>(),
+                                                                          It.IsAny<ChannelId>()), Times.Never);
+    }
+
+    private OpenChannelClientHandler CreateHandlerWithReserve(IAnchorReserveService reserveService) =>
+        new(_blockchainMonitorMock.Object, _channelFactoryMock.Object, _channelManagerMock.Object,
+            _channelMemoryRepositoryMock.Object, new Mock<ILogger<OpenChannelClientHandler>>().Object,
+            _messageFactoryMock.Object, _peerManagerMock.Object, _utxoMemoryRepositoryMock.Object,
+            anchorReserveService: reserveService);
+
+    private ChannelModel SetUpOpen(CompactPubKey peerId, OpenChannelClientRequest request, LightningMoney fundingAmount,
+                                   bool anchors)
+    {
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(200_000));
+
+        var party = new ChannelParty(LightningMoney.Satoshis(354), LightningMoney.Satoshis(1_000),
+                                     LightningMoney.Satoshis(1), 30, fundingAmount, 144, null);
+        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(253), 3, anchors,
+                                              FeatureSupport.No);
+        var localKeySet = new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId);
+        var channelModel = new ChannelModel(channelParams, CreateRandomChannelId(), null, null, true, null, null,
+                                            fundingAmount, localKeySet, 0, 0, LightningMoney.Zero, null, 0, peerId, 0,
+                                            ChannelState.V1Opening, ChannelVersion.V1);
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ReturnsAsync(channelModel);
+        _messageFactoryMock.Setup(x => x.CreateOpenChannel1Message(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<ChannelParty>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<ChannelFlags>(),
+                                                                   It.IsAny<ChannelTypeTlv>(),
+                                                                   It.IsAny<UpfrontShutdownScriptTlv>()))
+                           .Returns(CreateDummyOpenChannel1Message(channelModel.ChannelId, fundingAmount, peerId));
+        return channelModel;
     }
 
     private static ChannelId CreateRandomChannelId()

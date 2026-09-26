@@ -129,6 +129,8 @@ public class AnchorsMempoolPenaltyTests : IAsyncLifetime
         var cheater = await _harness.CreateNodeAsync("anchors-o8-cheater", ct);
         var victim = await _harness.CreateNodeAsync("anchors-o8-victim", ct);
         await cheater.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
+        // NL-379: as fundee of an anchors channel the victim keeps the on-chain anchors reserve (10,000 sat)
+        await victim.FundWalletAsync(LightningMoney.Satoshis(100_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_harness.Fixture, [cheater, victim], ct);
         await cheater.ConnectToAsync(victim, ct);
         var opened = await cheater.OpenChannelAsync(new OpenChannelClientRequest(victim.Address,

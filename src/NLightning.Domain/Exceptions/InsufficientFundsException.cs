@@ -26,4 +26,11 @@ public class InsufficientFundsException : ErrorException
         Required = required;
         Available = available;
     }
+
+    protected InsufficientFundsException(string message, LightningMoney required, LightningMoney available)
+        : base(message)
+    {
+        Required = required;
+        Available = available;
+    }
 }

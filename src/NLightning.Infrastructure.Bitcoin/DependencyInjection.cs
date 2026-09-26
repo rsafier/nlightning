@@ -79,6 +79,9 @@ public static class DependencyInjection
         // Fee inputs for CPFP and anchor HTLC transactions (BOLT 5 plan O7-T1)
         services.AddSingleton<IFeeInputSelector, FeeInputSelector>();
 
+        // The wallet reserve of anchors channels and the channel funding selection that keeps it (NL-379, NL-385)
+        services.AddSingleton<IAnchorReserveService, AnchorReserveService>();
+
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();
 
