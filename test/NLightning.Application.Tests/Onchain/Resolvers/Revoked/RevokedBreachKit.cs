@@ -70,9 +70,9 @@ internal sealed class RevokedBreachKit : IDisposable
                                           RevokedChainTx.TxId, RevokedNumber, SpentAtHeight,
                                           new Hash(new byte[32]), DateTimeOffset.UtcNow);
 
-    public RevokedBreachKit(RevokedCommitResolverOptions? options = null)
+    public RevokedBreachKit(RevokedCommitResolverOptions? options = null, bool hasAnchors = false)
     {
-        Pair = new RealSigningCommitmentPair(false);
+        Pair = new RealSigningCommitmentPair(hasAnchors);
 
         var services = new ServiceCollection();
         services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
@@ -236,6 +236,35 @@ internal sealed class RevokedBreachKit : IDisposable
         var input = tx.Inputs[0];
         var witness = new List<byte[]> { Array.Empty<byte>(), signature, signature, last, descriptor.WitnessScript! };
         return tx with { Inputs = [input with { Witness = witness }] };
+    }
+
+    /// <summary>
+    /// The cheater's anchors HTLC transaction for an HTLC output of the revoked commitment, batched behind another input
+    /// and output as <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> allows: input 0 and output 0 are a fee input and its
+    /// change, the HTLC input and its second-level output are at index 1.
+    /// </summary>
+    public ChainTx CheaterBatchedSecondLevel(HtlcDirection victimDirection, ulong htlcId, Secret? preimage = null)
+    {
+        var single = CheaterSecondLevel(victimDirection, htlcId, preimage);
+        var feeInput = new ChainTxInput(Enumerable.Repeat((byte)0xFE, 32).ToArray(), 3, 0xFFFFFFFD,
+                                     [new byte[72], new byte[33]]);
+        var change = new ChainTxOutput(50_000, Destination);
+        var batched = single with
+        {
+            Inputs = [feeInput, single.Inputs[0]],
+            Outputs = [change, single.Outputs[0]]
+        };
+
+        // The txid of the batched transaction, as bitcoind would compute it
+        var tx = Transaction.Create(Network.Main);
+        tx.Version = 2;
+        tx.LockTime = new LockTime(single.LockTime);
+        foreach (var input in batched.Inputs)
+            tx.Inputs.Add(new OutPoint(new uint256((byte[])input.PreviousTxId), input.PreviousVout), null, null,
+                          new Sequence(input.Sequence));
+        foreach (var output in batched.Outputs)
+            tx.Outputs.Add(new TxOut(Money.Satoshis(output.AmountSat), new Script(output.ScriptPubKey)));
+        return batched with { TxId = tx.GetHash().ToBytes() };
     }
 
     /// <summary>Our broadcast transactions that are not replaced or confirmed yet, in broadcast order.</summary>

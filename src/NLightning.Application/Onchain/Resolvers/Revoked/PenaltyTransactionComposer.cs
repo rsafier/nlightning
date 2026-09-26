@@ -19,7 +19,8 @@ using Infrastructure.Bitcoin.Builders.Interfaces;
 /// <list type="bullet">
 /// <item>An output without a live transaction gets one: every output whose deadline is still more than
 /// <c>security_delay</c> (18) blocks away shares one batched penalty (with our <c>to_remote</c> of the same commitment,
-/// +272 weight); an output closer to its deadline gets its own (B5-REV-08).</item>
+/// +272 weight); an output closer to its deadline gets its own (B5-REV-08), and so does, from the start, an output
+/// marked <see cref="PenaltyNeed.Isolate"/> (anchors: an HTLC output the cheater can already spend, O7-T3).</item>
 /// <item>A batched penalty that is still unconfirmed when one of its outputs comes within <c>security_delay</c> of its
 /// deadline is split: every output still unspent gets its own penalty, the most urgent one paying at least the BIP 125
 /// replacement fee of the batch (O5-T3), and published first, so the others no longer conflict once it replaced the
@@ -198,7 +199,8 @@ public sealed class PenaltyTransactionComposer
     }
 
     private bool IsUrgent(PenaltyNeed need, uint height) =>
-        need is { IsPenalty: true, DeadlineHeight: { } deadline } && _policy.ShouldSplitPenalty(height, deadline);
+        need is { IsPenalty: true, Isolate: true }
+     || (need is { IsPenalty: true, DeadlineHeight: { } deadline } && _policy.ShouldSplitPenalty(height, deadline));
 
     private IEnumerable<OutputResolverAction> BuildBatch(ChannelId channelId, IReadOnlyList<PenaltyNeed> needs,
                                                          uint height, uint estimatePerKw, byte[] destinationScript)
