@@ -47,6 +47,29 @@ public class GraphModelTests
     }
 
     [Theory]
+    [InlineData(null, null, null, null)] // assumed, no policy: unknown
+    [InlineData(null, 400_000_000UL, null, 400_000_000UL)] // one direction's htlc_maximum_msat
+    [InlineData(null, 400_000_000UL, 900_000_000UL, 900_000_000UL)] // the larger of both
+    [InlineData(5_000UL, 400_000_000UL, 900_000_000UL, 5_000_000UL)] // a chain capacity wins
+    public void Given_CapacityAndPolicies_When_ReadingTheEstimate_Then_TheChainCapacityOrTheLargerHtlcMaximum(
+        ulong? capacitySat, ulong? htlcMax1, ulong? htlcMax2, ulong? expectedMsat)
+    {
+        // Arrange (Gossip:AssumeChannelValid stores channels without capacity)
+        var channel = new GraphChannel(s_scid, s_node1, s_node2, s_node1, s_node2, capacitySat,
+                                       verification: capacitySat is null
+                                                         ? GraphChannelVerification.Assumed
+                                                         : GraphChannelVerification.Verified);
+        if (htlcMax1 is { } max1)
+            channel = channel.WithPolicy(GraphTestKit.Policy(htlcMax: max1));
+        if (htlcMax2 is { } max2)
+            channel = channel.WithPolicy(GraphTestKit.WithDirection(GraphTestKit.Policy(htlcMax: max2), 1));
+
+        // Act / Assert
+        Assert.Equal(expectedMsat, channel.EstimatedCapacityMsat);
+        Assert.Equal(capacitySat is not null, channel.IsChainChecked);
+    }
+
+    [Theory]
     [InlineData(null, null, true)] // no policy at all
     [InlineData(1_000u, null, false)] // one fresh direction
     [InlineData(1_000u, 100u, true)] // the older one is stale

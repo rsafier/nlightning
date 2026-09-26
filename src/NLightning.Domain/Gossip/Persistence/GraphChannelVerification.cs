@@ -15,5 +15,11 @@ public enum GraphChannelVerification : byte
     Unverified = 1,
 
     /// <summary>One of our own channels: announced by us, no chain lookup needed.</summary>
-    Own = 2
+    Own = 2,
+
+    /// <summary>
+    /// Accepted on its signatures alone (<c>Gossip:AssumeChannelValid</c>): no chain lookup, capacity unknown, never
+    /// relayed or served.
+    /// </summary>
+    Assumed = 3
 }

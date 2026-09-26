@@ -19,5 +19,14 @@ public enum GraphChannelVerification : byte
     /// <summary>
     /// One of our own channels (no chain lookup needed).
     /// </summary>
-    Own = 2
+    Own = 2,
+
+    /// <summary>
+    /// Accepted on its four signatures alone, without the funding output lookup (<c>Gossip:AssumeChannelValid</c>, the
+    /// equivalent of LND's <c>--routing.assumechanvalid</c>): the capacity is unknown (routing estimates it from the
+    /// policies' <c>htlc_maximum_msat</c>, <see cref="GraphChannel.EstimatedCapacityMsat"/>), a closed channel is only
+    /// dropped by the stale rule, and the channel is never relayed or served in query replies (BOLT 7 requires the
+    /// output check before a <c>channel_announcement</c> is passed on).
+    /// </summary>
+    Assumed = 3
 }

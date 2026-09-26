@@ -325,6 +325,55 @@ public class NodeServiceExtensionsTests
     }
 
     [Theory]
+    [InlineData("mainnet", null, null, "HTLCs are enabled")] // HTLCs on by default
+    [InlineData("mainnet", "true", null, "HTLCs are enabled")]
+    [InlineData("mainnet", "false", "true", "AllowPublicChannelsOnMainnet")]
+    [InlineData("mainnet", "false", null, null)] // the gossip probe's settings
+    [InlineData("regtest", null, "true", null)] // any other network: allowed
+    [InlineData("signet", null, null, null)]
+    public void Given_AssumeChannelValid_When_GossipGraphOptionsResolved_Then_MainnetRefusesItWithHtlcsOrPublicChannels(
+        string network, string? enableHtlcs, string? allowPublicOnMainnet, string? expectedFailure)
+    {
+        // Arrange: ValidateOnStart runs this check when the daemon's host starts
+        var extra = new List<(string, string)> { ("Node:Network", network), ("Gossip:AssumeChannelValid", "true") };
+        if (enableHtlcs is not null)
+            extra.Add(("Node:EnableHtlcs", enableHtlcs));
+        if (allowPublicOnMainnet is not null)
+            extra.Add(("Gossip:AllowPublicChannelsOnMainnet", allowPublicOnMainnet));
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(extra.ToArray()), new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        GossipGraphOptions Resolve() => provider.GetRequiredService<IOptions<GossipGraphOptions>>().Value;
+
+        // Assert
+        if (expectedFailure is null)
+        {
+            Assert.True(Resolve().AssumeChannelValid);
+            return;
+        }
+
+        var exception = Assert.Throws<OptionsValidationException>(Resolve);
+        Assert.Contains(exception.Failures, f => f.Contains(expectedFailure) && f.Contains("AssumeChannelValid"));
+    }
+
+    [Fact]
+    public void Given_AssumeChannelValidUnset_When_GossipGraphOptionsResolvedOnMainnet_Then_ItIsOffAndValid()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Network", "mainnet")), new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<GossipGraphOptions>>().Value;
+
+        // Assert
+        Assert.False(options.AssumeChannelValid);
+    }
+
+    [Theory]
     [InlineData("regtest", null, true)]
     [InlineData("regtest", "false", false)]
     [InlineData("mainnet", null, true)]

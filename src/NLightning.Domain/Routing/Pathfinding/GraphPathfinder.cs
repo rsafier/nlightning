@@ -420,7 +420,8 @@ public sealed class GraphPathfinder
                 {
                     var neighborDirection = (byte)(1 - adjacency.LocalDirection);
                     yield return new Edge(adjacency.NeighborIndex, adjacency.Channel.ShortChannelId, neighborDirection,
-                                          adjacency.IncomingPolicy, adjacency.Channel.CapacityMsat, adjacency.Channel);
+                                          adjacency.IncomingPolicy, adjacency.Channel.EstimatedCapacityMsat,
+                                          adjacency.Channel);
                 }
             }
 
