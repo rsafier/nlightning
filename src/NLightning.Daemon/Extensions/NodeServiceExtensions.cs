@@ -15,6 +15,7 @@ using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
 using Application.Onchain.Resolvers.Revoked;
 using Application.Payments.Send;
+using Application.Payments.Switch;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -223,6 +224,9 @@ public static class NodeServiceExtensions
         // Fee, part and retry limits of our outgoing payments (optional section; PaymentSendOptions has defaults; a
         // payinvoice call may set its own fee and part limits, NL-270)
         services.Configure<PaymentSendOptions>(configuration.GetSection("Node:Payments"));
+
+        // How long the final hop holds an incomplete basic_mpp HTLC set before mpp_timeout (optional; default 60 s)
+        services.Configure<HtlcSwitchOptions>(configuration.GetSection("Node:Switch"));
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>

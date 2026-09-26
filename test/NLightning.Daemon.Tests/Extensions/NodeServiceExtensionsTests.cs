@@ -31,6 +31,7 @@ using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -485,6 +486,28 @@ public class NodeServiceExtensionsTests
         // Assert
         Assert.Equal(TimeSpan.FromSeconds(1), options.ReconnectInitialDelay);
         Assert.Equal(TimeSpan.FromSeconds(30), options.ReconnectMaxDelay);
+    }
+
+    [Fact]
+    public void Given_NodeSwitchSection_When_Composed_Then_MppTimeoutBoundAndAttributionServiceResolves()
+    {
+        // Arrange (ABCD W6 integration: Node:Switch binds HtlcSwitchOptions, AddBitcoinInfrastructure registers the
+        // W6-D attribution service)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Switch:MppTimeout", "00:01:30")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var switchOptions = provider.GetRequiredService<IOptions<HtlcSwitchOptions>>().Value;
+        var attribution = provider.GetRequiredService<IAttributionDataService>();
+
+        // Assert
+        Assert.Equal(TimeSpan.FromSeconds(90), switchOptions.MppTimeout);
+        Assert.NotNull(attribution);
+        Assert.Single(services, d => d.ServiceType == typeof(IAttributionDataService));
     }
 
     private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)

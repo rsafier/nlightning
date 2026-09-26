@@ -206,8 +206,9 @@ public class PaymentHarnessTests : IDisposable
     [Fact]
     public async Task Given_AmountAboveOurBalance_When_BobPays_Then_NothingIsOfferedAndThePaymentFailsWithoutCode()
     {
-        // Arrange: Bob has 1.5M sat on Bob-Carol, and Carol's invoice does not offer basic_mpp (no split); the engine's
-        // own sender rules (LocalLiquidityEstimator) say no route can carry it, so nothing is offered
+        // Arrange: Bob has 1.5M sat on Bob-Carol, and Carol's invoice offers basic_mpp (advertised by default since
+        // ABCD W6-B), but even a split over every path cannot carry it; the engine's own sender rules
+        // (LocalLiquidityEstimator) say no route can carry it, so nothing is offered
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(LightningMoney.Satoshis(1_900_000),
                                                                               "too much", null, ct);
@@ -221,7 +222,7 @@ public class PaymentHarnessTests : IDisposable
         Assert.Null(payment.FailureCode);
         Assert.Null(payment.OutgoingHtlcId);
         Assert.Contains("can send at most", payment.FailureReason);
-        Assert.Contains("basic_mpp", payment.FailureReason);
+        Assert.Contains("even split over every path", payment.FailureReason);
         Assert.Empty(_harness.Carol.Switch.Events);
         AssertNoPendingHtlcs();
     }

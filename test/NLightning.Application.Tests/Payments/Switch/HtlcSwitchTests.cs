@@ -222,7 +222,7 @@ public class HtlcSwitchTests
         services.AddSingleton(Options.Create(new NodeOptions { EnableHtlcs = true }));
         services.AddSingleton(new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
                                                          new Mock<IHopPayloadSerializer>().Object,
-                                                         new Mock<IOnionReplayCache>().Object,
+                                                         new Mock<IOnionReplayStore>().Object,
                                                          NullLogger<IncomingOnionProcessor>.Instance));
         services.AddHtlcSwitchServices();
         services.AddChannelFeeServices();
