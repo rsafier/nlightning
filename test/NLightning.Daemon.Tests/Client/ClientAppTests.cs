@@ -57,6 +57,10 @@ public class ClientAppTests
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "fast")]
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "301")]
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "5", "bogus")]
+    [InlineData("openchannel", "peer@host", "0")]
+    [InlineData("openchannel", "peer@host", "lots")]
+    [InlineData("openchannel", "peer@host", "50000", "50000")]
+    [InlineData("open-channel", "peer@host", "50000", "-1")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -97,6 +101,9 @@ public class ClientAppTests
     [InlineData("pay-invoice", "lnbcrt1", "1000")]
     [InlineData("listinvoices", "1000")]
     [InlineData("pay", "lnbcrt1", "any", "300")]
+    [InlineData("openchannel", "peer@host", "50000")]
+    [InlineData("openchannel", "peer@host", "50000", "0")]
+    [InlineData("open-channel", "peer@host", "50000", "20000")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
         params string[] commandArgs)
     {

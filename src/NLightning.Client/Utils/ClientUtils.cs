@@ -20,7 +20,8 @@ public static class ClientUtils
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
-        Console.WriteLine("  openchannel <node> <sats>    Open a channel to peer");
+        Console.WriteLine("  openchannel <node> <sats> [push_sats]");
+        Console.WriteLine("                               Open a channel to peer, optionally giving it push_sats");
         Console.WriteLine("  createinvoice <msat|any> [description] [expiry_seconds]");
         Console.WriteLine("                               Create an invoice (alias: addinvoice)");
         Console.WriteLine("  payinvoice <bolt11> [msat] [timeout_seconds]");
