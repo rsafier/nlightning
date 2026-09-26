@@ -15,6 +15,13 @@ using Networks;
 
 public class BitcoinWalletService : IBitcoinWalletService
 {
+    /// <summary>
+    /// Serializes address lookup and batch generation across scopes (NL-283): two scopes that both find no unused
+    /// address would otherwise compute the same first index and the second save would hit the
+    /// (Index, IsChange, AddressType) key. Process-wide, so nodes sharing a process (tests) only wait on each other.
+    /// </summary>
+    private static readonly SemaphoreSlim s_addressGenerationLock = new(1, 1);
+
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly ILogger<BitcoinWalletService> _logger;
     private readonly Network _network;
@@ -42,6 +49,19 @@ public class BitcoinWalletService : IBitcoinWalletService
             throw new InvalidOperationException(
                 "You cannot use flags for this method. Please select only one address type.");
 
+        await s_addressGenerationLock.WaitAsync();
+        try
+        {
+            return await GetOrGenerateUnusedAddressAsync(addressType, isChange);
+        }
+        finally
+        {
+            s_addressGenerationLock.Release();
+        }
+    }
+
+    private async Task<WalletAddressModel> GetOrGenerateUnusedAddressAsync(AddressType addressType, bool isChange)
+    {
         // Find an unused address in the DB
         var addressModel = await _uow.WalletAddressesDbRepository.GetUnusedAddressAsync(addressType, isChange);
 

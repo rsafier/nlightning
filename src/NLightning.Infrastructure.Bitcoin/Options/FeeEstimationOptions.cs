@@ -61,6 +61,13 @@ public class FeeEstimationOptions
     /// </summary>
     public uint FixedFeeRatePerKw { get; set; } = 2_500;
 
+    /// <summary>
+    /// The feerate in sat/kw (at least 253) used while there is no estimate: before the first successful fetch, and
+    /// while every fetch fails (bitcoind without <c>estimatesmartfee</c> data, an unreachable API). Once there was an
+    /// estimate, a failed refresh keeps it instead.
+    /// </summary>
+    public uint FallbackFeeRatePerKw { get; set; } = 2_500;
+
     public string CacheFile { get; set; } = "fee_estimation_cache.bin";
     public string CacheExpiration { get; set; } = "5m"; // 5 minutes
 
@@ -89,6 +96,10 @@ public class FeeEstimationOptions
              && !EstimateMode.Equals("ECONOMICAL", StringComparison.OrdinalIgnoreCase))
                 errors.Add($"FeeEstimation:EstimateMode '{EstimateMode}' is not CONSERVATIVE or ECONOMICAL.");
         }
+
+        if (FallbackFeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
+            errors.Add(
+                $"FeeEstimation:FallbackFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");
 
         if (IsSource(SourceFixed) && FixedFeeRatePerKw < FeeRateConverter.FeeratePerKwFloor)
             errors.Add($"FeeEstimation:FixedFeeRatePerKw must be at least {FeeRateConverter.FeeratePerKwFloor} sat/kw.");

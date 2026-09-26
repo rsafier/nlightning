@@ -343,6 +343,7 @@ public static class NodeConfigurationExtensions
                    "ConfirmationTarget": {{FEE_CONF_TARGET}},
                    "EstimateMode": "{{FEE_ESTIMATE_MODE}}",
                    "FixedFeeRatePerKw": {{FEE_FIXED}},
+                   "FallbackFeeRatePerKw": {{FEE_FALLBACK}},
                    "CacheExpiration": "5m",
                    "CacheFile": "fee_estimation_cache.bin"
                  },
@@ -379,6 +380,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{FEE_CONF_TARGET}}", Invariant(fees.ConfirmationTarget))
                   .Replace("{{FEE_ESTIMATE_MODE}}", fees.EstimateMode)
                   .Replace("{{FEE_FIXED}}", Invariant(fees.FixedFeeRatePerKw))
+                  .Replace("{{FEE_FALLBACK}}", Invariant(fees.FallbackFeeRatePerKw))
                   .Replace("{{RPC_PORT}}", Invariant(rpcPort))
                   .Replace("{{ZMQ_HOST}}", zmqHost)
                   .Replace("{{ZMQ_BLOCK_PORT}}", Invariant(zmqBlockPort))

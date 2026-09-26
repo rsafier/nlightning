@@ -15,8 +15,13 @@ using Options;
 /// <summary>
 /// The node's fee estimate in sat/kw, from the source <see cref="FeeEstimationOptions.Source"/> selects: a
 /// mempool.space-style HTTP API (default), bitcoind's <c>estimatesmartfee</c> or a fixed rate. Every rate goes through
-/// <see cref="FeeRateConverter"/> (NL-288: sat/vB x 250, not x 1000) and is at least 253 sat/kw.
+/// <see cref="FeeRateConverter"/> (NL-288: sat/vB x 250, not x 1000) and is at least 253 sat/kw. Without any estimate
+/// the rate is <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>, never 0.
 /// </summary>
+/// <remarks>
+/// Register it as one singleton (<see cref="FeeServiceCollectionExtensions.AddFeeServices"/>): the host starts that
+/// instance, and every consumer must read its cache.
+/// </remarks>
 public class FeeService : IFeeService
 {
     private const string FeeCacheFileName = "fee_cache.bin";
@@ -129,9 +134,15 @@ public class FeeService : IFeeService
     /// The cached rate (sat/kw in <see cref="LightningMoney.Satoshi"/>), as a new value, so a caller can't change the
     /// cache.
     /// </summary>
+    /// <remarks>
+    /// Until the first successful estimate (not started yet, or a source without an estimate, such as bitcoind's
+    /// <c>estimatesmartfee</c> on a young signet) this is <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>, never
+    /// 0: a rate of 0 would put <c>feerate_per_kw=0</c> in open_channel and make every dust fee 0.
+    /// </remarks>
     public LightningMoney GetCachedFeeRatePerKw()
     {
-        return LightningMoney.Satoshis(Interlocked.Read(ref _cachedFeeRatePerKw));
+        var cached = Interlocked.Read(ref _cachedFeeRatePerKw);
+        return LightningMoney.Satoshis(cached > 0 ? cached : _feeEstimationOptions.FallbackFeeRatePerKw);
     }
 
     public async Task RefreshFeeRateAsync(CancellationToken cancellationToken)
@@ -143,13 +154,25 @@ public class FeeService : IFeeService
             _lastFetchTime = DateTime.UtcNow;
             await SaveToFileAsync();
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Ignore cancellation
+            // Our own cancellation (stopping, or the caller gave up): nothing to report
         }
         catch (Exception e)
         {
-            _logger.LogError(e, "Error fetching the fee rate from {Source}", _feeEstimationOptions.Source);
+            // An HttpClient timeout is an OperationCanceledException although our token is not cancelled: log it too
+            var reason = e is OperationCanceledException ? "timed out" : "failed";
+            if (Interlocked.Read(ref _cachedFeeRatePerKw) > 0)
+            {
+                _logger.LogError(e, "Fetching the fee rate from {Source} {Reason}; keeping the last estimate",
+                                 _feeEstimationOptions.Source, reason);
+            }
+            else if (_logger.IsEnabled(LogLevel.Warning))
+            {
+                _logger.LogWarning(e, "Fetching the fee rate from {Source} {Reason} and there is no estimate yet; "
+                                    + "using FeeEstimation:FallbackFeeRatePerKw ({FallbackFeeRatePerKw} sat/kw)",
+                                   _feeEstimationOptions.Source, reason, _feeEstimationOptions.FallbackFeeRatePerKw);
+            }
         }
     }
 

@@ -121,6 +121,34 @@ public class BitcoinWalletServiceTests
         Assert.True(change.IsChange);
     }
 
+    [Fact]
+    public async Task Given_TwoScopesWithoutUnusedAddresses_When_GettingAddressesConcurrently_Then_BatchesDoNotCollide()
+    {
+        // Arrange: the first batch (0-9) is used; the index query yields, so both scopes would read 9 without the lock
+        var first = CreateService(BitcoinNetwork.Regtest);
+        await first.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        _addresses.Setup(r => r.GetLastUsedAddressIndex(It.IsAny<AddressType>(), It.IsAny<bool>()))
+                  .Returns(async (AddressType type, bool isChange) =>
+                   {
+                       var highest = _stored.Where(a => a.AddressType == type && a.IsChange == isChange)
+                                            .Select(a => a.Index)
+                                            .DefaultIfEmpty(0u)
+                                            .Max();
+                       await Task.Delay(50, TestContext.Current.CancellationToken);
+                       return highest;
+                   });
+        var second = CreateService(BitcoinNetwork.Regtest);
+        var third = CreateService(BitcoinNetwork.Regtest);
+
+        // Act
+        var addresses = await Task.WhenAll(second.GetUnusedAddressAsync(AddressType.P2Wpkh, false),
+                                           third.GetUnusedAddressAsync(AddressType.P2Wpkh, false));
+
+        // Assert: 10-19 and 20-29, no duplicate key (NL-283)
+        Assert.Equal([10u, 20u], addresses.Select(a => a.Index).Order());
+        Assert.Equal(Enumerable.Range(0, 30).Select(i => (uint)i), _stored.Select(a => a.Index).Order());
+    }
+
     [Theory]
     [InlineData("signet", AddressType.P2Wpkh, "tb1q")]
     [InlineData("signet", AddressType.P2Tr, "tb1p")]

@@ -71,8 +71,12 @@ dotnet run --project src/NLightning.Client -- --network mutinynet getaddress    
 | Source | Settings | Notes |
 |---|---|---|
 | `Http` (template default on signets) | `Url`, `PreferredFeeRate` (JSON property), `RateUnit` (`sat/vB` default, `sat/kvB`, `sat/kw`, `BTC/kvB`), `Method`/`Body`/`ContentType` | Mutinynet: `https://mutinynet.com/api/v1/fees/recommended` (mempool.space API: `fastestFee`, `halfHourFee`, `hourFee`, `economyFee`, `minimumFee`, all sat/vB). Plain signet: `https://mempool.space/signet/api/v1/fees/recommended`. |
-| `Bitcoind` | `ConfirmationTarget` (default 6), `EstimateMode` (`CONSERVATIVE`/`ECONOMICAL`) | `estimatesmartfee` over the `Bitcoin` RPC settings. A fresh node has no estimate for a while; the service then logs an error and has no rate. |
+| `Bitcoind` | `ConfirmationTarget` (default 6), `EstimateMode` (`CONSERVATIVE`/`ECONOMICAL`) | `estimatesmartfee` over the `Bitcoin` RPC settings. A fresh node has no estimate for a while; the service then logs a warning and uses `FallbackFeeRatePerKw`. |
 | `Fixed` | `FixedFeeRatePerKw` (default 2500, at least 253) | Template default on regtest. |
+
+Whatever the source, until the first estimate arrives (and while every fetch fails) the rate is
+`FeeEstimation:FallbackFeeRatePerKw` (default 2500 sat/kw, at least 253), never 0; once there was an estimate, a failed
+refresh keeps it. A request that times out is logged as such.
 
 `FeeEstimation:RateMultiplier` is ignored since NL-288 (it turned sat/vB into sat/kvB, 4x too high) and logs a warning
 when set; delete it from old configuration files.
