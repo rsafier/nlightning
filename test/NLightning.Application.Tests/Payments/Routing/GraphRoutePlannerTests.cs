@@ -323,4 +323,36 @@ public class GraphRoutePlannerTests
         Assert.Equal("direct over " + s_scidUc, part.Description);
         Assert.True(part.Route.Fee.IsZero);
     }
+
+    [Fact]
+    public void Given_AUsableHintAboveTheFeeLimit_When_PlannedWithAGraph_Then_TheGraphIsNotUsed()
+    {
+        // Arrange: Erin hints a channel from Carol (our peer) at 50,000 msat; the graph has a 3,600 msat route
+        var target = Target(false, [new RoutingInfo(s_carol, new ShortChannelId(900, 1, 1), 50_000, 0, 40)]);
+
+        // Act
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build()), maxFee: 10_000), out _,
+                                        out var reason);
+
+        // Assert: the payee's own hint decides while it is usable (the per-call fee limit keeps its meaning)
+        Assert.False(planned);
+        Assert.Contains("fee 50000 msat exceeds the limit of 10000 msat", reason);
+        Assert.DoesNotContain("graph", reason);
+    }
+
+    [Fact]
+    public void Given_TheHintChannelAvoidedAfterAFailure_When_PlannedWithAGraph_Then_TheGraphRouteIsUsed()
+    {
+        // Arrange
+        var hintScid = new ShortChannelId(900, 1, 1);
+        var target = Target(false, [new RoutingInfo(s_carol, hintScid, 1_000, 0, 40)]);
+        _constraints.ExcludedChannels.Add(hintScid);
+
+        // Act
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build())), out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        Assert.Equal(s_scidDe, Assert.Single(parts!).Route.Hops[1].OutgoingShortChannelId);
+    }
 }

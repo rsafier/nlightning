@@ -34,15 +34,16 @@ using Domain.Routing.Pathfinding;
 /// takes the largest amount that fits (at least <see cref="PaymentPlanRequest.MinPartMsat"/> unless that is all that
 /// is left), until the amount is covered, within <see cref="PaymentPlanRequest.MaxParts"/>. Every part carries
 /// <c>total_msat</c> = <see cref="PaymentPlanRequest.TotalMsat"/>.</para>
-/// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when no direct
-/// or hint path carries the whole amount, <see cref="GraphPathfinder"/> searches the gossip graph from us to the payee
+/// <para>Graph paths (BOLT 7 plan G4-T3, decision D7; only with <see cref="PaymentPlanRequest.Graph"/>): when there is no
+/// usable direct or hint path (the payee is not our peer and no hint starts at one, or the payment avoided them all),
+/// <see cref="GraphPathfinder"/> searches the gossip graph from us to the payee
 /// (Dijkstra backward from the payee, probability-weighted with <see cref="MissionControl"/>'s estimates) with our
 /// usable channels as the first hops (their live sendable amount, never their gossip state), the invoice's route hints
 /// as extra edges (so a private payee is reached through the graph and then its hint), the payment's exclusions, the
 /// nodes mission control penalizes and the verified <c>channel_update</c>s of earlier failures
 /// (<see cref="RouteConstraints.GraphPolicyOverrides"/>, this payment only), the fee limit and
 /// <see cref="RoutingOptions.MaxCltvExpiryDistance"/>. It returns up to <see cref="GraphRoutingContext.PathsPerAmount"/>
-/// diverse paths, tried after the direct and hint paths; for a split it is asked again for half the amount, a quarter,
+/// diverse paths, cheapest first; for a split it is asked again for half the amount, a quarter,
 /// and so on down to <see cref="PaymentPlanRequest.MinPartMsat"/>, so smaller channels are found too. A graph path's
 /// hops also keep their <c>htlc_minimum_msat</c>, <c>htlc_maximum_msat</c> and capacity, which every part (and the
 /// parts together, for the capacity) must respect, and its payee CLTV carries the shadow offset
@@ -92,7 +93,10 @@ public sealed class PaymentRoutePlanner
         var reasons = new List<string>();
         var paths = BuildPaths(request, reasons);
 
-        // One part, when one path can carry the whole amount: the direct and hint paths first, then the graph's
+        // The graph only when no direct or hint path is usable (none exists, or the payment avoided them all)
+        var useGraph = request.Graph is not null && paths.Count == 0;
+
+        // One part, when one path can carry the whole amount
         var singleReasons = new List<string>();
         if (TryFitSingle(request, paths, inFlight, singleReasons, out parts))
         {
@@ -100,18 +104,22 @@ public sealed class PaymentRoutePlanner
             return true;
         }
 
-        var seen = new HashSet<string>(paths.Select(Signature));
-        var graphPaths = BuildGraphPaths(request, request.AmountMsat, seen);
-        if (TryFitSingle(request, graphPaths, inFlight, singleReasons, out parts))
+        var graphPaths = new List<CandidatePath>();
+        var seen = new HashSet<string>();
+        if (useGraph)
         {
-            failureReason = null;
-            return true;
+            graphPaths.AddRange(BuildGraphPaths(request, request.AmountMsat, seen));
+            if (TryFitSingle(request, graphPaths, inFlight, singleReasons, out parts))
+            {
+                failureReason = null;
+                return true;
+            }
+
+            if (graphPaths.Count == 0)
+                reasons.Add("the graph has no path for the whole amount within the limits");
         }
 
-        if (request.Graph is not null && graphPaths.Count == 0)
-            reasons.Add("the graph has no path for the whole amount within the limits");
-
-        if (request.Target.SupportsMpp && request.MaxParts >= 2 && request.Graph is not null)
+        if (useGraph && request.Target.SupportsMpp && request.MaxParts >= 2)
         {
             // Smaller amounts find the smaller channels a split can combine
             var amount = request.AmountMsat;
