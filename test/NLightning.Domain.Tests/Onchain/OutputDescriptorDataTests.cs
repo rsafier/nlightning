@@ -56,8 +56,11 @@ public class OutputDescriptorDataTests
         var bytes = new OutputDescriptorData(1, [1, 2, 3], [4], 0, false, s_point, null).Encode();
         var row = new OutputResolutionModel
         {
-            TransactionId = new byte[32], OutputIndex = 0, ChannelId = new byte[32],
-            Descriptor = OutputDescriptorKind.DelayedToLocal, DescriptorData = bytes[..^1]
+            TransactionId = new byte[32],
+            OutputIndex = 0,
+            ChannelId = new byte[32],
+            Descriptor = OutputDescriptorKind.DelayedToLocal,
+            DescriptorData = bytes[..^1]
         };
 
         // Act / Assert
