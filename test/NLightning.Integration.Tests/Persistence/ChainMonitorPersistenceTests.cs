@@ -362,6 +362,94 @@ public class ChainMonitorPersistenceTests
     }
 
     [Fact]
+    public async Task Given_NewBranchProcessed_When_AStaleOrphanIsDeliveredLate_Then_ItIsDroppedWithoutARewind()
+    {
+        // Arrange: 101 and 102 processed, then a branch from 100 (101', 102', 103') replaces them
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        await harness.MineAndDeliverAsync();
+        var orphan = await harness.MineAndDeliverAsync();
+        harness.Chain.Reorg(100, 3);
+        await harness.DeliverTipAsync();
+        Assert.Equal(103u, harness.Monitor.LastProcessedBlockHeight);
+        var disconnected = new List<uint>();
+        harness.Monitor.OnBlockDisconnected += (_, args) => disconnected.Add(args.Height);
+        var processed = new List<uint>();
+        harness.Monitor.OnNewBlockDetected += (_, args) => processed.Add(args.Height);
+
+        // Act: a late notification of the old 102, which is not in the active chain
+        await harness.Monitor.ProcessNewBlockAsync(orphan, 102);
+
+        // Assert: nothing of the active branch was disconnected or processed again
+        Assert.Empty(disconnected);
+        Assert.Empty(processed);
+        Assert.Equal(103u, harness.Monitor.LastProcessedBlockHeight);
+        Assert.False(harness.Monitor.IsChainProcessingHalted);
+        await using (var context = harness.Context())
+        {
+            var state = await context.BlockchainStates.AsNoTracking().SingleAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(harness.Chain[103].GetHash().ToBytes(), (byte[])state.LastProcessedBlockHash);
+            var headers = await context.BlockHeaders.AsNoTracking().Where(h => h.Height > 100)
+                                       .OrderBy(h => h.Height).ToListAsync(TestContext.Current.CancellationToken);
+            Assert.Equal([101u, 102u, 103u], headers.Select(h => h.Height));
+        }
+
+        // Act: the chain grows on the active branch
+        await harness.MineAndDeliverAsync();
+
+        // Assert
+        Assert.Equal([104u], processed);
+        Assert.Empty(disconnected);
+    }
+
+    [Fact]
+    public async Task Given_PendingBroadcast_When_ABlockHaltsProcessing_Then_ItIsStillSentAfterTheRound()
+    {
+        // Arrange: a refused broadcast (stored as pending), then every block save fails
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        harness.Monitor.BlockRetryBaseDelay = TimeSpan.Zero;
+        var commitment = CreateTransaction(0x0d);
+        harness.Chain.SendFailure = new InvalidOperationException("node down");
+        Assert.False(await harness.Monitor.SaveAndPublishAsync(
+                         new BroadcastTransactionModel(ToSigned(commitment), BroadcastPurpose.LocalCommitment,
+                                                       ChannelIdOf(0x0d), 100)));
+        harness.Chain.SendFailure = null;
+        harness.FailSaves = true;
+
+        // Act
+        await harness.MineAndDeliverAsync();
+
+        // Assert: the round halted, and the pending transaction was sent anyway
+        Assert.True(harness.Monitor.IsChainProcessingHalted);
+        Assert.Contains(harness.Chain.Mempool, t => t.GetHash() == commitment.GetHash());
+        Assert.Equal(2, harness.Chain.SendAttempts.Count(t => t.GetHash() == commitment.GetHash()));
+    }
+
+    [Fact]
+    public async Task Given_PendingBroadcast_When_StartupHaltsOnADeepReorg_Then_ItIsStillSentAtStartup()
+    {
+        // Arrange: a refused broadcast, then the chain loses every block we keep a hash of while we are down
+        await using var harness = new ChainMonitorHarness();
+        await harness.StartAsync(95);
+        var funding = CreateTransaction(0x0e);
+        harness.Chain.SendFailure = new InvalidOperationException("node down");
+        Assert.False(await harness.Monitor.SaveAndPublishAsync(
+                         new BroadcastTransactionModel(ToSigned(funding), BroadcastPurpose.Funding, ChannelIdOf(0x0e),
+                                                       100)));
+        await harness.Monitor.StopAsync();
+        harness.Chain.SendFailure = null;
+        harness.Chain.Reorg(90, 0);
+
+        // Act
+        await harness.RestartAsync(alreadyStopped: true);
+
+        // Assert
+        Assert.True(harness.Monitor.IsChainProcessingHalted);
+        Assert.Contains(harness.Chain.Mempool, t => t.GetHash() == funding.GetHash());
+    }
+
+    [Fact]
     public async Task Given_TheSameBlocksDeliveredAgain_When_Processed_Then_NothingIsRewound()
     {
         // Arrange (reconsiderblock reconnects blocks we already processed)
