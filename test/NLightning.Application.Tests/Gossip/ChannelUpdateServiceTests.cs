@@ -9,6 +9,7 @@ namespace NLightning.Application.Tests.Gossip;
 
 using Announcements;
 
+using Application.Channels.Interfaces;
 using Application.Channels.Services;
 using Application.Gossip.Announcements;
 using Application.Gossip.Events;
@@ -716,13 +717,189 @@ public class ChannelUpdateServiceTests
         Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
     }
 
-    private ChannelUpdateService CreateService(out ILightningSigner ourSigner, OwnGossipPublisher? publisher = null)
+    [Fact]
+    public async Task Given_TheLinkOfAnAnnouncedChannelDown_When_DisableAfterPasses_Then_ADisabledUpdateIsRelayedOnce()
+    {
+        // Arrange (NL-349, BOLT 7 plan G1-T5): the peer is away; DisableAfter 20 min
+        var relay = new RecordingRelayScheduler();
+        var alive = false;
+        await using var provider = CreateProbeProvider(() => alive);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: first seen down at s_now, checked again just before and at 20 minutes, then later again
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(20) - TimeSpan.FromSeconds(1);
+        await service.CheckOfflinePeersAsync(ct);
+        var beforeDisableAfter = relay.Queued.Count;
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(20);
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(30);
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert: one disabled public update, relayed only (the peer is away), our latest update
+        Assert.Equal(0, beforeDisableAfter);
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        Assert.True(disabled.IsDisabled);
+        Assert.False(disabled.DontForward);
+        Assert.Equal(s_shortChannelId, disabled.ShortChannelId);
+        Assert.Empty(raised);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
+        Assert.Same(disabled, latest!.Payload);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_ADisabledOfflineChannel_When_ThePeerIsBack_Then_ANewerEnabledUpdateGoesToThePeerAndRelay(
+        bool byReconnect)
+    {
+        // Arrange (NL-349): disabled after 20 minutes away
+        var relay = new RecordingRelayScheduler();
+        var alive = false;
+        await using var provider = CreateProbeProvider(() => alive);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(20);
+        await service.CheckOfflinePeersAsync(ct);
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act: the peer's next connection (PeerManager), or a check that finds the link up (after the reestablish)
+        if (byReconnect)
+        {
+            await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+        }
+        else
+        {
+            alive = true;
+            await service.CheckOfflinePeersAsync(ct);
+        }
+
+        alive = true;
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert: exactly one enabled update, newer than the disabled one, to the peer and to the relay
+        var args = Assert.Single(raised);
+        Assert.Equal(PeerNodeId, args.PeerPubKey);
+        var enabled = args.Message.Payload;
+        Assert.False(enabled.IsDisabled);
+        Assert.False(enabled.DontForward);
+        Assert.True(enabled.Timestamp > disabled.Timestamp);
+        Assert.Equal([disabled, enabled], relay.Queued);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
+        Assert.Same(enabled, latest!.Payload);
+    }
+
+    [Fact]
+    public async Task Given_ALinkBackBeforeDisableAfter_When_ItDropsAgain_Then_TheOfflineTimeStartsAgain()
+    {
+        // Arrange (NL-349)
+        var relay = new RecordingRelayScheduler();
+        var alive = false;
+        await using var provider = CreateProbeProvider(() => alive);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: down at 0, up at 15 min, down again from 16 min, checked at 25 and 36 min
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(15);
+        alive = true;
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(16);
+        alive = false;
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(25);
+        await service.CheckOfflinePeersAsync(ct);
+        var at25 = relay.Queued.Count;
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(36);
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert
+        Assert.Equal(0, at25);
+        Assert.True(Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued)).IsDisabled);
+    }
+
+    [Theory]
+    [InlineData("private")]
+    [InlineData("not exchanged")]
+    [InlineData("disable off")]
+    [InlineData("no probe")]
+    public async Task Given_NoDisableCase_When_TheLinkStaysDown_Then_NothingIsDisabled(string variant)
+    {
+        // Arrange (NL-349): only an open announced channel of a node with a liveness probe is ever disabled
+        var relay = new RecordingRelayScheduler();
+        await using var provider = CreateProbeProvider(() => false);
+        await using var emptyProvider = new ServiceCollection().BuildServiceProvider();
+        var options = new GossipOptions
+        {
+            DisableAfter = variant == "disable off" ? TimeSpan.Zero : TimeSpan.FromMinutes(20)
+        };
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay), options,
+                                          variant == "no probe" ? emptyProvider : provider);
+        var channel = variant switch
+        {
+            "private" => AddChannel(ChannelState.Open),
+            "not exchanged" => AddAnnouncedChannel(exchanged: false),
+            _ => AddAnnouncedChannel()
+        };
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromHours(1);
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert
+        Assert.Empty(relay.Queued);
+        Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+    }
+
+    [Theory]
+    [InlineData(20 * 60, 60)]
+    [InlineData(2 * 60, 30)]
+    [InlineData(2, 1)]
+    public void Given_DisableAfter_When_Scheduling_Then_TheCheckIntervalIsAQuarterBetweenOneSecondAndOneMinute(
+        int disableAfterSeconds, int expectedSeconds)
+    {
+        // Act / Assert
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds),
+                     ChannelUpdateService.GetOfflineCheckInterval(TimeSpan.FromSeconds(disableAfterSeconds)));
+    }
+
+    private ChannelUpdateService CreateService(out ILightningSigner ourSigner, OwnGossipPublisher? publisher = null,
+                                               GossipOptions? gossipOptions = null,
+                                               IServiceProvider? serviceProvider = null)
     {
         ourSigner = CreateSigner(_ourKey);
         var keyManager = CreateKeyManager(_ourKey);
         return new ChannelUpdateService(_channelMemoryRepository.Object, _channelLockProvider, ourSigner,
                                         keyManager.Object, Options.Create(_nodeOptions),
-                                        NullLogger<ChannelUpdateService>.Instance, _timeProvider, publisher);
+                                        NullLogger<ChannelUpdateService>.Instance, _timeProvider, publisher,
+                                        gossipOptions is null ? null : Options.Create(gossipOptions),
+                                        serviceProvider);
+    }
+
+    /// <summary>A service provider holding only a liveness probe whose answer the test sets.</summary>
+    private static ServiceProvider CreateProbeProvider(Func<bool> isAlive)
+    {
+        var probe = new Mock<IPeerLivenessProbe>();
+        probe.Setup(p => p.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
+                                        It.IsAny<CancellationToken>()))
+             .ReturnsAsync(() => isAlive());
+        var services = new ServiceCollection();
+        services.AddSingleton(probe.Object);
+        return services.BuildServiceProvider();
     }
 
     /// <summary>
@@ -815,6 +992,8 @@ public class ChannelUpdateServiceTests
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => now;
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 }

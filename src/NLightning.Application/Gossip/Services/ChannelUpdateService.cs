@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Gossip.Services;
 
 using Announcements;
+using Channels.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
@@ -58,6 +60,15 @@ using Interfaces;
 /// (shutdown, closing, failed) a <c>disable</c>d update is made once and handed to the relay only.
 /// </para>
 /// <para>
+/// Offline peers (NL-349, plan G1-T5): with an <see cref="IPeerLivenessProbe"/> (resolved lazily from the service
+/// provider) and a positive <see cref="GossipOptions.DisableAfter"/>, a timer checks every
+/// <see cref="GetOfflineCheckInterval"/> whether the link of each open announced channel is up. A channel whose link
+/// stayed down for <c>DisableAfter</c> (20 min) gets one <c>disable</c>d update, handed to the relay only (the peer is
+/// away). It is enabled again with a newer update, to the peer and the relay, when the peer's next connection is set up
+/// (<see cref="SendChannelUpdatesToPeerAsync"/>) or a check finds the link up again (after <c>channel_reestablish</c>).
+/// The offline time is counted from the first check that finds the link down, in memory: a restart starts it again.
+/// </para>
+/// <para>
 /// Everything is in memory: the peer's update is forgotten on restart until it sends a new one.
 /// </para>
 /// </remarks>
@@ -83,6 +94,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdatePayload> _remoteUpdates = new();
     private readonly ConcurrentDictionary<ChannelId, uint> _lastLocalTimestamps = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _disabledOnClose = new();
+    private readonly ConcurrentDictionary<ChannelId, DateTimeOffset> _offlineSince = new();
+    private readonly ConcurrentDictionary<ChannelId, byte> _disabledOffline = new();
+    private readonly IServiceProvider? _serviceProvider;
+    private readonly TimeSpan _disableAfter;
+    private readonly ITimer? _offlineCheckTimer;
+    private int _offlineCheckRunning;
 
     /// <inheritdoc/>
     public event EventHandler<ChannelUpdateReadyEventArgs>? OnChannelUpdateReady;
@@ -91,7 +108,9 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                                 IChannelLockProvider channelLockProvider, ILightningSigner lightningSigner,
                                 ISecureKeyManager secureKeyManager, IOptions<NodeOptions> nodeOptions,
                                 ILogger<ChannelUpdateService> logger, TimeProvider? timeProvider = null,
-                                OwnGossipPublisher? ownGossipPublisher = null)
+                                OwnGossipPublisher? ownGossipPublisher = null,
+                                IOptions<GossipOptions>? gossipOptions = null,
+                                IServiceProvider? serviceProvider = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _channelLockProvider = channelLockProvider;
@@ -101,9 +120,30 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         _nodeOptions = nodeOptions.Value;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _ownGossipPublisher = ownGossipPublisher;
+        _serviceProvider = serviceProvider;
+        _disableAfter = (gossipOptions?.Value ?? new GossipOptions()).DisableAfter;
 
         _channelMemoryRepository.OnChannelUpdated += HandleChannelUpdated;
+
+        // Only a node that can tell whether a link is up (the daemon) disables the channels of offline peers. The
+        // checks run on the system clock; the offline time is measured with the injected one (a test clock's timers
+        // stay the test's own)
+        if (serviceProvider is not null && _disableAfter > TimeSpan.Zero)
+        {
+            var interval = GetOfflineCheckInterval(_disableAfter);
+            _offlineCheckTimer = TimeProvider.System.CreateTimer(_ => StartOfflineCheck(), null, interval, interval);
+        }
     }
+
+    /// <summary>The last offline check the timer started (tests).</summary>
+    internal Task LastOfflineCheck { get; private set; } = Task.CompletedTask;
+
+    /// <summary>
+    /// How often the links of announced channels are checked: a quarter of <paramref name="disableAfter"/>, between 1 s
+    /// and 1 min, so a channel is disabled at most a minute late.
+    /// </summary>
+    internal static TimeSpan GetOfflineCheckInterval(TimeSpan disableAfter) =>
+        TimeSpan.FromTicks(Math.Clamp(disableAfter.Ticks / 4, TimeSpan.TicksPerSecond, TimeSpan.TicksPerMinute));
 
     /// <inheritdoc/>
     public ChannelUpdateMessage CreateChannelUpdate(ChannelModel channel, bool disabled = false)
@@ -215,7 +255,56 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         {
             // Opening it now would send it again
             _sentOnOpen.TryAdd(channelId, 0);
+
+            // The peer is back: a channel disabled while it was away gets a newer enabled update (the last one is
+            // disabled, so it is not reused), to the peer and the relay
+            _offlineSince.TryRemove(channelId, out _);
+            if (_disabledOffline.TryRemove(channelId, out _))
+                _logger.LogInformation("Peer {Peer} is back: enabling announced channel {ChannelId} again", peerPubKey,
+                                       channelId);
             await SendChannelUpdateAsync(channelId, reuseUnchanged: true, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// One offline check (NL-349): every open announced channel whose link has been down for
+    /// <see cref="GossipOptions.DisableAfter"/> gets a disabled update (relay only, once until it is enabled again);
+    /// one found up again after that gets a newer enabled update. Does nothing without an
+    /// <see cref="IPeerLivenessProbe"/>.
+    /// </summary>
+    internal async Task CheckOfflinePeersAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disableAfter <= TimeSpan.Zero || _serviceProvider?.GetService<IPeerLivenessProbe>() is not { } probe)
+            return;
+
+        var channels = _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open && IsPublic(c))
+                                               .ToList();
+        var checkedIds = channels.Select(c => c.ChannelId).ToHashSet();
+        foreach (var channelId in _offlineSince.Keys.Where(id => !checkedIds.Contains(id)))
+            _offlineSince.TryRemove(channelId, out _);
+        foreach (var channelId in _disabledOffline.Keys.Where(id => !checkedIds.Contains(id)))
+            _disabledOffline.TryRemove(channelId, out _);
+
+        foreach (var channel in channels)
+        {
+            var channelId = channel.ChannelId;
+            if (await probe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
+            {
+                _offlineSince.TryRemove(channelId, out _);
+                if (_disabledOffline.TryRemove(channelId, out _))
+                {
+                    _logger.LogInformation("The link of announced channel {ChannelId} is up again: enabling it",
+                                           channelId);
+                    await SendChannelUpdateAsync(channelId, reuseUnchanged: true, cancellationToken);
+                }
+
+                continue;
+            }
+
+            var now = _timeProvider.GetUtcNow();
+            var since = _offlineSince.GetOrAdd(channelId, now);
+            if (now - since >= _disableAfter && !_disabledOffline.ContainsKey(channelId))
+                await DisableOfflineChannelAsync(channelId, now - since, cancellationToken);
         }
     }
 
@@ -288,7 +377,57 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
     public void Dispose()
     {
+        _offlineCheckTimer?.Dispose();
         _channelMemoryRepository.OnChannelUpdated -= HandleChannelUpdated;
+    }
+
+    /// <summary>Starts an offline check unless the previous one still runs (timer callback).</summary>
+    private void StartOfflineCheck()
+    {
+        if (Interlocked.CompareExchange(ref _offlineCheckRunning, 1, 0) != 0)
+            return;
+
+        LastOfflineCheck = Task.Run(async () =>
+        {
+            try
+            {
+                await CheckOfflinePeersAsync();
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "The offline check of announced channels failed");
+            }
+            finally
+            {
+                Volatile.Write(ref _offlineCheckRunning, 0);
+            }
+        });
+    }
+
+    /// <summary>
+    /// The disabled update of an announced channel whose peer has been away for <paramref name="offlineFor"/>: to the
+    /// relay only (the peer is away, and learns the enabled one when it is back). Under the channel's lock.
+    /// </summary>
+    private async Task DisableOfflineChannelAsync(ChannelId channelId, TimeSpan offlineFor,
+                                                  CancellationToken cancellationToken)
+    {
+        using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel) || channel.State != ChannelState.Open
+         || !IsPublic(channel) || !TryGetPolicy(channel, out _, out _) || !_disabledOffline.TryAdd(channelId, 0))
+            return;
+
+        try
+        {
+            CreateChannelUpdate(channel, disabled: true);
+            _logger.LogInformation(
+                "The peer {Peer} of announced channel {ChannelId} has been away for {OfflineFor}: its channel_update "
+              + "is now disabled", channel.RemoteNodeId, channelId, offlineFor);
+        }
+        catch (Exception e)
+        {
+            _disabledOffline.TryRemove(channelId, out _);
+            _logger.LogWarning(e, "Could not make the disabled channel_update of channel {ChannelId}", channelId);
+        }
     }
 
     /// <summary>
