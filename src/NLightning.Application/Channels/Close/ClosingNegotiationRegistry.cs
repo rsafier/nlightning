@@ -1,0 +1,88 @@
+using System.Collections.Concurrent;
+
+namespace NLightning.Application.Channels.Close;
+
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Closing;
+using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
+
+/// <summary>
+/// The in-memory part of each channel's mutual close (BOLT2 plan N10-T3): what happened on the peer's current
+/// connection and the running <c>closing_signed</c> negotiation, which BOLT 2 restarts on every reconnection
+/// (B2-RE-29), plus the IPC caller's preferences and waiters.
+/// </summary>
+/// <remarks>
+/// Singleton. Every mutation of a channel's entry happens under that channel's lock, except
+/// <see cref="ResetConnection"/> (called before any message of the new connection) and the waiters.
+/// </remarks>
+public sealed class ClosingNegotiationRegistry
+{
+    private readonly ConcurrentDictionary<ChannelId, Entry> _entries = new();
+
+    /// <summary>The close state of one channel.</summary>
+    public sealed class Entry
+    {
+        private readonly List<TaskCompletionSource<TxId>> _waiters = [];
+
+        /// <summary>Our <c>shutdown</c> went out on the peer's current connection (first send or re-send).</summary>
+        public bool ShutdownSentOnConnection { get; set; }
+
+        /// <summary>The peer's <c>shutdown</c> arrived on its current connection.</summary>
+        public bool ShutdownReceivedOnConnection { get; set; }
+
+        /// <summary>The negotiation on the current connection, or null before its first <c>closing_signed</c>.</summary>
+        public ClosingNegotiation? Negotiation { get; set; }
+
+        /// <summary>The IPC caller's close request (feerate, fee_range use), or null for the defaults.</summary>
+        public ChannelCloseRequest? Request { get; set; }
+
+        /// <summary>Waits until the closing transaction is agreed and broadcast.</summary>
+        public Task<TxId> WaitForClosingTxAsync()
+        {
+            var waiter = new TaskCompletionSource<TxId>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_waiters)
+                _waiters.Add(waiter);
+            return waiter.Task;
+        }
+
+        /// <summary>Completes every waiter with the closing txid.</summary>
+        public void CompleteWaiters(TxId closingTxId)
+        {
+            TaskCompletionSource<TxId>[] waiters;
+            lock (_waiters)
+            {
+                waiters = _waiters.ToArray();
+                _waiters.Clear();
+            }
+
+            foreach (var waiter in waiters)
+                waiter.TrySetResult(closingTxId);
+        }
+
+        internal void ResetConnection()
+        {
+            ShutdownSentOnConnection = false;
+            ShutdownReceivedOnConnection = false;
+            Negotiation = null;
+        }
+    }
+
+    /// <summary>The entry of <paramref name="channelId"/>, created on first use.</summary>
+    public Entry Get(ChannelId channelId) => _entries.GetOrAdd(channelId, _ => new Entry());
+
+    /// <summary>The entry of <paramref name="channelId"/> if there is one.</summary>
+    public bool TryGet(ChannelId channelId, out Entry? entry) => _entries.TryGetValue(channelId, out entry);
+
+    /// <summary>
+    /// A new connection with the channel's peer: nothing was exchanged on it yet and the negotiation restarts.
+    /// </summary>
+    public void ResetConnection(ChannelId channelId)
+    {
+        if (_entries.TryGetValue(channelId, out var entry))
+            entry.ResetConnection();
+    }
+
+    /// <summary>Forgets a closed channel.</summary>
+    public void Remove(ChannelId channelId) => _entries.TryRemove(channelId, out _);
+}

@@ -78,6 +78,7 @@ internal sealed class TwoNodeHarness : IDisposable
     private readonly CommitmentNumber _obscuring;
     private readonly bool _hasAnchors;
     private readonly bool _localOnlySwitch;
+    private readonly Action<HarnessNode, IServiceCollection>? _configureServices;
 
     public HarnessNode Alice { get; private set; }
     public HarnessNode Bob { get; private set; }
@@ -96,13 +97,17 @@ internal sealed class TwoNodeHarness : IDisposable
     /// <param name="aliceState">Alice's channel state: Open (usable on this connection), or a state before Open
     /// (ReadyForUs, ReadyForThem, V1FundingSigned) with no commitment state yet, waiting for channel_ready.</param>
     /// <param name="bobState">Bob's channel state, as <paramref name="aliceState"/>.</param>
+    /// <param name="configureServices">Adds or replaces services of each node (last registration wins), e.g. the
+    /// close services (N10).</param>
     public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false,
-                          ChannelState aliceState = ChannelState.Open, ChannelState bobState = ChannelState.Open)
+                          ChannelState aliceState = ChannelState.Open, ChannelState bobState = ChannelState.Open,
+                          Action<HarnessNode, IServiceCollection>? configureServices = null)
     {
         _hasAnchors = hasAnchors;
         _localOnlySwitch = localOnlySwitch;
-        Alice = new HarnessNode("Alice", 0xA1, localOnlySwitch);
-        Bob = new HarnessNode("Bob", 0xB0, localOnlySwitch);
+        _configureServices = configureServices;
+        Alice = new HarnessNode("Alice", 0xA1, localOnlySwitch, configureServices: configureServices);
+        Bob = new HarnessNode("Bob", 0xB0, localOnlySwitch, configureServices: configureServices);
         Alice.Peer = Bob;
         Bob.Peer = Alice;
 
@@ -242,7 +247,8 @@ internal sealed class TwoNodeHarness : IDisposable
         crashed.Dispose();
         crashed.Store.Restart();
 
-        var restarted = new HarnessNode(crashed.Name, (byte)crashed.KeyIndex, _localOnlySwitch, crashed)
+        var restarted = new HarnessNode(crashed.Name, (byte)crashed.KeyIndex, _localOnlySwitch, crashed,
+                                        _configureServices)
         {
             Peer = crashed.Peer,
             PeerAlive = false
@@ -377,11 +383,16 @@ internal sealed class HarnessNode : IDisposable
 
     public ChannelCommitments State => Channel.Commitments!;
 
+    /// <summary>The node's services (to resolve what the harness does not expose).</summary>
+    public IServiceProvider Services => _provider;
+
     /// <param name="name">The node's name.</param>
     /// <param name="seedTag">The key seed (and key index).</param>
     /// <param name="localOnlySwitch">Hand events to the production <see cref="LocalOnlyHtlcSwitch"/>.</param>
     /// <param name="previous">The crashed node this one restarts: its store and records are kept.</param>
-    public HarnessNode(string name, byte seedTag, bool localOnlySwitch = false, HarnessNode? previous = null)
+    /// <param name="configureServices">Adds or replaces services before the provider is built.</param>
+    public HarnessNode(string name, byte seedTag, bool localOnlySwitch = false, HarnessNode? previous = null,
+                       Action<HarnessNode, IServiceCollection>? configureServices = null)
     {
         Name = name;
         KeyIndex = seedTag;
@@ -467,6 +478,7 @@ internal sealed class HarnessNode : IDisposable
         services.AddScoped<IChannelMessageHandler<UpdateFeeMessage>, UpdateFeeMessageHandler>();
         services.AddScoped<IChannelMessageHandler<ChannelReestablishMessage>, ChannelReestablishMessageHandler>();
         services.AddScoped<IChannelMessageHandler<ChannelReadyMessage>, ChannelReadyMessageHandler>();
+        configureServices?.Invoke(this, services);
         _provider = services.BuildServiceProvider();
         Tracker = _provider.GetRequiredService<ReestablishTracker>();
 

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application;
 
+using Channels.Close;
 using Channels.Handlers;
 using Channels.Handlers.Interfaces;
 using Channels.Interfaces;
@@ -85,6 +86,7 @@ public static class DependencyInjection
         services.AddChannelStateTransitionServices();
         services.AddReestablishServices();
         services.AddChannelOperationsServices();
+        services.AddChannelCloseServices();
         services.AddGossipServices();
         services.AddPaymentsServices();
         services.AddHtlcSwitchServices();

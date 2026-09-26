@@ -1,0 +1,582 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+
+namespace NLightning.Application.Channels.Close;
+
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Closing;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
+using Infrastructure.Bitcoin.Builders.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Services;
+
+/// <summary>
+/// The mutual close of one channel (BOLT 2 "Channel Close", legacy <c>closing_signed</c>; BOLT2 plan N10-T3):
+/// <c>shutdown</c> in both directions, the move to <see cref="ChannelState.Negotiating"/> once no HTLC or update is
+/// left, the fee negotiation (<see cref="LegacyClosingNegotiator"/>), and the agreed closing transaction, which is
+/// persisted (<see cref="ChannelState.Closing"/>) before it is sent or broadcast.
+/// </summary>
+/// <remarks>
+/// Scoped (one per message or IPC call); every method runs under the channel's lock and returns the messages to send
+/// to the peer in wire order. Every state change is saved before the message that reveals it goes out (invariant I1).
+/// </remarks>
+public sealed class ChannelCloseCoordinator
+{
+    /// <summary>BOLT 3's feerate floor, used as the lowest closing fee we propose or accept.</summary>
+    public const uint MinFeeratePerKw = 253;
+
+    private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IClosingTransactionBuilder _closingTransactionBuilder;
+    private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly IFeeService _feeService;
+    private readonly ILightningSigner _lightningSigner;
+    private readonly ILogger<ChannelCloseCoordinator> _logger;
+    private readonly IMessageFactory _messageFactory;
+    private readonly ChannelCloseOptions _options;
+    private readonly ClosingNegotiationRegistry _registry;
+    private readonly ShutdownScriptProvider _shutdownScriptProvider;
+    private readonly ChannelStateTransitionService _transitions;
+    private readonly IUnitOfWork _unitOfWork;
+
+    public ChannelCloseCoordinator(IClosingTransactionBuilder closingTransactionBuilder,
+                                   IChannelMemoryRepository channelMemoryRepository, IFeeService feeService,
+                                   ILightningSigner lightningSigner, ILogger<ChannelCloseCoordinator> logger,
+                                   IMessageFactory messageFactory, IOptions<ChannelCloseOptions> options,
+                                   ClosingNegotiationRegistry registry, ShutdownScriptProvider shutdownScriptProvider,
+                                   ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
+                                   IBlockchainMonitor? blockchainMonitor = null)
+    {
+        _blockchainMonitor = blockchainMonitor;
+        _closingTransactionBuilder = closingTransactionBuilder;
+        _channelMemoryRepository = channelMemoryRepository;
+        _feeService = feeService;
+        _lightningSigner = lightningSigner;
+        _logger = logger;
+        _messageFactory = messageFactory;
+        _options = options.Value;
+        _registry = registry;
+        _shutdownScriptProvider = shutdownScriptProvider;
+        _transitions = transitions;
+        _unitOfWork = unitOfWork;
+    }
+
+    /// <summary>True for the states in which the close still needs the peer (shutdown sent or received).</summary>
+    public static bool IsNegotiationPhase(ChannelState state) =>
+        state is ChannelState.ShuttingDown or ChannelState.Negotiating;
+
+    #region Our shutdown
+
+    /// <summary>
+    /// Starts the close (IPC): signs our pending updates first (B2-SHUT-S03: no <c>shutdown</c> while updates are
+    /// pending on the peer's commitment), then persists and returns our <c>shutdown</c>. A channel whose
+    /// <c>shutdown</c> was already sent returns nothing (B2-SHUT-S04: only once).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Not open, failed, lost data, or pending updates wait for a
+    /// <c>revoke_and_ack</c> before they can be signed.</exception>
+    public async Task<List<IChannelMessage>> InitiateAsync(ChannelModel channel, ChannelCloseRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(request);
+        _registry.Get(channel.ChannelId).Request = request;
+
+        if (channel.LocalShutdownScript is not null)
+            return [];
+
+        // B2-SHUT-S01: shutdown only after funding_created/funding_signed; we also wait for channel_ready (N10 scope)
+        if (channel.State != ChannelState.Open)
+            throw new InvalidOperationException(
+                $"Channel {channel.ChannelId} is {Enum.GetName(channel.State)}; only an open channel can be closed");
+        if (channel.DataLossDetected)
+            throw new InvalidOperationException($"Channel {channel.ChannelId} lost data; it can't be closed mutually");
+
+        var replies = new List<IChannelMessage>();
+        if (channel.Commitments is { HasPendingChangesForRemote: true } commitments)
+        {
+            if (!commitments.CanSendCommit)
+                throw new InvalidOperationException(
+                    $"Channel {channel.ChannelId} has updates waiting for the peer's revoke_and_ack; try again");
+
+            if (await _transitions.SignIfPendingAsync(channel) is { } commitmentSigned)
+                replies.Add(commitmentSigned);
+        }
+
+        replies.Add(await SendShutdownAsync(channel));
+        return replies;
+    }
+
+    /// <summary>
+    /// Our <c>shutdown</c> again, for the <c>channel_reestablish</c> of a new connection (B2-RE-28), or null when we
+    /// never sent one.
+    /// </summary>
+    public ShutdownMessage? CreateShutdownResend(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.LocalShutdownScript is not { } script)
+            return null;
+
+        _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
+        return _messageFactory.CreateShutdownMessage(channel.ChannelId, script);
+    }
+
+    private async Task<ShutdownMessage> SendShutdownAsync(ChannelModel channel)
+    {
+        var script = await _shutdownScriptProvider.GetLocalScriptAsync(channel);
+        channel.SetLocalShutdownScript(script);
+        if (channel.State < ChannelState.ShuttingDown)
+            channel.UpdateState(ChannelState.ShuttingDown);
+        await PersistAsync(channel);
+
+        _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
+        _logger.LogInformation("Sending shutdown for channel {ChannelId} to {Script}", channel.ChannelId, script);
+        return _messageFactory.CreateShutdownMessage(channel.ChannelId, script);
+    }
+
+    #endregion
+
+    #region Peer's shutdown
+
+    /// <summary>
+    /// The peer's <c>shutdown</c> (B2-SHUT-R01..R06): checks the script (form, upfront script), persists it and
+    /// <see cref="ChannelState.ShuttingDown"/>, and replies with ours once none of our updates is unsigned (signing
+    /// them first when possible, B2-SHUT-R04). The same <c>shutdown</c> again (after a reconnection) is accepted.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> ReceiveShutdownAsync(ChannelModel channel,
+                                                                           ShutdownMessage message,
+                                                                           FeatureOptions negotiatedFeatures)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(negotiatedFeatures);
+        var channelId = channel.ChannelId;
+        var script = message.Payload.ScriptPubkey;
+
+        if (channel.State is < ChannelState.Open or ChannelState.Closing or ChannelState.Closed)
+        {
+            if (channel.State is ChannelState.Closing or ChannelState.Closed)
+            {
+                _logger.LogInformation("Ignoring shutdown for channel {ChannelId}: its closing transaction is out",
+                                       channelId);
+                return [];
+            }
+
+            // BOLT 2 allows closing before channel_ready (B2-SHUT-R03, MAY); not supported yet
+            throw new ChannelWarningException(
+                $"shutdown on channel {channelId} in state {Enum.GetName(channel.State)} is not supported", channelId,
+                "shutdown before channel_ready is not supported, message ignored");
+        }
+
+        // B2-SHUT-R02
+        var anySegwit = negotiatedFeatures.BeyondSegwitShutdown > FeatureSupport.No;
+        var simpleClose = negotiatedFeatures.OptionSimpleClose > FeatureSupport.No;
+        if (!ShutdownScriptValidator.IsValid((byte[])script, anySegwit, simpleClose))
+            throw new ChannelWarningException($"[B2-SHUT-R02] shutdown script {script} is not allowed", channelId,
+                                              "shutdown scriptpubkey is not a valid form");
+
+        // B2-SHUT-R05: the upfront shutdown script we received binds the peer
+        if (negotiatedFeatures.UpfrontShutdownScript > FeatureSupport.No
+         && channel.RemoteUpfrontShutdownScript is { Length: > 0 } upfront && upfront != script)
+            throw new ChannelWarningException(
+                $"[B2-SHUT-R05] shutdown script {script} differs from the upfront script {upfront}", channelId,
+                "shutdown scriptpubkey differs from upfront_shutdown_script")
+            {
+                CloseConnection = true
+            };
+
+        if (channel.RemoteShutdownScript is { } previous && previous != script)
+            throw new ChannelWarningException(
+                $"shutdown script {script} differs from the one received before ({previous})", channelId,
+                "shutdown scriptpubkey changed")
+            {
+                CloseConnection = true
+            };
+
+        var entry = _registry.Get(channelId);
+        entry.ShutdownReceivedOnConnection = true;
+        if (channel.RemoteShutdownScript is null)
+        {
+            channel.SetRemoteShutdownScript(script);
+            if (channel.State < ChannelState.ShuttingDown)
+                channel.UpdateState(ChannelState.ShuttingDown);
+            await PersistAsync(channel);
+            _logger.LogInformation("Peer {Peer} sent shutdown for channel {ChannelId} to {Script}",
+                                   channel.RemoteNodeId, channelId, script);
+        }
+
+        if (channel.LocalShutdownScript is not null)
+            return [];
+
+        // B2-SHUT-R04: reply once no update of ours is unsigned; sign them first when we can
+        var replies = new List<IChannelMessage>();
+        if (channel.Commitments is { HasPendingChangesForRemote: true } commitments)
+        {
+            if (!commitments.CanSendCommit)
+            {
+                _logger.LogInformation(
+                    "Deferring our shutdown for channel {ChannelId} until our updates are signed", channelId);
+                return [];
+            }
+
+            if (await _transitions.SignIfPendingAsync(channel) is { } commitmentSigned)
+                replies.Add(commitmentSigned);
+        }
+
+        replies.Add(await SendShutdownAsync(channel));
+        return replies;
+    }
+
+    #endregion
+
+    #region Negotiation
+
+    /// <summary>
+    /// Moves the close on after a message or an IPC call (under the channel's lock): our deferred <c>shutdown</c> once
+    /// our updates are signed, <see cref="ChannelState.Negotiating"/> once both <c>shutdown</c>s are known and nothing
+    /// is left in either commitment, and, as the funder, the opening <c>closing_signed</c> once both <c>shutdown</c>s
+    /// were exchanged on the current connection (B2-CLS-01; a reconnection restarts it, B2-RE-29).
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> AdvanceAsync(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        var messages = new List<IChannelMessage>();
+
+        if (channel is { State: ChannelState.ShuttingDown, RemoteShutdownScript: not null, LocalShutdownScript: null }
+         && channel.Commitments is not { HasPendingChangesForRemote: true })
+            messages.Add(await SendShutdownAsync(channel));
+
+        await MoveToNegotiatingIfClearedAsync(channel);
+
+        if (channel is { State: ChannelState.Negotiating, IsInitiator: true })
+        {
+            var entry = _registry.Get(channel.ChannelId);
+            if (entry is { ShutdownSentOnConnection: true, ShutdownReceivedOnConnection: true, Negotiation: null })
+            {
+                var context = BuildContext(channel, entry);
+                var (decision, next) = LegacyClosingNegotiator.Open(context.InitialState, context.IdealFeeSat);
+                messages.Add(CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange));
+                entry.Negotiation = next;
+                _logger.LogInformation(
+                    "Proposing a closing fee of {Fee} sat for channel {ChannelId} (range {Range}, estimate {Ideal})",
+                    decision.FeeSat, channel.ChannelId, decision.FeeRange?.ToString() ?? "none",
+                    context.IdealFeeSat);
+            }
+        }
+
+        return messages;
+    }
+
+    /// <summary>
+    /// The peer's <c>closing_signed</c> (B2-CLS-R01..R10): the signature must be valid for one variant of the closing
+    /// transaction, no output may be below its script's dust threshold, then the negotiator decides. On agreement the
+    /// fully signed transaction is persisted with <see cref="ChannelState.Closing"/> before our echo is sent and the
+    /// transaction broadcast and watched.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> ReceiveClosingSignedAsync(ChannelModel channel,
+                                                                                ClosingSignedMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(message);
+        var channelId = channel.ChannelId;
+
+        if (channel.State is ChannelState.Closing or ChannelState.Closed)
+        {
+            _logger.LogInformation("Ignoring closing_signed for channel {ChannelId}: the closing transaction is out",
+                                   channelId);
+            return [];
+        }
+
+        await MoveToNegotiatingIfClearedAsync(channel);
+        if (channel.State != ChannelState.Negotiating)
+            throw new ChannelWarningException(
+                $"closing_signed on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
+                "closing_signed before both shutdowns and with updates pending")
+            {
+                CloseConnection = true
+            };
+
+        var entry = _registry.Get(channelId);
+        var context = BuildContext(channel, entry);
+        var feeSat = (ulong)message.Payload.FeeAmount.Satoshi;
+        if (feeSat > context.MaxFeeSat)
+            throw new ChannelWarningException(
+                $"closing_signed fee {feeSat} sat is above the funder's balance of {context.MaxFeeSat} sat", channelId,
+                "fee_satoshis above the funder's balance")
+            {
+                CloseConnection = true
+            };
+
+        ClosingFeeRange? theirRange = null;
+        if (message.FeeRangeTlv is { } rangeTlv)
+        {
+            var (min, max) = ((ulong)rangeTlv.MinFeeAmount.Satoshi, (ulong)rangeTlv.MaxFeeAmount.Satoshi);
+            if (min > max)
+                throw new ChannelWarningException($"fee_range [{min}, {max}] is inverted", channelId,
+                                                  "fee_range min_fee_satoshis above max_fee_satoshis")
+                {
+                    CloseConnection = true
+                };
+            theirRange = new ClosingFeeRange(min, max);
+        }
+
+        // B2-CLS-R01: the signature must be valid for a variant of the closing transaction
+        var peerSignature = message.Payload.Signature;
+        var signed = FindSignedVariant(channel, context, feeSat, peerSignature)
+                  ?? throw new ChannelWarningException(
+                         $"[B2-CLS-R01] closing_signed signature for {feeSat} sat is valid for no closing transaction",
+                         channelId, "invalid closing_signed signature")
+                  {
+                      CloseConnection = true
+                  };
+
+        // B2-CLS-R10: an output below its script's dust threshold would not relay
+        foreach (var output in signed.Model.Outputs)
+        {
+            var threshold = ShutdownScriptValidator.GetDustThresholdSat((byte[])output.ScriptPubKey);
+            if ((ulong)output.Amount.Satoshi < threshold)
+                throw new ChannelFailedException(
+                    channelId,
+                    $"[B2-CLS-R10] closing output of {output.Amount.Satoshi} sat is below the {threshold} sat dust threshold of its script",
+                    "closing transaction output below dust")
+                {
+                    RequirementId = "B2-CLS-R10"
+                };
+        }
+
+        var state = entry.Negotiation ?? context.InitialState;
+        var (decision, next) = LegacyClosingNegotiator.Receive(state, feeSat, theirRange, context.IdealFeeSat);
+        entry.Negotiation = next;
+        _logger.LogInformation(
+            "closing_signed for channel {ChannelId}: {Fee} sat (range {Range}) -> {Decision} {DecisionFee} sat [{Requirement}]",
+            channelId, feeSat, theirRange?.ToString() ?? "none", decision.Kind, decision.FeeSat,
+            decision.RequirementId);
+
+        switch (decision.Kind)
+        {
+            case ClosingDecisionKind.Warn:
+                throw new ChannelWarningException($"[{decision.RequirementId}] {decision.Reason}", channelId,
+                                                  decision.Reason)
+                {
+                    CloseConnection = decision.CloseConnection
+                };
+            case ClosingDecisionKind.Fail:
+                throw new ChannelFailedException(channelId, $"[{decision.RequirementId}] {decision.Reason}",
+                                                 $"closing negotiation failed: {decision.Reason}")
+                {
+                    RequirementId = decision.RequirementId
+                };
+            case ClosingDecisionKind.Propose:
+                return [CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange)];
+            default:
+                return await FinalizeAsync(channel, context, signed, peerSignature, decision);
+        }
+    }
+
+    /// <summary>
+    /// Both sides signed the same closing transaction: sign it, persist it with <see cref="ChannelState.Closing"/>
+    /// (before anything reveals it), complete the IPC waiters, broadcast and watch it, and return our echo if one is
+    /// due.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> FinalizeAsync(ChannelModel channel, CloseContext context,
+                                                                     SignedVariant signed,
+                                                                     CompactSignature peerSignature,
+                                                                     ClosingDecision decision)
+    {
+        var ourSignature = _lightningSigner.SignChannelTransaction(channel.ChannelId, signed.Transaction);
+        var closingTransaction = _closingTransactionBuilder.AddWitness(signed.Transaction, context.Funding,
+                                                                       ourSignature, peerSignature);
+
+        channel.SetClosingTransaction(closingTransaction);
+        channel.UpdateState(ChannelState.Closing);
+        await PersistAsync(channel);
+        _registry.Get(channel.ChannelId).CompleteWaiters(closingTransaction.TxId);
+        _logger.LogInformation("Channel {ChannelId} agreed on closing transaction {TxId} with a fee of {Fee} sat",
+                               channel.ChannelId, closingTransaction.TxId, decision.FeeSat);
+
+        IReadOnlyList<IChannelMessage> replies = decision.Reply
+                                                     ? [CreateClosingSigned(channel.ChannelId, decision.FeeSat,
+                                                                            decision.FeeRange, ourSignature)]
+                                                     : [];
+
+        await BroadcastAsync(channel, closingTransaction);
+        return replies;
+    }
+
+    /// <summary>
+    /// Publishes and watches the closing transaction (the watch is saved first, so a restart keeps waiting for it). A
+    /// failed broadcast is logged: the peer broadcasts the same transaction, and it is stored for a rebroadcast.
+    /// </summary>
+    private async Task BroadcastAsync(ChannelModel channel, SignedTransaction closingTransaction)
+    {
+        if (_blockchainMonitor is null)
+            return;
+
+        try
+        {
+            await _blockchainMonitor.PublishAndWatchTransactionAsync(channel.ChannelId, closingTransaction,
+                                                                     _options.ConfirmationDepth);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Broadcasting closing transaction {TxId} of channel {ChannelId} failed",
+                               closingTransaction.TxId, channel.ChannelId);
+        }
+    }
+
+    private async Task MoveToNegotiatingIfClearedAsync(ChannelModel channel)
+    {
+        if (channel is not
+            { State: ChannelState.ShuttingDown, LocalShutdownScript: not null, RemoteShutdownScript: not null }
+         || channel.Commitments is { IsCleared: false })
+            return;
+
+        channel.UpdateState(ChannelState.Negotiating);
+        await PersistAsync(channel);
+        _logger.LogInformation("Channel {ChannelId} has no HTLC left; negotiating the closing fee", channel.ChannelId);
+    }
+
+    #endregion
+
+    #region Transactions
+
+    /// <summary>What every closing transaction of this channel is built from.</summary>
+    private sealed record CloseContext(FundingOutputInfo Funding, ulong LocalBalanceMsat, ulong RemoteBalanceMsat,
+                                       bool IsFunder, BitcoinScript LocalScript, BitcoinScript RemoteScript,
+                                       ulong LocalDustLimitSat, ulong RemoteDustLimitSat, ulong IdealFeeSat,
+                                       ulong MaxFeeSat, ClosingNegotiation InitialState);
+
+    private sealed record SignedVariant(ClosingTransactionModel Model, SignedTransaction Transaction);
+
+    private CloseContext BuildContext(ChannelModel channel, ClosingNegotiationRegistry.Entry entry)
+    {
+        var funding = channel.FundingOutput
+                   ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no funding output");
+        var localScript = channel.LocalShutdownScript
+                       ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no shutdown script");
+        var remoteScript = channel.RemoteShutdownScript
+                        ?? throw new InvalidOperationException(
+                               $"Channel {channel.ChannelId} has no shutdown script from the peer");
+
+        var localMsat = channel.Commitments?.LocalBalanceMsat ?? channel.LocalBalance.MilliSatoshi;
+        var remoteMsat = channel.Commitments?.RemoteBalanceMsat ?? channel.RemoteBalance.MilliSatoshi;
+        var isFunder = channel.IsInitiator;
+        var maxFee = LegacyClosingTransactionFactory.MaxFeeSat(localMsat, remoteMsat, isFunder);
+
+        var weight = ClosingFeeCalculator.EstimateWeight(localScript.Length, remoteScript.Length);
+        var feerate = Math.Max(entry.Request?.FeeRatePerKw ?? (ulong)_feeService.GetCachedFeeRatePerKw().Satoshi,
+                               MinFeeratePerKw);
+        var floor = Math.Min(ClosingFeeCalculator.FeeSat(MinFeeratePerKw, weight), maxFee);
+        var ideal = Math.Clamp(ClosingFeeCalculator.FeeSat(feerate, weight), floor, maxFee);
+
+        // B2-CLS-02/04: the funder pays up to a multiple of its estimate; the non-funder accepts anything from the
+        // relay floor up to what the funder can pay
+        var acceptableMax = isFunder
+                                ? Math.Clamp(ideal * Math.Max(_options.MaxFeeMultiplier, 1), floor, maxFee)
+                                : maxFee;
+        // fee_range goes out unless the node options or the IPC request turn it off
+        var initial = new ClosingNegotiation
+        {
+            IsFunder = isFunder,
+            Acceptable = new ClosingFeeRange(floor, acceptableMax),
+            SendFeeRange = _options.SendFeeRange && (entry.Request?.SendFeeRange ?? true)
+        };
+
+        return new CloseContext(funding, localMsat, remoteMsat, isFunder, localScript, remoteScript,
+                                (ulong)channel.ChannelParams.Local.DustLimitAmount.Satoshi,
+                                (ulong)channel.ChannelParams.Remote.DustLimitAmount.Satoshi, ideal, maxFee, initial);
+    }
+
+    /// <summary>Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed.</summary>
+    private ClosingSignedMessage CreateClosingSigned(ChannelModel channel, CloseContext context, ulong feeSat,
+                                                     ClosingFeeRange? feeRange)
+    {
+        var model = LegacyClosingTransactionFactory.Create(context.Funding, context.LocalBalanceMsat,
+                                                           context.RemoteBalanceMsat, context.IsFunder, feeSat,
+                                                           context.LocalScript, context.RemoteScript,
+                                                           context.LocalDustLimitSat);
+        var unsigned = _closingTransactionBuilder.Build(model);
+        var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
+        return CreateClosingSigned(channel.ChannelId, feeSat, feeRange, signature);
+    }
+
+    private static ClosingSignedMessage CreateClosingSigned(Domain.Channels.ValueObjects.ChannelId channelId,
+                                                            ulong feeSat, ClosingFeeRange? feeRange,
+                                                            CompactSignature signature)
+    {
+        var payload = new ClosingSignedPayload(channelId, LightningMoney.Satoshis(feeSat), signature);
+        var rangeTlv = feeRange is null
+                           ? null
+                           : new FeeRangeTlv(LightningMoney.Satoshis(feeRange.MinFeeSat),
+                                             LightningMoney.Satoshis(feeRange.MaxFeeSat));
+        return new ClosingSignedMessage(payload, rangeTlv);
+    }
+
+    /// <summary>
+    /// The closing transaction the peer's signature is valid for (B2-CLS-R01, "either variant"): outputs trimmed by
+    /// the peer's dust limit, the same without the peer's output (BOLT 3: it MAY eliminate its own), or trimmed by our
+    /// dust limit. Null when the signature fits none of them.
+    /// </summary>
+    private SignedVariant? FindSignedVariant(ChannelModel channel, CloseContext context, ulong feeSat,
+                                             CompactSignature signature)
+    {
+        var seen = new HashSet<TxId>();
+        foreach (var (dustLimit, variant) in new[]
+                 {
+                     (context.RemoteDustLimitSat, ClosingVariant.Full),
+                     (context.RemoteDustLimitSat, ClosingVariant.WithoutRemoteOutput),
+                     (context.LocalDustLimitSat, ClosingVariant.Full)
+                 })
+        {
+            ClosingTransactionModel model;
+            try
+            {
+                model = LegacyClosingTransactionFactory.Create(context.Funding, context.LocalBalanceMsat,
+                                                               context.RemoteBalanceMsat, context.IsFunder, feeSat,
+                                                               context.LocalScript, context.RemoteScript, dustLimit,
+                                                               variant);
+            }
+            catch (Exception e) when (e is ArgumentOutOfRangeException or InvalidOperationException)
+            {
+                continue;
+            }
+
+            var unsigned = _closingTransactionBuilder.Build(model);
+            if (!seen.Add(unsigned.TxId))
+                continue;
+
+            try
+            {
+                _lightningSigner.ValidateSignature(channel.ChannelId, signature, unsigned);
+                return new SignedVariant(model, unsigned);
+            }
+            catch (SignerException)
+            {
+                // Not this variant
+            }
+        }
+
+        return null;
+    }
+
+    #endregion
+
+    private async Task PersistAsync(ChannelModel channel)
+    {
+        await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await _unitOfWork.SaveChangesAsync();
+        _channelMemoryRepository.UpdateChannel(channel);
+    }
+}

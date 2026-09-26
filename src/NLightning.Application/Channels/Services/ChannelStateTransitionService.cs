@@ -86,7 +86,8 @@ public sealed class ChannelStateTransitionService
     /// <param name="messageName">The message name, for the texts.</param>
     /// <exception cref="ChannelWarningException">HTLCs are disabled (<see cref="NodeOptions.HtlcsEnabled"/>; the
     /// message is ignored as before N6), the channel is not in memory, has no commitment state (opened before this
-    /// wiring, NL-232), or is not <see cref="ChannelState.Open"/> (warning and close the connection).</exception>
+    /// wiring, NL-232), or is neither <see cref="ChannelState.Open"/> nor <see cref="ChannelState.ShuttingDown"/> (warning
+    /// and close the connection; HTLCs in flight still settle after a <c>shutdown</c>, BOLT 2).</exception>
     /// <exception cref="ChannelErrorException">The channel was failed: every update is refused and the peer gets the
     /// <c>error</c> again.</exception>
     public ChannelModel GetUpdatableChannel(ChannelId channelId, ChannelState currentState, string messageName)
@@ -103,7 +104,7 @@ public sealed class ChannelStateTransitionService
             throw new ChannelErrorException($"Refusing {messageName} on failed channel {channelId}", channelId,
                                             ChannelFailedException.DefaultPeerMessage);
 
-        if (currentState != ChannelState.Open || channel.State != ChannelState.Open)
+        if (!CarriesUpdates(currentState) || !CarriesUpdates(channel.State))
             throw new ChannelWarningException(
                 $"[B2-NO-02] {messageName} on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
                 $"{messageName} before the channel is open")
@@ -118,6 +119,13 @@ public sealed class ChannelStateTransitionService
 
         return channel;
     }
+
+    /// <summary>
+    /// True for the states in which updates, <c>commitment_signed</c> and <c>revoke_and_ack</c> flow:
+    /// <see cref="ChannelState.Open"/>, and <see cref="ChannelState.ShuttingDown"/> until no HTLC is left (BOLT 2: after
+    /// <c>shutdown</c> no new HTLC, but the ones in flight are still fulfilled or failed).
+    /// </summary>
+    public static bool CarriesUpdates(ChannelState state) => state is ChannelState.Open or ChannelState.ShuttingDown;
 
     /// <summary>
     /// What the peer receives for a rule it broke (the engine state is unchanged): "send an <c>error</c> and fail the
@@ -207,7 +215,7 @@ public sealed class ChannelStateTransitionService
         if (!commitments.CanSendCommit)
             return null;
 
-        if (channel.DataLossDetected || channel.State != ChannelState.Open)
+        if (channel.DataLossDetected || !CarriesUpdates(channel.State))
         {
             _logger.LogWarning("Not signing a commitment for channel {ChannelId} in state {State} (data loss: {Lost})",
                                channel.ChannelId, Enum.GetName(channel.State), channel.DataLossDetected);

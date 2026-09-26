@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Close;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -49,14 +50,17 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
     private readonly ReestablishTracker _tracker;
     private readonly ChannelStateTransitionService _transitions;
     private readonly IUnitOfWork _unitOfWork;
+    private readonly ClosingNegotiationRegistry? _closingRegistry;
 
     public ChannelReestablishMessageHandler(IChannelMemoryRepository channelMemoryRepository,
                                             ILightningSigner lightningSigner,
                                             ILogger<ChannelReestablishMessageHandler> logger,
                                             IMessageFactory messageFactory, IMessageSerializer messageSerializer,
                                             ReestablishService reestablishService, ReestablishTracker tracker,
-                                            ChannelStateTransitionService transitions, IUnitOfWork unitOfWork)
+                                            ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
+                                            ClosingNegotiationRegistry? closingRegistry = null)
     {
+        _closingRegistry = closingRegistry;
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
         _logger = logger;
@@ -90,7 +94,8 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             throw new ChannelFailedException(channelId, $"channel_reestablish on failed channel {channelId}");
 
         if (channel.State is not (ChannelState.V1FundingSigned or ChannelState.ReadyForThem
-                               or ChannelState.ReadyForUs or ChannelState.Open))
+                               or ChannelState.ReadyForUs or ChannelState.Open or ChannelState.ShuttingDown
+                               or ChannelState.Negotiating))
             throw new ChannelWarningException(
                 $"Ignoring channel_reestablish on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
                 "channel_reestablish ignored: channel not active");
@@ -141,6 +146,13 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
         foreach (var step in plan.Steps)
             replies.AddRange(await BuildStepAsync(channel, step, local));
+
+        // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
+        if (channel.LocalShutdownScript is { } shutdownScript)
+        {
+            replies.Add(_messageFactory.CreateShutdownMessage(channelId, shutdownScript));
+            _closingRegistry?.Get(channelId).ShutdownSentOnConnection = true;
+        }
 
         return replies;
     }

@@ -1,0 +1,390 @@
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using NBitcoin;
+
+namespace NLightning.Application.Tests.Channels.Close;
+
+using Application.Channels.Close;
+using Application.Channels.Services;
+using Application.Protocol.Factories;
+using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments.Interfaces;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.Tlv;
+using Domain.Serialization.Interfaces;
+using Handlers;
+using Infrastructure.Bitcoin.Builders;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+
+/// <summary>
+/// <see cref="ChannelCloseCoordinator"/> rules that the two-node harness can't reach (BOLT2 plan §6.10/§6.11): the
+/// upfront shutdown script (B2-SHUT-R05), shutdown before channel_ready (B2-SHUT-R03) and after the close is out,
+/// outputs below their script's dust threshold (B2-CLS-R10), a fee above the funder's balance, persist-before-broadcast
+/// (I1) and the shutdown re-send (B2-RE-28). Channels here have no commitment snapshot, so the balances are the
+/// channel's; the signer is mocked.
+/// </summary>
+public class ChannelCloseCoordinatorTests
+{
+    private static readonly BitcoinScript s_localScript = Convert.FromHexString("0014" + new string('1', 40));
+    private static readonly BitcoinScript s_remoteScript = Convert.FromHexString("0020" + new string('2', 64));
+    private static readonly CompactSignature s_signature =
+        new(new Key(Enumerable.Repeat((byte)0x42, 32).ToArray()).Sign(uint256.One).MakeCanonical().ToCompact());
+
+    private readonly Mock<IChannelDbRepository> _channelDb = new();
+    private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<ILightningSigner> _signer = new();
+    private readonly Mock<IBlockchainMonitor> _monitor = new();
+    private readonly List<string> _calls = [];
+    private readonly ClosingNegotiationRegistry _registry = new();
+
+    public ChannelCloseCoordinatorTests()
+    {
+        _unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(_channelDb.Object);
+        _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
+                  .Callback((ChannelModel c) => _calls.Add($"update:{c.State}"))
+                  .Returns(Task.CompletedTask);
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _calls.Add("save")).Returns(Task.CompletedTask);
+        _signer.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
+               .Returns(s_signature);
+        _monitor.Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
+                                                              It.IsAny<uint>()))
+                .Callback(() => _calls.Add("publish"))
+                .Returns(Task.CompletedTask);
+    }
+
+    [Theory]
+    [InlineData(ChannelState.V1FundingSigned)]
+    [InlineData(ChannelState.ReadyForThem)]
+    [InlineData(ChannelState.ReadyForUs)]
+    public async Task Given_ChannelNotOpenYet_When_Shutdown_Then_WarningAndNothingPersisted(ChannelState state)
+    {
+        // Arrange (B2-SHUT-R03 is a MAY: not supported before channel_ready)
+        var channel = CreateChannel(state);
+
+        // Act
+        var warning = await Assert.ThrowsAsync<ChannelWarningException>(
+                          () => CreateCoordinator().ReceiveShutdownAsync(channel, Shutdown(s_remoteScript),
+                                                                         new FeatureOptions()));
+
+        // Assert
+        Assert.False(warning.CloseConnection);
+        Assert.Null(channel.RemoteShutdownScript);
+        Assert.Empty(_calls);
+    }
+
+    [Fact]
+    public async Task Given_ClosingChannel_When_Shutdown_Then_Ignored()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.Closing);
+
+        // Act
+        var replies = await CreateCoordinator().ReceiveShutdownAsync(channel, Shutdown(s_remoteScript),
+                                                                     new FeatureOptions());
+
+        // Assert
+        Assert.Empty(replies);
+        Assert.Empty(_calls);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task Given_UpfrontScript_When_ShutdownWithAnotherScript_Then_WarningAndDisconnect(
+        bool negotiated, bool accepted)
+    {
+        // Arrange (B2-SHUT-R05: only binding when option_upfront_shutdown_script was negotiated)
+        var upfront = (BitcoinScript)Convert.FromHexString("0014" + new string('9', 40));
+        var channel = CreateChannel(ChannelState.Open, remoteUpfront: upfront);
+        var features = new FeatureOptions
+        {
+            UpfrontShutdownScript = negotiated ? FeatureSupport.Optional : FeatureSupport.No
+        };
+
+        // Act
+        var exception = await Record.ExceptionAsync(
+                            () => CreateCoordinator().ReceiveShutdownAsync(channel, Shutdown(s_remoteScript),
+                                                                           features));
+
+        // Assert
+        if (accepted)
+        {
+            Assert.Null(exception);
+            Assert.Equal(s_remoteScript, channel.RemoteShutdownScript);
+        }
+        else
+        {
+            var warning = Assert.IsType<ChannelWarningException>(exception);
+            Assert.True(warning.CloseConnection);
+            Assert.Contains("B2-SHUT-R05", warning.Message);
+            Assert.Null(channel.RemoteShutdownScript);
+        }
+    }
+
+    [Fact]
+    public async Task Given_UpfrontScript_When_ShutdownWithIt_Then_AcceptedAndReplied()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.Open, remoteUpfront: s_remoteScript);
+        var features = new FeatureOptions { UpfrontShutdownScript = FeatureSupport.Optional };
+
+        // Act
+        var replies = await CreateCoordinator().ReceiveShutdownAsync(channel, Shutdown(s_remoteScript), features);
+
+        // Assert: our shutdown was persisted (with ShuttingDown) before it is returned
+        var reply = Assert.IsType<ShutdownMessage>(Assert.Single(replies));
+        Assert.Equal(s_localScript, reply.Payload.ScriptPubkey);
+        Assert.Equal(ChannelState.ShuttingDown, channel.State);
+        Assert.Equal(["update:ShuttingDown", "save", "update:ShuttingDown", "save"], _calls);
+    }
+
+    [Fact]
+    public async Task Given_OurUpfrontScript_When_Initiate_Then_ItIsTheShutdownScript()
+    {
+        // Arrange (B2-SHUT-S09: reuse the upfront script we sent)
+        var ourUpfront = (BitcoinScript)Convert.FromHexString("0020" + new string('7', 64));
+        var channel = CreateChannel(ChannelState.Open, localUpfront: ourUpfront);
+        var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()),
+                                                  new Mock<IBitcoinWalletService>(MockBehavior.Strict).Object);
+
+        // Act
+        var messages = await CreateCoordinator(provider).InitiateAsync(channel, new ChannelCloseRequest());
+
+        // Assert
+        var shutdown = Assert.IsType<ShutdownMessage>(Assert.Single(messages));
+        Assert.Equal(ourUpfront, shutdown.Payload.ScriptPubkey);
+        Assert.Equal(ourUpfront, channel.LocalShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_ShutdownSent_When_InitiateAgain_Then_NothingSent()
+    {
+        // Arrange (B2-SHUT-S04: only once)
+        var channel = CreateChannel(ChannelState.Open);
+        var coordinator = CreateCoordinator();
+        await coordinator.InitiateAsync(channel, new ChannelCloseRequest());
+        _calls.Clear();
+
+        // Act
+        var messages = await coordinator.InitiateAsync(channel, new ChannelCloseRequest());
+
+        // Assert
+        Assert.Empty(messages);
+        Assert.Empty(_calls);
+    }
+
+    [Fact]
+    public async Task Given_OutputBelowItsScriptDust_When_ClosingSigned_Then_ChannelFailedAndNothingBroadcast()
+    {
+        // Arrange (B2-CLS-R10): dust limits of 300 sat keep a 320 sat P2WSH output, below its 330 sat threshold
+        var channel = CreateNegotiatingChannel(localSat: 99_680, remoteSat: 320, dustLimitSat: 300);
+
+        // Act
+        var failure = await Assert.ThrowsAsync<ChannelFailedException>(
+                          () => CreateCoordinator().ReceiveClosingSignedAsync(channel, ClosingSigned(500)));
+
+        // Assert
+        Assert.Equal("B2-CLS-R10", failure.RequirementId);
+        Assert.Equal(ChannelState.Negotiating, channel.State);
+        _monitor.Verify(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
+                                                               It.IsAny<uint>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_FeeAboveFunderBalance_When_ClosingSigned_Then_WarningAndDisconnect()
+    {
+        // Arrange
+        var channel = CreateNegotiatingChannel(localSat: 1_000, remoteSat: 99_000, dustLimitSat: 546);
+
+        // Act
+        var warning = await Assert.ThrowsAsync<ChannelWarningException>(
+                          () => CreateCoordinator().ReceiveClosingSignedAsync(channel, ClosingSigned(1_001)));
+
+        // Assert
+        Assert.True(warning.CloseConnection);
+    }
+
+    [Fact]
+    public async Task Given_InvertedFeeRange_When_ClosingSigned_Then_WarningAndDisconnect()
+    {
+        // Arrange
+        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546);
+        var message = new ClosingSignedMessage(
+            new ClosingSignedPayload(channel.ChannelId, LightningMoney.Satoshis(500), s_signature),
+            new FeeRangeTlv(LightningMoney.Satoshis(900), LightningMoney.Satoshis(100)));
+
+        // Act
+        var warning = await Assert.ThrowsAsync<ChannelWarningException>(
+                          () => CreateCoordinator().ReceiveClosingSignedAsync(channel, message));
+
+        // Assert
+        Assert.True(warning.CloseConnection);
+    }
+
+    [Fact]
+    public async Task Given_AgreedFee_When_ClosingSigned_Then_PersistedClosingBeforeBroadcastAndEcho()
+    {
+        // Arrange (I1): we are the non-funder, the funder offers 500 sat without a range; we agree (B2-CLS-R08)
+        var channel = CreateNegotiatingChannel(localSat: 40_000, remoteSat: 60_000, dustLimitSat: 546,
+                                               isInitiator: false);
+
+        // Act
+        var replies = await CreateCoordinator().ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+
+        // Assert
+        var echo = Assert.IsType<ClosingSignedMessage>(Assert.Single(replies));
+        Assert.Equal(LightningMoney.Satoshis(500), echo.Payload.FeeAmount);
+        Assert.Null(echo.FeeRangeTlv);
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.Equal(["update:Closing", "save", "publish"], _calls);
+        var tx = Transaction.Load(channel.ClosingTransaction!.RawTxBytes, Network.RegTest);
+        Assert.Equal(40_000, tx.Outputs.Single(o => o.ScriptPubKey.ToBytes().SequenceEqual((byte[])s_localScript))
+                                .Value.Satoshi);
+        Assert.Equal(59_500, tx.Outputs.Single(o => o.ScriptPubKey.ToBytes().SequenceEqual((byte[])s_remoteScript))
+                                .Value.Satoshi);
+        Assert.Equal(4, tx.Inputs[0].WitScript.PushCount);
+    }
+
+    [Fact]
+    public async Task Given_BroadcastFails_When_Agreed_Then_StillClosing()
+    {
+        // Arrange: the peer broadcast first (already in the mempool)
+        var channel = CreateNegotiatingChannel(localSat: 40_000, remoteSat: 60_000, dustLimitSat: 546,
+                                               isInitiator: false);
+        _monitor.Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
+                                                              It.IsAny<uint>()))
+                .ThrowsAsync(new InvalidOperationException("txn-already-in-mempool"));
+
+        // Act
+        var replies = await CreateCoordinator().ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+
+        // Assert
+        Assert.Single(replies);
+        Assert.Equal(ChannelState.Closing, channel.State);
+    }
+
+    [Fact]
+    public void Given_ShutdownSent_When_CreateShutdownResend_Then_SameScriptAndMarkedSent()
+    {
+        // Arrange (B2-RE-28)
+        var channel = CreateChannel(ChannelState.ShuttingDown);
+        channel.SetLocalShutdownScript(s_localScript);
+        var coordinator = CreateCoordinator();
+
+        // Act
+        var resend = coordinator.CreateShutdownResend(channel);
+
+        // Assert
+        Assert.NotNull(resend);
+        Assert.Equal(s_localScript, resend.Payload.ScriptPubkey);
+        Assert.True(_registry.Get(channel.ChannelId).ShutdownSentOnConnection);
+    }
+
+    [Fact]
+    public void Given_NoShutdownSent_When_CreateShutdownResend_Then_Null()
+    {
+        // Arrange
+        var channel = CreateChannel(ChannelState.ShuttingDown);
+        channel.SetRemoteShutdownScript(s_remoteScript);
+
+        // Act / Assert
+        Assert.Null(CreateCoordinator().CreateShutdownResend(channel));
+    }
+
+    private ChannelCloseCoordinator CreateCoordinator(ShutdownScriptProvider? provider = null)
+    {
+        var nodeOptions = Options.Create(new NodeOptions());
+        var memory = new Mock<IChannelMemoryRepository>();
+        var messageFactory = new MessageFactory(nodeOptions);
+        var transitions = new ChannelStateTransitionService(memory.Object, new ChannelDomainEventQueue(),
+                                                            new Mock<ICommitmentSigner>().Object, _signer.Object,
+                                                            NullLogger<ChannelStateTransitionService>.Instance,
+                                                            messageFactory, new Mock<IMessageSerializer>().Object,
+                                                            nodeOptions,
+                                                            new Mock<ISecretStorageServiceFactory>().Object,
+                                                            _unitOfWork.Object);
+        var feeService = new Mock<IFeeService>();
+        feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Satoshis(1_000));
+        return new ChannelCloseCoordinator(new ClosingTransactionBuilder(nodeOptions), memory.Object,
+                                           feeService.Object, _signer.Object,
+                                           NullLogger<ChannelCloseCoordinator>.Instance, messageFactory,
+                                           Options.Create(new ChannelCloseOptions()), _registry,
+                                           provider ?? new FixedProvider(s_localScript), transitions,
+                                           _unitOfWork.Object, _monitor.Object);
+    }
+
+    private static ShutdownMessage Shutdown(BitcoinScript script) =>
+        new(new ShutdownPayload(new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()), script));
+
+    private static ClosingSignedMessage ClosingSigned(ulong feeSat) =>
+        new(new ClosingSignedPayload(new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()),
+                                     LightningMoney.Satoshis(feeSat), s_signature));
+
+    /// <summary>A channel in Negotiating with both shutdown scripts, no snapshot.</summary>
+    private static ChannelModel CreateNegotiatingChannel(long localSat, long remoteSat, long dustLimitSat,
+                                                         bool isInitiator = true)
+    {
+        var channel = CreateChannel(ChannelState.Negotiating, localSat: localSat, remoteSat: remoteSat,
+                                    dustLimitSat: dustLimitSat, isInitiator: isInitiator);
+        channel.SetLocalShutdownScript(s_localScript);
+        channel.SetRemoteShutdownScript(s_remoteScript);
+        return channel;
+    }
+
+    private static ChannelModel CreateChannel(ChannelState state, long localSat = 60_000, long remoteSat = 40_000,
+                                              long dustLimitSat = 546, bool isInitiator = true,
+                                              BitcoinScript? localUpfront = null, BitcoinScript? remoteUpfront = null)
+    {
+        var local = new ChannelParty(LightningMoney.Satoshis(dustLimitSat), LightningMoney.Satoshis(1_000),
+                                     LightningMoney.MilliSatoshis(1_000), 30,
+                                     LightningMoney.Satoshis(localSat + remoteSat), 144, localUpfront);
+        var remote = new ChannelParty(LightningMoney.Satoshis(dustLimitSat), LightningMoney.Satoshis(1_000),
+                                      LightningMoney.MilliSatoshis(1_000), 30,
+                                      LightningMoney.Satoshis(localSat + remoteSat), 144, remoteUpfront);
+        var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(2_500), 3, false,
+                                              FeatureSupport.No);
+        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(localSat + remoteSat),
+                                                  NormalOperationTestContext.Point(0x01),
+                                                  NormalOperationTestContext.Point(0x02))
+        {
+            TransactionId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray()),
+            Index = 0
+        };
+        var localKeySet = new ChannelKeySetModel(0, NormalOperationTestContext.Point(0x01),
+                                                 NormalOperationTestContext.Point(0x03),
+                                                 NormalOperationTestContext.Point(0x04),
+                                                 NormalOperationTestContext.Point(0x05),
+                                                 NormalOperationTestContext.Point(0x06),
+                                                 NormalOperationTestContext.Point(0x07));
+        var remoteKeySet = new ChannelKeySetModel(0, NormalOperationTestContext.Point(0x02),
+                                                  NormalOperationTestContext.Point(0x08),
+                                                  NormalOperationTestContext.Point(0x09),
+                                                  NormalOperationTestContext.Point(0x0b),
+                                                  NormalOperationTestContext.Point(0x0c),
+                                                  NormalOperationTestContext.Point(0x0d));
+        return new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()), null,
+                                fundingOutput, isInitiator, null, null, LightningMoney.Satoshis(localSat),
+                                localKeySet, 0, 0, LightningMoney.Satoshis(remoteSat), remoteKeySet, 0,
+                                NormalOperationTestContext.PeerNodeId, 0, state, ChannelVersion.V1);
+    }
+
+    private sealed class FixedProvider(BitcoinScript script)
+        : ShutdownScriptProvider(Options.Create(new NodeOptions()), new Mock<IBitcoinWalletService>().Object)
+    {
+        public override Task<BitcoinScript> GetLocalScriptAsync(ChannelModel channel) => Task.FromResult(script);
+    }
+}

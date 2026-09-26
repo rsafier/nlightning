@@ -1,11 +1,14 @@
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NBitcoin;
 
 namespace NLightning.Application.Channels.Managers;
 
+using Close;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Constants;
 using Domain.Channels.Enums;
@@ -142,11 +145,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             case ChannelState.ReadyForThem or ChannelState.ReadyForUs:
                 _logger.LogInformation("Waiting for channel {ChannelId} to be ready", channel.ChannelId);
                 break;
+            case ChannelState.ShuttingDown or ChannelState.Negotiating:
+                // The close resumes on the peer's next connection: channel_reestablish re-sends our shutdown
+                // (B2-RE-28) and the fee negotiation restarts (B2-RE-29)
+                _logger.LogInformation("Channel {ChannelId} is {State}; the close resumes when the peer reconnects",
+                                       channel.ChannelId, Enum.GetName(channel.State));
+                break;
             case ChannelState.Closing:
-                // Nothing moves a channel to Closing yet: shutdown, its re-send and closing_signed are N10 (NL-036).
-                // Kept in memory so the peer's messages for it are recognized; updates on it are refused
-                _logger.LogWarning("Channel {ChannelId} is closing; the close resumes only once shutdown exists (N10)",
-                                   channel.ChannelId);
+                // The agreed closing transaction is persisted and watched; rebroadcast it in case it never went out
+                await RebroadcastClosingTransactionAsync(scope, channel);
                 break;
             case ChannelState.Failed:
                 // Kept in memory so its messages are ignored; its error is re-sent on every connection (B2-RE-05)
@@ -254,7 +261,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// </summary>
     private async Task QueuePendingDomainEventsAsync(IServiceScope scope, ChannelModel channel)
     {
-        if (channel.State != ChannelState.Open)
+        if (channel.State is not (ChannelState.Open or ChannelState.ShuttingDown))
             return;
 
         try
@@ -335,6 +342,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 if (message.Type == MessageTypes.ChannelReestablish)
                     reestablished = await CompleteReestablishAsync(scope, channelId, peerPubKey);
 
+                replies = await AdvanceCloseAsync(scope, channelId, replies);
                 RaiseResponseMessages(peerPubKey, replies);
             }
 
@@ -382,6 +390,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             {
                 using var scope = _serviceProvider.CreateScope();
                 using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
+
+                // BOLT 2: the closing negotiation restarts on every reconnection (B2-RE-29)
+                _serviceProvider.GetService<ClosingNegotiationRegistry>()?.ResetConnection(channel.ChannelId);
                 switch (channel.State)
                 {
                     case ChannelState.Failed:
@@ -390,8 +401,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                                channel.ChannelId);
                         break;
                     case ChannelState.V1FundingSigned or ChannelState.ReadyForThem or ChannelState.ReadyForUs
-                      or ChannelState.Open:
-                        if (channel.State == ChannelState.Open && channel.Commitments is not null)
+                      or ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating:
+                        if (channel.State is ChannelState.Open or ChannelState.ShuttingDown
+                         && channel.Commitments is not null)
                             await RevertUncommittedAsync(channel);
 
                         var reestablishService = scope.ServiceProvider.GetRequiredService<ReestablishService>();
@@ -422,7 +434,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             try
             {
                 using var channelLock = await _channelLockProvider.AcquireAsync(channel.ChannelId);
-                if (channel.State is ChannelState.Open or ChannelState.Failed)
+                if (channel.State is ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Failed)
                     await RevertUncommittedAsync(channel);
             }
             catch (Exception e)
@@ -459,7 +471,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         if (tracker is null || !tracker.TryMarkReestablished(channelId))
             return false;
 
-        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel) || channel.State != ChannelState.Open)
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+         || channel.State is not (ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating))
             return true;
 
         _serviceProvider.GetService<IPeerLivenessProbe>()?.MarkLinkUp(channelId, peerPubKey);
@@ -468,6 +481,77 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         _logger.LogInformation("Channel {ChannelId} reestablished with peer {Peer}", channelId, peerPubKey);
         return true;
+    }
+
+    /// <summary>
+    /// After a message was handled on a closing channel (BOLT2 plan N10): our deferred <c>shutdown</c>, the move to
+    /// Negotiating once nothing is left, and the funder's opening <c>closing_signed</c>
+    /// (<see cref="ChannelCloseCoordinator.AdvanceAsync"/>), appended to the handler's replies. Call it under the
+    /// channel's lock. A failure is logged (the next message retries): the peer did nothing wrong.
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AdvanceCloseAsync(IServiceScope scope, ChannelId channelId,
+                                                                        IReadOnlyList<IChannelMessage> replies)
+    {
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+         || !ChannelCloseCoordinator.IsNegotiationPhase(channel.State)
+         || scope.ServiceProvider.GetService<ChannelCloseCoordinator>() is not { } coordinator)
+            return replies;
+
+        try
+        {
+            var more = await coordinator.AdvanceAsync(channel);
+            return more.Count == 0 ? replies : replies.Concat(more).ToList();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not move the close of channel {ChannelId} on", channelId);
+            return replies;
+        }
+    }
+
+    /// <summary>
+    /// Startup of a <see cref="ChannelState.Closing"/> channel: its agreed transaction is persisted and watched (the
+    /// monitor reloads the watch), so only rebroadcast it; a failure (already confirmed or in the mempool) is logged.
+    /// </summary>
+    private async Task RebroadcastClosingTransactionAsync(IServiceScope scope, ChannelModel channel)
+    {
+        if (channel.ClosingTransaction is not { } closingTransaction)
+        {
+            _logger.LogWarning("Channel {ChannelId} is closing without a stored closing transaction",
+                               channel.ChannelId);
+            return;
+        }
+
+        _logger.LogInformation("Channel {ChannelId} is waiting for closing transaction {TxId} to confirm",
+                               channel.ChannelId, closingTransaction.TxId);
+        if (scope.ServiceProvider.GetService<IBitcoinChainService>() is not { } chainService)
+            return;
+
+        try
+        {
+            await chainService.SendTransactionAsync(Transaction.Load(closingTransaction.RawTxBytes, Network.Main));
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Rebroadcast of closing transaction {TxId} failed", closingTransaction.TxId);
+        }
+    }
+
+    /// <summary>
+    /// The mutual close transaction reached its depth: the channel is <see cref="ChannelState.Closed"/>, persisted,
+    /// and forgotten in memory (and in the close registry). Call it under the channel's lock.
+    /// </summary>
+    private async Task CompleteCloseAsync(IServiceScope scope, ChannelModel channel)
+    {
+        channel.UpdateState(ChannelState.Closed);
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await unitOfWork.SaveChangesAsync();
+
+        _channelMemoryRepository.TryRemoveChannel(channel.ChannelId);
+        _serviceProvider.GetService<ClosingNegotiationRegistry>()?.Remove(channel.ChannelId);
+        _logger.LogInformation("Channel {ChannelId} is closed: closing transaction {TxId} confirmed",
+                               channel.ChannelId, channel.ClosingTransaction?.TxId);
     }
 
     /// <summary>Asks the commit scheduler to sign what is pending (it checks the link and D7 itself).</summary>
@@ -682,7 +766,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                                              $"Ignoring {Enum.GetName(message.Type)} on failed channel {channelId}",
                                              await GetStoredErrorTextAsync(scope, failed));
 
-        if (IsNormalOperationMessage(message.Type))
+        if (IsNormalOperationMessage(message.Type) || IsCloseMessage(message.Type))
             ThrowIfNotReestablished(channelId, currentState, message.Type);
 
         // In this case we can only handle messages that are opening a channel
@@ -782,11 +866,26 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                           .HandleAsync(Cast<ChannelReestablishMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
 
+            // BOLT 2 channel close (plan N10): shutdown and the legacy closing_signed negotiation
+            case MessageTypes.Shutdown:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<ShutdownMessage>(scope)
+                          .HandleAsync(Cast<ShutdownMessage>(message), currentState, negotiatedFeatures, peerPubKey);
+
+            case MessageTypes.ClosingSigned:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<ClosingSignedMessage>(scope)
+                          .HandleAsync(Cast<ClosingSignedMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
         }
     }
+
+    private static bool IsCloseMessage(MessageTypes messageType) =>
+        messageType is MessageTypes.Shutdown or MessageTypes.ClosingSigned;
 
     private static bool IsNormalOperationMessage(MessageTypes messageType) =>
         messageType is MessageTypes.UpdateAddHtlc or MessageTypes.UpdateFulfillHtlc or MessageTypes.UpdateFailHtlc
@@ -801,7 +900,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// </summary>
     private void ThrowIfNotReestablished(ChannelId channelId, ChannelState currentState, MessageTypes messageType)
     {
-        if (currentState != ChannelState.Open || GetTracker() is not { } tracker || tracker.IsReestablished(channelId))
+        if (currentState is not (ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating)
+         || GetTracker() is not { } tracker || tracker.IsReestablished(channelId))
             return;
 
         var messageName = Enum.GetName(messageType) ?? ((ushort)messageType).ToString();
@@ -837,9 +937,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: shutdown/closing_signed (BOLT2 plan N10), and the
-    /// dual-funding messages (the HTLC and fee updates, commitment_signed and
-    /// revoke_and_ack have handlers since N6-T1). Only for channels we know: an unknown channel gets an `error` (see
+    /// Interim behavior for channel messages we can't process yet: the dual-funding messages and
+    /// <c>closing_complete</c>/<c>closing_sig</c> (option_simple_close, N11). The HTLC and fee updates,
+    /// commitment_signed and revoke_and_ack have handlers since N6-T1, shutdown and closing_signed since N10. Only for channels we know: an unknown channel gets an `error` (see
     /// <see cref="ThrowIfUnknownChannelAsync"/>).
     /// </summary>
     /// <remarks>
@@ -1087,14 +1187,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
 
         _ = ConfirmFundingAsync(args.WatchedTransaction.ChannelId, args.WatchedTransaction.FirstSeenAtHeight.Value,
-                                args.WatchedTransaction.TransactionIndex.Value);
+                                args.WatchedTransaction.TransactionIndex.Value, args.WatchedTransaction.TransactionId);
     }
 
     /// <summary>
     /// Runs the funding confirmation of one channel under its lock, so it can't interleave with that channel's peer
     /// messages or with another confirmation, and its channel_ready is enqueued before the lock is released.
     /// </summary>
-    private async Task ConfirmFundingAsync(ChannelId channelId, uint firstSeenAtHeight, uint transactionIndex)
+    private async Task ConfirmFundingAsync(ChannelId channelId, uint firstSeenAtHeight, uint transactionIndex,
+                                           TxId? confirmedTxId = null)
     {
         try
         {
@@ -1117,6 +1218,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
                 _lightningSigner.RegisterChannel(channelId, channel.GetSigningInfo());
                 _channelMemoryRepository.AddChannel(channel);
+            }
+
+            // The agreed mutual close transaction reached its depth (N10)
+            if (channel.State == ChannelState.Closing && confirmedTxId is { } txId
+             && channel.ClosingTransaction?.TxId == txId)
+            {
+                await CompleteCloseAsync(scope, channel);
+                return;
             }
 
             // Funding confirmation is only processed once per channel
