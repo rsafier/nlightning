@@ -83,11 +83,8 @@ public class CommitmentNumber
                                                   ISha256 sha256)
     {
         // Hash the concatenation of payment basepoints
-        sha256.AppendData(openerBasepoint);
-        sha256.AppendData(accepterBasepoint);
-
         Span<byte> hashResult = stackalloc byte[32];
-        sha256.GetHashAndReset(hashResult);
+        sha256.ComputeHash(openerBasepoint, accepterBasepoint, hashResult);
 
         // Extract the lower 48 bits (6 bytes) of the hash
         ulong obscuringFactor = 0;

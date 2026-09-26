@@ -120,4 +120,82 @@ public class ThreadLocalSha256Tests
         Assert.IsType<ThreadLocalSha256>(sha256);
         Assert.Same(sha256, provider.GetRequiredService<ISha256>());
     }
+
+    [Fact]
+    public void Given_AnAppendThatThrows_When_HashingWithComputeHash_Then_TheNextCallerOnTheThreadGetsTheRightHash()
+    {
+        // Arrange - the first part is appended, then the second append fails. Without the reset the leftover "a"
+        // would be hashed into the next, unrelated caller's result on this thread.
+        using var sha256 = new ThreadLocalSha256();
+        var failing = new FailingSecondAppendSha256(sha256);
+        var hash = new byte[32];
+        var threw = false;
+
+        // Act
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                failing.ComputeHash("a"u8, "b"u8, hash);
+            }
+            catch (InvalidOperationException)
+            {
+                threw = true;
+            }
+
+            sha256.ComputeHash("c"u8, hash);
+        });
+        thread.Start();
+        thread.Join(s_timeout);
+
+        // Assert
+        Assert.True(threw);
+        Assert.Equal(2, failing.Appends);
+        Assert.Equal(SHA256.HashData("c"u8), hash);
+    }
+
+    [Fact]
+    public void Given_TwoParts_When_HashingWithComputeHash_Then_TheHashIsOfTheirConcatenation()
+    {
+        // Arrange
+        using var sha256 = new ThreadLocalSha256();
+        var hash = new byte[32];
+
+        // Act
+        sha256.ComputeHash("ab"u8, "cd"u8, hash);
+
+        // Assert
+        Assert.Equal(SHA256.HashData("abcd"u8), hash);
+    }
+
+    [Fact]
+    public void Given_AShortHashBuffer_When_HashingWithComputeHash_Then_ThrowsBeforeAppendingAnything()
+    {
+        // Arrange
+        using var sha256 = new ThreadLocalSha256();
+        var failing = new FailingSecondAppendSha256(sha256);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => failing.ComputeHash("a"u8, new byte[31]));
+        Assert.Equal(0, failing.Appends);
+    }
+
+    /// <summary>Delegates to an inner <see cref="ISha256"/> but throws on the second append.</summary>
+    private sealed class FailingSecondAppendSha256(ISha256 inner) : ISha256
+    {
+        public int Appends { get; private set; }
+
+        public void AppendData(ReadOnlySpan<byte> data)
+        {
+            if (++Appends == 2)
+                throw new InvalidOperationException("append failed");
+            inner.AppendData(data);
+        }
+
+        public void GetHashAndReset(Span<byte> hash) => inner.GetHashAndReset(hash);
+
+        public void Dispose()
+        {
+        }
+    }
 }

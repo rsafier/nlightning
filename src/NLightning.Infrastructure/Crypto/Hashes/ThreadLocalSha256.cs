@@ -14,8 +14,11 @@ using Domain.Crypto.Hashes;
 /// </para>
 /// <para>
 /// A caller must append and read its hash on the same thread, without an <c>await</c> in between (every caller does:
-/// the span parameters make that the natural shape). A caller that fails between the two leaves data behind only on
-/// its own thread, exactly as with a private <see cref="Sha256"/>.
+/// the span parameters make that the natural shape). Unlike a private <see cref="Sha256"/>, which is thrown away, a
+/// thread's state outlives its caller: one that failed between the two would leave its bytes for the next, unrelated
+/// caller on that thread, and that caller would get a wrong hash. So hash through
+/// <see cref="Sha256Extensions.ComputeHash(ISha256, ReadOnlySpan{byte}, Span{byte})"/> (or its two-part overload),
+/// which resets the state even when appending throws.
 /// </para>
 /// </remarks>
 public sealed class ThreadLocalSha256 : ISha256
