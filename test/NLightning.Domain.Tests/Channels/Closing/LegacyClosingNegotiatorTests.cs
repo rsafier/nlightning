@@ -264,6 +264,24 @@ public class LegacyClosingNegotiatorTests
     }
 
     [Fact]
+    public void Given_AtOurLimitAndPeerNotSeenConverging_When_Receive_Then_WarnAndCloseConnection()
+    {
+        // B2-CLS-R09 MUST (propose strictly between): our opening fee is already our limit and the peer's first fee is
+        // beyond it, so we can't move and the peer has not shown it moves towards us: warning and close, no hold
+        // Arrange
+        var state = Funder(100, 900, sendRange: false) with { LastSentFeeSat = 900, Rounds = 0 };
+
+        // Act
+        var (decision, next) = LegacyClosingNegotiator.Receive(state, 1_500, null, 900);
+
+        // Assert
+        Assert.Equal(ClosingDecisionKind.Warn, decision.Kind);
+        Assert.True(decision.CloseConnection);
+        Assert.Equal("B2-CLS-R09", decision.RequirementId);
+        Assert.Equal(900UL, next.LastSentFeeSat);
+    }
+
+    [Fact]
     public void Given_HeldTooLong_When_Receive_Then_WarnAndCloseConnection()
     {
         // Arrange
