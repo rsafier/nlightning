@@ -246,6 +246,33 @@ public sealed class OnchainChannelWatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ReplacedCloseWithAResolvedHtlc_When_AnotherSpendIsRaised_Then_Alerted()
+    {
+        // Arrange: our commitment was recorded and one of its HTLC outputs resolved (its upstream may be failed); a
+        // reorg took it out and the peer's commitment confirmed instead
+        var local = _pair.Alice.State.LocalCommit;
+        var ours = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(ours), TestContext.Current.CancellationToken);
+        var htlcRow = _store.Outputs.Values.First(o => o.TransactionId == ours.TxId && o.HtlcId is not null);
+        _store.Outputs[(htlcRow.TransactionId, htlcRow.OutputIndex)] =
+            htlcRow with { State = OutputResolutionState.Resolved, ResolvedHeight = SpendHeight + 1 };
+        var remote = _pair.Alice.State.RemoteCommit;
+        var theirs = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number, remote.PerCommitmentPoint);
+        var reorged = new OutpointSpentEventArgs(_channel.ChannelId, theirs, SpendHeight + 2, 1,
+                                                 _channel.FundingOutput!.TransactionId!.Value,
+                                                 _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(9));
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(reorged, TestContext.Current.CancellationToken);
+
+        // Assert: the operator is told which HTLC of the old close had been resolved
+        Assert.Contains(_logger.Messages, m => m.Contains("[B5-GEN-06]", StringComparison.Ordinal)
+                                            && m.Contains("had already resolved", StringComparison.Ordinal)
+                                            && m.Contains($"{htlcRow.HtlcDirection} {htlcRow.HtlcId}",
+                                                          StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Given_PeersCurrentCommitment_When_FundingSpent_Then_RemoteCloseAndOurPendingCommitmentAbandoned()
     {
         // Arrange: we had failed the channel and our commitment was never confirmed (its row is pending)
