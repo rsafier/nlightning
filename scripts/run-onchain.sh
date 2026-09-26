@@ -19,6 +19,9 @@
 # containers). ONCHAIN_SDK_IMAGE overrides the runner image. By default the proof namespace runs (xunit v3's -namespace
 # matches it exactly; Docker.Onchain.Cheater holds helpers only); the two Explicit O5 by-hand variants need
 # "-explicit on". NLTG_TEST_PORT_BASE, when set, is passed on (PortPoolUtil's port range).
+# ONCHAIN_SUITE picks the default proofs when no xunit arguments are given: "legacy" (default, the
+# Docker.Onchain namespace), "anchors" (the O7-T4 anchors proofs, Docker.Onchain.Anchors: -namespace matches one
+# namespace exactly, so they never run with the legacy suite) or "all" (both namespaces in one process and fixture).
 set -euo pipefail
 
 runs="${1:-3}"
@@ -31,6 +34,8 @@ framework="${ONCHAIN_FRAMEWORK:-net10.0}"
 output_dir="$repo_root/test/NLightning.Integration.Tests/bin/$configuration/$framework"
 results_dir="$repo_root/TestResults/onchain"
 namespace="NLightning.Integration.Tests.Docker.Onchain"
+anchors_namespace="$namespace.Anchors"
+suite="${ONCHAIN_SUITE:-legacy}"
 
 case "$framework" in
     net11.0) default_image="mcr.microsoft.com/dotnet/sdk:11.0" ;;
@@ -43,9 +48,18 @@ if ! [[ "$runs" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
-# Without extra arguments the whole proof namespace runs; with them (e.g. -class/-method) they pick the tests
+# Without extra arguments the proof namespace(s) of ONCHAIN_SUITE run; with them (e.g. -class/-method) they pick the
+# tests
 if [ "$#" -eq 0 ]; then
-    set -- -namespace "$namespace"
+    case "$suite" in
+        legacy) set -- -namespace "$namespace" ;;
+        anchors) set -- -namespace "$anchors_namespace" ;;
+        all) set -- -namespace "$namespace" -namespace "$anchors_namespace" ;;
+        *)
+            echo "ONCHAIN_SUITE must be legacy, anchors or all, got '$suite'" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 port_env=()
@@ -58,7 +72,7 @@ dotnet build "$project" -c "$configuration" -f "$framework" -p:MSBuildWarningsAs
 
 mkdir -p "$results_dir"
 for run in $(seq 1 "$runs"); do
-    log="$results_dir/onchain-run-$run-$framework.log"
+    log="$results_dir/onchain-$suite-run-$run-$framework.log"
     echo "===== On-chain run $run/$runs on $framework in $image ($(date -u +%H:%M:%S)), log $log ====="
     if ! docker run --rm --network host ${port_env[@]+"${port_env[@]}"} \
         -v /var/run/docker.sock:/var/run/docker.sock \
