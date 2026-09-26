@@ -77,7 +77,8 @@ public class PeerServiceFactory : IPeerServiceFactory
 
         // Create the service
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
-                               _serviceProvider.GetService<IGossipIngress>());
+                               _serviceProvider.GetService<IGossipIngress>(),
+                               _serviceProvider.GetService<IGossipSyncService>());
     }
 
     /// <inheritdoc />
@@ -125,6 +126,7 @@ public class PeerServiceFactory : IPeerServiceFactory
 
         // Create the application service (application layer)
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
-                               _serviceProvider.GetService<IGossipIngress>());
+                               _serviceProvider.GetService<IGossipIngress>(),
+                               _serviceProvider.GetService<IGossipSyncService>());
     }
 }

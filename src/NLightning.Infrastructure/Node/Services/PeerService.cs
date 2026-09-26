@@ -9,6 +9,7 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Addresses;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Queries;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -51,6 +52,7 @@ public sealed class PeerService : IPeerService
     private readonly IPeerCommunicationService _peerCommunicationService;
     private readonly ILogger<PeerService> _logger;
     private readonly IGossipIngress? _gossipIngress;
+    private readonly IGossipSyncService? _gossipSync;
     private readonly ChainHash _chainHash;
     private readonly Lock _channelMessageLock = new();
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
@@ -173,13 +175,20 @@ public sealed class PeerService : IPeerService
     /// Where graph gossip (256/257/258) goes, and whether to ask the peer for its graph after init; null drops graph
     /// gossip (the <c>channel_update</c> event still fires).
     /// </param>
+    /// <param name="gossipSync">
+    /// Where the gossip queries, their replies and the filters (261-265) go, and who decides what to ask the peer for
+    /// after init (BOLT 7 G3); null answers queries as a node without a graph and, while the graph is enabled, asks the
+    /// peer for its whole graph with <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c>.
+    /// </param>
     public PeerService(IPeerCommunicationService peerCommunicationService, FeatureOptions features,
-                       ILogger<PeerService> logger, TimeSpan networkTimeout, IGossipIngress? gossipIngress = null)
+                       ILogger<PeerService> logger, TimeSpan networkTimeout, IGossipIngress? gossipIngress = null,
+                       IGossipSyncService? gossipSync = null)
     {
         _peerCommunicationService = peerCommunicationService;
         Features = features;
         _logger = logger;
         _gossipIngress = gossipIngress;
+        _gossipSync = gossipSync;
         _chainHash = features.ChainHashes.Any() ? features.ChainHashes.First() : ChainConstants.Main;
 
         // Nobody has to observe a failed init wait (e.g. a connection that closes before anyone asked)
@@ -342,26 +351,16 @@ public sealed class PeerService : IPeerService
                                                    stfuMessage.Payload.ChannelId,
                                                    "Quiescence (stfu) is not supported"));
         }
-        else if (message is QueryChannelRangeMessage queryChannelRangeMessage)
+        else if (message is QueryChannelRangeMessage or QueryShortChannelIdsMessage or ReplyChannelRangeMessage
+                                or ReplyShortChannelIdsEndMessage or GossipTimestampFilterMessage)
         {
-            // BOLT 7: MUST respond with one or more reply_channel_range. We know no public channels yet.
-            _logger.LogDebug("Answering query_channel_range from peer {peer}", PeerPubKey);
-            _ = SendGossipReplyAsync(GossipQueryResponder.CreateReply(queryChannelRangeMessage));
-        }
-        else if (message is QueryShortChannelIdsMessage queryShortChannelIdsMessage)
-        {
-            // BOLT 7: MUST follow the (here empty) responses with reply_short_channel_ids_end
-            _logger.LogDebug("Answering query_short_channel_ids from peer {peer}", PeerPubKey);
-            try
-            {
-                _ = SendGossipReplyAsync(GossipQueryResponder.CreateReply(queryShortChannelIdsMessage));
-            }
-            catch (WarningException we)
-            {
-                _logger.LogWarning("Invalid query_short_channel_ids from peer {peer}: {message}", PeerPubKey,
-                                   we.Message);
-                _ = _peerCommunicationService.SendWarningAsync(we);
-            }
+            // BOLT 7 gossip queries (G3): answered from the graph, the replies to our own queries checked, the peer's
+            // filter kept for the relay; all by the sync service, which only queues here (the read loop never waits)
+            _logger.LogDebug("Received {messageType} from peer {peer}", Enum.GetName(message.Type), PeerPubKey);
+            if (_gossipSync is not null)
+                _gossipSync.HandleMessage(this, message);
+            else
+                HandleQueryWithoutSync(message);
         }
         else if (message is ChannelUpdateMessage channelUpdateMessage)
         {
@@ -372,11 +371,6 @@ public sealed class PeerService : IPeerService
             RaiseChannelUpdate(channelUpdateMessage);
             _gossipIngress?.TryEnqueue(this, channelUpdateMessage);
         }
-        else if (message is GossipTimestampFilterMessage)
-        {
-            // We never relay gossip (and generate none yet), so there is nothing to filter: accept and ignore
-            _logger.LogDebug("Ignoring gossip_timestamp_filter from peer {peer}", PeerPubKey);
-        }
         else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage)
         {
             // BOLT 7 graph gossip: validated (signatures, funding output) and stored by the graph ingress (G2-T4),
@@ -386,11 +380,45 @@ public sealed class PeerService : IPeerService
                 _logger.LogTrace("Dropping gossip message ({messageType}) from peer {peer}",
                                  Enum.GetName(message.Type), PeerPubKey);
         }
-        else if (message is ReplyChannelRangeMessage or ReplyShortChannelIdsEndMessage)
+    }
+
+    /// <summary>
+    /// Gossip queries without a sync service (in-process tests, a node built without the graph): a query is answered
+    /// as by a node that keeps no graph (one final empty <c>reply_channel_range</c> covering the queried range;
+    /// <c>reply_short_channel_ids_end</c> with <c>full_information</c> = 0 once the query decodes, a malformed one gets
+    /// a warning); replies and filters are dropped.
+    /// </summary>
+    private void HandleQueryWithoutSync(IMessage message)
+    {
+        switch (message)
         {
-            // We never query yet (G3): accept the message so the connection stays up, and drop it
-            _logger.LogDebug("Dropping gossip message ({messageType}) from peer {peer}",
-                             Enum.GetName(message.Type), PeerPubKey);
+            case QueryChannelRangeMessage query:
+                // BOLT 7: one reply covering the range (at least one block), final
+                _ = SendGossipReplyAsync(new ReplyChannelRangeMessage(
+                                             new ReplyChannelRangePayload(
+                                                 query.Payload.ChainHash, query.Payload.FirstBlocknum,
+                                                 Math.Max(query.Payload.NumberOfBlocks, 1u), true,
+                                                 new[] { GossipQueryCodec.EncodingUncompressed })));
+                break;
+            case QueryShortChannelIdsMessage query:
+                try
+                {
+                    var shortChannelIds = GossipQueryCodec.DecodeShortChannelIds(query.Payload.EncodedShortIds.Span,
+                                                                                 "query_short_channel_ids");
+                    if (query.QueryFlagsTlv is not null)
+                        _ = GossipQueryCodec.DecodeQueryFlags(query.QueryFlagsTlv.Value, shortChannelIds.Length);
+
+                    _ = SendGossipReplyAsync(new ReplyShortChannelIdsEndMessage(
+                                                 new ReplyShortChannelIdsEndPayload(query.Payload.ChainHash, false)));
+                }
+                catch (WarningException we)
+                {
+                    _logger.LogWarning("Invalid query_short_channel_ids from peer {peer}: {message}", PeerPubKey,
+                                       we.Message);
+                    _ = _peerCommunicationService.SendWarningAsync(we);
+                }
+
+                break;
         }
     }
 
@@ -574,6 +602,13 @@ public sealed class PeerService : IPeerService
     /// </summary>
     private void RequestGossipIfEnabled()
     {
+        if (_gossipSync is not null)
+        {
+            // The sync service decides: a range sync, a filter for new gossip, or the "nothing" filter (G3-T2)
+            _gossipSync.OnPeerInitialized(this);
+            return;
+        }
+
         if (_gossipIngress is not { IsEnabled: true } || Features.GossipQueries == FeatureSupport.No)
             return;
 

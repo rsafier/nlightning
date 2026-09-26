@@ -16,6 +16,8 @@ using Application.Gossip.Interfaces;
 using Application.Gossip.Relay;
 using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Services;
+using Application.Gossip.Sync;
+using Application.Gossip.Sync.Interfaces;
 using Application.Payments.Invoices;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
@@ -550,6 +552,50 @@ public class NodeServiceExtensionsTests
         Assert.Empty(provider.GetRequiredService<IGossipPeerDirectory>().GetConnectedPeers());
         // The graph ingress replaces lane B1's no-op sink (AddGossipGraphServices), so our own gossip reaches the graph
         Assert.Same(provider.GetRequiredService<GossipIngress>(), provider.GetRequiredService<IOwnGossipSink>());
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheGossipSyncResolvesAsOneInstanceWithBoundOptions()
+    {
+        // Arrange (BOLT 7 plan G3-T1/G3-T2: the peer services' IGossipSyncService is the sync manager)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:SyncPeers", "5"),
+                                                        ("Gossip:SyncReplyTimeout", "00:00:30"),
+                                                        ("Gossip:SyncEnabled", "false")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var manager = provider.GetRequiredService<GossipSyncManager>();
+        var options = provider.GetRequiredService<IOptions<GossipSyncOptions>>().Value;
+
+        // Assert
+        Assert.Same(manager, provider.GetRequiredService<IGossipSyncService>());
+        Assert.Same(manager, provider.GetRequiredService<IGossipSyncManager>());
+        Assert.Equal(5, options.SyncPeers);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.SyncReplyTimeout);
+        Assert.False(manager.IsSyncEnabled);
+    }
+
+    [Fact]
+    public void Given_ABadSyncSetting_When_OptionsResolved_Then_ValidationFails()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:MaxScidsPerReply", "0")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var exception = Assert.Throws<OptionsValidationException>(() =>
+                                                                      provider
+                                                                         .GetRequiredService<
+                                                                              IOptions<GossipSyncOptions>>().Value);
+
+        // Assert
+        Assert.Contains(exception.Failures, f => f.Contains(nameof(GossipSyncOptions.MaxScidsPerReply)));
     }
 
     [Fact]

@@ -229,8 +229,109 @@ public class PeerServiceGossipTests
         _communication.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
-    private PeerService CreatePeerService(IGossipIngress? ingress) =>
-        new(_communication.Object, _features, NullLogger<PeerService>.Instance, TimeSpan.FromSeconds(1), ingress);
+    public static TheoryData<IMessage> QueryMessages => new()
+    {
+        new QueryShortChannelIdsMessage(new QueryShortChannelIdsPayload(ChainConstants.Regtest, new byte[] { 0 })),
+        new ReplyShortChannelIdsEndMessage(new ReplyShortChannelIdsEndPayload(ChainConstants.Regtest, true)),
+        new QueryChannelRangeMessage(new QueryChannelRangePayload(ChainConstants.Regtest, 0, 100)),
+        new ReplyChannelRangeMessage(new ReplyChannelRangePayload(ChainConstants.Regtest, 0, 100, true,
+                                                                  new byte[] { 0 })),
+        new GossipTimestampFilterMessage(new GossipTimestampFilterPayload(ChainConstants.Regtest, 0, 10))
+    };
+
+    [Theory]
+    [MemberData(nameof(QueryMessages))]
+    public void Given_ASyncService_When_AQueryMessageArrives_Then_ItGoesToTheSyncServiceOnly(IMessage message)
+    {
+        // Arrange: G3-T1/G3-T2, messages 261-265
+        var sync = new Mock<IGossipSyncService>();
+        var peerService = CreatePeerService(_ingress.Object, sync.Object);
+        RaiseMessage(CreateInitMessage());
+        _communication.Invocations.Clear();
+
+        // Act
+        RaiseMessage(message);
+
+        // Assert: nothing answered here, the connection stays
+        sync.Verify(s => s.HandleMessage(peerService, message), Times.Once);
+        _communication.Verify(x => x.SendMessageAsync(It.IsAny<IMessage>()), Times.Never);
+        _communication.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_ASyncService_When_InitIsAccepted_Then_ItDecidesAndNoBootstrapFilterIsSent()
+    {
+        // Arrange: G3-T2 replaces the wave G-B bootstrap filter (0, 0xFFFFFFFF)
+        var sync = new Mock<IGossipSyncService>();
+        var peerService = CreatePeerService(_ingress.Object, sync.Object);
+
+        // Act
+        RaiseMessage(CreateInitMessage());
+
+        // Assert
+        sync.Verify(s => s.OnPeerInitialized(peerService), Times.Once);
+        _communication.Verify(x => x.SendMessageAsync(It.IsAny<GossipTimestampFilterMessage>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_ASyncServiceAndPeerInitHandledWhileOursIsBeingSent_When_OursGoesOut_Then_TheSyncStartsAfterIt()
+    {
+        // Arrange: BOLT 1, init first
+        var events = new List<string>();
+        var sync = new Mock<IGossipSyncService>();
+        sync.Setup(s => s.OnPeerInitialized(It.IsAny<IPeerService>())).Callback(() => events.Add("sync"));
+        _communication.Setup(x => x.InitializeAsync(It.IsAny<TimeSpan>()))
+                      .Returns(() =>
+                       {
+                           RaiseMessage(CreateInitMessage());
+                           events.Add("our init sent");
+                           return Task.CompletedTask;
+                       });
+
+        // Act
+        CreatePeerService(_ingress.Object, sync.Object);
+
+        // Assert
+        Assert.Equal(["our init sent", "sync"], events);
+    }
+
+    [Fact]
+    public void Given_NoSyncService_When_QueryChannelRangeArrives_Then_OneFinalEmptyReplyCoversTheRange()
+    {
+        // Arrange
+        CreatePeerService(null);
+        RaiseMessage(CreateInitMessage());
+
+        // Act
+        RaiseMessage(new QueryChannelRangeMessage(new QueryChannelRangePayload(ChainConstants.Regtest, 42, 0)));
+
+        // Assert: BOLT 7, first + number > the query's first even for number_of_blocks 0
+        _communication.Verify(x => x.SendMessageAsync(It.Is<IMessage>(m =>
+                                  m is ReplyChannelRangeMessage
+                               && ((ReplyChannelRangeMessage)m).Payload.FirstBlocknum == 42
+                               && ((ReplyChannelRangeMessage)m).Payload.NumberOfBlocks == 1
+                               && ((ReplyChannelRangeMessage)m).Payload.SyncComplete)), Times.Once);
+    }
+
+    [Fact]
+    public void Given_NoSyncService_When_QueryWithZlibEncodingArrives_Then_AWarningIsSentAndNoReply()
+    {
+        // Arrange: encoding 1 MUST NOT be used (plan D5)
+        CreatePeerService(null);
+        RaiseMessage(CreateInitMessage());
+
+        // Act
+        RaiseMessage(new QueryShortChannelIdsMessage(
+                         new QueryShortChannelIdsPayload(ChainConstants.Regtest, new byte[] { 1, 0x78, 0x9c })));
+
+        // Assert
+        _communication.Verify(x => x.SendWarningAsync(It.IsAny<Domain.Exceptions.WarningException>()), Times.Once);
+        _communication.Verify(x => x.SendMessageAsync(It.IsAny<ReplyShortChannelIdsEndMessage>()), Times.Never);
+    }
+
+    private PeerService CreatePeerService(IGossipIngress? ingress, IGossipSyncService? sync = null) =>
+        new(_communication.Object, _features, NullLogger<PeerService>.Instance, TimeSpan.FromSeconds(1), ingress,
+            sync);
 
     private void RaiseMessage(IMessage message) =>
         _communication.Raise(x => x.MessageReceived += null, _communication.Object, message);

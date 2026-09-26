@@ -11,6 +11,7 @@ using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
 using Application.Gossip.Graph;
+using Application.Gossip.Sync;
 using Application.Onchain;
 using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
@@ -288,6 +289,24 @@ public static class NodeServiceExtensions
                      if (errors.Count > 0)
                          throw new OptionsValidationException(GossipGraphOptions.SectionName,
                                                               typeof(GossipGraphOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
+
+        // BOLT 7 gossip queries and sync (G3-T1/G3-T2): answers peers' queries from the graph, syncs the graph from
+        // up to Gossip:SyncPeers peers, sends the gossip_timestamp_filters and re-queries what the ingress dropped
+        // (NL-353). Gossip:SyncEnabled unset means on everywhere but mainnet (plan D12); the peer services hand it
+        // messages 261-265 and call it after init
+        services.AddGossipSyncServices();
+        services.AddOptions<GossipSyncOptions>()
+                .BindConfiguration(GossipSyncOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipSyncOptions.SectionName,
+                                                              typeof(GossipSyncOptions), errors);
 
                      return true;
                  })
