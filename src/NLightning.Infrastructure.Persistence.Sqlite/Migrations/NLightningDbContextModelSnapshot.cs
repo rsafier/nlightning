@@ -15,7 +15,25 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
         protected override void BuildModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
-            modelBuilder.HasAnnotation("ProductVersion", "10.0.5");
+            modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
+                {
+                    b.Property<uint>("Height")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("BlockHash")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("PreviousBlockHash")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("Height");
+
+                    b.ToTable("BlockHeaders");
+                });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockchainStateEntity", b =>
                 {
@@ -36,6 +54,53 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("BlockchainStates");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BroadcastTransactionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ConfirmedBlockHash")
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint?>("ConfirmedHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("FirstBroadcastHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Purpose")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("RawTransaction")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ReplacesTransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("TransactionId");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("ConfirmedHeight");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("BroadcastTransactions");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
@@ -98,6 +163,42 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.HasKey("Index", "IsChange", "AddressType");
 
                     b.ToTable("WalletAddresses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("OutputIndex")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("Purpose")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint?>("SpentAtHeight")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("SpentBlockHash")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("SpentByTransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("TransactionId", "OutputIndex");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("SpentAtHeight");
+
+                    b.ToTable("WatchedOutpoints");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity", b =>

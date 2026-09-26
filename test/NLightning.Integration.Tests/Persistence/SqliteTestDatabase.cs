@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace NLightning.Integration.Tests.Persistence;
 
@@ -28,13 +29,14 @@ internal sealed class SqliteTestDatabase : IDisposable
         context.Database.Migrate();
     }
 
-    public NLightningDbContext CreateContext()
+    public NLightningDbContext CreateContext(params IInterceptor[] interceptors)
     {
-        var options = new DbContextOptionsBuilder<NLightningDbContext>()
-                     .UseSqlite(_connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
-                     .Options;
+        var builder = new DbContextOptionsBuilder<NLightningDbContext>()
+           .UseSqlite(_connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"));
+        if (interceptors.Length > 0)
+            builder.AddInterceptors(interceptors);
 
-        return new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite));
+        return new NLightningDbContext(builder.Options, new DatabaseTypeProvider(DatabaseType.Sqlite));
     }
 
     public static WalletAddressModel CreateWalletAddress(uint index = 0) =>

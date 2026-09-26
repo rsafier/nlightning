@@ -6,6 +6,7 @@ namespace NLightning.Infrastructure.Repositories;
 using Database.Bitcoin;
 using Database.Channel;
 using Database.Node;
+using Database.Onchain;
 using Database.Payment;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
@@ -15,6 +16,7 @@ using Domain.Channels.Models;
 using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
+using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Persistence.Contexts;
@@ -32,6 +34,11 @@ public class UnitOfWork : IUnitOfWork
     private WatchedTransactionDbRepository? _watchedTransactionDbRepository;
     private WalletAddressesDbRepository? _walletAddressesDbRepository;
     private UtxoDbRepository? _utxoDbRepository;
+
+    // On-chain repositories
+    private WatchedOutpointDbRepository? _watchedOutpointDbRepository;
+    private BroadcastTransactionDbRepository? _broadcastTransactionDbRepository;
+    private BlockHeaderDbRepository? _blockHeaderDbRepository;
 
     // Channel repositories
     private ChannelConfigDbRepository? _channelConfigDbRepository;
@@ -58,6 +65,15 @@ public class UnitOfWork : IUnitOfWork
         _walletAddressesDbRepository ??= new WalletAddressesDbRepository(_context);
 
     public IUtxoDbRepository UtxoDbRepository => _utxoDbRepository ??= new UtxoDbRepository(_context);
+
+    public IWatchedOutpointDbRepository WatchedOutpointDbRepository =>
+        _watchedOutpointDbRepository ??= new WatchedOutpointDbRepository(_context);
+
+    public IBroadcastTransactionDbRepository BroadcastTransactionDbRepository =>
+        _broadcastTransactionDbRepository ??= new BroadcastTransactionDbRepository(_context);
+
+    public IBlockHeaderDbRepository BlockHeaderDbRepository =>
+        _blockHeaderDbRepository ??= new BlockHeaderDbRepository(_context);
 
     public IChannelConfigDbRepository ChannelConfigDbRepository =>
         _channelConfigDbRepository ??= new ChannelConfigDbRepository(_context);
