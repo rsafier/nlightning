@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -74,6 +75,7 @@ public sealed class LocalCommitResolver : IOutputResolver
 {
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IBitcoinChainService? _chainService;
+    private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unreadableSpendAlerts = new();
     private readonly ISweepDestinationProvider _destinationProvider;
     private readonly SweepFeePolicy _feePolicy;
     private readonly IFeeService _feeService;
@@ -363,7 +365,7 @@ public sealed class LocalCommitResolver : IOutputResolver
                 // preimage (our HTLC-timeout, a revocation) may lead to the upstream fail (BOLT 5: fail upstream only
                 // when the output was resolved by a timeout); an unreadable one is alerted, never failed
                 var (path, preimage) = await ReadSpendingWitnessAsync(context, row, spend.SpendingTxId,
-                                                                      spentOffered.PaymentHash);
+                                                                      spend.Height, spentOffered.PaymentHash);
                 spend = spend with { Path = path, Preimage = preimage };
                 lossUnproven = preimage is null
                             && path is not (HtlcSpendPath.HtlcTimeoutTransaction or HtlcSpendPath.Revocation);
@@ -433,7 +435,10 @@ public sealed class LocalCommitResolver : IOutputResolver
                     _logger.LogError("Not failing HTLC {HtlcId} of channel {ChannelId} upstream: its output was taken "
                                    + "by {TxId}, whose witness could not be read", offered.Id,
                                      context.Channel.ChannelId, Display(spend!.SpendingTxId));
-                    if (Depth(context.Height, spend.Height) == _options.ReasonableDepth)
+                    // NL-315: alerted once per process, from the first round at or past the reasonable depth, so a
+                    // node that was offline over that block is alerted too
+                    if (Depth(context.Height, spend.Height) >= _options.ReasonableDepth
+                     && _unreadableSpendAlerts.TryAdd((context.Channel.ChannelId, offered.Id), 0))
                         actions.Add(new AlertAction("B5-LCL-LO-03",
                                                     $"Our offered HTLC {offered.Id} ({offered.AmountMsat} msat) of "
                                                   + $"channel {context.Channel.ChannelId} was taken by "
@@ -453,18 +458,22 @@ public sealed class LocalCommitResolver : IOutputResolver
 
     /// <summary>
     /// The spend path and the preimage (checked against <paramref name="paymentHash"/>) of the input of
-    /// <paramref name="spenderTxId"/> that spends <paramref name="row"/>'s outpoint, read from the chain;
+    /// <paramref name="spenderTxId"/> that spends <paramref name="row"/>'s outpoint, read from the chain: from the block
+    /// at <paramref name="spentAt"/> first (no <c>txindex</c> needed, NL-315), else <c>getrawtransaction</c>;
     /// <see cref="HtlcSpendPath.Unknown"/> when the transaction cannot be fetched.
     /// </summary>
     private async Task<(HtlcSpendPath Path, byte[]? Preimage)> ReadSpendingWitnessAsync(
-        LocalCommitContext context, OutputResolutionModel row, TxId spenderTxId, Hash paymentHash)
+        LocalCommitContext context, OutputResolutionModel row, TxId spenderTxId, uint spentAt, Hash paymentHash)
     {
         if (_chainService is null)
             return (HtlcSpendPath.Unknown, null);
 
         try
         {
-            var transaction = await _chainService.GetTransactionAsync(new uint256((byte[])spenderTxId));
+            var hash = new uint256((byte[])spenderTxId);
+            var block = await _chainService.GetBlockAsync(spentAt);
+            var transaction = block?.Transactions.FirstOrDefault(t => t.GetHash() == hash)
+                           ?? await _chainService.GetTransactionAsync(hash);
             if (transaction is null)
             {
                 _logger.LogWarning("The spender {TxId} of {Output}:{Vout} of channel {ChannelId} is not found",

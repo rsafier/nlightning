@@ -329,6 +329,7 @@ public sealed class LocalCommitResolutionTests
         var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
         harness.NotifySpends = false;
         harness.ChainServiceFindsTransactions = false;
+        harness.ChainServiceFindsBlocks = false;
 
         // Act
         await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
@@ -337,6 +338,63 @@ public sealed class LocalCommitResolutionTests
 
         // Assert: the peer may have been paid, so the upstream HTLC is never failed; the operator is alerted once, at
         // the depth where the fail would have been raised
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed or OutgoingHtlcFulfilled);
+        Assert.Equal("B5-LCL-LO-03", Assert.Single(harness.Alerts).RequirementId);
+    }
+
+    [Fact]
+    public async Task Given_PeersPreimageClaimNotStagedAndNoTxIndex_When_ReasonablyDeep_Then_FulfilledFromTheSpendBlock()
+    {
+        // Arrange: NL-315: the spend-time round is lost and bitcoind has no txindex (getrawtransaction finds nothing),
+        // but the block at the recorded spend height is readable
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+        harness.ChainServiceFindsTransactions = false;
+
+        // Act
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        await harness.MineToAsync(harness.Height + 20);
+
+        // Assert: the preimage is read from the spend's block: staged, fulfilled upstream, never failed, no alert
+        var fulfilled = Assert.IsType<OutgoingHtlcFulfilled>(harness.Events.First(e => e.Event is OutgoingHtlcFulfilled)
+                                                                    .Event);
+        Assert.Equal(s_offeredPreimage, fulfilled.PaymentPreimage);
+        Assert.Equal(s_offeredPreimage, Assert.Single(harness.Applied).UpsertedHtlcs.Single().KnownPreimage);
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed);
+        Assert.Empty(harness.Alerts);
+    }
+
+    [Fact]
+    public async Task Given_UnreadableSpenderAndNodeOfflineAtTheReasonableDepth_When_NextRound_Then_AlertedOnce()
+    {
+        // Arrange: NL-315: the spender cannot be read, and the node misses every round until well past the reasonable
+        // depth of the spend
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+        harness.ChainServiceFindsTransactions = false;
+        harness.ChainServiceFindsBlocks = false;
+        harness.ResolveEachBlock = false;
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        await harness.MineToAsync(harness.Height + 15);
+
+        // Act: back online, several rounds
+        harness.ResolveEachBlock = true;
+        await harness.ResolveAsync();
+        await harness.MineToAsync(harness.Height + 5);
+
+        // Assert: alerted once at the first round past the depth, never failed nor fulfilled
         Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed or OutgoingHtlcFulfilled);
         Assert.Equal("B5-LCL-LO-03", Assert.Single(harness.Alerts).RequirementId);
     }
