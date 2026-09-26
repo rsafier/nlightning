@@ -6,21 +6,34 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Gossip.Relay;
 
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
+using Graph.Interfaces;
 using Interfaces;
+using Sync.Interfaces;
 
 /// <inheritdoc cref="IGossipRelayScheduler"/>
 /// <remarks>
-/// A singleton. The periodic flush starts with the first queued message and runs every
-/// <see cref="GossipOptions.OwnGossipFlushInterval"/> from then on, so a peer that connects later gets our gossip at
-/// the next flush. What went out is remembered per connection (per <c>IPeerService</c>, weakly): a new connection gets
-/// everything again. Our own messages stay queued (the latest per channel, direction and node) for the life of the
-/// process; the announcement services queue them again after a restart.
+/// <para>
+/// A singleton with two paths. <b>Our own gossip</b> (G1-T7): the periodic flush starts with the first queued message
+/// and runs every <see cref="GossipOptions.OwnGossipFlushInterval"/> from then on, so a peer that connects later gets
+/// our gossip at the next flush. What went out is remembered per connection (per <c>IPeerService</c>, weakly): a new
+/// connection gets everything again. Our own messages stay queued (the latest per channel, direction and node) for the
+/// life of the process; the announcement services queue them again after a restart.
+/// </para>
+/// <para>
+/// <b>Other nodes' gossip</b> (G3-T3, see the other part of this class) is relayed only when a graph, the sync manager
+/// (the peers' filters) and <see cref="GossipRelayOptions.IsRelayEnabledFor"/> are there.
+/// </para>
+/// <para>
+/// Everything goes out through <see cref="IGossipPeerSender"/>: the peer's <c>PeerOutbox</c> when the peer manager
+/// offers it (NL-351), else the peer service directly.
+/// </para>
 /// </remarks>
-public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
+public sealed partial class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
 {
     private const int ChannelAnnouncementRank = 0;
     private const int ChannelUpdateRank = 1;
@@ -28,6 +41,7 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
 
     private readonly ILogger<GossipRelayScheduler> _logger;
     private readonly IGossipPeerDirectory _peerDirectory;
+    private readonly IGossipPeerSender _sender;
     private readonly NodeOptions _nodeOptions;
     private readonly GossipOptions _gossipOptions;
     private readonly TimeProvider _timeProvider;
@@ -40,15 +54,39 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
     private ITimer? _timer;
     private bool _disposed;
 
+    /// <param name="peerDirectory">The connected peers.</param>
+    /// <param name="logger">A logger.</param>
+    /// <param name="nodeOptions">Our chain.</param>
+    /// <param name="gossipOptions">The flush interval of our own gossip.</param>
+    /// <param name="timeProvider">The clock (flushes, staggering, backlog pacing).</param>
+    /// <param name="sender">How a message goes to a connection (default: the peer service directly).</param>
+    /// <param name="graphStore">The graph whose accepted gossip is relayed (null: only our own gossip).</param>
+    /// <param name="syncManager">The peers' <c>gossip_timestamp_filter</c>s (null: only our own gossip).</param>
+    /// <param name="originTracker">Which peer sent which message (null: no origin suppression).</param>
+    /// <param name="relayOptions">The relay settings.</param>
+    /// <param name="secureKeyManager">Our node id: our own messages are left to the own path.</param>
     public GossipRelayScheduler(IGossipPeerDirectory peerDirectory, ILogger<GossipRelayScheduler> logger,
                                 IOptions<NodeOptions> nodeOptions, IOptions<GossipOptions>? gossipOptions = null,
-                                TimeProvider? timeProvider = null)
+                                TimeProvider? timeProvider = null, IGossipPeerSender? sender = null,
+                                IGraphStore? graphStore = null, IGossipSyncManager? syncManager = null,
+                                GossipOriginTracker? originTracker = null,
+                                IOptions<GossipRelayOptions>? relayOptions = null,
+                                ISecureKeyManager? secureKeyManager = null)
     {
         _peerDirectory = peerDirectory;
         _logger = logger;
         _nodeOptions = nodeOptions.Value;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _sender = sender ?? new PeerGossipSender();
+        _graphStore = graphStore;
+        _syncManager = syncManager;
+        _originTracker = originTracker;
+        _relayOptions = relayOptions?.Value ?? new GossipRelayOptions();
+        _ourNodeId = secureKeyManager?.GetNodePubKey();
+
+        if (IsRelayingOthers)
+            _syncManager!.FilterReceived += OnFilterReceived;
     }
 
     /// <inheritdoc />
@@ -121,7 +159,12 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
             _disposed = true;
             _timer?.Dispose();
             _timer = null;
+            _relayTimer?.Dispose();
+            _relayTimer = null;
         }
+
+        if (IsRelayingOthers)
+            _syncManager!.FilterReceived -= OnFilterReceived;
     }
 
     private void Enqueue(string key, int rank, uint timestamp, ShortChannelId? shortChannelId, IMessage message,
@@ -162,7 +205,9 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
 
             try
             {
-                await peer.Service.SendGossipMessageAsync(entry.Message);
+                if (!await _sender.SendAsync(peer, entry.Message))
+                    return;
+
                 sent.Add(entry.Digest);
             }
             catch (Exception e)
@@ -193,6 +238,8 @@ public sealed class GossipRelayScheduler : IGossipRelayScheduler, IDisposable
             _logger.LogWarning(e, "Our gossip flush failed; the next one retries");
         }
     }
+
+    private bool IsOurs(CompactPubKey nodeId) => _ourNodeId is { } ours && ours == nodeId;
 
     /// <summary>One queued message of ours.</summary>
     private sealed record OwnEntry(int Rank, IMessage Message, string Digest, uint Timestamp,

@@ -580,6 +580,53 @@ public class NodeServiceExtensionsTests
     }
 
     [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheRelayOfOthersIsWiredWithOriginTracking()
+    {
+        // Arrange (BOLT 7 plan G3-T3: the peer services' ingress records origins; the relay reads graph and filters)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:RelayFlushInterval", "00:00:30"),
+                                                        ("Gossip:BacklogMessagesPerSecond", "500")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var ingress = provider.GetRequiredService<IGossipIngress>();
+        var relay = Assert.IsType<GossipRelayScheduler>(provider.GetRequiredService<IGossipRelayScheduler>());
+        var options = provider.GetRequiredService<IOptions<GossipRelayOptions>>().Value;
+
+        // Assert
+        Assert.IsType<OriginTrackingGossipIngress>(ingress);
+        Assert.True(ingress.IsEnabled);
+        Assert.True(relay.IsRelayingOthers);
+        Assert.IsType<PeerGossipSender>(provider.GetRequiredService<IGossipPeerSender>());
+        Assert.Equal(TimeSpan.FromSeconds(30), options.RelayFlushInterval);
+        Assert.Equal(500, options.BacklogMessagesPerSecond);
+        // The graph's own entry points are unchanged: the sink and the sync manager use the ingress itself
+        Assert.Same(provider.GetRequiredService<GossipIngress>(), provider.GetRequiredService<IOwnGossipSink>());
+    }
+
+    [Fact]
+    public void Given_ABadRelaySetting_When_OptionsResolved_Then_ValidationFails()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:BacklogMessagesPerSecond", "0")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var exception = Assert.Throws<OptionsValidationException>(() =>
+                                                                      provider
+                                                                         .GetRequiredService<
+                                                                              IOptions<GossipRelayOptions>>().Value);
+
+        // Assert
+        Assert.Contains(exception.Failures, f => f.Contains(nameof(GossipRelayOptions.BacklogMessagesPerSecond)));
+    }
+
+    [Fact]
     public void Given_ABadSyncSetting_When_OptionsResolved_Then_ValidationFails()
     {
         // Arrange

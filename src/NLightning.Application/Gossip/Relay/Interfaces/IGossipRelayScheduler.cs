@@ -8,7 +8,8 @@ using Domain.Protocol.Payloads;
 /// <c>channel_update</c>s and <c>node_announcement</c> go to every connected peer whose <c>init</c> networks include
 /// our chain, regardless of any <c>gossip_timestamp_filter</c> (B7-Q-05: SHOULD send our own gossip), each once per
 /// connection; within a flush all <c>channel_announcement</c>s go first, then the <c>channel_update</c>s, then the
-/// <c>node_announcement</c>. Relaying other nodes' gossip (filters, origin suppression, backlog) is G3-T3.
+/// <c>node_announcement</c>. The implementation also relays other nodes' gossip from the graph (G3-T3: per-peer
+/// filters, staggered flushes, origin suppression, backlog); that path needs no calls.
 /// </summary>
 /// <remarks>
 /// The enqueue methods only record the message (callers may hold a channel lock). A newer message replaces the
