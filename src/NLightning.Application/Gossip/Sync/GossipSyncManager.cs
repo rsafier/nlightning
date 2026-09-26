@@ -341,6 +341,17 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
             await Task.Delay(5, cancellationToken);
     }
 
+    /// <summary>
+    /// The sync state of every connection (BOLT 7 plan G5-T4 <c>describegraph</c>); a read only.
+    /// </summary>
+    public IReadOnlyList<GossipSyncPeerState> GetPeerStates() =>
+        _sessions.Values
+                 .Select(s => new GossipSyncPeerState(s.Peer.PeerPubKey, s.IsReady, s.SupportsQueries,
+                                                      s.SupportsQueriesEx, s.IsSyncPeer, s.IsRangeSyncRunning,
+                                                      s.LastRangeSyncAt, s.Filter, s.SentFilter,
+                                                      s.IsQuerySlotPoisoned, s.PendingWork))
+                 .ToList();
+
     public void Dispose()
     {
         lock (_timerLock)
@@ -797,6 +808,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         await session.Peer.SendGossipMessageAsync(new GossipTimestampFilterMessage(
                                                       new GossipTimestampFilterPayload(
                                                           OurChain, filter.FirstTimestamp, filter.TimestampRange)));
+        session.SentFilter = filter;
     }
 
     private async Task SendWarningAsync(PeerSession session, WarningException warning)
@@ -899,6 +911,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         public bool SyncFilterSent { get; set; }
         public bool LiveFilterSent { get; set; }
         public bool NeedsLiveFilter { get; set; }
+
+        /// <summary>The last <c>gossip_timestamp_filter</c> we sent on this connection (describegraph).</summary>
+        public GossipTimestampFilter? SentFilter { get; set; }
         private volatile bool _querySlotPoisoned;
 
         /// <summary>

@@ -11,6 +11,7 @@ using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
 using Application.Gossip.Graph;
+using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Relay;
 using Application.Gossip.Sync;
 using Application.Onchain;
@@ -166,6 +167,13 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<GetRouteClientRequest, GetRouteClientResponse>>(sp =>
             new GetRouteClientHandler(GetPaymentLayerService<IRouteQueryService>(sp)));
 
+        // BOLT 7 G5-T4: the graph's counts, memory, queues and sync state, with paged listings (ClientCommand 20)
+        services.TryAddSingleton<GossipGraphDescriber>(sp =>
+            new GossipGraphDescriber(sp.GetRequiredService<IGraphStore>(), sp.GetService<GossipIngress>(),
+                                     sp.GetService<GossipSyncManager>()));
+        services.AddScoped<IClientCommandHandler<DescribeGraphClientRequest, DescribeGraphClientResponse>,
+            DescribeGraphClientHandler>();
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -189,6 +197,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ListNodesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, DescribeGraphIpcHandler>();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

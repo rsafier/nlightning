@@ -319,4 +319,28 @@ public class ClientAppTests
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-parts", "2"]));
         Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-fee-msat"]));
     }
+
+    [Fact]
+    public void GivenDescribeGraphArguments_WhenValidatedAndParsed_ThenFlagsAndPage()
+    {
+        // Arrange (BOLT 7 G5-T4)
+        string[] full = ["--channels", "--nodes", "--limit", "25", "--offset=50"];
+
+        // Act
+        var parsed = ClientApp.ParseDescribeGraphOptions(full, out var error);
+        var plain = ClientApp.ParseDescribeGraphOptions([], out _);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(new DescribeGraphArguments(true, true, 50, 25), parsed);
+        Assert.Equal(new DescribeGraphArguments(false, false, 0, 100), plain);
+        Assert.Null(ClientApp.ValidateArguments("describegraph", []));
+        Assert.Null(ClientApp.ValidateArguments("describe-graph", ["--limit=1000", "--channels"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--limit", "0"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--limit", "1001"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--offset", "-1"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--offset"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["channels"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--channels=yes"]));
+    }
 }

@@ -21,18 +21,7 @@ public sealed class ListGraphChannelsIpcResponse
         ArgumentNullException.ThrowIfNull(clientResponse);
         return new ListGraphChannelsIpcResponse
         {
-            Channels = clientResponse.Channels.Select(c => new GraphChannelIpcInfo
-            {
-                ShortChannelId = ToNumber(c.ShortChannelId),
-                NodeId1 = c.NodeId1,
-                NodeId2 = c.NodeId2,
-                CapacitySat = c.CapacitySat,
-                Verification = c.Verification.ToString(),
-                SpentAtHeight = c.SpentAtHeight,
-                Features = Convert.ToHexStringLower(c.Features.Span),
-                Policy1 = ToInfo(c.Policy1),
-                Policy2 = ToInfo(c.Policy2)
-            }).ToList()
+            Channels = clientResponse.Channels.Select(GraphChannelIpcInfo.From).ToList()
         };
     }
 
@@ -41,7 +30,7 @@ public sealed class ListGraphChannelsIpcResponse
         ((ulong)shortChannelId.BlockHeight << 40) | ((ulong)shortChannelId.TransactionIndex << 16)
                                                   | shortChannelId.OutputIndex;
 
-    private static GraphPolicyIpcInfo? ToInfo(GraphPolicy? policy) =>
+    internal static GraphPolicyIpcInfo? ToInfo(GraphPolicy? policy) =>
         policy is null
             ? null
             : new GraphPolicyIpcInfo
@@ -84,6 +73,24 @@ public sealed class GraphChannelIpcInfo
 
     /// <summary>The policy of direction 1 (node 2 forwarding towards node 1), when known.</summary>
     [Key(8)] public GraphPolicyIpcInfo? Policy2 { get; init; }
+
+    /// <summary>The IPC form of a graph channel (also used by <c>describegraph</c>'s page).</summary>
+    public static GraphChannelIpcInfo From(GraphChannel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        return new GraphChannelIpcInfo
+        {
+            ShortChannelId = ListGraphChannelsIpcResponse.ToNumber(channel.ShortChannelId),
+            NodeId1 = channel.NodeId1,
+            NodeId2 = channel.NodeId2,
+            CapacitySat = channel.CapacitySat,
+            Verification = channel.Verification.ToString(),
+            SpentAtHeight = channel.SpentAtHeight,
+            Features = Convert.ToHexStringLower(channel.Features.Span),
+            Policy1 = ListGraphChannelsIpcResponse.ToInfo(channel.Policy1),
+            Policy2 = ListGraphChannelsIpcResponse.ToInfo(channel.Policy2)
+        };
+    }
 }
 
 /// <summary>One direction's <c>channel_update</c> of a <see cref="GraphChannelIpcInfo"/>.</summary>
