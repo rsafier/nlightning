@@ -127,8 +127,12 @@ public class AnnouncementSignaturesMessageHandler : IChannelMessageHandler<Annou
                 "Stored the announcement_signatures of channel {ChannelId} ({ShortChannelId}){Reply}", channelId,
                 payload.ShortChannelId, reply is null ? string.Empty : "; replying with ours");
 
+        var hadRemoteHalf = channel.RemoteAnnouncementSignatures is not null;
         if (_announcementService.TryAssembleAnnouncement(channel) is { } announcement)
             _announcementService.OnChannelAnnounced(channel, announcement);
+        else if (hadRemoteHalf && channel.RemoteAnnouncementSignatures is null)
+            // The stored half did not sign the current announcement and was forgotten (see TryAssembleAnnouncement)
+            await PersistAsync(channel);
 
         return reply is null ? [] : [reply];
     }

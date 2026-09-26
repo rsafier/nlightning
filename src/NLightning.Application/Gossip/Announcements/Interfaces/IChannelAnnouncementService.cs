@@ -63,7 +63,9 @@ public interface IChannelAnnouncementService
     /// The channel's <c>channel_announcement</c> with all four signatures, once we sent ours and hold the peer's
     /// (BOLT 7: "has sent AND received a valid <c>announcement_signatures</c>") and the funding transaction has the
     /// announcement depth; null otherwise, or when the stored peer signatures don't verify for the channel's current
-    /// short channel id (for example after a reorg moved it).
+    /// short channel id (for example after a reorg moved it). In that last case the peer's half is also forgotten on
+    /// the model (the caller persists it, as <see cref="CompleteAnnouncementAsync"/> does), so the channel no longer
+    /// counts as announced and ours is sent again on the next connection.
     /// </summary>
     ChannelAnnouncementPayload? TryAssembleAnnouncement(ChannelModel channel);
 
@@ -91,7 +93,9 @@ public interface IChannelAnnouncementService
 
     /// <summary>
     /// Assembles and hands on the channel's announcement when both halves are in and it was not handed on in this
-    /// process yet (for example after a restart, or when ours went out after the peer's arrived).
+    /// process yet (for example after a restart, or when ours went out after the peer's arrived). A stored peer half
+    /// that does not sign the current announcement is forgotten and that is saved through <paramref name="unitOfWork"/>.
+    /// Call it under the channel's lock.
     /// </summary>
-    void CompleteAnnouncement(ChannelModel channel);
+    Task CompleteAnnouncementAsync(ChannelModel channel, IUnitOfWork unitOfWork);
 }

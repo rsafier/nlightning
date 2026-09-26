@@ -170,8 +170,12 @@ public class AnnouncementSignaturesMessageHandlerTests
         early.MarkAnnouncementSignaturesSent(DateTimeOffset.UtcNow);
         var announcement = pair.Bob.Service.TryAssembleAnnouncement(early);
 
-        // Assert: the stored half signs another announcement, so nothing is assembled
+        // Assert: the stored half signs another announcement, so nothing is assembled and the half is forgotten (the
+        // channel is not public, and ours goes out again on the next connection)
         Assert.Null(announcement);
+        Assert.Null(early.RemoteAnnouncementSignatures);
+        Assert.NotNull(early.LocalAnnouncementSignaturesSentAt);
+        Assert.False(ChannelAnnouncementService.IsAnnounced(early));
     }
 
     [Fact]
