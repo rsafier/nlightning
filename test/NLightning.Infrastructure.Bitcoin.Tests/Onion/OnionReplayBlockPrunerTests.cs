@@ -14,7 +14,8 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <summary>
 /// <see cref="OnionReplayBlockPruner"/> (NL-327): the onion replay set is pruned on every new block, not only when an
 /// onion arrives. The SQLite proof over the real chain monitor and store is
-/// <c>Integration.Tests/Persistence/OnionReplayPersistenceTests</c>.
+/// <c>Integration.Tests/Persistence/ChainMonitorPersistenceTests</c>
+/// (<c>Given_OnionReplayEntries_When_BlocksPassTheirExpiry_Then_ThePrunerDeletesThemWithoutAnOnion</c>).
 /// </summary>
 public class OnionReplayBlockPrunerTests
 {
@@ -149,6 +150,39 @@ public class OnionReplayBlockPrunerTests
         logger.Verify(l => l.Log(LogLevel.Error, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(),
                                  It.IsAny<InvalidOperationException>(),
                                  It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Once);
+        await pruner.StopAsync();
+    }
+
+    [Fact]
+    public async Task Given_APruneFails_When_AHigherBlockArrivedDuringIt_Then_TheHigherBlockIsStillPruned()
+    {
+        // Arrange: the prune at 101 blocks until 102 has arrived, then fails
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        _store.Setup(s => s.PruneAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
+              .Returns<uint, CancellationToken>(async (height, _) =>
+               {
+                   _prunedHeights.Enqueue(height);
+                   if (Interlocked.Increment(ref calls) != 1)
+                       return 1;
+
+                   firstStarted.SetResult();
+                   await releaseFirst.Task;
+                   throw new InvalidOperationException("database is locked");
+               });
+        var pruner = CreatePruner();
+        pruner.Start();
+
+        // Act
+        RaiseBlock(101);
+        await firstStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        RaiseBlock(102);
+        releaseFirst.SetResult();
+        await pruner.WhenIdleAsync();
+
+        // Assert: 102 was pruned without waiting for another block
+        Assert.Equal([101u, 102u], _prunedHeights);
         await pruner.StopAsync();
     }
 
