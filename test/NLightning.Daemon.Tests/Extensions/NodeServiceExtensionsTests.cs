@@ -29,7 +29,10 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.ValueObjects;
+using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 public class NodeServiceExtensionsTests
@@ -298,6 +301,8 @@ public class NodeServiceExtensionsTests
     [InlineData("regtest", true)]
     [InlineData("mainnet", false)]
     [InlineData("testnet", false)]
+    [InlineData("signet", true)]
+    [InlineData("mutinynet", true)]
     public void Given_DefaultConfigJson_When_Bound_Then_RoutingDefaultsAndEnableHtlcsAreExplicitAndValid(
         string network, bool expectedHtlcs)
     {
@@ -331,6 +336,75 @@ public class NodeServiceExtensionsTests
         var routingKeys = configuration.GetSection("Node:Routing").GetChildren().Select(c => c.Key).ToList();
         Assert.Equal(8, routingKeys.Count);
         Assert.All(routingKeys, key => Assert.NotNull(typeof(RoutingOptions).GetProperty(key)));
+    }
+
+    [Theory]
+    [InlineData("mutinynet", "mutinynet", "https://mutinynet.com/api/v1/fees/recommended")]
+    [InlineData("signet", "", "https://mempool.space/signet/api/v1/fees/recommended")]
+    public void Given_SignetDefaultConfigJson_When_Bound_Then_SignetWithCustomSignetSectionAndFeeSource(
+        string network, string customSignetName, string feeUrl)
+    {
+        // Arrange
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+        var fees = provider.GetRequiredService<IOptions<FeeEstimationOptions>>().Value;
+        var bitcoin = provider.GetRequiredService<IOptions<BitcoinOptions>>().Value;
+
+        // Assert: a custom signet is signet for everything but its name (chain hash, invoices, addresses)
+        Assert.Equal("signet", configuration["Node:Network"]);
+        Assert.Equal(BitcoinNetwork.Signet, options.BitcoinNetwork);
+        Assert.Equal([ChainConstants.Signet], options.Features.ChainHashes);
+        Assert.Equal(customSignetName, options.CustomSignet?.Name ?? string.Empty);
+        Assert.Empty(options.GetValidationErrors());
+        Assert.Empty(configuration.GetSection("Node:DnsSeedServers").GetChildren());
+        Assert.Equal(FeeEstimationOptions.SourceHttp, fees.Source);
+        Assert.Equal(feeUrl, fees.Url);
+        Assert.Equal("sat/vB", fees.RateUnit);
+        Assert.Null(fees.RateMultiplier);
+        Assert.Empty(fees.GetValidationErrors());
+        Assert.Equal("http://localhost:38332", bitcoin.RpcEndpoint);
+        Assert.Equal(28332, bitcoin.ZmqBlockPort);
+        Assert.Equal(28333, bitcoin.ZmqTxPort);
+    }
+
+    [Theory]
+    [InlineData("regtest", "Fixed", "http://localhost:18443")]
+    [InlineData("testnet", "Http", "http://localhost:18332")]
+    [InlineData("mainnet", "Http", "http://localhost:8332")]
+    public void Given_DefaultConfigJson_When_Bound_Then_FeeSourceAndRpcPortFitTheNetwork(string network,
+        string feeSource, string rpcEndpoint)
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                                                               NodeConfigurationExtensions
+                                                                  .CreateDefaultConfigJson(network))))
+                           .Build();
+
+        // Act
+        var fees = configuration.GetSection("FeeEstimation").Get<FeeEstimationOptions>()!;
+
+        // Assert: no RateMultiplier any more (NL-288)
+        Assert.Equal(feeSource, fees.Source);
+        Assert.Null(fees.RateMultiplier);
+        Assert.Empty(fees.GetValidationErrors());
+        Assert.Equal(rpcEndpoint, configuration["Bitcoin:RpcEndpoint"]);
+        Assert.Null(configuration["Node:CustomSignet:Name"]);
+    }
+
+    [Fact]
+    public void Given_UnknownNetwork_When_CreatingDefaultConfigJson_Then_ItThrows()
+    {
+        // Act / Assert
+        Assert.Throws<ArgumentException>(() => NodeConfigurationExtensions.CreateDefaultConfigJson("unknown-net"));
     }
 
     [Fact]
