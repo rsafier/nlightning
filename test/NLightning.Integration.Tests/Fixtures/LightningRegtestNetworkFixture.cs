@@ -92,6 +92,9 @@ public class LightningRegtestNetworkFixture : IDisposable
                 RemoteName = "bob"
             }
         ], imageName: "custom_lnd", tagName: "latest", pullImage: false);
+        // alice signals LND's option_simple_close (bits 61/161, "rbf-coop-close"): used only with a peer that signals it
+        // too (CooperativeCloseFlowTests' simple-close cases); every other close with her stays legacy
+        Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--protocol.rbf-coop-close");
 
         Builder.AddPolarLNDNode("bob",
         [
