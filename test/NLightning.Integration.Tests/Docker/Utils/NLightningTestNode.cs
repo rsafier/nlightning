@@ -134,6 +134,13 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// </summary>
     public Action<IServiceCollection>? ConfigureServices { get; set; }
 
+    /// <summary>
+    /// Extra configuration keys (e.g. <c>Gossip:Enabled</c>, <c>Node:Alias</c>), layered over the test node's own
+    /// settings on every <see cref="StartAsync"/>, so a key here overrides a default. Empty by default: the node then
+    /// behaves as before. Set them before starting.
+    /// </summary>
+    public IDictionary<string, string?> ExtraConfiguration { get; } = new Dictionary<string, string?>();
+
     public bool IsRunning => _started;
 
     /// <summary>
@@ -654,7 +661,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Node:FeeUpdates:Enabled", "false"),
             new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration).Build();
+        // A later source overrides an earlier one, so ExtraConfiguration wins over the defaults above
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration)
+                                                      .AddInMemoryCollection(ExtraConfiguration)
+                                                      .Build();
 
         var services = new ServiceCollection();
         services.AddLogging(builder => builder.AddProvider(new TestConsoleLoggerProvider(Name, _nodeLog))
