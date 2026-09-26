@@ -58,6 +58,44 @@ public class ClosingTimeoutHarnessTests
     }
 
     [Fact]
+    public async Task Given_PeerDisconnectsAfterOurClosingSigned_When_ReplyTimeoutPasses_Then_NotFailed()
+    {
+        // Arrange (W4-E review F1): our closing_signed went out, then the peer dropped (e.g. LND restarting) and
+        // stays away past the reply timeout; B2-CLS-03 counts only on the connection the proposal went out on
+        var clock = new ManualTimeProvider();
+        var failures = new List<ChannelFailureRequest>();
+        using var close = new CloseHarness(configure: (name, services) =>
+        {
+            if (name == "Alice")
+            {
+                services.AddSingleton<TimeProvider>(clock);
+                services.AddSingleton(RecordingFailureService(failures));
+            }
+            else
+            {
+                services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, SilentClosingSignedHandler>();
+            }
+        });
+        var ct = TestContext.Current.CancellationToken;
+        await close.CloseService(close.Alice).CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                                ct);
+        await close.Harness.PumpAsync();
+        Assert.Single(close.Bob.Received.OfType<ClosingSignedMessage>());
+        var monitor = close.Alice.Services.GetRequiredService<ClosingTimeoutMonitor>();
+        await close.Harness.DisconnectAsync();
+
+        // Act
+        clock.Advance(new ChannelCloseOptions().ClosingSignedReplyTimeout + TimeSpan.FromMinutes(1));
+        await monitor.WhenIdleAsync();
+        var outcome = await monitor.CheckAsync(TwoNodeHarness.ChannelId, ct);
+
+        // Assert
+        Assert.Null(outcome);
+        Assert.Empty(failures);
+        Assert.Equal(ChannelState.Negotiating, close.Alice.Channel.State);
+    }
+
+    [Fact]
     public async Task Given_PeerAnswers_When_ReplyTimeoutPasses_Then_Closed()
     {
         // Arrange

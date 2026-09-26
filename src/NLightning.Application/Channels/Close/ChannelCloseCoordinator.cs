@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoinTransaction = NBitcoin.Transaction;
 
@@ -45,6 +46,7 @@ public sealed class ChannelCloseCoordinator
     private readonly IClosingTransactionBuilder _closingTransactionBuilder;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IFeeService _feeService;
+    private readonly ClosingFeeEstimator _feeEstimator;
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<ChannelCloseCoordinator> _logger;
     private readonly IMessageFactory _messageFactory;
@@ -62,13 +64,16 @@ public sealed class ChannelCloseCoordinator
                                    ClosingNegotiationRegistry registry, ShutdownScriptProvider shutdownScriptProvider,
                                    ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
                                    IBlockchainMonitor? blockchainMonitor = null,
-                                   ClosingTimeoutMonitor? timeouts = null)
+                                   ClosingTimeoutMonitor? timeouts = null,
+                                   ClosingFeeEstimator? feeEstimator = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _timeouts = timeouts;
         _closingTransactionBuilder = closingTransactionBuilder;
         _channelMemoryRepository = channelMemoryRepository;
         _feeService = feeService;
+        _feeEstimator = feeEstimator
+                     ?? new ClosingFeeEstimator(feeService, options, NullLogger<ClosingFeeEstimator>.Instance);
         _lightningSigner = lightningSigner;
         _logger = logger;
         _messageFactory = messageFactory;
@@ -212,6 +217,8 @@ public sealed class ChannelCloseCoordinator
 
         var entry = _registry.Get(channelId);
         entry.ShutdownReceivedOnConnection = true;
+        // The negotiation that follows needs a fee estimate: fetch it now, without waiting under the lock
+        _ = _feeEstimator.StartFetchIfDue();
         if (channel.RemoteShutdownScript is null)
         {
             channel.SetRemoteShutdownScript(script);
@@ -271,7 +278,7 @@ public sealed class ChannelCloseCoordinator
             var entry = _registry.Get(channel.ChannelId);
             if (entry is { ShutdownSentOnConnection: true, ShutdownReceivedOnConnection: true, Negotiation: null })
             {
-                await ResolveEstimateAsync(channel, entry);
+                await ResolveEstimateAsync(entry);
                 var context = BuildContext(channel, entry);
                 var (decision, next) = LegacyClosingNegotiator.Open(context.InitialState, context.IdealFeeSat);
                 messages.Add(CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange));
@@ -329,7 +336,7 @@ public sealed class ChannelCloseCoordinator
 
         var entry = _registry.Get(channelId);
         entry.ReplyDueAt = null; // any closing_signed answers ours (B2-CLS-03)
-        await ResolveEstimateAsync(channel, entry);
+        await ResolveEstimateAsync(entry);
         var context = BuildContext(channel, entry);
         var feeSat = (ulong)message.Payload.FeeAmount.Satoshi;
         if (feeSat > context.MaxFeeSat)
@@ -368,6 +375,8 @@ public sealed class ChannelCloseCoordinator
         {
             var threshold = ShutdownScriptValidator.GetDustThresholdSat((byte[])output.ScriptPubKey);
             if ((ulong)output.Amount.Satoshi < threshold)
+            {
+                ClearDeadlines(entry);
                 throw new ChannelFailedException(
                     channelId,
                     $"[B2-CLS-R10] closing output of {output.Amount.Satoshi} sat is below the {threshold} sat dust threshold of its script",
@@ -375,6 +384,7 @@ public sealed class ChannelCloseCoordinator
                 {
                     RequirementId = "B2-CLS-R10"
                 };
+            }
         }
 
         var state = entry.Negotiation ?? context.InitialState;
@@ -400,6 +410,7 @@ public sealed class ChannelCloseCoordinator
                     CloseConnection = decision.CloseConnection
                 };
             case ClosingDecisionKind.Fail:
+                ClearDeadlines(entry);
                 throw new ChannelFailedException(channelId, $"[{decision.RequirementId}] {decision.Reason}",
                                                  $"closing negotiation failed: {decision.Reason}")
                 {
@@ -437,8 +448,7 @@ public sealed class ChannelCloseCoordinator
         if (watch is not null)
             _blockchainMonitor?.TrackWatchedTransaction(watch);
         var entry = _registry.Get(channel.ChannelId);
-        entry.ReplyDueAt = null;
-        entry.FeeRangeDueAt = null;
+        ClearDeadlines(entry);
         entry.CompleteWaiters(closingTransaction.TxId);
         _logger.LogInformation("Channel {ChannelId} agreed on closing transaction {TxId} with a fee of {Fee} sat",
                                channel.ChannelId, closingTransaction.TxId, decision.FeeSat);
@@ -552,28 +562,38 @@ public sealed class ChannelCloseCoordinator
     }
 
     /// <summary>
-    /// Reads our fee estimate once per negotiation (per connection) into the registry entry. The estimate comes from
-    /// <see cref="IFeeService.GetFeeRatePerKwAsync"/>, which refreshes an expired cache: the host registers the fee
-    /// service as a transient typed HttpClient, so the instance this scope gets has an empty cache, and the cached
-    /// value alone made every close propose the 253 sat/kw floor (W4-E, found against CLN). A failure or no estimate
-    /// leaves the cached value (then the floor).
+    /// Reads our fee estimate once per negotiation (per connection) into the registry entry, from the process-wide
+    /// <see cref="ClosingFeeEstimator"/>. Only the first message of a negotiation may wait for a fetch, and at most
+    /// <see cref="ChannelCloseOptions.FeeEstimateWaitUnderLock"/> (this runs under the channel's lock, in the peer's
+    /// inbound loop); later ones take whatever the estimator has by then. Without one, <see cref="BuildContext"/> uses
+    /// the fee service's cached value, then the floor. (The host's fee service is a transient typed HttpClient, so the
+    /// cached value alone made every close propose the 253 sat/kw floor, W4-E.)
     /// </summary>
-    private async Task ResolveEstimateAsync(ChannelModel channel, ClosingNegotiationRegistry.Entry entry)
+    private async Task ResolveEstimateAsync(ClosingNegotiationRegistry.Entry entry)
     {
         if (entry.EstimateFeeratePerKw is not null || entry.Request?.FeeRatePerKw is not null)
             return;
 
-        try
+        ulong? estimate;
+        if (entry.EstimateAttempted)
         {
-            var estimate = (ulong)(await _feeService.GetFeeRatePerKwAsync()).Satoshi;
-            if (estimate > 0)
-                entry.EstimateFeeratePerKw = estimate;
+            estimate = _feeEstimator.Latest;
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        else
         {
-            _logger.LogWarning(e, "No fee estimate for the close of channel {ChannelId}; using the cached one",
-                               channel.ChannelId);
+            entry.EstimateAttempted = true;
+            estimate = await _feeEstimator.GetUnderLockAsync();
         }
+
+        if (estimate > 0)
+            entry.EstimateFeeratePerKw = estimate;
+    }
+
+    /// <summary>No closing deadline applies any more (agreement, or the channel failed out of the negotiation).</summary>
+    private static void ClearDeadlines(ClosingNegotiationRegistry.Entry entry)
+    {
+        entry.ReplyDueAt = null;
+        entry.FeeRangeDueAt = null;
     }
 
     /// <summary>Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed.</summary>

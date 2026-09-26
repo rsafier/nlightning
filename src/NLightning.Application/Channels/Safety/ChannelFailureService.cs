@@ -238,12 +238,17 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
             channel = loaded;
             if (channel.State is ChannelState.Closed or ChannelState.Stale
-             || channel.State < ChannelState.V1FundingSigned
-             || (request.StillApplies is { } stillApplies && !stillApplies(channel)))
+             || channel.State < ChannelState.V1FundingSigned)
             {
+                // Nothing of this channel can be broadcast any more
                 _pendingPublishes.TryRemove(channelId, out _);
                 return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
             }
+
+            // A request whose precondition no longer holds changes nothing, not even the retry of an earlier
+            // failure's commitment publish (W4-E review F2)
+            if (request.StillApplies is { } stillApplies && !stillApplies(channel))
+                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
 
             _logger.LogCritical("Failing channel {ChannelId} ({RequirementId}): {Reason}; broadcast: {Broadcast}",
                                 channelId, request.RequirementId, request.Reason, request.Broadcast);
@@ -291,8 +296,11 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             else
                 _pendingPublishes.TryRemove(channelId, out _);
         }
-        else
+        else if (outcome!.Status is ChannelFailureStatus.RefusedDataLoss
+                 or ChannelFailureStatus.NoBroadcastableCommitment)
         {
+            // Nothing is ever to be broadcast for this channel; a later request without broadcast (an already Failed
+            // channel failed again) leaves an earlier failure's publish retry alone
             _pendingPublishes.TryRemove(channelId, out _);
         }
 

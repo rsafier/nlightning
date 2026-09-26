@@ -35,4 +35,17 @@ public sealed class ChannelCloseOptions
     /// we fail the channel (B2-CLS-R04 MUST). Zero or less turns it off.
     /// </summary>
     public TimeSpan FeeRangeTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>How long a fetched fee estimate serves new closing negotiations before it is fetched again.</summary>
+    public TimeSpan FeeEstimateMaxAge { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>After a failed fee estimate fetch, how long no close fetches again (the last value, then the cached
+    /// one, is used meanwhile).</summary>
+    public TimeSpan FeeEstimateRetryAfter { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The longest a negotiation that starts under the channel's lock (the peer's inbound loop) waits for a fee
+    /// estimate fetch; the fetch goes on in the background. Zero or less never waits.
+    /// </summary>
+    public TimeSpan FeeEstimateWaitUnderLock { get; set; } = TimeSpan.FromSeconds(2);
 }

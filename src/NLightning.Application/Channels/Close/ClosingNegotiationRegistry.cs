@@ -20,6 +20,10 @@ public sealed class ClosingNegotiationRegistry
 {
     private readonly ConcurrentDictionary<ChannelId, Entry> _entries = new();
 
+    // The wallet shutdown scripts handed out by this process, per channel (NL-280: the wallet answers every caller
+    // with the same first unused address, and two closes on different channels run under different locks)
+    private readonly ConcurrentDictionary<BitcoinScript, ChannelId> _shutdownScripts = new();
+
     /// <summary>The close state of one channel.</summary>
     public sealed class Entry
     {
@@ -50,6 +54,12 @@ public sealed class ClosingNegotiationRegistry
         public ulong? EstimateFeeratePerKw { get; set; }
 
         /// <summary>
+        /// The negotiation on the current connection already asked <see cref="ClosingFeeEstimator"/> (and may have
+        /// waited for it): later messages don't wait again.
+        /// </summary>
+        public bool EstimateAttempted { get; set; }
+
+        /// <summary>
         /// When the peer must have answered our last <c>closing_signed</c> (B2-CLS-03), or null when no answer is
         /// awaited. Cleared by any <c>closing_signed</c> received and by a new connection.
         /// </summary>
@@ -62,8 +72,14 @@ public sealed class ClosingNegotiationRegistry
         public DateTimeOffset? FeeRangeDueAt { get; set; }
 
         /// <summary>The earliest deadline, or null for none.</summary>
-        public DateTimeOffset? NextDeadline =>
-            (ReplyDueAt, FeeRangeDueAt) switch
+        public DateTimeOffset? NextDeadline => GetNextDeadline(true);
+
+        /// <summary>
+        /// The earliest deadline, or null for none; without the reply deadline when <paramref name="includeReply"/> is
+        /// false (the peer is not on the connection our <c>closing_signed</c> went out on).
+        /// </summary>
+        public DateTimeOffset? GetNextDeadline(bool includeReply) =>
+            (includeReply ? ReplyDueAt : null, FeeRangeDueAt) switch
             {
                 ({ } reply, { } range) => reply < range ? reply : range,
                 ({ } reply, null) => reply,
@@ -71,10 +87,13 @@ public sealed class ClosingNegotiationRegistry
                 _ => null
             };
 
-        /// <summary>The deadline that is past at <paramref name="now"/>, if any (the reply deadline first).</summary>
-        public ClosingDeadline? GetExpired(DateTimeOffset now)
+        /// <summary>
+        /// The deadline that is past at <paramref name="now"/>, if any (the reply deadline first, and only when
+        /// <paramref name="includeReply"/>).
+        /// </summary>
+        public ClosingDeadline? GetExpired(DateTimeOffset now, bool includeReply = true)
         {
-            if (ReplyDueAt is { } reply && reply <= now)
+            if (includeReply && ReplyDueAt is { } reply && reply <= now)
                 return new ClosingDeadline("B2-CLS-03", "no closing_signed answered ours in time",
                                            ClosingTimeoutMonitor.NoReplyPeerMessage);
             if (FeeRangeDueAt is { } range && range <= now)
@@ -114,6 +133,7 @@ public sealed class ClosingNegotiationRegistry
             Negotiation = null;
             ReplyDueAt = null;
             EstimateFeeratePerKw = null;
+            EstimateAttempted = false;
         }
     }
 
@@ -132,8 +152,21 @@ public sealed class ClosingNegotiationRegistry
             entry.ResetConnection();
     }
 
-    /// <summary>Forgets a closed channel.</summary>
-    public void Remove(ChannelId channelId) => _entries.TryRemove(channelId, out _);
+    /// <summary>
+    /// Claims <paramref name="script"/> as the shutdown script of <paramref name="channelId"/> for this process;
+    /// false when another channel claimed it first. Atomic, so two concurrent closes never both get it.
+    /// </summary>
+    public bool TryReserveShutdownScript(ChannelId channelId, BitcoinScript script) =>
+        _shutdownScripts.GetOrAdd(script, channelId) == channelId;
+
+    /// <summary>Forgets a closed channel (and its shutdown script reservation).</summary>
+    public void Remove(ChannelId channelId)
+    {
+        _entries.TryRemove(channelId, out _);
+        foreach (var (script, owner) in _shutdownScripts)
+            if (owner == channelId)
+                _shutdownScripts.TryRemove(new KeyValuePair<BitcoinScript, ChannelId>(script, owner));
+    }
 }
 
 /// <summary>A closing negotiation deadline that passed.</summary>
