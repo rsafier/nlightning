@@ -17,6 +17,9 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Handlers;
@@ -175,9 +178,57 @@ public class StartupStateTests
         Assert.Empty(_raised);
     }
 
-    private ChannelManager CreateManager()
+    [Theory]
+    [InlineData(ChannelState.V1FundingSigned)]
+    [InlineData(ChannelState.ReadyForUs)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_ASignerThatLoadsChannels_When_Registered_Then_TheChannelIsNotRegisteredByHand(
+        ChannelState state)
+    {
+        // Arrange - NL-343: with an IChannelSigningInfoSource the signer reads the channel (keys, commitment number,
+        // S1 mark) from the database on first use
+        var channel = CreateChannel(state);
+        var manager = CreateManager(new Mock<IChannelSigningInfoSource>().Object);
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert
+        _memory.Verify(m => m.AddChannel(channel), Times.Once);
+        _signer.Verify(s => s.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
+        _unitOfWork.Verify(u => u.BroadcastTransactionDbRepository, Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ASignerWithoutASource_When_Registered_Then_TheChannelIsRegisteredWithItsBroadcastMark()
+    {
+        // Arrange - a source-less signer (in-process tests) still needs the registration and the S1 mark (NL-297)
+        var channel = CreateChannel(ChannelState.Failed);
+        var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
+        broadcasts.Setup(r => r.GetByChannelIdAsync(channel.ChannelId))
+                  .ReturnsAsync((IReadOnlyList<BroadcastTransactionModel>)
+                  [
+                      new BroadcastTransactionModel(
+                          new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x33, 32).ToArray()), [0x01]),
+                          BroadcastPurpose.LocalCommitment, channel.ChannelId, 100, commitmentNumber: 4)
+                  ]);
+        _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
+        var manager = CreateManager();
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert
+        _signer.Verify(s => s.RegisterChannel(channel.ChannelId,
+                                              It.Is<ChannelSigningInfo>(i => i.BroadcastSignedCommitmentNumber == 4)),
+                       Times.Once);
+    }
+
+    private ChannelManager CreateManager(IChannelSigningInfoSource? signingInfoSource = null)
     {
         var services = new ServiceCollection();
+        if (signingInfoSource is not null)
+            services.AddSingleton(signingInfoSource);
         services.AddSingleton(new ReestablishTracker());
         services.AddScoped<ChannelDomainEventQueue>();
         services.AddScoped(_ => _unitOfWork.Object);
