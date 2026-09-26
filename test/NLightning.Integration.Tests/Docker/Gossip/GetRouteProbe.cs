@@ -1,5 +1,3 @@
-using System.Collections;
-using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
@@ -8,6 +6,7 @@ using Abcd;
 using Daemon.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
+using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Utils;
@@ -45,48 +44,41 @@ public sealed record RouteView(IReadOnlyList<RouteHopView> Hops, ulong TotalFeeM
 
 /// <summary>
 /// Calls our node's <c>getroute</c> (<c>ClientCommand.GetRoute</c> = 19, plan G4-T4) through the daemon's client
-/// command handler, the same path as <c>nltg getroute &lt;node&gt; &lt;amount_msat&gt;</c>.
+/// command handler (<c>IClientCommandHandler&lt;GetRouteClientRequest, GetRouteClientResponse&gt;</c>), the same path
+/// as <c>nltg getroute &lt;node&gt; &lt;amount_msat&gt;</c>.
 /// </summary>
 /// <remarks>
-/// <para>TODO(G-C integrate): lane C2 adds the contract in parallel with this lane (C3), so it is bound here by its
-/// exact names through reflection, and only here: <c>NLightning.Domain.Client.Requests.GetRouteClientRequest(
-/// CompactPubKey nodeId, LightningMoney amount)</c>, <c>NLightning.Domain.Client.Responses.GetRouteClientResponse</c>
-/// (<c>Hops</c>: <c>IReadOnlyList&lt;GetRouteHop&gt;</c>, <c>Fee</c>: <c>LightningMoney</c>) and <c>GetRouteHop</c>
-/// (<c>NodeId</c>: <c>CompactPubKey</c>, <c>ShortChannelId</c>: <c>ShortChannelId</c> (the channel the hop's HTLC
-/// arrives on), <c>Amount</c>: <c>LightningMoney</c> (what that HTLC carries), <c>CltvExpiry</c>: <c>uint</c>,
-/// <c>Fee</c>: <c>LightningMoney</c> (what the node keeps)), handled by
-/// <c>IClientCommandHandler&lt;GetRouteClientRequest, GetRouteClientResponse&gt;</c>, which throws a
-/// <c>ClientException</c> when there is no route. Once lane C2 is merged, replace <see cref="InvokeAsync"/> and
-/// <see cref="ReadResponse"/> with the typed call (<c>handler.HandleAsync(new GetRouteClientRequest(destination,
-/// LightningMoney.MilliSatoshis(amountMsat)), ct)</c> and a plain mapping of the response); the proofs only use
-/// <see cref="GetRouteAsync"/>, <see cref="WaitForRouteAsync"/> and <see cref="RouteView"/>.</para>
-/// <para>A handler that throws (e.g. no route) is reported as <see cref="RouteView.Error"/>, never rethrown, so a
-/// proof can wait for a route to appear or disappear. A build without the contract throws
-/// <see cref="InvalidOperationException"/> naming this TODO (never read as "no route").</para>
+/// A handler that throws (a <c>ClientException</c> when there is no route) is reported as
+/// <see cref="RouteView.Error"/>, never rethrown, so a proof can wait for a route to appear or disappear.
 /// </remarks>
 public static class GetRouteProbe
 {
-    private const string RequestTypeName = "NLightning.Domain.Client.Requests.GetRouteClientRequest";
-    private const string ResponseTypeName = "NLightning.Domain.Client.Responses.GetRouteClientResponse";
-
     /// <summary>
     /// <c>getroute <paramref name="destination"/> <paramref name="amountMsat"/></c> on <paramref name="node"/>; logs the
     /// result.
     /// </summary>
-    /// <exception cref="InvalidOperationException">This build has no <c>getroute</c> contract or handler, or the
-    /// response does not have its shape.</exception>
     public static async Task<RouteView> GetRouteAsync(NLightningTestNode node, CompactPubKey destination,
                                                       ulong amountMsat, CancellationToken cancellationToken)
     {
         RouteView view;
         try
         {
-            view = ReadResponse(await InvokeAsync(node, destination, amountMsat, cancellationToken));
+            using var scope = node.Services.CreateScope();
+            var handler = scope.ServiceProvider
+                               .GetRequiredService<IClientCommandHandler<GetRouteClientRequest,
+                                    GetRouteClientResponse>>();
+            var response = await handler.HandleAsync(
+                new GetRouteClientRequest(destination, LightningMoney.MilliSatoshis(amountMsat)), cancellationToken);
+            var hops = response.Hops.Select(hop => new RouteHopView(hop.ShortChannelId.ToUInt64(),
+                                                                     Convert.ToHexStringLower(hop.NodeId),
+                                                                     hop.Amount.MilliSatoshi,
+                                                                     hop.Fee.MilliSatoshi, hop.CltvExpiry))
+                                .ToList();
+            view = new RouteView(hops, response.Fee.MilliSatoshi, hops.Count == 0 ? "no hops" : null);
         }
-        catch (HandlerFailedException e)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
-            // Only the handler's own failure (e.g. no route) is a route answer; a contract mismatch propagates
-            view = new RouteView([], 0, $"{e.InnerException!.GetType().Name}: {e.InnerException.Message}");
+            view = new RouteView([], 0, $"{e.GetType().Name}: {e.Message}");
         }
 
         Console.WriteLine($"[{node.Name}] getroute {Convert.ToHexStringLower(destination)[..16]}… {amountMsat} msat: "
@@ -105,60 +97,4 @@ public static class GetRouteProbe
             var route = await GetRouteAsync(node, destination, amountMsat, cancellationToken);
             return accept(route) ? route : null;
         }, timeout, description, cancellationToken, GossipGraphProbe.PollInterval);
-
-    /// <summary>
-    /// Builds the request and calls the registered handler; returns the response.
-    /// </summary>
-    private static async Task<object> InvokeAsync(NLightningTestNode node, CompactPubKey destination,
-                                                  ulong amountMsat, CancellationToken cancellationToken)
-    {
-        var domain = typeof(ListGraphChannelsClientRequest).Assembly;
-        var requestType = domain.GetType(RequestTypeName);
-        var responseType = domain.GetType(ResponseTypeName);
-        var constructor = requestType?.GetConstructor([typeof(CompactPubKey), typeof(LightningMoney)]);
-        if (requestType is null || responseType is null || constructor is null)
-            throw Missing($"{RequestTypeName}(CompactPubKey, LightningMoney) and {ResponseTypeName}");
-
-        var request = constructor.Invoke([destination, LightningMoney.MilliSatoshis(amountMsat)]);
-        using var scope = node.Services.CreateScope();
-        var handlerType = typeof(IClientCommandHandler<,>).MakeGenericType(requestType, responseType);
-        var handler = scope.ServiceProvider.GetService(handlerType)
-                   ?? throw Missing($"a registered IClientCommandHandler<{requestType.Name}, {responseType.Name}>");
-        var task = (Task)handlerType.GetMethod("HandleAsync")!.Invoke(handler, [request, cancellationToken])!;
-        try
-        {
-            await task;
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            throw new HandlerFailedException(e);
-        }
-
-        return task.GetType().GetProperty("Result")!.GetValue(task)
-            ?? throw Missing("a non-null GetRouteClientResponse");
-    }
-
-    private static RouteView ReadResponse(object response)
-    {
-        var hops = ((IEnumerable)Read(response, "Hops")).Cast<object>().Select(hop => new RouteHopView(
-                       ((ShortChannelId)Read(hop, "ShortChannelId")).ToUInt64(),
-                       Convert.ToHexStringLower((CompactPubKey)Read(hop, "NodeId")),
-                       ((LightningMoney)Read(hop, "Amount")).MilliSatoshi,
-                       ((LightningMoney)Read(hop, "Fee")).MilliSatoshi,
-                       (uint)Read(hop, "CltvExpiry"))).ToList();
-        var fee = ((LightningMoney)Read(response, "Fee")).MilliSatoshi;
-        return new RouteView(hops, fee, hops.Count == 0 ? "no hops" : null);
-    }
-
-    private static object Read(object holder, string property) =>
-        holder.GetType().GetProperty(property, BindingFlags.Public | BindingFlags.Instance)?.GetValue(holder)
-     ?? throw Missing($"{holder.GetType().Name}.{property}");
-
-    private static InvalidOperationException Missing(string what) =>
-        new($"This build has no getroute contract ({what}): TODO(G-C integrate), IPC 19 from lane C2");
-
-    /// <summary>
-    /// The <c>getroute</c> handler itself threw (<see cref="Exception.InnerException"/>).
-    /// </summary>
-    private sealed class HandlerFailedException(Exception inner) : Exception(inner.Message, inner);
 }
