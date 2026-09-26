@@ -22,4 +22,17 @@ public sealed class ChannelCloseOptions
     /// above our balance).
     /// </summary>
     public uint MaxFeeMultiplier { get; set; } = 3;
+
+    /// <summary>
+    /// How long the peer has to answer a <c>closing_signed</c> of ours before we fail the channel (BOLT 2: "if it
+    /// doesn't receive a closing_signed response after a reasonable amount of time: MUST fail the channel",
+    /// B2-CLS-03). Counted on the current connection only. Zero or less turns it off.
+    /// </summary>
+    public TimeSpan ClosingSignedReplyTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// How long, from the first <c>fee_range</c> that did not overlap ours, the peer has to send one that does before
+    /// we fail the channel (B2-CLS-R04 MUST). Zero or less turns it off.
+    /// </summary>
+    public TimeSpan FeeRangeTimeout { get; set; } = TimeSpan.FromMinutes(10);
 }

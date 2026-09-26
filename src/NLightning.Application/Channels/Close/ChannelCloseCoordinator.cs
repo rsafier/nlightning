@@ -51,6 +51,7 @@ public sealed class ChannelCloseCoordinator
     private readonly ChannelCloseOptions _options;
     private readonly ClosingNegotiationRegistry _registry;
     private readonly ShutdownScriptProvider _shutdownScriptProvider;
+    private readonly ClosingTimeoutMonitor? _timeouts;
     private readonly ChannelStateTransitionService _transitions;
     private readonly IUnitOfWork _unitOfWork;
 
@@ -60,9 +61,11 @@ public sealed class ChannelCloseCoordinator
                                    IMessageFactory messageFactory, IOptions<ChannelCloseOptions> options,
                                    ClosingNegotiationRegistry registry, ShutdownScriptProvider shutdownScriptProvider,
                                    ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
-                                   IBlockchainMonitor? blockchainMonitor = null)
+                                   IBlockchainMonitor? blockchainMonitor = null,
+                                   ClosingTimeoutMonitor? timeouts = null)
     {
         _blockchainMonitor = blockchainMonitor;
+        _timeouts = timeouts;
         _closingTransactionBuilder = closingTransactionBuilder;
         _channelMemoryRepository = channelMemoryRepository;
         _feeService = feeService;
@@ -272,6 +275,7 @@ public sealed class ChannelCloseCoordinator
                 var (decision, next) = LegacyClosingNegotiator.Open(context.InitialState, context.IdealFeeSat);
                 messages.Add(CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange));
                 entry.Negotiation = next;
+                _timeouts?.ArmReply(channel.ChannelId);
                 _logger.LogInformation(
                     "Proposing a closing fee of {Fee} sat for channel {ChannelId} (range {Range}, estimate {Ideal})",
                     decision.FeeSat, channel.ChannelId, decision.FeeRange?.ToString() ?? "none",
@@ -323,6 +327,7 @@ public sealed class ChannelCloseCoordinator
             };
 
         var entry = _registry.Get(channelId);
+        entry.ReplyDueAt = null; // any closing_signed answers ours (B2-CLS-03)
         var context = BuildContext(channel, entry);
         var feeSat = (ulong)message.Payload.FeeAmount.Satoshi;
         if (feeSat > context.MaxFeeSat)
@@ -378,6 +383,12 @@ public sealed class ChannelCloseCoordinator
             channelId, feeSat, theirRange?.ToString() ?? "none", decision.Kind, decision.FeeSat,
             decision.RequirementId);
 
+        // B2-CLS-R04: a range that doesn't overlap ours starts the wait for a satisfying one; any other outcome ends it
+        if (decision is { Kind: ClosingDecisionKind.Warn, RequirementId: "B2-CLS-R04" })
+            _timeouts?.ArmFeeRange(channelId);
+        else if (decision.Kind != ClosingDecisionKind.Warn)
+            entry.FeeRangeDueAt = null;
+
         switch (decision.Kind)
         {
             case ClosingDecisionKind.Warn:
@@ -393,7 +404,9 @@ public sealed class ChannelCloseCoordinator
                     RequirementId = decision.RequirementId
                 };
             case ClosingDecisionKind.Propose:
-                return [CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange)];
+                var proposal = CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange);
+                _timeouts?.ArmReply(channelId);
+                return [proposal];
             default:
                 return await FinalizeAsync(channel, context, signed, peerSignature, decision);
         }
@@ -421,7 +434,10 @@ public sealed class ChannelCloseCoordinator
         await PersistAsync(channel);
         if (watch is not null)
             _blockchainMonitor?.TrackWatchedTransaction(watch);
-        _registry.Get(channel.ChannelId).CompleteWaiters(closingTransaction.TxId);
+        var entry = _registry.Get(channel.ChannelId);
+        entry.ReplyDueAt = null;
+        entry.FeeRangeDueAt = null;
+        entry.CompleteWaiters(closingTransaction.TxId);
         _logger.LogInformation("Channel {ChannelId} agreed on closing transaction {TxId} with a fee of {Fee} sat",
                                channel.ChannelId, closingTransaction.TxId, decision.FeeSat);
 

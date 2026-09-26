@@ -46,8 +46,10 @@ internal sealed class CloseHarness : IDisposable
     /// <param name="bobFeeratePerKw">Bob's fee estimate.</param>
     /// <param name="aliceSendsFeeRange">Alice's <c>Node:Close:SendFeeRange</c>.</param>
     /// <param name="bobSendsFeeRange">Bob's <c>Node:Close:SendFeeRange</c>.</param>
+    /// <param name="configure">More registrations per node (by name), applied last so they replace the defaults.
+    /// </param>
     public CloseHarness(uint aliceFeeratePerKw = 2_500, uint bobFeeratePerKw = 2_500, bool aliceSendsFeeRange = true,
-                        bool bobSendsFeeRange = true)
+                        bool bobSendsFeeRange = true, Action<string, IServiceCollection>? configure = null)
     {
         Harness = new TwoNodeHarness(configureServices: (node, services) =>
         {
@@ -76,6 +78,7 @@ internal sealed class CloseHarness : IDisposable
             services.AddChannelCloseServices();
             services.AddScoped<IChannelMessageHandler<ShutdownMessage>, ShutdownMessageHandler>();
             services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, ClosingSignedMessageHandler>();
+            configure?.Invoke(node.Name, services);
         });
     }
 
