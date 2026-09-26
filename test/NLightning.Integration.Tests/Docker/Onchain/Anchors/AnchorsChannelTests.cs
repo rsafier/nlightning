@@ -1,5 +1,7 @@
 using Lnrpc;
 using NBitcoin;
+using OutPoint = NBitcoin.OutPoint;
+using Transaction = NBitcoin.Transaction;
 
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
@@ -14,8 +16,8 @@ using Utils;
 /// (<c>option_anchors_zero_fee_htlc_tx</c>) channel we fund is negotiated on both ends, carries HTLCs both ways (every
 /// HTLC signature we send is <c>SIGHASH_SINGLE|ANYONECANPAY</c> and LND accepts it, LND's are checked by our signer),
 /// and our force close broadcasts a BOLT 3 anchors commitment: both 330-sat anchors, the P2WSH CSV-1
-/// <c>to_remote</c>, classified with <see cref="OutputDescriptorKind.OurAnchor"/> and
-/// <see cref="OutputDescriptorKind.PeerAnchor"/> rows.
+/// <c>to_remote</c>, recorded with an <see cref="OutputDescriptorKind.OurAnchor"/> row and a
+/// <see cref="OutputDescriptorKind.DelayedToLocal"/> row only (the peer's outputs get none).
 /// </summary>
 /// <remarks>
 /// Needs only what exists before the O7 lanes (anchors commitments and HTLC signatures, BOLT 3 Appendix F); the
@@ -88,6 +90,7 @@ public class AnchorsChannelTests : IAsyncLifetime
                         + $"{ourAnchor}, david's anchor {peerAnchor}, vsize {commitment.GetVirtualSize()}, fee "
                         + $"{(long)AnchorsHarness.Capacity.Satoshi - commitment.TotalOut.Satoshi} sat");
         Assert.Equal(4, commitment.Outputs.Count);
+        await LogMempoolSpendersAsync(commitment, ct);
         Assert.All(commitment.Outputs, o => Assert.True(o.ScriptPubKey.IsScriptType(ScriptType.P2WSH),
                                                         $"output {o.ScriptPubKey} is not P2WSH"));
         Assert.Equal(0x20u, commitment.LockTime.Value >> 24);
@@ -98,19 +101,34 @@ public class AnchorsChannelTests : IAsyncLifetime
         Assert.True(confirmed.Confirmations >= 1);
         var close = await AnchorsHarness.WaitForCloseAsync(node, channel.ChannelId, ct);
         Assert.Equal(ChannelCloseKind.LocalCommitment, close.Kind);
+        // Rows only for our outputs (our anchor and to_local): the peer's anchor and balance are not ours to resolve
         var rows = await Poll.ForAsync(async () =>
         {
-            var found = await AnchorsHarness.GetRowsAsync(node, channel.ChannelId);
-            return found.Count(r => r.TransactionId == close.CommitmentTransactionId) >= 4 ? found : null;
-        }, AnchorsHarness.Timeout, "a row for every output of our commitment", ct);
-        var byVout = rows.Where(r => r.TransactionId == close.CommitmentTransactionId)
-                         .ToDictionary(r => r.OutputIndex, r => r.Descriptor);
+            var found = (await AnchorsHarness.GetRowsAsync(node, channel.ChannelId))
+                       .Where(r => r.TransactionId == close.CommitmentTransactionId).ToList();
+            return found.Count >= 2 ? found : null;
+        }, AnchorsHarness.Timeout, "the rows of our outputs of the commitment", ct);
+        var byVout = rows.ToDictionary(r => r.OutputIndex, r => r.Descriptor);
+        Console.WriteLine($"Rows: {string.Join(", ", byVout.Select(r => $"{r.Key}={r.Value}"))}");
+        Assert.Equal(2, byVout.Count);
         Assert.Equal(OutputDescriptorKind.OurAnchor, byVout[ourAnchor]);
-        Assert.Equal(OutputDescriptorKind.PeerAnchor, byVout[peerAnchor]);
+        Assert.DoesNotContain(peerAnchor, byVout.Keys);
         Assert.Single(byVout.Values, d => d == OutputDescriptorKind.DelayedToLocal);
-        Assert.Single(byVout.Values, d => d == OutputDescriptorKind.PeerOutput);
         await _harness.AssertLndClosedAsync(node, david, channel, commitment.GetHash(),
                                             ChannelCloseSummary.Types.ClosureType.RemoteForceClose, ct);
+    }
+
+    /// <summary>What spends the unconfirmed commitment in the mempool (e.g. a CPFP child of either side), for the log.</summary>
+    private async Task LogMempoolSpendersAsync(Transaction commitment, CancellationToken ct)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        for (var vout = 0; vout < commitment.Outputs.Count; vout++)
+        {
+            var spender = await _harness.FindMempoolSpenderAsync(new OutPoint(commitment.GetHash(), vout), ct);
+            if (spender is not null)
+                Console.WriteLine($"Output {vout} ({commitment.Outputs[vout].Value}) spent in the mempool by "
+                                + $"{spender.GetHash()} ({spender.Inputs.Count} inputs)");
+        }
     }
 
     public async ValueTask DisposeAsync()
