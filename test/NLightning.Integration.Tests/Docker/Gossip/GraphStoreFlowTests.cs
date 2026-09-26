@@ -15,7 +15,7 @@ using Utils;
 /// BOLT 7 plan Proof G2 (validation and graph store) against LND 0.20: (a) connected to alice, our graph gets the
 /// fixture's LND-LND channels with both policies and the alice, bob and carol node announcements; (b) they are still
 /// there after a restart before any connection; (c) a public channel closed cooperatively is marked spent one block
-/// after the close and removed 72 blocks after it.
+/// after the close, still stored (and spent) 70 blocks after the spend, and removed 72 blocks after it.
 /// </summary>
 /// <remarks>
 /// <para>(c) closes a channel the test opens itself (david-carol, public), not the fixture's alice-carol the plan
@@ -32,6 +32,9 @@ public class GraphStoreFlowTests
 
     private static readonly TimeSpan s_syncTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_timeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>How long (c) watches the spent channel stay stored one block short of the forget delay.</summary>
+    private static readonly TimeSpan s_boundaryHold = TimeSpan.FromSeconds(5);
 
     private readonly LightningRegtestNetworkFixture _fixture;
 
@@ -81,8 +84,9 @@ public class GraphStoreFlowTests
         await node.StartAsync(ct);
 
         // Assert: read before any connection
-        // TODO(G-B integrator): read through listgraphchannels/listnodes (IPC 18/17) to prove the in-memory GraphStore
-        // reload too, not only the persisted rows (see GossipGraphProbe.TryGetOurGraphChannelAsync)
+        // TODO(G-B integrator): NOT PROVEN until this reads through listgraphchannels/listnodes (IPC 18/17). Today it
+        // reads the persisted rows (GossipGraphProbe.TryGetOurGraphChannelAsync), which a restart does not delete, so
+        // it only fails if startup deletes the graph; the in-memory GraphStore reload is what (b) must show
         Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
         Assert.True(await GossipGraphProbe.OurGraphHasAsync(node, scids, lndNodes));
         Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
@@ -121,16 +125,33 @@ public class GraphStoreFlowTests
                               }, s_timeout, $"david-carol marked spent at {spendHeight}", ct,
                               GossipGraphProbe.PollInterval);
 
-        // Act 2: 71 more blocks (the pruner's boundary is logged), then the 72nd
-        await ChainSync.MineAndWaitAsync(_fixture, SpentForgetDepth - 1, _fixture.LndNodes, [node], ct);
-        var atBoundary = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
-        Console.WriteLine($"At spend + {SpentForgetDepth - 1}: {(atBoundary is null ? "removed" : "still stored")}");
-        await ChainSync.MineAndWaitAsync(_fixture, 1, _fixture.LndNodes, [node], ct);
+        // Act 2: up to spend + 70 (71 confirmations of the spend), one block short of either reading of BOLT 7's
+        // delay ("72 block confirmations" is reached at spend + 71, "a 72-block delay" at spend + 72)
+        await ChainSync.MineAndWaitAsync(_fixture, SpentForgetDepth - 2, _fixture.LndNodes, [node], ct);
 
-        // Assert 2: gone
+        // Assert 2: still stored and still marked spent at the close's height (BOLT 7 forbids forgetting a spent
+        // channel before the delay, so a splice's new channel_announcement can propagate); checked right after the
+        // mining and again after a few seconds (a removal is final), so a pruner that runs behind the block is caught
+        await AssertStillSpentAsync(node, scid, spendHeight, $"spend + {SpentForgetDepth - 2}");
+        await Task.Delay(s_boundaryHold, ct);
+        await AssertStillSpentAsync(node, scid, spendHeight, $"spend + {SpentForgetDepth - 2}, after the hold");
+
+        // Act 3: the two blocks to spend + 72, past either reading of the delay
+        await ChainSync.MineAndWaitAsync(_fixture, 2, _fixture.LndNodes, [node], ct);
+
+        // Assert 3: gone
         await Poll.UntilAsync(async () => await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid) is null,
                               s_timeout, $"david-carol removed {SpentForgetDepth} blocks after its spend", ct,
                               GossipGraphProbe.PollInterval);
+    }
+
+    private static async Task AssertStillSpentAsync(NLightningTestNode node, ulong scid, uint spendHeight, string when)
+    {
+        var stored = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
+        Console.WriteLine($"At {when}: {new ShortChannelId(scid)} "
+                        + (stored is null ? "removed" : $"stored, spent at {stored.Value.Channel.SpentAtHeight}"));
+        Assert.NotNull(stored);
+        Assert.Equal(spendHeight, stored.Value.Channel.SpentAtHeight);
     }
 
     private IReadOnlyList<LNDNodeConnection> GossipLndNodes() =>

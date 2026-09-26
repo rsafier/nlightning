@@ -2,6 +2,7 @@ using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
+using Capture;
 using Fixtures;
 using Utils;
 
@@ -65,23 +66,59 @@ public class GossipFixtureTests
     }
 
     /// <summary>
-    /// Proof G0 (Docker smoke): alice sends her whole graph after our <c>gossip_timestamp_filter</c>; every 256, 257 and
-    /// 258 parses (no deserialize failure in our log) and the connection stays up for 60 s.
+    /// Proof G0 (Docker smoke): alice sends her whole graph after our <c>gossip_timestamp_filter</c>; we receive the
+    /// <c>channel_announcement</c> and both <c>channel_update</c>s of every fixture channel and the
+    /// <c>node_announcement</c> of alice, bob and carol (recorded on the wire by <see cref="RawGossipRecorder"/>, so a
+    /// filter alice ignores fails the test), every one parses (no deserialize failure in our log) and the connection
+    /// stays up for 60 s.
     /// </summary>
     [Fact]
     public async Task Given_ConnectedToAlice_When_AliceSendsHerGraph_Then_EveryMessageParsesAndTheConnectionStaysUp()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var alice = _fixture.GetLndNode("alice");
-        await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-g0", "nltg-g0", ct);
+        var lndNodes = GossipLndNodes();
+        var alice = lndNodes[0];
+        var channels = await GossipGraphProbe.GetFixtureChannelsAsync(lndNodes, ct);
+        Assert.NotEmpty(channels);
+        await GossipGraphProbe.MineUntilAsync(async () =>
+        {
+            foreach (var (scid, _, _, _) in channels)
+                if (await GossipGraphProbe.TryGetChanInfoAsync(alice, scid, ct) is not
+                    { Node1Policy: not null, Node2Policy: not null })
+                    return false;
+
+            foreach (var lnd in lndNodes.Skip(1))
+                if (await GossipGraphProbe.TryGetNodeInfoAsync(alice, lnd.LocalNodePubKey, ct) is null)
+                    return false;
+
+            return true;
+        }, () => ChainSync.MineAndWaitAsync(_fixture, 1, lndNodes, [], ct), TimeSpan.FromSeconds(20), 6,
+                                              s_graphTimeout, "alice has the whole fixture graph", ct);
+        var recorder = new RawGossipRecorder();
+        await using var node = await GossipTestNodes.StartGossipNodeAsync(
+                                   _fixture, "gossip-g0", "nltg-g0", ct,
+                                   n => n.ConfigureServices = recorder.Install);
         await ChainSync.WaitAllAtTipAsync(_fixture, [node], ct);
         await node.ConnectToAsync(alice, ct);
 
         // Act
         await GossipTestNodes.SendFullTimestampFilterAsync(node, alice.LocalNodePubKeyBytes, ct);
 
-        // Assert
+        // Assert: alice's dump of the fixture's graph arrived (filtered to the fixture's own channels and nodes, since
+        // alice also relays other tests' channels)
+        var expectedScids = channels.Select(c => c.ShortChannelId).ToHashSet();
+        var expectedNodes = lndNodes.Select(n => n.LocalNodePubKey.ToLowerInvariant()).ToHashSet();
+        await Poll.UntilAsync(() =>
+                              {
+                                  var received = GossipWire.Summarize(recorder.Received.Select(r => r.Wire));
+                                  var missing = GossipWire.Missing(received, expectedScids, expectedNodes);
+                                  Console.WriteLine(missing.Count == 0
+                                                        ? $"Received {received}: the fixture's graph is complete"
+                                                        : $"Received {received}; missing {string.Join(", ", missing)}");
+                                  return missing.Count == 0;
+                              }, s_graphTimeout, "alice's dump of the fixture graph received", ct,
+                              GossipGraphProbe.PollInterval);
         await Poll.StaysTrueAsync(() => node.IsConnectedTo(alice.LocalNodePubKeyBytes), s_smokeDuration,
                                   "connected to alice", ct);
         Assert.Equal(0, node.CountLogLines(DeserializeFailedLogFragment));

@@ -135,7 +135,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public Action<IServiceCollection>? ConfigureServices { get; set; }
 
     /// <summary>
-    /// Extra configuration keys (e.g. <c>Gossip:Enabled</c>, <c>Node:Alias</c>), layered over the test node's own
+    /// Extra configuration keys (e.g. <c>Gossip:SyncEnabled</c>, <c>Node:Alias</c>), layered over the test node's own
     /// settings on every <see cref="StartAsync"/>, so a key here overrides a default. Empty by default: the node then
     /// behaves as before. Set them before starting.
     /// </summary>
