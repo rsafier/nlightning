@@ -191,8 +191,7 @@ public partial class Invoice
         {
             var oldFeatures = Features;
             _taggedFields.Replace(TaggedFieldTypes.Features, new FeaturesTaggedField(value));
-            if (oldFeatures is not null)
-                oldFeatures.Changed -= OnTaggedFieldsChanged;
+            oldFeatures?.Changed -= OnTaggedFieldsChanged;
 
             value.Changed += OnTaggedFieldsChanged;
         }
@@ -522,8 +521,7 @@ public partial class Invoice
         _taggedFields.Changed += OnTaggedFieldsChanged;
 
         // Editing a decoded invoice's features or route hints must drop the cached string too
-        if (Features is not null)
-            Features.Changed += OnTaggedFieldsChanged;
+        Features?.Changed += OnTaggedFieldsChanged;
 
         foreach (var routeHint in RouteHints)
             routeHint.Changed += OnTaggedFieldsChanged;

@@ -146,8 +146,7 @@ public sealed class PeerManager : IPeerManager
         _channelManager.OnResponseMessageReady += HandleResponseMessageReady;
 
         _channelUpdateService = channelUpdateService;
-        if (_channelUpdateService is not null)
-            _channelUpdateService.OnChannelUpdateReady += HandleChannelUpdateReady;
+        _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
