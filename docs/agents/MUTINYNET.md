@@ -219,7 +219,8 @@ with the `started_daemon` trap error above and did not restart the daemon, so th
 ## Public channel (gossip wave G-D, 2026-09-26)
 
 Our first announced channel on Mutinynet, opened with `openchannel --public` from the soak node (node id
-`030f7defc57e05273c109870dbc15ec0f1ade96872852a06247c42c75bfac2495a`):
+`030f7defc57e05273c109870dbc15ec0f1ade96872852a06247c42c75bfac2495a`, checked against the mutinynet.com
+Lightning API at 20:21 UTC: alias NLightningFAFO, 1 channel, capacity 200,000 sat, SCID 3458334x7x0):
 
 | Item | Value |
 |---|---|
