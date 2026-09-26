@@ -51,6 +51,12 @@ public class ClientAppTests
     [InlineData("createinvoice", "0")]
     [InlineData("pay", "lnbcrt1", "0")]
     [InlineData("payinvoice", "lnbcrt1", "any", "301")]
+    [InlineData("closechannel")]
+    [InlineData("close-channel", "abcd")]
+    [InlineData("closechannel", "zz21212121212121212121212121212121212121212121212121212121212121")]
+    [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "fast")]
+    [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "301")]
+    [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "5", "bogus")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -140,5 +146,24 @@ public class ClientAppTests
 
         // Assert
         Assert.Equal((take, skip), page);
+    }
+
+    [Fact]
+    public void GivenCloseChannelOptions_WhenParsed_ThenFeerateWaitAndFeeRange()
+    {
+        // Arrange
+        const string id = "2121212121212121212121212121212121212121212121212121212121212121";
+
+        // Act
+        var none = ClientApp.ParseCloseOptions([id]);
+        var all = ClientApp.ParseCloseOptions([id, "5000", "0", "NoFeeRange"]);
+        var defaultFeerate = ClientApp.ParseCloseOptions([id, "0", "60"]);
+
+        // Assert
+        Assert.Equal((null, null, false), none);
+        Assert.Equal((5000U, 0U, true), all);
+        Assert.Equal((null, 60U, false), defaultFeerate);
+        Assert.True(ClientApp.TryParseChannelId(id, out var channelId));
+        Assert.Equal(id, Convert.ToHexString((byte[])channelId).ToLowerInvariant());
     }
 }

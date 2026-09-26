@@ -4,6 +4,7 @@ namespace NLightning.Client;
 
 using Daemon.Contracts.Helpers;
 using Daemon.Contracts.Utilities;
+using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Handlers;
@@ -30,6 +31,11 @@ internal static class ClientApp
     /// The longest payinvoice wait; the daemon refuses a longer one (<c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>).
     /// </summary>
     internal const uint MaxPayTimeoutSeconds = 300;
+
+    /// <summary>
+    /// The longest closechannel wait; the daemon refuses a longer one (<c>CloseChannelClientHandler.MaxWaitSeconds</c>).
+    /// </summary>
+    internal const uint MaxCloseWaitSeconds = 300;
 
     internal static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
@@ -123,6 +129,13 @@ internal static class ClientApp
                     if (payment.Payment.Status == PaymentStatus.Failed)
                         return Failure;
                     break;
+                case "closechannel":
+                case "close-channel":
+                    var (closeFeerate, closeWait, noFeeRange) = ParseCloseOptions(commandArgs);
+                    var close = await client.CloseChannelAsync(ParseChannelId(commandArgs[0]), closeFeerate,
+                                                               noFeeRange, closeWait, cancellationToken);
+                    new CloseChannelPrinter().Print(close);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -192,6 +205,23 @@ internal static class ClientApp
                  && !(TryParsePositiveUInt(commandArgs[2], out var timeout) && timeout <= MaxPayTimeoutSeconds))
                     return $"Invalid timeout '{commandArgs[2]}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
                 return null;
+            case "closechannel":
+            case "close-channel":
+                if (commandArgs.Length < 1)
+                    return $"Missing argument. Usage: {cmd} <channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange]";
+                if (!TryParseChannelId(commandArgs[0], out _))
+                    return $"Invalid channel id '{commandArgs[0]}': expected 64 hex characters.";
+                if (commandArgs.Length > 1 && !uint.TryParse(commandArgs[1], NumberStyles.None,
+                                                             CultureInfo.InvariantCulture, out _))
+                    return $"Invalid feerate '{commandArgs[1]}': expected sat/kw, or 0 for the node's estimate.";
+                if (commandArgs.Length > 2
+                 && !(uint.TryParse(commandArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var wait)
+                   && wait <= MaxCloseWaitSeconds))
+                    return $"Invalid wait '{commandArgs[2]}': expected 0 to {MaxCloseWaitSeconds} seconds.";
+                if (commandArgs.Length > 3 && !string.Equals(commandArgs[3], "nofeerange",
+                                                             StringComparison.OrdinalIgnoreCase))
+                    return $"Invalid option '{commandArgs[3]}': expected nofeerange.";
+                return null;
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
@@ -239,6 +269,45 @@ internal static class ClientApp
         TryParsePositiveUInt(value, out var result)
             ? result
             : throw new ArgumentException($"Invalid number '{value}'.", nameof(value));
+
+    /// <summary>A channel id: 64 hex characters, as listchannels prints it.</summary>
+    internal static bool TryParseChannelId(string value, out ChannelId channelId)
+    {
+        channelId = default;
+        if (value.Length != 64)
+            return false;
+
+        try
+        {
+            channelId = new ChannelId(Convert.FromHexString(value));
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    private static ChannelId ParseChannelId(string value) =>
+        TryParseChannelId(value, out var channelId)
+            ? channelId
+            : throw new ArgumentException($"Invalid channel id '{value}'.", nameof(value));
+
+    /// <summary>
+    /// <c>[feerate_per_kw|0] [wait_seconds] [nofeerange]</c> of closechannel: a feerate of 0 (or none) uses the node's
+    /// estimate, no wait uses the daemon's default.
+    /// </summary>
+    internal static (uint? FeeRatePerKw, uint? WaitSeconds, bool NoFeeRange) ParseCloseOptions(string[] commandArgs)
+    {
+        uint? feerate = commandArgs.Length > 1 && TryParsePositiveUInt(commandArgs[1], out var f) ? f : null;
+        uint? wait = commandArgs.Length > 2
+                  && uint.TryParse(commandArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var w)
+                         ? w
+                         : null;
+        var noFeeRange = commandArgs.Length > 3
+                      && string.Equals(commandArgs[3], "nofeerange", StringComparison.OrdinalIgnoreCase);
+        return (feerate, wait, noFeeRange);
+    }
 
     /// <summary>
     /// <c>[take] [skip]</c> of the list commands; take defaults to 100 and skip to 0.

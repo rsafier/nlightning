@@ -259,6 +259,28 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Starts the cooperative close of a channel and waits for the closing transaction (ClientCommand 13).
+    /// </summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="feeRatePerKw">The feerate of our closing fee estimate, or null for the daemon's.</param>
+    /// <param name="noFeeRange">Negotiate without <c>fee_range</c>.</param>
+    /// <param name="waitSeconds">How long the daemon waits for the closing transaction, or null for its default.</param>
+    /// <param name="ct">Cancels the call (the close itself goes on in the daemon).</param>
+    public Task<CloseChannelIpcResponse> CloseChannelAsync(ChannelId channelId, uint? feeRatePerKw, bool noFeeRange,
+                                                           uint? waitSeconds, CancellationToken ct = default)
+    {
+        var req = new CloseChannelIpcRequest
+        {
+            ChannelId = channelId,
+            FeeRatePerKw = feeRatePerKw,
+            NoFeeRange = noFeeRange,
+            WaitSeconds = waitSeconds
+        };
+        return SendRequestAsync<CloseChannelIpcRequest, CloseChannelIpcResponse>(ClientCommand.CloseChannel, req,
+                                                                                 ct);
+    }
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)
