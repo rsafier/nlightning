@@ -126,6 +126,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Daemon.Plugins",
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.Transport.Ipc", "src\NLightning.Transport.Ipc\NLightning.Transport.Ipc.csproj", "{A3C18FCE-8C13-4B2F-BD9E-82131750C716}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{7E1F3A52-6C0B-4D8E-9B1A-3F2C5D6E7A81}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NLightning.GossipProbe", "tools\NLightning.GossipProbe\NLightning.GossipProbe.csproj", "{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|Any CPU = Release|Any CPU
@@ -408,6 +412,14 @@ Global
 		{A3C18FCE-8C13-4B2F-BD9E-82131750C716}.Debug.Native|Any CPU.Build.0 = Debug|Any CPU
 		{A3C18FCE-8C13-4B2F-BD9E-82131750C716}.Debug.Wasm|Any CPU.ActiveCfg = Debug|Any CPU
 		{A3C18FCE-8C13-4B2F-BD9E-82131750C716}.Debug.Wasm|Any CPU.Build.0 = Debug|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Release.Native|Any CPU.ActiveCfg = Release.Native|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Release.Native|Any CPU.Build.0 = Release.Native|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Debug.Native|Any CPU.ActiveCfg = Debug.Native|Any CPU
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C}.Debug.Native|Any CPU.Build.0 = Debug.Native|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -416,6 +428,7 @@ Global
 		SolutionGuid = {B11DB411-8F72-4829-AA0D-8E3908363026}
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
+		{C4B2E9A7-1D3F-4E5A-8B6C-9D0E1F2A3B4C} = {7E1F3A52-6C0B-4D8E-9B1A-3F2C5D6E7A81}
 		{A103C727-E983-4510-81FB-301625DC1A7F} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
 		{2EBE72E4-F20D-4668-B2A5-F7DCDECA0832} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
 		{DC168173-FDDA-4C70-9A7F-F14D909B01EE} = {123D0631-533C-447F-B7DA-D1D37E5E64BF}
