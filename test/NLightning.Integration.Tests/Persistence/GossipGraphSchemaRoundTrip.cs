@@ -139,7 +139,7 @@ internal static class GossipGraphSchemaRoundTrip
         // Channels with their policies
         var channelA = new GraphChannelRecord(scidA, Key(0x31), Key(0x32), Key(0x41), Key(0x42), 16_777_215,
                                               [0x01, 0x00], Raw(430, 0x74), GraphChannelVerification.Verified, null,
-                                              receivedAt);
+                                              receivedAt, ChainWatchSchemaRoundTrip.TxIdOf(0x7B));
         var channelB = new GraphChannelRecord(scidB, Key(0x33), Key(0x34), Key(0x43), Key(0x44), long.MaxValue,
                                               [], Raw(432, 0x75), GraphChannelVerification.Own, 700,
                                               receivedAt);
@@ -379,6 +379,7 @@ internal static class GossipGraphSchemaRoundTrip
         Assert.Equal(expected.Verification, actual.Verification);
         Assert.Equal(expected.SpentAtHeight, actual.SpentAtHeight);
         Assert.Equal(expected.ReceivedAt.UtcTicks, actual.ReceivedAt.UtcTicks);
+        Assert.Equal(expected.FundingTxId, actual.FundingTxId);
     }
 
     private static void AssertPolicy(GraphPolicyRecord expected, GraphPolicyRecord actual)

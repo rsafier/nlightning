@@ -30,6 +30,56 @@ public class GraphStoreTests
     }
 
     [Fact]
+    public async Task Given_ChannelsWithFundingTxIds_When_FlushedAndLoadedIntoANewStore_Then_TheTxIdsAreKnownWithoutALookup()
+    {
+        // Arrange: NL-352, the chain check gave each channel its funding txid
+        var kit = await CreateGraphAsync();
+        var ab = new ShortChannelId(110, 1, 0);
+        var bc = new ShortChannelId(115, 1, 0);
+
+        // Act
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        var restarted = new GraphTestKit(kit.Repository);
+        await restarted.Store.LoadAsync(TestContext.Current.CancellationToken);
+
+        // Assert: saved with the channel, and back in the funding-outpoint index after the load
+        Assert.Equal(GraphTestKit.TxIdFor(ab), kit.Repository.Channels[ab].FundingTxId);
+        Assert.Empty(restarted.Store.GetChannelsWithoutFundingTxId());
+        Assert.True(restarted.Store.TryGetFundingTxId(bc, out var fundingTxId));
+        Assert.Equal(GraphTestKit.TxIdFor(bc), fundingTxId);
+        Assert.True(restarted.Store.TryGetChannelByFundingOutpoint(GraphTestKit.TxIdFor(ab), ab.OutputIndex,
+                                                                   out var found));
+        Assert.Equal(ab, found);
+    }
+
+    [Fact]
+    public async Task Given_AChannelStoredWithoutFundingTxId_When_TheTxIdIsSet_Then_TheNextFlushSavesIt()
+    {
+        // Arrange: a row from before the column (or an unverified channel) has none
+        var kit = await CreateGraphAsync();
+        var ab = new ShortChannelId(110, 1, 0);
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        kit.Repository.Channels[ab] = kit.Repository.Channels[ab] with { FundingTxId = null };
+        var restarted = new GraphTestKit(kit.Repository);
+        await restarted.Store.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.Equal([ab], restarted.Store.GetChannelsWithoutFundingTxId());
+
+        // Act: the pruner's lookup found it; setting the same txid again changes nothing
+        Assert.True(restarted.Store.TrySetFundingTxId(ab, GraphTestKit.TxIdFor(ab)));
+        var pending = restarted.Store.PendingChanges;
+        await restarted.Store.FlushAsync(TestContext.Current.CancellationToken);
+        Assert.True(restarted.Store.TrySetFundingTxId(ab, GraphTestKit.TxIdFor(ab)));
+
+        // Assert
+        Assert.Equal(1, pending);
+        Assert.Equal(0, restarted.Store.PendingChanges);
+        Assert.Equal(GraphTestKit.TxIdFor(ab), kit.Repository.Channels[ab].FundingTxId);
+        var again = new GraphTestKit(kit.Repository);
+        await again.Store.LoadAsync(TestContext.Current.CancellationToken);
+        Assert.Empty(again.Store.GetChannelsWithoutFundingTxId());
+    }
+
+    [Fact]
     public async Task Given_ManyUpdatesToOneChannel_When_Flushed_Then_OnlyTheLatestPolicyIsWrittenInOneSave()
     {
         // Arrange

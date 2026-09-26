@@ -56,8 +56,8 @@ public interface IGraphStore
     bool TryGetFundingTxId(ShortChannelId shortChannelId, out TxId fundingTxId);
 
     /// <summary>
-    /// Records the funding transaction id of a stored channel (the pruner's startup lookup: txids are not persisted);
-    /// false when the channel is unknown.
+    /// Records the funding transaction id of a stored channel (the pruner's startup lookup of a row saved without one)
+    /// and marks the channel for the next flush when it changed (NL-352); false when the channel is unknown.
     /// </summary>
     bool TrySetFundingTxId(ShortChannelId shortChannelId, TxId fundingTxId);
 

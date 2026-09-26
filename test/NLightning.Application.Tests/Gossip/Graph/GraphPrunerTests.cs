@@ -259,9 +259,10 @@ public class GraphPrunerTests
     [Fact]
     public async Task Given_ARestart_When_TheTxidsAreLookedUp_Then_FoundOnesAreFollowedAndSpentOnesMarked()
     {
-        // Arrange: the graph reloaded from the database has no funding txids
+        // Arrange: the graph reloaded from rows saved without funding txids (before migration AddGraphFundingTxId)
         var before = await GraphStoreTests.CreateGraphAsync();
         await before.Store.FlushAsync(TestContext.Current.CancellationToken);
+        ForgetFundingTxIds(before.Repository);
         var kit = new GraphTestKit(before.Repository);
         await kit.Store.LoadAsync(TestContext.Current.CancellationToken);
         Assert.Equal(2, kit.Store.GetChannelsWithoutFundingTxId().Count);
@@ -290,6 +291,7 @@ public class GraphPrunerTests
         // Arrange
         var before = await GraphStoreTests.CreateGraphAsync();
         await before.Store.FlushAsync(TestContext.Current.CancellationToken);
+        ForgetFundingTxIds(before.Repository);
         var kit = new GraphTestKit(before.Repository);
         await kit.Store.LoadAsync(TestContext.Current.CancellationToken);
         kit.FundingLookup.Setup(l => l.LookupAsync(s_ab, It.IsAny<CancellationToken>()))
@@ -350,6 +352,7 @@ public class GraphPrunerTests
         // Arrange: the graph reloaded without txids; the monitor loads its height only when it starts (after us)
         var before = await GraphStoreTests.CreateGraphAsync();
         await before.Store.FlushAsync(TestContext.Current.CancellationToken);
+        ForgetFundingTxIds(before.Repository);
         var kit = new GraphTestKit(before.Repository);
         kit.FundingLookup.Setup(l => l.LookupAsync(s_ab, It.IsAny<CancellationToken>()))
            .ReturnsAsync(FundingOutputLookupResult.Failed(FundingOutputStatus.OutputSpentOrMissing));
@@ -513,6 +516,13 @@ public class GraphPrunerTests
         // Assert
         Assert.False(pruner.IsEnabled);
         monitor.VerifyAdd(m => m.OnBlockInputs += It.IsAny<EventHandler<BlockInputsEventArgs>>(), Times.Never);
+    }
+
+    /// <summary>Rows as stored before migration <c>AddGraphFundingTxId</c> (NL-352): no funding txid.</summary>
+    private static void ForgetFundingTxIds(InMemoryGraphDbRepository repository)
+    {
+        foreach (var (shortChannelId, channel) in repository.Channels.ToList())
+            repository.Channels[shortChannelId] = channel with { FundingTxId = null };
     }
 
     private static (TxId TransactionId, uint OutputIndex) SpendOf(ShortChannelId shortChannelId) =>

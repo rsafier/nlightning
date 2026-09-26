@@ -720,6 +720,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .IsRequired()
                         .HasColumnType("BLOB");
 
+                    b.Property<byte[]>("FundingTxId")
+                        .HasColumnType("BLOB");
+
                     b.Property<byte[]>("NodeId1")
                         .IsRequired()
                         .HasColumnType("BLOB");

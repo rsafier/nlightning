@@ -1,5 +1,6 @@
 namespace NLightning.Infrastructure.Persistence.Entities.Gossip;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 
@@ -28,6 +29,12 @@ public class GraphChannelEntity
 
     /// <summary>The height of the block that spent the funding output, or null while unspent.</summary>
     public uint? SpentAtHeight { get; set; }
+
+    /// <summary>
+    /// The funding transaction id, when known (migration <c>AddGraphFundingTxId</c>, NL-352): the pruner's spent
+    /// check needs it, and rows stored without one are looked up again at startup.
+    /// </summary>
+    public TxId? FundingTxId { get; set; }
 
     /// <summary>When it was received; UTC ticks (<c>UtcTicksConverter</c>).</summary>
     public required DateTimeOffset ReceivedAt { get; set; }
