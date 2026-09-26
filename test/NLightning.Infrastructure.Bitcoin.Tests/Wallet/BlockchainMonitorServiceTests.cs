@@ -567,7 +567,47 @@ public class BlockchainMonitorServiceTests
         Assert.Same(monitor, provider.GetRequiredService<IOutpointWatcher>());
     }
 
-    private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest")
+    [Fact]
+    public async Task Given_ABroadcastTheNodeKeepsRefusing_When_BlocksArrive_Then_ItIsWarnedAboutFirstAndThenPeriodically()
+    {
+        // Arrange: a stored funding transaction the node refuses for good (e.g. its inputs are gone)
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.RefusalWarningInterval = 3;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x34)), BroadcastPurpose.Funding,
+                                                      null, 110);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act: the first send, then six blocks (a rebroadcast after each)
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 6; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: 7 refusals, a warning at the 1st, 3rd and 6th, the others at Debug
+        var refusals = logger.Entries.Where(e => e.Message.Contains("was refused")).ToList();
+        Assert.Equal(7, refusals.Count);
+        Assert.Equal([
+                         LogLevel.Warning, LogLevel.Debug, LogLevel.Warning, LogLevel.Debug, LogLevel.Debug,
+                         LogLevel.Warning, LogLevel.Debug
+                     ], refusals.Select(e => e.Level));
+        Assert.Contains("(6 time(s) in a row)", refusals[5].Message);
+
+        // Act: the node accepts it again, then refuses it again
+        _chain.SendFailure = null;
+        await service.PublishAsync(broadcast);
+        _chain.SendFailure = new InvalidOperationException("node down");
+        await service.PublishAsync(broadcast);
+
+        // Assert: the count started over
+        var (level, message) = logger.Entries.Last(e => e.Message.Contains("was refused"));
+        Assert.Equal(LogLevel.Warning, level);
+        Assert.Contains("(1 time(s) in a row)", message);
+    }
+
+    private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
+                                                   ILogger<BlockchainMonitorService>? logger = null)
     {
         var bitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
         bitcoinOptions.Setup(x => x.Value).Returns(new BitcoinOptions
@@ -582,7 +622,8 @@ public class BlockchainMonitorServiceTests
         var nodeOptions = new Mock<IOptions<NodeOptions>>();
         nodeOptions.Setup(x => x.Value).Returns(new NodeOptions { BitcoinNetwork = network });
         return new BlockchainMonitorService(bitcoinOptions.Object, chain,
-                                            new Mock<ILogger<BlockchainMonitorService>>().Object, nodeOptions.Object,
+                                            logger ?? new Mock<ILogger<BlockchainMonitorService>>().Object,
+                                            nodeOptions.Object,
                                             _fakeServiceProvider)
         {
             BlockRetryBaseDelay = TimeSpan.Zero
@@ -609,4 +650,20 @@ public class BlockchainMonitorServiceTests
         new(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
 
     private delegate bool TryGetUtxoCallback(TxId txId, uint index, out UtxoModel? utxo);
+
+    /// <summary>Keeps every log entry at every level (a Moq logger reports every level as disabled).</summary>
+    private sealed class RecordingLogger : ILogger<BlockchainMonitorService>
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            Entries.Enqueue((logLevel, formatter(state, exception)));
+        }
+    }
 }

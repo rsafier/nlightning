@@ -37,10 +37,13 @@ using Options;
 /// hash differs from the stored one at its height, or whose parent is not the stored tip, starts a rewind: the fork
 /// point is found by asking bitcoind for the active chain's hashes, the rows the disconnected blocks changed are
 /// rolled back in one save (first-seen heights of pending watches, outpoint spends, broadcast confirmations, headers,
-/// state), <see cref="OnBlockDisconnected"/> is raised per disconnected block, and the new branch is processed. A reorg
-/// deeper than the ring halts processing (Critical).</para>
+/// state), <see cref="OnBlockDisconnected"/> is raised per disconnected block, and the new branch is processed. The fork
+/// is searched from our last processed block down; a block that is not in the active chain while every block we
+/// processed still is (a late notification of an orphan) is dropped without a rewind. A reorg deeper than the ring
+/// halts processing (Critical). Not rolled back yet: a watch that completed in a disconnected block (the channel keeps
+/// its funding confirmation and short channel id) and the wallet UTXOs added or spent in disconnected blocks.</para>
 /// <para>Broadcasts (NL-258): every stored <see cref="BroadcastState.Pending"/> transaction is sent again after each
-/// processing round and at startup, until a processed block holds it.</para>
+/// processing round (also a halted one) and at startup (also when halted), until a processed block holds it.</para>
 /// </remarks>
 public class BlockchainMonitorService : IBlockchainMonitor
 {
@@ -62,6 +65,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
     private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
     private readonly ConcurrentDictionary<uint256, BroadcastTransactionModel> _pendingBroadcasts = new();
+    private readonly ConcurrentDictionary<uint256, int> _refusals = new();
     private readonly SortedDictionary<uint, BlockHeaderModel> _headers = new();
     private readonly OrderedDictionary<uint, Block> _blocksToProcess = new();
 
@@ -103,6 +107,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// How many processed block headers are kept for reorg detection; a deeper reorg halts processing.
     /// </summary>
     internal int HeaderRingSize { get; set; } = 100;
+
+    /// <summary>
+    /// A pending broadcast the node keeps refusing is logged at Warning on its first refusal and then once every this
+    /// many refusals in a row (it is retried after every block, with no abandonment rule yet).
+    /// </summary>
+    internal int RefusalWarningInterval { get; set; } = 6;
 
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
@@ -190,6 +200,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         if (!IsChainProcessingHalted)
             await ProcessPendingBlocksAsync();
+        else
+            await RebroadcastPendingAsync(); // A halt must not keep our pending transactions off the chain
 
         // Initialize ZMQ sockets
         InitializeZmqSockets();
@@ -307,7 +319,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation("Publishing {Purpose} transaction {TxId}", Enum.GetName(transaction.Purpose), txId);
 
-        return await TrySendAsync(transaction, LogLevel.Warning);
+        return await TrySendAsync(transaction);
     }
 
     /// <inheritdoc />
@@ -515,8 +527,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// the failing block and every later block stay queued, nothing is dropped, and the height is not advanced. The
     /// next round (the next ZMQ block, or a restart, which refetches the blocks from bitcoind) starts over from the
     /// failing block. Blocks are never skipped, because a skipped block could hide a funding confirmation, a deposit
-    /// or a spend of a watched output. After a round that reached the end of the queue, the pending broadcasts are
-    /// sent again.
+    /// or a spend of a watched output. The pending broadcasts are sent again after every round, also after a halted
+    /// one: a halt is when a failed channel's commitment most needs to reach the chain.
     /// </remarks>
     private async Task ProcessPendingBlocksAsync()
     {
@@ -525,55 +537,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
         await _blockBacklogSemaphore.WaitAsync(cancellationToken);
         try
         {
-            while (true)
-            {
-                if (_blocksToProcess.Count == 0)
-                {
-                    // Refill from bitcoind the blocks that were left out because the queue was full
-                    await FillQueueFromChainAsync();
-                    if (_blocksToProcess.Count == 0)
-                        break;
-                }
-
-                var (height, block) = _blocksToProcess.First();
-                var blockHash = new Hash(block.GetHash().ToBytes());
-
-                if (DoesNotExtendProcessedChain(height, block))
-                {
-                    _logger.LogWarning("Block {Height} ({Hash}) does not extend the processed chain: reorg", height,
-                                       block.GetHash());
-                    var searchFrom = Math.Min(height == 0 ? 0 : height - 1, _lastProcessedBlockHeight);
-                    if (!await TryRewindAsync(searchFrom))
-                    {
-                        IsChainProcessingHalted = true;
-                        return;
-                    }
-
-                    continue;
-                }
-
-                if (height < _lastProcessedBlockHeight)
-                {
-                    // Already processed (a repeated notification, e.g. after reconsiderblock), or older than the ring
-                    if (!TryGetKnownHash(height, out var known) || !known.Equals(blockHash))
-                        _logger.LogWarning("Skipping block {Height} below the last processed block {Last}", height,
-                                           _lastProcessedBlockHeight);
-
-                    _blocksToProcess.Remove(height);
-                    continue;
-                }
-
-                if (!await TryProcessBlockWithRetriesAsync(block, height, cancellationToken))
-                {
-                    IsChainProcessingHalted = true;
-                    _logger.LogCritical(
-                        "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
-                        height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
-                    return;
-                }
-            }
-
-            IsChainProcessingHalted = false;
+            await ProcessQueueAsync(cancellationToken);
         }
         finally
         {
@@ -581,6 +545,102 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
 
         await RebroadcastPendingAsync();
+    }
+
+    /// <summary>
+    /// Processes the queue until it is empty, or until the round halts (then <see cref="IsChainProcessingHalted"/> is
+    /// set).
+    /// </summary>
+    private async Task ProcessQueueAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            if (_blocksToProcess.Count == 0)
+            {
+                // Refill from bitcoind the blocks that were left out because the queue was full
+                await FillQueueFromChainAsync();
+                if (_blocksToProcess.Count == 0)
+                    break;
+            }
+
+            var (height, block) = _blocksToProcess.First();
+            var blockHash = new Hash(block.GetHash().ToBytes());
+
+            if (DoesNotExtendProcessedChain(height, block))
+            {
+                if (await IsProcessedTipActiveAsync())
+                {
+                    // Our last processed block is still bitcoind's block at its height, so this block is not in the
+                    // active chain (a late notification of a block that was reorged out): nothing to rewind
+                    _logger.LogWarning(
+                        "Block {Height} ({Hash}) is not in the active chain, which still holds every block we processed; dropping it",
+                        height, block.GetHash());
+                    _blocksToProcess.Remove(height);
+                    if (height > _lastProcessedBlockHeight
+                     && height <= await _bitcoinChainService.GetCurrentBlockHeightAsync())
+                    {
+                        // The stale block may have replaced the active block at its height in the queue
+                        var active = await _bitcoinChainService.GetBlockAsync(height);
+                        if (active is not null && active.GetHash() != block.GetHash())
+                            _blocksToProcess[height] = active;
+                    }
+
+                    continue;
+                }
+
+                _logger.LogWarning("Block {Height} ({Hash}) does not extend the processed chain: reorg", height,
+                                   block.GetHash());
+
+                // The fork is searched from our own tip down (not from the incoming block's height), never above
+                // bitcoind's tip
+                var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                if (!await TryRewindAsync(Math.Min(_lastProcessedBlockHeight, tip)))
+                {
+                    IsChainProcessingHalted = true;
+                    return;
+                }
+
+                continue;
+            }
+
+            if (height < _lastProcessedBlockHeight)
+            {
+                // Already processed (a repeated notification, e.g. after reconsiderblock), or older than the ring
+                if (!TryGetKnownHash(height, out var known) || !known.Equals(blockHash))
+                    _logger.LogWarning("Skipping block {Height} below the last processed block {Last}", height,
+                                       _lastProcessedBlockHeight);
+
+                _blocksToProcess.Remove(height);
+                continue;
+            }
+
+            if (!await TryProcessBlockWithRetriesAsync(block, height, cancellationToken))
+            {
+                IsChainProcessingHalted = true;
+                _logger.LogCritical(
+                    "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
+                    height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
+                return;
+            }
+        }
+
+        IsChainProcessingHalted = false;
+    }
+
+    /// <summary>
+    /// True when bitcoind's block at our last processed height is the one we processed there, i.e. every block we
+    /// processed is still in the active chain.
+    /// </summary>
+    private async Task<bool> IsProcessedTipActiveAsync()
+    {
+        if (!TryGetKnownHash(_lastProcessedBlockHeight, out var known))
+            return false;
+
+        if (await _bitcoinChainService.GetCurrentBlockHeightAsync() < _lastProcessedBlockHeight)
+            return false;
+
+        var chainHash = await _bitcoinChainService.GetBlockHashAsync(_lastProcessedBlockHeight);
+        return known.Equals(new Hash(chainHash.ToBytes()));
     }
 
     /// <summary>
@@ -865,7 +925,10 @@ public class BlockchainMonitorService : IBlockchainMonitor
             TrackWatchedOutpoint(outpoint);
 
         foreach (var txId in effects.ConfirmedBroadcasts)
+        {
             _pendingBroadcasts.TryRemove(txId, out _);
+            _refusals.TryRemove(txId, out _);
+        }
 
         _headers[effects.Height] = effects.Header;
         while (_headers.Count > HeaderRingSize)
@@ -966,7 +1029,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             foreach (var watch in completedInDisconnected)
                 _logger.LogCritical(
-                    "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; its confirmation is not rolled back",
+                    "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; its confirmation (and the channel's short channel id) is not rolled back, check the channel",
                     watch.TransactionId, watch.ChannelId, watch.FirstSeenAtHeight);
 
             foreach (var header in disconnected)
@@ -1004,32 +1067,41 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
-    /// <summary>Sends every pending broadcast again (after a processing round and at startup).</summary>
+    /// <summary>Sends every pending broadcast again (after every processing round and at startup).</summary>
     private async Task RebroadcastPendingAsync()
     {
         foreach (var broadcast in _pendingBroadcasts.Values.ToList())
-            await TrySendAsync(broadcast, LogLevel.Debug);
+            await TrySendAsync(broadcast);
     }
 
     /// <summary>
-    /// Sends a stored broadcast. True when the node accepted it or already has it; false (logged at
-    /// <paramref name="refusalLevel"/>) when it was refused.
+    /// Sends a stored broadcast. True when the node accepted it or already has it; false when it was refused. A refusal
+    /// is logged at Warning the first time and then every <see cref="RefusalWarningInterval"/> refusals in a row (at
+    /// Debug in between), so a transaction the node keeps refusing stays visible without a line per block.
     /// </summary>
-    private async Task<bool> TrySendAsync(BroadcastTransactionModel broadcast, LogLevel refusalLevel)
+    private async Task<bool> TrySendAsync(BroadcastTransactionModel broadcast)
     {
+        var txId = new uint256(broadcast.TransactionId);
         try
         {
             await _bitcoinChainService.SendTransactionAsync(Transaction.Load(broadcast.RawTransaction, _network));
+            _refusals.TryRemove(txId, out _);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (IsAlreadyKnown(ex))
+            {
+                _refusals.TryRemove(txId, out _);
                 return true;
+            }
 
-            if (_logger.IsEnabled(refusalLevel))
-                _logger.Log(refusalLevel, ex, "Broadcast of {Purpose} transaction {TxId} was refused; it is sent again after the next block",
-                            Enum.GetName(broadcast.Purpose), new uint256(broadcast.TransactionId));
+            var refusals = _refusals.AddOrUpdate(txId, 1, (_, count) => count + 1);
+            var level = refusals == 1 || refusals % RefusalWarningInterval == 0 ? LogLevel.Warning : LogLevel.Debug;
+            if (_logger.IsEnabled(level))
+                _logger.Log(level, ex,
+                            "Broadcast of {Purpose} transaction {TxId} was refused ({Refusals} time(s) in a row); it is sent again after the next block",
+                            Enum.GetName(broadcast.Purpose), txId, refusals);
             return false;
         }
     }
