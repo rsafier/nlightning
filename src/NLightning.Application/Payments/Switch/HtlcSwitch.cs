@@ -73,7 +73,9 @@ using Onion;
 ///   settled on chain without a preimage (<see cref="HtlcRemovalKind.OnchainTimeout"/>, raised by the BOLT 5 resolvers
 ///   once that settlement is reasonably deep) has no downstream error: we fail upstream with our own
 ///   <c>permanent_channel_failure</c>. The resolvers raise their events again every block until the output is
-///   irrevocable, so a refused upstream removal is retried; one that went out is never sent twice.</item>
+///   irrevocable, so a refused upstream removal is retried; one that went out is never sent twice. After that, the
+///   replayed upstream lock-in (startup, link-up) of a <c>Failed</c> circuit whose outgoing record derives no
+///   resolution fails the upstream HTLC the same way.</item>
 ///   <item><see cref="OutgoingHtlcSettled"/>: the archived HTLC row is pruned (NL-243) only once nothing needs its
 ///   replay any more: for a forward, the upstream HTLC has its removal and the circuit is resolved (an upstream
 ///   channel that is not loaded yet keeps the row); for our own payment, every
@@ -470,6 +472,19 @@ public sealed class HtlcSwitch : IHtlcSwitch
                                 await PruneAsync(outgoingChannelId, record!.Key, cancellationToken);
                                 break;
                         }
+                    }
+
+                    if (!resolved && circuit.Status == ForwardCircuitStatus.Failed)
+                    {
+                        // The circuit is marked Failed only after an irrevocable downstream failure, but no persisted
+                        // removal says why: the downstream HTLC was settled on chain without a preimage (an
+                        // OnchainTimeout is never persisted as a removal) and the upstream fail was refused, or the
+                        // outgoing channel is no longer loaded. The resolver stops raising its event once the output
+                        // is irrevocable, so fail upstream here with our own permanent_channel_failure
+                        var failed = new OutgoingHtlcFailed(outgoingChannelId, outgoingHtlcId, circuit.PaymentHash,
+                                                            HtlcRemoval.OnchainTimeout());
+                        await FailForwardLockedAsync(incomingChannelId, incomingHtlcId, failed, cancellationToken);
+                        return;
                     }
 
                     if (!resolved)
