@@ -25,7 +25,8 @@ public static class PaymentSendServiceCollectionExtensions
     /// (<c>IChannelOperations</c>, <c>IPeerLivenessProbe</c>, <c>IChannelMemoryRepository</c>),
     /// <c>IFailureOnionService</c>, <c>ILightningSigner</c> (to verify the <c>channel_update</c> of an UPDATE failure)
     /// and <c>IBlockchainMonitor</c>, and a Scoped <c>IPaymentDbRepository</c> sharing the
-    /// scope's <c>IUnitOfWork</c> (<c>AddRepositoriesInfrastructureServices</c>).
+    /// scope's <c>IUnitOfWork</c> (<c>AddRepositoriesInfrastructureServices</c>). <c>IAttributionDataService</c>
+    /// (<c>AddBitcoinInfrastructure</c>) is optional: with it the origin verifies <c>attribution_data</c> (NL-326).
     /// </remarks>
     public static IServiceCollection AddPaymentSendServices(this IServiceCollection services)
     {

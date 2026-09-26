@@ -120,6 +120,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// <remarks>Applied as <c>NodeOptions.ReconnectInitialDelay</c>, before the caller's own option changes.</remarks>
     public TimeSpan? ReconnectInitialDelay { get; set; }
 
+    /// <summary>
+    /// Last changes to the node's services, applied on every <see cref="StartAsync"/> after the daemon's composition and
+    /// the test overrides (e.g. a test-only decorator of the HTLC switch). Set it before starting.
+    /// </summary>
+    public Action<IServiceCollection>? ConfigureServices { get; set; }
+
     public bool IsRunning => _started;
 
     /// <summary>
@@ -658,6 +664,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
             _tcpService = new CrashableTcpService(sp.GetRequiredService<TcpService>());
             return _tcpService;
         });
+        ConfigureServices?.Invoke(services);
 
         return services.BuildServiceProvider();
     }
