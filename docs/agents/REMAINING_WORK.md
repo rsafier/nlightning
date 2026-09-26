@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`) and G-C (`4dc0f77`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`) and G-D (`48a8951`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -23,7 +23,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 ## Before real funds (mainnet gate)
 
-- **Enable HTLCs on mainnet.** BOLT5 plan O6-T4 is unblocked: NL-316 and NL-322 (wave 7) and NL-311, NL-320, NL-337 (gossip wave G-B) are fixed and Proofs O3-O6 are green; the evidence and remaining risks are in `BOLT5_ONCHAIN_PLAN.md` "O6-T4 evaluation evidence". The decision (G-D integrator) waits on a re-run of the N9, ABCD and LND/CLN suites. `Node:EnableHtlcs` is still regtest only (NL-094).
+- ~~**Enable HTLCs on mainnet.**~~ **Done in gossip wave G-D** (BOLT5 plan O6-T4, NL-094 fixed): HTLCs are on for every network by default and `Node:EnableHtlcs=false` turns them off (6de56ad); NL-315 fixed on the way; the integrator kept the flip after on-chain 24/24, LND 58/58 incl. N9, CLN 22/22 and ABCD 3 x 10/10 (`BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision"). Remaining BOLT 5 follow-ups (NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336) are not fund-safety blockers.
 - **Anchor channels.**
   - CPFP of our commitment and fee inputs for HTLC txs (BOLT5 plan O7).
   - Wallet signing: `SignWalletTransaction` still throws (NL-067).
@@ -45,8 +45,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - Wave G-A done (`164289a`): typed 256/257/259 with LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, address descriptors (NL-008), Domain graph, validator and pathfinder; none wired yet.
   - Wave G-B done (`5bbfbb5`): public channels end to end (`openchannel --public`, NL-341, NL-342, NL-236), our channel_announcement/public channel_update/node_announcement relayed, graph ingress/store/pruner and `listnodes`/`listgraphchannels`, Docker Proofs G0, G1 (a)-(c), G2 (a)-(c) against LND.
   - Wave G-C done (`4dc0f77`): gossip queries answered from the graph and sync by queries (G3-T1/T2, `gossip_queries_ex` G3-T4), relay of others' gossip through the `PeerOutbox` (G3-T3, NL-351), graph routes with mission control in `PaymentService` and a refresh through gossip on failures (G4-T2/T3, G3-T5), `getroute` (IPC 19), invoices without route hints once an announced channel can receive (NL-245), NL-348..NL-356 fixed. The BOLT 7 goal proofs (a)-(e) are green: we pay and get paid over public channels without route hints against LND 0.20 and CLN v26.06.8.
-  - Next, wave G-D (G5): memory limits and accounting, spam protection, persistence performance, `describegraph` (IPC 20) and metrics, and the mainnet gate (D12: sync and relay stay off on mainnet until a 24 h signet/Mutinynet soak).
-  - Follow-ups: NL-345, NL-346, NL-357..NL-369 (incl. Docker Proof G4 (b)/(c), NL-367), B7-CU-01b (accept the previous fee for a while).
+  - Wave G-D done (`48a8951`): rate limits, misbehaviour ban, graph caps and the relay backlog bound (G5-T2), `Meter("NLightning.Gossip")` and `describegraph` (IPC 20) (G5-T4), batched graph store and streamed load, 200k channels loaded in 1.55 s on SQLite (G5-T3), the mainnet gossip gate written into the config template and the Mutinynet soak started (G5-T5 partial).
+  - Next (mainnet gossip, D12): intern node ids and enforce `Gossip:MaxMemoryMb` (NL-373), evaluate the 24 h soak with a second sync peer (NL-376), bound the `PeerOutbox` gossip share (NL-360); sync, relay and public channels stay off on mainnet until then.
+  - Follow-ups: NL-345, NL-346, NL-357, NL-360..NL-378 (incl. Docker Proof G4 (b)/(c), NL-367), B7-CU-01b (accept the previous fee for a while).
 - **Attribution data** (M3b). Wired end to end but kept experimental: LND 0.20 does not implement it, so it can't be proven against LND (NL-332). Follow-ups:
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).

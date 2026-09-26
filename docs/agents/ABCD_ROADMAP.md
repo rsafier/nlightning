@@ -1,6 +1,41 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-C @ `4dc0f77`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-D @ `48a8951`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Gossip wave G-D: integrated into `wip/fafo` @ `48a8951` (2026-09-26), gates GREEN
+
+Fourth wave of the BOLT 7 plan (G5 hardening) plus the BOLT 5 O6-T4 mainnet HTLC gate. Four lanes (D1 limits/spam/metrics, D2 persistence performance + `describegraph`, D3 mainnet gossip gate + soak + runner scripts, M4 O6-T4), each with a review/fix step; the 14 lane commits were cherry-picked with `-x` onto `55c0abc` in the order D2 → D1 → M4 → D3 (conflicts: `GraphTestKit.cs` constructor parameters, root `CLAUDE.md`). No migration. Integrator commits:
+- d31cd2f: `GraphStore` records its load/flush durations (`nlightning.gossip.store.duration`) and write-behind depth (`graph_write_behind`) in the gossip meter (the D1/D2 seam).
+- 48a8951: keeps the O6-T4 flip after the full Docker matrix, records the evidence in `BOLT5_ONCHAIN_PLAN.md` ("O6-T4 integration record"), documents the container runner scripts in root `CLAUDE.md`.
+
+Gates at `48a8951`:
+- Build: Release and Release.Native, SDK 10 (net10.0) and SDK 11 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7104** non-Docker, 0 failures, 0 skips (Domain 2392, Application 1598, Integration 668, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 871, Bolt11 278, Daemon 376). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped): gossip `scripts/run-gossip.sh 3` **3 x 24/24**; on-chain with `-explicit on` **24/24** (both `Explicit` O5 variants); ABCD `scripts/run-abcd.sh 3` **3 x 10/10**; LND suite (`Docker`, `Docker.Utils`, `Docker.Mock`) **58/58** incl. N9 `ChannelSafetyFlowTests`; CLN **22/22**. Not run: `SqlServerTests` and the multi-node server-database theory (its Postgres row too, NL-347).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| D2 perf + `describegraph` | done: batched write-behind (5,000 rows per save, bulk reads), streamed bulk load (200k channels in 1.55 s on SQLite), O(1) memory estimate, 200k measurement (475 MiB store + 39 MiB per snapshot), `describegraph` = `ClientCommand` 20; no `AddGossipIndexes`. Review: capacity counts only unspent verified/own channels, one `--offset` for both listings refused, load-between-batches test | 66b4dbc, 4860494, 2abbec2 | NL-099 progress (G5-T3, G5-T4 IPC); new NL-373, NL-374, NL-375, NL-377 |
+| D1 limits/spam/metrics | done: rate limits and keep-alive rule, misbehaviour score and 1 h ban, `MaxChannels`/`MaxNodes`, future timestamps, relay backlog bound, `Meter("NLightning.Gossip")`, `GossipFloodTests`. Review: bans bounded and persisted only for graph nodes, the ban warning carries the offence, rate-limited gossip kept and replayed, backlog evicted by channel group | 97cdc27, b77d1c1, ff09f96 | NL-099 progress (G5-T1 caps, G5-T2, G5-T4 metrics); NL-360 partial; new NL-370, NL-371, NL-372 |
+| M4 O6-T4 mainnet HTLC gate | done: HTLCs on for every network by default (`Node:EnableHtlcs=false` turns them off); evidence on-chain 24/24 + N9 2/2 before the flip; NL-315 fixed (spend read from its block, alert once after a successful save); the Explicit O5 cheater variant without the mempool reaction | a140940, 04aab92, 6de56ad, 44767d3 | NL-094 fixed, NL-315 fixed |
+| D3 gate + soak + scripts | done except the 24 h soak evaluation: the template writes the D12 gossip gate per network and `EnableHtlcs: null` on mainnet/testnet, `run-onchain.sh`/`run-abcd.sh` in the container runner, per-process test ports, `soak-gossip.sh` and the first 20 min of the Mutinynet soak | 1d561f2, 70411ac, e7c628e, aadb9d4 | NL-358, NL-359 fixed; NL-276 partial; new NL-376 |
+| Integration | metrics seam in `GraphStore`, O6-T4 integration record, docs | d31cd2f, 48a8951 | new NL-378 |
+
+Deviations accepted in wave G-D:
+- The config template keeps `"EnableHtlcs": null` on mainnet and testnet (M4 proposed `true`): `null` binds as unset, so HTLCs follow the code default (on) and the switch stays visible in the file.
+- Funding-output mismatches count toward the misbehaviour ban as §3.8 says; whether that is too strict for relayers that do not check funding outputs is left to the soak (NL-371).
+- The misbehaviour ban is persisted only for graph nodes (throwaway node ids cost no rows); the peer-level door ban is memory only (NL-370).
+- No `AddGossipIndexes` migration: the measurements showed no need.
+- `Gossip:MaxMemoryMb` is not enforced yet: the measured store exceeds the planned 512 MiB at the 200k cap (NL-373).
+
+### Carried into the next wave (after G-D)
+
+- **Close BOLT 7 G5 and decide D12 on mainnet:** intern node ids and enforce `Gossip:MaxMemoryMb` with a re-measured default (NL-373, G5-T1); evaluate the 24 h Mutinynet soak (RSS, WAL, RPC rate) and repeat it with a second sync peer (NL-376, G5-T5); bound the `PeerOutbox` gossip share (NL-360 remainder, hub files `PeerManager`/`PeerOutbox`); snapshot build outside the writer lock (NL-374) and the relay's full diff (NL-366).
+- **G5 follow-ups:** NL-370, NL-371, NL-372, NL-375, NL-377 (SQL Server bulk graph paths), NL-378 (runner output).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367 (Proof G4 (b)/(c)), NL-368, NL-369; B7-CU-01b.
+- **BOLT 5:** O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half); follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336 (none a mainnet fund-safety blocker, `BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision").
+- **Tooling:** NL-276 host route (scripts use the container runner), NL-347 (multi-node Postgres case never runs).
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
 
 ### Gossip wave G-C: integrated into `wip/fafo` @ `4dc0f77` (2026-09-26), gates GREEN
 
@@ -33,7 +68,7 @@ Deviations accepted in wave G-C:
 - CLN v26.06.8 has no `dev-query-scids`: Proof G3 (d) relies on CLN's own seeker (NL-357).
 - `Docker/PaymentRetryFlowTests` runs with `Node:Payments:UseGraph=false` (its proofs are about hints).
 
-### Carried into the next wave (G-D, plus the mainnet gate)
+### Carried into wave G-D (superseded by the list above)
 
 - **BOLT 7 G-D (G5):** D1 memory limits and accounting (G5-T1: NL-360 outbox backlog, NL-366 relay diff, a signet-sized sync for NL-353/NL-365) and spam protection (G5-T2); D2 persistence performance (G5-T3, `AddGossipIndexes` only if needed) and `describegraph` (`ClientCommand` 20) + metrics (G5-T4); D3 mainnet defaults and the 24 h signet/Mutinynet soak (G5-T5, D12).
 - **G-C follow-ups:** NL-357, NL-358, NL-359, NL-361..NL-365, NL-367 (Proof G4 (b)/(c)), NL-368, NL-369; B7-CU-01b (accept the previous fee for 10 min); still NL-345, NL-346, NL-347.
