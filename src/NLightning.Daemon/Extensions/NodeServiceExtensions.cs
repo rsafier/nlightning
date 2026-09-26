@@ -60,6 +60,11 @@ public static class NodeServiceExtensions
             // The whole node graph, shared with the Docker integration tests
             services.AddNltgNodeServices(hostContext.Configuration, secureKeyManager);
 
+            // The gossip graph (ingress + pruner, BOLT 7 G2-T4/G2-T5) is registered first: it starts before the daemon
+            // service (the pruner follows the chain monitor's first block) and stops after it (the graph is written
+            // once the peers and the monitor stopped)
+            services.AddHostedService<GossipGraphHostedService>();
+
             // Register the main daemon service
             services.AddHostedService<NltgDaemonService>();
 

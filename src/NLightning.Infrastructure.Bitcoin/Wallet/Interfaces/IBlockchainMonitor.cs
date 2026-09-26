@@ -34,6 +34,14 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     event EventHandler<NewBlockEventArgs> OnNewBlockDetected;
 
     /// <summary>
+    /// The outpoints a processed block's inputs spend (coinbase excluded), raised right after
+    /// <see cref="OnNewBlockDetected"/> for every processed block, only when someone listens (BOLT 7 plan G2-T5: the
+    /// graph pruner). Also raised for a replayed block and for a new branch after a reorg, so handlers must be
+    /// idempotent; they run on the monitor's loop, so they must only enqueue.
+    /// </summary>
+    event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
+
+    /// <summary>
     /// A transaction bitcoind accepted into its mempool (ZMQ <c>rawtx</c>) spends a watched outpoint, or an output of a
     /// transaction reported this way (one level: a commitment and its HTLC transaction both unconfirmed). BOLT 5 plan
     /// O8 (NL-098): never a confirmation, nothing is saved and no watch is marked spent. Raised once per transaction

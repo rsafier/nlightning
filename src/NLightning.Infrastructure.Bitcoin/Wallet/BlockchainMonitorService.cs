@@ -92,6 +92,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private SubscriberSocket? _txSocket;
 
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
+    public event EventHandler<BlockInputsEventArgs>? OnBlockInputs;
     public event EventHandler<TransactionConfirmedEventArgs>? OnTransactionConfirmed;
     public event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
     public event EventHandler<OutpointSpentEventArgs>? OnWatchedOutpointSpent;
@@ -883,7 +884,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
             if (effects is not null)
             {
                 ApplyBlock(effects);
-                RaiseBlockEvents(effects);
+                RaiseBlockEvents(effects, block);
                 return true;
             }
 
@@ -1121,11 +1122,30 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _lastProcessedBlockHeight = effects.State!.LastProcessedHeight;
     }
 
-    /// <summary>Raises a saved block's events: the block, confirmations, wallet movements, outpoint spends.</summary>
-    private void RaiseBlockEvents(BlockEffects effects)
+    /// <summary>
+    /// Raises a saved block's events: the block, its spent outpoints, confirmations, wallet movements, outpoint spends.
+    /// </summary>
+    private void RaiseBlockEvents(BlockEffects effects, Block block)
     {
         Raise(() => OnNewBlockDetected?.Invoke(this, new NewBlockEventArgs(effects.Height, effects.BlockHash)),
               "new block");
+
+        // The spent outpoints are listed only when someone listens (the graph pruner, BOLT 7 G2-T5)
+        if (OnBlockInputs is { } blockInputs)
+        {
+            var spent = new List<(TxId, uint)>();
+            foreach (var transaction in block.Transactions)
+            {
+                if (transaction.IsCoinBase)
+                    continue;
+
+                foreach (var input in transaction.Inputs)
+                    spent.Add((new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N));
+            }
+
+            Raise(() => blockInputs(this, new BlockInputsEventArgs(effects.Height, effects.BlockHash, spent)),
+                  "block inputs");
+        }
 
         foreach (var confirmed in effects.Confirmed)
             Raise(() => OnTransactionConfirmed?.Invoke(this, new TransactionConfirmedEventArgs(confirmed,
