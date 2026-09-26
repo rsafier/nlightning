@@ -20,7 +20,8 @@ using Utils;
 /// estimate is fee-bumped by a child that spends our anchor (<c>to_local_anchor</c>) and wallet inputs (CPFP), against
 /// LND david:
 /// <list type="bullet">
-///   <item>(a) a channel opened at BOLT 2's floor (253 sat/kw, about 1 sat/vB) while the estimate is 10 sat/vB: at our
+///   <item>(a) a channel opened at our opener's lowest feerate (1,000 sat/kw, about 4 sat/vB) while the estimate is
+///   10 sat/vB: at our
 ///   force close a child spending our anchor and at least one wallet input is in the mempool, the package (commitment
 ///   and child) pays at least the estimate, and both confirm in the same block; the child's change is ours.</item>
 ///   <item>(b) the same with our HTLC in the commitment (a deadline): while the miners leave the package out (empty
@@ -59,12 +60,12 @@ public class AnchorsCpfpTests : IAsyncLifetime
     [Fact]
     public async Task Given_CommitmentBelowTheFeeEstimate_When_WeForceClose_Then_OurAnchorChildPaysForItAndBothConfirmTogether()
     {
-        // Arrange: an anchors channel whose commitment pays about 1 sat/vB
+        // Arrange: an anchors channel whose commitment pays about 4 sat/vB
         var ct = TestContext.Current.CancellationToken;
         var node = _node!;
         var david = _harness.Fixture.GetLndNode("david");
         var channel = await _harness.OpenAnchorsChannelAsync(node, david, LightningMoney.Satoshis(300_000), ct,
-                                                             AnchorsHarness.FloorFeeRatePerKw);
+                                                             AnchorsHarness.LowFeeRatePerKw);
         var model = AnchorsHarness.GetModel(node, channel.ChannelId);
 
         // Act: force close
@@ -73,7 +74,7 @@ public class AnchorsCpfpTests : IAsyncLifetime
         var commitmentFee = (long)AnchorsHarness.Capacity.Satoshi - commitment.TotalOut.Satoshi;
         var commitmentRate = (decimal)commitmentFee / commitment.GetVirtualSize();
         Console.WriteLine($"Commitment {commitment.GetHash()}: fee {commitmentFee} sat, {commitmentRate:F2} sat/vB");
-        Assert.True(commitmentRate < MinimumPackageRateSatPerVByte / 2, $"commitment at {commitmentRate} sat/vB");
+        Assert.True(commitmentRate < MinimumPackageRateSatPerVByte, $"commitment at {commitmentRate} sat/vB");
 
         // Assert: a child spends our anchor and wallet coins, and pays for the package
         var anchorOutPoint = new OutPoint(commitment.GetHash(), ourAnchor);
@@ -98,11 +99,11 @@ public class AnchorsCpfpTests : IAsyncLifetime
     [Fact]
     public async Task Given_CpfpChildLeftOutOfBlocks_When_BlocksPassBeforeTheHtlcDeadline_Then_ChildReplacedWithHigherFeeAndCommitmentConfirmedInTime()
     {
-        // Arrange: an anchors channel at the floor feerate with our HTLC to david's hold invoice in it
+        // Arrange: an anchors channel at the low feerate with our HTLC to david's hold invoice in it
         var ct = TestContext.Current.CancellationToken;
         var node = _node!;
         var david = _harness.Fixture.GetLndNode("david");
-        var channel = await _harness.OpenAnchorsChannelAsync(node, david, null, ct, AnchorsHarness.FloorFeeRatePerKw);
+        var channel = await _harness.OpenAnchorsChannelAsync(node, david, null, ct, AnchorsHarness.LowFeeRatePerKw);
         var model = AnchorsHarness.GetModel(node, channel.ChannelId);
         var (_, paymentHash) = LndTestHelpers.NewPreimage();
         var holdInvoice = await LndTestHelpers.AddHoldInvoiceAsync(david, paymentHash, 50_000_000, [], ct,
