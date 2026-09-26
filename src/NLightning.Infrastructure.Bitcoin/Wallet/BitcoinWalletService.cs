@@ -29,7 +29,9 @@ public class BitcoinWalletService : IBitcoinWalletService
         _secureKeyManager = secureKeyManager;
         _uow = uow;
 
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ?? Network.Main;
+        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork)
+                ?? throw new InvalidOperationException(
+                       $"Unknown bitcoin network '{nodeOptions.Value.BitcoinNetwork}'");
         _logger.LogInformation("BitcoinWalletService network: {Network} (config: {ConfigNetwork})", _network, nodeOptions.Value.BitcoinNetwork);
     }
 

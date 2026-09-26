@@ -5,12 +5,15 @@ namespace NLightning.Application.Channels.Handlers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -103,26 +106,41 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         if (!allSigned)
             throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
 
-        // Persist the channel to the database before publishing the transaction, so the watched transaction can point
-        // to the channel
-        await PersistChannelAsync(channel);
-
-        await _blockchainMonitor.PublishAndWatchTransactionAsync(channel.ChannelId, unsignedFundingTransaction,
-                                                                 channel.ChannelParams.MinimumDepth);
-
-        // Now that we should remember the channel, we update its state
+        // One save (BOLT 5 plan O0-T1/T2, NL-258): the channel as V1FundingSigned, the funding watch, the signed funding
+        // transaction (sent again after every block until a block holds it, so a crash or a refused send before or
+        // during the publish loses nothing) and the watch of the funding output (any spend of it closes the channel)
         channel.UpdateState(ChannelState.V1FundingSigned);
+        var fundingWatch = new WatchedTransactionModel(channel.ChannelId, unsignedFundingTransaction.TxId,
+                                                       channel.ChannelParams.MinimumDepth);
+        var fundingBroadcast = new BroadcastTransactionModel(unsignedFundingTransaction, BroadcastPurpose.Funding,
+                                                             channel.ChannelId,
+                                                             _blockchainMonitor.LastProcessedBlockHeight);
+        var fundingOutputWatch = new WatchedOutpointModel(unsignedFundingTransaction.TxId,
+                                                          fundingTransaction.FundingOutputIndex, channel.ChannelId,
+                                                          WatchedOutpointPurpose.FundingOutput);
+        await PersistChannelAsync(channel, uow =>
+        {
+            uow.WatchedTransactionDbRepository.Add(fundingWatch);
+            uow.BroadcastTransactionDbRepository.Add(fundingBroadcast);
+            uow.WatchedOutpointDbRepository.Add(fundingOutputWatch);
+        });
 
-        // Save to the database
-        await PersistChannelAsync(channel);
+        _blockchainMonitor.TrackWatchedTransaction(fundingWatch);
+        _blockchainMonitor.TrackWatchedOutpoint(fundingOutputWatch);
+
+        // A refused publish is logged by the broadcaster and retried after the next block
+        if (!await _blockchainMonitor.PublishAsync(fundingBroadcast))
+            _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} was not accepted yet; it is sent "
+                             + "again after every block", unsignedFundingTransaction.TxId, channel.ChannelId);
 
         return [];
     }
 
     /// <summary>
-    /// Persists a channel to the database using a scoped Unit of Work
+    /// Persists a channel, with the rows <paramref name="stageWithChannel"/> stages, in one save of the scoped unit of
+    /// work
     /// </summary>
-    private async Task PersistChannelAsync(ChannelModel channel)
+    private async Task PersistChannelAsync(ChannelModel channel, Action<IUnitOfWork> stageWithChannel)
     {
         try
         {
@@ -136,6 +154,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
             else
                 await _unitOfWork.ChannelDbRepository.AddAsync(channel);
 
+            stageWithChannel(_unitOfWork);
             await _unitOfWork.SaveChangesAsync();
 
             if (_logger.IsEnabled(LogLevel.Debug))

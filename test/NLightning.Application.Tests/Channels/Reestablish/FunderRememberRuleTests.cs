@@ -22,6 +22,9 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
@@ -32,16 +35,15 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// BOLT2 plan N7-T6 / B2-RE-01 (NL-048, wontfix): BOLT 2 "Message Retransmission" says a funder that has not
-/// broadcast the funding transaction SHOULD NOT remember the channel on disconnect. The funder persists the channel at
-/// funding_signed, before the broadcast (the watch must point at a stored channel), and moves it to V1FundingSigned
-/// after; a stop in between is resolved at startup by <c>ChannelManager</c> (see <see cref="StartupStateTests"/>).
-/// Before funding_signed nothing is persisted. These tests pin that order.
+/// broadcast the funding transaction SHOULD NOT remember the channel on disconnect. At funding_signed the funder saves,
+/// in one save, the channel as V1FundingSigned, the funding watch, the signed funding transaction (BOLT 5 plan O0-T1)
+/// and the watch of the funding output, and only then publishes: from that save on the transaction is certain to go
+/// out (the chain monitor sends every stored pending transaction again after each block and at startup, NL-258), so
+/// remembering the channel is right. Before funding_signed nothing is persisted. These tests pin that order.
 /// </summary>
 /// <remarks>
-/// <see cref="IBlockchainMonitor"/> is mocked here. The real <c>BlockchainMonitorService.PublishAndWatchTransactionAsync</c>
-/// saves the watch first and publishes after, so a crash or a failed publish between the two leaves a watch for a
-/// transaction that never went out: the startup rule then keeps the channel as V1FundingSigned and nothing rebroadcasts
-/// the funding transaction (a known gap, reported to the ledger; it needs a publish-only path in the monitor).
+/// <see cref="IBlockchainMonitor"/> is mocked here; the rebroadcast itself is proven on SQLite by
+/// <c>Integration.Tests/Persistence/ChainMonitorPersistenceTests</c>.
 /// </remarks>
 public class FunderRememberRuleTests
 {
@@ -126,10 +128,25 @@ public class FunderRememberRuleTests
                   .Callback((ChannelModel c) => _steps.Add($"update {c.State}"))
                   .Returns(Task.CompletedTask);
         _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _steps.Add("save")).Returns(Task.CompletedTask);
-        _blockchainMonitor
-           .Setup(b => b.PublishAndWatchTransactionAsync(channelId, It.IsAny<SignedTransaction>(), It.IsAny<uint>()))
-           .Callback(() => _steps.Add("broadcast"))
-           .Returns(Task.CompletedTask);
+        var watchedTransactions = new Mock<IWatchedTransactionDbRepository>();
+        watchedTransactions.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                           .Callback((WatchedTransactionModel w) => _steps.Add($"stage watch {w.RequiredDepth}"));
+        _unitOfWork.Setup(u => u.WatchedTransactionDbRepository).Returns(watchedTransactions.Object);
+        var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
+        broadcasts.Setup(r => r.Add(It.IsAny<BroadcastTransactionModel>()))
+                  .Callback((BroadcastTransactionModel b) =>
+                   {
+                       StagedBroadcast = b;
+                       _steps.Add($"stage {b.Purpose}");
+                   });
+        _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
+        var outpoints = new Mock<IWatchedOutpointDbRepository>();
+        outpoints.Setup(r => r.Add(It.IsAny<WatchedOutpointModel>()))
+                 .Callback((WatchedOutpointModel o) => _steps.Add($"stage outpoint {o.OutputIndex} {o.Purpose}"));
+        _unitOfWork.Setup(u => u.WatchedOutpointDbRepository).Returns(outpoints.Object);
+        _blockchainMonitor.Setup(b => b.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
+                          .Callback(() => _steps.Add("publish"))
+                          .ReturnsAsync(true);
 
         _handler = new FundingSignedMessageHandler(_blockchainMonitor.Object, memory.Object, commitmentBuilder.Object,
                                                    commitmentModelFactory.Object, fundingBuilder.Object,
@@ -137,6 +154,8 @@ public class FunderRememberRuleTests
                                                    NullLogger<FundingSignedMessageHandler>.Instance,
                                                    _unitOfWork.Object, utxoMemory.Object);
     }
+
+    private BroadcastTransactionModel? StagedBroadcast { get; set; }
 
     private delegate bool TryGetChannelDelegate(ChannelId channelId, out ChannelModel channel);
 
@@ -146,9 +165,18 @@ public class FunderRememberRuleTests
         // Act
         await _handler.HandleAsync(_message, ChannelState.V1FundingCreated, new FeatureOptions(), _peer);
 
-        // Assert - stored (and saved) before the broadcast, remembered as V1FundingSigned only after it
-        Assert.Equal(["add V1FundingCreated", "save", "broadcast", "update V1FundingSigned", "save"], _steps);
+        // Assert - one save holds the channel as V1FundingSigned, the funding watch, the funding transaction and the
+        // funding output watch; the publish comes after it
+        Assert.Equal(["add V1FundingSigned", "stage watch 3", "stage Funding", "stage outpoint 1 FundingOutput", "save",
+                      "publish"], _steps);
         Assert.Equal(ChannelState.V1FundingSigned, _channel.State);
+        Assert.NotNull(StagedBroadcast);
+        Assert.Equal(_channel.ChannelId, StagedBroadcast.ChannelId);
+        Assert.Equal(new byte[] { 0x02 }, StagedBroadcast.RawTransaction);
+        Assert.Equal(BroadcastState.Pending, StagedBroadcast.State);
+        _blockchainMonitor.Verify(b => b.TrackWatchedTransaction(It.IsAny<WatchedTransactionModel>()), Times.Once);
+        _blockchainMonitor.Verify(b => b.TrackWatchedOutpoint(It.Is<WatchedOutpointModel>(o => o.OutputIndex == 1)),
+                                  Times.Once);
     }
 
     [Fact]
@@ -169,21 +197,20 @@ public class FunderRememberRuleTests
     }
 
     [Fact]
-    public async Task Given_TheBroadcastFails_When_Handled_Then_TheChannelStaysStoredAsFundingCreated()
+    public async Task Given_TheBroadcastIsRefused_When_Handled_Then_TheChannelIsStoredWithItsTransactionForRebroadcast()
     {
-        // Arrange - the startup rule (N7-T5) then keeps it only when the funding transaction was watched (with the
-        // real monitor the watch is saved before the publish, so a failed publish is kept and waits: see the remarks)
-        _blockchainMonitor
-           .Setup(b => b.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                         It.IsAny<uint>()))
-           .ThrowsAsync(new InvalidOperationException("node down"));
+        // Arrange (NL-258: before O0 a refused publish left a watch for a transaction nothing sent again)
+        _blockchainMonitor.Setup(b => b.PublishAsync(It.IsAny<BroadcastTransactionModel>()))
+                          .Callback(() => _steps.Add("publish"))
+                          .ReturnsAsync(false);
 
         // Act
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _handler.HandleAsync(_message, ChannelState.V1FundingCreated, new FeatureOptions(), _peer));
+        var replies = await _handler.HandleAsync(_message, ChannelState.V1FundingCreated, new FeatureOptions(), _peer);
 
-        // Assert
-        Assert.Equal(["add V1FundingCreated", "save"], _steps);
-        Assert.Equal(ChannelState.V1FundingCreated, _channel.State);
+        // Assert - nothing thrown: the stored pending transaction is sent again after every block
+        Assert.Empty(replies);
+        Assert.Equal(["add V1FundingSigned", "stage watch 3", "stage Funding", "stage outpoint 1 FundingOutput", "save",
+                      "publish"], _steps);
+        Assert.Equal(ChannelState.V1FundingSigned, _channel.State);
     }
 }
