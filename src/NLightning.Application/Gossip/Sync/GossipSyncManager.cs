@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Gossip.Sync;
 
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
@@ -90,6 +91,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private readonly Func<IReadOnlyList<ShortChannelId>>? _takeMissedShortChannelIds;
     private readonly Func<uint>? _getTipHeight;
     private readonly Func<int>? _getIngressQueueDepth;
+    private readonly Func<CompactPubKey, int>? _getPeerQueueDepth;
     private readonly int _ingressQueueCapacity;
     private readonly GossipMetrics? _metrics;
     private readonly ConcurrentDictionary<IPeerService, PeerSession> _sessions = new(ReferenceEqualityComparer.Instance);
@@ -119,13 +121,19 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     /// fits in the half the querier waited for.
     /// </param>
     /// <param name="metrics">Where the range sync durations are recorded (null: nowhere).</param>
+    /// <param name="getPeerQueueDepth">
+    /// The messages of one peer waiting in the graph ingress (null: pace by <paramref name="getIngressQueueDepth"/>).
+    /// When given, the querier waits for the queried peer's own queue, without a time limit (NL-412).
+    /// </param>
     public GossipSyncManager(IGraphStore graphStore, IOptions<GossipSyncOptions> options,
                              IOptions<NodeOptions> nodeOptions, ILogger<GossipSyncManager> logger,
                              TimeProvider? timeProvider = null, IGossipIngress? ingress = null,
                              Func<IReadOnlyList<ShortChannelId>>? takeMissedShortChannelIds = null,
                              Func<uint>? getTipHeight = null, Func<int>? getIngressQueueDepth = null,
-                             int ingressQueueCapacity = 0, GossipMetrics? metrics = null)
+                             int ingressQueueCapacity = 0, GossipMetrics? metrics = null,
+                             Func<CompactPubKey, int>? getPeerQueueDepth = null)
     {
+        _getPeerQueueDepth = getPeerQueueDepth;
         _metrics = metrics;
         _getIngressQueueDepth = getIngressQueueDepth;
         _ingressQueueCapacity = Math.Max(0, ingressQueueCapacity);
@@ -270,7 +278,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
     /// <summary>
     /// Asks an idle <c>gossip_queries</c> peer for the channels the ingress dropped (NL-353) that are still missing
-    /// from the graph. The missed-SCID timer calls it; tests call it directly.
+    /// from the graph, or that are in it without a policy for one of their directions: a dropped
+    /// <c>channel_update</c> of a channel whose announcement was stored is otherwise lost, and a peer without
+    /// <c>gossip_queries_ex</c> never offers it again (NL-410). The missed-SCID timer calls it; tests call it directly.
     /// </summary>
     /// <returns>How many short channel ids were queued for a query.</returns>
     internal int RetryMissedShortChannelIds()
@@ -282,7 +292,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 foreach (var shortChannelId in _takeMissedShortChannelIds())
                     _missedBacklog.Add(shortChannelId);
 
-            _missedBacklog.RemoveWhere(scid => _graphStore.TryGetChannel(scid, out _));
+            _missedBacklog.RemoveWhere(IsCompleteInGraph);
             if (_missedBacklog.Count == 0)
                 return 0;
 
@@ -757,6 +767,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     }
 
     /// <summary>
+    /// A missed channel that needs no query: in the graph with a policy for both directions, or spent (B7-Q-01).
+    /// </summary>
+    private bool IsCompleteInGraph(ShortChannelId shortChannelId) =>
+        _graphStore.TryGetChannel(shortChannelId, out var channel)
+     && (channel.SpentAtHeight is not null || (channel.Policy1 is not null && channel.Policy2 is not null));
+
+    /// <summary>
     /// True when both update timestamps of a <c>reply_channel_range</c> entry are older than
     /// <see cref="GossipSyncOptions.SkipChannelsStaleFor"/> (0 = no update); never with the option at zero.
     /// </summary>
@@ -821,24 +838,41 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     }
 
     /// <summary>
-    /// Backpressure (NL-353): waits until the graph ingress has room for the answer to one query (its queue at most
-    /// half of the per-peer capacity), at most <see cref="GossipSyncOptions.SyncReplyTimeout"/>; after that the query
-    /// goes out anyway (what the ingress drops comes back through the missed-channel retry).
+    /// Backpressure (NL-353): waits until the graph ingress has room for the answer to one query (at most half of the
+    /// per-peer capacity queued). With the per-peer depth (NL-412) it waits for the queried peer's own messages, which
+    /// is where the answer goes, for as long as it takes: other peers' gossip no longer holds the query back, and a
+    /// query never goes out into a queue that would drop its answer (with the chain checked, the ingress drains at
+    /// the lookup rate, far slower than peers answer). Without it, it waits for the whole queue, at most
+    /// <see cref="GossipSyncOptions.SyncReplyTimeout"/>, and then the query goes out anyway (what the ingress drops
+    /// comes back through the missed-channel retry).
     /// </summary>
     private async Task WaitForIngressAsync(PeerSession session, CancellationToken cancellationToken)
     {
-        if (_getIngressQueueDepth is null || _ingressQueueCapacity <= 0)
+        if ((_getIngressQueueDepth is null && _getPeerQueueDepth is null) || _ingressQueueCapacity <= 0)
             return;
 
         var started = _timeProvider.GetTimestamp();
         var room = _ingressQueueCapacity / 2;
-        while (_getIngressQueueDepth() > room)
+        var peer = session.Peer.PeerPubKey;
+        var logged = false;
+        while ((_getPeerQueueDepth is not null ? _getPeerQueueDepth(peer) : _getIngressQueueDepth!()) > room)
         {
             if (_timeProvider.GetElapsedTime(started) >= _options.SyncReplyTimeout)
             {
-                _logger.LogInformation("The gossip ingress queue did not drain in {Timeout}; querying peer {Peer} "
-                                     + "anyway", _options.SyncReplyTimeout, session.Peer.PeerPubKey);
-                return;
+                if (_getPeerQueueDepth is null)
+                {
+                    _logger.LogInformation("The gossip ingress queue did not drain in {Timeout}; querying peer {Peer} "
+                                         + "anyway", _options.SyncReplyTimeout, peer);
+                    return;
+                }
+
+                if (!logged)
+                {
+                    logged = true;
+                    _logger.LogInformation("Peer {Peer}'s gossip is still queued after {Timeout}; its next "
+                                         + "query_short_channel_ids waits until the ingress has room for the answer",
+                                           peer, _options.SyncReplyTimeout);
+                }
             }
 
             await Task.Delay(s_ingressPollInterval, _timeProvider, cancellationToken);

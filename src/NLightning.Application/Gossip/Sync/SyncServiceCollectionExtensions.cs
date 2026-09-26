@@ -47,7 +47,8 @@ public static class SyncServiceCollectionExtensions
                                          ingress is null
                                              ? 0
                                              : Math.Min(graphOptions.MaxQueuedPerPeer, graphOptions.MaxQueued),
-                                         sp.GetService<GossipMetrics>());
+                                         sp.GetService<GossipMetrics>(),
+                                         ingress is null ? null : ingress.QueuedCountOf);
         });
         services.TryAddSingleton<IGossipSyncManager>(sp => sp.GetRequiredService<GossipSyncManager>());
         services.TryAddSingleton<IGossipSyncService>(sp => sp.GetRequiredService<GossipSyncManager>());
