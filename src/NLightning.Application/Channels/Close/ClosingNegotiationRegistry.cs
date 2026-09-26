@@ -44,6 +44,12 @@ public sealed class ClosingNegotiationRegistry
         public ChannelCloseRequest? Request { get; set; }
 
         /// <summary>
+        /// Our fee estimate (sat/kw) for the negotiation on the current connection, read once when it starts, or null
+        /// before. A new connection reads it again (fees may have moved, which is why BOLT 2 restarts the negotiation).
+        /// </summary>
+        public ulong? EstimateFeeratePerKw { get; set; }
+
+        /// <summary>
         /// When the peer must have answered our last <c>closing_signed</c> (B2-CLS-03), or null when no answer is
         /// awaited. Cleared by any <c>closing_signed</c> received and by a new connection.
         /// </summary>
@@ -107,6 +113,7 @@ public sealed class ClosingNegotiationRegistry
             AgreedClosingSignedSentOnConnection = false;
             Negotiation = null;
             ReplyDueAt = null;
+            EstimateFeeratePerKw = null;
         }
     }
 

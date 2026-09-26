@@ -271,6 +271,7 @@ public sealed class ChannelCloseCoordinator
             var entry = _registry.Get(channel.ChannelId);
             if (entry is { ShutdownSentOnConnection: true, ShutdownReceivedOnConnection: true, Negotiation: null })
             {
+                await ResolveEstimateAsync(channel, entry);
                 var context = BuildContext(channel, entry);
                 var (decision, next) = LegacyClosingNegotiator.Open(context.InitialState, context.IdealFeeSat);
                 messages.Add(CreateClosingSigned(channel, context, decision.FeeSat, decision.FeeRange));
@@ -328,6 +329,7 @@ public sealed class ChannelCloseCoordinator
 
         var entry = _registry.Get(channelId);
         entry.ReplyDueAt = null; // any closing_signed answers ours (B2-CLS-03)
+        await ResolveEstimateAsync(channel, entry);
         var context = BuildContext(channel, entry);
         var feeSat = (ulong)message.Payload.FeeAmount.Satoshi;
         if (feeSat > context.MaxFeeSat)
@@ -524,7 +526,9 @@ public sealed class ChannelCloseCoordinator
         var maxFee = LegacyClosingTransactionFactory.MaxFeeSat(localMsat, remoteMsat, isFunder);
 
         var weight = ClosingFeeCalculator.EstimateWeight(localScript.Length, remoteScript.Length);
-        var feerate = Math.Max(entry.Request?.FeeRatePerKw ?? (ulong)_feeService.GetCachedFeeRatePerKw().Satoshi,
+        var feerate = Math.Max(entry.Request?.FeeRatePerKw
+                            ?? entry.EstimateFeeratePerKw
+                            ?? (ulong)_feeService.GetCachedFeeRatePerKw().Satoshi,
                                MinFeeratePerKw);
         var floor = Math.Min(ClosingFeeCalculator.FeeSat(MinFeeratePerKw, weight), maxFee);
         var ideal = Math.Clamp(ClosingFeeCalculator.FeeSat(feerate, weight), floor, maxFee);
@@ -545,6 +549,31 @@ public sealed class ChannelCloseCoordinator
         return new CloseContext(funding, localMsat, remoteMsat, isFunder, localScript, remoteScript,
                                 (ulong)channel.ChannelParams.Local.DustLimitAmount.Satoshi,
                                 (ulong)channel.ChannelParams.Remote.DustLimitAmount.Satoshi, ideal, maxFee, initial);
+    }
+
+    /// <summary>
+    /// Reads our fee estimate once per negotiation (per connection) into the registry entry. The estimate comes from
+    /// <see cref="IFeeService.GetFeeRatePerKwAsync"/>, which refreshes an expired cache: the host registers the fee
+    /// service as a transient typed HttpClient, so the instance this scope gets has an empty cache, and the cached
+    /// value alone made every close propose the 253 sat/kw floor (W4-E, found against CLN). A failure or no estimate
+    /// leaves the cached value (then the floor).
+    /// </summary>
+    private async Task ResolveEstimateAsync(ChannelModel channel, ClosingNegotiationRegistry.Entry entry)
+    {
+        if (entry.EstimateFeeratePerKw is not null || entry.Request?.FeeRatePerKw is not null)
+            return;
+
+        try
+        {
+            var estimate = (ulong)(await _feeService.GetFeeRatePerKwAsync()).Satoshi;
+            if (estimate > 0)
+                entry.EstimateFeeratePerKw = estimate;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning(e, "No fee estimate for the close of channel {ChannelId}; using the cached one",
+                               channel.ChannelId);
+        }
     }
 
     /// <summary>Our <c>closing_signed</c> at <paramref name="feeSat"/>: our variant (our dust limit), signed.</summary>

@@ -15,6 +15,7 @@ using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Closing;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -450,6 +451,30 @@ public class ChannelCloseCoordinatorTests
     }
 
     [Fact]
+    public async Task Given_FeeServiceWithEmptyCache_When_FunderProposes_Then_FeeFromTheFetchedEstimate()
+    {
+        // Arrange: the host's fee service is a transient typed HttpClient, so the coordinator's instance has an empty
+        // cache; reading only the cache made every close propose the 253 sat/kw floor (W4-E, seen against CLN and LND)
+        var feeService = new Mock<IFeeService>();
+        feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Zero);
+        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(LightningMoney.Satoshis(2_500));
+        var channel = CreateFunderReadyToPropose();
+        var coordinator = CreateCoordinator(feeService: feeService.Object);
+
+        // Act
+        var proposal = Assert.IsType<ClosingSignedMessage>(Assert.Single(await coordinator.AdvanceAsync(channel)));
+
+        // Assert: 2,500 sat/kw for a P2WPKH and a P2WSH output, and a range up to 3x that (the funder's limit)
+        var weight = ClosingFeeCalculator.EstimateWeight(s_localScript.Length, s_remoteScript.Length);
+        var expected = ClosingFeeCalculator.FeeSat(2_500, weight);
+        Assert.Equal(LightningMoney.Satoshis(expected), proposal.Payload.FeeAmount);
+        Assert.NotNull(proposal.FeeRangeTlv);
+        Assert.Equal(LightningMoney.Satoshis(expected * 3), proposal.FeeRangeTlv.MaxFeeAmount);
+        feeService.Verify(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task Given_OurClosingSignedUnanswered_When_ReplyTimeoutPasses_Then_ChannelFailed()
     {
         // Arrange (B2-CLS-03, NL-284): as the funder we open the negotiation
@@ -614,7 +639,8 @@ public class ChannelCloseCoordinatorTests
     }
 
     private ChannelCloseCoordinator CreateCoordinator(ShutdownScriptProvider? provider = null,
-                                                      ClosingTimeoutMonitor? timeouts = null)
+                                                      ClosingTimeoutMonitor? timeouts = null,
+                                                      IFeeService? feeService = null)
     {
         var nodeOptions = Options.Create(new NodeOptions());
         var memory = new Mock<IChannelMemoryRepository>();
@@ -626,10 +652,17 @@ public class ChannelCloseCoordinatorTests
                                                             nodeOptions,
                                                             new Mock<ISecretStorageServiceFactory>().Object,
                                                             _unitOfWork.Object);
-        var feeService = new Mock<IFeeService>();
-        feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Satoshis(1_000));
+        if (feeService is null)
+        {
+            var fixedFee = new Mock<IFeeService>();
+            fixedFee.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Satoshis(1_000));
+            fixedFee.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(LightningMoney.Satoshis(1_000));
+            feeService = fixedFee.Object;
+        }
+
         return new ChannelCloseCoordinator(new ClosingTransactionBuilder(nodeOptions), memory.Object,
-                                           feeService.Object, _signer.Object,
+                                           feeService, _signer.Object,
                                            NullLogger<ChannelCloseCoordinator>.Instance, messageFactory,
                                            Options.Create(new ChannelCloseOptions()), _registry,
                                            provider ?? new FixedProvider(s_localScript), transitions,
