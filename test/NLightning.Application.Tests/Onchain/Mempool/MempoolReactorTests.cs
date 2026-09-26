@@ -247,6 +247,25 @@ public sealed class MempoolReactorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_PreparedPenaltyMinedWithTheCommitment_When_TheCloseIsRecorded_Then_TheRowsStillNameIt()
+    {
+        // Arrange: the block holds both; the monitor marks the penalty confirmed before the watcher records the close
+        // (found by the Docker proof: the resolver then built a second penalty that bitcoind refused)
+        var revoked = PrepareBreach();
+        await Reactor.HandleSpendAsync(FundingSpend(revoked), TestContext.Current.CancellationToken);
+        var penalty = Assert.Single(_store.Broadcasts);
+        penalty.MarkConfirmed(SpendHeight, OnchainTestStore.BlockHash(1));
+
+        // Act
+        await Watcher.HandleFundingSpentAsync(SpentBy(revoked), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.NotEmpty(_store.Outputs);
+        Assert.All(_store.Outputs.Values, o => Assert.Equal(penalty.TransactionId, o.ResolvingTransactionId));
+        Assert.Equal(BroadcastState.Confirmed, penalty.State);
+    }
+
+    [Fact]
     public async Task Given_PreparedPenalty_When_AnotherCommitmentConfirms_Then_ThePenaltyIsAbandoned()
     {
         // Arrange: the revoked commitment was replaced; Bob's current commitment wins the funding output instead

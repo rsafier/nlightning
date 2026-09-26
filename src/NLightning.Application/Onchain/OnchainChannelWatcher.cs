@@ -559,16 +559,18 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
     }
 
     /// <summary>
-    /// O8: the pending transactions prepared from the mempool before this funding spend confirmed. The ones that spend
-    /// outputs of <paramref name="spend"/> are returned by the vout they spend (the rows name them); the ones that spend
-    /// another transaction (a revoked commitment that was replaced or evicted) are abandoned in this save.
+    /// O8: the transactions prepared from the mempool before this funding spend confirmed. The ones that spend outputs
+    /// of <paramref name="spend"/> are returned by the vout they spend (the rows name them), also when they already
+    /// confirmed (a penalty mined in the same block as the commitment: the monitor marks it confirmed before this
+    /// runs); pending ones that spend another transaction (a revoked commitment that was replaced or evicted) are
+    /// abandoned in this save.
     /// </summary>
     private async Task<Dictionary<uint, TxId>> SettlePreparedAsync(IUnitOfWork unitOfWork, ChannelId channelId,
                                                                    IReadOnlyList<BroadcastTransactionModel> broadcasts,
                                                                    TxId spend)
     {
         var spentBy = new Dictionary<uint, TxId>();
-        foreach (var broadcast in broadcasts.Where(b => b.State == BroadcastState.Pending
+        foreach (var broadcast in broadcasts.Where(b => b.State is (BroadcastState.Pending or BroadcastState.Confirmed)
                                                      && IsPreparedPurpose(b.Purpose)))
         {
             if (!ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) || transaction is null)
@@ -577,6 +579,9 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             var fromSpend = transaction.Inputs.Where(i => i.PreviousTxId == spend).ToList();
             if (fromSpend.Count == 0)
             {
+                if (broadcast.State != BroadcastState.Pending)
+                    continue;
+
                 _logger.LogWarning("Channel {ChannelId}: {Purpose} {TxId}, prepared from the mempool, spends a "
                                  + "transaction that did not confirm; abandoning it", channelId, broadcast.Purpose,
                                    Display(broadcast.TransactionId));
