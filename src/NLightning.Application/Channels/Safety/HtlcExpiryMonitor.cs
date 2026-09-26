@@ -22,6 +22,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain.Resolvers;
 using Payments.Onion;
 
 /// <summary>
@@ -40,15 +41,17 @@ using Payments.Onion;
 /// <para>Singleton, outside every channel lock: it reads the immutable snapshot of each channel, and changes channels
 /// only through <see cref="IChannelOperations"/> and <see cref="IChannelFailureService"/>, which take the lock. An
 /// incoming HTLC's resolution (<see cref="IncomingHtlcResolution"/>) comes from the forward circuit, the outgoing HTLC
-/// that carries its origin (its <see cref="HtlcRecord.KnownPreimage"/>) and our invoice for the hash; it is looked up
+/// that carries its origin (its <see cref="HtlcRecord.KnownPreimage"/>) and, for a final hop, its own record and our
+/// invoice (<see cref="FinalHopClaims.GetAcceptedPreimageAsync"/>); it is looked up
 /// only for HTLCs whose deadline is near. An HTLC continued downstream is never failed upstream here (the outgoing
 /// HTLC's own deadline protects it). Rounds never overlap; blocks that arrive during a round are coalesced into one
 /// more round at the latest height.</para>
 /// <para>A channel failed by this monitor is not failed again in the same process unless its publish failed (then
 /// every block retries). A refused fail-back (peer away, not reestablished) is retried on the next block.</para>
-/// <para>Known limits: an incoming HTLC whose invoice was settled by another HTLC of the same hash counts as
-/// preimage-known (it fails the channel at the fulfillment deadline instead of failing back; the switch normally fails
-/// it at lock-in); the switch could start a forward between our circuit lookup and our fail-back only if it read a
+/// <para>A final-hop HTLC counts as preimage-known only when the switch committed it to its set (its record carries the
+/// preimage of the invoice <c>Settled</c> with it, <see cref="FinalHopClaims.GetAcceptedPreimageAsync"/>, NL-337);
+/// another HTLC for a settled invoice is failed back at its fulfillment deadline, never by failing the channel.</para>
+/// <para>Known limits: the switch could start a forward between our circuit lookup and our fail-back only if it read a
 /// height at least <c>cltv_expiry_delta + ExpiryTooSoonBlocks</c> blocks older than ours.</para>
 /// </remarks>
 public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
@@ -344,10 +347,12 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
         if (circuit is not null || outgoingKeys.Count > 0)
             return IncomingHtlcResolution.AwaitingDownstream;
 
-        // Final hop: our invoice for the hash was accepted/settled, so we hold the preimage; otherwise the switch may
-        // still settle it, so it gets the final-hop (fulfillment) deadline, not the forwarding distance
-        var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
-        return invoice is { Status: InvoiceStatus.Accepted or InvoiceStatus.Settled }
+        // Final hop (NL-337): we owe the preimage only for an HTLC the switch committed to a set, i.e. its record
+        // carries the preimage of the invoice that is Settled with it (the NL-323 commit point, the same test as the
+        // on-chain claim). Any other HTLC for our invoice (a duplicate for a Settled invoice whose fail could not be
+        // sent, a part of a set that never completed) is not ours to claim: the switch may still settle an Open
+        // invoice, so it gets the final-hop (fulfillment) deadline and is then failed back, never the channel failed
+        return await FinalHopClaims.GetAcceptedPreimageAsync(unitOfWork, htlc) is not null
                    ? IncomingHtlcResolution.PreimageKnown
                    : IncomingHtlcResolution.UnresolvedFinalHop;
     }

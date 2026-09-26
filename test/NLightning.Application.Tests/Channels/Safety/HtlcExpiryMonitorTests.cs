@@ -246,10 +246,12 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     [Fact]
     public async Task Given_SettledInvoiceForIncomingHtlc_When_Deadlines_Then_NeverFailedBackButChannelFailedAtFulfillDeadline()
     {
-        // Arrange: we are the final hop and settled the invoice, but the fulfill never got committed
+        // Arrange: we are the final hop, the switch committed the HTLC to its set (the preimage on its record) and
+        // settled the invoice, but the fulfill never got committed
         var preimage = RealSigningCommitmentPair.Preimage(1);
-        _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
         _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
         UseChannel(_pair.Bob);
         _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
                  .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
@@ -267,6 +269,80 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
                                                        It.Is<ChannelFailureRequest>(r =>
                                                            r.RequirementId == "B2-CLTV-06"),
                                                        It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_DuplicateHtlcForSettledInvoiceWhoseFailWasNotSent_When_FulfillDeadline_Then_FailedBackNotChannelFailed()
+    {
+        // Arrange (NL-337): the invoice was settled by another HTLC set; this HTLC for the same hash carries no mark
+        // (not a part of the committed set), and the switch's 0x400F could not be sent while the peer was away
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Settled));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert (B2-CLTV-05): failed back upstream, the channel is never failed
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Theory]
+    [InlineData(InvoiceStatus.Open)]
+    [InlineData(InvoiceStatus.Accepted)]
+    public async Task Given_MarkedHtlcOfAnInvoiceNotSettled_When_FulfillDeadline_Then_FailedBackNotChannelFailed(
+        InvoiceStatus status)
+    {
+        // Arrange (NL-337, NL-323): a mark left by a set that never settled commits to nothing
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), status));
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_MarkWithAnotherPreimageThanTheSettledInvoice_When_FulfillDeadline_Then_FailedBack()
+    {
+        // Arrange (NL-337): the invoice is Settled with another preimage than the one on the record
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        var id = _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        MarkPreimage(_pair.Bob, id, preimage);
+        UseChannel(_pair.Bob);
+        var settled = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), RealSigningCommitmentPair.Preimage(2),
+                                       new Secret(new byte[32]), LightningMoney.MilliSatoshis(20_000_000), "test",
+                                       "lnbcrt1test", DateTimeOffset.UtcNow, 3600, 40, InvoiceStatus.Settled,
+                                       LightningMoney.MilliSatoshis(20_000_000), DateTimeOffset.UtcNow);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>())).ReturnsAsync(settled);
+        var monitor = CreateMonitor();
+
+        // Act
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+        _failureService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -441,6 +517,18 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     {
         node.Channel.UpdateCommitments(node.State);
         _channel = node.Channel;
+    }
+
+    /// <summary>What the switch's <c>MarkPartAsync</c> persists: the preimage on the incoming HTLC's record.</summary>
+    private static void MarkPreimage(RealSigningNode node, ulong htlcId, Secret preimage)
+    {
+        var state = node.State;
+        var record = state.GetHtlc(HtlcDirection.Incoming, htlcId)! with { KnownPreimage = preimage };
+        node.State = ChannelCommitments.Restore(state.ChannelId, state.Params, state.LocalBalanceMsat,
+                                                state.RemoteBalanceMsat, state.Htlcs.SetItem(record.Key, record).Values,
+                                                state.FeeUpdates, state.LocalNextHtlcId, state.RemoteNextHtlcId,
+                                                state.LocalCommit, state.RemoteCommit, state.RemoteNextCommit,
+                                                state.RemoteNextPerCommitmentPoint);
     }
 
     private HtlcExpiryMonitor CreateMonitor() =>
