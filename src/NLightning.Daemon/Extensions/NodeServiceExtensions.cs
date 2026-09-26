@@ -16,6 +16,8 @@ using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
 using Application.Onchain.Resolvers.Revoked;
+using Application.Payments.Invoices;
+using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Switch;
 using Contracts.Utilities;
@@ -158,6 +160,10 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<ListGraphChannelsClientRequest, ListGraphChannelsClientResponse>,
             ListGraphChannelsClientHandler>();
 
+        // BOLT 7 G4-T4: the route a payment would take (ClientCommand 19); the payment service answers it
+        services.AddScoped<IClientCommandHandler<GetRouteClientRequest, GetRouteClientResponse>>(sp =>
+            new GetRouteClientHandler(GetPaymentLayerService<IRouteQueryService>(sp)));
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -180,6 +186,7 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ChainStatusIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListNodesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
@@ -254,6 +261,10 @@ public static class NodeServiceExtensions
         // Fee, part and retry limits of our outgoing payments (optional section; PaymentSendOptions has defaults; a
         // payinvoice call may set its own fee and part limits, NL-270)
         services.Configure<PaymentSendOptions>(configuration.GetSection("Node:Payments"));
+
+        // When our invoices carry route hints (optional; Auto leaves them out once an announced channel can receive,
+        // BOLT 7 G4)
+        services.Configure<InvoiceOptions>(configuration.GetSection(InvoiceOptions.SectionName));
 
         // How long the final hop holds an incomplete basic_mpp HTLC set before mpp_timeout (optional; default 60 s)
         services.Configure<HtlcSwitchOptions>(configuration.GetSection("Node:Switch"));

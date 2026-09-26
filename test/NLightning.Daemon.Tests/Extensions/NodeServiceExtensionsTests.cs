@@ -17,6 +17,8 @@ using Application.Gossip.Relay;
 using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Services;
 using Application.Payments.Invoices;
+using Application.Payments.Routing;
+using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
 using Application.Payments.Send.Interfaces;
 using Application.Payments.Switch;
@@ -100,6 +102,17 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<ListGraphChannelsClientRequest,
                                  ListGraphChannelsClientResponse>>());
+
+        // BOLT 7 G4-T4: getroute answered by the payment service; the graph routing pieces are shared singletons
+        Assert.Contains(ClientCommand.GetRoute, commands);
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<GetRouteClientRequest,
+                                 GetRouteClientResponse>>());
+        Assert.Same(provider.GetRequiredService<PaymentService>(), provider.GetRequiredService<IRouteQueryService>());
+        Assert.True(provider.GetRequiredService<GraphPathSource>().IsAvailable);
+        Assert.Same(provider.GetRequiredService<MissionControl>(),
+                    provider.GetRequiredService<GraphPathSource>().MissionControl);
+        Assert.NotNull(provider.GetRequiredService<IGossipScidRefresher>());
     }
 
     [Fact]

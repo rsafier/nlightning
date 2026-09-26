@@ -291,4 +291,32 @@ public class ClientAppTests
         Assert.NotNull(ClientApp.ValidateArguments("listgraphchannels", ["110x1"]));
         Assert.NotNull(ClientApp.ValidateArguments("listgraphchannels", ["16777216x0x0"]));
     }
+
+    [Fact]
+    public void GivenGetRouteArguments_WhenValidatedAndParsed_ThenNodeAmountAndOptions()
+    {
+        // Arrange (BOLT 7 G4-T4)
+        const string node = "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+        // Act
+        var full = ClientApp.ParseGetRouteOptions([node, "1000000", "--max-fee-msat", "5000", "--final-cltv=40"],
+                                                  out var fullError);
+        var plain = ClientApp.ParseGetRouteOptions([node, "1"], out _);
+
+        // Assert
+        Assert.Null(fullError);
+        Assert.Equal(node, Convert.ToHexString((byte[])full!.NodeId).ToLowerInvariant());
+        Assert.Equal((1_000_000UL, (ulong?)5_000, (ushort?)40),
+                     (full.AmountMsat, full.MaxFeeMsat, full.FinalCltvDelta));
+        Assert.Equal((1UL, (ulong?)null, (ushort?)null), (plain!.AmountMsat, plain.MaxFeeMsat, plain.FinalCltvDelta));
+        Assert.Null(ClientApp.ValidateArguments("getroute", [node, "10"]));
+        Assert.Null(ClientApp.ValidateArguments("get-route", ["--max-fee-msat=0", node, "10"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "0"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", ["04" + node[2..], "10"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "extra"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--final-cltv", "0"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-parts", "2"]));
+        Assert.NotNull(ClientApp.ValidateArguments("getroute", [node, "10", "--max-fee-msat"]));
+    }
 }

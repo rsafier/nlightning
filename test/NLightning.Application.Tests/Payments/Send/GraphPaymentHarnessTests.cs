@@ -2,7 +2,6 @@ namespace NLightning.Application.Tests.Payments.Send;
 
 using Bolt11.Models;
 using Domain.Channels.ValueObjects;
-using Domain.Gossip.Graph;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
@@ -130,5 +129,37 @@ public class GraphPaymentHarnessTests
         Assert.Equal(policiesBefore, graph.Channels.Select(c => (c.ShortChannelId, c.Policy1, c.Policy2)).ToList());
         Assert.True(graph.TryGetChannel(failing.Value, out var failed));
         Assert.False(failed.Policy1!.IsDisabled || failed.Policy2!.IsDisabled);
+    }
+
+    [Fact]
+    public async Task Given_TheGraph_When_BobAsksForARouteToErin_Then_ItIsTheRouteHisPaymentTakes()
+    {
+        // Arrange
+        using var harness = Harness();
+        var erin = harness.Erin!;
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: getroute first (nothing sent), then the payment of Erin's invoice (c = 40)
+        var quote = await harness.Bob.RouteQuery.QuoteRouteAsync(erin.NodeId, s_amount, null, 40, ct);
+        var invoice = await erin.InvoiceService.CreateInvoiceAsync(s_amount, "quote", null, ct);
+        var result = await PayAsync(harness, invoice.Bolt11);
+
+        // Assert: the same hops, amounts, CLTVs and fee; two unknown channels after ours at the 0.6 prior each
+        Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
+        Assert.Equal(harness.BobCarol, quote.Channel.ChannelId);
+        Assert.Equal(result.Payment.Fee, quote.Route.Fee);
+        Assert.Equal(result.Payment.Route[0].Amount, quote.Route.FirstHopAmount);
+        Assert.Equal(result.Payment.Route[0].CltvExpiry, quote.Route.FirstHopCltvExpiry);
+        for (var i = 1; i < quote.Route.Hops.Count; i++)
+        {
+            var previous = quote.Route.Hops[i - 1];
+            Assert.Equal((result.Payment.Route[i].NodeId, result.Payment.Route[i].ShortChannelId,
+                          result.Payment.Route[i].Amount, result.Payment.Route[i].CltvExpiry),
+                         (quote.Route.Hops[i].NodeId, previous.OutgoingShortChannelId!.Value,
+                          previous.AmountToForward, previous.OutgoingCltvValue));
+        }
+
+        Assert.Equal(0.36, quote.Probability, 9);
+        Assert.Equal(PaymentHarness.BlockHeight, quote.BlockHeight);
     }
 }

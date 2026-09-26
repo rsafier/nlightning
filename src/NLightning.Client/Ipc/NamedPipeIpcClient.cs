@@ -340,6 +340,21 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
             new ListGraphChannelsIpcRequest { ShortChannelId = shortChannelId, NodeId = nodeId }, ct);
 
     /// <summary>
+    /// The route a payment of <paramref name="amountMsat"/> to <paramref name="nodeId"/> would take now
+    /// (ClientCommand 19); nothing is sent.
+    /// </summary>
+    public Task<GetRouteIpcResponse> GetRouteAsync(CompactPubKey nodeId, ulong amountMsat, ulong? maxFeeMsat,
+                                                   ushort? finalCltvDelta, CancellationToken ct = default) =>
+        SendRequestAsync<GetRouteIpcRequest, GetRouteIpcResponse>(ClientCommand.GetRoute,
+                                                                  new GetRouteIpcRequest
+                                                                  {
+                                                                      NodeId = nodeId,
+                                                                      AmountMsat = amountMsat,
+                                                                      MaxFeeMsat = maxFeeMsat,
+                                                                      FinalCltvDelta = finalCltvDelta
+                                                                  }, ct);
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)

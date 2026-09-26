@@ -389,6 +389,62 @@ public class PrinterSnapshotTests
         Assert.Equal(Lines("Graph channels: 0"), emptyOutput);
     }
 
+    [Fact]
+    public void Given_ARoute_When_Printed_Then_MatchesSnapshot()
+    {
+        // Arrange (BOLT 7 G4-T4): us -> payee -> payee over two channels
+        var route = new GetRouteIpcResponse
+        {
+            ChannelId = new ChannelId(Enumerable.Repeat((byte)0xC1, 32).ToArray()),
+            Hops =
+            [
+                new GetRouteHopIpcInfo
+                {
+                    NodeId = s_payee,
+                    ShortChannelId = (300UL << 40) | (1UL << 16),
+                    AmountMsat = 1_002_500,
+                    CltvExpiry = 783,
+                    FeeMsat = 2_500
+                },
+                new GetRouteHopIpcInfo
+                {
+                    NodeId = s_payee,
+                    ShortChannelId = (101UL << 40) | (2UL << 16) | 1,
+                    AmountMsat = 1_000_000,
+                    CltvExpiry = 743,
+                    FeeMsat = 0
+                }
+            ],
+            AmountMsat = 1_002_500,
+            FeeMsat = 2_500,
+            CltvExpiry = 783,
+            BlockHeight = 700,
+            Probability = 0.6,
+            Description = "graph route over 300x1x0 through 101x2x1"
+        };
+
+        // Act
+        var output = Print(w => new GetRoutePrinter(w).Print(route));
+
+        // Assert
+        Assert.Equal(Lines(
+                         "Route: 2 hop(s), graph route over 300x1x0 through 101x2x1",
+                         $"  Our Channel Id:     {Hex(0xc1)}",
+                         "  Amount (msat):      1002500",
+                         "  Fee (msat):         2500",
+                         "  CLTV Expiry:        783 (+83 blocks from 700)",
+                         "  Probability:        0.6",
+                         Separator,
+                         $"  Hop 0:              02{Hex(0x11)}",
+                         "    Channel:          300x1x0",
+                         "    Amount (msat):    1002500, fee 2500",
+                         "    CLTV Expiry:      783",
+                         $"  Hop 1:              02{Hex(0x11)}",
+                         "    Channel:          101x2x1",
+                         "    Amount (msat):    1000000, fee 0",
+                         "    CLTV Expiry:      743"), output);
+    }
+
     private static string Print(Action<TextWriter> print)
     {
         using var writer = new StringWriter();

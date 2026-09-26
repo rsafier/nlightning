@@ -50,6 +50,9 @@ public static class ClientUtils
         Console.WriteLine("  listgraphchannels [scid] [node_id]");
         Console.WriteLine("                               List the gossip graph's channels with both policies (alias:");
         Console.WriteLine("                               list-graph-channels); scid as BLOCKxTXxOUTPUT");
+        Console.WriteLine("  getroute <node_id> <amount_msat> [--max-fee-msat <msat>] [--final-cltv <blocks>]");
+        Console.WriteLine("                               Show the route a payment would take now, hop by hop, with");
+        Console.WriteLine("                               fees, CLTVs and its success estimate (alias: get-route)");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");
