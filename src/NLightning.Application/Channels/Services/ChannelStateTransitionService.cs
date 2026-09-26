@@ -335,18 +335,26 @@ public sealed class ChannelStateTransitionService
     /// both commitment numbers, the peer's signature of our first commitment, and the peer's current and next
     /// per-commitment points (NL-232: the current one must be taken before <c>channel_ready</c> overwrites it).
     /// </summary>
+    /// <param name="channel">The opened channel.</param>
+    /// <param name="remoteCurrentPerCommitmentPoint">The peer's point of its current commitment.</param>
+    /// <param name="remoteNextPerCommitmentPoint">The peer's point of its next commitment.</param>
+    /// <param name="maxDustHtlcExposureMsat">Our <c>max_dust_htlc_exposure_msat</c> policy
+    /// (<c>NodeOptions.MaxDustHtlcExposureMsat</c>), stored with the snapshot (NL-242, NL-254); null disables the
+    /// check.</param>
     /// <exception cref="InvalidOperationException">The funding output is not known.</exception>
     /// <exception cref="ArgumentException">The balances do not add up to the funding amount.</exception>
     public static ChannelCommitments CreateInitialCommitments(ChannelModel channel,
                                                               CompactPubKey remoteCurrentPerCommitmentPoint,
-                                                              CompactPubKey remoteNextPerCommitmentPoint)
+                                                              CompactPubKey remoteNextPerCommitmentPoint,
+                                                              ulong? maxDustHtlcExposureMsat = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
 
         var signatures = channel.LastReceivedSignature is { } signature
                              ? new CommitmentSignatures(signature, [])
                              : null;
-        return ChannelCommitments.Create(channel.ChannelId, CommitmentParams.FromChannel(channel),
+        return ChannelCommitments.Create(channel.ChannelId,
+                                         CommitmentParams.FromChannel(channel, maxDustHtlcExposureMsat),
                                          channel.LocalBalance.MilliSatoshi, channel.RemoteBalance.MilliSatoshi,
                                          checked((uint)channel.ChannelParams.FeeRateAmountPerKw.Satoshi),
                                          remoteCurrentPerCommitmentPoint, remoteNextPerCommitmentPoint, signatures,
