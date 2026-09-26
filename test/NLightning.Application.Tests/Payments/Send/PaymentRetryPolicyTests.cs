@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Options;
+
 namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Payments.Routing;
@@ -6,6 +8,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Interfaces;
 using Domain.Models;
 using Domain.Money;
 using Domain.Protocol.Constants;
@@ -13,6 +16,7 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
+using Domain.Routing.Pathfinding;
 
 /// <summary>
 /// NL-270: what one failed part teaches the payment (BOLT 4 "Receiving Failure Codes") and whether it may be retried.
@@ -253,5 +257,75 @@ public class PaymentRetryPolicyTests
         // Assert
         Assert.True(retry);
         Assert.Contains(s_toCarol.ChannelId, _constraints.ExcludedLocalChannels);
+    }
+
+    [Fact]
+    public void Given_AnUpdateFailure_When_Decided_Then_TheGossipSyncIsAskedForTheChannelAndTheGraphPolicyIsPerPayment()
+    {
+        // Arrange
+        var refresher = new Mock<IGossipScidRefresher>();
+        var policy = new PaymentRetryPolicy(_signer.Object, ChainConstants.Regtest, 6, null, refresher.Object);
+
+        // Act
+        var (retry, _) = policy.Decide(Part(), HtlcRemovalKind.Fail,
+                                       FromCarol(FailureCode.FeeInsufficient, CarolUpdate()), _constraints);
+
+        // Assert: the update is this payment's (both override maps), the graph learns only through gossip (D9)
+        Assert.True(retry);
+        refresher.Verify(r => r.RequestRefresh(s_scidCd), Times.Once);
+        var direction = DirectedChannel.Between(s_scidCd, s_carol, s_david);
+        var graphPolicy = _constraints.GraphPolicyOverrides[direction];
+        Assert.Equal((3_000u, 1_000u, (ushort)80, 10u, direction.Direction),
+                     (graphPolicy.FeeBaseMsat, graphPolicy.FeeProportionalMillionths, graphPolicy.CltvExpiryDelta,
+                      graphPolicy.Timestamp, graphPolicy.Direction));
+    }
+
+    [Theory]
+    [InlineData(FailureCode.UnknownNextPeer)]
+    [InlineData(FailureCode.PermanentChannelFailure)]
+    [InlineData(FailureCode.TemporaryNodeFailure)]
+    public void Given_AFailureWithoutTheUpdateBit_When_Decided_Then_NoGossipRefresh(FailureCode code)
+    {
+        // Arrange
+        var refresher = new Mock<IGossipScidRefresher>();
+        var policy = new PaymentRetryPolicy(_signer.Object, ChainConstants.Regtest, 6, null, refresher.Object);
+
+        // Act
+        policy.Decide(Part(), HtlcRemovalKind.Fail,
+                      FromCarol(code, node: ((ushort)code & (ushort)FailureCodeFlags.Node) != 0), _constraints);
+
+        // Assert
+        refresher.Verify(r => r.RequestRefresh(It.IsAny<ShortChannelId>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_TemporaryChannelFailure_When_Decided_Then_MissionControlBoundsTheChannelForLaterPayments()
+    {
+        // Arrange
+        var missionControl = new MissionControl(Options.Create(new PaymentSendOptions()), TimeProvider.System);
+        var policy = new PaymentRetryPolicy(_signer.Object, ChainConstants.Regtest, 6, missionControl);
+        var part = Part();
+
+        // Act
+        policy.Decide(part, HtlcRemovalKind.Fail, FromCarol(FailureCode.TemporaryChannelFailure), _constraints);
+
+        // Assert: below what Carol could not forward, for every payment (the payment's own bound is separate)
+        Assert.True(missionControl.TryGetBounds(s_scidCd, s_carol, s_david, out _, out var max));
+        Assert.Equal(part.Route.Hops[0].AmountToForward.MilliSatoshi, max);
+    }
+
+    [Fact]
+    public void Given_ANodeFailure_When_Decided_Then_MissionControlPenalizesTheNode()
+    {
+        // Arrange
+        var missionControl = new MissionControl(Options.Create(new PaymentSendOptions()), TimeProvider.System);
+        var policy = new PaymentRetryPolicy(_signer.Object, ChainConstants.Regtest, 6, missionControl);
+
+        // Act
+        policy.Decide(Part(), HtlcRemovalKind.Fail, FromCarol(FailureCode.TemporaryNodeFailure, node: true),
+                      _constraints);
+
+        // Assert
+        Assert.Contains(s_carol, missionControl.GetSnapshot().PenalizedNodes);
     }
 }

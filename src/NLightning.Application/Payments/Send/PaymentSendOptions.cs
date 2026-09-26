@@ -47,6 +47,37 @@ public sealed class PaymentSendOptions
     public uint ExpiryTooSoonExtraBlocks { get; set; } = 6;
 
     /// <summary>
+    /// Route through the gossip graph (BOLT 7 plan G4-T3) when the payee is neither our peer nor reachable over the
+    /// invoice's route hints from one of our peers, and to find more paths for a split (default true). Without a graph
+    /// (gossip disabled) this changes nothing.
+    /// </summary>
+    public bool UseGraph { get; set; } = true;
+
+    /// <summary>
+    /// The diverse graph paths the planner asks the pathfinder for per amount it tries (plan §3.10 "k paths", default 3).
+    /// </summary>
+    public int GraphPathsPerRound { get; set; } = 3;
+
+    /// <summary>
+    /// The largest random CLTV offset added to the payee's CLTV of a graph route (BOLT 7 shadow route, B7-RT-01;
+    /// default 144 blocks, 0 turns it off). It is cut down so the route stays within
+    /// <c>Routing.MaxCltvExpiryDistance</c>.
+    /// </summary>
+    public uint ShadowCltvMaxOffset { get; set; } = 144;
+
+    /// <summary>
+    /// How fast what mission control learnt about a channel's liquidity fades (plan D8: 1 hour half-life, never
+    /// persisted).
+    /// </summary>
+    public TimeSpan MissionControlHalfLife { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// How long a node that sent a NODE failure is not routed through by later payments (default 1 hour; the payment
+    /// that got the failure avoids it until it ends).
+    /// </summary>
+    public TimeSpan NodeFailurePenalty { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// The largest part limit a call may ask for.
     /// </summary>
     public const int MaxPartsLimit = 128;

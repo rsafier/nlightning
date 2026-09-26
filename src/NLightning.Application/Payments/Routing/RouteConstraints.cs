@@ -2,6 +2,8 @@ namespace NLightning.Application.Payments.Routing;
 
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Graph;
+using Domain.Routing.Pathfinding;
 
 /// <summary>
 /// What one payment learnt from its failed attempts (NL-270): nodes and channels to avoid, the policies hops sent in
@@ -20,7 +22,7 @@ public sealed class RouteConstraints
     public HashSet<CompactPubKey> ExcludedNodes { get; } = [];
 
     /// <summary>
-    /// Channels after our first hop (route-hint channels, by short channel id) that are not used.
+    /// Channels after our first hop (route-hint and graph channels, by short channel id) that are not used.
     /// </summary>
     public HashSet<ShortChannelId> ExcludedChannels { get; } = [];
 
@@ -35,7 +37,13 @@ public sealed class RouteConstraints
     public Dictionary<ShortChannelId, HintChannelPolicy> PolicyOverrides { get; } = [];
 
     /// <summary>
-    /// An exclusive upper bound on what the payment's HTLCs may forward over a hint channel, together (a
+    /// The same verified <c>channel_update</c>s by channel direction, for the graph pathfinder (BOLT 7 plan G4-T3):
+    /// they replace the graph's policy of that direction for this payment only, never the graph itself (BOLT 4, D9).
+    /// </summary>
+    public Dictionary<DirectedChannel, GraphPolicy> GraphPolicyOverrides { get; } = [];
+
+    /// <summary>
+    /// An exclusive upper bound on what the payment's HTLCs may forward over a channel after our first hop, together (a
     /// <c>temporary_channel_failure</c> for an HTLC of that size says the channel lacks the liquidity).
     /// </summary>
     public Dictionary<ShortChannelId, ulong> ChannelLiquidityBoundsMsat { get; } = [];
