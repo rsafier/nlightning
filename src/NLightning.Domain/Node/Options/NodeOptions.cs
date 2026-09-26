@@ -113,8 +113,10 @@ public class NodeOptions
     /// would trim HTLCs over it. Null (an empty configuration value) disables the check.
     /// </summary>
     /// <remarks>Configuration key <c>Node:MaxDustHtlcExposureMsat</c>. The value is stored with a channel's first
-    /// commitment state and kept with it (NL-242); channels whose state has none use this value for the receive and fee
-    /// checks.</remarks>
+    /// commitment state and kept with it (NL-242); channels whose state has none (first snapshot taken before this
+    /// option existed) use this value for the receive and fee checks, but the engine's send-side rules (B2-DUST-03/04)
+    /// read only the stored value, so on those channels our own dust offers stay unlimited until the limit is backfilled
+    /// into the snapshot (open follow-up).</remarks>
     public ulong? MaxDustHtlcExposureMsat { get; set; } = DefaultMaxDustHtlcExposureMsat;
 
     /// <summary>

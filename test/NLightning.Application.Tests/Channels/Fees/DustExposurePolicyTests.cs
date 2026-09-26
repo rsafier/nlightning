@@ -180,4 +180,25 @@ public class DustExposurePolicyTests
         Assert.NotNull(excess);
         Assert.Equal(14_000 * Sat, excess.ExposureMsat);
     }
+
+    [Fact]
+    public void Given_SnapshotWithoutAStoredLimit_When_Checking_Then_ReceiveSideUsesTheNodeLimitButSendSideIsUnlimited()
+    {
+        // Arrange - a first snapshot taken before max_dust_htlc_exposure_msat was stored (Params limit null); 2,000 sat
+        // HTLCs are trimmed at 2,500 sat/kw without anchors; the node limit is 3,000 sat
+        const ulong nodeLimitMsat = 3_000 * Sat;
+        var commitments = Create(800_000, 200_000, 2_500, maxDustMsat: null);
+        var hash = PaymentHash(7);
+
+        // Act - the receive and fee checks fall back to the node limit
+        var resolved = DustExposurePolicy.Resolve(commitments, nodeLimitMsat);
+        var first = commitments.SendAdd(2_000 * Sat, hash, 700, new byte[1366]).Next;
+        var second = first.SendAdd(2_000 * Sat, hash, 700, new byte[1366]).Next;
+
+        // Assert - the engine's send-side rules (B2-DUST-03/04) read only the stored limit, so 4,000 sat of our own
+        // dust is accepted over the 3,000 sat node limit (known gap until the limit is backfilled into old snapshots)
+        Assert.Equal(nodeLimitMsat, resolved);
+        Assert.Null(second.Params.MaxDustHtlcExposureMsat);
+        Assert.True(DustExposurePolicy.ProspectiveExposureMsat(second, CommitmentSide.Remote, 2_500) > nodeLimitMsat);
+    }
 }

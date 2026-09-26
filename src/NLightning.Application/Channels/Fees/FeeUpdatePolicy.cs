@@ -10,7 +10,8 @@ using Domain.Node.Options;
 /// </summary>
 /// <remarks>
 /// <para>BOLT 2: the node responsible for the fee SHOULD keep the feerate sufficient "by a significant margin"; the
-/// other MUST NOT send <c>update_fee</c>. The target is the estimate clamped to
+/// other MUST NOT send <c>update_fee</c>. The target is the estimate (times
+/// <see cref="FeeUpdateOptions.NonAnchorFeerateMarginPercent"/> without <c>option_anchors</c>) clamped to
 /// [<see cref="FeeUpdateOptions.MinFeeratePerKw"/>, max] (max = <see cref="FeeUpdateOptions.MaxAnchorFeeratePerKw"/>
 /// with <c>option_anchors</c>, else <see cref="FeeUpdateOptions.MaxFeeratePerKw"/>), never below 253 sat/kw; we move
 /// to it only when it differs from the channel's latest feerate by at least
@@ -23,13 +24,20 @@ using Domain.Node.Options;
 /// </remarks>
 public static class FeeUpdatePolicy
 {
-    /// <summary>The feerate we aim for given an estimate: clamped to the configured bounds and the 253 sat/kw floor.</summary>
+    /// <summary>
+    /// The feerate we aim for given an estimate: without <c>option_anchors</c> the estimate times
+    /// <see cref="FeeUpdateOptions.NonAnchorFeerateMarginPercent"/> (the BOLT 2 "significant margin"), then clamped to
+    /// the configured bounds and the 253 sat/kw floor.
+    /// </summary>
     public static uint TargetFeeratePerKw(uint estimatePerKw, bool optionAnchors, FeeUpdateOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         var min = Math.Max(options.MinFeeratePerKw, FeeUpdateOptions.FeeratePerKwFloor);
         var max = Math.Max(min, optionAnchors ? options.MaxAnchorFeeratePerKw : options.MaxFeeratePerKw);
-        return Math.Clamp(estimatePerKw, min, max);
+        var withMargin = optionAnchors
+                             ? estimatePerKw
+                             : (ulong)estimatePerKw * Math.Max(options.NonAnchorFeerateMarginPercent, 100U) / 100;
+        return (uint)Math.Clamp(withMargin, min, max);
     }
 
     /// <summary>
