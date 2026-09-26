@@ -5,7 +5,8 @@ This is the authoritative plan for BOLT 2 "Normal Operation" (`update_add_htlc`,
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-25: `02-peer-protocol.md` (§Channel Close, §Normal Operation, §Message Retransmission) and `03-transactions.md` (HTLC txs, fee calculation, closing txs, Appendices C, D, E, F). Re-read the requirement block before you implement a handler.
 - **Sources merged:** three independent drafts (safety-first, MVP-to-interop, requirements traceability). Where they disagreed about the code, the code was checked (§2.3). Design choices are recorded in §4.
 - **Issue ledger:** every bug and gap here has an `NL-###` ID in [`ISSUES.md`](ISSUES.md). Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-25, `wip/fafo` @ `a5675cb`, after ABCD wave 2):** N0-N8 are **done**. N7 (ABCD W2-A): pure `ReestablishPlanner` with an exhaustive oracle table (4620895); lifecycle hooks, gating, retransmission, data-loss detection, error re-send without disconnect and `HandleChannelMessageAsync` returning `Task` (4ec83d3); startup resumes every stored state and the funder remember rule is pinned (82c4c37); a peer's reestablish after channel_ready is answered and ours is sent at connect for every channel past funding_signed (22c29ae). Proof N7: I11 harness (1ad14ce) and Docker (a)(b)(c) (a4e95d7, 30c1bb8). N8 (W2-B switch ca87313/d1476a4, W2-C `PaymentService` 6cb279f/083a726, W2-D Docker fdc80af, integration f2f1ef6/a5675cb): LND pays our invoice (also trimmed), we pay LND's, 10 concurrent each way, restart with an HTLC in flight; the ABCD multi-hop suite is green. Remaining in N7: Closing/Negotiating resumption and shutdown re-send (N10), signer-level broadcast refusal (N9-T4). **Next milestones: N9** (deadlines `HtlcExpiryMonitor`, fail-the-channel broadcast) and **N10** (close). §5 opens with the wave-2 record.
+- **Status (2026-09-25, `wip/fafo` @ `c92d837`, after ABCD wave 3):** N0-N10 are **done** (N10 awaits a re-run of its Docker proof on `wip/fafo`). N9 (W3-A, W3-C): `HtlcDeadlinePolicy` + block-driven `HtlcExpiryMonitor` (36d2270, 06da54b), `ChannelFailureService` as the only broadcast path with the signer's broadcast signing, revoked-number refusal and data-loss lock (36d2270, 06da54b), `FeeUpdatePolicy`/`FeeUpdateScheduler`, the `max_dust_htlc_exposure_msat` node option and `DustExposureHtlcSwitch` (1dbbc1f, 525973a); wired and started by the daemon (983b2b4). N10 (W3-B, migration owner): shutdown script forms, the legacy closing tx and negotiator, states 23/25/30, migration `AddShutdownState`, `closechannel` (34757a3, b38ce86, 6d81ecd), LND interop fixes (9733937, 5d0aafc) and crash/chain safety (8e0e154). Proofs: Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) and `CooperativeCloseFlowTests` (287a956) passed in their lanes; the integrator could not run the LND Docker suite (NL-276), so neither was re-verified at `c92d837`. **Next:** re-run the Docker proofs, N11 (`option_simple_close`, NL-020), the closing timeouts (NL-284) and BOLT 5 (`docs/agents/BOLT5_ONCHAIN_PLAN.md`). §5 opens with the wave-3 record.
+- Status after ABCD wave 2 (`a5675cb`, superseded by the line above): N0-N8 are **done**. N7 (ABCD W2-A): pure `ReestablishPlanner` with an exhaustive oracle table (4620895); lifecycle hooks, gating, retransmission, data-loss detection, error re-send without disconnect and `HandleChannelMessageAsync` returning `Task` (4ec83d3); startup resumes every stored state and the funder remember rule is pinned (82c4c37); a peer's reestablish after channel_ready is answered and ours is sent at connect for every channel past funding_signed (22c29ae). Proof N7: I11 harness (1ad14ce) and Docker (a)(b)(c) (a4e95d7, 30c1bb8). N8 (W2-B switch ca87313/d1476a4, W2-C `PaymentService` 6cb279f/083a726, W2-D Docker fdc80af, integration f2f1ef6/a5675cb): LND pays our invoice (also trimmed), we pay LND's, 10 concurrent each way, restart with an HTLC in flight; the ABCD multi-hop suite is green. Remaining in N7: Closing/Negotiating resumption and shutdown re-send (N10), signer-level broadcast refusal (N9-T4). **Next milestones: N9** (deadlines `HtlcExpiryMonitor`, fail-the-channel broadcast) and **N10** (close). §5 opens with the wave-2 record.
 - Status after ABCD wave 1 (`342d22e`, superseded by the line above): N0-N6 are **done**. N6 (ABCD W1-A): the seven normal-operation receive handlers and their `ChannelManager` cases persist every transition before sending (a604dff); `ChannelOperationsService`, the debounced `CommitScheduler` and `LocalOnlyHtlcSwitch` form the send side, with startup replay of pending events (a02afa7), and each channel's link is pinned to the connection it opened on (e5f7312). Proof N6: the in-process `TwoNodeHarness` (f5315c0) and Docker N6-T5 against LND (a388fc4). N6-T3 is partial (Failed + ErrorSent persisted and updates refused; re-send on reconnect is N7). **Next milestones: N7** (ABCD W2-A) and the N8 slice (W2-B switch, W2-C send, W2-D Docker proofs). §5 opens with the wave-1 record.
 - Status after ABCD wave 0 (`0b7e617`, superseded by the line above): N0-N5 are **done**. N4 is complete: the engine signs and verifies through the real signer (NL-230), uses one fee calculator (NL-231) and raises lock-in/fulfill/irrevocable-fail/settle events (N4-T4). N5 persists the engine with one save per transition on all three providers, with crash injection (NL-025, NL-232, NL-237, NL-238). The N6-T2/N6-T3 **contracts** (`IChannelOperations`, `IHtlcSwitch`, `ChannelState.Failed`, `ChannelFailedException`, `NodeOptions.EnableHtlcs`) are in Domain. Still no HTLC behaviour on the wire: nothing wires the engine to handlers (N6). **Next milestone: N6** (ABCD roadmap wave 1, lane W1-A). §5 opens with the wave-0 record; §2.2 marks each gate.
 
@@ -101,7 +102,7 @@ All verified in code unless marked. "Gate" = the milestone task that must fix it
 
 | # | Bug | Evidence | NL | Gate | Status (swarm) |
 |---|---|---|---|---|---|
-| G1 | Every non-open channel message is ignored (interim: `default` throws a channel-scoped `ChannelWarningException`, so the peer gets a `warning` for that channel and stays connected; it used to fail every channel with an all-zero `error`). A message for a channel we don't know (not in memory, not a temporary channel of that peer, not in the DB) gets an `error` for that unknown channel_id (BOLT 1 SHOULD). update_fail_malformed_htlc without BADONION gets a channel `warning` and the connection is closed (BOLT 2's other option; we can't fail a channel yet, see G21) | `ChannelManager.HandleChannelMessageAsync` switch, `ThrowIfUnknownChannelAsync`, `CreateNotImplementedWarning` | NL-031 | N6 (reestablish: N7, close: N10) | **done** for N6 (a604dff) and N7 (4ec83d3): 128-135 and channel_reestablish have handlers; only close messages still get the interim warning |
+| G1 | Every non-open channel message is ignored (interim: `default` throws a channel-scoped `ChannelWarningException`, so the peer gets a `warning` for that channel and stays connected; it used to fail every channel with an all-zero `error`). A message for a channel we don't know (not in memory, not a temporary channel of that peer, not in the DB) gets an `error` for that unknown channel_id (BOLT 1 SHOULD). update_fail_malformed_htlc without BADONION gets a channel `warning` and the connection is closed (BOLT 2's other option; we can't fail a channel yet, see G21) | `ChannelManager.HandleChannelMessageAsync` switch, `ThrowIfUnknownChannelAsync`, `CreateNotImplementedWarning` | NL-031 | N6 (reestablish: N7, close: N10) | **done** for N6 (a604dff) and N7 (4ec83d3): 128-135 and channel_reestablish have handlers; close messages have handlers since N10 (b38ce86) |
 | G2 | Second local per-commitment point built from **index 1** instead of 2^48−2 | `FundingConfirmedMessageHandler.cs:52-54` passes `CommitmentNumber.Value` to `GetPerCommitmentPoint`, whose `commitmentNumber` parameter is used as the raw index (`LocalLightningSigner.cs:127-139`) | NL-187 | N1-T1 | **done** (NL-187, b74e526) |
 | G3 | Commitment number mutated at confirmation, every block | `CommitmentNumber.Increment()` in the handler above; `ConfirmUnconfirmedChannels` re-runs it for `ReadyForUs`; the handler only logs a wrong state (`:43-47`) | NL-050, NL-069 | N0-T7, N1-T1 | **done**: fires once per confirmation (NL-050, afbb108); numbers are never changed at confirmation (b74e526) |
 | G4 | One `CommitmentNumber` shared by both commitments; reload rebuilds it from `LocalRevocationNumber + 1` | `ChannelModel.CommitmentNumber`; factory `:225`; `ChannelDbRepository.cs:237-239` | NL-188, NL-127 | N1-T1, N1-T5 | **done** (NL-188: b74e526, 0b8dd33, 72a4ac6) |
@@ -305,6 +306,29 @@ Each needs Domain request/response, `[MessagePackObject]` DTOs in `src/NLightnin
 
 ## 5. Milestones
 
+### ABCD wave 3 record (status 2026-09-25, `wip/fafo` @ `c92d837`)
+
+N9 and N10 are done (lanes W3-A, W3-B, W3-C; lane SHAs mapped to `wip/fafo` by the `-x` footers; `983b2b4` wires the services):
+- N9-T1 (1dbbc1f, 525973a, 9bfa09d): `Application/Channels/Fees/FeeUpdatePolicy` (funder only; target = estimate, times `NonAnchorFeerateMarginPercent` 200 without anchors, clamped to [max(253, Min), 50,000] or 2,500 with anchors; moves at >= 20 % or below the floor; an increase must pass `SendFee` and, without anchors, the dust limit, else the highest passing feerate by binary search) and `FeeUpdateScheduler` (every `Node:FeeUpdates:Interval`, 10 min; off in the Docker test node). Docker `FeeUpdateFlowTests` (45cc1b9): the LND-funded case is skipped because our estimate is 4x too high (NL-288, 533330f).
+- N9-T2 (36d2270, 06da54b): Domain `HtlcDeadlinePolicy` (offered: fail the channel at cltv + G, G = 2; fulfilled/preimage-known received: at cltv - 18; unresolved locked-in forwarded: fail back at cltv - cltv_expiry_delta; never-forwarded final hop: at cltv - 18, B2-CLTV-05; AwaitingDownstream never acts) and `HtlcExpiryMonitor` (on `OnNewBlockDetected`, rounds coalesced, outside every lock). Deviation: the plan placed the table tests in Domain.Tests; they are `AT/Channels/Safety/HtlcDeadlinePolicyTests`.
+- N9-T3 (1dbbc1f): `NodeOptions.MaxDustHtlcExposureMsat` stored with the first snapshot (NL-254); `DustExposureHtlcSwitch` fails a locked-in incoming HTLC over the limit with `temporary_channel_failure` before forward or preimage (B2-DUST-01/02). Snapshots without a stored limit offer unlimited dust (NL-290).
+- N9-T4 (36d2270, 06da54b, 983b2b4): `ChannelFailureService` persists Failed + error under the lock, signs the latest local commitment with its stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, byte-exact against BOLT 3 Appendix C commitment 0; refuses a revoked number), publishes after the lock with the watch saved first, retries refused publishes each block and resumes interrupted broadcasts at start; Closed when the commitment confirms. `MarkDataLoss` locks the signer. `ChannelManager` hands a `MustBroadcast` failure to it after the lock (B2-RE-14). Gaps: no persisted broadcast intent (NL-271), no detection of the peer's commitment (NL-272), no sweeps (BOLT 5).
+- Proof N9: Docker `ChannelSafetyFlowTests` (02b12f7: an offered HTLC past its deadline, our commitment confirms, LND shows RemoteForceClose; a681dad: a forwarded HTLC held downstream is failed back upstream before the fail-back height). Passed in the lane (runner in an SDK container), not re-run at integration (NL-276). The plan's `Given_LndFundedChannel_Then_PaymentsAndFeeUpdatesWork` is the skipped `FeeUpdateFlowTests` case.
+- N10-T1 (34757a3): `Domain/Channels/Closing/ShutdownScriptValidator` (P2WPKH, P2WSH, v1-16 with anysegwit, OP_RETURN with simple_close) and per-script BOLT 3 dust thresholds. A local upfront script is still never generated (NL-045).
+- N10-T2 (34757a3): `ClosingTransactionModel`, `LegacyClosingTransactionFactory`, `ClosingFeeCalculator` (weight 724), `ClosingTransactionBuilder`; dead `Transactions/*` deleted (NL-065). No BOLT 3 vector exists; signed txs verified with NBitcoin.
+- N10-T3 (b38ce86, 6d81ecd, 9733937, 5d0aafc, 8e0e154): `ShutdownMessageHandler`/`ClosingSignedMessageHandler` → scoped `ChannelCloseCoordinator`, pure `LegacyClosingNegotiator`, states ShuttingDown 23 / Negotiating 25 / Closing 30 / Closed 40, `ClientCommand.CloseChannel = 13`. Closing watch saved with Closing; funding-spend watch from the first shutdown records a mutual close the peer broadcast; startup and per-block completion; reestablish in ShuttingDown/Negotiating/Closing with channel_ready and shutdown retransmitted and the agreed closing_signed re-sent (NL-036, NL-287).
+- Proof N10: Docker `CooperativeCloseFlowTests` 4/4 against LND in lane step 2 (287a956: we close / LND closes, with and without fee_range, after a payment each way; LND COOPERATIVE_CLOSE with the same txid, our Closed after 6 blocks, the wallet credited). Not re-run after 8e0e154 or at integration (NL-276). LND 0.20 ignores fee_range, so the range path is in-process only (NL-286).
+
+Deviations accepted in wave 3:
+- B2-CLS-R09: we re-send our fee limit to a peer seen converging instead of proposing strictly between (LND lowers 10 % per round; about 19 rounds), capped at 100 messages (NL-285).
+- B2-CLS-03 / B2-CLS-R04 timeouts not implemented (NL-284); B2-SHUT-R03 (MAY reply before channel_ready) answered with a warning; B2-SHUT-S08 not implemented (NL-279).
+- A Closing channel is never turned Failed (a broadcast would conflict with the agreed close); a reestablish mismatch on it is only logged.
+- Out-of-lane touches accepted: `IBlockchainMonitor` gained `TrackWatchedTransaction`, `PublishTransactionAsync`, `WatchOutpointSpend`, `StopWatchingOutpointSpend`, `OnWatchedOutpointSpent` (W3-B); `IPeerService` gained `LastMessageReceivedAt`/`PingAsync` (W3-D).
+
+Also in wave 3 (W3-D): NL-247 (`ThreadLocalSha256`), NL-249, NL-251 (real ping before commit, B2-CS-S05), NL-264 (single replay) fixed; `IOnionReplayStore` added but not wired (NL-078); NL-246 closed as wontfix. W3-E added a Core Lightning Docker fixture (`Docker/Interop/Cln/`, 9/9 green at integration). W3-F wrote `docs/agents/BOLT5_ONCHAIN_PLAN.md`.
+
+Carried: re-run the N9/N10 Docker proofs and `scripts/run-abcd.sh 3` (NL-276); N11 (NL-020); NL-271, NL-272, NL-284, NL-279, NL-288, NL-289, NL-280, NL-283; BOLT 5 O0-O8.
+
 ### ABCD wave 2 record (status 2026-09-25, `wip/fafo` @ `a5675cb`)
 
 N7 is done (lane W2-A; lane SHAs mapped to `wip/fafo` by the `-x` footers):
@@ -494,19 +518,19 @@ Prerequisite: ONION M3-T1 + create half of M3-T2: **met** (ONION M3 done, NL-070
 ### N9: Fees, deadlines, dust exposure, fail-the-channel
 | Task | Files | Acceptance |
 |---|---|---|
-| **N9-T1** `FeeUpdateScheduler` + `FeeUpdatePolicy` | funder only, ±20% hysteresis, floor 253 sat/kw, bounds vs `IFeeService` (receive: < 0.5× or > 10× estimate) | `AT/Channels/Services/FeeUpdateSchedulerTests.Given_EstimateUp20Pct_Then_UpdateFeeQueued`; harness fee/add race |
-| **N9-T2** Deadlines | Domain `HtlcDeadlinePolicy` (G=2, fulfill deadline 18), `NodeOptions.CltvExpiryDelta` (default 34), `HtlcExpiryMonitor` on `OnNewBlockDetected` | table tests at heights N−1, N, N+G |
-| **N9-T3** Dust exposure | `UpdateValidator` + `NodeOptions.MaxDustHtlcExposureMsat` | DUST-01..05 rows |
-| **N9-T4** `ChannelFailureService`. Partial NL-094, NL-095 | error + sign latest local commitment with both sigs + broadcast + `Failed`; refuses under `DataLossDetected`; the only broadcast path | `AT/…/ChannelFailureServiceTests.Given_Revoked_Then_OnlyLatestBroadcast`, `…Given_DataLoss_Then_Refused` |
+| **N9-T1** `FeeUpdateScheduler` + `FeeUpdatePolicy`. **Done** (1dbbc1f, 525973a; LND-funded Docker case skipped, NL-288) | funder only, ±20% hysteresis, floor 253 sat/kw, bounds vs `IFeeService` (receive: < 0.5× or > 10× estimate) | `AT/Channels/Services/FeeUpdateSchedulerTests.Given_EstimateUp20Pct_Then_UpdateFeeQueued`; harness fee/add race |
+| **N9-T2** Deadlines. **Done** (36d2270, 06da54b; Docker 02b12f7, a681dad) | Domain `HtlcDeadlinePolicy` (G=2, fulfill deadline 18), `NodeOptions.CltvExpiryDelta` (default 34), `HtlcExpiryMonitor` on `OnNewBlockDetected` | table tests at heights N−1, N, N+G |
+| **N9-T3** Dust exposure. Resolves NL-254. **Done** (1dbbc1f; pre-wave-3 snapshots NL-290) | `UpdateValidator` + `NodeOptions.MaxDustHtlcExposureMsat` | DUST-01..05 rows |
+| **N9-T4** `ChannelFailureService`. Partial NL-094, NL-095. **Done** (36d2270, 06da54b, wired 983b2b4; gaps NL-271, NL-272) | error + sign latest local commitment with both sigs + broadcast + `Failed`; refuses under `DataLossDetected`; the only broadcast path | `AT/…/ChannelFailureServiceTests.Given_Revoked_Then_OnlyLatestBroadcast`, `…Given_DataLoss_Then_Refused` |
 
 **Proof N9:** Docker `Given_LndFundedChannel_Then_PaymentsAndFeeUpdatesWork` (alice opens to us with push; payments both ways; our `update_fee` on an N1 channel accepted by LND; LND `update_fee` accepted if it sends one **(unverified trigger in regtest)**), and `Given_OfferedHtlcPastDeadline_Then_ChannelFailedAndCommitmentConfirmed` (alice hold invoice never settled; mine past deadline; our latest commitment confirms).
 
 ### N10: Cooperative close
 | Task | Files | Acceptance |
 |---|---|---|
-| **N10-T1** Scripts and dust. Resolves NL-045, NL-068 | `Channels/Validators/ShutdownScriptValidator.cs`; `DustService` in `AddBitcoinInfrastructure` (+ P2A/OP_RETURN thresholds); local upfront script from the wallet | table tests (every form, push lengths 2/40, OP_RETURN 6..80, invalid ones) |
-| **N10-T2** Closing tx. Resolves NL-065 | Domain `ClosingTransactionModel`, `ClosingTransactionBuilder.BuildLegacy`; delete dead `Transactions/{ClosingTransaction,BaseTransaction,FundingTransaction}.cs` | `BT/Builders/ClosingTransactionBuilderTests` (both variants, floor, dust drop, BIP69, witness `0 <sig1> <sig2> <script>` in funding-key order) |
-| **N10-T3** Shutdown + negotiation + `CloseChannel`. Resolves NL-034 (legacy); partial NL-036, NL-152 | `ShutdownMessageHandler`, `ClosingSignedMessageHandler`, `ChannelCloseService`, `LegacyClosingNegotiator`, states 23/25/30, migration `AddShutdownState`, `ClientCommand.CloseChannel` | negotiator property tests (convergence ≤ 64 rounds, strictly-between, range overlap); handler tests per §6 SHUT/CLS rows |
+| **N10-T1** Scripts and dust. Resolves NL-045, NL-068. **Done** (34757a3; local upfront script still missing, NL-045) | `Channels/Validators/ShutdownScriptValidator.cs`; `DustService` in `AddBitcoinInfrastructure` (+ P2A/OP_RETURN thresholds); local upfront script from the wallet | table tests (every form, push lengths 2/40, OP_RETURN 6..80, invalid ones) |
+| **N10-T2** Closing tx. Resolves NL-065. **Done** (34757a3) | Domain `ClosingTransactionModel`, `ClosingTransactionBuilder.BuildLegacy`; delete dead `Transactions/{ClosingTransaction,BaseTransaction,FundingTransaction}.cs` | `BT/Builders/ClosingTransactionBuilderTests` (both variants, floor, dust drop, BIP69, witness `0 <sig1> <sig2> <script>` in funding-key order) |
+| **N10-T3** Shutdown + negotiation + `CloseChannel`. Resolves NL-034 (legacy); partial NL-036, NL-152. **Done** (b38ce86, 6d81ecd, 9733937, 5d0aafc, 8e0e154; timeouts NL-284) | `ShutdownMessageHandler`, `ClosingSignedMessageHandler`, `ChannelCloseService`, `LegacyClosingNegotiator`, states 23/25/30, migration `AddShutdownState`, `ClientCommand.CloseChannel` | negotiator property tests (convergence ≤ 64 rounds, strictly-between, range overlap); handler tests per §6 SHUT/CLS rows |
 
 **Proof N10:** Docker `Given_OpenChannel_When_CooperativeClose_Then_FundsReturnToWallets`: (a) we close: LND lists `COOPERATIVE_CLOSE`, after 6 blocks we are `Closed` and our wallet rises by `to_local − fee`; (b) alice closes a second channel: we reply `shutdown`, negotiate, same checks; (c) with and without `fee_range`; stretch: close with a hold-invoice HTLC in flight completes only after it settles.
 
@@ -532,23 +556,23 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-NO-03 | Irrevocably-committed definition | DONE (engine; lock-in and irrevocable-removal events, N4-T4 b166ea0) | N4-T4 | `DT/…/CommitmentsIrrevocabilityTests` [M4] |
 | B2-FWD-01 | No outgoing offer before incoming lock-in | DONE (engine gate b166ea0; `HtlcSwitch` forwards only on `IncomingHtlcLockedIn`, ca87313) | N4-T4 / N6-T2 | `AT/Payments/HtlcSwitchTests.Given_IncomingNotLockedIn_Then_NoOutgoingAdd` [M4] |
 | B2-FWD-02 | No incoming fail before outgoing removal irrevocable | DONE (engine gate b166ea0; `HtlcSwitch` fails upstream only on the irrevocable `OutgoingHtlcFailed`, ca87313; `ThreeNodeSwitchTests`) | N4-T4 | `…Given_DownstreamFailNotLockedIn_Then_UpstreamNotFailed` [M4][B5] |
-| B2-FWD-03 | Fail incoming at expiry / delta | MISSING | N9-T2 | `AT/…/HtlcExpiryMonitorTests.Given_IncomingAtExpiry_When_NewBlock_Then_FailQueued` [M4] |
+| B2-FWD-03 | Fail incoming at expiry / delta | DONE (N9-T2 36d2270, 06da54b; Docker a681dad) | N9-T2 | `AT/…/HtlcExpiryMonitorTests.Given_IncomingAtExpiry_When_NewBlock_Then_FailQueued` [M4] |
 | B2-FWD-04 | `expiry_too_far` | MISSING | ONION M4-T4 | M4 tests [M4] |
 | B2-FWD-05 | Fulfill incoming on outgoing fulfill / on-chain preimage | PARTIAL (off-chain: upstream fulfilled at once on `OutgoingHtlcFulfilled`, ca87313, d1476a4; on-chain preimage is BOLT 5) | N4-T4 | `…Given_DownstreamFulfill_Then_UpstreamFulfillImmediately` [M4][B5] |
 
 ### 6.2 `cltv_expiry_delta` and dust exposure
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
-| B2-CLTV-01 | Offerer deadline `cltv_expiry + G` | MISSING | N9-T2 | `DT/Channels/Policies/HtlcDeadlinePolicyTests` |
+| B2-CLTV-01 | Offerer deadline `cltv_expiry + G` | DONE (`HtlcDeadlinePolicy`, G = 2, 36d2270) | N9-T2 | `DT/Channels/Policies/HtlcDeadlinePolicyTests` |
 | B2-CLTV-02 | Don't offer already-expired HTLCs | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/SendAddTests.Given_ExpiryInPast_Then_Rejected` |
-| B2-CLTV-03 | Offered past deadline → fail channel | MISSING | N9-T2/T4 | `AT/…/HtlcExpiryMonitorTests.Given_OfferedPastDeadline_Then_ChannelFailed` [B5] |
-| B2-CLTV-04 | Fulfiller deadline (18 blocks) | MISSING | N9-T2 | `HtlcDeadlinePolicyTests` |
-| B2-CLTV-05 | Fail (not forward) past fulfillment deadline | MISSING | N9-T2 | `AT/Payments/…` [M4] |
-| B2-CLTV-06 | Fulfilled past deadline → fail channel | MISSING | N9-T2/T4 | `…Given_FulfilledPastDeadline_Then_ChannelFailed` [B5] |
-| B2-CLTV-07 | `cltv_expiry_delta ≥ 34` | MISSING | N9-T2 | `DT/Node/NodeOptionsTests` [M4] |
-| B2-DUST-01/02 | Receiving: remote/local dust over limit → fail once committed, no preimage | MISSING | N9-T3 | `DT/…/DustExposureTests.Given_RemoteDustOverLimit_When_ReceiveAdd_Then_MarkedFailOnLockIn` (+ local) [M4] |
-| B2-DUST-03/04 | Offering over limit → don't send | PARTIAL (engine refuses over `MaxDustHtlcExposureMsat`; no `NodeOptions` value, N9-T3) | N9-T3 | `…Given_OfferOverRemoteDust_Then_Refused` (+ local) |
-| B2-DUST-05 | Non-anchor fee increase over dust limit | MISSING | N9-T1 | `DT/…/FeeUpdatePolicyTests` |
+| B2-CLTV-03 | Offered past deadline → fail channel | DONE (36d2270; Docker 02b12f7; sweeps are BOLT 5) | N9-T2/T4 | `AT/…/HtlcExpiryMonitorTests.Given_OfferedPastDeadline_Then_ChannelFailed` [B5] |
+| B2-CLTV-04 | Fulfiller deadline (18 blocks) | DONE (36d2270) | N9-T2 | `HtlcDeadlinePolicyTests` |
+| B2-CLTV-05 | Fail (not forward) past fulfillment deadline | DONE (06da54b: never-forwarded final-hop HTLCs failed back at cltv - 18) | N9-T2 | `AT/Payments/…` [M4] |
+| B2-CLTV-06 | Fulfilled past deadline → fail channel | DONE (36d2270; invoice-level preimage check, NL-274) | N9-T2/T4 | `…Given_FulfilledPastDeadline_Then_ChannelFailed` [B5] |
+| B2-CLTV-07 | `cltv_expiry_delta ≥ 34` | DONE (`RoutingOptions.MinimumCltvExpiryDelta` = 34, validated at startup) | N9-T2 | `DT/Node/NodeOptionsTests` [M4] |
+| B2-DUST-01/02 | Receiving: remote/local dust over limit → fail once committed, no preimage | DONE (`DustExposureHtlcSwitch`, 1dbbc1f) | N9-T3 | `DT/…/DustExposureTests.Given_RemoteDustOverLimit_When_ReceiveAdd_Then_MarkedFailOnLockIn` (+ local) [M4] |
+| B2-DUST-03/04 | Offering over limit → don't send | DONE (engine; `NodeOptions.MaxDustHtlcExposureMsat` stored with the first snapshot, 1dbbc1f; older snapshots NL-290) | N9-T3 | `…Given_OfferOverRemoteDust_Then_Refused` (+ local) |
+| B2-DUST-05 | Non-anchor fee increase over dust limit | DONE (`FeeUpdatePolicy`, 1dbbc1f) | N9-T1 | `DT/…/FeeUpdatePolicyTests` |
 
 ### 6.3 `update_add_htlc`
 | ID | Requirement | Status | Task | Test |
@@ -567,7 +591,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-ADD-S10 | ids from 0, +1, never reset | DONE (engine N4; wired N6, a604dff/a02afa7); ids start at 0 (NL-190 fixed) | N1-T3, N4-T2 | `…Given_ThreeAddsAcrossTwoCommits_Then_Ids012` |
 | B2-ADD-S11 | Blinded relay sets `path_key` | MISSING (NL-026) | ONION M5 | M5 [M5] |
 | B2-ADD-S12 | Splice rules | N/A | — | — |
-| B2-ADD-S13 | No add after `shutdown` | MISSING | N10-T3 | `DT/…/ShutdownTests.Given_ShutdownSent_When_SendAdd_Then_Rejected` |
+| B2-ADD-S13 | No add after `shutdown` | DONE (b38ce86) | N10-T3 | `DT/…/ShutdownTests.Given_ShutdownSent_When_SendAdd_Then_Rejected` |
 | B2-ADD-R01 | 0 / below own minimum → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2, N6-T1 | `DT/…/ReceiveAddTests.Given_BelowOwnMinimum_Then_Violation`; `AT/…/UpdateAddHtlcMessageHandlerTests` |
 | B2-ADD-R02 | Sender can't afford → fail | DONE (engine N4; wired N6, a604dff/a02afa7); judged on what the peer signed | N4-T2 | `…Given_SenderBelowReserveAfterAdd_Then_Violation` |
 | B2-ADD-R03 | Own max accepted / in-flight | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_OwnMaxAcceptedExceeded_Then_Violation` |
@@ -585,7 +609,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-DEL-W01 | fulfill TLVs 1/3, fail TLV 1 | MISSING (NL-022) | ONION M3b | `ST/Messages/UpdateFulfillHtlcMessageTests` [M3b] |
 | B2-DEL-00 | Only remove the other node's HTLCs | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/RemoveTests.Given_RemoveOwnOfferedHtlc_Then_Rejected` |
 | B2-DEL-01 | Remove as soon as possible | DONE (`CommitScheduler`, a02afa7) | N6-T2 | `AT/Channels/Services/CommitSchedulerTests` [M4] |
-| B2-DEL-02 | Fail timed-out HTLCs | MISSING | N9-T2 | see B2-CLTV-03 |
+| B2-DEL-02 | Fail timed-out HTLCs | DONE (36d2270) | N9-T2 | see B2-CLTV-03 |
 | B2-DEL-03 | No remove before lock-in | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_AddNotLockedIn_When_SendFulfill_Then_Rejected` |
 | B2-DEL-04 | Blinded non-final → `invalid_onion_blinding` | MISSING | ONION M5 | M5 [M5] |
 | B2-DEL-05 | `path_key` in add → malformed `invalid_onion_blinding` | MISSING | ONION M5 | M5 [M5] |
@@ -612,7 +636,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-CS-S02 | Fee-only CS allowed | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_OnlyFeeUpdate_Then_CanSign` |
 | B2-CS-S03 | Revocation-number-only CS allowed | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_DustOnlyAdd_Then_CanSign_And_NumHtlcs0` |
 | B2-CS-S04 | HTLC sigs in output order | DONE (N2-T3, N3-T1) | N2-T3, N3-T1 | `IT/BOLT3/Bolt3HtlcTxVectorTests.Given_AppendixC_When_SigningRemoteHtlcTxs_Then_SignaturesInVectorOrder` |
-| B2-CS-S05 | Ping before CS if idle | PARTIAL (connection check only, NL-251) | N6-T2 | `AT/…/CommitSchedulerTests.Given_IdlePeer_When_Commit_Then_PingFirst` |
+| B2-CS-S05 | Ping before CS if idle | DONE (ping a quiet peer and await the pong, d7f09a9, c84f81a; NL-251) | N6-T2 | `AT/…/CommitSchedulerTests.Given_IdlePeer_When_Commit_Then_PingFirst` |
 | B2-CS-S06 | One un-revoked CS; needs remote next point | DONE (engine N4; wired N6, a604dff/a02afa7) | N1-T2, N4-T3 | `…Given_WaitingForRevocation_Then_CannotSign` |
 | B2-CS-S07 | Splice batch | N/A | — | — |
 | B2-CS-R01 | Invalid / high-S sig → fail | DONE (engine verifies before any state change; handler a604dff) | N3-T5, N6-T1 | `AT/…/CommitmentSignedMessageHandlerTests.Given_BadSig_Then_ChannelError` |
@@ -632,20 +656,20 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-RAA-R02 | Shachain violation → MAY fail | PARTIAL (shachain rejects and is persisted, NL-136; not wired) | N3-T4 | Appendix D "wrong sequence"; `AT/…Given_ShachainInconsistent_Then_Fail` [B5] |
 | B2-RAA-R03 | RAA without outstanding CS → violation | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T3 | `…Given_NoPendingCommit_Then_Violation` |
 | B2-RAA-R04 | Store remote secrets for penalties | DONE (saved on every revoke_and_ack, a604dff) | N3-T4 | `IT/Persistence/RemoteShachainPersistenceTests` [B5] |
-| B2-RAA-N01 | Never broadcast revoked commitments | MISSING | N9-T4 | `AT/…/ChannelFailureServiceTests.Given_Revoked_Then_OnlyLatestBroadcast` [B5] |
-| B2-RAA-N02 | Don't sign own commitment unless broadcasting | DONE in effect | N9-T4 | same (code review) |
+| B2-RAA-N01 | Never broadcast revoked commitments | DONE (signer refuses a revoked number; `ChannelFailureService` the only broadcast path, 36d2270) | N9-T4 | `AT/…/ChannelFailureServiceTests.Given_Revoked_Then_OnlyLatestBroadcast` [B5] |
+| B2-RAA-N02 | Don't sign own commitment unless broadcasting | DONE (our commitment is signed only by `SignLocalCommitmentForBroadcast`, 36d2270) | N9-T4 | same (code review) |
 
 ### 6.8 `update_fee`
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-FEE-Z01 | `zero_fee_commitments` rules | N/A | — | — |
-| B2-FEE-S01 | Payer keeps feerate sufficient | MISSING | N9-T1 | `AT/…/FeeUpdateSchedulerTests.Given_EstimateUp20Pct_Then_UpdateFeeQueued` |
+| B2-FEE-S01 | Payer keeps feerate sufficient | DONE (`FeeUpdateScheduler`, 1dbbc1f, 525973a; our estimate is 4x too high, NL-288) | N9-T1 | `AT/…/FeeUpdateSchedulerTests.Given_EstimateUp20Pct_Then_UpdateFeeQueued` |
 | B2-FEE-S02 | Non-payer MUST NOT send | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `DT/…/FeeTests.Given_NotFunder_When_SendFee_Then_Rejected` |
-| B2-FEE-S03 | Non-anchor dust on increase → MAY skip/fail | MISSING | N9-T1 | see B2-DUST-05 |
+| B2-FEE-S03 | Non-anchor dust on increase → MAY skip/fail | DONE (`FeeUpdatePolicy` skips or lowers, 1dbbc1f) | N9-T1 | see B2-DUST-05 |
 | B2-FEE-R01 | Unreasonable feerate → fail | DONE (engine N4; wired N6, a604dff/a02afa7); bounds come from N9-T1 | N4-T2, N9-T1 | `…Given_FeeAboveMax_Then_Violation` |
 | B2-FEE-R02 | Non-payer sender → fail | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T2 | `…Given_FromNonFunder_Then_Violation` |
 | B2-FEE-R03 | Funder can't afford → SHOULD fail | DONE (engine N4; wired N6, a604dff/a02afa7); checked on the current local commitment and again at commit | N4-T2 | `…Given_FunderCantAffordNewFee_Then_Violation` |
-| B2-FEE-R04 | Non-anchor dust after increase → MAY fail | MISSING | N9-T1 | see B2-DUST-05 |
+| B2-FEE-R04 | Non-anchor dust after increase → MAY fail | DONE (`DustExposurePolicy.CheckFeeIncrease`, 1dbbc1f) | N9-T1 | see B2-DUST-05 |
 | B2-FEE-X01 | Replaced, last applies per commitment | DONE (engine N4; wired N6, a604dff/a02afa7) | N4-T1 | `DT/…/ReduceTests.Given_TwoFeeUpdates_Then_LastApplies` |
 
 ### 6.9 `channel_reestablish`
@@ -666,7 +690,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-RE-11 | `your_last_per_commitment_secret` (zeros if none) | DONE (planner 4620895) | N7-T1, N3-T4 | same |
 | B2-RE-12 | No `next_funding` on v1 | DONE by omission | N7-T1 | `…Given_V1Channel_Then_NoNextFunding` |
 | B2-RE-13 | `my_current_funding_locked` send rules | N/A | — | — |
-| B2-RE-14 | Received 0 → fail and broadcast | PARTIAL (planner fails the channel, 4620895; broadcast is N9-T4) | N7-T1, N9-T4 | `…Given_Zero_Then_FailAndBroadcast` [B5] |
+| B2-RE-14 | Received 0 → fail and broadcast | DONE (planner 4620895; `MustBroadcast` to `IChannelFailureService`, 983b2b4) | N7-T1, N9-T4 | `…Given_Zero_Then_FailAndBroadcast` [B5] |
 | B2-RE-15 | Both 1 → resend `channel_ready` | DONE (4ec83d3; lost channel_ready between two NLightning nodes, 22c29ae) | N7-T3 | `…Given_BothOne_Then_ResendChannelReady` |
 | B2-RE-16 | Otherwise no `channel_ready` resend | DONE (planner 4620895) | N0-T7, N7-T1 | `…Given_Two_Then_NoChannelReady` |
 | B2-RE-17 | Ignore redundant `channel_ready` | DONE | N7-T3 | `AT/…/ChannelReadyMessageHandlerTests.Given_Open_When_Duplicate_Then_NoStateChange` |
@@ -675,54 +699,54 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | B2-RE-20 | Resend last RAA, keep order with CS | DONE (4ec83d3; `LastSent` order) | N7-T3 | `…Given_RaaLost_And_CsLost_Then_OriginalOrderPreserved` (both orders) |
 | B2-RE-21 | Revocation mismatch → fail | DONE (planner 4620895) | N7-T1 | `…Given_RevocationMismatch_Then_Error` |
 | B2-RE-22 | Ignore `my_current_per_commitment_point` | DONE (planner 4620895) | N7-T1 | `…Given_InvalidPoint_Then_Ignored` |
-| B2-RE-23 | Data loss → no broadcast, send error | DONE (4ec83d3; `DataLossDetected` persisted, error sent, nothing signed after; signer-level refusal is N9-T4) | N7-T4 | `…Given_PeerAhead_WithValidSecret_Then_NoBroadcast_And_ErrorSent` [B5] |
+| B2-RE-23 | Data loss → no broadcast, send error | DONE (4ec83d3; signer `MarkDataLoss` 36d2270, called by the handler 983b2b4) | N7-T4 | `…Given_PeerAhead_WithValidSecret_Then_NoBroadcast_And_ErrorSent` [B5] |
 | B2-RE-24 | Wrong secret → fail | DONE (planner 4620895) | N7-T1 | `…Given_BadSecret_Then_Fail` |
 | B2-RE-25 | Unexpected `next_funding` on v1 → `tx_abort` | DONE (planner 4620895) | N7-T1 | `…Given_NextFundingOnV1_Then_TxAbort` |
 | B2-RE-26 | `my_current_funding_locked` processing | N/A | — | — |
 | B2-RE-27 | Handle broadcast of any sent commitment | MISSING | BOLT 5 | BOLT 5 plan [B5] |
-| B2-RE-28 | Re-send `shutdown` | MISSING | N7-T3, N10-T3 | `…Given_ShutdownSent_When_Reconnect_Then_ShutdownResent` |
-| B2-RE-29 | Closing negotiation restarts | MISSING | N10-T3 | `DT/Channels/Closing/LegacyClosingNegotiatorTests.Given_Reconnect_Then_Restart` |
+| B2-RE-28 | Re-send `shutdown` | DONE (b38ce86, 8e0e154; in-process proof) | N7-T3, N10-T3 | `…Given_ShutdownSent_When_Reconnect_Then_ShutdownResent` |
+| B2-RE-29 | Closing negotiation restarts | DONE (b38ce86; in-process proof) | N10-T3 | `DT/Channels/Closing/LegacyClosingNegotiatorTests.Given_Reconnect_Then_Restart` |
 
 ### 6.10 `shutdown`
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-SHUT-W01 | Wire | WIRE | — | `ShutdownMessageTests` |
-| B2-SHUT-S01 | Not before funding_created/signed | MISSING | N10-T3 | `AT/…/ChannelCloseServiceTests.Given_V1Opening_Then_Refused` |
-| B2-SHUT-S02 | MAY send before `channel_ready` | MISSING | N10-T3 | `…Given_ReadyForUs_Then_Allowed` |
-| B2-SHUT-S03 | Not with pending updates on receiver | MISSING | N10-T3 | `DT/…/ShutdownTests.Given_ProposedLocalChanges_Then_ShutdownDeferredUntilSigned` |
-| B2-SHUT-S04 | Only once | MISSING | N10-T3 | `…Given_ShutdownSent_Then_SecondRefused` |
+| B2-SHUT-S01 | Not before funding_created/signed | DONE (`InitiateAsync` only for Open channels, b38ce86) | N10-T3 | `AT/…/ChannelCloseServiceTests.Given_V1Opening_Then_Refused` |
+| B2-SHUT-S02 | MAY send before `channel_ready` | MISSING (MAY; we initiate only on Open) | N10-T3 | `…Given_ReadyForUs_Then_Allowed` |
+| B2-SHUT-S03 | Not with pending updates on receiver | DONE (pending updates signed first, b38ce86) | N10-T3 | `DT/…/ShutdownTests.Given_ProposedLocalChanges_Then_ShutdownDeferredUntilSigned` |
+| B2-SHUT-S04 | Only once | DONE (b38ce86) | N10-T3 | `…Given_ShutdownSent_Then_SecondRefused` |
 | B2-SHUT-S05 | Unlocked splice | N/A | — | — |
-| B2-SHUT-S06 | No add after shutdown | MISSING | N10-T3 | see B2-ADD-S13 |
-| B2-SHUT-S07 | Cleared → no `update_*` | MISSING | N10-T3 | `…Given_Cleared_When_SendFee_Then_Rejected` |
-| B2-SHUT-S08 | Fail routing of HTLCs added after our shutdown | MISSING | N10-T3 | `AT/Payments/HtlcSwitchTests.Given_LocalShutdown_When_IncomingAdd_Then_FailedBack` [M4] |
-| B2-SHUT-S09 | Reuse upfront script | BUG (NL-045) | N10-T1 | `…Given_UpfrontScript_Then_SameScriptSent` |
-| B2-SHUT-S10 | Allowed script forms | MISSING | N10-T1 | `DT/Channels/Validators/ShutdownScriptValidatorTests` |
-| B2-SHUT-R01 | Before funding → error | MISSING | N10-T3 | `AT/…/ShutdownMessageHandlerTests.Given_V1Opening_Then_Error` |
-| B2-SHUT-R02 | Bad script → warning | MISSING | N10-T3 | `…Given_P2PkhScript_Then_Warning` |
-| B2-SHUT-R03 | Pre-ready → MAY reply | MISSING | N10-T3 | `…Given_PreReady_Then_ShutdownReply` |
-| B2-SHUT-R04 | Reply once no outstanding updates | MISSING | N10-T3 | `…Given_PendingLocalChanges_Then_CsThenShutdown` |
-| B2-SHUT-R05 | Upfront mismatch → fail connection | MISSING | N10-T3 | `…Given_UpfrontMismatch_Then_Disconnect` |
-| B2-SHUT-R06 | Peer add after its shutdown → violation | MISSING | N10-T3 | `DT/…/ShutdownTests.Given_RemoteShutdown_When_ReceiveAdd_Then_Violation` |
+| B2-SHUT-S06 | No add after shutdown | DONE (b38ce86) | N10-T3 | see B2-ADD-S13 |
+| B2-SHUT-S07 | Cleared → no `update_*` | DONE (b38ce86) | N10-T3 | `…Given_Cleared_When_SendFee_Then_Rejected` |
+| B2-SHUT-S08 | Fail routing of HTLCs added after our shutdown | MISSING (NL-279) | N10-T3 | `AT/Payments/HtlcSwitchTests.Given_LocalShutdown_When_IncomingAdd_Then_FailedBack` [M4] |
+| B2-SHUT-S09 | Reuse upfront script | PARTIAL (a sent upfront script is reused, b38ce86; we never send one, NL-045) | N10-T1 | `…Given_UpfrontScript_Then_SameScriptSent` |
+| B2-SHUT-S10 | Allowed script forms | DONE (`ShutdownScriptValidator`, 34757a3) | N10-T1 | `DT/Channels/Validators/ShutdownScriptValidatorTests` |
+| B2-SHUT-R01 | Before funding → error | PARTIAL (refused with a warning, not an error, b38ce86) | N10-T3 | `AT/…/ShutdownMessageHandlerTests.Given_V1Opening_Then_Error` |
+| B2-SHUT-R02 | Bad script → warning | DONE (b38ce86) | N10-T3 | `…Given_P2PkhScript_Then_Warning` |
+| B2-SHUT-R03 | Pre-ready → MAY reply | MISSING (MAY; warning) | N10-T3 | `…Given_PreReady_Then_ShutdownReply` |
+| B2-SHUT-R04 | Reply once no outstanding updates | DONE (b38ce86) | N10-T3 | `…Given_PendingLocalChanges_Then_CsThenShutdown` |
+| B2-SHUT-R05 | Upfront mismatch → fail connection | DONE (b38ce86) | N10-T3 | `…Given_UpfrontMismatch_Then_Disconnect` |
+| B2-SHUT-R06 | Peer add after its shutdown → violation | DONE (b38ce86) | N10-T3 | `DT/…/ShutdownTests.Given_RemoteShutdown_When_ReceiveAdd_Then_Violation` |
 
 ### 6.11 Legacy `closing_signed`
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
 | B2-CLS-W01 | `fee_range` optional | DONE (NL-198) | N0-T6 | `ST/Messages/ClosingSignedMessageTests.Given_NoFeeRange_When_Deserialize_Then_Ok` |
-| B2-CLS-01 | Funder proposes once cleared | MISSING | N10-T3 | `DT/…/LegacyClosingNegotiatorTests.Given_Funder_Cleared_Then_Proposes` |
-| B2-CLS-02 | Initial fee from estimate; set `fee_range` | MISSING | N10-T3 | `…Given_Estimate_Then_FeeAndRangeSet` |
-| B2-CLS-03 | No response in time → fail | MISSING | N10-T3, N9-T4 | `AT/…Given_NoReplyTimeout_Then_ChannelFailed` [B5] |
-| B2-CLS-04 | Non-funder range rules | MISSING | N10-T3 | `…Given_NonFunder_Then_MaxAtLeastReceivedMax` |
-| B2-CLS-05 | Sign BOLT 3 closing tx | MISSING (NL-065) | N10-T2 | `BT/Builders/ClosingTransactionBuilderTests` + DK close |
-| B2-CLS-R01 | Sig valid for either variant | MISSING | N10-T3 | `AT/…/ClosingSignedMessageHandlerTests.Given_SigOverVariantWithoutOurOutput_Then_Accepted` |
-| B2-CLS-R02 | Equal fee → sign and broadcast | MISSING | N10-T3 | `…Given_EqualFee_Then_Agree` |
-| B2-CLS-R03 | Fee in our range → broadcast, echo | MISSING | N10-T3 | `…Given_FeeInOurRange_Then_EchoAndBroadcast` |
-| B2-CLS-R04 | No overlap → warn / fail | MISSING | N10-T3 | `…Given_NoOverlap_Then_Warning` |
-| B2-CLS-R05 | Funder: outside overlap → fail, else echo | MISSING | N10-T3 | `…Given_FunderFeeOutsideOverlap_Then_Fail` |
-| B2-CLS-R06 | Non-funder mismatch rules | MISSING | N10-T3 | `…Given_NonFunderMismatch_Then_Fail` |
-| B2-CLS-R07 | No range: strictly between | MISSING | N10-T3 | `…Given_NotStrictlyBetween_Then_Warning` |
-| B2-CLS-R08 | Agree → echo | MISSING | N10-T3 | `…Given_Agree_Then_Echo` |
-| B2-CLS-R09 | Otherwise propose strictly between | MISSING | N10-T3 | `…Given_Disagree_Then_StrictlyBetween` (property) |
-| B2-CLS-R10 | Output below script dust → fail | MISSING (NL-068) | N10-T1/T3 | `…Given_P2PkhOutputBelow546_Then_Fail` |
+| B2-CLS-01 | Funder proposes once cleared | DONE (b38ce86) | N10-T3 | `DT/…/LegacyClosingNegotiatorTests.Given_Funder_Cleared_Then_Proposes` |
+| B2-CLS-02 | Initial fee from estimate; set `fee_range` | DONE (b38ce86) | N10-T3 | `…Given_Estimate_Then_FeeAndRangeSet` |
+| B2-CLS-03 | No response in time → fail | MISSING (NL-284) | N10-T3, N9-T4 | `AT/…Given_NoReplyTimeout_Then_ChannelFailed` [B5] |
+| B2-CLS-04 | Non-funder range rules | DONE (b38ce86) | N10-T3 | `…Given_NonFunder_Then_MaxAtLeastReceivedMax` |
+| B2-CLS-05 | Sign BOLT 3 closing tx | DONE (34757a3; Docker 287a956) | N10-T2 | `BT/Builders/ClosingTransactionBuilderTests` + DK close |
+| B2-CLS-R01 | Sig valid for either variant | DONE (b38ce86) | N10-T3 | `AT/…/ClosingSignedMessageHandlerTests.Given_SigOverVariantWithoutOurOutput_Then_Accepted` |
+| B2-CLS-R02 | Equal fee → sign and broadcast | DONE (b38ce86) | N10-T3 | `…Given_EqualFee_Then_Agree` |
+| B2-CLS-R03 | Fee in our range → broadcast, echo | DONE (b38ce86; in-process only, NL-286) | N10-T3 | `…Given_FeeInOurRange_Then_EchoAndBroadcast` |
+| B2-CLS-R04 | No overlap → warn / fail | PARTIAL (warning; the fail timeout is NL-284) | N10-T3 | `…Given_NoOverlap_Then_Warning` |
+| B2-CLS-R05 | Funder: outside overlap → fail, else echo | DONE (b38ce86; in-process only, NL-286) | N10-T3 | `…Given_FunderFeeOutsideOverlap_Then_Fail` |
+| B2-CLS-R06 | Non-funder mismatch rules | DONE (b38ce86; in-process only, NL-286) | N10-T3 | `…Given_NonFunderMismatch_Then_Fail` |
+| B2-CLS-R07 | No range: strictly between | DONE (b38ce86) | N10-T3 | `…Given_NotStrictlyBetween_Then_Warning` |
+| B2-CLS-R08 | Agree → echo | DONE (b38ce86) | N10-T3 | `…Given_Agree_Then_Echo` |
+| B2-CLS-R09 | Otherwise propose strictly between | DEVIATION (hold our limit against a converging peer, 9733937, 5d0aafc; NL-285) | N10-T3 | `…Given_Disagree_Then_StrictlyBetween` (property) |
+| B2-CLS-R10 | Output below script dust → fail | DONE (b38ce86) | N10-T1/T3 | `…Given_P2PkhOutputBelow546_Then_Fail` |
 
 ### 6.12 `closing_complete` / `closing_sig` (optional)
 | ID | Requirement | Status | Task | Test |
@@ -781,7 +805,7 @@ Status: **DONE**, **WIRE** (message only), **PARTIAL**, **BUG**, **MISSING**, **
 | X-03 | Local/remote channel params | DONE (NL-194) | N1-T4 | `ChannelFactoryTests` |
 | X-04 | msat balances, local/remote numbers, remote next point | DONE (msat NL-191, numbers NL-188; remote current and next points persisted, NL-232 4472a8b; first snapshot at channel_ready a604dff) | N1-T1/T2/T5 | `ChannelRoundTripTests` |
 | X-05 | HTLC reload bugs | DONE (NL-125..128) | N1-T5 | `ChannelRoundTripTests` |
-| X-06 | Fail-the-channel service | PARTIAL (Failed + `ErrorSent` persisted, updates refused, a604dff; no broadcast service, NL-200) | N6-T3, N9-T4 | `ChannelFailureServiceTests` |
+| X-06 | Fail-the-channel service | DONE (Failed + `ErrorSent` a604dff; `ChannelFailureService` broadcast 36d2270, 06da54b, 983b2b4; NL-271) | N6-T3, N9-T4 | `ChannelFailureServiceTests` |
 | X-07 | Feature hygiene | DONE (NL-109, NL-074) | N0-T4 | `FeatureOptionsTests` |
 | X-08 | Application.Tests discovered | DONE (NL-167) | N0-T1 | `dotnet test` count |
 | X-09 | Strict TLV reads on touched messages | DONE (NL-001) | N0-T6, N11-T1 | serializer tests |

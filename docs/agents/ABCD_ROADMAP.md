@@ -1,6 +1,47 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 2 @ `a5675cb`).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 3 @ `c92d837`).
 
 ## Status
+
+### Wave 3: integrated into `wip/fafo` @ `c92d837` (2026-09-25), gates PARTIAL
+
+Wave 3 moved from "make ABCD green" to BOLT 2 completion and hardening. Six lanes: W3-A N9 safety, W3-B N10 close (migration owner), W3-C N9 fees, W3-D replay and debt, W3-E CLN interop, W3-F BOLT 5 plan (docs only). 30 lane commits were cherry-picked with `-x` in the order w3b, w3a, w3c, w3d, w3e, w3f; the only conflict was doc text in `src/NLightning.Application/CLAUDE.md` (both kept). Two `integrate:` commits:
+- 983b2b4: `AddApplicationServices` calls `AddChannelSafetyServices()` after `AddPaymentSendServices()` and `AddChannelFeeServices()` last (it wraps `IHtlcSwitch` in `DustExposureHtlcSwitch`); `Node:Safety` binds `ChannelSafetyOptions`; `NltgDaemonService` and `NLightningTestNode` start `IChannelFailureService`, `IHtlcExpiryMonitor` and `IFeeUpdateScheduler` after `PeerManager.StartAsync` and the payment reconcile and stop them before the chain monitor (the test node sets `Node:FeeUpdates:Enabled=false`); `ChannelManager` hands a `MustBroadcast` `ChannelFailedException` to `IChannelFailureService` after the lock; the reestablish handler calls `ILightningSigner.MarkDataLoss` after the data-loss save; `ChannelSafetyFlowTests` resolves its services from DI. Tests: ChannelManager theory (failure service only with MustBroadcast, never under the lock), MarkDataLoss assertions, DI resolution of the new services.
+- c92d837: root `CLAUDE.md` for wave 3.
+
+Gates at `c92d837`:
+- Build: Release and Release.Native, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean; `scripts/check-sln-configs.py` OK.
+- Tests: **4879** non-Docker tests pass in both configs, 0 skips (Domain 1899, Application 782, Integration 512, Serialization 466, Infrastructure 372, Infrastructure.Bitcoin 323, Bolt11 275, Daemon 250). The 10k-seed Long simulator passes.
+- `HasPendingModelChanges()` is false for all three providers after `AddShutdownState` (W3-B).
+- Docker (67 tests): 23 passed (Postgres 4/4, SqlServer 4/4, CLN interop 9/9, `ClnChannelSessionTests` 2/2, `OnceOnlyBuildTests` 2/2, `PollTests` 2/2); the 2 `Explicit` CLN reproducers were not run; **44 LND-based tests failed at fixture setup** ("No route to host" from the host process to the container IPs, NL-276), before any test code ran. So the ABCD 3-run gate (`scripts/run-abcd.sh 3 Release`) and the N9/N10 LND proofs are **not verified at `c92d837`**. In the lanes: `ChannelSafetyFlowTests` 2/2 (several runs, from an SDK container), `CooperativeCloseFlowTests` 4/4 at 287a956 (not re-run after 8e0e154), ABCD `scripts/run-abcd.sh 1` 10/10 plus `ReestablishFlowTests` 3/3 and `NormalOperationFlowTests` 8/8 during W3-B step 2.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W3-A N9 safety | done: N9-T2 `HtlcDeadlinePolicy` + `HtlcExpiryMonitor`, N9-T4 `ChannelFailureService`, signer broadcast signing + data-loss lock; review fixes (retry refused publishes, resume at start, final-hop deadline); Docker proofs (offered HTLC force close; forwarded HTLC failed back upstream before its deadline) | 36d2270, 684bc1e, 02b12f7, a681dad, 06da54b | NL-094 partial; new NL-271, NL-272, NL-273, NL-274, NL-275, NL-276 |
+| W3-B N10 close (migration owner) | done: N10-T1..T3, `AddShutdownState` (3 providers), `closechannel` (ClientCommand 13), LND interop fixes, crash/chain safety (closing watch in the Closing save, funding-spend watch, startup and per-block completion, reestablish in closing states); Docker close proof 4/4 at step 2 | 34757a3, b38ce86, 6d81ecd, b41e925, 9733937, 287a956, 5d0aafc, 8e0e154 | NL-036, NL-065 fixed; NL-034, NL-045, NL-152 partial; new NL-277..NL-287 (NL-278, NL-281, NL-287 fixed in the wave) |
+| W3-C N9 fees | done: N9-T1 `FeeUpdatePolicy`/`FeeUpdateScheduler`, N9-T3 `max_dust_htlc_exposure_msat` + `DustExposureHtlcSwitch`; Docker `FeeUpdateFlowTests` with the LND-funded case skipped | 1dbbc1f, 45cc1b9, 525973a, 9bfa09d, 533330f | NL-254 fixed; new NL-288, NL-290 |
+| W3-D replay and debt | done: NL-247, NL-249, NL-251 (real ping before commit), NL-264; `IOnionReplayStore` (not wired); NL-246 documented as unfixable | 03a19fa, c53afa2, 82b7dcc, d7f09a9, eb597d7, 813fc85, c84f81a, 9762e28 | NL-247, NL-249, NL-251, NL-264 fixed; NL-078 partial; NL-246 wontfix |
+| W3-E CLN interop | done: `ClnFixture` (own bitcoind + CLN v26.06.8, fee limits on), connect both ways, channels both directions, payments both ways, reestablish after disconnect and restart; two `Explicit` reproducers | 7c7c8c5, 8427c87 | new NL-288 (shared with W3-C), NL-289 |
+| W3-F BOLT 5 plan | done: `docs/agents/BOLT5_ONCHAIN_PLAN.md` (spec summary, verified gaps, design, milestones O0-O8, Docker proofs against LND) and its review revision | 3b02972, 6290443 | NL-094 plan ref |
+| Integration | wiring, root guide | 983b2b4, c92d837 | NL-094 partial (wired) |
+
+Ledger note: NL-034 stays **open (partial)** until `CooperativeCloseFlowTests` passes on `wip/fafo` (W3-B step 2 said fixed, step 3 changed the close path afterwards and could not re-run Docker). NL-094 stays open: only the broadcast of our own commitment exists. The W3-C lane result reached the ledger agent truncated; its items were taken from its commits and `src/NLightning.Application/CLAUDE.md`.
+
+Deviations accepted in wave 3 (details in the BOLT2 plan "ABCD wave 3 record"):
+- B2-CLS-R09: we re-send our closing fee limit to a peer seen converging (LND 0.20 lowers 10 % per round, about 19 rounds) instead of failing; NL-285.
+- The closing timeouts B2-CLS-03/R04 are not implemented (NL-284); B2-SHUT-S08 (fail HTLCs added after our shutdown) is not implemented (NL-279).
+- `HtlcDeadlinePolicyTests` live in Application.Tests, not Domain.Tests.
+- A Closing channel is never turned Failed.
+- Out-of-lane touches: `IBlockchainMonitor` (W3-B: `TrackWatchedTransaction`, `PublishTransactionAsync`, `WatchOutpointSpend`, `StopWatchingOutpointSpend`, `OnWatchedOutpointSpent`), `IPeerService` (W3-D: `LastMessageReceivedAt`, `PingAsync`), `TwoNodeHarness` (W3-B).
+
+### Carried into wave 4
+
+- **Gate first:** fix the host-to-container route (NL-276: Local Network permission or OrbStack restart, or run from the SDK container), then run the full Docker suite and `scripts/run-abcd.sh 3 Release`. Close NL-034 when `CooperativeCloseFlowTests` passes; confirm `ChannelSafetyFlowTests` and `FeeUpdateFlowTests` through DI.
+- **Interop bugs (high):** fee estimate unit (NL-288; then un-skip the LND-funded `FeeUpdateFlowTests` case and drop the CLN `Explicit`), fundee feerate floor (NL-289), wallet address generation off-by-one (NL-283) and address reuse (NL-280).
+- **BOLT 5** (`BOLT5_ONCHAIN_PLAN.md` O0-O8): detect the peer's commitment and any funding spend (NL-272), persisted broadcast intent (NL-271, migration owner), sweeps and HTLC resolution, penalty (NL-095).
+- **Close follow-ups:** closing timeouts via `IChannelFailureService` (NL-284), fail back HTLCs added after our shutdown (NL-279), `option_simple_close` (N11, NL-020), local upfront script (NL-045), Docker restart-while-ShuttingDown and CLN close cases (NL-286), R09 (NL-285), `MessageFactory.CreateClosingSignedMessage` (NL-277), in-memory model before save (NL-282).
+- **Switch/monitor:** wire `IOnionReplayStore` into the switch and persist it (NL-078), HTLCs from older builds without an origin (NL-265), alias scids in UPDATE failures (NL-266), forward checks at height 0 (NL-267), fee-aware liquidity pre-check (NL-268), per-invoice preimage check in the monitor (NL-274), error through the outbox (NL-273), pre-wave-3 dust limit backfill (NL-290).
+- **Carried from wave 2:** NL-258 (funding rebroadcast), NL-259 (UTXO locks), NL-263 (flake), NL-262, NL-261, NL-269, NL-260, NL-270, NL-152 (disconnect), NL-138, the Wasm risk, and the per-wave refresh of the root/`test` CLAUDE.md counts.
 
 ### Wave 2: integrated into `wip/fafo` @ `a5675cb` (2026-09-25)
 

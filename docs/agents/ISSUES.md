@@ -14,6 +14,8 @@ Updated 2026-09-25 after ABCD wave 1 (W1-A channel wiring, W1-B payment core, W1
 
 Updated 2026-09-25 after ABCD wave 2 (W2-A reestablish, W2-B HTLC switch, W2-C send, W2-D N8 and ABCD Docker proofs) was integrated into `wip/fafo` (at `a5675cb`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `f2f1ef6` and `a5675cb` are `integrate:` commits), and NL-256..NL-270 record the lanes' and the integrator's new findings (NL-256 and NL-257 keep the IDs W2-B proposed; NL-257 was not reproduced and is wontfix).
 
+Updated 2026-09-25 after ABCD wave 3 (W3-A N9 safety, W3-B N10 close (migration owner), W3-C N9 fees, W3-D replay and debt, W3-E CLN interop, W3-F BOLT 5 plan) was integrated into `wip/fafo` (at `c92d837`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `983b2b4` and `c92d837` are `integrate:` commits), and NL-271..NL-290 record the lanes' and the integrator's new findings (NL-278, NL-281 and NL-287 were found and fixed within the wave). The LND Docker suite could not run at integration (NL-276).
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -48,26 +50,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 3 | 7 | 26 | 54 | 90 |
+| open | 3 | 11 | 27 | 58 | 99 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 11 | 38 | 77 | 50 | 176 |
-| wontfix | 0 | 0 | 1 | 3 | 4 |
+| fixed | 11 | 39 | 82 | 54 | 186 |
+| wontfix | 0 | 0 | 2 | 3 | 5 |
 | duplicate | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **14** | **45** | **104** | **107** | **270** |
+| **Total** | **14** | **50** | **111** | **115** | **290** |
 
 ### Epics
 
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
-- NL-034: Channel close (shutdown / closing_signed / option_simple_close) (open, critical)
+- NL-034: Channel close (shutdown / closing_signed / option_simple_close) (open, critical; legacy close done in wave 3 W3-B, awaiting the Docker close proof on `wip/fafo`; simple close NL-020, timeouts NL-284)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 open)
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; persistent replay set NL-078 deferred)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
-- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical)
+- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical; fail-the-channel broadcast and signer refusal done in wave 3 W3-A; the rest is `BOLT5_ONCHAIN_PLAN.md`, NL-271, NL-272, NL-095)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
-- NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments and HTLC origins done; replay set and forward failure reasons remain)
+- NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments and HTLC origins done; replay set (in-memory `IOnionReplayStore` since wave 3, NL-078) and forward failure reasons remain)
 
 ---
 
@@ -462,11 +464,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION_ROUTING_PLAN §7 "Per-channel ordering"; BOLT2 N0-T3
 
 ### NL-034 [EPIC] Channel close (shutdown / closing_signed / option_simple_close)
-- **Status:** open
+- **Status:** open (partial: 34757a3, b38ce86, 6d81ecd, 9733937, 287a956, 5d0aafc, 8e0e154)
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Channels/Enums/ChannelState.cs` (Closing/Closed enum only), `src/NLightning.Infrastructure.Bitcoin/Transactions/ClosingTransaction.cs` (commented out)
-- **Evidence:** Nothing moves a channel to Closing; an incoming shutdown disconnects the peer (see NL-031). Funds can only leave a channel via the peer's force close.
+- **Evidence:** Nothing moves a channel to Closing; an incoming shutdown disconnects the peer (see NL-031). Funds can only leave a channel via the peer's force close. Update (ABCD wave 3, `c92d837`): legacy cooperative close is implemented (N10-T1..T3): shutdown/closing_signed handlers, `ChannelCloseCoordinator`, pure `LegacyClosingNegotiator`, the BOLT 3 legacy closing tx, states ShuttingDown 23 / Negotiating 25 / Closing 30, migration `AddShutdownState` (3 providers), `closechannel` IPC (ClientCommand 13). Crash-safe: the closing watch is saved with Closing; a funding-spend watch records a mutual close the peer broadcast; startup and every block finish a confirmed close. Docker `CooperativeCloseFlowTests` passed 4/4 against LND at lane step 2 (287a956) but was **not re-run** after the step-3 fixes (8e0e154) nor at integration (Docker env, NL-276). Remaining, each with its own entry: `option_simple_close` (NL-020), the closing timeouts (NL-284), HTLCs added after our shutdown (NL-279), the R09 deviation (NL-285), Docker-only proof gaps (NL-286), local upfront script (NL-045). Close this epic once the Docker close proof passes on `wip/fafo`.
 - **Fix sketch:** shutdown/closing_signed handlers with fee_range, closing tx builder (NL-065), then option_simple_close (NL-020). Needs a close IPC command (NL-152).
 - **Blocks/Blocked-by:** Blocked-by NL-031 (must wait for HTLCs to clear)
 - **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N10 (legacy), N11 (simple close)
@@ -482,11 +484,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT_COVERAGE roadmap step 6; BOLT2 N7
 
 ### NL-036 Closing/Stale channels are not handled on startup
-- **Status:** open (partial: 82c4c37)
+- **Status:** fixed (b38ce86, 8e0e154)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs:70`
-- **Evidence:** `TODO: Deal with channels that are Closing, Stale, or any other state`. Update (ABCD wave 2, `a5675cb`): `ChannelManager.ResumeStartupStateAsync` handles every stored state (82c4c37). Closed/Stale are skipped. None/V1Opening/V2Opening are never persisted, so they are logged and skipped. V1FundingCreated moves to V1FundingSigned when a watch for the funding txid exists; otherwise it is persisted Stale and not registered (BOLT 2: the funder SHOULD NOT remember). Explicit cases for V1FundingSigned, ReadyFor*, Closing and Failed; Failed re-sends its stored error. Remaining: Closing/Negotiating resumption and close logic (N10), and a Stale funder channel keeps its UTXO locks (NL-259). The funding-tx rebroadcast is NL-258.
+- **Evidence:** `TODO: Deal with channels that are Closing, Stale, or any other state`. Update (ABCD wave 2, `a5675cb`): `ChannelManager.ResumeStartupStateAsync` handles every stored state (82c4c37). Closed/Stale are skipped. None/V1Opening/V2Opening are never persisted, so they are logged and skipped. V1FundingCreated moves to V1FundingSigned when a watch for the funding txid exists; otherwise it is persisted Stale and not registered (BOLT 2: the funder SHOULD NOT remember). Explicit cases for V1FundingSigned, ReadyFor*, Closing and Failed; Failed re-sends its stored error. Remaining: Closing/Negotiating resumption and close logic (N10), and a Stale funder channel keeps its UTXO locks (NL-259). The funding-tx rebroadcast is NL-258. Update (ABCD wave 3, `c92d837`): ShuttingDown/Negotiating send channel_reestablish at connect, re-send our shutdown and restart negotiation (B2-RE-28/29, b38ce86); Closing channels take part in the reestablish, re-send the agreed closing_signed, and at startup close at once (watch completed), re-create a missing watch or rebroadcast the stored tx (8e0e154). Proven in-process (`CooperativeCloseHarnessTests`, `ClosingLifecycleTests`). Stale funder UTXO locks remain NL-259, funding rebroadcast NL-258.
 - **Fix sketch:** Resume close / watch on-chain for these states.
 - **Blocks/Blocked-by:** Part of NL-034, NL-094
 - **Plan ref:** BOLT2 N7-T5, N10-T3 (partial)
@@ -572,11 +574,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT_COVERAGE roadmap step 3; BOLT2 N2-T1
 
 ### NL-045 Local upfront_shutdown_script is never generated
-- **Status:** open
+- **Status:** open (partial: 34757a3, b38ce86)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Channels/Factories/ChannelFactory.cs:101,235`
-- **Evidence:** `TODO: Generate a script from the local key set`; the feature is advertised Optional. Update: `upfront_shutdown_script` now defaults to No (3c2b673). `ChannelFactory` still throws when the peer requires it; BOLT 2 allows sending a zero-length script instead.
+- **Evidence:** `TODO: Generate a script from the local key set`; the feature is advertised Optional. Update: `upfront_shutdown_script` now defaults to No (3c2b673). `ChannelFactory` still throws when the peer requires it; BOLT 2 allows sending a zero-length script instead. Update (ABCD wave 3, `c92d837`): the peer's upfront script is enforced (B2-SHUT-R05) and a script we sent upfront would be reused (B2-SHUT-S09), but we still never generate one.
 - **Fix sketch:** Derive a wallet script (or send zero-length) and persist it for close.
 - **Blocks/Blocked-by:** Related NL-034
 - **Plan ref:** BOLT2 N10-T1
@@ -852,21 +854,21 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-246 Channels that got channel_ready before ABCD wave 1 have no commitment snapshot and can never carry HTLCs
-- **Status:** open
+- **Status:** wontfix
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs`, `Channels/Managers/ChannelManager.cs` (`RegisterExistingChannelAsync`)
-- **Evidence:** The first snapshot is built at the first channel_ready (NL-232, a604dff). Channels that received channel_ready earlier had the peer's commitment-0 per-commitment point overwritten, so no snapshot can be built: they are logged at startup and HTLC messages on them get a warning (reported by W1-A).
+- **Evidence:** The first snapshot is built at the first channel_ready (NL-232, a604dff). Channels that received channel_ready earlier had the peer's commitment-0 per-commitment point overwritten, so no snapshot can be built: they are logged at startup and HTLC messages on them get a warning (reported by W1-A). Update (ABCD wave 3, `c92d837`): cannot be fixed (813fc85): the first snapshot needs the peer's commitment-0 per-commitment point, which that channel_ready replaced, and BOLT 2 makes the receiver ignore `my_current_per_commitment_point` in channel_reestablish, so nothing recovers it. Such channels keep working without HTLCs; close them with `closechannel` (N10) and reopen. Never build a snapshot from an unverified point.
 - **Fix sketch:** Close and reopen such channels (no automated path); or recover commitment 0's point via reestablish (`my_current_per_commitment_point` is not sent for commitment 0), so closing is the practical answer once N10 exists.
 - **Blocks/Blocked-by:** Related NL-232, NL-034
 - **Plan ref:** BOLT2 N6-T1
 
 ### NL-251 Ping-before-commit only checks that the peer is connected
-- **Status:** open
+- **Status:** fixed (d7f09a9, c84f81a)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Channels/Services/ConnectedPeerLivenessProbe.cs`, `CommitScheduler.cs`
-- **Evidence:** BOLT 2 says to send a ping before commitment_signed when the peer has been quiet (B2-CS-S05). `IPeerLivenessProbe`'s default implementation only checks that the channel's pinned connection is still the peer's current one (a02afa7, e5f7312); there is no last-message timestamp or ping API on `IPeerService` (reported by W1-A).
+- **Evidence:** BOLT 2 says to send a ping before commitment_signed when the peer has been quiet (B2-CS-S05). `IPeerLivenessProbe`'s default implementation only checks that the channel's pinned connection is still the peer's current one (a02afa7, e5f7312); there is no last-message timestamp or ping API on `IPeerService` (reported by W1-A). Update (ABCD wave 3, `c92d837`): `IPeerService` exposes `LastMessageReceivedAt` and `PingAsync`; the commit scheduler asks `IPingBeforeCommit` outside the lock and pings a quiet peer, awaiting its pong before signing (B2-CS-S05). The ping handler is subscribed before the ping loop is marked started (c84f81a).
 - **Fix sketch:** Expose `IPeerService.LastMessageReceivedAt` (or a ping-and-wait API) and ping when it is older than a threshold; swap the probe with `services.Replace` or register it before `AddApplicationServices` (TryAdd).
 - **Blocks/Blocked-by:** Related NL-031
 - **Plan ref:** BOLT2 N6-T2
@@ -882,11 +884,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T3; ABCD W2-A
 
 ### NL-254 No node option for the dust-exposure policy
-- **Status:** open
+- **Status:** fixed (1dbbc1f, 525973a)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/NodeOptions.cs`, `CommitmentParams.FromChannel` callers
-- **Evidence:** The snapshot stores and reloads `MaxDustHtlcExposureMsat` (NL-242), but no option sets it, so the first snapshot is created with none and the dust-exposure check (BOLT 2 `max_dust_htlc_exposure_msat`) never runs (reported by W1-A).
+- **Evidence:** The snapshot stores and reloads `MaxDustHtlcExposureMsat` (NL-242), but no option sets it, so the first snapshot is created with none and the dust-exposure check (BOLT 2 `max_dust_htlc_exposure_msat`) never runs (reported by W1-A). Update (ABCD wave 3, `c92d837`): `NodeOptions.MaxDustHtlcExposureMsat` is stored with the first snapshot (`CreateInitialCommitments`); `DustExposureHtlcSwitch` fails incoming dust HTLCs over the limit before forward or preimage (B2-DUST-01/02); `FeeUpdatePolicy` checks the dust limit on a non-anchor fee increase (B2-DUST-05). Snapshots created earlier have no stored limit: NL-290.
 - **Fix sketch:** Add a node option (e.g. `Node:MaxDustHtlcExposureMsat`, or feerate-scaled like LND) and pass it to `CommitmentParams.FromChannel` when creating the first snapshot.
 - **Blocks/Blocked-by:** Related NL-242
 - **Plan ref:** BOLT2 N9-T3
@@ -932,11 +934,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T3
 
 ### NL-264 Pending HTLC events are replayed twice after a reestablish
-- **Status:** open
+- **Status:** fixed (82b7dcc)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`CompleteReestablishAsync`), `Payments/Switch/LinkUpReplayingPeerLivenessProbe.cs`
-- **Evidence:** `CompleteReestablishAsync` queues the pending events itself and also calls `MarkLinkUp`. The W2-B probe decorator turns that call into a second replay. The switch is idempotent, so nothing breaks, but every reconnect does the work twice (reported by the integrator).
+- **Evidence:** `CompleteReestablishAsync` queues the pending events itself and also calls `MarkLinkUp`. The W2-B probe decorator turns that call into a second replay. The switch is idempotent, so nothing breaks, but every reconnect does the work twice (reported by the integrator). Update (ABCD wave 3, `c92d837`): the link-up probe leaves the replay to the channel manager when the tracker says the channel was just reestablished, so pending events are replayed once.
 - **Fix sketch:** Keep one path (the probe replay) and drop the manager's own queueing, or have the probe skip channels the manager just replayed.
 - **Blocks/Blocked-by:** Related NL-252
 - **Plan ref:** BOLT2 N7-T2; ABCD W2-A/W2-B
@@ -950,6 +952,126 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add a Docker proof with a reconnect before channel_ready; if LND objects, hold updates until the peer's reestablish arrives.
 - **Blocks/Blocked-by:** Related NL-035
 - **Plan ref:** BOLT2 N7-T2
+
+### NL-273 PeerChannelErrorSender bypasses the PeerOutbox ordering
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Safety/` (`PeerChannelErrorSender`), `IPeerService.SendErrorAsync`
+- **Evidence:** The fail-the-channel `error` is sent through `IPeerService.SendErrorAsync`, not enqueued on the peer's `PeerOutbox`, so it can overtake queued replies. Harmless for a Failed channel (nothing else is sent for it) (reported by W3-A).
+- **Fix sketch:** Add a `PeerManager` API that enqueues a channel error on the outbox and use it here.
+- **Blocks/Blocked-by:** Related NL-033, NL-261
+- **Plan ref:** BOLT2 N9-T4
+
+### NL-274 HtlcExpiryMonitor treats an invoice settled by another HTLC as preimage-known
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (incoming resolution)
+- **Evidence:** The monitor derives "preimage known" from the invoice status. An invoice settled by another HTLC of the same payment hash makes an unrelated incoming HTLC look fulfillable, so the channel is failed at cltv_expiry - 18 instead of the HTLC being failed back. A residual race with a switch forward exists only if the switch read a height more than cltv_expiry_delta + ExpiryTooSoonBlocks blocks old (reported by W3-A).
+- **Fix sketch:** Resolve per HTLC (stored preimage or origin), not per invoice.
+- **Blocks/Blocked-by:** Related NL-094
+- **Plan ref:** BOLT2 N9-T2
+
+### NL-277 MessageFactory.CreateClosingSignedMessage uses msat for fee_satoshis and always adds fee_range
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` (`CreateClosingSignedMessage`)
+- **Evidence:** The fee is passed as a `ulong` that converts implicitly to msat, so it is 1000x too small, and a `fee_range` is always added. Unused today: `ChannelCloseCoordinator` builds closing_signed directly (reported by W3-B).
+- **Fix sketch:** Take a `LightningMoney` (satoshis) and an optional range, or delete the method.
+- **Blocks/Blocked-by:** Related NL-034
+- **Plan ref:** BOLT2 N10-T3
+
+### NL-278 A mutual close the peer broadcast before our final closing_signed was not detected
+- **Status:** fixed (8e0e154)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`HandleFundingSpentAsync`), `IBlockchainMonitor.WatchOutpointSpend`
+- **Evidence:** If the peer broadcast a closing tx we signed and the link dropped before our final closing_signed, we stayed Negotiating forever (reported by W3-B). Fixed: from the first shutdown the funding outpoint is watched for a spend; a spend shaped like a mutual close to the two shutdown scripts becomes the closing tx (Closing + watch in one save, then Closed at depth).
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Part of NL-034
+- **Plan ref:** BOLT2 N10-T3
+
+### NL-279 HTLCs added to us after our shutdown are not failed back (B2-SHUT-S08)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`
+- **Evidence:** BOLT 2: after sending shutdown a node MUST fail to route any HTLC added after it. The switch forwards or accepts such an HTLC like any other; only our own adds are refused after shutdown (B2-ADD-S13) (reported by W3-B).
+- **Fix sketch:** Fail an incoming HTLC on a ShuttingDown channel whose add came after our shutdown, before forwarding or final-hop accept.
+- **Blocks/Blocked-by:** Related NL-034
+- **Plan ref:** BOLT2 N10-T3, B2-SHUT-S08
+
+### NL-282 ChannelCloseCoordinator mutates the in-memory ChannelModel before its save
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Close/ChannelCloseCoordinator.cs`
+- **Evidence:** Scripts and state are set on the in-memory model before `SaveChangesAsync`; a failed save leaves memory ahead of the database until a restart (reported by W3-B).
+- **Fix sketch:** Apply to a copy and swap after the save, as the commitment engine does.
+- **Blocks/Blocked-by:** Related NL-034
+- **Plan ref:** BOLT2 N10-T3
+
+### NL-284 closing_signed reply timeout and no-overlap fee_range timeout are missing (B2-CLS-03, B2-CLS-R04)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Application/Channels/Close/`
+- **Evidence:** BOLT 2: the funder MUST fail the channel if it gets no closing_signed reply in time, and a node that sees no fee_range overlap MUST fail the channel if the peer does not send a new range after a reasonable time; we only warn. Now possible through `IChannelFailureService` (N9-T4) (reported by W3-B).
+- **Fix sketch:** Timer per negotiation; on expiry call `IChannelFailureService.FailChannelAsync`.
+- **Blocks/Blocked-by:** Related NL-034, NL-094
+- **Plan ref:** BOLT2 N10-T3
+
+### NL-285 Closing negotiation holds our fee at our limit instead of proposing strictly between (B2-CLS-R09 deviation)
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Channels/Closing/LegacyClosingNegotiator.cs`
+- **Evidence:** LND 0.20 sends no fee_range and lowers its fee 10 % per closing_signed from its own estimate (4225 sat vs our funder limit 513 sat), so the old R09 rule failed the channel on LND's second message. We now re-send our limit, but only to a peer that already moved strictly towards us (R07); otherwise warning + close, and after `MaxRounds` (100) warning + close (9733937, 5d0aafc). Takes about 19 rounds against LND. A strict peer (CLN/Eclair legacy) may fail over a repeated fee (reported by W3-B).
+- **Fix sketch:** A better funder limit (e.g. the peer's first offer capped by the commitment fee), or option_simple_close (NL-020).
+- **Blocks/Blocked-by:** Related NL-034, NL-020
+- **Plan ref:** BOLT2 N10-T3, B2-CLS-R09
+
+### NL-287 A retransmitted channel_ready in ShuttingDown/Negotiating/Closing disconnected the peer
+- **Status:** fixed (8e0e154)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Handlers/ChannelReadyMessageHandler.cs`, `ChannelReestablishMessageHandler`
+- **Evidence:** `ChannelReadyMessageHandler` threw `ChannelErrorException` ('Unexpected ChannelReady') when the peer retransmitted channel_ready in a closing state, which LND does per spec (B2-RE-15); and we did not retransmit ours in those states (reported by W3-B). Fixed: ignored in those states, and the reestablish retransmits ours; harness test `Given_IdleChannelShuttingDown_When_Reconnect_Then_ChannelReadyAndShutdownRetransmitted`.
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-036
+- **Plan ref:** BOLT2 N10-T3, B2-RE-15
+
+### NL-288 Fee estimate multiplier is sat/kvB, not sat/kw: our feerates are 4x too high
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Options/FeeEstimationOptions.cs` (`RateMultiplier` "1000"), `Services/FeeService.cs:162`, `NodeConfigurationExtensions.cs:239`
+- **Evidence:** The estimate in sat/vB is multiplied by 1000 (sat/kvB) and used as sat/kw, so 10 sat/vB becomes 10,000 sat/kw (should be 2,500). Our default open to CLN is refused above its 2530 sat/kw limit (Explicit reproducer `ClnInteropTests.Given_OurDefaultFeerate_When_OpeningToCln_Then_ClnAccepts`), and as fundee we refuse LND's open_channel ('Fee rate per kw is too small: 6250, currentFee 10000'; `FeeUpdateFlowTests` LND-funded case skipped, 533330f) (reported by W3-C, W3-E).
+- **Fix sketch:** Convert sat/vB to sat/kw (x 250) in one place; drop the Explicit/Skip markers and the explicit test feerates.
+- **Blocks/Blocked-by:** Related NL-289
+- **Plan ref:** BOLT2 N9-T1
+
+### NL-289 As fundee we refuse a feerate below 80 % of our own estimate
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Validators/ChannelOpenValidator.cs:99`, `IFeeService`
+- **Evidence:** A CLN-funded channel at CLN's own estimate (253 sat/kw on an idle regtest) is refused (Explicit reproducer `ClnInteropTests.Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept`). BOLT 2 only asks to fail an unreasonably low feerate; LND and CLN accept down to the relay floor. Made worse by NL-288 (reported by W3-E).
+- **Fix sketch:** Accept anything from the 253 sat/kw floor (or a configurable lower bound) upwards.
+- **Blocks/Blocked-by:** Related NL-288
+- **Plan ref:** BOLT2 N9-T1, B2-FEE-R01
+
+### NL-290 Snapshots without a stored dust limit offer unlimited dust on the send side
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Fees/DustExposurePolicy.cs`, engine `UpdateValidator`
+- **Evidence:** The engine's send rules B2-DUST-03/04 read `CommitmentParams.MaxDustHtlcExposureMsat` from the snapshot; channels whose first snapshot predates wave 3 have none, and the `NodeOptions` fallback covers only the receive and fee checks (reported by W3-C, 9bfa09d).
+- **Fix sketch:** Backfill the stored limit from `NodeOptions` at load (a migration or a one-time save).
+- **Blocks/Blocked-by:** Related NL-254
+- **Plan ref:** BOLT2 N9-T3
 
 ---
 
@@ -1046,11 +1168,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-065 Closing transaction builder not implemented
-- **Status:** open
+- **Status:** fixed (34757a3)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Transactions/ClosingTransaction.cs` (commented out, `TODO: Find out correct lockTime`)
-- **Evidence:** No closing tx; `BaseTransaction.cs`/`FundingTransaction.cs` in the same folder are also dead commented code.
+- **Evidence:** No closing tx; `BaseTransaction.cs`/`FundingTransaction.cs` in the same folder are also dead commented code. Update (ABCD wave 3, `c92d837`): Domain `ClosingTransactionModel` + `LegacyClosingTransactionFactory`, `ClosingFeeCalculator`, Infra.Bitcoin `ClosingTransactionBuilder` (v2, locktime 0, BIP69, `0 sig1 sig2 script` in funding-key order); the dead `Transactions/{Closing,Base,Funding}Transaction.cs` are deleted. BOLT 3 has no closing vector: signed txs are verified with NBitcoin's interpreter.
 - **Fix sketch:** New builder for closing_signed and closing_complete; delete the dead files.
 - **Blocks/Blocked-by:** Part of NL-034
 - **Plan ref:** BOLT2 N10-T2
@@ -1250,11 +1372,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M5
 
 ### NL-078 Onion replay cache is in-memory FIFO, not cltv-keyed or persistent
-- **Status:** open
+- **Status:** open (partial: eb597d7)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Onion/OnionReplayCache.cs`
-- **Evidence:** 100k-entry FIFO; replays older than capacity or across restarts are accepted. Update (ABCD wave 2, `a5675cb`): still in memory, by ABCD roadmap decision 5 (regtest only). The switch skips the replay check (`checkReplay: false`) for an HTLC whose shared secret is already stored, so a restart replays persisted HTLCs without tripping the cache (ca87313). A restart still forgets the replay entries of onions that are not stored.
+- **Evidence:** 100k-entry FIFO; replays older than capacity or across restarts are accepted. Update (ABCD wave 2, `a5675cb`): still in memory, by ABCD roadmap decision 5 (regtest only). The switch skips the replay check (`checkReplay: false`) for an HTLC whose shared secret is already stored, so a restart replays persisted HTLCs without tripping the cache (ca87313). A restart still forgets the replay entries of onions that are not stored. Update (ABCD wave 3, `c92d837`): `IOnionReplayStore` (Domain) with `InMemoryOnionReplayStore` (Infrastructure, `AddOnionReplayStore()`): entries are owned by the incoming HTLC and expire at its cltv_expiry, ready to be backed by a table. Not yet wired into the switch in place of `OnionReplayCache`, and not persisted.
 - **Fix sketch:** Key by HMAC with cltv_expiry eviction; persist (see NL-137).
 - **Blocks/Blocked-by:** Blocks NL-073
 - **Plan ref:** ONION M4-T2/T7; M2 review issue 9 (partial)
@@ -1494,14 +1616,14 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 5: On-chain handling
 
 ### NL-094 [EPIC] On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice
-- **Status:** open
+- **Status:** open (partial: 36d2270, 06da54b, 983b2b4)
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs`, `src/NLightning.Domain/Bitcoin/Transactions/Models/PenaltyTransactionModel.cs` (empty)
-- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists).
+- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists). Update (ABCD wave 3, `c92d837`): N9-T4 done: `ChannelFailureService` is the only broadcast path; under the lock it persists Failed + the error, signs the latest local commitment with the stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, refuses a revoked number), saves the watch and publishes after the lock, retries a refused publish every block and resumes interrupted broadcasts at start (06da54b); the signer refuses every signature after `MarkDataLoss` (also set at registration from `DataLossDetected`). `ChannelManager` hands a `MustBroadcast` failure to it after the lock, and the daemon starts it (983b2b4). Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) passed in the lane, not re-run at integration (NL-276). The design for the rest is `docs/agents/BOLT5_ONCHAIN_PLAN.md` (3b02972, 6290443). Still open: sweeps (to_local after the delay, HTLC outputs), HTLC-timeout/success broadcasts, detecting the peer's commitment on chain (NL-272), a persisted broadcast intent (NL-271), penalty (NL-095). An upstream HTLC forwarded onto a force-closed channel stays AwaitingDownstream until BOLT 5 resolves the downstream HTLC.
 - **Fix sketch:** Watch funding outpoints, classify spends, sweep to_local/to_remote/HTLC outputs, justice txs. Sub-issues: NL-095, NL-096, NL-097, NL-098.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-056, NL-066, NL-136, NL-067
-- **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (broadcast only)
+- **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (done); `BOLT5_ONCHAIN_PLAN.md` O0-O8
 
 ### NL-095 Revocation watch / penalty is a stub
 - **Status:** open
@@ -1571,6 +1693,66 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** After NL-097 a poisoned block sets `IsChainProcessingHalted` and logs Critical; `IBlockchainMonitor` does not expose it and nothing fails the node or stops channel operations.
 - **Fix sketch:** Expose the flag, surface it over IPC and refuse new channel operations (or stop the node) while halted.
 - **Blocks/Blocked-by:** Related NL-097, NL-094
+- **Plan ref:** —
+
+### NL-271 Fail-the-channel has no persisted broadcast intent
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Safety/ChannelFailureService.cs`
+- **Evidence:** Failed is saved under the lock and the commitment watch only after it. A stop between the two saves leaves no record that a broadcast was wanted, so the start-up resume (06da54b, which covers Failed channels with an unconfirmed commitment watch) skips it, unless an HTLC past its deadline makes the monitor ask again (reported by W3-A). The BOLT 5 plan's invariant S1 wants Failed + the broadcast row in one save.
+- **Fix sketch:** Save the watch (or a 'broadcast requested' marker) in the same save as Failed (migration owner).
+- **Blocks/Blocked-by:** Part of NL-094
+- **Plan ref:** BOLT2 N9-T4; `BOLT5_ONCHAIN_PLAN.md`
+
+### NL-272 No detection of the peer's commitment (or any non-close tx) spending our funding output
+- **Status:** open
+- **Severity:** high
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Managers/ChannelManager.cs` (`HandleFundingSpentAsync`), `BlockchainMonitorService`
+- **Evidence:** A funding spend that is not a mutual close is only logged at critical level. A Failed channel whose peer's commitment confirmed stays Failed and our conflicting publish is retried (PublishFailed) every block; the funding spend watch exists only from the first shutdown on (reported by W3-A and W3-B).
+- **Fix sketch:** Watch every channel's funding outpoint and classify spends (ours, the peer's current/previous, revoked) per the BOLT 5 plan.
+- **Blocks/Blocked-by:** Part of NL-094; related NL-095
+- **Plan ref:** `BOLT5_ONCHAIN_PLAN.md`
+
+### NL-275 ChannelFailureService logs TxIds in internal byte order
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Safety/ChannelFailureService.cs`
+- **Evidence:** Log lines print the txid bytes as stored, not in the reversed display order that bitcoind and LND show (reported by W3-A).
+- **Fix sketch:** Format through the display-order helper.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-280 The wallet hands out spent and shared addresses
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`GetUnusedAddressAsync`), `UtxoDbRepository.Spend`
+- **Evidence:** An address with no UTXO rows counts as unused, and spending deletes the row, so spent addresses come back. Concurrent closes get the same shutdown address, which links the channels on chain (reported by W3-B). Close re-watches its address, so the output is credited (9733937).
+- **Fix sketch:** Record handed-out addresses (reserve per use) instead of inferring use from UTXO rows.
+- **Blocks/Blocked-by:** Related NL-281, NL-283
+- **Plan ref:** —
+
+### NL-281 BlockchainMonitorService stopped watching a wallet address after its first deposit
+- **Status:** fixed (9733937, 8e0e154)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs` (`CheckBlockForWalletMovement`)
+- **Evidence:** An address was removed from `_watchedAddresses` after its first deposit (a restart reloaded it), so a second deposit to a reused address, such as a closing output, was never credited (reported by W3-B). Workaround 9733937 (close re-watches its address), fix 8e0e154 (addresses stay watched; regression test with two deposits).
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-280
+- **Plan ref:** BOLT2 N10-T3
+
+### NL-283 Wallet address generation re-adds index 9 in the second batch
+- **Status:** open
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinWalletService.cs` (`GetUnusedAddressAsync`)
+- **Evidence:** New addresses start at `GetLastUsedAddressIndex` (the highest existing index) instead of that + 1, so the second batch of 10 re-adds index 9 and `SaveChanges` hits the (Index, IsChange, AddressType) key; after 10 used addresses, getaddress, funding change and shutdown addresses fail (found by W3-B, not reproduced in Docker).
+- **Fix sketch:** Start at max + 1; add a test that generates two batches.
+- **Blocks/Blocked-by:** Related NL-280
 - **Plan ref:** —
 
 ---
@@ -2352,11 +2534,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
-- **Status:** open (partial: 5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6)
+- **Status:** open (partial: 5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs`
-- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C). Update (ABCD wave 2, `a5675cb`): `payinvoice` and `listpayments` work end to end now that `IPaymentService` is registered (f2f1ef6; `PaymentSendIpcTests`, ABCD c-send). The daemon binds `Node:Payments` (`PaymentSendOptions`). Remaining: close and disconnect commands.
+- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C). Update (ABCD wave 2, `a5675cb`): `payinvoice` and `listpayments` work end to end now that `IPaymentService` is registered (f2f1ef6; `PaymentSendIpcTests`, ABCD c-send). The daemon binds `Node:Payments` (`PaymentSendOptions`). Remaining: close and disconnect commands. Update (ABCD wave 3, `c92d837`): `closechannel` (ClientCommand.CloseChannel = 13, next free 14) with daemon handler, CLI and `Node:Close` options (6d81ecd). Remaining: disconnect.
 - **Fix sketch:** Append commands per the recipe as each epic lands.
 - **Blocks/Blocked-by:** Blocked-by NL-034, NL-114
 - **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
@@ -2556,11 +2738,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-247 ISha256 is a stateful singleton shared by concurrent users
-- **Status:** open
+- **Status:** fixed (03a19fa, 9762e28)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure/DependencyInjection.cs:29` (`AddSingleton<ISha256, Sha256>()`), consumers such as `ChannelFactory` and the repositories
-- **Evidence:** `Sha256` keeps state between `AppendData` and `GetHashAndReset`, so two concurrent users of the singleton can interleave and get wrong hashes. The update_fulfill_htlc handler now hashes preimages with its own instance (1392489); other users still share it (reported by W1-A).
+- **Evidence:** `Sha256` keeps state between `AppendData` and `GetHashAndReset`, so two concurrent users of the singleton can interleave and get wrong hashes. The update_fulfill_htlc handler now hashes preimages with its own instance (1392489); other users still share it (reported by W1-A). Update (ABCD wave 3, `c92d837`): `ISha256` is registered as `ThreadLocalSha256` (one hash state per thread), and hashing goes through a one-shot `ComputeHash` that resets the state even when appending throws.
 - **Fix sketch:** Register it transient (or through a factory) and audit singleton consumers that hold it.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -2740,11 +2922,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-249 FakeServiceProvider throws for unregistered services instead of returning null
-- **Status:** open
+- **Status:** fixed (c53afa2)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Tests.Utils/Mocks/FakeServiceProvider.cs`
-- **Evidence:** `GetService` throws `KeyNotFoundException` for unregistered types, which breaks the `IServiceProvider` contract; `ChannelManager` now calls `GetService<IHtlcSwitch>()` and resolves `ChannelDomainEventQueue`, so tests using the fake must register them (reported by W1-A).
+- **Evidence:** `GetService` throws `KeyNotFoundException` for unregistered types, which breaks the `IServiceProvider` contract; `ChannelManager` now calls `GetService<IHtlcSwitch>()` and resolves `ChannelDomainEventQueue`, so tests using the fake must register them (reported by W1-A). Update (ABCD wave 3, `c92d837`): `FakeServiceProvider.GetService` returns null for unregistered types; `Strict = true` restores the throw.
 - **Fix sketch:** Return null for unknown types; keep an opt-in strict mode if some tests rely on the throw.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -2774,10 +2956,30 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/ChannelOpeningFlowTests.cs`
-- **Evidence:** Failed once in a full Docker run and passed in every other full run and in class reruns (reported by W2-A). Not seen in the integrator's runs at `a5675cb`.
+- **Evidence:** Failed once in a full Docker run and passed in every other full run and in class reruns (reported by W2-A). Not seen in the integrator's runs at `a5675cb`. Update (ABCD wave 3, `c92d837`): the same message ('No locked UTXOs found for channel', `OpenChannelClientSubscriptionHandler`) failed `NormalOperationFlowTests.Given_InFlightRestart` once during its open (W3-B) and passed on rerun. Possibly related to the wallet address bugs NL-280/NL-283.
 - **Fix sketch:** Capture the wallet/UTXO state on failure; check for a race between funding the wallet and the lock.
 - **Blocks/Blocked-by:** Related NL-180
 - **Plan ref:** —
+
+### NL-276 Host dotnet cannot reach Docker bridge container IPs; LNUnit Docker tests fail in the fixture
+- **Status:** open
+- **Severity:** high
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/` (LNUnit `LightningRegtestNetworkFixture`), this macOS host
+- **Evidence:** In wave 3 the host process got EHOSTUNREACH ('No route to host 192.168.215.x:18443') to container IPs while ping and /usr/bin/curl worked (likely macOS Local Network privacy for the parent app, or OrbStack routing). All 44 LND-based Docker tests failed at setup at integration (`c92d837`), so the ABCD 3-run gate and the N9/N10 Docker proofs were not re-verified there; the CLN and database fixtures publish ports on 127.0.0.1 and passed. Lanes worked around it by running the host-built test dll inside an SDK container on the bridge (`test/CLAUDE.md`). Concurrent Docker runs also force-remove each other's fixture containers (miner/alice/...).
+- **Fix sketch:** Grant Local Network access to the terminal/Claude app or restart OrbStack; longer term publish LNUnit ports on 127.0.0.1 or run Docker tests from a container by default, and serialize Docker runs across agents.
+- **Blocks/Blocked-by:** Related NL-180, NL-263
+- **Plan ref:** ABCD wave 3 gate
+
+### NL-286 Close interop gaps are proven in-process only
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/CooperativeCloseFlowTests.cs`, `test/NLightning.Application.Tests/Channels/Close/`
+- **Evidence:** LND 0.20 ignores fee_range, so the fee_range receive path (B2-CLS-R03..R06) runs only between two of our nodes; there is no Docker restart while ShuttingDown/Negotiating/Closing, no close against CLN/Eclair, and an LND-funded channel closed by LND (our non-funder path) is in-process only (reported by W3-B).
+- **Fix sketch:** Add a Docker restart-while-ShuttingDown case, and CLN close cases on the W3-E `ClnFixture`.
+- **Blocks/Blocked-by:** Related NL-034, NL-285
+- **Plan ref:** BOLT2 Proof N10
 
 ---
 
