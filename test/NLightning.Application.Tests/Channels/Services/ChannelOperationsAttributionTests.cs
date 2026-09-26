@@ -14,7 +14,6 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Models;
-using Payments.Switch;
 using static Handlers.NormalOperationTestContext;
 
 /// <summary>
@@ -28,7 +27,7 @@ public class ChannelOperationsAttributionTests
     private readonly Mock<IChannelMessagePublisher> _publisher = new();
     private readonly Mock<IPeerLivenessProbe> _probe = new();
     private readonly List<IChannelMessage> _published = [];
-    private readonly SteppedTimeProvider _clock = new();
+    private readonly ManualClock _clock = new();
 
     public ChannelOperationsAttributionTests()
     {
@@ -185,4 +184,17 @@ public class ChannelOperationsAttributionTests
     }
 
     private static byte[] Bytes(int length, byte tag) => Enumerable.Repeat(tag, length).ToArray();
+
+    /// <summary>
+    /// A clock that moves only when advanced: a wall-clock based one adds the test's own run time, so 99 ms could read
+    /// as one 100 ms unit.
+    /// </summary>
+    private sealed class ManualClock : TimeProvider
+    {
+        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => _now;
+
+        public void Advance(TimeSpan by) => _now += by;
+    }
 }
