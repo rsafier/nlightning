@@ -1,5 +1,4 @@
 using Lnrpc;
-using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
 using OutPoint = NBitcoin.OutPoint;
@@ -191,7 +190,7 @@ public class AnchorsO4Tests : IAsyncLifetime
             crashed.TrySetResult();
         };
         var invoice = await Node.CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "o7 o4 c claim with preimage", ct);
-        await PayUntilSentAsync(david, invoice.Bolt11, lndChannel.ChanId, crashed.Task, ct);
+        await AnchorsHarness.PayUntilSentAsync(david, invoice.Bolt11, lndChannel.ChanId, crashed.Task, ct);
         var htlc = Assert.Single(AnchorsHarness.GetHtlcs(Node, channel.ChannelId),
                                  h => h.Direction == HtlcDirection.Incoming);
         Assert.NotNull(htlc.Removal);
@@ -234,34 +233,5 @@ public class AnchorsO4Tests : IAsyncLifetime
     {
         await _harness.DisposeNodesAsync(["david"]);
         GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Starts a pinned LND payment and returns once <paramref name="sent"/> completes; a payment LND fails at once for
-    /// want of a route (its router adds the private edge a moment after the channel turns active, NL-319) is started
-    /// again.
-    /// </summary>
-    private static async Task PayUntilSentAsync(LNDNodeConnection lnd, string bolt11, ulong chanId, Task sent,
-                                                CancellationToken ct)
-    {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        deadline.CancelAfter(AnchorsHarness.Timeout);
-        while (true)
-        {
-            await LndTestHelpers.ResetMissionControlAsync(lnd, ct);
-            var payment = LndTestHelpers.SendPaymentV2Async(lnd, LndTestHelpers.PinnedPayment(bolt11, [chanId]), ct,
-                                                            TimeSpan.FromMinutes(5));
-            if (await Task.WhenAny(sent, payment).WaitAsync(deadline.Token) == sent)
-                return;
-
-            var result = await payment;
-            if (result.FailureReason is not (PaymentFailureReason.FailureReasonInsufficientBalance
-                                             or PaymentFailureReason.FailureReasonNoRoute))
-                Assert.Fail($"{lnd.LocalAlias}'s payment ended before it reached us: {result.Status} "
-                          + $"{result.FailureReason}");
-
-            Console.WriteLine($"{lnd.LocalAlias}'s payment failed with {result.FailureReason}; retrying");
-            await Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token);
-        }
     }
 }
