@@ -33,10 +33,12 @@ public class TlvConverterFactory : ITlvConverterFactory
 
     private void RegisterConverters()
     {
+        _converters.Add(typeof(AttributionDataTlv), new AttributionDataTlvConverter());
         _converters.Add(typeof(BlindedPathTlv), new BlindedPathTlvConverter());
         _converters.Add(typeof(ChannelTypeTlv), new ChannelTypeTlvConverter());
         _converters.Add(typeof(FeeRangeTlv), new FeeRangeTlvConverter());
         _converters.Add(typeof(FundingOutputContributionTlv), new FundingOutputContributionTlvConverter());
+        _converters.Add(typeof(FulfillmentPayloadTlv), new FulfillmentPayloadTlvConverter());
         _converters.Add(typeof(FundingTxIdTlv), new FundingTxIdTlvConverter());
         _converters.Add(typeof(NetworksTlv), new NetworksTlvConverter());
         _converters.Add(typeof(NextFundingTlv), new NextFundingTlvConverter());

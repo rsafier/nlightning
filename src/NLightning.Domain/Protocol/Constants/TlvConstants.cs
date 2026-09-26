@@ -85,6 +85,23 @@ public static class TlvConstants
     public static readonly BigSize BlindedPath = 0;
 
     /// <summary>
+    /// Attribution Data TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>update_fulfill_htlc_tlvs</c> and <c>update_fail_htlc_tlvs</c> type 1 (<c>attribution_data</c>):
+    /// [<c>20*u32</c>:<c>htlc_hold_times</c>] [<c>210*sha256[..4]</c>:<c>truncated_hmacs</c>].
+    /// </remarks>
+    public static readonly BigSize AttributionData = 1;
+
+    /// <summary>
+    /// Fulfillment Payload TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>update_fulfill_htlc_tlvs</c> type 3 (<c>fulfillment_payload</c>): an opaque blob for the origin.
+    /// </remarks>
+    public static readonly BigSize FulfillmentPayload = 3;
+
+    /// <summary>
     /// Next Funding TLV Type
     /// </summary>
     /// <remarks>

@@ -104,12 +104,14 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                          new UpdateAddHtlcMessageTypeSerializer(_payloadSerializerFactory,
                                                                 _tlvConverterFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(UpdateFailHtlcMessage),
-                         new UpdateFailHtlcMessageTypeSerializer(_payloadSerializerFactory));
+                         new UpdateFailHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                 _tlvStreamSerializer));
         _serializers.Add(typeof(UpdateFailMalformedHtlcMessage),
                          new UpdateFailMalformedHtlcMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(UpdateFeeMessage), new UpdateFeeMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(UpdateFulfillHtlcMessage),
-                         new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory));
+                         new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                    _tlvStreamSerializer));
         _serializers.Add(typeof(WarningMessage), new WarningMessageTypeSerializer(_payloadSerializerFactory));
 
         // BOLT 7 gossip queries are parsed so the node can answer them
