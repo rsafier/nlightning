@@ -314,17 +314,18 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             var outputs = (await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId))
                          .ToDictionary(o => (o.TransactionId, o.OutputIndex));
             var actions = new List<OutputResolverAction>();
+            var revived = new List<TxId>();
             var resolver = GetResolver(scope, close.Kind);
 
             if (spent is null)
             {
                 // O6-T3: a spend the chain monitor rolled back is no longer a resolution
-                await RevertReorgedSpendsAsync(unitOfWork, channelId, outputs, actions);
+                await RevertReorgedSpendsAsync(unitOfWork, channelId, outputs, actions, revived);
 
                 if (!await IsFundingSpendOnChainAsync(scope, close))
                 {
                     var paused = await HandleFundingSpendGoneAsync(scope, unitOfWork, channel, close, height, actions,
-                                                                   cancellationToken);
+                                                                   revived, cancellationToken);
                     applied = paused.Applied;
                     rewatch = paused.FundingWatch;
                     goto afterLock;
@@ -429,6 +430,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                                       foreach (var stage in stageMore)
                                                           await stage();
                                                   }, cancellationToken);
+            applied = await WithRevivedAsync(unitOfWork, applied, revived);
 
             // Where a spend of each new watch may already be: from its parent's confirmation
             foreach (var watch in applied.NewWatches)
@@ -458,7 +460,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// </summary>
     private async Task RevertReorgedSpendsAsync(IUnitOfWork unitOfWork, ChannelId channelId,
                                                 Dictionary<(TxId, uint), OutputResolutionModel> outputs,
-                                                List<OutputResolverAction> actions)
+                                                List<OutputResolverAction> actions, List<TxId> revived)
     {
         foreach (var output in outputs.Values.Where(o => o.State == OutputResolutionState.Resolved).ToList())
         {
@@ -484,11 +486,15 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 ResolvedHeight = null
             });
 
-            // Our transaction that lost the output to the reorged-out spend may confirm now: send it again
-            if (output.ResolvingTransactionId is { } ours)
+            // Our transaction that lost the output to the reorged-out spend may confirm now: send it again (the
+            // resolvers never broadcast a row that has a resolving transaction, so it is published after the save)
+            if (output.ResolvingTransactionId is { } ours && !revived.Contains(ours))
+            {
+                revived.Add(ours);
                 actions.Add(new StageWriteAction($"revive {Display(ours)}",
                                                  (uow, _) => uow.BroadcastTransactionDbRepository
                                                                 .MarkPendingAsync(ours)));
+            }
         }
     }
 
@@ -526,7 +532,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     /// </summary>
     private async Task<(Applied Applied, WatchedOutpointModel? FundingWatch)> HandleFundingSpendGoneAsync(
         IServiceScope scope, IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close, uint height,
-        List<OutputResolverAction> actions, CancellationToken cancellationToken)
+        List<OutputResolverAction> actions, List<TxId> revived, CancellationToken cancellationToken)
     {
         var channelId = channel.ChannelId;
         var first = false;
@@ -598,10 +604,18 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                                              (uow, _) => uow.BroadcastTransactionDbRepository.MarkPendingAsync(txId)));
 
         var applied = await StageAndSaveAsync(unitOfWork, actions, null, cancellationToken);
+        return (await WithRevivedAsync(unitOfWork, applied, revived.Concat(revive)), fundingWatch);
+    }
 
-        // A revived row is published after the save (the monitor then sends it again after every block)
+    /// <summary>
+    /// Adds each revived transaction whose row is <see cref="BroadcastState.Pending"/> after the save to the ones
+    /// published (<see cref="IChainBroadcaster.PublishAsync"/> then keeps it for rebroadcast after every block).
+    /// </summary>
+    private static async Task<Applied> WithRevivedAsync(IUnitOfWork unitOfWork, Applied applied,
+                                                        IEnumerable<TxId> revived)
+    {
         var toPublish = applied.ToPublish.ToList();
-        foreach (var txId in revive)
+        foreach (var txId in revived)
         {
             if (toPublish.Any(t => t.TransactionId == txId))
                 continue;
@@ -610,7 +624,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 toPublish.Add(pending);
         }
 
-        return (applied with { ToPublish = toPublish }, fundingWatch);
+        return toPublish.Count == applied.ToPublish.Count ? applied : applied with { ToPublish = toPublish };
     }
 
     /// <summary>
