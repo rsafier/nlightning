@@ -31,7 +31,7 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 3. Add `Database/<Area>/<Name>DbRepository.cs : BaseDbRepository<<Name>Entity>, I<Name>DbRepository`, with static `MapDomainToEntity` / `MapEntityToDomain`. Make a mapper `internal static` if other repos reuse it, as `ChannelDbRepository` does with the config and key set mappers.
 4. Add a lazy property to `IUnitOfWork` and `UnitOfWork`.
 5. Callers resolve `IUnitOfWork` from a scope (`IServiceScopeFactory.CreateScope()`) and must call `SaveChangesAsync()`. Nothing is written without it.
-6. Update the `IUnitOfWork` mocks (and `test/NLightning.Tests.Utils/Mocks/CrashingUnitOfWork.cs`) if the interface changed: `test/NLightning.Application.Tests` (`Channels/Handlers/FundingCreatedMessageHandlerTests.cs`, `Node/Managers/PeerManagerTests.cs`) and `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/BlockchainMonitorServiceTests.cs`.
+6. Update the `IUnitOfWork` mocks (and `test/NLightning.Tests.Utils/Mocks/CrashingUnitOfWork.cs`) if the interface changed: `test/NLightning.Application.Tests` (`Channels/Handlers/FundingCreatedMessageHandlerTests.cs`, `Node/Managers/PeerManagerTests.cs`) and `test/NLightning.Infrastructure.Bitcoin.Tests/Wallet/BlockchainMonitorServiceTests.cs`. `CrashingUnitOfWork` and `ThreeNodeHarness.HookedUnitOfWork` (`test/NLightning.Application.Tests/Channels/Harness/`) forward every `IUnitOfWork` property, including `RevokedCommitmentDbRepository` and `OnchainResolutionDbRepository` (BOLT 5 plan O1), so add a new property there too.
 
 ## Conventions
 - Most files: System.*/Microsoft.* usings, then the file-scoped namespace, then relative `using Domain.X;` / `using Persistence.X;` below it. Follow the majority style in new files.
