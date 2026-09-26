@@ -83,7 +83,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
 
-    private readonly LightningRegtestNetworkFixture _fixture;
+    private readonly Func<RegtestBitcoinEndpoint> _bitcoinEndpoint;
     private readonly Action<NodeOptions>? _configureNodeOptions;
     private readonly bool _ownsResources;
 
@@ -151,7 +151,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public IChannelMemoryRepository ChannelMemoryRepository =>
         Services.GetRequiredService<IChannelMemoryRepository>();
 
-    public RPCClient Bitcoin => _fixture.Bitcoin;
+    public RPCClient Bitcoin => _bitcoinEndpoint().Rpc;
 
     /// <summary>
     /// A SQLite node (the original constructor).
@@ -178,16 +178,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public NLightningTestNode(LightningRegtestNetworkFixture fixture, string name, TestNodeDatabase database,
                               ISecureKeyManager secureKeyManager, int port,
                               Action<NodeOptions>? configureNodeOptions = null)
-        : this(fixture, name, database, secureKeyManager, port, configureNodeOptions, ownsResources: false)
+        : this(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, secureKeyManager, port,
+               configureNodeOptions, ownsResources: false)
     {
     }
 
-    private NLightningTestNode(LightningRegtestNetworkFixture fixture, string name, TestNodeDatabase database,
+    private NLightningTestNode(Func<RegtestBitcoinEndpoint> bitcoinEndpoint, string name, TestNodeDatabase database,
                                ISecureKeyManager secureKeyManager, int port,
                                Action<NodeOptions>? configureNodeOptions, bool ownsResources)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        _fixture = fixture;
+        _bitcoinEndpoint = bitcoinEndpoint;
         _configureNodeOptions = configureNodeOptions;
         _ownsResources = ownsResources;
         Name = name;
@@ -204,13 +205,27 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// <paramref name="database"/> says otherwise, its own SQLite file; <see cref="DisposeAsync"/> releases them. Its
     /// reconnect backoff starts at <see cref="FastReconnectInitialDelay"/>. The node is not started.
     /// </summary>
-    public static async Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
-                                                        TestNodeDatabase? database = null,
-                                                        Action<NodeOptions>? configureNodeOptions = null)
+    public static Task<NLightningTestNode> CreateAsync(LightningRegtestNetworkFixture fixture, string name,
+                                                       TestNodeDatabase? database = null,
+                                                       Action<NodeOptions>? configureNodeOptions = null) =>
+        CreateAsync(() => RegtestBitcoinEndpoint.FromFixture(fixture), name, database, configureNodeOptions);
+
+    /// <summary>
+    /// As <see cref="CreateAsync(LightningRegtestNetworkFixture, string, TestNodeDatabase?, Action{NodeOptions}?)"/>,
+    /// for a node on a bitcoind outside the shared regtest network (e.g. the CLN interop fixture's own).
+    /// </summary>
+    public static Task<NLightningTestNode> CreateAsync(RegtestBitcoinEndpoint bitcoin, string name,
+                                                       TestNodeDatabase? database = null,
+                                                       Action<NodeOptions>? configureNodeOptions = null) =>
+        CreateAsync(() => bitcoin, name, database, configureNodeOptions);
+
+    private static async Task<NLightningTestNode> CreateAsync(Func<RegtestBitcoinEndpoint> bitcoinEndpoint,
+                                                              string name, TestNodeDatabase? database,
+                                                              Action<NodeOptions>? configureNodeOptions)
     {
         var port = await PortPoolUtil.GetAvailablePortAsync();
         database ??= TestNodeDatabase.Sqlite($"nlightning_{name}_{Guid.NewGuid():N}.db");
-        return new NLightningTestNode(fixture, name, database, new FakeSecureKeyManager(), port,
+        return new NLightningTestNode(bitcoinEndpoint, name, database, new FakeSecureKeyManager(), port,
                                       configureNodeOptions, ownsResources: true)
         {
             ReconnectInitialDelay = FastReconnectInitialDelay
@@ -569,11 +584,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     private ServiceProvider BuildServiceProvider()
     {
-        Assert.NotNull(_fixture.Builder);
-        var bitcoinConfiguration = _fixture.Builder.Configuration.BTCNodes[0];
-        var zmqRawBlockPort = bitcoinConfiguration.Cmd.First(c => c.Contains("-zmqpubrawblock")).Split(':')[2];
-        var zmqRawTxPort = bitcoinConfiguration.Cmd.First(c => c.Contains("-zmqpubrawtx")).Split(':')[2];
-        var bitcoin = Bitcoin;
+        var endpoint = _bitcoinEndpoint();
+        var bitcoin = endpoint.Rpc;
 
         List<KeyValuePair<string, string?>> inMemoryConfiguration =
         [
@@ -584,9 +596,9 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Bitcoin:RpcEndpoint", bitcoin.Address.ToString()),
             new("Bitcoin:RpcUser", bitcoin.CredentialString.UserPassword.UserName),
             new("Bitcoin:RpcPassword", bitcoin.CredentialString.UserPassword.Password),
-            new("Bitcoin:ZmqHost", bitcoin.Address.Host),
-            new("Bitcoin:ZmqBlockPort", zmqRawBlockPort),
-            new("Bitcoin:ZmqTxPort", zmqRawTxPort),
+            new("Bitcoin:ZmqHost", endpoint.ZmqHost),
+            new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()),
+            new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()),
             new("FeeEstimation:CacheFile", FeeCacheFilePath)
         ];
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration).Build();
