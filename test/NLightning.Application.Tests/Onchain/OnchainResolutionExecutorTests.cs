@@ -284,6 +284,30 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AlertInARoundWhoseSaveFails_When_NextRoundSaves_Then_EmittedOnlyAfterThatSave()
+    {
+        // Arrange: NL-315: a resolver alerts once and records it through Emitted; the first round's save fails
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal);
+        var sweep = CreateBroadcast(0x54);
+        var emitted = 0;
+        _resolver.OnResolve = (_, _, _) =>
+        [
+            new BroadcastAction(sweep),
+            new AlertAction("B5-TEST", "just a test", () => emitted++)
+        ];
+        _store.FailNextSave = new InvalidOperationException("database down");
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 5, TestContext.Current.CancellationToken);
+        var afterFailedSave = emitted;
+        await CreateExecutor().RunRoundAsync(SpentAt + 6, TestContext.Current.CancellationToken);
+
+        // Assert: not emitted by the failed round, emitted by the saved one
+        Assert.Equal(0, afterFailedSave);
+        Assert.Equal(1, emitted);
+    }
+
+    [Fact]
     public async Task Given_SaveFailsAtTheIrrevocableDepth_When_NextRound_Then_ChannelStillResolvingThenClosed()
     {
         // Arrange (NL-282 class): everything is irrevocable at SpentAt + 100, and that round's save fails

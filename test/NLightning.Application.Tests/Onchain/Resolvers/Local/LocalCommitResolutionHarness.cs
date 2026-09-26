@@ -89,6 +89,13 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <summary>False: <c>IBitcoinChainService.GetBlockAsync(height)</c> finds nothing (pruned node, RPC down).</summary>
     public bool ChainServiceFindsBlocks { get; set; } = true;
 
+    /// <summary>True: <c>IBitcoinChainService.GetBlockAsync(height)</c> throws, as the real service does on every RPC
+    /// error (pruned block, height past the tip).</summary>
+    public bool ChainServiceThrowsOnBlocks { get; set; }
+
+    /// <summary>True: every round's save fails: nothing after the save (events, alerts) happens.</summary>
+    public bool SavesFail { get; set; }
+
     /// <summary>False: mined blocks skip the per-block <c>ResolveAsync</c> round (the node is offline).</summary>
     public bool ResolveEachBlock { get; set; } = true;
 
@@ -121,9 +128,11 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                                                         ? _knownTransactions.GetValueOrDefault(txId)
                                                         : null);
         chainService.Setup(c => c.GetBlockAsync(It.IsAny<uint>()))
-                    .ReturnsAsync((uint height) => ChainServiceFindsBlocks && _blocks.TryGetValue(height, out var txs)
-                                                       ? BuildBlock(txs)
-                                                       : null);
+                    .ReturnsAsync((uint height) => ChainServiceThrowsOnBlocks
+                                                       ? throw new InvalidOperationException("Block not available")
+                                                       : ChainServiceFindsBlocks && _blocks.TryGetValue(height, out var txs)
+                                                           ? BuildBlock(txs)
+                                                           : null);
         var destinations = new Mock<ISweepDestinationProvider>();
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
@@ -303,6 +312,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         }
 
         // After the save: events and alerts
+        if (SavesFail)
+            return;
+
         foreach (var action in actions)
         {
             switch (action)
@@ -313,6 +325,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                     break;
                 case AlertAction alert:
                     Alerts.Add(alert);
+                    alert.Emitted?.Invoke();
                     break;
             }
         }

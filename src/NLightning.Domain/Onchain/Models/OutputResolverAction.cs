@@ -55,4 +55,6 @@ public sealed record StageWriteAction(string Description, Func<IUnitOfWork, Canc
 /// </summary>
 /// <param name="RequirementId">The BOLT 5 plan requirement behind it (<c>B5-…</c>).</param>
 /// <param name="Message">What happened.</param>
-public sealed record AlertAction(string RequirementId, string Message) : OutputResolverAction;
+/// <param name="Emitted">Called once the alert is logged, after the round's save succeeded (a resolver that alerts once
+/// records it here, so an alert whose round failed to save is raised again next round, NL-315).</param>
+public sealed record AlertAction(string RequirementId, string Message, Action? Emitted = null) : OutputResolverAction;
