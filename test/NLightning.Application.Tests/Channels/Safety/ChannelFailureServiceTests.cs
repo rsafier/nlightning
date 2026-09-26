@@ -733,9 +733,10 @@ public sealed class ChannelFailureServiceTests : IDisposable
     }
 
     [Theory]
+    [InlineData(ChannelState.Closing)]
     [InlineData(ChannelState.Closed)]
     [InlineData(ChannelState.OnchainResolving)]
-    public async Task Given_ClosedOrResolvingChannel_When_Failed_Then_NotApplicable(ChannelState state)
+    public async Task Given_ClosingClosedOrResolvingChannel_When_Failed_Then_NotApplicable(ChannelState state)
     {
         // Arrange
         _channel.UpdateState(state);
