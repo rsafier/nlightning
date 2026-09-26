@@ -18,6 +18,11 @@ using Protocol.Payloads;
 /// <param name="HtlcMaximumMsat">The largest HTLC the origin sends through the channel.</param>
 /// <param name="FeeBaseMsat">The base fee.</param>
 /// <param name="FeeProportionalMillionths">The proportional fee.</param>
+/// <remarks>
+/// Equality is by value (NL-354): every field and <see cref="ExtraData"/> by content; <see cref="RawUpdate"/> does not
+/// take part (like <c>RawAnnouncement</c> in <see cref="GraphNode"/> and <see cref="GraphChannel"/>), so a policy
+/// reloaded from the database equals the one before a restart, and one built by hand equals the parsed one.
+/// </remarks>
 public sealed record GraphPolicy(
     uint Timestamp,
     byte MessageFlags,
@@ -67,7 +72,6 @@ public sealed record GraphPolicy(
                                update.HtlcMinimumMsat, update.HtlcMaximumMsat, update.FeeBaseMsat,
                                update.FeeProportionalMillionths)
         {
-            // Left default when empty, so record equality with a policy built by hand still holds
             ExtraData = update.ExtraData.IsEmpty ? default : update.ExtraData.ToArray()
         };
     }
@@ -88,4 +92,20 @@ public sealed record GraphPolicy(
             && HtlcMaximumMsat == update.HtlcMaximumMsat
             && ExtraData.Span.SequenceEqual(update.ExtraData.Span);
     }
+
+    public bool Equals(GraphPolicy? other) =>
+        other is not null
+     && Timestamp == other.Timestamp
+     && MessageFlags == other.MessageFlags
+     && ChannelFlags == other.ChannelFlags
+     && CltvExpiryDelta == other.CltvExpiryDelta
+     && HtlcMinimumMsat == other.HtlcMinimumMsat
+     && HtlcMaximumMsat == other.HtlcMaximumMsat
+     && FeeBaseMsat == other.FeeBaseMsat
+     && FeeProportionalMillionths == other.FeeProportionalMillionths
+     && ExtraData.Span.SequenceEqual(other.ExtraData.Span);
+
+    public override int GetHashCode() =>
+        HashCode.Combine(Timestamp, ChannelFlags, CltvExpiryDelta, HtlcMinimumMsat, HtlcMaximumMsat, FeeBaseMsat,
+                         FeeProportionalMillionths);
 }
