@@ -27,7 +27,8 @@ using Utils;
 /// <list type="bullet">
 ///   <item>An HTLC we offered to LND is held (hold invoice) while the peer is unreachable; once the chain passes its
 ///   <c>cltv_expiry + G</c> our <see cref="HtlcExpiryMonitor"/> fails the channel, <see cref="ChannelFailureService"/>
-///   broadcasts our latest commitment (both signatures), it confirms, our channel becomes <c>Closed</c> and LND sees
+///   broadcasts our latest commitment (both signatures), it confirms, our channel becomes <c>OnchainResolving</c> (BOLT
+///   5 plan O2-T5) and LND sees
 ///   a remote force close with our transaction.</item>
 ///   <item>An HTLC LND Alice forwards through us to LND David's hold invoice: while David holds it, the monitor leaves
 ///   the incoming HTLC alone (it is continued downstream) and fails no channel; when David gives up on it
@@ -130,10 +131,12 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
             // The commitment confirms
             await ChainSync.MineAndWaitAsync(_fixture, 1, [alice], [node], ct);
 
-            // Assert: our channel is closed, the commitment is in a block with both signatures, and LND saw its peer
-            // force close with our transaction
+            // Assert: our channel is resolving on chain (BOLT 5 plan O2-T5: Closed only once its outputs are
+            // irrevocably resolved), the commitment is in a block with both signatures, and LND saw its peer force
+            // close with our transaction
             await Poll.UntilAsync(async () => (await node.GetChannelAsync(channel.ChannelId, ct)).State
-                                           == ChannelState.Closed, s_timeout, "our channel closed", ct);
+                                           == ChannelState.OnchainResolving, s_timeout,
+                                  "our channel resolving on chain", ct);
 
             var confirmed = await _fixture.Bitcoin.GetRawTransactionInfoAsync(displayTxId, ct);
             Assert.True(confirmed.Confirmations >= 1);
