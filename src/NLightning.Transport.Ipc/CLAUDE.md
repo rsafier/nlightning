@@ -26,7 +26,7 @@ This is the wire contract for local IPC between the CLI (`src/NLightning.Client`
 - A property with a default value must use `set`, not `init`: the MessagePack analyzer (MsgPack017) warns that an `init` initializer is reset on deserialization (see `ListInvoicesIpcRequest.Take`).
 
 ## Dependency rules
-- Allowed: `NLightning.Domain` and the MessagePack package (3.1.4). The csproj also references `NLightning.Daemon.Contracts` (net9.0), but no source file uses it.
+- Allowed: `NLightning.Domain` and the MessagePack package (3.1.4). The csproj also references `NLightning.Daemon.Contracts` (same targets as every src project since W4-C), but no source file uses it.
 - Must NOT reference Application, Infrastructure.*, Daemon, Client, NBitcoin or EF. This project is consumed by both Client and Daemon, so a reference to either one creates a cycle.
 
 ## Tests

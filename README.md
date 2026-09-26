@@ -6,7 +6,7 @@
 &nbsp;
 [![MIT License](https://img.shields.io/github/license/ngoline/nlightning)](LICENSE)
 &nbsp;
-![.NET 10.0](https://img.shields.io/badge/Version-.NET%2010.0-informational?style=flat&logo=dotnet)
+![.NET 10.0 | 11.0](https://img.shields.io/badge/Version-.NET%2010.0%20%7C%2011.0-informational?style=flat&logo=dotnet)
 
 Welcome to the C# implementation of the Lightning Network!
 
@@ -52,13 +52,15 @@ and testing purposes.
 
 Before you begin, ensure you have the following installed on your system:
 
-- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) or any later 9.x version
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download/dotnet/10.0) (10.0.100 or later), and optionally the
+  [.NET 11.0 SDK](https://dotnet.microsoft.com/download/dotnet/11.0) (release candidates are accepted until 11.0 is GA)
 - Git (for cloning the repository)
 
-This project uses a global.json file to pin the .NET SDK to version 9.0.0, but with rollForward:
-"latestMinor" it will accept any newer 9.x release (e.g., 9.1.x, 9.2.x).
-You must have .NET SDK 9.0.0 or later within the 9.x line installed.
-SDK versions outside the 9.x line (e.g., 8.x or 10.x) are not supported.
+The projects target .NET 10.0 (LTS), and also .NET 11.0 when they are built with SDK 11 or newer, so SDK 10 alone is
+enough. `global.json` requires SDK 10.0.100 or later and rolls forward to the newest installed SDK
+(`rollForward: latestMajor`, prereleases allowed while .NET 11 is in RC). With SDK 11 installed, build, test or run a
+single framework with `-f net10.0` / `-f net11.0` (or `-p:NltgTargetNet11=false` for net10.0 only); the net10.0 build
+needs the .NET 10 runtime and the net11.0 build the .NET 11 runtime.
 
 ### Installation
 
