@@ -352,13 +352,13 @@ public class NodeServiceExtensionsTests
     }
 
     [Theory]
-    [InlineData("regtest", true, true)]
-    [InlineData("mainnet", null, false)]
-    [InlineData("testnet", false, false)]
-    [InlineData("signet", true, true)]
-    [InlineData("mutinynet", true, true)]
+    [InlineData("regtest", true)]
+    [InlineData("mainnet", null)]
+    [InlineData("testnet", null)]
+    [InlineData("signet", true)]
+    [InlineData("mutinynet", true)]
     public void Given_DefaultConfigJson_When_Bound_Then_RoutingDefaultsAndEnableHtlcsAreExplicitAndValid(
-        string network, bool? expectedEnableHtlcs, bool expectedHtlcs)
+        string network, bool? expectedEnableHtlcs)
     {
         // Arrange
         var json = NodeConfigurationExtensions.CreateDefaultConfigJson(network);
@@ -374,11 +374,13 @@ public class NodeServiceExtensionsTests
         var options = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
 
         // Assert
-        // Mainnet keeps the key (the integrator's switch) with null, which binds as unset: the code default applies
+        // Mainnet and testnet keep the key (the operator's switch) with null, which binds as unset: the code default
+        // of the network applies, whatever the BOLT 5 O6-T4 gate makes it
         Assert.Contains(configuration.GetSection("Node").GetChildren(), c => c.Key == "EnableHtlcs");
         Assert.Equal(expectedEnableHtlcs, configuration.GetValue<bool?>("Node:EnableHtlcs"));
         Assert.Equal(expectedEnableHtlcs, options.EnableHtlcs);
-        Assert.Equal(expectedHtlcs, options.HtlcsEnabled);
+        var codeDefault = new NodeOptions { BitcoinNetwork = options.BitcoinNetwork }.HtlcsEnabled;
+        Assert.Equal(expectedEnableHtlcs ?? codeDefault, options.HtlcsEnabled);
         Assert.Equal(defaults.FeeBaseMsat, options.Routing.FeeBaseMsat);
         Assert.Equal(defaults.FeeProportionalMillionths, options.Routing.FeeProportionalMillionths);
         Assert.Equal(defaults.CltvExpiryDelta, options.Routing.CltvExpiryDelta);
@@ -423,7 +425,10 @@ public class NodeServiceExtensionsTests
         Assert.Equal(expectedOn, graph.Enabled);
         Assert.Equal(expectedOn, sync.SyncEnabled);
         Assert.Equal(expectedOn, relay.RelayEnabled);
-        Assert.Equal(expectedOn, gossip.AcceptPublicChannels);
+        // AcceptPublicChannels keeps its code default everywhere: on mainnet AllowPublicChannelsOnMainnet alone gates
+        // public channels, ours and a peer's
+        Assert.Equal(new GossipOptions().AcceptPublicChannels, gossip.AcceptPublicChannels);
+        Assert.True(gossip.AcceptPublicChannels);
         Assert.False(gossip.AllowPublicChannelsOnMainnet);
         Assert.Equal(new GossipGraphOptions().IsEnabledFor(chain), graph.IsEnabledFor(chain));
         Assert.Equal(new GossipSyncOptions().IsSyncEnabledFor(chain), sync.IsSyncEnabledFor(chain));
@@ -437,6 +442,33 @@ public class NodeServiceExtensionsTests
                                                || typeof(GossipSyncOptions).GetProperty(key) is not null
                                                || typeof(GossipRelayOptions).GetProperty(key) is not null,
                                                   key));
+    }
+
+    [Fact]
+    public void Given_MainnetDefaultConfigJson_When_OnlyAllowPublicChannelsOnMainnetIsFlipped_Then_PublicChannelsAreAccepted()
+    {
+        // Arrange: the documented D12 switch is one key; the template must not leave a second one (AcceptPublicChannels)
+        // off, or a peer's public open_channel would still be refused
+        var json = NodeConfigurationExtensions.CreateDefaultConfigJson("mainnet");
+        var configuration = new ConfigurationBuilder()
+                           .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json)))
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Gossip:AllowPublicChannelsOnMainnet"] = "true"
+                           })
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var nodeOptions = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+        var gossip = provider.GetRequiredService<IOptions<GossipOptions>>().Value;
+
+        // Assert
+        Assert.Equal(BitcoinNetwork.Mainnet, nodeOptions.BitcoinNetwork);
+        Assert.True(gossip.ArePublicChannelsAllowed(nodeOptions.BitcoinNetwork));
+        Assert.True(gossip.AcceptPublicChannels);
     }
 
     [Theory]

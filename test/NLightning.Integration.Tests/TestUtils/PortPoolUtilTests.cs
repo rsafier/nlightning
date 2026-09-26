@@ -89,41 +89,43 @@ public class PortPoolUtilTests
     }
 
     [Fact]
-    public async Task Given_PortsInUseByAnotherListener_When_GettingPorts_Then_TheyAreSkipped()
+    public void Given_PortInUseByAnotherListener_When_PickingAPort_Then_ItIsSkipped()
     {
-        // Arrange: another "process" listens on a pool port we don't hold
-        var taken = new List<int>();
-        var squatter = default(TcpListener);
+        // Arrange: another "process" listens on the first candidate, the second is free. The ports come from the OS,
+        // not from this process's shared pool, which the other tests of the process use at the same time (draining it
+        // here made their GetAvailablePortAsync fail)
+        var squatter = new TcpListener(IPAddress.Loopback, 0);
+        squatter.Start();
         try
         {
-            var first = await PortPoolUtil.GetAvailablePortAsync();
-            PortPoolUtil.ReleasePort(first);
-            squatter = new TcpListener(IPAddress.Loopback, first);
-            squatter.Start();
+            var squatted = ((IPEndPoint)squatter.LocalEndpoint).Port;
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            var free = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
 
-            // Act: take every other port of the range
-            for (var i = 0; i < PortPoolUtil.PoolSize - 1; i++)
-            {
-                try
-                {
-                    taken.Add(await PortPoolUtil.GetAvailablePortAsync());
-                }
-                catch (InvalidOperationException)
-                {
-                    // Another test of this process holds a port; the rest of the range is enough
-                    break;
-                }
-            }
+            // Act
+            var picked = PortPoolUtil.PickFreePort([squatted, free], PortPoolUtil.IsFree);
+            var none = PortPoolUtil.PickFreePort([squatted], PortPoolUtil.IsFree);
 
             // Assert
-            Assert.DoesNotContain(first, taken);
-            Assert.NotEmpty(taken);
+            Assert.False(PortPoolUtil.IsFree(squatted));
+            Assert.Equal(free, picked);
+            Assert.Null(none);
         }
         finally
         {
-            squatter?.Stop();
-            foreach (var port in taken)
-                PortPoolUtil.ReleasePort(port);
+            squatter.Stop();
         }
+    }
+
+    [Fact]
+    public void Given_Candidates_When_PickingAPort_Then_TheFirstFreeOneInOrderWins()
+    {
+        // Act
+        var picked = PortPoolUtil.PickFreePort([5, 6, 7, 8], port => port % 2 == 0);
+
+        // Assert
+        Assert.Equal(6, picked);
     }
 }

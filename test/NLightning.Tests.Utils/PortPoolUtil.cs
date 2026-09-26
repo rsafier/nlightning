@@ -91,11 +91,8 @@ public static class PortPoolUtil
 
             // Random order, skipping ports another process listens on (they stay in the pool for later)
             var candidates = s_availablePorts.OrderBy(_ => s_random.Next()).ToList();
-            foreach (var port in candidates)
+            if (PickFreePort(candidates, IsFree) is { } port)
             {
-                if (!IsFree(port))
-                    continue;
-
                 s_availablePorts.Remove(port);
                 return port;
             }
@@ -117,8 +114,26 @@ public static class PortPoolUtil
         s_semaphore.Release();
     }
 
-    // Test nodes listen on the loopback address; another process may also listen on every address
-    private static bool IsFree(int port) => CanListen(IPAddress.Loopback, port) && CanListen(IPAddress.Any, port);
+    /// <summary>
+    /// The first of <paramref name="candidates"/> that <paramref name="isFree"/> accepts, or null when none is. Pure,
+    /// so tests check the skipping without draining this process's shared pool.
+    /// </summary>
+    public static int? PickFreePort(IEnumerable<int> candidates, Func<int, bool> isFree)
+    {
+        foreach (var port in candidates)
+        {
+            if (isFree(port))
+                return port;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether nothing listens on <paramref name="port"/>: test nodes listen on the loopback address, and another
+    /// process may also listen on every address.
+    /// </summary>
+    public static bool IsFree(int port) => CanListen(IPAddress.Loopback, port) && CanListen(IPAddress.Any, port);
 
     private static bool CanListen(IPAddress address, int port)
     {
