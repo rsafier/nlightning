@@ -49,6 +49,7 @@ public sealed class ChannelFailureServiceTests : IDisposable
     private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
     private readonly List<string> _calls = [];
     private readonly List<SignedTransaction> _published = [];
+    private readonly List<WatchedTransactionModel> _storedWatches = [];
     private ServiceProvider _provider = null!;
     private ChannelModel _channel = null!;
 
@@ -71,6 +72,14 @@ public sealed class ChannelFailureServiceTests : IDisposable
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
         _watchedDb.Setup(r => r.GetAllPendingAsync()).ReturnsAsync([]);
+        _watchedDb.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                  .Callback<WatchedTransactionModel>(w =>
+                   {
+                       _calls.Add("watch staged");
+                       _storedWatches.Add(w);
+                   });
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId id) => _storedWatches.FirstOrDefault(w => w.TransactionId == id));
         _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
                   .Callback<ChannelModel>(c => _calls.Add($"persist {c.State}"))
                   .Returns(Task.CompletedTask);
@@ -79,10 +88,19 @@ public sealed class ChannelFailureServiceTests : IDisposable
                                                          It.IsAny<uint>()))
            .Callback<ChannelId, SignedTransaction, uint>((_, tx, _) =>
             {
-                _calls.Add("publish");
+                _calls.Add("publish and watch");
                 _published.Add(tx);
             })
            .Returns(Task.CompletedTask);
+        _blockchainMonitor.Setup(m => m.TrackWatchedTransaction(It.IsAny<WatchedTransactionModel>()))
+                          .Callback(() => _calls.Add("track"));
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .Callback<SignedTransaction>(tx =>
+                           {
+                               _calls.Add("publish");
+                               _published.Add(tx);
+                           })
+                          .Returns(Task.CompletedTask);
         _errorSender.Setup(s => s.TrySendAsync(It.IsAny<CompactPubKey>(), It.IsAny<ErrorMessage>()))
                     .Callback(() => _calls.Add("error sent"))
                     .ReturnsAsync(true);
@@ -153,8 +171,11 @@ public sealed class ChannelFailureServiceTests : IDisposable
         Assert.Equal(2, htlcOutputs);
         Assert.Equal(hasAnchors ? 6 : 4, tx.Outputs.Count);
 
-        // Failed + error persisted before the publish, the error sent after it
-        Assert.Equal(["persist Failed", "save", "publish", "error sent"], _calls);
+        // Failed + error + the commitment's watch persisted in one save before the publish (NL-271), the error sent
+        // after it
+        Assert.Equal(["watch staged", "persist Failed", "save", "track", "publish", "error sent"], _calls);
+        var watch = Assert.Single(_storedWatches);
+        Assert.Equal(expectedTxId, watch.TransactionId);
         Assert.Equal(ChannelState.Failed, _channel.State);
         Assert.NotNull(_channel.ErrorSent);
     }
@@ -326,18 +347,17 @@ public sealed class ChannelFailureServiceTests : IDisposable
     [Fact]
     public async Task Given_PublishFailsAfterWatchSavedAndResendFailsToo_When_Blocks_Then_RetriedUntilPublished()
     {
-        // Arrange: the real monitor saves the watch, then the send throws (bitcoind down)
+        // Arrange: the watch is saved with Failed, then the send throws (bitcoind down)
         _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
         _pair.Settle(_pair.Alice);
         _channel.UpdateCommitments(_pair.Alice.State);
         WatchedTransactionModel? saved = null;
         _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
                   .ReturnsAsync((TxId id) => saved is not null && saved.TransactionId == id ? saved : null);
-        _blockchainMonitor
-           .Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                         It.IsAny<uint>()))
-           .Callback<ChannelId, SignedTransaction, uint>((id, tx, depth) => saved = new WatchedTransactionModel(id, tx.TxId, depth))
-           .ThrowsAsync(new InvalidOperationException("bitcoind down"));
+        _watchedDb.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                  .Callback<WatchedTransactionModel>(w => saved = w);
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new InvalidOperationException("bitcoind down"));
         _chainService.SetupSequence(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
                      .ThrowsAsync(new InvalidOperationException("bitcoind down"))
                      .ReturnsAsync(uint256.One);
@@ -368,11 +388,8 @@ public sealed class ChannelFailureServiceTests : IDisposable
         _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
         _pair.Settle(_pair.Alice);
         _channel.UpdateCommitments(_pair.Alice.State);
-        _blockchainMonitor
-           .SetupSequence(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                                 It.IsAny<uint>()))
-           .ThrowsAsync(new InvalidOperationException("bitcoind down"))
-           .Returns(Task.CompletedTask);
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new InvalidOperationException("bitcoind down"));
         var service = Service;
         service.Start();
         await service.WhenResumedAsync();
@@ -417,7 +434,7 @@ public sealed class ChannelFailureServiceTests : IDisposable
                                                                                  watch.TransactionId))), Times.Once);
         Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out _));
         Assert.DoesNotContain("error sent", _calls);
-        Assert.Single(_published); // only the previous run's PublishAndWatch
+        Assert.Single(_published); // only the previous run's publish
     }
 
     [Theory]
@@ -456,10 +473,8 @@ public sealed class ChannelFailureServiceTests : IDisposable
         _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
         _pair.Settle(_pair.Alice);
         _channel.UpdateCommitments(_pair.Alice.State);
-        _blockchainMonitor
-           .Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                         It.IsAny<uint>()))
-           .ThrowsAsync(new InvalidOperationException("bitcoind down"));
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new InvalidOperationException("bitcoind down"));
 
         // Act
         var outcome = await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
@@ -468,6 +483,81 @@ public sealed class ChannelFailureServiceTests : IDisposable
         // Assert
         Assert.Equal(ChannelFailureStatus.PublishFailed, outcome.Status);
         Assert.Equal(ChannelState.Failed, _channel.State);
+    }
+
+    [Fact]
+    public async Task Given_CrashAfterFailedSave_When_Restarted_Then_BroadcastResumedFromTheSameSave()
+    {
+        // Arrange (NL-271): the process dies right after the Failed save, before anything is published
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new OperationCanceledException("process stopped"));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "htlc timed out"),
+                                           TestContext.Current.CancellationToken));
+        Assert.Equal(["watch staged", "persist Failed", "save", "track"], _calls);
+        Assert.Empty(_published);
+        var watch = Assert.Single(_storedWatches);
+        _watchedDb.Setup(r => r.GetAllPendingAsync()).ReturnsAsync([watch]);
+        _calls.Clear();
+
+        // A new process over the same channel memory and database; no HTLC deadline asks again
+        using var service = ActivatorUtilities.CreateInstance<ChannelFailureService>(_provider);
+
+        // Act
+        service.Start();
+        await service.WhenResumedAsync();
+
+        // Assert: the commitment recorded by the Failed save is sent; nothing is saved again
+        _chainService.Verify(c => c.SendTransactionAsync(It.Is<Transaction>(t => t.GetHash() == new uint256(
+                                                                                 watch.TransactionId))), Times.Once);
+        Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out var txId));
+        Assert.Equal(watch.TransactionId, txId);
+        Assert.DoesNotContain("save", _calls);
+        service.Stop();
+    }
+
+    [Fact]
+    public async Task Given_FailedWithoutWatch_When_FailedAgainWithBroadcast_Then_WatchSavedAloneAndPublished()
+    {
+        // Arrange: failed earlier without a broadcast (the error is stored)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b", Broadcast: false),
+                                       TestContext.Current.CancellationToken);
+        var storedError = _channel.ErrorSent!.Value.ToArray();
+        _calls.Clear();
+
+        // Act
+        var outcome = await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("c", "d"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert: the watch is saved (the channel row is unchanged) before the publish, the stored error is kept
+        Assert.Equal(ChannelFailureStatus.Broadcast, outcome.Status);
+        Assert.Equal(["watch staged", "save", "track", "publish", "error sent"], _calls);
+        Assert.Equal(storedError, _channel.ErrorSent!.Value.ToArray());
+    }
+
+    [Fact]
+    public async Task Given_ConditionNoLongerHolds_When_Failed_Then_NotApplicableAndNothingPersisted()
+    {
+        // Arrange: the caller's reason went away while it waited for the lock
+        var request = new ChannelFailureRequest("closing_signed reply timeout", "no reply")
+        {
+            StillApplies = _ => false
+        };
+
+        // Act
+        var outcome = await Service.FailChannelAsync(_channel.ChannelId, request,
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelFailureStatus.NotApplicable, outcome.Status);
+        Assert.Empty(_calls);
+        Assert.NotEqual(ChannelState.Failed, _channel.State);
     }
 
     [Fact]
