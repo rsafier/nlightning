@@ -174,4 +174,32 @@ public class PaymentModelTests
         Assert.Empty(payment.Route);
         Assert.Empty(payment.HopSharedSecrets);
     }
+
+    [Fact]
+    public void Given_ARoute_When_RecordingVerifiedHoldTimes_Then_OnlyTheVerifiedHopsGetOne()
+    {
+        // Arrange - BOLT 4 attribution_data: two of three hops verified
+        var hopA = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)8, 32)]);
+        var hopB = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)9, 32)]);
+        PaymentHop[] route =
+        [
+            new(hopA, new ShortChannelId(1, 2, 3), LightningMoney.MilliSatoshis(3UL), 900, new Secret(new byte[32])),
+            new(hopB, new ShortChannelId(1, 2, 4), LightningMoney.MilliSatoshis(2UL), 860, new Secret(new byte[32])),
+            new(s_payee, new ShortChannelId(1, 2, 5), LightningMoney.MilliSatoshis(1UL), 820,
+                new Secret(new byte[32]))
+        ];
+        var payment = new PaymentModel(new Hash(new byte[32]), null, s_payee, LightningMoney.MilliSatoshis(1UL),
+                                       LightningMoney.Zero, s_createdAt, route);
+
+        // Act
+        var changed = payment.RecordHoldTimes([TimeSpan.FromMilliseconds(2_500), TimeSpan.FromMilliseconds(1_000)]);
+        var again = payment.RecordHoldTimes([TimeSpan.FromMilliseconds(2_500), TimeSpan.FromMilliseconds(1_000)]);
+
+        // Assert
+        Assert.True(changed);
+        Assert.False(again);
+        Assert.Equal([TimeSpan.FromMilliseconds(2_500), TimeSpan.FromMilliseconds(1_000), null],
+                     payment.Route.Select(h => h.HoldTime));
+        Assert.Equal(route[0].SharedSecret, payment.Route[0].SharedSecret);
+    }
 }

@@ -74,6 +74,13 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         var entity = await DbSet.FindAsync(payment.PaymentHash)
                   ?? throw new InvalidOperationException($"No payment for payment hash {payment.PaymentHash}");
         MapMutableFields(payment, entity);
+
+        // The route is fixed once stored; only the hold times its hops reported (BOLT 4 attribution_data) change
+        foreach (var hop in await LoadTrackedHopsAsync(payment.PaymentHash))
+        {
+            if (hop.HopIndex < payment.Route.Count)
+                hop.HoldTimeMs = ToHoldTimeMs(payment.Route[hop.HopIndex]);
+        }
     }
 
     /// <inheritdoc />
@@ -123,7 +130,8 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         var route = hops.OrderBy(h => h.HopIndex)
                         .Select(h => new PaymentHop(h.NodeId, h.ShortChannelId,
                                                     LightningMoney.MilliSatoshis(checked((ulong)h.AmountMsat)),
-                                                    h.CltvExpiry, new Secret(h.SharedSecret)))
+                                                    h.CltvExpiry, new Secret(h.SharedSecret),
+                                                    h.HoldTimeMs is { } ms ? TimeSpan.FromMilliseconds(ms) : null))
                         .ToList();
 
         return PaymentModel.Restore(entity.PaymentHash, entity.Bolt11, entity.PayeeNodeId,
@@ -154,6 +162,9 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
         entity.FailureReason = payment.FailureReason;
         entity.CompletedAt = payment.CompletedAt;
     }
+
+    private static long? ToHoldTimeMs(PaymentHop hop) =>
+        hop.HoldTime is { } holdTime ? (long)holdTime.TotalMilliseconds : null;
 
     /// <summary>
     /// The hop rows of a payment as the change tracker sees them: the stored ones (tracked) plus the ones this unit of
@@ -198,6 +209,7 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
             entity.AmountMsat = checked((long)hop.Amount.MilliSatoshi);
             entity.CltvExpiry = hop.CltvExpiry;
             entity.SharedSecret = ((byte[])hop.SharedSecret).ToArray();
+            entity.HoldTimeMs = ToHoldTimeMs(hop);
         }
 
         foreach (var stale in byIndex.Values)

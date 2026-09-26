@@ -752,6 +752,9 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
         public Task<Secret?> GetOnionSharedSecretAsync(ChannelId channelId, HtlcKey htlc) =>
             inner.GetOnionSharedSecretAsync(channelId, htlc);
 
+        public Task<DateTimeOffset?> GetHtlcAddedAtAsync(ChannelId channelId, HtlcKey htlc) =>
+            inner.GetHtlcAddedAtAsync(channelId, htlc);
+
         public Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin)
         {
             node.BeforeSetHtlcOrigin?.Invoke(origin);

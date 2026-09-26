@@ -83,6 +83,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsFromBeforeAddAttributionData_When_Migrated_Then_AttributionAndHoldTimesRoundTrip()
+    {
+        // Arrange (NL-326: rows written before the migration load with no attribution and no hold time; attributed
+        // removals, receipt times and per-hop hold times round-trip on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_attribution");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await AttributionSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                     DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforeAddOnionReplaySet_When_Migrated_Then_TheyMoveForwardAndTheReplaySetWorks()
     {
         // Arrange (NL-078: rows written before the migration move forward; replay entries round-trip, are pruned by

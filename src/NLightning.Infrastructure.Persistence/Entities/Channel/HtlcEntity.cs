@@ -77,6 +77,24 @@ public class HtlcEntity
     public byte[]? FailReason { get; set; }
 
     /// <summary>
+    /// The <c>attribution_data</c> (920 bytes) of a fulfill or fail removal, sent or received (BOLT 4 attributable
+    /// failures and hold times, migration <c>AddAttributionData</c>); null when the message carried none.
+    /// </summary>
+    public byte[]? AttributionData { get; set; }
+
+    /// <summary>
+    /// The <c>fulfillment_payload</c> of a fulfill removal, sent or received; null when none.
+    /// </summary>
+    public byte[]? FulfillmentPayload { get; set; }
+
+    /// <summary>
+    /// When the row was inserted (stored as UTC ticks): for an incoming HTLC the receipt of its
+    /// <c>update_add_htlc</c>, the start of this node's BOLT 4 hold time. Written once, on insert; null for rows from
+    /// before migration <c>AddAttributionData</c>.
+    /// </summary>
+    public DateTimeOffset? AddedAt { get; set; }
+
+    /// <summary>
     /// The BOLT 4 failure code of a fail-malformed removal.
     /// </summary>
     public ushort? FailureCode { get; set; }

@@ -82,7 +82,7 @@ public sealed class PaymentModel
     /// secret; empty when it was not recorded. Persisted with the payment so a failure returned after a restart can
     /// still be decrypted and attributed.
     /// </summary>
-    public IReadOnlyList<PaymentHop> Route { get; }
+    public IReadOnlyList<PaymentHop> Route { get; private set; }
 
     /// <summary>
     /// The shared secret of each hop of <see cref="Route"/>, first hop first (for
@@ -182,6 +182,32 @@ public sealed class PaymentModel
         Preimage = preimage;
         CompletedAt = completedAt;
         Status = PaymentStatus.Succeeded;
+    }
+
+    /// <summary>
+    /// Records the hold times the hops of <see cref="Route"/> reported in a verified <c>attribution_data</c> (BOLT 4),
+    /// first hop first: hop <c>i</c> gets <c>holdTimes[i]</c>; hops past the list (not verified) keep what they had.
+    /// </summary>
+    /// <param name="holdTimes">The verified hold times, first hop first.</param>
+    /// <returns>True when a hop changed.</returns>
+    public bool RecordHoldTimes(IReadOnlyList<TimeSpan> holdTimes)
+    {
+        ArgumentNullException.ThrowIfNull(holdTimes);
+
+        var changed = false;
+        var route = Route.ToList();
+        for (var i = 0; i < route.Count && i < holdTimes.Count; i++)
+        {
+            if (route[i].HoldTime == holdTimes[i])
+                continue;
+
+            route[i] = route[i] with { HoldTime = holdTimes[i] };
+            changed = true;
+        }
+
+        if (changed)
+            Route = route;
+        return changed;
     }
 
     /// <summary>

@@ -677,16 +677,23 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="id">The htlc id.</param>
     /// <param name="preimage">The preimage for this htlc.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> (920 bytes), or empty for no TLV 1.</param>
+    /// <param name="fulfillmentPayload">The <c>fulfillment_payload</c>, or empty for no TLV 3.</param>
     /// <returns>The UpdateFulfillHtlc message.</returns>
     /// <seealso cref="UpdateFulfillHtlcMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="UpdateFulfillHtlcPayload"/>
     public UpdateFulfillHtlcMessage CreateUpdateFulfillHtlcMessage(ChannelId channelId, ulong id,
-                                                                   ReadOnlyMemory<byte> preimage)
+                                                                   ReadOnlyMemory<byte> preimage,
+                                                                   ReadOnlyMemory<byte> attributionData = default,
+                                                                   ReadOnlyMemory<byte> fulfillmentPayload = default)
     {
         var payload = new UpdateFulfillHtlcPayload(channelId, id, preimage);
 
-        return new UpdateFulfillHtlcMessage(payload);
+        return new UpdateFulfillHtlcMessage(payload, ToAttributionTlv(attributionData),
+                                            fulfillmentPayload.IsEmpty
+                                                ? null
+                                                : new FulfillmentPayloadTlv(fulfillmentPayload.ToArray()));
     }
 
     /// <summary>
@@ -695,16 +702,23 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="id">The htlc id.</param>
     /// <param name="reason">The reason for failure.</param>
+    /// <param name="attributionData">The <c>attribution_data</c> (920 bytes), or empty for no TLV 1.</param>
     /// <returns>The UpdateFailHtlc message.</returns>
     /// <seealso cref="UpdateFailHtlcMessage"/>
     /// <seealso cref="ChannelId"/>
     /// <seealso cref="UpdateFailHtlcPayload"/>
-    public UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason)
+    public UpdateFailHtlcMessage CreateUpdateFailHtlcMessage(ChannelId channelId, ulong id, ReadOnlyMemory<byte> reason,
+                                                             ReadOnlyMemory<byte> attributionData = default)
     {
         var payload = new UpdateFailHtlcPayload(channelId, id, reason);
 
-        return new UpdateFailHtlcMessage(payload);
+        return new UpdateFailHtlcMessage(payload, ToAttributionTlv(attributionData));
     }
+
+    /// <summary>The <c>attribution_data</c> TLV, or null for none (empty).</summary>
+    /// <exception cref="ArgumentException">Neither empty nor 920 bytes.</exception>
+    private static AttributionDataTlv? ToAttributionTlv(ReadOnlyMemory<byte> attributionData) =>
+        attributionData.IsEmpty ? null : new AttributionDataTlv(attributionData.ToArray());
 
     /// <summary>
     /// Create a CommitmentSigned message.

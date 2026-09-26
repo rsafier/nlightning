@@ -48,6 +48,12 @@ public class PaymentHopEntity
     /// </summary>
     public required byte[] SharedSecret { get; set; }
 
+    /// <summary>
+    /// The hold time this hop reported in a verified <c>attribution_data</c> (BOLT 4), in milliseconds; null when none
+    /// was verified for it (migration <c>AddAttributionData</c>).
+    /// </summary>
+    public long? HoldTimeMs { get; set; }
+
     // Default constructor for EF Core
     internal PaymentHopEntity()
     {

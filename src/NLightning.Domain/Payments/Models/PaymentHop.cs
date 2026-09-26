@@ -19,9 +19,13 @@ using Money;
 /// previous hop).</param>
 /// <param name="CltvExpiry">The <c>cltv_expiry</c> of the HTLC <paramref name="NodeId"/> receives.</param>
 /// <param name="SharedSecret">The Sphinx shared secret of this hop (from the onion construction).</param>
+/// <param name="HoldTime">How long this hop reported holding the HTLC, from a verified <c>attribution_data</c> of the
+/// payment's fulfill or failure (BOLT 4, reported in units of 100 ms; zero means "no timing information"), or null
+/// when none was verified for this hop.</param>
 public sealed record PaymentHop(
     CompactPubKey NodeId,
     ShortChannelId ShortChannelId,
     LightningMoney Amount,
     uint CltvExpiry,
-    Secret SharedSecret);
+    Secret SharedSecret,
+    TimeSpan? HoldTime = null);

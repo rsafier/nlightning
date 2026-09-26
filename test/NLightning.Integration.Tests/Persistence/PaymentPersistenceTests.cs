@@ -153,6 +153,39 @@ public class PaymentPersistenceTests
         Assert.Equal(retry.Route[0].NodeId, hop.NodeId);
     }
 
+    [Fact]
+    public async Task Given_VerifiedHoldTimes_When_ThePaymentIsUpdatedOrReplaced_Then_EachHopKeepsItsHoldTime()
+    {
+        // Arrange - BOLT 4 attribution_data verified at the origin (NL-326): hop 0 verified, hop 1 not
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var payment = CreatePayment(0x85);
+        await SaveAsync(db, c => new PaymentDbRepository(c).AddAsync(payment));
+        payment.RecordHoldTimes([TimeSpan.FromMilliseconds(2_500)]);
+        payment.Fail(null, 1, "failed with hold times", s_now);
+
+        // Act: the outcome's update writes the hold times of the stored route
+        await SaveAsync(db, c => new PaymentDbRepository(c).UpdateAsync(payment));
+
+        // Assert
+        await using (var context = db.CreateDbContext())
+        {
+            var stored = await new PaymentDbRepository(context).GetByPaymentHashAsync(payment.PaymentHash);
+            AssertPayment(payment, stored);
+            Assert.Equal([TimeSpan.FromMilliseconds(2_500), null], stored!.Route.Select(h => h.HoldTime));
+        }
+
+        // Act: a retry replaces the failed row with a route that already carries hold times (a fulfilled part)
+        var retry = CreatePayment(0x85, s_now.AddSeconds(30));
+        retry.RecordHoldTimes([TimeSpan.FromMilliseconds(300), TimeSpan.Zero]);
+        await SaveAsync(db, c => new PaymentDbRepository(c).AddAsync(retry));
+
+        // Assert
+        await using var readContext = db.CreateDbContext();
+        var replaced = await new PaymentDbRepository(readContext).GetByPaymentHashAsync(retry.PaymentHash);
+        AssertPayment(retry, replaced);
+        Assert.Equal([TimeSpan.FromMilliseconds(300), TimeSpan.Zero], replaced!.Route.Select(h => h.HoldTime));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

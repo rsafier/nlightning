@@ -553,8 +553,14 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte>("Direction")
                         .HasColumnType("INTEGER");
 
+                    b.Property<long?>("AddedAt")
+                        .HasColumnType("INTEGER");
+
                     b.Property<ulong>("AmountMsat")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("AttributionData")
+                        .HasColumnType("BLOB");
 
                     b.Property<uint>("CltvExpiry")
                         .HasColumnType("INTEGER");
@@ -564,6 +570,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<ushort?>("FailureCode")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("FulfillmentPayload")
+                        .HasColumnType("BLOB");
 
                     b.Property<byte[]>("KnownPreimage")
                         .HasColumnType("BLOB");
@@ -959,6 +968,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<uint>("CltvExpiry")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("HoldTimeMs")
                         .HasColumnType("INTEGER");
 
                     b.Property<byte[]>("NodeId")

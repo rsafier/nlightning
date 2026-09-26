@@ -11,11 +11,20 @@ public abstract record CommitmentOutbound;
 /// <summary>Send <c>update_add_htlc</c> for <paramref name="Htlc"/>.</summary>
 public sealed record OutboundAddHtlc(HtlcRecord Htlc) : CommitmentOutbound;
 
-/// <summary>Send <c>update_fulfill_htlc</c>.</summary>
-public sealed record OutboundFulfillHtlc(ulong Id, Secret PaymentPreimage) : CommitmentOutbound;
+/// <summary>Send <c>update_fulfill_htlc</c>, with its <c>attribution_data</c> and <c>fulfillment_payload</c> TLVs when
+/// they are not empty.</summary>
+public sealed record OutboundFulfillHtlc(
+    ulong Id,
+    Secret PaymentPreimage,
+    ReadOnlyMemory<byte> AttributionData = default,
+    ReadOnlyMemory<byte> FulfillmentPayload = default) : CommitmentOutbound;
 
-/// <summary>Send <c>update_fail_htlc</c> with the opaque <paramref name="Reason"/>.</summary>
-public sealed record OutboundFailHtlc(ulong Id, ReadOnlyMemory<byte> Reason) : CommitmentOutbound;
+/// <summary>Send <c>update_fail_htlc</c> with the opaque <paramref name="Reason"/>, and its <c>attribution_data</c>
+/// TLV when <paramref name="AttributionData"/> is not empty.</summary>
+public sealed record OutboundFailHtlc(
+    ulong Id,
+    ReadOnlyMemory<byte> Reason,
+    ReadOnlyMemory<byte> AttributionData = default) : CommitmentOutbound;
 
 /// <summary>Send <c>update_fail_malformed_htlc</c>.</summary>
 public sealed record OutboundFailMalformedHtlc(ulong Id, ushort FailureCode, ReadOnlyMemory<byte> Sha256OfOnion)

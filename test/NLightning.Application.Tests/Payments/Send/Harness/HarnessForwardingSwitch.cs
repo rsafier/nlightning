@@ -27,6 +27,13 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// production channel operations, keeps forward circuits in memory, and calls <see cref="IPaymentOutcomeHandler"/>
 /// for outgoing HTLCs without a circuit (our own payments), the hook the W2-B switch must call.
 /// </summary>
+/// <remarks>
+/// With <see cref="UseAttribution"/> it is also the reference for the attribution seam of the production switch
+/// (NL-326): an erring or final node creates <c>attribution_data</c> with its hold time
+/// (<see cref="IChannelOperations.GetHoldTimeAsync"/>), an intermediate node wraps the downstream one with its own, and
+/// both go out through the attributed <see cref="IChannelOperations.FailHtlcAsync(ChannelId, ulong, AttributedErrorPacket, CancellationToken)"/>
+/// and <c>FulfillHtlcAsync</c> overloads.
+/// </remarks>
 [ExcludeFromCodeCoverage]
 internal sealed class HarnessForwardingSwitch(
     IncomingOnionProcessor onionProcessor,
@@ -36,7 +43,8 @@ internal sealed class HarnessForwardingSwitch(
     IFailureOnionService failureOnionService,
     IPaymentOutcomeHandler paymentOutcomeHandler,
     IBlockchainMonitor blockchainMonitor,
-    IServiceScopeFactory serviceScopeFactory) : IHtlcSwitch
+    IServiceScopeFactory serviceScopeFactory,
+    IAttributionDataService attributionDataService) : IHtlcSwitch
 {
     private readonly ConcurrentDictionary<(ChannelId, ulong), Circuit> _circuits = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _handledIncoming = new();
@@ -64,6 +72,21 @@ internal sealed class HarnessForwardingSwitch(
     /// <summary>The final-hop HTLCs this node received, in order: (amount, <c>total_msat</c>).</summary>
     public ConcurrentQueue<(ulong AmountMsat, ulong TotalMsat)> Received { get; } = new();
 
+    /// <summary>
+    /// When set, this node sends <c>attribution_data</c> with every <c>update_fail_htlc</c> and
+    /// <c>update_fulfill_htlc</c> (BOLT 4 <c>option_attribution_data</c>); otherwise it sends none (a node without the
+    /// feature).
+    /// </summary>
+    public bool UseAttribution { get; set; }
+
+    /// <summary>
+    /// When set, applied to every attributed failure this node sends (a tampering hop in the proofs).
+    /// </summary>
+    public Func<AttributedErrorPacket, AttributedErrorPacket>? TamperFailure { get; set; }
+
+    /// <summary>The hold times this node reported, in order: (incoming channel, HTLC id, hold time).</summary>
+    public ConcurrentQueue<(ChannelId ChannelId, ulong HtlcId, uint HoldTime)> ReportedHoldTimes { get; } = new();
+
     public async Task HandleAsync(IChannelDomainEvent channelEvent, CancellationToken cancellationToken)
     {
         Events.Enqueue(channelEvent);
@@ -76,9 +99,7 @@ internal sealed class HarnessForwardingSwitch(
                 if (_circuits.TryGetValue((fulfilled.ChannelId, fulfilled.HtlcId), out var fulfilledCircuit))
                 {
                     if (_resolvedOutgoing.TryAdd((fulfilled.ChannelId, fulfilled.HtlcId), 0))
-                        await channelOperations.FulfillHtlcAsync(fulfilledCircuit.IncomingChannelId,
-                                                                 fulfilledCircuit.IncomingHtlcId,
-                                                                 fulfilled.PaymentPreimage, cancellationToken);
+                        await FulfillUpstreamAsync(fulfilledCircuit, fulfilled, cancellationToken);
                 }
                 else
                 {
@@ -118,9 +139,7 @@ internal sealed class HarnessForwardingSwitch(
                 Forwards.Enqueue((htlc.AmountMsat, forward));
                 if (ForwardInterceptor?.Invoke(htlc, forward) is { } intercepted)
                 {
-                    await channelOperations.FailHtlcAsync(channelId, htlc.Id,
-                                                          failureOnionService.CreateErrorPacket(
-                                                              forward.SharedSecret, intercepted), cancellationToken);
+                    await FailAsync(channelId, htlc.Id, forward.SharedSecret, intercepted, cancellationToken);
                     return;
                 }
 
@@ -130,10 +149,8 @@ internal sealed class HarnessForwardingSwitch(
                               .SingleOrDefault();
                 if (outgoing is null || FailEveryForward)
                 {
-                    var failure = FailureMessage.UnknownNextPeer();
-                    await channelOperations.FailHtlcAsync(channelId, htlc.Id,
-                                                          failureOnionService.CreateErrorPacket(
-                                                              forward.SharedSecret, failure), cancellationToken);
+                    await FailAsync(channelId, htlc.Id, forward.SharedSecret, FailureMessage.UnknownNextPeer(),
+                                    cancellationToken);
                     return;
                 }
 
@@ -163,26 +180,20 @@ internal sealed class HarnessForwardingSwitch(
                                                                         blockchainMonitor.LastProcessedBlockHeight);
                     if (!decision.IsAccepted)
                     {
-                        await channelOperations.FailHtlcAsync(channelId, htlc.Id,
-                                                              failureOnionService.CreateErrorPacket(
-                                                                  final.SharedSecret, decision.Failure!),
-                                                              cancellationToken);
+                        await FailAsync(channelId, htlc.Id, final.SharedSecret, decision.Failure!, cancellationToken);
                         return;
                     }
 
                     decision.Invoice!.Accept(decision.AmountReceived!);
                     await invoices.UpdateAsync(decision.Invoice);
-                    await channelOperations.FulfillHtlcAsync(channelId, htlc.Id, decision.Preimage!.Value,
-                                                             cancellationToken);
+                    await FulfillAsync(channelId, htlc.Id, decision.Preimage!.Value, final.SharedSecret,
+                                       cancellationToken);
                 }
 
                 return;
 
             case IncomingOnionFailed onionFailed:
-                await channelOperations.FailHtlcAsync(channelId, htlc.Id,
-                                                      failureOnionService.CreateErrorPacket(
-                                                          onionFailed.SharedSecret, onionFailed.Failure),
-                                                      cancellationToken);
+                await FailAsync(channelId, htlc.Id, onionFailed.SharedSecret, onionFailed.Failure, cancellationToken);
                 return;
 
             case IncomingOnionMalformed malformed:
@@ -207,9 +218,7 @@ internal sealed class HarnessForwardingSwitch(
         {
             var failure = FailureMessage.IncorrectOrUnknownPaymentDetails(
                 LightningMoney.MilliSatoshis(htlc.AmountMsat), blockchainMonitor.LastProcessedBlockHeight);
-            await channelOperations.FailHtlcAsync(channelId, htlc.Id,
-                                                  failureOnionService.CreateErrorPacket(final.SharedSecret, failure),
-                                                  cancellationToken);
+            await FailAsync(channelId, htlc.Id, final.SharedSecret, failure, cancellationToken);
             return;
         }
 
@@ -234,12 +243,88 @@ internal sealed class HarnessForwardingSwitch(
 
     private async Task FailUpstreamAsync(Circuit circuit, HtlcRemoval removal, CancellationToken cancellationToken)
     {
+        if (UseAttribution)
+        {
+            // The switch seam (NL-326): wrap the downstream attribution_data (all zero when none came) with our hold
+            // time, or create it for a malformed downstream failure (we are the erring node then)
+            var holdTime = await GetHoldTimeAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId, cancellationToken);
+            var packet = removal.Kind == HtlcRemovalKind.FailMalformed
+                             ? attributionDataService.CreateErrorPacketFromMalformed(
+                                 circuit.IncomingSharedSecret, (FailureCode)removal.FailureCode,
+                                 removal.Sha256OfOnion.Span, holdTime)
+                             : attributionDataService.WrapErrorPacket(circuit.IncomingSharedSecret, removal.Reason.Span,
+                                                                      removal.AttributionData.Span, holdTime);
+            await channelOperations.FailHtlcAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId,
+                                                  TamperFailure?.Invoke(packet) ?? packet, cancellationToken);
+            return;
+        }
+
         var reason = removal.Kind == HtlcRemovalKind.FailMalformed
                          ? failureOnionService.CreateErrorPacketFromMalformed(
                              circuit.IncomingSharedSecret, (FailureCode)removal.FailureCode, removal.Sha256OfOnion.Span)
                          : failureOnionService.WrapErrorPacket(circuit.IncomingSharedSecret, removal.Reason.Span);
         await channelOperations.FailHtlcAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId, reason,
                                               cancellationToken);
+    }
+
+    private async Task FulfillUpstreamAsync(Circuit circuit, OutgoingHtlcFulfilled fulfilled,
+                                            CancellationToken cancellationToken)
+    {
+        if (!UseAttribution)
+        {
+            await channelOperations.FulfillHtlcAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId,
+                                                     fulfilled.PaymentPreimage, cancellationToken);
+            return;
+        }
+
+        var holdTime = await GetHoldTimeAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId, cancellationToken);
+        var attributed = attributionDataService.WrapFulfillment(circuit.IncomingSharedSecret,
+                                                                fulfilled.AttributionData.Span,
+                                                                fulfilled.FulfillmentPayload.Span, holdTime);
+        await channelOperations.FulfillHtlcAsync(circuit.IncomingChannelId, circuit.IncomingHtlcId,
+                                                 fulfilled.PaymentPreimage, attributed,
+                                                 cancellationToken: cancellationToken);
+    }
+
+    /// <summary>Fails an incoming HTLC as the erring node.</summary>
+    private async Task FailAsync(ChannelId channelId, ulong htlcId, Secret sharedSecret, FailureMessage failure,
+                                 CancellationToken cancellationToken)
+    {
+        if (!UseAttribution)
+        {
+            await channelOperations.FailHtlcAsync(channelId, htlcId,
+                                                  failureOnionService.CreateErrorPacket(sharedSecret, failure),
+                                                  cancellationToken);
+            return;
+        }
+
+        var holdTime = await GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+        var packet = attributionDataService.CreateErrorPacket(sharedSecret, failure, holdTime);
+        await channelOperations.FailHtlcAsync(channelId, htlcId, TamperFailure?.Invoke(packet) ?? packet,
+                                              cancellationToken);
+    }
+
+    /// <summary>Fulfills an incoming HTLC as the final node.</summary>
+    private async Task FulfillAsync(ChannelId channelId, ulong htlcId, Secret preimage, Secret sharedSecret,
+                                    CancellationToken cancellationToken)
+    {
+        if (!UseAttribution)
+        {
+            await channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage, cancellationToken);
+            return;
+        }
+
+        var holdTime = await GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+        await channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage,
+                                                 attributionDataService.CreateFulfillment(sharedSecret, holdTime),
+                                                 cancellationToken: cancellationToken);
+    }
+
+    private async Task<uint> GetHoldTimeAsync(ChannelId channelId, ulong htlcId, CancellationToken cancellationToken)
+    {
+        var holdTime = await channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);
+        ReportedHoldTimes.Enqueue((channelId, htlcId, holdTime));
+        return holdTime;
     }
 
     private sealed record Circuit(ChannelId IncomingChannelId, ulong IncomingHtlcId, Secret IncomingSharedSecret);

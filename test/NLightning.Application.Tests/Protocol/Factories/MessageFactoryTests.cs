@@ -67,4 +67,55 @@ public class MessageFactoryTests
         Assert.Equal(s_localParams.MaxHtlcValueInFlight, payload.MaxHtlcValueInFlight);
         Assert.Equal(s_localParams.ToSelfDelay, payload.ToSelfDelay);
     }
+
+    [Fact]
+    public void Given_AttributionAndPayload_When_CreatingUpdateFulfillHtlc_Then_Tlv1And3AreSet()
+    {
+        // Arrange - BOLT 2 update_fulfill_htlc_tlvs (NL-022)
+        var attribution = Enumerable.Repeat((byte)0x1A, 920).ToArray();
+        var payload = Enumerable.Repeat((byte)0x3C, 272).ToArray();
+
+        // Act
+        var message = _messageFactory.CreateUpdateFulfillHtlcMessage(ChannelId.Zero, 7, new byte[32], attribution,
+                                                                     payload);
+
+        // Assert
+        Assert.Equal(attribution, message.AttributionDataTlv!.AttributionData);
+        Assert.Equal(payload, message.FulfillmentPayloadTlv!.FulfillmentPayload);
+        Assert.NotNull(message.Extension);
+    }
+
+    [Fact]
+    public void Given_NoAttribution_When_CreatingUpdateFailHtlc_Then_NoExtension()
+    {
+        // Act
+        var message = _messageFactory.CreateUpdateFailHtlcMessage(ChannelId.Zero, 7, new byte[292]);
+
+        // Assert
+        Assert.Null(message.AttributionDataTlv);
+        Assert.Null(message.Extension);
+    }
+
+    [Fact]
+    public void Given_Attribution_When_CreatingUpdateFailHtlc_Then_Tlv1IsSet()
+    {
+        // Arrange
+        var attribution = Enumerable.Repeat((byte)0x2B, 920).ToArray();
+
+        // Act
+        var message = _messageFactory.CreateUpdateFailHtlcMessage(ChannelId.Zero, 7, new byte[292], attribution);
+
+        // Assert
+        Assert.Equal(attribution, message.AttributionDataTlv!.AttributionData);
+    }
+
+    [Theory]
+    [InlineData(919)]
+    [InlineData(921)]
+    public void Given_AttributionOfTheWrongLength_When_CreatingUpdateFailHtlc_Then_ArgumentException(int length)
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentException>(
+            () => _messageFactory.CreateUpdateFailHtlcMessage(ChannelId.Zero, 7, new byte[292], new byte[length]));
+    }
 }

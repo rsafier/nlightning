@@ -273,6 +273,66 @@ public class ChannelStateDbRepositoryTests
     }
 
     [Fact]
+    public async Task Given_ANewHtlc_When_ItsTransitionIsSaved_Then_ItsReceiptTimeIsStampedOnceAndKept()
+    {
+        // Arrange - the start of this node's BOLT 4 hold time (NL-326)
+        await using var harness = await StateHarness.CreateAsync();
+        var clock = new ManualTimeProvider(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero));
+        var add = harness.Driver.TryPeerAdd()!;
+        var key = add.Transition.UpsertedHtlcs.Single().Key;
+
+        // Act: the add, then a later transition of the same HTLC an hour on
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            await new ChannelStateDbRepository(context, clock).ApplyAsync(add.Next, add.Transition);
+            Assert.Equal(clock.Now, await new ChannelStateDbRepository(context).GetHtlcAddedAtAsync(harness.ChannelId,
+                                                                                                    key));
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        clock.Now = clock.Now.AddHours(1);
+        var commit = harness.Driver.TryPeerCommit()!;
+        Assert.Contains(commit.Transition.UpsertedHtlcs, h => h.Key == key);
+        await using (var context = harness.Db.CreateDbContext())
+        {
+            await new ChannelStateDbRepository(context, clock).ApplyAsync(commit.Next, commit.Transition);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        await using var readContext = harness.Db.CreateDbContext();
+        var repository = new ChannelStateDbRepository(readContext);
+        Assert.Equal(new DateTimeOffset(2026, 9, 26, 10, 0, 0, TimeSpan.Zero),
+                     await repository.GetHtlcAddedAtAsync(harness.ChannelId, key));
+        Assert.Null(await repository.GetHtlcAddedAtAsync(harness.ChannelId,
+                                                         new HtlcKey(HtlcDirection.Incoming, key.Id + 100)));
+    }
+
+    [Fact]
+    public async Task Given_AttributedRemovals_When_PersistedAndReloaded_Then_AttributionAndPayloadRoundTrip()
+    {
+        // Arrange - run the dance until removals with and without attribution_data were persisted
+        await using var harness = await StateHarness.CreateAsync(seed: 3);
+        var attributed = new List<HtlcRecord>();
+
+        // Act
+        for (var i = 0; i < 200 && attributed.Select(h => h.Removal!.Kind).Distinct().Count() < 2; i++)
+        {
+            var result = harness.Driver.NextTransition();
+            await harness.PersistAsync(result);
+            attributed.AddRange(result.Transition.UpsertedHtlcs.Where(
+                                    h => h.Removal is { Kind: HtlcRemovalKind.Fulfill or HtlcRemovalKind.Fail }
+                                      && !h.Removal.AttributionData.IsEmpty));
+        }
+
+        // Assert: fulfills and fails both carried attribution_data, and the reload (HtlcEqual) kept every byte
+        Assert.Contains(attributed, h => h.Removal!.Kind == HtlcRemovalKind.Fulfill);
+        Assert.Contains(attributed, h => h.Removal!.Kind == HtlcRemovalKind.Fail);
+        var state = await harness.AssertReloadEqualsAsync();
+        Assert.NotNull(state);
+    }
+
+    [Fact]
     public async Task Given_RemoteShachainInExtras_When_Applied_Then_ItIsSavedInTheSameTransition()
     {
         // Arrange
@@ -444,6 +504,13 @@ public class ChannelStateDbRepositoryTests
     /// <summary>
     /// A channel saved in SQLite plus the driver whose "us" side is persisted.
     /// </summary>
+    private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
     private sealed class StateHarness : IAsyncDisposable
     {
         private readonly IInterceptor? _interceptor;

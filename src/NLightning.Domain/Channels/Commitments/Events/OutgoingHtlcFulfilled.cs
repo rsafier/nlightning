@@ -15,5 +15,16 @@ using ValueObjects;
 /// <param name="HtlcId">Our id of the HTLC.</param>
 /// <param name="PaymentHash">The payment hash.</param>
 /// <param name="PaymentPreimage">The preimage (hashes to <paramref name="PaymentHash"/>).</param>
-public sealed record OutgoingHtlcFulfilled(ChannelId ChannelId, ulong HtlcId, Hash PaymentHash, Secret PaymentPreimage)
-    : IChannelDomainEvent;
+/// <param name="AttributionData">The <c>attribution_data</c> of the peer's <c>update_fulfill_htlc</c> (BOLT 4 hold
+/// times, 920 bytes), empty when it carried none or the fulfill is no longer stored (a fulfill reverted by a
+/// disconnection keeps only its preimage, and an on-chain claim has none). A forward wraps it upstream; the origin
+/// verifies it.</param>
+/// <param name="FulfillmentPayload">The <c>fulfillment_payload</c> of the peer's <c>update_fulfill_htlc</c>, empty when
+/// none.</param>
+public sealed record OutgoingHtlcFulfilled(
+    ChannelId ChannelId,
+    ulong HtlcId,
+    Hash PaymentHash,
+    Secret PaymentPreimage,
+    ReadOnlyMemory<byte> AttributionData = default,
+    ReadOnlyMemory<byte> FulfillmentPayload = default) : IChannelDomainEvent;

@@ -13,8 +13,10 @@ using Interfaces;
 using Services;
 
 /// <summary>
-/// Receives <c>update_fail_htlc</c> for an HTLC we offered (BOLT 2, plan N6-T1). The failure is persisted; the
-/// <c>OutgoingHtlcFailed</c> event is raised only once the removal is irrevocably committed (B2-FWD-02).
+/// Receives <c>update_fail_htlc</c> for an HTLC we offered (BOLT 2, plan N6-T1). The failure is persisted with its
+/// <c>attribution_data</c> TLV when present (BOLT 4, NL-326), so the switch can wrap it upstream and the origin verify
+/// it even after a restart; the <c>OutgoingHtlcFailed</c> event is raised only once the removal is irrevocably
+/// committed (B2-FWD-02).
 /// </summary>
 public class UpdateFailHtlcMessageHandler : IChannelMessageHandler<UpdateFailHtlcMessage>
 {
@@ -40,7 +42,8 @@ public class UpdateFailHtlcMessageHandler : IChannelMessageHandler<UpdateFailHtl
         CommitmentsResult result;
         try
         {
-            result = channel.Commitments!.ReceiveFail(payload.Id, payload.Reason.ToArray());
+            result = channel.Commitments!.ReceiveFail(payload.Id, payload.Reason.ToArray(),
+                                                      message.AttributionDataTlv?.AttributionData ?? []);
         }
         catch (CommitmentViolationException e)
         {

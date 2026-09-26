@@ -146,12 +146,15 @@ internal sealed class CommitmentDanceDriver
         {
             case 0:
                 var preimage = Preimage(_preimageTags[(HtlcDirection.Incoming, htlc.Id)]);
-                result = Us.SendFulfill(htlc.Id, preimage, _sha256);
-                Peer = Peer.ReceiveFulfill(htlc.Id, preimage, _sha256).Next;
+                result = Us.SendFulfill(htlc.Id, preimage, _sha256, AttributionFor(htlc.Id),
+                                        FulfillmentPayloadFor(htlc.Id));
+                Peer = Peer.ReceiveFulfill(htlc.Id, preimage, _sha256, AttributionFor(htlc.Id),
+                                           FulfillmentPayloadFor(htlc.Id)).Next;
                 break;
             case 1:
-                result = Us.SendFail(htlc.Id, new byte[] { 0xFA, (byte)htlc.Id, 0x11 });
-                Peer = Peer.ReceiveFail(htlc.Id, new byte[] { 0xFA, (byte)htlc.Id, 0x11 }).Next;
+                result = Us.SendFail(htlc.Id, new byte[] { 0xFA, (byte)htlc.Id, 0x11 }, AttributionFor(htlc.Id));
+                Peer = Peer.ReceiveFail(htlc.Id, new byte[] { 0xFA, (byte)htlc.Id, 0x11 }, AttributionFor(htlc.Id))
+                           .Next;
                 break;
             default:
                 var sha = SHA256.HashData(new[] { (byte)htlc.Id });
@@ -176,13 +179,15 @@ internal sealed class CommitmentDanceDriver
         if (_rng.Next(2) == 0)
         {
             var preimage = Preimage(_preimageTags[(HtlcDirection.Outgoing, htlc.Id)]);
-            Peer = Peer.SendFulfill(htlc.Id, preimage, _sha256).Next;
-            result = Us.ReceiveFulfill(htlc.Id, preimage, _sha256);
+            Peer = Peer.SendFulfill(htlc.Id, preimage, _sha256, AttributionFor(htlc.Id),
+                                    FulfillmentPayloadFor(htlc.Id)).Next;
+            result = Us.ReceiveFulfill(htlc.Id, preimage, _sha256, AttributionFor(htlc.Id),
+                                       FulfillmentPayloadFor(htlc.Id));
         }
         else
         {
-            Peer = Peer.SendFail(htlc.Id, new byte[] { 0xEE, (byte)htlc.Id }).Next;
-            result = Us.ReceiveFail(htlc.Id, new byte[] { 0xEE, (byte)htlc.Id });
+            Peer = Peer.SendFail(htlc.Id, new byte[] { 0xEE, (byte)htlc.Id }, AttributionFor(htlc.Id)).Next;
+            result = Us.ReceiveFail(htlc.Id, new byte[] { 0xEE, (byte)htlc.Id }, AttributionFor(htlc.Id));
         }
 
         Us = result.Next;
@@ -288,6 +293,17 @@ internal sealed class CommitmentDanceDriver
 
     public static Secret Preimage(byte tag) => new(Enumerable.Repeat(tag, 32).ToArray());
 
+    /// <summary>
+    /// The <c>attribution_data</c> a removal of HTLC <paramref name="htlcId"/> carries (NL-326): 920 bytes for even
+    /// ids, none for odd ones, so both round-trip (chosen by id, not by the random stream, to keep the seeded dances).
+    /// </summary>
+    public static byte[] AttributionFor(ulong htlcId) =>
+        htlcId % 2 == 0 ? Enumerable.Repeat((byte)(0xA0 + htlcId % 16), 920).ToArray() : [];
+
+    /// <summary>The <c>fulfillment_payload</c> a fulfill of HTLC <paramref name="htlcId"/> carries (every 4th id).</summary>
+    public static byte[] FulfillmentPayloadFor(ulong htlcId) =>
+        htlcId % 4 == 0 ? Enumerable.Repeat((byte)(0xB0 + htlcId % 16), 272).ToArray() : [];
+
     public static Hash PaymentHash(byte tag) => new(SHA256.HashData((byte[])Preimage(tag)));
 
     private static byte[] Onion(byte tag)
@@ -384,6 +400,8 @@ internal static class CommitmentsAssert
         Assert.Equal(removal.Reason.ToArray(), actual.Removal.Reason.ToArray());
         Assert.Equal(removal.FailureCode, actual.Removal.FailureCode);
         Assert.Equal(removal.Sha256OfOnion.ToArray(), actual.Removal.Sha256OfOnion.ToArray());
+        Assert.Equal(removal.AttributionData.ToArray(), actual.Removal.AttributionData.ToArray());
+        Assert.Equal(removal.FulfillmentPayload.ToArray(), actual.Removal.FulfillmentPayload.ToArray());
     }
 
     private static void RemoteCommitEqual(RemoteCommit expected, RemoteCommit actual)

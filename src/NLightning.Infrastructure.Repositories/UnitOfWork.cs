@@ -27,6 +27,7 @@ public class UnitOfWork : IUnitOfWork
     private readonly NLightningDbContext _context;
     private readonly ILogger<UnitOfWork> _logger;
     private readonly ISha256 _sha256;
+    private readonly TimeProvider _timeProvider;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
     private readonly List<(PendingUtxoChange Change, UtxoModel Utxo)> _pendingUtxoChanges = [];
 
@@ -97,7 +98,7 @@ public class UnitOfWork : IUnitOfWork
         _channelKeySetDbRepository ??= new ChannelKeySetDbRepository(_context);
 
     public IChannelStateDbRepository ChannelStateDbRepository =>
-        _channelStateDbRepository ??= new ChannelStateDbRepository(_context);
+        _channelStateDbRepository ??= new ChannelStateDbRepository(_context, _timeProvider);
 
     public IRemoteShachainDbRepository RemoteShachainDbRepository =>
         _remoteShachainDbRepository ??= new RemoteShachainDbRepository(_context);
@@ -115,12 +116,19 @@ public class UnitOfWork : IUnitOfWork
     public IOnionReplayDbRepository OnionReplayDbRepository =>
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
 
+    /// <param name="context">The scope's database context.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="sha256">The hasher the channel repository uses.</param>
+    /// <param name="utxoMemoryRepository">The in-memory UTXO set, updated after a successful save.</param>
+    /// <param name="timeProvider">The clock that stamps new HTLC rows (<c>HtlcEntity.AddedAt</c>, the start of the
+    /// BOLT 4 hold time); <see cref="TimeProvider.System"/> when null.</param>
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
-                      IUtxoMemoryRepository utxoMemoryRepository)
+                      IUtxoMemoryRepository utxoMemoryRepository, TimeProvider? timeProvider = null)
     {
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger;
         _sha256 = sha256;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _utxoMemoryRepository = utxoMemoryRepository;
     }
 

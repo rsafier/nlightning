@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
 using Domain.Channels.Constants;
 using Domain.Crypto.Constants;
+using Domain.Protocol.Onion.Constants;
 using Entities.Channel;
 using Enums;
 using ValueConverters;
@@ -37,6 +38,11 @@ public static class HtlcEntityConfiguration
             entity.Property(h => h.RemovalKind).IsRequired(false);
             entity.Property(h => h.PaymentPreimage).IsRequired(false);
             entity.Property(h => h.FailReason).IsRequired(false);
+            entity.Property(h => h.AttributionData).IsRequired(false);
+            entity.Property(h => h.FulfillmentPayload).IsRequired(false);
+            entity.Property(h => h.AddedAt)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired(false);
             entity.Property(h => h.FailureCode).IsRequired(false);
             entity.Property(h => h.Sha256OfOnion).IsRequired(false);
             entity.Property(h => h.KnownPreimage).IsRequired(false);
@@ -68,6 +74,8 @@ public static class HtlcEntityConfiguration
         entity.Property(h => h.OnionRoutingPacket).HasColumnType("varbinary(max)");
         entity.Property(h => h.PathKey).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(h => h.FailReason).HasColumnType("varbinary(max)");
+        entity.Property(h => h.AttributionData).HasColumnType($"varbinary({OnionConstants.AttributionDataLength})");
+        entity.Property(h => h.FulfillmentPayload).HasColumnType("varbinary(max)");
         entity.Property(h => h.Sha256OfOnion).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(h => h.KnownPreimage).HasColumnType($"varbinary({CryptoConstants.SecretLen})");
         entity.Property(h => h.OnionSharedSecret).HasColumnType($"varbinary({CryptoConstants.SecretLen})");

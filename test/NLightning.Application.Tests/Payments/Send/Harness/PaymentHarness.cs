@@ -534,6 +534,15 @@ internal sealed class HarnessStateStore
     public Dictionary<(ChannelId, HtlcKey), HtlcOrigin> Origins { get; } = [];
     public List<(ChannelId, HtlcKey)> Pruned { get; } = [];
 
+    /// <summary>When each HTLC first reached a saved transition (as <c>HtlcEntity.AddedAt</c>).</summary>
+    public Dictionary<(ChannelId, HtlcKey), DateTimeOffset> AddedAt { get; } = [];
+
+    /// <summary>
+    /// How much earlier than now a new HTLC is stamped (<see cref="AddedAt"/>): a hold time this node reports is then
+    /// at least this long (the attribution proofs).
+    /// </summary>
+    public TimeSpan AddedAtOffset { get; set; }
+
     /// <summary>When set, the next <c>ApplyAsync</c> throws (a transition whose save fails); then it clears.</summary>
     public bool FailNextApply { get; set; }
 
@@ -561,11 +570,14 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
     private readonly Dictionary<(ChannelId, HtlcKey), Secret> _onionSecrets = [];
     private readonly Dictionary<(ChannelId, HtlcKey), HtlcOrigin> _origins = [];
     private readonly List<(ChannelId, HtlcKey)> _prunes = [];
+    private readonly Dictionary<(ChannelId, HtlcKey), DateTimeOffset> _addedAt = [];
 
     public void Commit()
     {
         lock (store.Sync)
         {
+            foreach (var (key, addedAt) in _addedAt)
+                store.AddedAt.TryAdd(key, addedAt);
             foreach (var (id, commitments) in _commitments)
                 store.Commitments[id] = commitments;
             foreach (var (id, shachain) in _shachains)
@@ -582,6 +594,7 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
         _onionSecrets.Clear();
         _origins.Clear();
         _prunes.Clear();
+        _addedAt.Clear();
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)
@@ -604,7 +617,26 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
         _commitments[next.ChannelId] = next;
         if (extras?.RemoteShachain is { } shachain)
             _shachains[next.ChannelId] = shachain;
+        lock (store.Sync)
+        {
+            foreach (var htlc in transition.UpsertedHtlcs)
+            {
+                if (!store.AddedAt.ContainsKey((next.ChannelId, htlc.Key)))
+                    _addedAt.TryAdd((next.ChannelId, htlc.Key), DateTimeOffset.UtcNow - store.AddedAtOffset);
+            }
+        }
+
         return Task.CompletedTask;
+    }
+
+    public Task<DateTimeOffset?> GetHtlcAddedAtAsync(ChannelId channelId, HtlcKey htlc)
+    {
+        if (_addedAt.TryGetValue((channelId, htlc), out var staged))
+            return Task.FromResult<DateTimeOffset?>(staged);
+        lock (store.Sync)
+            return Task.FromResult(store.AddedAt.TryGetValue((channelId, htlc), out var addedAt)
+                                       ? addedAt
+                                       : (DateTimeOffset?)null);
     }
 
     public Task<PersistedChannelState?> LoadAsync(ChannelId channelId, CommitmentParams @params) =>

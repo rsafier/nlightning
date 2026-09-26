@@ -286,8 +286,10 @@ public sealed class ChannelStateTransitionService
                        ?? throw new InvalidOperationException($"HTLC {htlc.Key} is being removed without a removal");
             updates.Add(removal.Kind switch
             {
-                HtlcRemovalKind.Fulfill => new OutboundFulfillHtlc(htlc.Id, removal.PaymentPreimage!.Value),
-                HtlcRemovalKind.Fail => new OutboundFailHtlc(htlc.Id, removal.Reason),
+                HtlcRemovalKind.Fulfill => new OutboundFulfillHtlc(htlc.Id, removal.PaymentPreimage!.Value,
+                                                                   removal.AttributionData,
+                                                                   removal.FulfillmentPayload),
+                HtlcRemovalKind.Fail => new OutboundFailHtlc(htlc.Id, removal.Reason, removal.AttributionData),
                 _ => new OutboundFailMalformedHtlc(htlc.Id, removal.FailureCode, removal.Sha256OfOnion)
             });
         }
@@ -316,8 +318,10 @@ public sealed class ChannelStateTransitionService
                 _messageFactory.CreateUpdateAddHtlcMessage(channelId, htlc.Id, htlc.AmountMsat, htlc.PaymentHash,
                                                            htlc.CltvExpiry, htlc.OnionRoutingPacket),
             OutboundFulfillHtlc fulfill =>
-                _messageFactory.CreateUpdateFulfillHtlcMessage(channelId, fulfill.Id, fulfill.PaymentPreimage),
-            OutboundFailHtlc fail => _messageFactory.CreateUpdateFailHtlcMessage(channelId, fail.Id, fail.Reason),
+                _messageFactory.CreateUpdateFulfillHtlcMessage(channelId, fulfill.Id, fulfill.PaymentPreimage,
+                                                               fulfill.AttributionData, fulfill.FulfillmentPayload),
+            OutboundFailHtlc fail =>
+                _messageFactory.CreateUpdateFailHtlcMessage(channelId, fail.Id, fail.Reason, fail.AttributionData),
             OutboundFailMalformedHtlc malformed =>
                 _messageFactory.CreateUpdateFailMalformedHtlcMessage(channelId, malformed.Id, malformed.Sha256OfOnion,
                                                                      malformed.FailureCode),

@@ -66,6 +66,12 @@ internal sealed class PaymentSession
     /// <summary>The last failure of a part: code, erring hop index and its description.</summary>
     public (FailureCode? Code, int? SourceIndex, string Reason)? LastFailure { get; set; }
 
+    /// <summary>
+    /// The hold times the hops reported in the verified <c>attribution_data</c> of the last part's failure (BOLT 4),
+    /// with that part's HTLC, so the row records them when it records that HTLC.
+    /// </summary>
+    public (ChannelId ChannelId, ulong HtlcId, IReadOnlyList<TimeSpan> HoldTimes)? LastFailureHoldTimes { get; set; }
+
     /// <summary>A round is queued to run on the thread pool.</summary>
     public bool RoundScheduled { get; set; }
 
