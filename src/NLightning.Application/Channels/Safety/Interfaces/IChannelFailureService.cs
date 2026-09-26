@@ -50,7 +50,15 @@ public interface IChannelFailureService
 /// <param name="Broadcast">Broadcast our latest commitment (false only when the peer must close, e.g. data loss).</param>
 /// <param name="RequirementId">The <c>B2-*</c> row that asked for the failure, when there is one.</param>
 public sealed record ChannelFailureRequest(string Reason, string PeerMessage, bool Broadcast = true,
-                                           string? RequirementId = null);
+                                           string? RequirementId = null)
+{
+    /// <summary>
+    /// Checked under the channel's lock before anything is done: false means the reason went away while the caller
+    /// waited for the lock (e.g. the peer's reply to a timed-out <c>closing_signed</c> arrived), and the call returns
+    /// <see cref="ChannelFailureStatus.NotApplicable"/>. Null for an unconditional failure.
+    /// </summary>
+    public Func<Domain.Channels.Models.ChannelModel, bool>? StillApplies { get; init; }
+}
 
 /// <summary>What <see cref="IChannelFailureService.FailChannelAsync(ChannelId, ChannelFailureRequest, CancellationToken)"/>
 /// did.</summary>
