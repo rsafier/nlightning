@@ -1,7 +1,9 @@
 namespace NLightning.Application.Tests.Gossip.Announcements;
 
 using Application.Gossip.Announcements;
+using Application.Gossip.Services;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
@@ -255,6 +257,44 @@ public class ChannelAnnouncementServiceTests
     }
 
     [Fact]
+    public async Task Given_AStoredHalfThatDoesNotSignTheAnnouncement_When_Completing_Then_ItIsForgottenAndOursIsDueAgain()
+    {
+        // Arrange: both halves count as exchanged, but the stored peer half does not verify for the current short
+        // channel id (stored before our funding confirmation, or before a reorg moved it)
+        using var pair = new AnnouncementTestPair();
+        var channel = pair.Alice.Channel;
+        var ours = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                  pair.Alice.UnitOfWork.Object);
+        var sentAt = channel.LocalAnnouncementSignaturesSentAt;
+        var theirs = pair.Bob.Service.CreateAnnouncementSignatures(pair.Bob.Channel).Payload;
+        channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(theirs.BitcoinSignature, theirs.NodeSignature));
+        Assert.True(ChannelAnnouncementService.IsAnnounced(channel));
+        Assert.True(ChannelUpdateService.IsPublic(channel));
+        var savesBefore = pair.Alice.Saves;
+
+        // Act
+        await pair.Alice.Service.CompleteAnnouncementAsync(channel, pair.Alice.UnitOfWork.Object);
+        await pair.Alice.Service.CompleteAnnouncementAsync(channel, pair.Alice.UnitOfWork.Object);
+        pair.Alice.Service.OnPeerConnectionChanged(pair.Bob.NodeId);
+        var again = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                   pair.Alice.UnitOfWork.Object);
+
+        // Assert: forgotten and saved once, no longer public, nothing handed on, ours sent again on the new connection
+        Assert.NotNull(ours);
+        Assert.Null(channel.RemoteAnnouncementSignatures);
+        Assert.Equal(savesBefore + 2, pair.Alice.Saves);
+        pair.Alice.ChannelDb.Verify(r => r.UpdateAsync(It.Is<ChannelModel>(c => c.RemoteAnnouncementSignatures == null)),
+                                    Times.AtLeastOnce);
+        Assert.False(ChannelAnnouncementService.IsAnnounced(channel));
+        Assert.False(ChannelUpdateService.IsPublic(channel));
+        Assert.False(pair.Alice.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+        Assert.Empty(pair.Alice.Sink.ChannelAnnouncements);
+        Assert.NotNull(again);
+        Assert.NotNull(sentAt);
+    }
+
+    [Fact]
     public async Task Given_BothHalvesExchanged_When_Reconnected_Then_NothingIsDue()
     {
         // Arrange (a peer that lacks ours sends its own on reconnection, and gets ours as the reply)
@@ -287,8 +327,8 @@ public class ChannelAnnouncementServiceTests
         // Act
         var ours = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
                                                                                   pair.Alice.UnitOfWork.Object);
-        pair.Alice.Service.CompleteAnnouncement(channel);
-        pair.Alice.Service.CompleteAnnouncement(channel);
+        await pair.Alice.Service.CompleteAnnouncementAsync(channel, pair.Alice.UnitOfWork.Object);
+        await pair.Alice.Service.CompleteAnnouncementAsync(channel, pair.Alice.UnitOfWork.Object);
 
         // Assert
         Assert.NotNull(ours);

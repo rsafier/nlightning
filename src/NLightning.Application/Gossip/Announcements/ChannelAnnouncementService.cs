@@ -155,10 +155,13 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
             return announcement;
 
         // The peer's half was stored for another short channel id (received before our funding confirmation, or
-        // before a reorg moved the funding transaction): it is useless now, the peer sends it again on reconnection
+        // before a reorg moved the funding transaction): it is useless now. It is forgotten, so the channel is not
+        // treated as announced (private update, dont_forward set) and ours goes out again on the next connection,
+        // where the peer answers with a half for the current short channel id
         _logger.LogWarning(
-            "The stored announcement_signatures of channel {ChannelId} don't sign its announcement of {ShortChannelId}",
-            channel.ChannelId, channel.ShortChannelId);
+            "The stored announcement_signatures of channel {ChannelId} don't sign its announcement of {ShortChannelId}; "
+          + "forgetting them", channel.ChannelId, channel.ShortChannelId);
+        DiscardRemoteHalf(channel);
         return null;
     }
 
@@ -211,17 +214,38 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     }
 
     /// <inheritdoc />
-    public void CompleteAnnouncement(ChannelModel channel)
+    public async Task CompleteAnnouncementAsync(ChannelModel channel, IUnitOfWork unitOfWork)
     {
         ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
         if (IsAnnouncementComplete(channel.ChannelId) || !IsAnnounced(channel))
             return;
 
         if (TryAssembleAnnouncement(channel) is { } announcement)
+        {
             OnChannelAnnounced(channel, announcement);
+            return;
+        }
+
+        // The stored half did not sign the current announcement and was forgotten: persist that, so a restart does not
+        // treat the channel as announced again
+        if (channel.RemoteAnnouncementSignatures is null)
+        {
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+            await unitOfWork.SaveChangesAsync();
+        }
     }
 
     private ChainHash ChainHash => _nodeOptions.BitcoinNetwork.ChainHash;
+
+    /// <summary>Forgets the peer's half and keeps when ours was sent (the model resets both together).</summary>
+    private static void DiscardRemoteHalf(ChannelModel channel)
+    {
+        var sentAt = channel.LocalAnnouncementSignaturesSentAt;
+        channel.ResetAnnouncementSignatures();
+        if (sentAt is { } ourHalfSentAt)
+            channel.MarkAnnouncementSignaturesSent(ourHalfSentAt);
+    }
 
     private bool IsAtAnnouncementDepth(ChannelModel channel)
     {

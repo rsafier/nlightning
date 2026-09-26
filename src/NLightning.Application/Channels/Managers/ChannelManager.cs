@@ -416,7 +416,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 RaiseResponseMessages(peerPubKey, replies);
 
                 if (announcementDue)
-                    CompleteAnnouncement(channelId);
+                    await CompleteAnnouncementAsync(scope, channelId);
             }
 
             if (reestablished)
@@ -1442,7 +1442,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             if (own is not null)
                 Publish(channel.RemoteNodeId, [own]);
 
-            announcementService.CompleteAnnouncement(channel);
+            await announcementService.CompleteAnnouncementAsync(channel, unitOfWork);
         }
         catch (Exception e)
         {
@@ -1479,7 +1479,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// Assembles and hands on the channel's announcement when both halves are in (after a restart, or when ours went
     /// out after the peer's arrived). Call it under the channel's lock, after the replies were raised.
     /// </summary>
-    private void CompleteAnnouncement(ChannelId channelId)
+    private async Task CompleteAnnouncementAsync(IServiceScope scope, ChannelId channelId)
     {
         if (_serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcementService
          || !_channelMemoryRepository.TryGetChannel(channelId, out var channel) || !channel.AnnounceChannel)
@@ -1487,7 +1487,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         try
         {
-            announcementService.CompleteAnnouncement(channel);
+            await announcementService.CompleteAnnouncementAsync(
+                channel, scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
         }
         catch (Exception e)
         {
