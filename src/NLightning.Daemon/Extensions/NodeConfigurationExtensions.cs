@@ -233,13 +233,14 @@ public static class NodeConfigurationExtensions
     /// <param name="network">A built-in network or a custom signet name (e.g. <c>mutinynet</c>, which writes
     /// <c>Node:Network</c> <c>signet</c> and <c>Node:CustomSignet:Name</c> <c>mutinynet</c>).</param>
     /// <remarks>
-    /// <c>Node:EnableHtlcs</c> is written explicitly: true on regtest and signets (test coins), false on testnet (on
-    /// signet this differs from leaving it unset, see <see cref="NodeOptions.HtlcsEnabled"/>), so the switch is visible.
-    /// On mainnet the key is present with <c>null</c>, which binds as unset: the code default of
+    /// <c>Node:EnableHtlcs</c> is always present so the switch is visible: true on regtest and signets (test coins).
+    /// On mainnet and testnet it is <c>null</c>, which binds as unset: the code default of
     /// <see cref="NodeOptions.HtlcsEnabled"/> applies (the BOLT 5 O6-T4 gate decides it; write true or false to
     /// override). <c>Gossip</c> carries the BOLT 7 mainnet gate (plan D12, G5-T5): <c>Enabled</c> (the graph),
-    /// <c>SyncEnabled</c>, <c>RelayEnabled</c> and <c>AcceptPublicChannels</c> are false on mainnet and true elsewhere,
-    /// and <c>AllowPublicChannelsOnMainnet</c> is false; the code defaults agree, the file makes them visible.
+    /// <c>SyncEnabled</c> and <c>RelayEnabled</c> are false on mainnet and true elsewhere, and
+    /// <c>AllowPublicChannelsOnMainnet</c> is false; <c>AcceptPublicChannels</c> is true everywhere, so on mainnet the
+    /// one switch for public channels (ours and a peer's) is <c>AllowPublicChannelsOnMainnet</c>. Every value equals
+    /// the code default; the file makes them visible.
     /// <c>Node:Routing</c> carries every <see cref="RoutingOptions"/> default except
     /// <see cref="RoutingOptions.HtlcMaximumMsat"/> (unset: the channel's own limits only). <c>FeeEstimation</c> reads
     /// mempool.space for the network (mutinynet.com for Mutinynet) in sat/vB, and a fixed rate on regtest.
@@ -256,9 +257,11 @@ public static class NodeConfigurationExtensions
         var routing = new RoutingOptions();
         var fees = new FeeEstimationOptions();
         var isMainnet = resolved == BitcoinNetwork.Mainnet;
-        // Mainnet leaves the HTLC switch to NodeOptions' code default (null binds as unset); elsewhere it is explicit
-        var enableHtlcs = isMainnet ? "null" : resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "false";
-        // BOLT 7 plan D12: the graph, gossip sync and relay and public channels stay off on mainnet until Proof G5
+        // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
+        // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
+        var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "null";
+        // BOLT 7 plan D12: the graph, gossip sync and relay stay off on mainnet until Proof G5; public channels there
+        // are gated by AllowPublicChannelsOnMainnet alone (AcceptPublicChannels keeps its code default, true)
         var gossipOn = isMainnet ? "false" : "true";
 
         var (feeSource, feeUrl) = name switch
@@ -346,7 +349,7 @@ public static class NodeConfigurationExtensions
                    "Enabled": {{GOSSIP_ON}},
                    "SyncEnabled": {{GOSSIP_ON}},
                    "RelayEnabled": {{GOSSIP_ON}},
-                   "AcceptPublicChannels": {{GOSSIP_ON}},
+                   "AcceptPublicChannels": true,
                    "AllowPublicChannelsOnMainnet": false
                  },
                  "FeeEstimation": {
