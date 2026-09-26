@@ -285,9 +285,11 @@ public class OnchainO6Tests : IAsyncLifetime
         }
     }
 
-    private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct)
+    private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct,
+                                                           bool watchMempool = true)
     {
         var node = await NLightningTestNode.CreateAsync(_fixture, name);
+        node.WatchMempool = watchMempool;
         _nodes.Add(node);
         await node.StartAsync(ct);
         return node;
@@ -379,7 +381,9 @@ public class OnchainO6Tests : IAsyncLifetime
         PrepareCheaterBreachAsync(CancellationToken ct)
     {
         var cheater = await CreateNodeAsync("o6b-cheater", ct);
-        var victim = await CreateNodeAsync("o6b-victim", ct);
+        // No mempool reaction (O8): the penalty must stay unconfirmed until the restart, as this proof needs; the
+        // penalty before the commitment confirms is OnchainMempoolTests' proof
+        var victim = await CreateNodeAsync("o6b-victim", ct, watchMempool: false);
         await cheater.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [cheater, victim], ct);
         await cheater.ConnectToAsync(victim, ct);

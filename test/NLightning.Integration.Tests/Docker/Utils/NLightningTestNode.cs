@@ -123,6 +123,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public TimeSpan? ReconnectInitialDelay { get; set; }
 
     /// <summary>
+    /// <c>Bitcoin:WatchMempool</c> (default true, BOLT 5 O8): false leaves the chain monitor without the ZMQ
+    /// <c>rawtx</c> loop, so nothing reacts to unconfirmed spends. Applied on every <see cref="StartAsync"/>.
+    /// </summary>
+    public bool WatchMempool { get; set; } = true;
+
+    /// <summary>
     /// Last changes to the node's services, applied on every <see cref="StartAsync"/> after the daemon's composition and
     /// the test overrides (e.g. a test-only decorator of the HTLC switch). Set it before starting.
     /// </summary>
@@ -645,7 +651,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("FeeEstimation:CacheFile", FeeCacheFilePath),
             // Deterministic Docker runs: no periodic update_fee (FeeUpdateFlowTests run rounds by hand; a test can turn
             // it on through configureNodeOptions)
-            new("Node:FeeUpdates:Enabled", "false")
+            new("Node:FeeUpdates:Enabled", "false"),
+            new("Bitcoin:WatchMempool", WatchMempool ? "true" : "false")
         ];
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration).Build();
 
