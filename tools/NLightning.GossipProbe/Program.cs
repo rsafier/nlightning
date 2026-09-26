@@ -21,8 +21,11 @@ public static class Program
             cts.Cancel();
         };
 
-        return options.Command == "verify"
-                   ? await EsploraVerifier.RunAsync(options, cts.Token)
-                   : await new ProbeRun(options).RunAsync(cts.Token);
+        return options.Command switch
+        {
+            "verify" => await EsploraVerifier.RunAsync(options, cts.Token),
+            "chaininfo" => await ChainInfo.RunCheckAsync(options),
+            _ => await new ProbeRun(options).RunAsync(cts.Token)
+        };
     }
 }
