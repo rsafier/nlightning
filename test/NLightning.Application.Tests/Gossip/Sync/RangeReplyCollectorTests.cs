@@ -64,6 +64,46 @@ public class RangeReplyCollectorTests
     }
 
     [Fact]
+    public void Given_CoreLightningsWrappingReplies_When_Collected_Then_EveryChannelInTheQueryIsKept()
+    {
+        // Arrange: the headers noserver4u (CLN) sent on mainnet (NL-379): unsorted ids, number_of_blocks the u32
+        // difference of the last and first id's blocks (wrapping), the next reply starting at the wrapped end
+        var collector = new RangeReplyCollector(ChainConstants.Main, 0, 968_747);
+        var mainnet = ChainConstants.Main;
+
+        // Act
+        collector.Add(Reply(mainnet, 0, 918_664, false, new ShortChannelId(930_994, 1, 0),
+                            new ShortChannelId(833_604, 2, 1)));
+        collector.Add(Reply(mainnet, 918_664, 4_294_956_303, false, new ShortChannelId(918_664, 3, 0),
+                            new ShortChannelId(830_086, 4, 0)));
+        collector.Add(Reply(mainnet, 907_671, 20_441, false, new ShortChannelId(907_671, 5, 0)));
+        collector.Add(Reply(mainnet, 928_112, 15_650, false));
+        collector.Add(Reply(mainnet, 943_762, 12_669, false));
+        collector.Add(Reply(mainnet, 956_431, 4_294_959_446, false, new ShortChannelId(945_934, 6, 0)));
+        Assert.False(collector.IsComplete);
+        collector.Add(Reply(mainnet, 948_581, 18_264, false));
+        collector.Add(Reply(mainnet, 966_845, 1_902, true, new ShortChannelId(968_739, 7, 0)));
+
+        // Assert: complete, every id kept (also those outside their own reply's claimed blocks)
+        Assert.True(collector.IsComplete);
+        Assert.Equal(8, collector.ReplyCount);
+        Assert.Equal(7, collector.Entries.Count);
+    }
+
+    [Fact]
+    public void Given_ALowerFirstBlocknumThatDoesNotContinueThePreviousReply_When_Added_Then_AWarning()
+    {
+        // Arrange
+        var collector = new RangeReplyCollector(s_chain, 0, 1_000);
+        collector.Add(Reply(0, 100, false));
+        collector.Add(Reply(100, 50, false));
+
+        // Act / Assert: 60 is below 100 and is not the previous reply's end (150) or the block before it
+        Assert.Contains("does not continue",
+                        Assert.Throws<WarningException>(() => collector.Add(Reply(60, 940, true))).Message);
+    }
+
+    [Fact]
     public void Given_AFinalReplyShortOfTheQueryEnd_When_Added_Then_AWarning()
     {
         // Arrange
@@ -146,7 +186,7 @@ public class RangeReplyCollectorTests
         // Act
         collector.Add(reply);
 
-        // Assert: block 99 is before the query, block 250 after the reply's own range
+        // Assert: block 99 is before the query, block 250 after it
         var entry = Assert.Single(collector.Entries);
         Assert.Equal(new ShortChannelId(120, 0, 0), entry.Key);
         Assert.Equal(new ChannelUpdatePair(3, 4), entry.Value);
@@ -154,6 +194,10 @@ public class RangeReplyCollectorTests
 
     internal static ReplyChannelRangeMessage Reply(uint first, uint number, bool complete,
                                                    params ShortChannelId[] ids) =>
-        new(new ReplyChannelRangePayload(s_chain, first, number, complete,
+        Reply(s_chain, first, number, complete, ids);
+
+    private static ReplyChannelRangeMessage Reply(ChainHash chain, uint first, uint number, bool complete,
+                                                  params ShortChannelId[] ids) =>
+        new(new ReplyChannelRangePayload(chain, first, number, complete,
                                          GossipQueryCodec.EncodeShortChannelIds(ids)));
 }
