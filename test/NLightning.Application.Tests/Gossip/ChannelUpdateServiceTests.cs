@@ -756,7 +756,7 @@ public class ChannelUpdateServiceTests
     [InlineData(false)]
     [InlineData(true)]
     public async Task Given_ADisabledOfflineChannel_When_ThePeerIsBack_Then_ANewerEnabledUpdateGoesToThePeerAndRelay(
-        bool byReconnect)
+        bool reconnectFirst)
     {
         // Arrange (NL-349): disabled after 20 minutes away
         var relay = new RecordingRelayScheduler();
@@ -773,21 +773,23 @@ public class ChannelUpdateServiceTests
         var raised = new List<ChannelUpdateReadyEventArgs>();
         service.OnChannelUpdateReady += (_, args) => raised.Add(args);
 
-        // Act: the peer's next connection (PeerManager), or a check that finds the link up (after the reestablish)
-        if (byReconnect)
-        {
+        // Act: the peer's next connection (PeerManager) gets the disabled update as is; a check that finds the link
+        // up (after the reestablish) enables the channel
+        if (reconnectFirst)
             await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
-        }
-        else
-        {
-            alive = true;
-            await service.CheckOfflinePeersAsync(ct);
-        }
 
         alive = true;
         await service.CheckOfflinePeersAsync(ct);
+        await service.CheckOfflinePeersAsync(ct);
 
         // Assert: exactly one enabled update, newer than the disabled one, to the peer and to the relay
+        if (reconnectFirst)
+        {
+            Assert.Equal(2, raised.Count);
+            Assert.Same(disabled, raised[0].Message.Payload);
+            raised.RemoveAt(0);
+        }
+
         var args = Assert.Single(raised);
         Assert.Equal(PeerNodeId, args.PeerPubKey);
         var enabled = args.Message.Payload;
@@ -797,6 +799,87 @@ public class ChannelUpdateServiceTests
         Assert.Equal([disabled, enabled], relay.Queued);
         Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
         Assert.Same(enabled, latest!.Payload);
+    }
+
+    [Fact]
+    public async Task Given_ADisabledOfflineChannel_When_ThePeerReconnectsButTheLinkStaysDown_Then_ItStaysDisabled()
+    {
+        // Arrange (NL-349 review): the reestablish of the new connection fails, so the link never comes up
+        var relay = new RecordingRelayScheduler();
+        await using var provider = CreateProbeProvider(() => false);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(20);
+        await service.CheckOfflinePeersAsync(ct);
+        var disabled = Assert.IsType<ChannelUpdatePayload>(Assert.Single(relay.Queued));
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act: the peer connects, then the checks keep finding the link down
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(21);
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(45);
+        await service.CheckOfflinePeersAsync(ct);
+
+        // Assert: the peer got the disabled update as is, nothing enabled reached the relay, nothing new was made
+        Assert.Same(disabled, Assert.Single(raised).Message.Payload);
+        Assert.Equal([disabled], relay.Queued);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
+        Assert.Same(disabled, latest!.Payload);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_TheOfflineConditionEndingDuringACheck_When_TheCheckWouldDisable_Then_NothingIsDisabled(
+        bool reconnect)
+    {
+        // Arrange (NL-349 review): past DisableAfter, the check finds the link down and waits for the channel lock;
+        // meanwhile the peer reconnects (and gets its enabled update; the link stays down until the reestablish) or
+        // the link comes up
+        var relay = new RecordingRelayScheduler();
+        var alive = false;
+        await using var provider = CreateProbeProvider(() => alive);
+        using var service = CreateService(out _, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                          new GossipOptions(), provider);
+        var channel = AddAnnouncedChannel();
+        var ct = TestContext.Current.CancellationToken;
+        await service.CheckOfflinePeersAsync(ct);
+        _timeProvider.Now = s_now + TimeSpan.FromMinutes(20);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        Task check;
+        var reconnected = Task.CompletedTask;
+        using (await _channelLockProvider.AcquireAsync(channel.ChannelId, ct))
+        {
+            check = service.CheckOfflinePeersAsync(ct);
+            if (reconnect)
+                reconnected = service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+            else
+                alive = true;
+        }
+
+        await Task.WhenAll(check, reconnected);
+
+        // Assert: no disabled update was made or relayed; a reconnected peer got its enabled update
+        Assert.DoesNotContain(relay.Queued, m => m is ChannelUpdatePayload { IsDisabled: true });
+        if (reconnect)
+        {
+            Assert.False(Assert.Single(raised).Message.Payload.IsDisabled);
+            Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
+            Assert.False(latest!.Payload.IsDisabled);
+        }
+        else
+        {
+            Assert.Empty(raised);
+            Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+        }
     }
 
     [Fact]
