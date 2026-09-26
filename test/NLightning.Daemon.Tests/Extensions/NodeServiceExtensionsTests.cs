@@ -318,9 +318,11 @@ public class NodeServiceExtensionsTests
     [Theory]
     [InlineData("regtest", null, true)]
     [InlineData("regtest", "false", false)]
-    [InlineData("mainnet", null, false)]
+    [InlineData("mainnet", null, true)]
+    [InlineData("mainnet", "false", false)]
     [InlineData("mainnet", "true", true)]
-    [InlineData("testnet", null, false)]
+    [InlineData("testnet", null, true)]
+    [InlineData("signet", "false", false)]
     public void Given_EnableHtlcsConfig_When_NodeOptionsResolved_Then_HtlcsEnabledFollowsIt(
         string network, string? enableHtlcs, bool expected)
     {

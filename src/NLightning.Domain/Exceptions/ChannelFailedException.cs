@@ -18,8 +18,7 @@ using Channels.ValueObjects;
 ///   blank peer message, never leaks the local message.</item>
 ///   <item>Refuse every later update on the channel, in both directions.</item>
 ///   <item>When <see cref="MustBroadcast"/> is true, broadcast the latest local commitment through the single
-///   fail-the-channel service (N9-T4). Until that exists (and while <c>NodeOptions.EnableHtlcs</c> keeps HTLCs on
-///   regtest) the caller logs at critical level instead.</item>
+///   fail-the-channel service (N9-T4, <c>IChannelFailureService</c>).</item>
 /// </list>
 /// Unlike <see cref="ChannelWarningException"/>, the connection itself may stay open; the peer's other channels are
 /// unaffected.
