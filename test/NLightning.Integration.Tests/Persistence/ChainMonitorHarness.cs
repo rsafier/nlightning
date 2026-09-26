@@ -29,6 +29,7 @@ using Infrastructure.Repositories.Memory;
 internal sealed class ChainMonitorHarness : IAsyncDisposable
 {
     private readonly FailingHeaderSaveInterceptor _interceptor = new();
+    private readonly SilentZmqEndpoint _zmq = new(); // never a real bitcoind's ZMQ port (NL-310)
     private readonly ServiceProvider _services;
 
     public SqliteTestDatabase Db { get; } = new();
@@ -96,6 +97,7 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
         }
 
         await _services.DisposeAsync();
+        _zmq.Dispose();
         Db.Dispose();
     }
 
@@ -106,9 +108,9 @@ internal sealed class ChainMonitorHarness : IAsyncDisposable
             RpcEndpoint = "",
             RpcUser = "",
             RpcPassword = "",
-            ZmqHost = "127.0.0.1",
-            ZmqBlockPort = 28332,
-            ZmqTxPort = 28333
+            ZmqHost = _zmq.Host,
+            ZmqBlockPort = _zmq.BlockPort,
+            ZmqTxPort = _zmq.TxPort
         });
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = "regtest" });
         return new BlockchainMonitorService(bitcoinOptions, Chain, NullLogger<BlockchainMonitorService>.Instance,

@@ -399,13 +399,30 @@ public class BlockchainMonitorService : IBlockchainMonitor
     /// <summary>
     /// A block announced by ZMQ: queues it (with any block missed before it) and processes the queue.
     /// </summary>
+    /// <remarks>
+    /// Callers are serialized (NL-310): the queue and the catch-up height are touched by one caller at a time, so a
+    /// block handed in directly never interleaves with one the ZMQ loop delivers. A block above bitcoind's tip is not
+    /// from the node we follow (e.g. a ZMQ endpoint of another chain on the same port) and is dropped: queuing it would
+    /// raise the catch-up height to heights the node does not have.
+    /// </remarks>
     internal async Task ProcessNewBlockAsync(Block block, uint currentHeight)
     {
         var blockHash = block.GetHash();
+        await _newBlockSemaphore.WaitAsync();
         try
         {
             if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Processing block at height {blockHeight}: {BlockHash}", currentHeight, blockHash);
+
+            var tipHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+            if (currentHeight > tipHeight)
+            {
+                if (_logger.IsEnabled(LogLevel.Warning))
+                    _logger.LogWarning(
+                        "Dropping block {BlockHash} at height {Height}: above the node's tip {Tip}, so not from the chain we follow",
+                        blockHash, currentHeight, tipHeight);
+                return;
+            }
 
             // Check for missed blocks first
             await AddMissingBlocksToProcessAsync(currentHeight);
@@ -421,6 +438,10 @@ public class BlockchainMonitorService : IBlockchainMonitor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing new block {BlockHash}", blockHash);
+        }
+        finally
+        {
+            _newBlockSemaphore.Release();
         }
     }
 
@@ -441,25 +462,17 @@ public class BlockchainMonitorService : IBlockchainMonitor
                     {
                         if (topic == "rawblock" && _blockSocket.TryReceiveFrameBytes(out var blockHashBytes))
                         {
-                            try
+                            var block = Block.Load(blockHashBytes, _network);
+                            var coinbaseHeight = block.GetCoinbaseHeight();
+                            if (!coinbaseHeight.HasValue)
                             {
-                                // One at a time
-                                await _newBlockSemaphore.WaitAsync(cancellationToken);
-                                var block = Block.Load(blockHashBytes, _network);
-                                var coinbaseHeight = block.GetCoinbaseHeight();
-                                if (!coinbaseHeight.HasValue)
-                                {
-                                    // Get the current height from the wallet
-                                    var currentHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
-                                    coinbaseHeight = (int)currentHeight;
-                                }
+                                // Get the current height from the wallet
+                                var currentHeight = await _bitcoinChainService.GetCurrentBlockHeightAsync();
+                                coinbaseHeight = (int)currentHeight;
+                            }
 
-                                await ProcessNewBlockAsync(block, (uint)coinbaseHeight);
-                            }
-                            finally
-                            {
-                                _newBlockSemaphore.Release();
-                            }
+                            // One at a time: ProcessNewBlockAsync serializes its callers
+                            await ProcessNewBlockAsync(block, (uint)coinbaseHeight);
                         }
                     }
 
