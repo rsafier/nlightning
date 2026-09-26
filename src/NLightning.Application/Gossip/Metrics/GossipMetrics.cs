@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
+using System.Text;
 
 namespace NLightning.Application.Gossip.Metrics;
 
@@ -51,6 +53,8 @@ public sealed class GossipMetrics : IDisposable
 
     /// <summary>The <c>path</c> tag of the relayed messages.</summary>
     public const string PathTag = "path";
+
+    private static readonly ConcurrentDictionary<Enum, string> s_tagValues = new();
 
     private readonly Counter<long> _received;
     private readonly Counter<long> _accepted;
@@ -149,8 +153,43 @@ public sealed class GossipMetrics : IDisposable
         MessageTypes.ChannelAnnouncement => "channel_announcement",
         MessageTypes.NodeAnnouncement => "node_announcement",
         MessageTypes.ChannelUpdate => "channel_update",
-        _ => type.ToString()
+        _ => TagValue(type)
     };
+
+    /// <summary>
+    /// The tag value of an enum member: its name in snake_case (<c>DuplicateUpdate</c> → <c>duplicate_update</c>), so
+    /// validator reasons and lookup statuses read like the <see cref="GossipMetricReasons"/> values. Cached.
+    /// </summary>
+    public static string TagValue(Enum value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return s_tagValues.GetOrAdd(value, v => ToSnakeCase(v.ToString()));
+    }
+
+    /// <summary><c>PascalCase</c> (or <c>camelCase</c>) to <c>snake_case</c>; an acronym stays one word.</summary>
+    internal static string ToSnakeCase(string name)
+    {
+        var builder = new StringBuilder(name.Length + 8);
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                var previousIsLowerOrDigit = i > 0 && (char.IsLower(name[i - 1]) || char.IsDigit(name[i - 1]));
+                var endsAcronym = i > 0 && char.IsUpper(name[i - 1]) && i + 1 < name.Length
+                               && char.IsLower(name[i + 1]);
+                if (previousIsLowerOrDigit || endsAcronym)
+                    builder.Append('_');
+                builder.Append(char.ToLowerInvariant(c));
+            }
+            else
+            {
+                builder.Append(c);
+            }
+        }
+
+        return builder.ToString();
+    }
 
     private static KeyValuePair<string, object?> TypeTagOf(MessageTypes type) => new(TypeTag, TypeName(type));
 

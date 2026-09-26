@@ -8,7 +8,9 @@ using Application.Gossip.Metrics;
 using Application.Gossip.Relay;
 using Application.Gossip.Sync;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Enums;
 using Domain.Gossip.Interfaces;
+using Domain.Gossip.Validation;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
@@ -53,6 +55,42 @@ public class GossipMetricsTests
         Assert.Equal(1, recorder.Sum("nlightning.gossip.chain.lookups", (GossipMetrics.StatusTag, "Found")));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.peers.banned"));
         Assert.Equal(2.5, recorder.Sum("nlightning.gossip.sync.duration", (GossipMetrics.OutcomeTag, "failed")));
+    }
+
+    [Theory]
+    [InlineData("DuplicateUpdate", "duplicate_update")]
+    [InlineData("OutputSpentOrMissing", "output_spent_or_missing")]
+    [InlineData("Found", "found")]
+    [InlineData("TLVStream", "tlv_stream")]
+    [InlineData("Utxo2Found", "utxo2_found")]
+    [InlineData("already_snake", "already_snake")]
+    public void Given_AnEnumName_When_MadeATagValue_Then_ItIsSnakeCase(string name, string expected)
+    {
+        // Act
+        var value = GossipMetrics.ToSnakeCase(name);
+
+        // Assert
+        Assert.Equal(expected, value);
+    }
+
+    [Fact]
+    public void Given_ValidatorReasonsAndLookupStatuses_When_Tagged_Then_TheyReadLikeTheIngressReasons()
+    {
+        // Arrange
+        var validatorRejection = new GossipIngressResult(GossipIngressOutcome.Ignored, "dup",
+                                                         GossipRejectReason.DuplicateUpdate);
+        var ingressRejection = new GossipIngressResult(GossipIngressOutcome.Ignored, "none");
+
+        // Act
+        var lookup = GossipMetrics.TagValue(FundingOutputStatus.ScriptMismatch);
+
+        // Assert
+        Assert.Equal("duplicate_update", validatorRejection.MetricReason);
+        Assert.Equal(GossipMetricReasons.Other, ingressRejection.MetricReason);
+        Assert.Equal("script_mismatch", lookup);
+        Assert.Same(lookup, GossipMetrics.TagValue(FundingOutputStatus.ScriptMismatch));
+        Assert.Equal("channel_update", GossipMetrics.TypeName(MessageTypes.ChannelUpdate));
+        Assert.Equal("query_channel_range", GossipMetrics.TypeName(MessageTypes.QueryChannelRange));
     }
 
     [Fact]

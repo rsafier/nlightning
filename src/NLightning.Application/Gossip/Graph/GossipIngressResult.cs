@@ -38,10 +38,10 @@ public sealed record GossipIngressResult(
     /// </summary>
     public string? LimitReason { get; init; }
 
-    /// <summary>The <c>reason</c> tag of the rejected counter.</summary>
+    /// <summary>The <c>reason</c> tag of the rejected counter (a validator reason in snake_case).</summary>
     public string MetricReason =>
         LimitReason ?? (RejectReason == GossipRejectReason.None ? Metrics.GossipMetricReasons.Other
-                                                                 : RejectReason.ToString());
+                                                                 : Metrics.GossipMetrics.TagValue(RejectReason));
 
     internal static GossipIngressResult Accepted(string detail) => new(GossipIngressOutcome.Accepted, detail);
 

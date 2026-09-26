@@ -358,7 +358,7 @@ public class GossipIngressLimitsTests : IDisposable
         // Assert
         Assert.Equal(banned, kit.Store.IsBanned(peer.Object.PeerPubKey));
         Assert.Equal(5, _recorder.Sum("nlightning.gossip.chain.lookups",
-                                      (GossipMetrics.StatusTag, status.ToString())));
+                                      (GossipMetrics.StatusTag, GossipMetrics.TagValue(status))));
     }
 
     [Fact]
@@ -453,11 +453,11 @@ public class GossipIngressLimitsTests : IDisposable
                                       (GossipMetrics.TypeTag, "channel_update")));
         Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.rejected",
                                       (GossipMetrics.TypeTag, "channel_update"),
-                                      (GossipMetrics.ReasonTag, nameof(GossipRejectReason.DuplicateUpdate))));
+                                      (GossipMetrics.ReasonTag, "duplicate_update")));
         Assert.Equal(1, _recorder.Sum("nlightning.gossip.messages.rejected",
                                       (GossipMetrics.ReasonTag, GossipMetricReasons.InvalidSignature)));
         Assert.Equal(1, _recorder.Sum("nlightning.gossip.chain.lookups",
-                                      (GossipMetrics.StatusTag, nameof(FundingOutputStatus.Found))));
+                                      (GossipMetrics.StatusTag, "found")));
     }
 
     private async Task<GraphTestKit> CreateKitWithChannelAsync(Action<GossipGraphOptions>? configure = null)
