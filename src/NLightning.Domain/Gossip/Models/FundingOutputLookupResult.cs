@@ -29,9 +29,12 @@ public sealed class FundingOutputLookupResult
     public bool IsFound => Status == FundingOutputStatus.Found;
 
     /// <summary>
-    /// True for outcomes that may change without the announcement changing (bitcoind unavailable, chain moving).
+    /// True for outcomes that may change without the announcement changing (bitcoind unavailable or behind the SCID's
+    /// height, the chain moving, a spend still in the mempool): retry later, never score the announcement as invalid.
     /// </summary>
-    public bool IsTransient => Status is FundingOutputStatus.ChainMoved or FundingOutputStatus.ChainUnavailable;
+    public bool IsTransient => Status is FundingOutputStatus.BlockNotFound or FundingOutputStatus.ChainMoved
+                                      or FundingOutputStatus.ChainUnavailable
+                                      or FundingOutputStatus.OutputSpentInMempool;
 
     private FundingOutputLookupResult(FundingOutputStatus status, TxId? transactionId, LightningMoney? amount,
                                       byte[]? scriptPubKey, uint confirmations)
