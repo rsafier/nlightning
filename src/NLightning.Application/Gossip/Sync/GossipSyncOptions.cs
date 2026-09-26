@@ -62,8 +62,9 @@ public sealed class GossipSyncOptions
     public TimeSpan MissedScidRetryInterval { get; set; } = TimeSpan.FromMinutes(1);
 
     /// <summary>
-    /// How far back the <c>gossip_timestamp_filter</c> of a synced peer reaches (plan: two weeks, BOLT 7's stale
-    /// limit), so updates the range sync could not tell apart are sent again.
+    /// How far back the <c>gossip_timestamp_filter</c> of a peer synced without <c>gossip_queries_ex</c> reaches (plan:
+    /// two weeks, BOLT 7's stale limit), so updates the range sync could not tell apart are sent again. After a sync
+    /// with timestamps the filter starts where the sync started (the sync already asked for every newer update).
     /// </summary>
     public TimeSpan SyncFilterBacklog { get; set; } = TimeSpan.FromSeconds(1_209_600);
 

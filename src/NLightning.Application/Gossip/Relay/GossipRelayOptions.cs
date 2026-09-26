@@ -40,6 +40,12 @@ public sealed class GossipRelayOptions
     /// </summary>
     public int BacklogMessagesPerSecond { get; set; } = 1_000;
 
+    /// <summary>
+    /// How long a relay tick waits for the peers' sends. A peer still sending after it keeps its send running and is
+    /// skipped by the next ticks until it ends; the other peers go on.
+    /// </summary>
+    public TimeSpan RelaySendWait { get; set; } = TimeSpan.FromSeconds(2);
+
     /// <summary>How many received message versions keep their origin peers (origin suppression).</summary>
     public int MaxTrackedOrigins { get; set; } = GossipOriginTracker.DefaultCapacity;
 
@@ -58,6 +64,8 @@ public sealed class GossipRelayOptions
             errors.Add($"{nameof(RelayCollectInterval)} must be positive");
         if (RelayTickInterval <= TimeSpan.Zero)
             errors.Add($"{nameof(RelayTickInterval)} must be positive");
+        if (RelaySendWait <= TimeSpan.Zero)
+            errors.Add($"{nameof(RelaySendWait)} must be positive");
         if (BacklogMessagesPerSecond < 1)
             errors.Add($"{nameof(BacklogMessagesPerSecond)} must be at least 1");
         if (MaxTrackedOrigins < 1)
