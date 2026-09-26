@@ -1,6 +1,44 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-B @ `5bbfbb5`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-C @ `4dc0f77`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Gossip wave G-C: integrated into `wip/fafo` @ `4dc0f77` (2026-09-26), gates GREEN
+
+Third wave of the BOLT 7 plan: G3 sync and relay, G4 graph routing in `PaymentService` and `getroute`, the Docker goal proofs (pay and get paid over public channels without route hints against LND 0.20 and CLN v26.06.8), plus the G-B follow-ups. Four lanes (C1 sync/relay, C2 routing, C3 Docker proofs, M3 follow-ups as migration owner for `AddGraphFundingTxId`), each with a review/fix step (C3's agent died on a network outage after committing; its review/fix ran as a separate agent); the 24 lane commits were cherry-picked with `-x` in the order M3 → C1 → C2 → C3. Integrator commits:
+- b5de7be: `GossipSyncScidRefresher` (G3-T5 over `IGossipSyncManager.QueryScidAsync`) replaces the null refresher; `PeerManager` implements and registers `IPeerGossipOutbox`, so own and relayed gossip go through the `PeerOutbox` (NL-351).
+- 0325ef3: `GetRouteProbe` calls `getroute` through its typed client handler.
+- b334442, 485a9aa: goal proofs (c) and (e) wait out C2's `Node:Invoices:PublicChannelGracePeriod` (5 s on those nodes); CLN v26.06.8 has no `dev-query-scids`, so Proof G3 (d) checks CLN's own seeker's queries on N1's recorded wire.
+- 4dc0f77: N1 nudges CLN's seeker with an unknown-SCID `channel_update` every 30 s; the G-C proofs documented in `test/CLAUDE.md`.
+
+Gates at `4dc0f77`:
+- Build: Release and Release.Native under SDK 10.0.103 (net10.0) and SDK 11.0.100-rc.1 (net10.0 + net11.0), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. Migration `AddGraphFundingTxId` on all three providers (`HasPendingModelChanges` false x3; SQLite and Postgres seeded upgrade).
+- Tests (net10.0, Release and Release.Native): **7000** non-Docker, 0 failures, 0 skips (Domain 2388, Application 1536, Infrastructure.Bitcoin 871, Integration 648, Serialization 520, Infrastructure 401, Daemon 358, Bolt11 278). Long simulator 1/1.
+- Docker (net10.0, in-container runner, SQL Server skipped): gossip (`scripts/run-gossip.sh`) **24/24** on the second run (the first failed only goal proof (c), fixed by b334442), CLN **22/22** (`ClnGossipTests` 5/5 = Proof G3 (d) + goal proof (e)), LND suite 55/56 in a run parallel with CLN (the failure, `CooperativeCloseFlowTests` simple close, was "Address already in use" from the shared `PortPoolUtil` range, NL-359; the class passed 7/7 alone), `Docker.Utils` 2/2, on-chain 22/22 (2 `Explicit` not run), ABCD **3 × 10/10**.
+
+Goal proofs (all green): (a) our public channel announced and seen by LND (Proof G1, wave G-B); (b) we pay carol's hint-free invoice over alice's public channels at the announced fees; (c) carol, with no channel to us, pays our hint-free invoice; (d) our `getroute` equals LND's `QueryRoutes` and `payinvoice` pays that fee, and after a restart we re-sync carol's changed policy; (e) through and from CLN without hints.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| M3 G-B follow-ups (migration owner) | done: NL-348 real SCID unless option_scid_alias is in the channel type, NL-354 `GraphPolicy` value equality, NL-352 `AddGraphFundingTxId`, NL-355 harness restart fields, NL-350 SCID move resets the announcement (`FundingReconfirmationHandler`), NL-349 offline disable. Review: the disable re-checked under the channel lock, re-enable only once the link is up | bca66aa, 12d3e74, 016a523, b9314d3, 7a4ef7f, 833e8e6, 80fd35f | NL-348..NL-350, NL-352, NL-354, NL-355 fixed; new NL-362, NL-364, NL-369 |
+| C1 sync/relay | done: strict query codec, CRC32C, timestamp filter (G3-T1/T4), `QueryResponder` from the graph and `GossipSyncManager` (G3-T1/T2, NL-205, NL-353), relay of others' gossip with filters, staggered flushes, origin suppression and a paced backlog (G3-T3), checksums equal to CLN's and `gossip_queries_ex` advertised Optional (G3-T4). Review: 256/258 across flush windows, a timed-out query ends querying on the connection, batches sized to the ingress, a stalled peer no longer stops the relay, a failed sync peer still gets a filter | 7b21464, c16edf0, 607a91f, 89110b9, 4b4f7b6 | NL-205, NL-353 fixed, NL-351 (with b5de7be); new NL-360, NL-361, NL-363, NL-365, NL-366, NL-368 |
+| C2 routing | done: `MissionControl` (G4-T2), graph paths in `PaymentRoutePlanner` with MPP and shadow CLTV (G4-T3), refresh on UPDATE failures (G3-T5), invoice hint policy (`Node:Invoices:RouteHints`, grace period), `getroute` = `ClientCommand` 19 (G4-T4), `GraphPaymentHarnessTests`. Review: graph also when direct/hint paths cannot carry the amount, no node penalty on our own peers, hints kept for a grace period, direction-less overrides on hint paths only | a34c9b5, e08e20b, 5673e78, 91cde4c, a70d6c0, f27340c, 2638eff | NL-245 updated; NL-099 progress |
+| C3 Docker proofs | done except Proof G4 (b)/(c): goal proofs (b)-(d) (`PublicPaymentFlowTests`), G3 (a)-(c) (`GossipSyncFlowTests`), G1 (d), G2 (d), `ClnGossipTests` (G3 (d), goal (e)) | 072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5 | NL-255, NL-356 fixed; new NL-357, NL-367 |
+| Integration | seams, typed `getroute` probe, grace-period and CLN seeker fixes in the proofs, guides | b5de7be, 0325ef3, b334442, 485a9aa, 4dc0f77 | NL-351 fixed; new NL-358, NL-359 |
+
+Deviations accepted in wave G-C:
+- After a sync with `gossip_queries_ex` timestamps our `gossip_timestamp_filter` starts at the sync's start less 600 s, not now - 2 weeks (plan §3.7).
+- The graph is a third candidate source: direct and hint paths are tried first; the graph comes in when none carries the amount alone, and a split may combine all three.
+- `Auto` invoices keep their route hints until the announced channel has been in our graph with both policies for `Node:Invoices:PublicChannelGracePeriod` (10 min).
+- A reorg that moves an announced SCID is handled in `FundingReconfirmationHandler`.
+- CLN v26.06.8 has no `dev-query-scids`: Proof G3 (d) relies on CLN's own seeker (NL-357).
+- `Docker/PaymentRetryFlowTests` runs with `Node:Payments:UseGraph=false` (its proofs are about hints).
+
+### Carried into the next wave (G-D, plus the mainnet gate)
+
+- **BOLT 7 G-D (G5):** D1 memory limits and accounting (G5-T1: NL-360 outbox backlog, NL-366 relay diff, a signet-sized sync for NL-353/NL-365) and spam protection (G5-T2); D2 persistence performance (G5-T3, `AddGossipIndexes` only if needed) and `describegraph` (`ClientCommand` 20) + metrics (G5-T4); D3 mainnet defaults and the 24 h signet/Mutinynet soak (G5-T5, D12).
+- **G-C follow-ups:** NL-357, NL-358, NL-359, NL-361..NL-365, NL-367 (Proof G4 (b)/(c)), NL-368, NL-369; B7-CU-01b (accept the previous fee for 10 min); still NL-345, NL-346, NL-347.
+- **Mainnet gate (NL-094 O6-T4):** the G-D integrator decides after re-running N9 `ChannelSafetyFlowTests`, ABCD and the LND/CLN normal-operation suites (evidence in `BOLT5_ONCHAIN_PLAN.md`). Then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- Still open from wave 7: NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
 
 ### Gossip wave G-B: integrated into `wip/fafo` @ `5bbfbb5` (2026-09-26), gates GREEN (net11.0 not built)
 
@@ -30,7 +68,7 @@ Deviations accepted in wave G-B:
 - Stale deletion uses the newest update of either direction and `DeleteStaleAfter` (28 d); routing exclusion at 14 d stays in `GraphChannel.IsStale`.
 - Own gossip goes through `IPeerService.SendGossipMessageAsync`, not the `PeerOutbox` (NL-351), because `PeerManager` was not in B1's lane.
 
-### Carried into the next wave (G-C, plus the mainnet gate)
+### Carried into wave G-C (from G-B; superseded by the list above)
 
 - **First: NL-348** (high): `HtlcSwitch.ResolveOutgoingChannel` must accept the real SCID unless `UseScidAlias == Compulsory`; it blocks routing through our public channels when the peer negotiated option_scid_alias (LND does by default) and so G4 Proof (a) through us.
 - **BOLT 7 G-C:** C1 sync/relay (G3-T1 `QueryResponder`, G3-T2 `GossipSyncManager`, G3-T3 relay of others' gossip with filters, moving own gossip onto the outbox NL-351, G3-T4 `gossip_queries_ex`; re-query dropped SCIDs from `GossipIngress.TakeMissedShortChannelIds`, NL-353); C2 routing (G4-T2 `MissionControl`, G4-T3 graph paths in `PaymentRoutePlanner`, G4-T4 `getroute` = `ClientCommand` 19, G3-T5 failure-triggered refresh); C3 Proofs G3/G4, `ClnGossipTests`, plus G1 (d) (NL-255) and G2 (d) (NL-356).

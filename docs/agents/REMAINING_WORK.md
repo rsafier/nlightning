@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`) and G-B (`5bbfbb5`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`) and G-C (`4dc0f77`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -44,8 +44,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - Graph pathfinding in `PaymentService`: pay any node without route hints.
   - Wave G-A done (`164289a`): typed 256/257/259 with LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, address descriptors (NL-008), Domain graph, validator and pathfinder; none wired yet.
   - Wave G-B done (`5bbfbb5`): public channels end to end (`openchannel --public`, NL-341, NL-342, NL-236), our channel_announcement/public channel_update/node_announcement relayed, graph ingress/store/pruner and `listnodes`/`listgraphchannels`, Docker Proofs G0, G1 (a)-(c), G2 (a)-(c) against LND.
-  - Next, wave G-C: gossip sync and relay of others' gossip (G3), graph paths in `PaymentService` and `getroute` (G4), CLN gossip interop; first NL-348 (the switch refuses the real SCID of a public channel that negotiated option_scid_alias), which blocks routing through us.
-  - Follow-ups: NL-345, NL-346, NL-349..NL-356.
+  - Wave G-C done (`4dc0f77`): gossip queries answered from the graph and sync by queries (G3-T1/T2, `gossip_queries_ex` G3-T4), relay of others' gossip through the `PeerOutbox` (G3-T3, NL-351), graph routes with mission control in `PaymentService` and a refresh through gossip on failures (G4-T2/T3, G3-T5), `getroute` (IPC 19), invoices without route hints once an announced channel can receive (NL-245), NL-348..NL-356 fixed. The BOLT 7 goal proofs (a)-(e) are green: we pay and get paid over public channels without route hints against LND 0.20 and CLN v26.06.8.
+  - Next, wave G-D (G5): memory limits and accounting, spam protection, persistence performance, `describegraph` (IPC 20) and metrics, and the mainnet gate (D12: sync and relay stay off on mainnet until a 24 h signet/Mutinynet soak).
+  - Follow-ups: NL-345, NL-346, NL-357..NL-369 (incl. Docker Proof G4 (b)/(c), NL-367), B7-CU-01b (accept the previous fee for a while).
 - **Attribution data** (M3b). Wired end to end but kept experimental: LND 0.20 does not implement it, so it can't be proven against LND (NL-332). Follow-ups:
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).
