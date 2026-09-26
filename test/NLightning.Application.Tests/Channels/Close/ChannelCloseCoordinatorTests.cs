@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -5,6 +6,7 @@ using NBitcoin;
 namespace NLightning.Application.Tests.Channels.Close;
 
 using Application.Channels.Close;
+using Application.Channels.Safety.Interfaces;
 using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Enums;
@@ -380,6 +382,159 @@ public class ChannelCloseCoordinatorTests
     }
 
     [Fact]
+    public async Task Given_OurClosingSignedUnanswered_When_ReplyTimeoutPasses_Then_ChannelFailed()
+    {
+        // Arrange (B2-CLS-03, NL-284): as the funder we open the negotiation
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateFunderReadyToPropose();
+        var sent = await CreateCoordinator(timeouts: monitor).AdvanceAsync(channel);
+        Assert.IsType<ClosingSignedMessage>(Assert.Single(sent));
+
+        // Act: one second short of the timeout, then past it
+        clock.Advance(new ChannelCloseOptions().ClosingSignedReplyTimeout - TimeSpan.FromSeconds(1));
+        await monitor.WhenIdleAsync();
+        var failedEarly = failures.Count;
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await monitor.WhenIdleAsync();
+
+        // Assert: failed (with a broadcast) once, only after the timeout, while still negotiating
+        Assert.Equal(0, failedEarly);
+        var request = Assert.Single(failures);
+        Assert.Equal("B2-CLS-03", request.RequirementId);
+        Assert.True(request.Broadcast);
+        Assert.Equal(ClosingTimeoutMonitor.NoReplyPeerMessage, request.PeerMessage);
+        Assert.NotNull(request.StillApplies);
+        Assert.True(request.StillApplies(channel));
+    }
+
+    [Fact]
+    public async Task Given_OurClosingSignedAnswered_When_ReplyTimeoutPasses_Then_NotFailed()
+    {
+        // Arrange: the peer echoes our fee (B2-CLS-R02), so the channel is Closing
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateFunderReadyToPropose();
+        var coordinator = CreateCoordinator(timeouts: monitor);
+        var ours = Assert.IsType<ClosingSignedMessage>(Assert.Single(await coordinator.AdvanceAsync(channel)));
+        await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned((ulong)ours.Payload.FeeAmount.Satoshi));
+        Assert.Equal(ChannelState.Closing, channel.State);
+
+        // Act
+        clock.Advance(TimeSpan.FromHours(1));
+        await monitor.WhenIdleAsync();
+
+        // Assert
+        Assert.Empty(failures);
+        Assert.Null(_registry.Get(channel.ChannelId).NextDeadline);
+    }
+
+    [Fact]
+    public async Task Given_OurClosingSignedUnanswered_When_Reconnected_Then_ReplyDeadlineDropped()
+    {
+        // Arrange: BOLT 2 restarts the negotiation on reconnection (B2-RE-29); the peer being away is no reason to
+        // fail the channel
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateFunderReadyToPropose();
+        await CreateCoordinator(timeouts: monitor).AdvanceAsync(channel);
+
+        // Act
+        _registry.ResetConnection(channel.ChannelId);
+        clock.Advance(TimeSpan.FromHours(1));
+        await monitor.WhenIdleAsync();
+
+        // Assert
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public async Task Given_FeeRangeWithoutOverlap_When_NoBetterRangeInTime_Then_WarnedThenChannelFailed()
+    {
+        // Arrange (B2-CLS-R04, NL-284): as the funder our range tops out at 3x our ~724 sat estimate; the peer asks
+        // for 5000..6000 sat
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546);
+        var coordinator = CreateCoordinator(timeouts: monitor);
+        var noOverlap = new ClosingSignedMessage(
+            new ClosingSignedPayload(channel.ChannelId, LightningMoney.Satoshis(5_000), s_signature),
+            new FeeRangeTlv(LightningMoney.Satoshis(5_000), LightningMoney.Satoshis(6_000)));
+
+        // Act 1: the warning (SHOULD), the connection stays up
+        var warning = await Assert.ThrowsAsync<ChannelWarningException>(
+                          () => coordinator.ReceiveClosingSignedAsync(channel, noOverlap));
+        var dueAt = _registry.Get(channel.ChannelId).FeeRangeDueAt;
+
+        // Act 2: the same range again, and a reconnection, do not move the deadline
+        _registry.ResetConnection(channel.ChannelId);
+        clock.Advance(TimeSpan.FromMinutes(5));
+        await Assert.ThrowsAsync<ChannelWarningException>(() => coordinator.ReceiveClosingSignedAsync(channel,
+                                                              noOverlap));
+        clock.Advance(new ChannelCloseOptions().FeeRangeTimeout - TimeSpan.FromMinutes(5));
+        await monitor.WhenIdleAsync();
+
+        // Assert
+        Assert.False(warning.CloseConnection);
+        Assert.Equal(_registry.Get(channel.ChannelId).FeeRangeDueAt, dueAt);
+        var request = Assert.Single(failures);
+        Assert.Equal("B2-CLS-R04", request.RequirementId);
+        Assert.Equal(ClosingTimeoutMonitor.NoFeeRangePeerMessage, request.PeerMessage);
+        Assert.True(request.StillApplies!(channel));
+    }
+
+    [Fact]
+    public async Task Given_FeeRangeWithoutOverlap_When_OverlappingRangeFollows_Then_AgreedAndNotFailed()
+    {
+        // Arrange
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546);
+        var coordinator = CreateCoordinator(timeouts: monitor);
+        await Assert.ThrowsAsync<ChannelWarningException>(() => coordinator.ReceiveClosingSignedAsync(
+                                                              channel,
+                                                              new ClosingSignedMessage(
+                                                                  new ClosingSignedPayload(
+                                                                      channel.ChannelId,
+                                                                      LightningMoney.Satoshis(5_000), s_signature),
+                                                                  new FeeRangeTlv(LightningMoney.Satoshis(5_000),
+                                                                                  LightningMoney.Satoshis(6_000)))));
+
+        // Act: a satisfying range with a fee inside the overlap (B2-CLS-R05: the funder echoes it)
+        var replies = await coordinator.ReceiveClosingSignedAsync(
+                          channel,
+                          new ClosingSignedMessage(
+                              new ClosingSignedPayload(channel.ChannelId, LightningMoney.Satoshis(1_000), s_signature),
+                              new FeeRangeTlv(LightningMoney.Satoshis(500), LightningMoney.Satoshis(6_000))));
+        clock.Advance(TimeSpan.FromHours(1));
+        await monitor.WhenIdleAsync();
+
+        // Assert
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.Single(replies);
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public async Task Given_Deadline_When_ChannelNoLongerNegotiating_Then_PreconditionFails()
+    {
+        // Arrange: the failure waits for the lock while the channel moves on
+        var (monitor, clock, failures) = CreateTimeoutMonitor();
+        using var _ = monitor;
+        var channel = CreateFunderReadyToPropose();
+        await CreateCoordinator(timeouts: monitor).AdvanceAsync(channel);
+        clock.Advance(TimeSpan.FromHours(1));
+        await monitor.WhenIdleAsync();
+        var request = Assert.Single(failures);
+
+        // Act
+        channel.UpdateState(ChannelState.Closing);
+
+        // Assert
+        Assert.False(request.StillApplies!(channel));
+    }
+
+    [Fact]
     public void Given_NoShutdownSent_When_CreateShutdownResend_Then_Null()
     {
         // Arrange
@@ -390,7 +545,8 @@ public class ChannelCloseCoordinatorTests
         Assert.Null(CreateCoordinator().CreateShutdownResend(channel));
     }
 
-    private ChannelCloseCoordinator CreateCoordinator(ShutdownScriptProvider? provider = null)
+    private ChannelCloseCoordinator CreateCoordinator(ShutdownScriptProvider? provider = null,
+                                                      ClosingTimeoutMonitor? timeouts = null)
     {
         var nodeOptions = Options.Create(new NodeOptions());
         var memory = new Mock<IChannelMemoryRepository>();
@@ -409,7 +565,41 @@ public class ChannelCloseCoordinatorTests
                                            NullLogger<ChannelCloseCoordinator>.Instance, messageFactory,
                                            Options.Create(new ChannelCloseOptions()), _registry,
                                            provider ?? new FixedProvider(s_localScript), transitions,
-                                           _unitOfWork.Object, _monitor.Object);
+                                           _unitOfWork.Object, _monitor.Object, timeouts);
+    }
+
+    /// <summary>A timeout monitor over this test's registry, a manual clock and a mocked fail-the-channel service
+    /// that records each request.</summary>
+    private (ClosingTimeoutMonitor Monitor, ManualTimeProvider Clock, List<ChannelFailureRequest> Failures)
+        CreateTimeoutMonitor()
+    {
+        var clock = new ManualTimeProvider();
+        var failures = new List<ChannelFailureRequest>();
+        var failureService = new Mock<IChannelFailureService>();
+        failureService.Setup(f => f.FailChannelAsync(It.IsAny<ChannelId>(), It.IsAny<ChannelFailureRequest>(),
+                                                     It.IsAny<CancellationToken>()))
+                      .Callback((ChannelId _, ChannelFailureRequest request, CancellationToken _) =>
+                       {
+                           lock (failures)
+                               failures.Add(request);
+                       })
+                      .ReturnsAsync(new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, null));
+        var services = new ServiceCollection();
+        services.AddSingleton(failureService.Object);
+        var monitor = new ClosingTimeoutMonitor(_registry, services.BuildServiceProvider(),
+                                                Options.Create(new ChannelCloseOptions()),
+                                                NullLogger<ClosingTimeoutMonitor>.Instance, clock);
+        return (monitor, clock, failures);
+    }
+
+    /// <summary>A funder channel in Negotiating whose shutdowns both went over the current connection.</summary>
+    private ChannelModel CreateFunderReadyToPropose()
+    {
+        var channel = CreateNegotiatingChannel(localSat: 60_000, remoteSat: 40_000, dustLimitSat: 546);
+        var entry = _registry.Get(channel.ChannelId);
+        entry.ShutdownSentOnConnection = true;
+        entry.ShutdownReceivedOnConnection = true;
+        return channel;
     }
 
     private static ShutdownMessage Shutdown(BitcoinScript script) =>

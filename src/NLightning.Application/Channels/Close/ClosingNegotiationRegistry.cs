@@ -43,6 +43,40 @@ public sealed class ClosingNegotiationRegistry
         /// <summary>The IPC caller's close request (feerate, fee_range use), or null for the defaults.</summary>
         public ChannelCloseRequest? Request { get; set; }
 
+        /// <summary>
+        /// When the peer must have answered our last <c>closing_signed</c> (B2-CLS-03), or null when no answer is
+        /// awaited. Cleared by any <c>closing_signed</c> received and by a new connection.
+        /// </summary>
+        public DateTimeOffset? ReplyDueAt { get; set; }
+
+        /// <summary>
+        /// When the peer must have sent a <c>fee_range</c> that overlaps ours (B2-CLS-R04), or null when none is
+        /// awaited. Kept across reconnections.
+        /// </summary>
+        public DateTimeOffset? FeeRangeDueAt { get; set; }
+
+        /// <summary>The earliest deadline, or null for none.</summary>
+        public DateTimeOffset? NextDeadline =>
+            (ReplyDueAt, FeeRangeDueAt) switch
+            {
+                ({ } reply, { } range) => reply < range ? reply : range,
+                ({ } reply, null) => reply,
+                (null, { } range) => range,
+                _ => null
+            };
+
+        /// <summary>The deadline that is past at <paramref name="now"/>, if any (the reply deadline first).</summary>
+        public ClosingDeadline? GetExpired(DateTimeOffset now)
+        {
+            if (ReplyDueAt is { } reply && reply <= now)
+                return new ClosingDeadline("B2-CLS-03", "no closing_signed answered ours in time",
+                                           ClosingTimeoutMonitor.NoReplyPeerMessage);
+            if (FeeRangeDueAt is { } range && range <= now)
+                return new ClosingDeadline("B2-CLS-R04", "no fee_range overlapping ours arrived in time",
+                                           ClosingTimeoutMonitor.NoFeeRangePeerMessage);
+            return null;
+        }
+
         /// <summary>Waits until the closing transaction is agreed and broadcast.</summary>
         public Task<TxId> WaitForClosingTxAsync()
         {
@@ -72,6 +106,7 @@ public sealed class ClosingNegotiationRegistry
             ShutdownReceivedOnConnection = false;
             AgreedClosingSignedSentOnConnection = false;
             Negotiation = null;
+            ReplyDueAt = null;
         }
     }
 
@@ -93,3 +128,9 @@ public sealed class ClosingNegotiationRegistry
     /// <summary>Forgets a closed channel.</summary>
     public void Remove(ChannelId channelId) => _entries.TryRemove(channelId, out _);
 }
+
+/// <summary>A closing negotiation deadline that passed.</summary>
+/// <param name="RequirementId">The BOLT 2 row that asks to fail the channel.</param>
+/// <param name="Reason">The local log text.</param>
+/// <param name="PeerMessage">The <c>error</c> text.</param>
+public sealed record ClosingDeadline(string RequirementId, string Reason, string PeerMessage);
