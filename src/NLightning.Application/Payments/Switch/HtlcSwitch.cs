@@ -1577,13 +1577,15 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
     /// <summary>
     /// The open channel the onion's <c>short_channel_id</c> names: one of our aliases or the peer's alias, or the real
-    /// scid when <c>option_scid_alias</c> is not used (BOLT 2 forbids routing into such a channel by its real scid).
+    /// scid unless <c>option_scid_alias</c> is in the channel type (<c>Compulsory</c>): BOLT 2 forbids routing into
+    /// such a channel by its real scid. A channel that only negotiated the feature (<c>Optional</c>, e.g. a public
+    /// channel, announced by its real scid) accepts both (NL-348).
     /// </summary>
     private ChannelModel? ResolveOutgoingChannel(ShortChannelId shortChannelId) =>
         _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open
                                                 && (c.LocalAliases?.Contains(shortChannelId) == true
                                                  || c.RemoteAlias == shortChannelId
-                                                 || (c.ChannelParams.UseScidAlias == FeatureSupport.No
+                                                 || (c.ChannelParams.UseScidAlias != FeatureSupport.Compulsory
                                                   && c.ShortChannelId != default
                                                   && c.ShortChannelId == shortChannelId)))
                                 .FirstOrDefault();

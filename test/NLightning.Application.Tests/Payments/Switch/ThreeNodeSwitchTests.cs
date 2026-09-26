@@ -10,6 +10,7 @@ using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
@@ -73,6 +74,61 @@ public class ThreeNodeSwitchTests
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
         await AssertNoSettledRowsAsync(harness);
         AssertNeverTwoLocks(harness);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.No, false)]
+    [InlineData(FeatureSupport.Optional, false)]
+    [InlineData(FeatureSupport.Optional, true)]
+    [InlineData(FeatureSupport.Compulsory, true)]
+    public async Task Given_ScidAliasUse_When_TheOnionNamesAnAcceptedScid_Then_BobForwardsAndCarolIsPaid(
+        FeatureSupport scidAlias, bool byAlias)
+    {
+        // Arrange: NL-348, a public channel that negotiated option_scid_alias without it in its channel type
+        // (Optional) is announced by its real scid, so Bob must forward by it as well as by his alias
+        await using var harness = await ThreeNodeHarness.CreateAsync(bobCarolScidAlias: scidAlias);
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "coffee", null,
+                                                                      TestContext.Current.CancellationToken);
+        var scid = byAlias ? ThreeNodeHarness.BobCarolBobAlias : ThreeNodeHarness.BobCarolScid;
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret, bobCarolScid: scid);
+
+        // Act
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert
+        var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
+        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, (await GetCircuitAsync(harness, 0))!.Status);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_ScidAliasInTheChannelType_When_TheOnionNamesTheRealScid_Then_BobFailsWithUnknownNextPeer()
+    {
+        // Arrange: BOLT 2 forbids routing by the real scid of a channel with option_scid_alias in its channel type
+        await using var harness = await ThreeNodeHarness.CreateAsync(bobCarolScidAlias: FeatureSupport.Compulsory);
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "coffee", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret,
+                                         bobCarolScid: ThreeNodeHarness.BobCarolScid);
+        var before = Balances(harness);
+
+        // Act
+        var (_, onion) = await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: Bob (hop 0) refused it; nothing reached Carol
+        var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
+        var decrypted = Decrypt(harness, onion, failed);
+        Assert.Equal(0, decrypted.ErringHopIndex);
+        Assert.Equal(FailureCode.UnknownNextPeer, decrypted.Code);
+        Assert.Empty(harness.Alice.PaymentHandler.Fulfilled);
+        Assert.DoesNotContain(harness.Sent, m => m is { From: "Bob", To: "Carol" }
+                                               && m.Message is UpdateAddHtlcMessage);
+        Assert.Equal(before, Balances(harness));
+        AssertNoHtlcs(harness);
     }
 
     [Fact]
@@ -379,7 +435,7 @@ public class ThreeNodeSwitchTests
         // basic_mpp: with it, an HTLC with the right secret for a settled invoice may be a held part of its set and is
         // fulfilled (MppReceiveTests)
         await using var harness = await ThreeNodeHarness.CreateAsync(
-                                      h => h.Carol.Options.Features.BasicMpp = Domain.Enums.FeatureSupport.No);
+                                      h => h.Carol.Options.Features.BasicMpp = FeatureSupport.No);
         var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "once", null,
                                                                       TestContext.Current.CancellationToken);
         harness.Carol.SwitchSuspended = true;
