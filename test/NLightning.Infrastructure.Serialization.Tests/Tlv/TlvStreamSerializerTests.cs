@@ -189,6 +189,8 @@ public class TlvStreamSerializerTests
         var pubKey = Convert.FromHexString("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb");
         BaseTlv[] samples =
         [
+            new AttributionDataTlv(Enumerable.Range(0, AttributionDataTlv.ValueLength).Select(i => (byte)i).ToArray()),
+            new FulfillmentPayloadTlv([0xca, 0xfe]),
             new BlindedPathTlv(new CompactPubKey(pubKey)),
             new ChannelTypeTlv([0x10, 0x00]),
             new FeeRangeTlv(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(2_000)),

@@ -64,6 +64,52 @@ public static class OnionConstants
     public const int ErrorDecryptionIterations = 27;
 
     /// <summary>
+    /// The maximum route length covered by <c>attribution_data</c> (BOLT 4: 20 hops).
+    /// </summary>
+    public const int AttributionMaxHops = 20;
+
+    /// <summary>
+    /// The length of one <c>htlc_hold_times</c> entry (a big-endian u32).
+    /// </summary>
+    public const int AttributionHoldTimeLength = 4;
+
+    /// <summary>
+    /// The length of one truncated HMAC in <c>attribution_data</c> (the first 4 bytes of an HMAC-SHA256).
+    /// </summary>
+    public const int AttributionHmacLength = 4;
+
+    /// <summary>
+    /// The number of truncated HMACs in <c>attribution_data</c>: 20 + 19 + ... + 1 = 210.
+    /// </summary>
+    public const int AttributionHmacCount = AttributionMaxHops * (AttributionMaxHops + 1) / 2;
+
+    /// <summary>
+    /// The length of the <c>htlc_hold_times</c> field (20 × u32 = 80 bytes).
+    /// </summary>
+    public const int AttributionHoldTimesLength = AttributionMaxHops * AttributionHoldTimeLength;
+
+    /// <summary>
+    /// The length of the <c>attribution_data</c> TLV value: 80 bytes of hold times and 840 bytes of HMACs (920).
+    /// </summary>
+    public const int AttributionDataLength = AttributionHoldTimesLength + AttributionHmacCount * AttributionHmacLength;
+
+    /// <summary>
+    /// The unit of <c>htlc_hold_times</c>, in milliseconds (a value of 3 means 300 ms).
+    /// </summary>
+    public const int AttributionHoldTimeUnitMilliseconds = 100;
+
+    /// <summary>
+    /// The maximum length of an <c>update_fulfill_htlc</c> <c>fulfillment_payload</c> (32 KiB). BOLT 2: a longer one
+    /// MUST make the receiver send an <c>error</c> and fail the channel.
+    /// </summary>
+    public const int MaxFulfillmentPayloadLength = 32768;
+
+    /// <summary>
+    /// The serialized <c>fulfillment_payload_tlvs</c> stream is padded to a multiple of this (and at least this).
+    /// </summary>
+    public const int FulfillmentPayloadPaddingBlock = 256;
+
+    /// <summary>
     /// Key type used to generate the hop_payloads obfuscation stream ("rho").
     /// </summary>
     public static ReadOnlySpan<byte> Rho => "rho"u8;
