@@ -41,8 +41,10 @@ using Options;
 /// state), <see cref="OnBlockDisconnected"/> is raised per disconnected block, and the new branch is processed. The fork
 /// is searched from our last processed block down; a block that is not in the active chain while every block we
 /// processed still is (a late notification of an orphan) is dropped without a rewind. A reorg deeper than the ring
-/// halts processing (Critical). Not rolled back yet: a watch that completed in a disconnected block (the channel keeps
-/// its funding confirmation and short channel id) and the wallet UTXOs added or spent in disconnected blocks.</para>
+/// halts processing (Critical). A watch that completed in a disconnected block is pending again (NL-292: its confirmation
+/// is raised again from the new branch, so a funding transaction's short channel id follows it); wallet deposits of the
+/// disconnected blocks are removed and wallet outputs they spent are restored when bitcoind reports them unspent
+/// (NL-293).</para>
 /// <para>Broadcasts (NL-258): every stored <see cref="BroadcastState.Pending"/> transaction is sent again after each
 /// processing round (also a halted one) and at startup (also when halted), until a processed block holds it.</para>
 /// </remarks>
@@ -1008,6 +1010,10 @@ public class BlockchainMonitorService : IBlockchainMonitor
                                                             _blockchainState.LastProcessedBlockHash, Hash.Empty));
 
             var rewoundState = new BlockchainState(forkHeight, forkHash, DateTime.UtcNow) { Id = _blockchainState.Id };
+
+            // NL-293: wallet outputs spent in the disconnected blocks that are unspent in the active chain again
+            var restoredUtxos = await FindWalletOutputsUnspentAgainAsync(disconnected);
+
             IReadOnlyList<WatchedTransactionModel> completedInDisconnected;
             using (var scope = _serviceProvider.CreateScope())
             {
@@ -1015,21 +1021,29 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 completedInDisconnected =
                     await uow.WatchedTransactionDbRepository.GetCompletedFirstSeenAboveAsync(forkHeight);
                 var resetWatches = await uow.WatchedTransactionDbRepository.ResetPendingFirstSeenAboveAsync(forkHeight);
+
+                // NL-292: a watch that completed in a disconnected block is pending again, so its confirmation (the
+                // funding depth and the short channel id) is raised again from its position on the new branch
+                foreach (var completed in completedInDisconnected)
+                    uow.WatchedTransactionDbRepository.Update(new WatchedTransactionModel(completed.ChannelId,
+                        completed.TransactionId, completed.RequiredDepth));
+
                 var clearedSpends = await uow.WatchedOutpointDbRepository.ClearSpendsAboveAsync(forkHeight);
                 var unconfirmed = await uow.BroadcastTransactionDbRepository.UnconfirmAboveAsync(forkHeight);
+                var (removedDeposits, restoredSpends) = await StageWalletRollbackAsync(uow, forkHeight, restoredUtxos);
                 await uow.BlockHeaderDbRepository.DeleteAboveAsync(forkHeight);
                 uow.BlockchainStateDbRepository.Update(rewoundState);
                 await uow.SaveChangesAsync();
 
                 _logger.LogWarning(
-                    "Reorg: rewound from block {From} to fork point {Fork} ({Count} blocks disconnected); reset {Watches} watched transactions, {Spends} outpoint spends and {Broadcasts} broadcast confirmations",
-                    _lastProcessedBlockHeight, forkHeight, disconnected.Count, resetWatches, clearedSpends,
-                    unconfirmed);
+                    "Reorg: rewound from block {From} to fork point {Fork} ({Count} blocks disconnected); reset {Watches} watched transactions ({Completed} of them completed), {Spends} outpoint spends and {Broadcasts} broadcast confirmations; removed {Deposits} wallet deposits and restored {Restored} wallet outputs",
+                    _lastProcessedBlockHeight, forkHeight, disconnected.Count, resetWatches + completedInDisconnected.Count,
+                    completedInDisconnected.Count, clearedSpends, unconfirmed, removedDeposits, restoredSpends);
             }
 
             foreach (var watch in completedInDisconnected)
-                _logger.LogCritical(
-                    "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; its confirmation (and the channel's short channel id) is not rolled back, check the channel",
+                _logger.LogWarning(
+                    "Transaction {TxId} of channel {ChannelId} had reached its depth in block {Height}, which was disconnected; it is watched again from the new branch",
                     watch.TransactionId, watch.ChannelId, watch.FirstSeenAtHeight);
 
             foreach (var header in disconnected)
@@ -1065,6 +1079,114 @@ public class BlockchainMonitorService : IBlockchainMonitor
                                 searchFrom);
             return false;
         }
+    }
+
+    /// <summary>
+    /// The wallet outputs that inputs of the disconnected blocks spent and that are unspent in the active chain again
+    /// (NL-293). A spent wallet row is deleted, so the output is read back from bitcoind (<c>gettxout</c> without the
+    /// mempool: the spend usually waits there again). Candidates: P2WPKH inputs whose key is a wallet address, and every
+    /// taproot key-path input (its witness names no key); bitcoind confirms the script.
+    /// </summary>
+    private async Task<List<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)>>
+        FindWalletOutputsUnspentAgainAsync(IReadOnlyList<BlockHeaderModel> disconnected)
+    {
+        var found = new List<(OutPoint, TxOut, uint, WalletAddressModel)>();
+        if (_watchedAddresses.IsEmpty)
+            return found;
+
+        foreach (var header in disconnected)
+        {
+            if (header.BlockHash.Equals(Hash.Empty))
+                continue;
+
+            var block = await _bitcoinChainService.GetBlockAsync(new uint256((byte[])header.BlockHash));
+            if (block is null)
+            {
+                _logger.LogWarning("Disconnected block {Height} ({Hash}) can't be read; wallet outputs it spent are "
+                                 + "not restored", header.Height, header.BlockHash);
+                continue;
+            }
+
+            foreach (var transaction in block.Transactions.Where(t => !t.IsCoinBase))
+            {
+                foreach (var input in transaction.Inputs)
+                {
+                    if (!MayBeWalletInput(input))
+                        continue;
+
+                    var unspent = await _bitcoinChainService.GetUnspentOutputAsync(input.PrevOut);
+                    if (unspent is not { } output
+                     || output.Output.ScriptPubKey.GetDestinationAddress(_network) is not { } address
+                     || !_watchedAddresses.TryGetValue(address.ToString(), out var walletAddress))
+                        continue;
+
+                    found.Add((input.PrevOut, output.Output, output.Height, walletAddress));
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>True for an input that may spend one of our wallet outputs (see
+    /// <see cref="FindWalletOutputsUnspentAgainAsync"/>).</summary>
+    private bool MayBeWalletInput(TxIn input)
+    {
+        var witness = input.WitScript.Pushes.ToArray();
+        if (witness is [_, { Length: 33 } pubKey])
+        {
+            try
+            {
+                var address = new PubKey(pubKey).WitHash.GetAddress(_network).ToString();
+                return _watchedAddresses.ContainsKey(address);
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
+        // Taproot key path: one 64- or 65-byte signature
+        return witness is [{ Length: 64 or 65 }];
+    }
+
+    /// <summary>
+    /// Stages the wallet rollback of a reorg (NL-293): deposits confirmed above the fork are removed (they come back when
+    /// their transaction is mined on the new branch), outputs a disconnected block spent are added back.
+    /// </summary>
+    private async Task<(int Removed, int Restored)> StageWalletRollbackAsync(
+        IUnitOfWork uow, uint forkHeight,
+        IReadOnlyList<(OutPoint OutPoint, TxOut Output, uint Height, WalletAddressModel Address)> restored)
+    {
+        var removed = 0;
+        var unspent = await uow.UtxoDbRepository.GetUnspentAsync() ?? [];
+        foreach (var deposit in unspent.Where(u => u.BlockHeight > forkHeight))
+        {
+            if (deposit.LockedToChannelId is { } channelId && _logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Wallet output {TxId}:{Index} locked to channel {ChannelId} was confirmed in a "
+                                 + "disconnected block; it is removed until its transaction confirms again",
+                                   deposit.TxId, deposit.Index, channelId);
+            uow.TrySpendUtxo(deposit.TxId, deposit.Index);
+            removed++;
+        }
+
+        var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>();
+        var count = 0;
+        foreach (var (outPoint, output, height, address) in restored)
+        {
+            var txId = new TxId(outPoint.Hash.ToBytes());
+            if (utxoMemoryRepository?.TryGetUtxo(txId, outPoint.N, out _) == true)
+                continue;
+
+            if (_logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Wallet output {OutPoint} ({Amount}) was spent in a disconnected block; it is "
+                                 + "spendable again", outPoint, output.Value);
+            uow.AddUtxo(new UtxoModel(txId, outPoint.N, LightningMoney.Satoshis(output.Value.Satoshi), height,
+                                      address));
+            count++;
+        }
+
+        return (removed, count);
     }
 
     /// <summary>Sends every pending broadcast again (after every processing round and at startup).</summary>

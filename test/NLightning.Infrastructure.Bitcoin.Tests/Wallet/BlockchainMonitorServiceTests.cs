@@ -622,6 +622,94 @@ public class BlockchainMonitorServiceTests
         Assert.Contains("(1 time(s) in a row)", message);
     }
 
+    [Fact]
+    public async Task Given_WatchCompletedInADisconnectedBlock_When_Reorged_Then_ItIsPendingAgainAndConfirmedFromTheNewBranch()
+    {
+        // Arrange (NL-292): a funding transaction reached its depth in block 111, which a reorg disconnects; the new
+        // branch holds it one block higher
+        var funding = CreateTransaction(0x30);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x31, 32).ToArray());
+        var fundingTxId = new TxId(funding.GetHash().ToBytes());
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        _service.TrackWatchedTransaction(new WatchedTransactionModel(channelId, fundingTxId, 1));
+        var confirmations = new List<TransactionConfirmedEventArgs>();
+        _service.OnTransactionConfirmed += (_, args) => confirmations.Add(args);
+        await _service.ProcessNewBlockAsync(_chain.Mine(funding), 111);
+        var completed = new WatchedTransactionModel(channelId, fundingTxId, 1);
+        completed.SetHeightAndIndex(111, 1);
+        completed.MarkAsCompleted();
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(110)).ReturnsAsync([completed]);
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
+                                         .ReturnsAsync([new WatchedTransactionModel(channelId, fundingTxId, 1)]);
+        var updates = new List<WatchedTransactionModel>();
+        _mockWatchedTransactionRepository.Setup(x => x.Update(It.IsAny<WatchedTransactionModel>()))
+                                         .Callback<WatchedTransactionModel>(updates.Add);
+
+        // Act: block 111 is replaced by an empty block and the funding transaction moves to 112
+        _chain.Reorg(110, 1);
+        var tip = _chain.Mine(false, funding);
+        await _service.ProcessNewBlockAsync(tip, 112);
+
+        // Assert: the rewind reset the completed watch (not completed, no height) and the new branch confirmed it at
+        // its new position
+        Assert.Contains(updates, u => u.TransactionId == fundingTxId && !u.IsCompleted && u.FirstSeenAtHeight is null);
+        Assert.Equal(2, confirmations.Count);
+        Assert.Equal(111u, confirmations[0].WatchedTransaction.FirstSeenAtHeight);
+        Assert.Equal(112u, confirmations[1].WatchedTransaction.FirstSeenAtHeight);
+        Assert.Equal(1u, confirmations[1].WatchedTransaction.TransactionIndex);
+    }
+
+    [Fact]
+    public async Task Given_WalletDepositAndSpendInDisconnectedBlocks_When_Reorged_Then_DepositRemovedAndSpentOutputRestored()
+    {
+        // Arrange (NL-293): a wallet output confirmed at 105 and spent at 111; another deposit at 111
+        var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        var older = Network.RegTest.CreateTransaction();
+        older.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x40, 32).ToArray()), 0));
+        older.Outputs.Add(Money.Satoshis(70_000), address.ScriptPubKey);
+        var olderBlockChain = new FakeBitcoinChain(104);
+        olderBlockChain.Mine(older);
+        for (var i = 0; i < 5; i++)
+            olderBlockChain.Mine();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(It.IsAny<uint>()))
+                                         .ReturnsAsync([]);
+        var service = CreateService(olderBlockChain);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(older.GetHash(), 0));
+        spend.Inputs[0].WitScript = new WitScript([new byte[71], key.PubKey.ToBytes()]);
+        spend.Outputs.Add(Money.Satoshis(60_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var deposit = Network.RegTest.CreateTransaction();
+        deposit.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x41, 32).ToArray()), 0));
+        deposit.Outputs.Add(Money.Satoshis(30_000), address.ScriptPubKey);
+        await service.ProcessNewBlockAsync(olderBlockChain.Mine(spend, deposit), 111);
+
+        var depositTxId = new TxId(deposit.GetHash().ToBytes());
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                             .ReturnsAsync([new UtxoModel(depositTxId, 0, LightningMoney.Satoshis(30_000), 111,
+                                                          walletAddress)]);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+
+        // Act: block 111 is replaced by two empty blocks
+        var newBranch = olderBlockChain.Reorg(110, 2);
+        await service.ProcessNewBlockAsync(newBranch[^1], 112);
+
+        // Assert: the deposit of the disconnected block is gone, the output it spent is back at its height
+        _mockUnitOfWork.Verify(x => x.TrySpendUtxo(depositTxId, 0), Times.Once);
+        var restored = Assert.Single(added);
+        Assert.Equal(new TxId(older.GetHash().ToBytes()), restored.TxId);
+        Assert.Equal(0u, restored.Index);
+        Assert.Equal(70_000, restored.Amount.Satoshi);
+        Assert.Equal(105u, restored.BlockHeight);
+        Assert.Equal(112u, service.LastProcessedBlockHeight);
+    }
+
     private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
                                                    ILogger<BlockchainMonitorService>? logger = null)
     {
@@ -679,7 +767,7 @@ public class BlockchainMonitorServiceTests
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
                                 Func<TState, Exception?, string> formatter)
         {
-            Entries.Enqueue((logLevel, formatter(state, exception)));
+            Entries.Enqueue((logLevel, formatter(state, exception) + (exception is null ? "" : " " + exception)));
         }
     }
 }
