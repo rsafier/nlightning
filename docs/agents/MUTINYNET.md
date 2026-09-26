@@ -109,6 +109,7 @@ All of them read `env.sh` (`MUTINYNET_DIR`, `NLTG_NETWORK` default `mutinynet`, 
 | `configure.sh` | writes the local bitcoind RPC/ZMQ settings (from `~/mutinynet/.env`) and `Database:RunMigrations=true` into the template (needs `jq`) |
 | `cli.sh` | the CLI with `--network mutinynet` |
 | `faucet.sh invoice <sats>` / `faucet.sh withdraw <bolt11>` | the two no-login faucet calls above |
+| `soak-gossip.sh start\|run\|stop\|status` | the BOLT 7 gossip soak, see [Gossip soak](#gossip-soak-g5-t5) |
 
 ## Live smoke test (wave 5)
 
@@ -163,6 +164,43 @@ Observations from the run (ledger items, not fixed here):
   and logs into the repository checkout it was started from (moved to `~/.nltg/mutinynet` afterwards; the node
   reloaded its closed channel and wallet from there). `start-daemon.sh` now `cd`s into the configuration directory;
   the daemon should anchor relative paths itself.
+
+## Gossip soak (G5-T5)
+
+The BOLT 7 plan's mainnet gate (D12, G5-T5) opens only after a 24 h soak with graph sync on and bitcoind load logged.
+`scripts/mutinynet/soak-gossip.sh start` builds the daemon and CLI, copies them and the Mutinynet scripts to
+`~/.nltg/<network>/soak/bin` (a rebuilt, edited or removed checkout does not touch a running soak), and starts the
+sampler with `nohup`. The sampler starts the staged daemon if none is running (with `NLTG_Gossip__Enabled`,
+`SyncEnabled` and `RelayEnabled` true), keeps it connected to the faucet node (`SOAK_PEER`), and every
+`SOAK_INTERVAL` seconds (300) appends one line to `~/.nltg/<network>/soak/soak-<UTC date>.log`: graph channels (and
+how many are spent), graph nodes, connected peers, the daemon's RSS and CPU, `nltg.db` plus its WAL, the chain tip,
+bitcoind's RPC calls in the interval and per minute, bitcoind's CPU, and the daemon's warnings and errors since the
+start. The RPC count comes from bitcoind's console log: the sampler turns the `rpc` debug category on at runtime
+(`bitcoin-cli logging '["rpc"]'`, off again when it ends; `SOAK_RPC_LOG=0` skips it). After `SOAK_DURATION`
+(86400 s) it stops the daemon it started. `soak-gossip.sh status` shows the last samples, `stop` ends it early. It
+opens no channel and spends nothing.
+
+First results (gossip wave G-D lane d3, 2026-09-26, `wip/fafo` @ 4dc0f77 plus the lane's commits, Release, SQLite,
+one peer: the faucet's LND, which reports 895 channels). The existing `~/.nltg/mutinynet` node from the wave 5 smoke
+test (one closed channel) was migrated on start.
+
+| UTC | Graph channels / nodes | RSS (MB) | CPU % | DB + WAL (KB) | bitcoind RPC / min | Note |
+|---|---|---|---|---|---|---|
+| 19:04:21 | 679 / 132 | 209 | 22.3 | 896 | 8180 (15 s window) | first start (trial run): initial sync plus 1386 missed blocks |
+| 19:09:23 | 895 / 194 | 214 | 1.8 | 896 | 310 | whole faucet graph after < 5 min; restarted to change the sampler |
+| 19:11:00 | 895 / 194 | 178 | 13.6 | 1428 | (rpc log turned on after the start) | restart: 895 channels reloaded from the database, sync asked for 0 |
+| 19:16:02 | 895 / 194 | 194 | 0.2 | 1569 | 3.2 | |
+| 19:21:04 | 895 / 194 | 202 | 0.0 | 1701 | 3.2 | |
+| 19:26:06 | 895 / 194 | 206 | 0.9 | 1830 | 3.2 | |
+| 19:31:07 | 895 / 194 | 207 | 0.0 | 1959 | 3.2 | 20 min of samples; no errors, one warning (missed-block catch-up at start) |
+
+Readings: the initial sync of the faucet's whole graph (895 channels, each funding output looked up) together with the
+catch-up of 1386 blocks cost about 3600 bitcoind RPC calls in the first 5 minutes; afterwards the load is about 1.6
+calls per 30 s block (3.2 a minute) and bitcoind's CPU stays under 1 %. The graph survives a restart (reloaded, the
+reply to the sync's `query_channel_range` needed nothing new). RSS grew 29 MB in the first 20 minutes, flattening
+(+1 MB in the last 5); the database grows about 130 KB per 5 minutes (WAL, not yet checkpointed). Still open: the
+24 h run itself (started with `nohup` at 19:10:53 UTC, `soak-20260926.log`), a second sync peer, and the RSS and WAL
+trends over a day; mainnet gossip stays off (template and code defaults).
 
 ## Known gaps
 
