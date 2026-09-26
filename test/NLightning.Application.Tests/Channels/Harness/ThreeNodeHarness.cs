@@ -596,7 +596,8 @@ internal sealed class SwitchNode
         services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
         services.AddSingleton<ISecureKeyManager>(KeyManager);
-        services.AddSingleton<IOnionReplayCache>(new OnionReplayCache());
+        // The node's persistent replay set on its SQLite database: it survives the harness restarts (NL-078)
+        services.AddPersistentOnionReplayStore();
         services.AddTransient<ISha256, Sha256>();
         services.AddSerializationInfrastructureServices();
         services.AddBitcoinInfrastructure();
@@ -708,6 +709,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IInvoiceDbRepository InvoiceDbRepository => new HookedInvoiceRepository(inner.InvoiceDbRepository, node);
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
+    public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);

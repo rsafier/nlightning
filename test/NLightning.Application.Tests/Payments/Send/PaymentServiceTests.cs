@@ -68,7 +68,7 @@ public class PaymentServiceTests : IDisposable
         services.AddSingleton<ISecureKeyManager>(_us);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(
                                   new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }));
-        services.AddSingleton<IOnionReplayCache>(new OnionReplayCache());
+        services.AddSingleton<IOnionReplayStore>(new InMemoryOnionReplayStore());
         services.AddSerializationInfrastructureServices();
         services.AddBitcoinInfrastructure();
         services.AddSingleton(_blockchainMonitor.Object);

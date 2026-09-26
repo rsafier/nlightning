@@ -24,6 +24,7 @@ public class OnionServiceRegistrationTests
     {
         // Arrange
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(new Mock<ISecureKeyManager>().Object);
         services.AddInfrastructureServices();
         services.AddSerializationInfrastructureServices();
@@ -32,21 +33,20 @@ public class OnionServiceRegistrationTests
 
         // Act
         var hopPayloadSerializer = provider.GetRequiredService<IHopPayloadSerializer>();
-        var replayCache = provider.GetRequiredService<IOnionReplayCache>();
+        var replayStore = provider.GetRequiredService<IOnionReplayStore>();
         var sphinxService = provider.GetRequiredService<ISphinxService>();
         var failureMessageSerializer = provider.GetRequiredService<IFailureMessageSerializer>();
         var failureOnionService = provider.GetRequiredService<IFailureOnionService>();
 
         // Assert
         Assert.IsType<HopPayloadSerializer>(hopPayloadSerializer);
-        Assert.IsType<OnionReplayCache>(replayCache);
+        Assert.IsType<PersistentOnionReplayStore>(replayStore);
         Assert.Same(hopPayloadSerializer, provider.GetRequiredService<IHopPayloadSerializer>());
-        Assert.Same(replayCache, provider.GetRequiredService<IOnionReplayCache>());
+        Assert.Same(replayStore, provider.GetRequiredService<IOnionReplayStore>());
         Assert.Same(sphinxService, provider.GetRequiredService<ISphinxService>());
         Assert.IsType<FailureMessageSerializer>(failureMessageSerializer);
         Assert.IsType<FailureOnionService>(failureOnionService);
         Assert.Same(failureOnionService, provider.GetRequiredService<IFailureOnionService>());
-        Assert.Equal(OnionReplayCache.DefaultCapacity, ((OnionReplayCache)replayCache).Capacity);
     }
 
     [Fact]

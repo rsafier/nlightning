@@ -55,5 +55,5 @@ This project implements the Domain repository ports: `IUnitOfWork`, the `I*DbRep
 
 ## Onion routing (BOLT 4) hooks
 - The onion packet persists raw in `HtlcEntity.OnionRoutingPacket`; the per-HTLC shared secret in `HtlcEntity.OnionSharedSecret` (`IChannelStateDbRepository.SetOnionSharedSecretAsync`/`GetOnionSharedSecretAsync`).
-- Forward circuits, invoices, payments (with per-hop shared secrets) and HTLC origins are persisted (`Database/Payment/`, `ChannelStateDbRepository` origin methods). Still missing: failure reasons, a persistent replay set (NL-078), and a lookup from scid/alias to ChannelId (likely via `IChannelMemoryRepository`).
+- Forward circuits, invoices, payments (with per-hop shared secrets) and HTLC origins are persisted (`Database/Payment/`, `ChannelStateDbRepository` origin methods). The onion replay set is `Database/Payment/OnionReplayDbRepository` (`IUnitOfWork.OnionReplayDbRepository`, NL-078: `GetByHmacAsync`, staged `Add`, `DeleteExpiredAsync(height)` runs at once with `ExecuteDeleteAsync`, `CountAsync`), used by Infrastructure's `PersistentOnionReplayStore`. Still missing: failure reasons and a lookup from scid/alias to ChannelId (likely via `IChannelMemoryRepository`).
 - In-flight HTLCs round-trip through `ChannelStateDbRepository`; HTLC signatures live on the commitment rows.

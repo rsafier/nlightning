@@ -57,6 +57,7 @@ public class NLightningDbContext : DbContext
     public DbSet<PaymentEntity> Payments { get; set; }
     public DbSet<PaymentHopEntity> PaymentHops { get; set; }
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
+    public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -93,5 +94,6 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureInvoiceEntity(_databaseType);
         modelBuilder.ConfigurePaymentEntity(_databaseType);
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
+        modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
     }
 }

@@ -8,6 +8,7 @@ using Node.Interfaces;
 using Node.Models;
 using Onchain.Interfaces;
 using Payments.Interfaces;
+using Protocol.Onion.Interfaces;
 
 public interface IUnitOfWork : IDisposable
 {
@@ -40,6 +41,9 @@ public interface IUnitOfWork : IDisposable
     IInvoiceDbRepository InvoiceDbRepository { get; }
     IPaymentDbRepository PaymentDbRepository { get; }
     IForwardCircuitDbRepository ForwardCircuitDbRepository { get; }
+
+    // Onion replay set (NL-078)
+    IOnionReplayDbRepository OnionReplayDbRepository { get; }
 
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
