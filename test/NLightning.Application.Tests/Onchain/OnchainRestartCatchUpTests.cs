@@ -117,8 +117,9 @@ public sealed class OnchainRestartCatchUpTests : IDisposable
     private async Task<(TxId CommitmentTxId, Transaction Spend)> RunFirstProcessUntilTheCrashAsync()
     {
         var channel = _pair.Alice.Channel;
-        var fundingTxId = channel.FundingOutput.TransactionId ?? throw new InvalidOperationException("No funding");
-        var commitment = CreateTransaction(fundingTxId, channel.FundingOutput.Index ?? 0, outputs: 2);
+        var funding = channel.FundingOutput ?? throw new InvalidOperationException("No funding output");
+        var fundingTxId = funding.TransactionId ?? throw new InvalidOperationException("No funding transaction");
+        var commitment = CreateTransaction(fundingTxId, funding.Index ?? 0, outputs: 2);
         var commitmentTxId = new TxId(commitment.GetHash().ToBytes());
         var commitmentBlock = _chain.Mine(commitment);
 
