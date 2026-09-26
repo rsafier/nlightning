@@ -11,6 +11,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
 using Bitcoin;
 using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
@@ -187,6 +188,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             (byte)ChannelState.ReadyForThem,
             (byte)ChannelState.ReadyForUs,
             (byte)ChannelState.Open,
+            (byte)ChannelState.ShuttingDown,
+            (byte)ChannelState.Negotiating,
             (byte)ChannelState.Closing
         ];
 
@@ -358,6 +361,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             ErrorSent = channelModel.ErrorSent?.ToArray(),
             DataLossDetected = channelModel.DataLossDetected,
 
+            LocalShutdownScript = channelModel.LocalShutdownScript is { } localScript ? (byte[])localScript : null,
+            RemoteShutdownScript = channelModel.RemoteShutdownScript is { } remoteScript ? (byte[])remoteScript : null,
+            ClosingTxId = channelModel.ClosingTransaction?.TxId,
+            ClosingTransaction = channelModel.ClosingTransaction?.RawTxBytes,
+
             Config = config,
             KeySets = keySets,
             LocalAliases = localAliasEntities
@@ -436,6 +444,12 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             channelModel.MarkErrorSent(channelEntity.ErrorSent);
         if (channelEntity.DataLossDetected)
             channelModel.MarkDataLossDetected();
+        if (channelEntity.LocalShutdownScript is not null)
+            channelModel.SetLocalShutdownScript(channelEntity.LocalShutdownScript);
+        if (channelEntity.RemoteShutdownScript is not null)
+            channelModel.SetRemoteShutdownScript(channelEntity.RemoteShutdownScript);
+        if (channelEntity is { ClosingTxId: { } closingTxId, ClosingTransaction: { Length: > 0 } closingTx })
+            channelModel.SetClosingTransaction(new SignedTransaction(closingTxId, closingTx));
 
         return channelModel;
     }

@@ -235,6 +235,11 @@ public class ChannelRoundTripTests
         });
         channel.MarkErrorSent(new byte[] { 0x00, 0x11, 0x42 });
         channel.MarkDataLossDetected();
+        // Close state (N10, migration AddShutdownState)
+        channel.SetLocalShutdownScript(Convert.FromHexString("0014" + new string('a', 40)));
+        channel.SetRemoteShutdownScript(Convert.FromHexString("0020" + new string('b', 64)));
+        channel.SetClosingTransaction(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x5c, 32).ToArray()),
+                                                            [0x02, 0x00, 0x00, 0x00, 0x01]));
 
         return channel;
     }
@@ -296,6 +301,13 @@ public class ChannelRoundTripTests
         Assert.Equal(expected.LastSentCommitmentMessage, actual.LastSentCommitmentMessage);
         Assert.Equal(expected.ErrorSent?.ToArray(), actual.ErrorSent?.ToArray());
         Assert.Equal(expected.DataLossDetected, actual.DataLossDetected);
+
+        // Close state (N10)
+        Assert.Equal(expected.LocalShutdownScript, actual.LocalShutdownScript);
+        Assert.Equal(expected.RemoteShutdownScript, actual.RemoteShutdownScript);
+        Assert.NotNull(actual.ClosingTransaction);
+        Assert.Equal(expected.ClosingTransaction!.TxId, actual.ClosingTransaction.TxId);
+        Assert.Equal(expected.ClosingTransaction.RawTxBytes, actual.ClosingTransaction.RawTxBytes);
     }
 
     private static void AssertKeySetsEqual(ChannelKeySetModel expected, ChannelKeySetModel actual)

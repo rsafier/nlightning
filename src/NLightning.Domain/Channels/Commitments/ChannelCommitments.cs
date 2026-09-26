@@ -311,6 +311,13 @@ public sealed record ChannelCommitments
     public bool CanSendCommit => RemoteNextCommit is null && RemoteNextPerCommitmentPoint.HasValue
                               && HasPendingChangesForRemote;
 
+    /// <summary>
+    /// No HTLC is left in either commitment (dust ones included), every fee update is in both commitments and no
+    /// <c>revoke_and_ack</c> is owed (BOLT 2 "Channel Close": once this holds after both <c>shutdown</c>s, no update
+    /// may be sent and the closing negotiation starts). The balances are then final.
+    /// </summary>
+    public bool IsCleared => Htlcs.IsEmpty && RemoteNextCommit is null && FeeUpdates.All(f => f.IsFinal);
+
     private bool HasMovable(HtlcEvent htlcEvent) =>
         Htlcs.Values.Any(h => HtlcStateTable.TryNext(h.State, htlcEvent, out _))
      || FeeUpdates.Any(f => HtlcStateTable.TryNext(f.State, htlcEvent, out _));

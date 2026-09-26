@@ -160,6 +160,21 @@ public class ChannelEntity
     /// </summary>
     public ulong? MaxDustHtlcExposureMsat { get; set; }
 
+    /// <summary>
+    /// The script of the <c>shutdown</c> we sent (persisted before it is sent, re-sent on reconnection), or null
+    /// (migration <c>AddShutdownState</c>, BOLT2 plan N10).
+    /// </summary>
+    public byte[]? LocalShutdownScript { get; set; }
+
+    /// <summary>The script of the peer's <c>shutdown</c>, or null.</summary>
+    public byte[]? RemoteShutdownScript { get; set; }
+
+    /// <summary>The txid of the agreed mutual close transaction, or null.</summary>
+    public TxId? ClosingTxId { get; set; }
+
+    /// <summary>The fully signed mutual close transaction (persisted before it is broadcast), or null.</summary>
+    public byte[]? ClosingTransaction { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 
