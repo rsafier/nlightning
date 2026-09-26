@@ -21,6 +21,7 @@ using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain.Anchors;
 
 /// <summary>
 /// The fail-the-channel service (BOLT2 plan N9-T4, D10; BOLT 5 plan O2-T2): persist <see cref="ChannelState.Failed"/>,
@@ -48,6 +49,7 @@ using Interfaces;
 /// </remarks>
 public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 {
+    private readonly IAnchorCpfpService? _anchorCpfpService;
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelErrorSender _channelErrorSender;
     private readonly IChannelLockProvider _channelLockProvider;
@@ -72,8 +74,10 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
                                  IChannelLockProvider channelLockProvider,
                                  IChannelMemoryRepository channelMemoryRepository,
                                  LocalCommitmentBroadcastBuilder commitmentBuilder, ILightningSigner lightningSigner,
-                                 ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory)
+                                 ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory,
+                                 IAnchorCpfpService? anchorCpfpService = null)
     {
+        _anchorCpfpService = anchorCpfpService;
         _blockchainMonitor = blockchainMonitor;
         _channelErrorSender = channelErrorSender;
         _channelLockProvider = channelLockProvider;
@@ -95,6 +99,7 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
         var token = _stopping.Token;
         _resumeTask = Task.Run(() => ResumeInterruptedBroadcastsAsync(token), CancellationToken.None);
+        _anchorCpfpService?.Start();
     }
 
     /// <inheritdoc />
@@ -105,6 +110,7 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
         _blockchainMonitor.OnNewBlockDetected -= HandleNewBlockDetected;
         _stopping.Cancel();
+        _anchorCpfpService?.Stop();
     }
 
     /// <summary>The background resume started by <see cref="Start"/> (tests, diagnostics).</summary>
@@ -248,6 +254,22 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
         if (sendError && prepared is { Channel: { } channel, Error: { } error })
             await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
+
+        // BOLT 5 plan O7-T2 (B5-FAIL-06): an anchor commitment gets its CPFP child at once, not only at the next block;
+        // after the error, outside the lock, never failing the failure
+        if (_anchorCpfpService is not null && prepared.Commitment is not null
+                                           && prepared.Channel is { ChannelParams.OptionAnchorOutputs: true })
+        {
+            try
+            {
+                await _anchorCpfpService.OnCommitmentBroadcastAsync(channelId, cancellationToken);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _logger.LogError(e, "The anchor CPFP of failed channel {ChannelId} failed; retried at the next block",
+                                 channelId);
+            }
+        }
 
         return outcome;
     }

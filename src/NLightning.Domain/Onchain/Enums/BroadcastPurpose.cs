@@ -27,5 +27,11 @@ public enum BroadcastPurpose : byte
     HtlcClaim = 6,
 
     /// <summary>A penalty (justice) transaction spending a revoked commitment or its second-level outputs.</summary>
-    Penalty = 7
+    Penalty = 7,
+
+    /// <summary>
+    /// A CPFP child spending our anchor of a commitment plus wallet inputs (BOLT 5 plan O7-T2, B5-FAIL-06): it pays for
+    /// the commitment's package, and is replaced (RBF) until the commitment confirms.
+    /// </summary>
+    AnchorCpfp = 8
 }
