@@ -10,6 +10,7 @@ namespace NLightning.Daemon.Extensions;
 using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
+using Application.Onchain;
 using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
@@ -126,6 +127,12 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<CloseChannelClientRequest, CloseChannelClientResponse>,
             CloseChannelClientHandler>();
 
+        // BOLT 5 (plan O2-T5, O3-T6): force close (ClientCommand 14) and the on-chain resolution list (15)
+        services.AddScoped<IClientCommandHandler<ForceCloseChannelClientRequest, ForceCloseChannelClientResponse>,
+            ForceCloseChannelClientHandler>();
+        services.AddScoped<IClientCommandHandler<PendingSweepsClientRequest, PendingSweepsClientResponse>,
+            PendingSweepsClientHandler>();
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -143,6 +150,8 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ListInvoicesIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
@@ -170,6 +179,7 @@ public static class NodeServiceExtensions
         services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
+        services.Configure<OnchainOptions>(configuration.GetSection(OnchainOptions.SectionName));
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>

@@ -136,6 +136,18 @@ internal static class ClientApp
                                                                noFeeRange, closeWait, cancellationToken);
                     new CloseChannelPrinter().Print(close);
                     break;
+                case "forceclosechannel":
+                case "force-close-channel":
+                    var forceClose = await client.ForceCloseChannelAsync(ParseChannelId(commandArgs[0]),
+                                                                         cancellationToken);
+                    new ForceCloseChannelPrinter().Print(forceClose);
+                    break;
+                case "pendingsweeps":
+                case "pending-sweeps":
+                    var (sweepChannel, includeClosed) = ParsePendingSweepsOptions(commandArgs);
+                    var sweeps = await client.PendingSweepsAsync(sweepChannel, includeClosed, cancellationToken);
+                    new PendingSweepsPrinter().Print(sweeps);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -222,6 +234,23 @@ internal static class ClientApp
                                                              StringComparison.OrdinalIgnoreCase))
                     return $"Invalid option '{commandArgs[3]}': expected nofeerange.";
                 return null;
+            case "forceclosechannel":
+            case "force-close-channel":
+                if (commandArgs.Length < 1)
+                    return $"Missing argument. Usage: {cmd} <channel_id>";
+                return TryParseChannelId(commandArgs[0], out _)
+                           ? null
+                           : $"Invalid channel id '{commandArgs[0]}': expected 64 hex characters.";
+            case "pendingsweeps":
+            case "pending-sweeps":
+                foreach (var argument in commandArgs)
+                {
+                    if (!string.Equals(argument, "all", StringComparison.OrdinalIgnoreCase)
+                     && !TryParseChannelId(argument, out _))
+                        return $"Invalid argument '{argument}': expected a channel id (64 hex characters) or all.";
+                }
+
+                return null;
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
@@ -307,6 +336,24 @@ internal static class ClientApp
         var noFeeRange = commandArgs.Length > 3
                       && string.Equals(commandArgs[3], "nofeerange", StringComparison.OrdinalIgnoreCase);
         return (feerate, wait, noFeeRange);
+    }
+
+    /// <summary>
+    /// <c>[channel_id] [all]</c> of pendingsweeps, in any order: one channel only, and the closed channels too.
+    /// </summary>
+    internal static (ChannelId? ChannelId, bool IncludeClosed) ParsePendingSweepsOptions(string[] commandArgs)
+    {
+        ChannelId? channelId = null;
+        var includeClosed = false;
+        foreach (var argument in commandArgs)
+        {
+            if (string.Equals(argument, "all", StringComparison.OrdinalIgnoreCase))
+                includeClosed = true;
+            else if (TryParseChannelId(argument, out var parsed))
+                channelId = parsed;
+        }
+
+        return (channelId, includeClosed);
     }
 
     /// <summary>

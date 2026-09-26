@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 14.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 16.
 /// </remarks>
 public enum ClientCommand
 {
@@ -22,5 +22,7 @@ public enum ClientCommand
     PayInvoice = 10,
     ListInvoices = 11,
     ListPayments = 12,
-    CloseChannel = 13
+    CloseChannel = 13,
+    ForceCloseChannel = 14,
+    PendingSweeps = 15
 }

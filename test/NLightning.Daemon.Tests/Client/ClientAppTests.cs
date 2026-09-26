@@ -57,6 +57,10 @@ public class ClientAppTests
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "fast")]
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "301")]
     [InlineData("closechannel", "2121212121212121212121212121212121212121212121212121212121212121", "0", "5", "bogus")]
+    [InlineData("forceclosechannel")]
+    [InlineData("force-close-channel", "abcd")]
+    [InlineData("pendingsweeps", "bogus")]
+    [InlineData("pending-sweeps", "2121212121212121212121212121212121212121212121212121212121212121", "most")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -165,5 +169,26 @@ public class ClientAppTests
         Assert.Equal((null, 60U, false), defaultFeerate);
         Assert.True(ClientApp.TryParseChannelId(id, out var channelId));
         Assert.Equal(id, Convert.ToHexString((byte[])channelId).ToLowerInvariant());
+    }
+
+    [Fact]
+    public void GivenPendingSweepsOptions_WhenParsed_ThenChannelAndIncludeClosedInAnyOrder()
+    {
+        // Arrange
+        const string id = "2121212121212121212121212121212121212121212121212121212121212121";
+
+        // Act
+        var none = ClientApp.ParsePendingSweepsOptions([]);
+        var (channelId, includeClosed) = ClientApp.ParsePendingSweepsOptions(["ALL", id]);
+        var (onlyChannelId, onlyIncludeClosed) = ClientApp.ParsePendingSweepsOptions([id]);
+
+        // Assert
+        Assert.Equal((null, false), none);
+        Assert.True(includeClosed);
+        Assert.Equal(id, Convert.ToHexString((byte[])channelId!.Value).ToLowerInvariant());
+        Assert.False(onlyIncludeClosed);
+        Assert.NotNull(onlyChannelId);
+        Assert.Null(ClientApp.ValidateArguments("pendingsweeps", []));
+        Assert.Null(ClientApp.ValidateArguments("forceclosechannel", [id]));
     }
 }
