@@ -22,6 +22,8 @@ Updated 2026-09-26 after ABCD wave 5 (W5-A funding-spend watcher and resolution 
 
 Updated 2026-09-26 after ABCD wave 6 (W6-A persistent onion replay set (migration owner), W6-B basic_mpp receive, W6-C payment retries and MPP send, W6-D attribution_data library, W6-E option_simple_close, W6-F BOLT 5 O6) was integrated into `wip/fafo` (at `3ce3cad`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `9692ba4`, `e8841d6`, `a45d290` and `3ce3cad` are `integrate:` commits), and NL-321..NL-331 record the lanes' and the integrator's new findings (the lanes' proposed NL-321/NL-322 collided and were renumbered: W6-C's per-part persistence is NL-321, W6-B's on-chain gap NL-322, W6-D's serializer fix NL-324 and fulfillment_payload check NL-325). The Docker suite (106 tests) ran from SDK containers on net10.0 and net11.0.
 
+Updated 2026-09-26 after ABCD wave 7 (W7-A attribution_data wiring (migration owner), W7-B final-hop on-chain claims and HTLC-set commitment, W7-C flakes and gates) was integrated into `wip/fafo` (at `4c37998`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `4751a26`, `672ed61` and `4c37998` are `integrate:` commits), and NL-332..NL-340 record the lanes' and the integrator's new findings (the lanes' proposed NL-331/NL-332 collided with existing or other lanes' IDs and were renumbered: W7-B's expiry gap is NL-335, its dust-exposure case NL-336, its `HtlcExpiryMonitor` item NL-337; W7-C's NativeAOT failure is NL-338). The Docker suite (114 tests) ran from SDK containers on net10.0 and net11.0.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -56,12 +58,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 1 | 6 | 29 | 73 | 109 |
+| open | 1 | 6 | 25 | 77 | 109 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 13 | 46 | 95 | 61 | 215 |
+| fixed | 13 | 46 | 100 | 65 | 224 |
 | wontfix | 0 | 0 | 2 | 4 | 6 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **52** | **127** | **138** | **331** |
+| **Total** | **14** | **52** | **128** | **146** | **340** |
 
 ### Epics
 
@@ -69,10 +71,10 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); remaining: NL-279, NL-285, NL-286, NL-045)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
-- NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, switch seam NL-326 open)
-- NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270)
+- NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
+- NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
-- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; next: O6-T4 mainnet gate (blocked by NL-316, NL-322), O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-316, NL-318, NL-320, NL-329, NL-330)
+- NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (open, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); next: O6-T4 mainnet gate (pending NL-311, NL-320, NL-337), O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-312..NL-315, NL-318, NL-320, NL-329, NL-330, NL-335, NL-336)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
 - NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments, HTLC origins and the persistent replay set (wave 6, NL-078) done; forward failure reasons, SCID map and per-part MPP send rows (NL-321) remain)
@@ -316,11 +318,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-022 update_fail_htlc / update_fulfill_htlc lack attribution_data and fulfillment TLVs
-- **Status:** open (partial: 6d7e480)
+- **Status:** fixed (6d7e480, 3a54e11)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Messages/UpdateFailHtlcMessage.cs`, `UpdateFulfillHtlcMessage.cs`
-- **Evidence:** No `attribution_data` (TLV 1) or fulfillment payload TLV (3) while `option_attribution_data` is advertised (NL-074). Update (ABCD wave 6, `3ce3cad`): `AttributionDataTlv` (TLV 1, exactly 920 bytes) and `FulfillmentPayloadTlv` (TLV 3, `IsTooLong` over 32768) with converters; both message serializers read and write them strictly (6d7e480). Remaining: `MessageFactory`/handlers never fill or consume them (the switch seam, NL-072, NL-326) and the fulfillment_payload size MUST (NL-325).
+- **Evidence:** No `attribution_data` (TLV 1) or fulfillment payload TLV (3) while `option_attribution_data` is advertised (NL-074). Update (ABCD wave 6, `3ce3cad`): `AttributionDataTlv` (TLV 1, exactly 920 bytes) and `FulfillmentPayloadTlv` (TLV 3, `IsTooLong` over 32768) with converters; both message serializers read and write them strictly (6d7e480). Remaining: `MessageFactory`/handlers never fill or consume them (the switch seam, NL-072, NL-326) and the fulfillment_payload size MUST (NL-325). Update (ABCD wave 7, `4c37998`): `MessageFactory` writes TLV 1 and TLV 3, the fail/fulfill handlers store them with the removal (`HtlcRemoval.AttributionData`/`FulfillmentPayload`, migration `AddAttributionData`), and retransmission re-sends them (3a54e11); the 32 KiB MUST is NL-325.
 - **Fix sketch:** Add `AttributionDataTlv` (920 bytes) + converter; wire into NL-072.
 - **Blocks/Blocked-by:** Blocks NL-072
 - **Plan ref:** ONION M3b
@@ -446,11 +448,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3b
 
 ### NL-325 An oversized fulfillment_payload does not fail the channel
-- **Status:** open
+- **Status:** fixed (3a54e11, e64da4e)
 - **Severity:** medium
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Application/Channels/Handlers/UpdateFulfillHtlcMessageHandler.cs`, `Domain/Protocol/Tlv/FulfillmentPayloadTlv.cs`
-- **Evidence:** BOLT 2: a receiver MUST send an error and fail the channel when update_fulfill_htlc's fulfillment_payload is longer than 32768 bytes. The serializer keeps such a TLV and sets `FulfillmentPayloadTlv.IsTooLong`, but the handler never checks it (reported by W6-D, review finding 1 skipped as out of lane).
+- **Evidence:** BOLT 2: a receiver MUST send an error and fail the channel when update_fulfill_htlc's fulfillment_payload is longer than 32768 bytes. The serializer keeps such a TLV and sets `FulfillmentPayloadTlv.IsTooLong`, but the handler never checks it (reported by W6-D, review finding 1 skipped as out of lane). Update (ABCD wave 7, `4c37998`): the fulfill handler fails the channel when fulfillment_payload is over 32768 bytes (3a54e11); a valid id and preimage are applied and committed first (KnownPreimage kept, `OutgoingHtlcFulfilled` queued and drained by `ChannelManager`), so the switch still fulfills upstream; a wrong id or preimage persists nothing (e64da4e; `AttributionHandlerTests`). The upstream fulfill after such a failure is proven at handler/event level only, not in a three-node harness.
 - **Fix sketch:** Throw `ChannelFailedException` in the fulfill handler when `message.FulfillmentPayloadTlv?.IsTooLong`.
 - **Blocks/Blocked-by:** Related NL-022
 - **Plan ref:** ONION M3b; BOLT2 N6
@@ -1338,11 +1340,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3-T3
 
 ### NL-072 attribution_data (error attribution) not implemented
-- **Status:** open (partial: d5866a6, 9692ba4)
+- **Status:** open (partial: d5866a6, 9692ba4, 3a54e11, 06b906c, e64da4e, 672ed61, 4c37998)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs:69`
-- **Evidence:** Advertised Optional; no TLV, no HMAC chain, no hold times. Update (ABCD wave 6, `3ce3cad`): the attribution_data library is done: `IAttributionDataService` (Domain) → `AttributionDataService` (Infrastructure.Bitcoin, `AddOnionAttributionServices`, registered by `AddBitcoinInfrastructure` in 9692ba4): create/wrap/origin-verify for failures (per-hop truncated HMACs, hold times, blamed hop) and fulfills (hold times, `fulfillment_payload`), byte-exact at every hop against the BOLT 4 Returning Errors and Returning success traces (d5866a6; the traces put hold time 1 on the erring/final node, recorded in `BOLT4/Vectors/README.md`). Not used by `HtlcSwitch`/`PaymentService`; `OptionAttributionData` stays experimental and No. Remaining: the switch/send seam and the persistence it needs (NL-326).
+- **Evidence:** Advertised Optional; no TLV, no HMAC chain, no hold times. Update (ABCD wave 6, `3ce3cad`): the attribution_data library is done: `IAttributionDataService` (Domain) → `AttributionDataService` (Infrastructure.Bitcoin, `AddOnionAttributionServices`, registered by `AddBitcoinInfrastructure` in 9692ba4): create/wrap/origin-verify for failures (per-hop truncated HMACs, hold times, blamed hop) and fulfills (hold times, `fulfillment_payload`), byte-exact at every hop against the BOLT 4 Returning Errors and Returning success traces (d5866a6; the traces put hold time 1 on the erring/final node, recorded in `BOLT4/Vectors/README.md`). Not used by `HtlcSwitch`/`PaymentService`; `OptionAttributionData` stays experimental and No. Remaining: the switch/send seam and the persistence it needs (NL-326). Update (ABCD wave 7, `4c37998`): wired end to end: the channel layer persists and sends attribution_data (NL-326), `PaymentService` verifies it at the origin (blamed hop, hold times on `PaymentHops.HoldTimeMs`), and `HtlcSwitch` creates/wraps it when we advertise `OptionAttributionData` and the incoming add had no `path_key` (672ed61). Proofs: `AttributionHarnessTests`, Docker `AttributionFlowTests` 5/5 (LND 0.20 accepts our TLV 1 but does not advertise bits 36/37 or send attribution; three NLightning nodes with the feature on record both hops' hold times through the production switch, 4c37998). Remaining: `OptionAttributionData` stays in `ExperimentalFeatures` because no LND interop proof is possible yet (NL-332); follow-ups NL-333, NL-334, NL-339.
 - **Fix sketch:** M3b after M3; until then default to No (NL-074).
 - **Blocks/Blocked-by:** Blocked-by NL-070, NL-022
 - **Plan ref:** ONION M3b
@@ -1642,49 +1644,99 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PaymentSession`), `Payments`/`PaymentHops` tables
-- **Evidence:** The payment row holds one route and HTLC. Parts added while other parts are in flight live only in the in-memory session, so after a restart their error onions cannot be decrypted (the payment fails without a failure code). The row's fee and route are corrected on success and when the recorded part fails (74c9014) (reported by W6-C).
+- **Evidence:** The payment row holds one route and HTLC. Parts added while other parts are in flight live only in the in-memory session, so after a restart their error onions cannot be decrypted (the payment fails without a failure code). The row's fee and route are corrected on success and when the recorded part fails (74c9014) (reported by W6-C). Update (ABCD wave 7, `4c37998`): hold times verified at the origin are recorded only for the persisted part; in-memory parts lose them (same cause).
 - **Fix sketch:** A `PaymentParts` table (route, shared secrets, HTLC id per part) from a migration-owner lane, reconciled at startup.
 - **Blocks/Blocked-by:** Related NL-137, NL-270
 - **Plan ref:** ONION M4-T6
 
 ### NL-323 A late or duplicate HTLC for a Settled invoice with the right secret is fulfilled
-- **Status:** open
+- **Status:** fixed (7ca5c60, a3cf0ce, 672ed61)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/FinalHop/FinalHopProcessor.cs`, `Switch/HtlcSwitch.cs`
-- **Evidence:** With `basic_mpp` on (the default), acceptance of a Settled invoice depends only on the payment_secret and `total_msat <= AmountReceived`, because HTLC sets are not persisted and a replayed held part cannot be told from a new HTLC. A duplicate single-part HTLC or a late part is fulfilled (BOLT 4 MAY accept an already paid hash); LND fails it. Only the payer loses (it overpays) (reported by W6-B).
+- **Evidence:** With `basic_mpp` on (the default), acceptance of a Settled invoice depends only on the payment_secret and `total_msat <= AmountReceived`, because HTLC sets are not persisted and a replayed held part cannot be told from a new HTLC. A duplicate single-part HTLC or a late part is fulfilled (BOLT 4 MAY accept an already paid hash); LND fails it. Only the payer loses (it overpays) (reported by W6-B). Update (ABCD wave 7, `4c37998`): the invoice's Settled save is the commit point: set membership is `HtlcRecord.KnownPreimage` (no migration); `FinalHopProcessor` accepts a Settled invoice only for a committed member, and any other HTLC gets 0x400F like LND (7ca5c60, a3cf0ce; `MppReceiveTests`, `FinalHopProcessorTests`); guides updated (672ed61). Accepted limit: pre-NL-323 settled sets whose held parts carry no mark are failed with 0x400F on replay after an upgrade (HTLCs are regtest-only, schema-reset policy).
 - **Fix sketch:** Persist set membership (the incoming HTLCs a settle covered) and fail HTLCs outside it with 0x400F.
 - **Blocks/Blocked-by:** Related NL-081, NL-253
 - **Plan ref:** ONION M4-T3
 
 ### NL-326 attribution_data needs persistence and a hold-time source before the switch can use it
-- **Status:** open
+- **Status:** fixed (3a54e11, 06b906c, e64da4e, 4751a26, 672ed61, 4c37998)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `IChannelOperations.FailHtlcAsync`/`FulfillHtlcAsync`, engine `HtlcRemoval`, `Htlcs` table, `HtlcSwitch`, `PaymentService`
-- **Evidence:** The switch seam (erring node create, intermediate wrap, final-hop and forwarded fulfill, origin decrypt/verify with `BlamedHopIndex`) is mapped out, but retransmission at reestablish and wrapping upstream after a restart need the 920-byte attribution_data (and an optional fulfillment_payload) stored with the HTLC removal (a migration on all three providers), the message factory must send them, and no add-received timestamp exists for hold times (0 is allowed meanwhile) (reported by W6-D and the W6 integrator).
+- **Evidence:** The switch seam (erring node create, intermediate wrap, final-hop and forwarded fulfill, origin decrypt/verify with `BlamedHopIndex`) is mapped out, but retransmission at reestablish and wrapping upstream after a restart need the 920-byte attribution_data (and an optional fulfillment_payload) stored with the HTLC removal (a migration on all three providers), the message factory must send them, and no add-received timestamp exists for hold times (0 is allowed meanwhile) (reported by W6-D and the W6 integrator). Update (ABCD wave 7, `4c37998`): W7-A (migration owner): migration `AddAttributionData` on all three providers (`Htlcs.AttributionData`, `FulfillmentPayload`, `AddedAt` in UTC ticks, `PaymentHops.HoldTimeMs`; no data step, no pending model changes), the engine and `IChannelOperations` carry the bytes (`FailHtlcAsync(AttributedErrorPacket)`, `FulfillHtlcAsync(AttributedFulfillment, ...)`, `GetHoldTimeAsync` in 100 ms units), `PaymentService` verifies and records hold times only on the fulfilled part's route (3a54e11, 06b906c, e64da4e); the hold time test uses a manual clock (4751a26). Integration: `HtlcSwitch` uses the seam (erring/final failures, final-hop and set fulfills, wrapped downstream failures incl. malformed and on-chain timeout, forwarded fulfills) gated on the feature and no `path_key` (672ed61); Docker three-node proof (4c37998). Feature gating is NL-332.
 - **Fix sketch:** Migration-owner lane: columns next to `HtlcRemoval.Reason`; pass through `IChannelOperations` and `MessageFactory`; wire `IAttributionDataService` into `HtlcSwitch`/`PaymentService`; then take `OptionAttributionData` out of `ExperimentalFeatures`.
 - **Blocks/Blocked-by:** Blocks NL-072; related NL-022
 - **Plan ref:** ONION M3b
 
 ### NL-327 The onion replay table is pruned only when an onion arrives
-- **Status:** open
+- **Status:** fixed (aa41f2b, 368a057, 672ed61)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Onion/PersistentOnionReplayStore.cs`
-- **Evidence:** Pruning runs lazily inside `TryAddAsync` (at most once per height) or on an explicit `PruneAsync`; nothing calls it on new blocks, so a node that receives no HTLCs keeps expired rows until the next one (reported by W6-A; the integrator kept lazy pruning).
+- **Evidence:** Pruning runs lazily inside `TryAddAsync` (at most once per height) or on an explicit `PruneAsync`; nothing calls it on new blocks, so a node that receives no HTLCs keeps expired rows until the next one (reported by W6-A; the integrator kept lazy pruning). Update (ABCD wave 7, `4c37998`): `OnionReplayBlockPruner` (Infrastructure.Bitcoin, `AddOnionReplayBlockPruner()`) prunes on every `OnNewBlockDetected`, coalesced to the highest height, retrying after a failed prune (aa41f2b, 368a057); registered in `AddNltgNodeServices` and started/stopped with the chain monitor by the daemon and `NLightningTestNode` (672ed61). The lazy prune stays as a fallback. The `IOnionReplayStore` XML remark is now stale (NL-340).
 - **Fix sketch:** Call `IOnionReplayStore.PruneAsync(height)` from an existing `OnNewBlockDetected` handler (e.g. `HtlcExpiryMonitor`).
 - **Blocks/Blocked-by:** Related NL-078
 - **Plan ref:** ONION M4-T7
 
 ### NL-328 PaymentModel doc comment still says single HTLC, no MPP
-- **Status:** open
+- **Status:** fixed (ef03b12)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Domain/Payments/Models/PaymentModel.cs`
-- **Evidence:** The XML doc says the payment is a "single HTLC (no MPP)"; since W6-C a payment can be split and the row records one live part (reported by W6-C, out of its lane).
+- **Evidence:** The XML doc says the payment is a "single HTLC (no MPP)"; since W6-C a payment can be split and the row records one live part (reported by W6-C, out of its lane). Update (ABCD wave 7, `4c37998`): the doc comment describes the multi-part row and links NL-321 (ef03b12).
 - **Fix sketch:** Rewrite the comment (and link NL-321).
 - **Blocks/Blocked-by:** Related NL-270, NL-321
+- **Plan ref:** —
+
+### NL-332 OptionAttributionData cannot be un-gated on an LND interop proof
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Domain/Node/Options/FeatureOptions.cs` (`ExperimentalFeatures`)
+- **Evidence:** LND 0.20 does not implement option_attribution_data (no bits 36/37, no TLV 1 sent; it accepts ours and still reads the failure), so the LND interop gate for taking `OptionAttributionData` out of `ExperimentalFeatures` cannot pass. Attribution is proven only between NLightning nodes (Docker `AttributionFlowTests`) (reported by W7-A and the W7 integrator).
+- **Fix sketch:** Decide: un-gate on the NLightning-to-NLightning proof plus a CLN/Eclair check, or wait for an LND release with the feature.
+- **Blocks/Blocked-by:** Related NL-072, NL-326
+- **Plan ref:** ONION M3b
+
+### NL-333 PaymentRetryPolicy ignores the attribution_data blame
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentRetryPolicy.cs`, `PaymentService.cs`
+- **Evidence:** When no hop authenticates the return packet but attribution_data blames hop i, the payment records `FailureSourceIndex = i`, but the retry policy still avoids our own first channel instead of the blamed hop's channel (reported by W7-A).
+- **Fix sketch:** Feed the blamed index into the retry decision (exclude the channel after hop i).
+- **Blocks/Blocked-by:** Related NL-072, NL-270
+- **Plan ref:** ONION M3b, M4-T6
+
+### NL-334 A fulfill reverted by a disconnect loses its attribution_data on replay
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Domain/Channels/Commitments/` (`RevertUncommitted`, `DerivePending`), `Payments/Switch/HtlcSwitch.cs`
+- **Evidence:** A fulfill that a disconnect reverts keeps only `KnownPreimage`; the replayed `OutgoingHtlcFulfilled` then carries no attribution, so a forwarding node wraps an all-zero block and the origin sees an invalid HMAC at the downstream hop (hold times lost, no funds impact) (reported by W7-A).
+- **Fix sketch:** Keep the attribution bytes with the preimage when a fulfill is reverted, or treat a missing block as "no attribution" instead of wrapping zeros.
+- **Blocks/Blocked-by:** Related NL-326
+- **Plan ref:** ONION M3b
+
+### NL-339 A blinded forward drops the downstream fulfillment_payload
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (forwarded fulfill)
+- **Evidence:** BOLT 4: a forwarding node passes the downstream fulfillment_payload on (obfuscated) even when it adds no attribution. When the incoming add had a `path_key` the switch adds no attribution and drops the payload. Unreachable until route blinding is enabled (M5) (reported by the W7 integrator).
+- **Fix sketch:** Pass the payload through the blinded branch as BOLT 4 describes when M5 lands.
+- **Blocks/Blocked-by:** Related NL-079, NL-326
+- **Plan ref:** ONION M3b, M5
+
+### NL-340 IOnionReplayStore doc remark says nothing prunes on blocks
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Protocol/Onion/Interfaces/IOnionReplayStore.cs:30`
+- **Evidence:** The XML remark says nothing in the node has to call `PruneAsync` and a node without HTLCs does not prune; since NL-327 `OnionReplayBlockPruner` prunes on every block (reported by W7-C).
+- **Fix sketch:** Reword the remark to name `OnionReplayBlockPruner` and keep the lazy prune as the fallback.
+- **Blocks/Blocked-by:** Related NL-327
 - **Plan ref:** —
 
 ---
@@ -1696,7 +1748,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** critical
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BlockchainMonitorService.cs`, `src/NLightning.Domain/Onchain/`, `src/NLightning.Infrastructure.Bitcoin/Onchain/`, `src/NLightning.Infrastructure.Bitcoin/Builders/{Sweep,Penalty}TransactionBuilder.cs`
-- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists). Update (ABCD wave 3, `c92d837`): N9-T4 done: `ChannelFailureService` is the only broadcast path; under the lock it persists Failed + the error, signs the latest local commitment with the stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, refuses a revoked number), saves the watch and publishes after the lock, retries a refused publish every block and resumes interrupted broadcasts at start (06da54b); the signer refuses every signature after `MarkDataLoss` (also set at registration from `DataLossDetected`). `ChannelManager` hands a `MustBroadcast` failure to it after the lock, and the daemon starts it (983b2b4). Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) passed in the lane, not re-run at integration (NL-276). The design for the rest is `docs/agents/BOLT5_ONCHAIN_PLAN.md` (3b02972, 6290443). Still open: sweeps (to_local after the delay, HTLC outputs), HTLC-timeout/success broadcasts, detecting the peer's commitment on chain (NL-272), a persisted broadcast intent (NL-271), penalty (NL-095). An upstream HTLC forwarded onto a force-closed channel stays AwaitingDownstream until BOLT 5 resolves the downstream HTLC. Update (ABCD wave 4, `6b5d50e`): `BOLT5_ONCHAIN_PLAN.md` O0 and O1 are done and wired: persisted broadcasts with per-block rebroadcast (`IChainBroadcaster`), persisted outpoint watches with every channel's funding output watched (`IOutpointWatcher`), one unit of work per block, the reorg header ring and rewind (7b4a173, f251dde, 5bedf44, a9e33a7; Docker `Onchain/OnchainSmokeTests`); the revocation log written in the revoke_and_ack save, the `ChannelCloses`/`OutputResolutions` tables, `ChannelState.OnchainResolving = 37`, migration `AddOnchainResolution` (4fd3617). The O2-O6 building blocks exist but are **not wired**: signer invariant S1 (dbe4cc8, 0761773; not restored after a restart, NL-297), `FundingSpendClassifier` + `CommitmentNumber.Decode` (5926d0c), `CommitmentOutputMapper` (263ab8f), preimage extraction (d7a4c73), `SignSweepInput` + `SweepTransactionBuilder` (7394f19, ff7f6cc), `PenaltyTransactionBuilder` (0df889a), `OutputResolutionPlanner` (36e8797), `SweepFeePolicy` (369314d), all against the Appendix C/F vectors; `AddOnchainBitcoinServices()` is registered (960cf05). Still open: the watcher that classifies funding spends and drives the planner (O2-T5, NL-272), the sweep scheduler (O6-T1), HTLC resolution into the switch (O3-T3/T4), penalty execution (O5-T2/T3), anchors CPFP (O7), reorg rollback of completed watches (O6-T3, NL-292), a confirmation-target fee estimate (NL-296). Update (ABCD wave 5, `1a5ab49`): `BOLT5_ONCHAIN_PLAN.md` O2-O5 are done, wired and proven against LND. O2 (W5-A): the `IOutputResolver` port and action model (152144c); the commitment `BroadcastTransactions` row with its commitment number in the Failed save and S1 restored at registration (d040654, 41f5fc2; NL-271, NL-297); `OnchainChannelWatcher` classifies every non-mutual funding spend, persists `ChannelCloses`/`OutputResolutions` + watches and moves the channel to `OnchainResolving` (41f5fc2; NL-272); `OnchainResolutionExecutor` runs the resolvers every block in one save, marks outputs Irrevocable at 100 blocks and closes the channel (O6-T2), and catches up spends mined before a watch was tracked (cbd99c6); `forceclosechannel` (ClientCommand 14) and `pendingsweeps` (15) IPC (c2ae40a); a Closing channel is never force-failed (7f6ebd9). O3 (W5-B): `LocalCommitResolver` (to_local after the CSV, HTLC-timeout/success, second-level sweeps; 7d3a6b3, 037c04b) and `HtlcRemovalKind.OnchainTimeout = 4` failing upstream with our own `permanent_channel_failure` (5af263f). O4 (W5-C): `RemoteCommitResolver` (to_remote, timeout and preimage claims at the peer's point incl. a forward's downstream preimage, remote-next and future commitments; 3794c0d, 202341b). O5 (W5-D): `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched, single and split penalties, second-level penalties; e5a556d, f4b83ff, 7189b71). Integration dd2d64f registers the three resolvers in `AddApplicationServices` and binds their options from `Node:Onchain`. Docker `Docker/Onchain/` O2 (2), O3 (4), O4 (5), O5 (2 end to end incl. an LND channel.db rollback, + 2 `Explicit` by-hand variants) green on net10.0 and net11.0 (567a3c1, cc207a8, 6bd3645, bbc51b4, a5b24e3). Still open: O6-T1 sweep scheduler and fee bumping (NL-317, NL-296), O6-T3 reorg re-resolution (NL-292, NL-293), O6-T4 mainnet gate, O7 anchors (NL-314), O8 mempool (NL-098), and the wave 5 follow-ups NL-307..NL-309, NL-311..NL-313, NL-315, NL-316, NL-318, NL-320. Update (ABCD wave 6, `3ce3cad`): `BOLT5_ONCHAIN_PLAN.md` O6-T1 and O6-T3 are done with Docker Proof O6: per-target fee estimates (6a4eb7d, NL-296), `SweepScheduler` RBF-bumps unconfirmed sweeps, claims and penalties every block and retires broadcasts that can no longer confirm (7c437b3, cde5ebb; NL-317, NL-294 partial); the chain-monitor rewind rolls back completed watches and wallet UTXOs (e8bb45b, 30584cf, 7dcf472; NL-293); the executor re-resolves after a reorg (pauses a channel whose funding spend left the chain, unresolves rolled-back spends, rebroadcasts our commitment, broadcasts it after `ReorgGraceBlocks` when the peer's is gone, moves a reconfirmed funding tx's SCID and sends a new channel_update, retires a replaced close; b330d8c, 8fcea62, 70cbd33, 6d4b625; NL-292); Docker `OnchainO6Tests` (a) reorged sweep rebroadcast, (b) penalty rebroadcast after restart, (c) RBF-bumped sweep, and the stale-SCID reproducer is a regular test (d3dfff8). The Onchain suite (18 + 2 Explicit) is green on net10.0 and net11.0. O6-T4 mainnet gate: opened (09052d0) and reverted (0c0d5c8): HTLCs stay regtest-only until NL-316 (and NL-311, NL-320, NL-322) are fixed. Still open: O6-T4, O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-311..NL-316, NL-318, NL-320, NL-322, NL-329, NL-330.
+- **Evidence:** No detection of commitment broadcasts, no sweeps, no HTLC on-chain resolution, no penalty tx. A revoked-state broadcast by a peer goes unpunished. Update (ABCD wave 2, `a5675cb`): this entry also tracks the fail-the-channel broadcast service (BOLT2 N9-T4). NL-200 and NL-035 are closed without it: a Failed channel is persisted and its error re-sent but our commitment is not broadcast, and the signer does not yet refuse broadcast signing after `DataLossDetected` (no broadcast path exists). Update (ABCD wave 3, `c92d837`): N9-T4 done: `ChannelFailureService` is the only broadcast path; under the lock it persists Failed + the error, signs the latest local commitment with the stored remote signature (`ILightningSigner.SignLocalCommitmentForBroadcast`, refuses a revoked number), saves the watch and publishes after the lock, retries a refused publish every block and resumes interrupted broadcasts at start (06da54b); the signer refuses every signature after `MarkDataLoss` (also set at registration from `DataLossDetected`). `ChannelManager` hands a `MustBroadcast` failure to it after the lock, and the daemon starts it (983b2b4). Docker `ChannelSafetyFlowTests` (02b12f7, a681dad) passed in the lane, not re-run at integration (NL-276). The design for the rest is `docs/agents/BOLT5_ONCHAIN_PLAN.md` (3b02972, 6290443). Still open: sweeps (to_local after the delay, HTLC outputs), HTLC-timeout/success broadcasts, detecting the peer's commitment on chain (NL-272), a persisted broadcast intent (NL-271), penalty (NL-095). An upstream HTLC forwarded onto a force-closed channel stays AwaitingDownstream until BOLT 5 resolves the downstream HTLC. Update (ABCD wave 4, `6b5d50e`): `BOLT5_ONCHAIN_PLAN.md` O0 and O1 are done and wired: persisted broadcasts with per-block rebroadcast (`IChainBroadcaster`), persisted outpoint watches with every channel's funding output watched (`IOutpointWatcher`), one unit of work per block, the reorg header ring and rewind (7b4a173, f251dde, 5bedf44, a9e33a7; Docker `Onchain/OnchainSmokeTests`); the revocation log written in the revoke_and_ack save, the `ChannelCloses`/`OutputResolutions` tables, `ChannelState.OnchainResolving = 37`, migration `AddOnchainResolution` (4fd3617). The O2-O6 building blocks exist but are **not wired**: signer invariant S1 (dbe4cc8, 0761773; not restored after a restart, NL-297), `FundingSpendClassifier` + `CommitmentNumber.Decode` (5926d0c), `CommitmentOutputMapper` (263ab8f), preimage extraction (d7a4c73), `SignSweepInput` + `SweepTransactionBuilder` (7394f19, ff7f6cc), `PenaltyTransactionBuilder` (0df889a), `OutputResolutionPlanner` (36e8797), `SweepFeePolicy` (369314d), all against the Appendix C/F vectors; `AddOnchainBitcoinServices()` is registered (960cf05). Still open: the watcher that classifies funding spends and drives the planner (O2-T5, NL-272), the sweep scheduler (O6-T1), HTLC resolution into the switch (O3-T3/T4), penalty execution (O5-T2/T3), anchors CPFP (O7), reorg rollback of completed watches (O6-T3, NL-292), a confirmation-target fee estimate (NL-296). Update (ABCD wave 5, `1a5ab49`): `BOLT5_ONCHAIN_PLAN.md` O2-O5 are done, wired and proven against LND. O2 (W5-A): the `IOutputResolver` port and action model (152144c); the commitment `BroadcastTransactions` row with its commitment number in the Failed save and S1 restored at registration (d040654, 41f5fc2; NL-271, NL-297); `OnchainChannelWatcher` classifies every non-mutual funding spend, persists `ChannelCloses`/`OutputResolutions` + watches and moves the channel to `OnchainResolving` (41f5fc2; NL-272); `OnchainResolutionExecutor` runs the resolvers every block in one save, marks outputs Irrevocable at 100 blocks and closes the channel (O6-T2), and catches up spends mined before a watch was tracked (cbd99c6); `forceclosechannel` (ClientCommand 14) and `pendingsweeps` (15) IPC (c2ae40a); a Closing channel is never force-failed (7f6ebd9). O3 (W5-B): `LocalCommitResolver` (to_local after the CSV, HTLC-timeout/success, second-level sweeps; 7d3a6b3, 037c04b) and `HtlcRemovalKind.OnchainTimeout = 4` failing upstream with our own `permanent_channel_failure` (5af263f). O4 (W5-C): `RemoteCommitResolver` (to_remote, timeout and preimage claims at the peer's point incl. a forward's downstream preimage, remote-next and future commitments; 3794c0d, 202341b). O5 (W5-D): `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched, single and split penalties, second-level penalties; e5a556d, f4b83ff, 7189b71). Integration dd2d64f registers the three resolvers in `AddApplicationServices` and binds their options from `Node:Onchain`. Docker `Docker/Onchain/` O2 (2), O3 (4), O4 (5), O5 (2 end to end incl. an LND channel.db rollback, + 2 `Explicit` by-hand variants) green on net10.0 and net11.0 (567a3c1, cc207a8, 6bd3645, bbc51b4, a5b24e3). Still open: O6-T1 sweep scheduler and fee bumping (NL-317, NL-296), O6-T3 reorg re-resolution (NL-292, NL-293), O6-T4 mainnet gate, O7 anchors (NL-314), O8 mempool (NL-098), and the wave 5 follow-ups NL-307..NL-309, NL-311..NL-313, NL-315, NL-316, NL-318, NL-320. Update (ABCD wave 6, `3ce3cad`): `BOLT5_ONCHAIN_PLAN.md` O6-T1 and O6-T3 are done with Docker Proof O6: per-target fee estimates (6a4eb7d, NL-296), `SweepScheduler` RBF-bumps unconfirmed sweeps, claims and penalties every block and retires broadcasts that can no longer confirm (7c437b3, cde5ebb; NL-317, NL-294 partial); the chain-monitor rewind rolls back completed watches and wallet UTXOs (e8bb45b, 30584cf, 7dcf472; NL-293); the executor re-resolves after a reorg (pauses a channel whose funding spend left the chain, unresolves rolled-back spends, rebroadcasts our commitment, broadcasts it after `ReorgGraceBlocks` when the peer's is gone, moves a reconfirmed funding tx's SCID and sends a new channel_update, retires a replaced close; b330d8c, 8fcea62, 70cbd33, 6d4b625; NL-292); Docker `OnchainO6Tests` (a) reorged sweep rebroadcast, (b) penalty rebroadcast after restart, (c) RBF-bumped sweep, and the stale-SCID reproducer is a regular test (d3dfff8). The Onchain suite (18 + 2 Explicit) is green on net10.0 and net11.0. O6-T4 mainnet gate: opened (09052d0) and reverted (0c0d5c8): HTLCs stay regtest-only until NL-316 (and NL-311, NL-320, NL-322) are fixed. Still open: O6-T4, O7 anchors (NL-314), O8 mempool (NL-098), follow-ups NL-307..NL-309, NL-311..NL-316, NL-318, NL-320, NL-322, NL-329, NL-330. Update (ABCD wave 7, `4c37998`): NL-316 and NL-322 are fixed (W7-B; Docker `OnchainFinalHopTests`), so O6-T4 is no longer blocked by them; the gate stays closed (HTLCs regtest-only) pending NL-311, NL-320 and the new NL-337. New follow-ups NL-335, NL-336.
 - **Fix sketch:** Watch funding outpoints, classify spends, sweep to_local/to_remote/HTLC outputs, justice txs. Sub-issues: NL-095, NL-096, NL-097, NL-098.
 - **Blocks/Blocked-by:** Blocked-by NL-031, NL-056, NL-066, NL-136, NL-067
 - **Plan ref:** BOLT_COVERAGE roadmap step 11; BOLT2 N9-T4 (done); `BOLT5_ONCHAIN_PLAN.md` O0-O8
@@ -2002,11 +2054,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O3-T3
 
 ### NL-316 An HTLC for our invoice not yet fulfilled when the peer force-closes is never claimed on chain
-- **Status:** open
+- **Status:** fixed (7ca5c60, db00321, 72e7f49, a3cf0ce)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Resolvers/RemoteCommitResolver.cs`, `HtlcSwitch` final hop
-- **Evidence:** The preimage claim on the peer's commitment uses only a preimage we learnt for that HTLC (our persisted fulfill, or a forward's downstream preimage, 202341b), never the invoice table alone (B5-LCL-RO-02). An HTLC locked in for our invoice whose fulfill was refused (e.g. the channel failed first) leaves the invoice Open and nothing ties it to the HTLC, so the peer times it out (reported by W5-C). Update (ABCD wave 6, `3ce3cad`): still open; it keeps the O6-T4 mainnet gate closed (0c0d5c8). The held parts of a settled MPP set have the same on-chain gap by another path (NL-322).
+- **Evidence:** The preimage claim on the peer's commitment uses only a preimage we learnt for that HTLC (our persisted fulfill, or a forward's downstream preimage, 202341b), never the invoice table alone (B5-LCL-RO-02). An HTLC locked in for our invoice whose fulfill was refused (e.g. the channel failed first) leaves the invoice Open and nothing ties it to the HTLC, so the peer times it out (reported by W5-C). Update (ABCD wave 6, `3ce3cad`): still open; it keeps the O6-T4 mainnet gate closed (0c0d5c8). The held parts of a settled MPP set have the same on-chain gap by another path (NL-322). Update (ABCD wave 7, `4c37998`): on a Failed/OnchainResolving incoming channel the switch acts only on final-hop onions and commits an accepted part by persisting the preimage on the incoming `HtlcRecord.KnownPreimage` in the invoice's settle save (7ca5c60); `FinalHopClaims.GetAcceptedPreimageAsync` lets `LocalCommitResolver`/`RemoteCommitResolver` claim with it only when the invoice is Settled with that preimage and the record has no fail removal, and the resolvers ask the switch to decide for unprocessed HTLCs of an Open invoice (db00321, a3cf0ce). Docker `Onchain/OnchainFinalHopTests` (72e7f49). O6-T4 is no longer blocked by NL-316/NL-322. Residual: the engine keeps KnownPreimage through a fail removal (harmless: the resolvers check the removal); NL-335, NL-336.
 - **Fix sketch:** A switch-side hook: accept the HTLC as final hop on chain (checks of `FinalHopProcessor`) and persist the fulfill/preimage for it, then the resolver claims it.
 - **Blocks/Blocked-by:** Part of NL-094; related NL-114
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O4-T2, §3.4
@@ -2042,11 +2094,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O4-T3, §3.4
 
 ### NL-322 Held parts of a settled MPP set are not claimed on chain after a force close
-- **Status:** open
+- **Status:** fixed (7ca5c60, db00321, 72e7f49, a3cf0ce)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Onchain/Resolvers/LocalCommitResolver.cs`, `RemoteCommitResolver.cs` (`GetAllowedPreimageAsync`), `Channels/Safety/HtlcExpiryMonitor.cs`
-- **Evidence:** A part of a settled set whose fulfill has not gone out when its channel is force-closed has no Fulfill removal and no forward record, so the resolvers never use the Settled invoice's preimage for it (B5-LCL-RO-02) and the peer times it out. The `HtlcExpiryMonitor` treats every HTLC of an Accepted/Settled invoice as preimage-known, so such parts are never failed back either (reported by W6-B, review finding 2 skipped as out of lane).
+- **Evidence:** A part of a settled set whose fulfill has not gone out when its channel is force-closed has no Fulfill removal and no forward record, so the resolvers never use the Settled invoice's preimage for it (B5-LCL-RO-02) and the peer times it out. The `HtlcExpiryMonitor` treats every HTLC of an Accepted/Settled invoice as preimage-known, so such parts are never failed back either (reported by W6-B, review finding 2 skipped as out of lane). Update (ABCD wave 7, `4c37998`): `FulfillSetAsync` marks every part with the preimage before the settle; an on-chain or refused part is claimed by the resolvers; marks are taken back when a set is not settled, and a set whose settle failed is retried by its timer (a3cf0ce). Docker `OnchainFinalHopTests` claims the held part on the force-closed channel. The `HtlcExpiryMonitor` half is NL-337.
 - **Fix sketch:** In the resolvers, accept the preimage of a Settled invoice for an incoming final-hop HTLC with a matching hash (with basic_mpp), or persist set membership (NL-323).
 - **Blocks/Blocked-by:** Part of NL-094; related NL-316, NL-081
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O3/O4, §3.4
@@ -2070,6 +2122,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Keep the upstream outcome per HTLC across closes; on a replaced close, resolve the new close's HTLC outputs against it and alert on a conflict.
 - **Blocks/Blocked-by:** Part of NL-094; related NL-292
 - **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O6-T3, B5-GEN-06
+
+### NL-335 The on-chain final-hop decision refuses an HTLC whose invoice expired after lock-in
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs`, `FinalHop/FinalHopProcessor.cs`, `Onchain/Resolvers/FinalHopClaims.cs`
+- **Evidence:** The on-chain final-hop decision checks invoice expiry at decision time, so an HTLC locked in just before its invoice expired and never fulfilled is not claimed on chain (the peer times it out) (reported by W7-B).
+- **Fix sketch:** Evaluate expiry against the HTLC's lock-in (or `AddedAt`) instead of now.
+- **Blocks/Blocked-by:** Related NL-316
+- **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O4-T2
+
+### NL-336 DustExposureHtlcSwitch can swallow the on-chain final-hop decision
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Fees/DustExposureHtlcSwitch.cs` (decorator of `IHtlcSwitch`)
+- **Evidence:** For an unprocessed HTLC over the dust-exposure limit on a Failed/OnchainResolving channel, the decorator tries an off-chain fail that is refused and returns handled, so the inner switch never makes the on-chain final-hop decision (reported by W7-B).
+- **Fix sketch:** Skip the dust-exposure fail for channels that are no longer Open, or fall through to the inner switch when the fail is refused.
+- **Blocks/Blocked-by:** Related NL-316
+- **Plan ref:** `BOLT5_ONCHAIN_PLAN.md` O4-T2
+
+### NL-337 HtlcExpiryMonitor treats every final-hop HTLC of an Accepted/Settled invoice as preimage-known
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Safety/HtlcExpiryMonitor.cs` (`ResolveIncomingAsync`)
+- **Evidence:** PreimageKnown for a final-hop HTLC comes from the invoice status, not from the incoming record's `KnownPreimage` mark plus a Settled invoice (the NL-323 commit point). A duplicate HTLC for a Settled invoice whose 0x400F fail cannot be sent (peer away) makes the monitor force-close the channel at the fulfillment deadline instead of failing it back (reported by W7-B).
+- **Fix sketch:** Use the same test as `FinalHopClaims.GetAcceptedPreimageAsync` (mark, hash, Settled with that preimage, no fail removal).
+- **Blocks/Blocked-by:** Related NL-322, NL-323; part of NL-094 (O6-T4)
+- **Plan ref:** BOLT2 N9; `BOLT5_ONCHAIN_PLAN.md` O6-T4
 
 ---
 
@@ -3362,17 +3444,17 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `src/Directory.Build.props`, `test/Directory.Build.props`, `docs/agents/NET11_PLAN.md`
-- **Evidence:** The multi-target build and the non-Docker tests pass on net10.0 and net11.0 (SDK 11 rc.1), but the Docker suite ran on net10.0 only (both frameworks would fight over the fixed container names), and NativeAOT and Wasm were not built with SDK 11. Seen with SDK 11 rc.1: building through a symlinked path skipped `CopyToOutputDirectory` items (not reproduced from the real path). `IHost.RunAsync` exits 1 on a failed BackgroundService on net11.0 but 0 on net10.0 (reported by W4-C). Update (ABCD wave 5, `1a5ab49`): the full Docker suite ran on net11.0 at the wave 5 integration from an sdk:11.0 container: LND suite 48/48, `Docker.Utils` 2/2, CLN 17/17, ABCD 10/10, `Docker.Onchain` 14/14 (3 Explicit not run), the same as net10.0. Remaining: NativeAOT publish and Wasm on SDK 11, `allowPrerelease: false` after GA.
+- **Evidence:** The multi-target build and the non-Docker tests pass on net10.0 and net11.0 (SDK 11 rc.1), but the Docker suite ran on net10.0 only (both frameworks would fight over the fixed container names), and NativeAOT and Wasm were not built with SDK 11. Seen with SDK 11 rc.1: building through a symlinked path skipped `CopyToOutputDirectory` items (not reproduced from the real path). `IHost.RunAsync` exits 1 on a failed BackgroundService on net11.0 but 0 on net10.0 (reported by W4-C). Update (ABCD wave 5, `1a5ab49`): the full Docker suite ran on net11.0 at the wave 5 integration from an sdk:11.0 container: LND suite 48/48, `Docker.Utils` 2/2, CLN 17/17, ABCD 10/10, `Docker.Onchain` 14/14 (3 Explicit not run), the same as net10.0. Remaining: NativeAOT publish and Wasm on SDK 11, `allowPrerelease: false` after GA. Update (ABCD wave 7, `4c37998`): NativeAOT publish on SDK 11 rc.1 fails at compile (NL-338). SDK 10 AOT and Wasm on SDK 11 not run. At the wave 7 integration the full Docker suite and non-Docker tests passed on net11.0 from the sdk:11.0 container; host SDK 11 on macOS hung in `dotnet test` for net10.0 (environment, not code).
 - **Fix sketch:** Run the Docker suite with `-f net11.0`; publish AOT and build Wasm with SDK 11; after GA set `allowPrerelease: false`.
 - **Blocks/Blocked-by:** Related NL-155
 - **Plan ref:** `NET11_PLAN.md` step 6
 
 ### NL-310 ChainMonitorPersistenceTests.Given_ReorgOfDepth2 failed once under load
-- **Status:** open
+- **Status:** fixed (548ba85, 368a057)
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Persistence/ChainMonitorPersistenceTests.cs` (several tests)
-- **Evidence:** Failed once under machine load in W5-A and passed on rerun; not seen at the wave 5 integration (5718 per framework, green). Possibly a timing assumption in the reorg rewind test. Update (ABCD wave 6, `3ce3cad`): at the wave 6 integration one full parallel run failed a different `ChainMonitorPersistenceTests` test per config (`Given_NewBranchProcessed_When_AStaleOrphanIsDeliveredLate` on Release, `Given_FundingTransactionOfAStoredChannelConfirms` on Release.Native); not reproduced in 8 class runs, 6 project runs and 6 more full runs. Suspected race between the monitor's background task and the test's direct `ProcessNewBlockAsync` (unconfirmed).
+- **Evidence:** Failed once under machine load in W5-A and passed on rerun; not seen at the wave 5 integration (5718 per framework, green). Possibly a timing assumption in the reorg rewind test. Update (ABCD wave 6, `3ce3cad`): at the wave 6 integration one full parallel run failed a different `ChainMonitorPersistenceTests` test per config (`Given_NewBranchProcessed_When_AStaleOrphanIsDeliveredLate` on Release, `Given_FundingTransactionOfAStoredChannelConfirms` on Release.Native); not reproduced in 8 class runs, 6 project runs and 6 more full runs. Suspected race between the monitor's background task and the test's direct `ProcessNewBlockAsync` (unconfirmed). Update (ABCD wave 7, `4c37998`): root cause found: the tests' ZMQ subscriber used 127.0.0.1:28332, where a local Mutinynet bitcoind publishes rawblock, so foreign blocks raced the tests' direct `ProcessNewBlockAsync`. `BlockchainMonitorService.ProcessNewBlockAsync` now serializes callers and drops a block above bitcoind's tip; tests use `SilentZmqEndpoint` (548ba85). Stress: 3/200 failing before, 252/252 green after (368a057). Any new test that starts a real monitor with a fixed ZMQ port must use `SilentZmqEndpoint`.
 - **Fix sketch:** Capture the failure output on the next occurrence; look for a wait on the monitor without a condition.
 - **Blocks/Blocked-by:** Related NL-096
 - **Plan ref:** —
@@ -3396,6 +3478,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Read the channel policy at test time, or set it explicitly on channels the test owns.
 - **Blocks/Blocked-by:** Related NL-263
 - **Plan ref:** —
+
+### NL-338 NativeAOT publish of the daemon fails on the configuration binder generator
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Options/BitcoinOptions.cs`, `src/NLightning.Daemon/Extensions/NodeServiceExtensions.cs:192`
+- **Evidence:** `dotnet publish src/NLightning.Daemon -c Release.Native -f net11.0 -r osx-arm64 -p:PublishAot=true` (SDK 11 rc.1) fails with 6x CS9035: the configuration-binding source generator (on with PublishAot) cannot build `BitcoinOptions`, whose members are `required`. Also SYSLIB1100/1101 for `NodeOptions` (`LightningMoney`, `IPAddress`, `Features`) and IL2026/IL3050/IL207x from reflection-based handler registration, EF migrations, the plugin loader and `SecureKeyManager` JSON (reported by W7-C; log was /private/tmp/w7-aot/net11.log). SDK 10 not compared.
+- **Fix sketch:** Drop `required` from `BitcoinOptions` and validate at startup (or `-p:EnableConfigurationBindingGenerator=false`), fix the NodeOptions binding, then address or suppress the trim warnings and smoke-run the binary.
+- **Blocks/Blocked-by:** Related NL-300, NL-155
+- **Plan ref:** `NET11_PLAN.md` step 6
 
 ---
 

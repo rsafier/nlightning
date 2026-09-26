@@ -1,6 +1,49 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 6 @ `3ce3cad`).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 7 @ `4c37998`).
 
 ## Status
+
+### Wave 7: integrated into `wip/fafo` @ `4c37998` (2026-09-26), gates GREEN
+
+Wave 7 wired attribution_data end to end, made final-hop HTLCs of our invoices claimable on chain (the last blockers of the O6-T4 gate on the switch side) and cleared the chain-monitor test flake. Three lanes, each with a review step: W7-A attribution_data wiring (migration owner), W7-B final-hop on-chain claims and HTLC-set commitment, W7-C flakes and gates. All 11 lane commits were cherry-picked with `-x` without conflicts (W7-A first). Integrator commits:
+- 4751a26: the W7-A hold-time test (99 ms, expected 0) was flaky because `SteppedTimeProvider` added wall-clock time on top of the step; it now uses a manual clock.
+- 672ed61: `HtlcSwitch` takes an optional `IAttributionDataService` and uses W7-A's seam (erring and final-node failures, final-hop and set fulfills with the settle still in the fulfill's save, wrapped downstream failures incl. malformed and on-chain timeout, forwarded fulfills via `WrapFulfillment`) only when `NodeOptions.Features.OptionAttributionData` is not No and the incoming add had no `path_key`; `AddOnionReplayBlockPruner()` in `AddNltgNodeServices`, started after and stopped before the chain monitor by `NltgDaemonService` and `NLightningTestNode`; 3 `HtlcSwitchTests`, a Daemon composition check; guides.
+- 4c37998: Docker `AttributionFlowTests.Given_ThreeNodesAdvertisingAttribution_…`: three NLightning nodes with the feature on forward through the production switch; both fulfills carry TLV 1 and the payer records both hops' hold times.
+
+Gates at `4c37998` (the ledger agent re-ran the net10.0 Release non-Docker tests at `4c37998`: 6097/6097):
+- Build: Release and Release.Native under SDK 10 and SDK 11, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean under SDK 10 and SDK 11.
+- Tests: **6097** non-Docker tests per config and framework, 0 failures, 0 skips (Domain 2142, Application 1148, Integration 573, Serialization 487, Infrastructure 380, Infrastructure.Bitcoin 777, Bolt11 278, Daemon 312): net10.0 on the host and net11.0 in the sdk:11.0 container, Release and Release.Native. The Long simulator passes. `HasPendingModelChanges()` false for all three providers after `AddAttributionData` (Integration tests).
+- Docker (in-container runner, `--network host`): LND suite **64/64** (incl. Postgres 8, SqlServer 8, `AttributionFlowTests` 5; on net10.0 63/63 before the new proof, then `AttributionFlowTests` 5/5 separately), `Docker.Utils` 2/2, CLN interop **17/17**, ABCD **3 × 10/10**, `Docker.Onchain` **19/19** incl. `OnchainFinalHopTests` (2 `Explicit` not run); identical on net10.0 and net11.0. **114** Docker tests in total (LND 64, Utils 2, CLN 17, ABCD 10, Onchain 21).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W7-A attribution wiring (migration owner) | done: migration `AddAttributionData` (3 providers: `Htlcs.AttributionData`/`FulfillmentPayload`/`AddedAt`, `PaymentHops.HoldTimeMs`; no data step; seeded round trip on SQLite, Postgres, SQL Server); engine, `IChannelOperations` (`FailHtlcAsync(AttributedErrorPacket)`, `FulfillHtlcAsync(AttributedFulfillment, ...)`, `GetHoldTimeAsync`), handlers, retransmission, `MessageFactory` TLV 1/3; origin verification and hold times in `PaymentService`; `AttributionHarnessTests`; Docker `AttributionFlowTests` (LND 0.20 lacks the feature). Review: a valid preimage is committed before the channel fails over an oversized payload; fulfill hold times only on the matching route. Skipped: taking `OptionAttributionData` out of `ExperimentalFeatures` | 3a54e11, 06b906c, e64da4e | NL-022, NL-325 fixed; NL-326 fixed with integration; NL-072 partial; new NL-332, NL-333, NL-334 |
+| W7-B final hop on chain | done: the switch accepts a final-hop HTLC of a Failed/OnchainResolving channel and commits it with the preimage on the incoming `HtlcRecord.KnownPreimage` in the settle's save; `FinalHopClaims.GetAcceptedPreimageAsync` for both resolvers (Settled invoice with that preimage, no fail removal); every part of a set committed before the settle, marks taken back when a set is not settled, a failed settle retried by the timer; 0x400F for HTLCs outside a Settled set; Docker `Onchain/OnchainFinalHopTests` | 7ca5c60, db00321, 72e7f49, a3cf0ce | NL-316, NL-322, NL-323 fixed; new NL-335, NL-336, NL-337 |
+| W7-C flakes and gates | done: NL-310 root cause (a local Mutinynet bitcoind publishing on the tests' ZMQ port) fixed with serialized `ProcessNewBlockAsync`, blocks above the tip dropped and `SilentZmqEndpoint` (stress 252/252); `OnionReplayBlockPruner` (coalesced, retries after a failure); `PaymentModel` doc. Partial: NativeAOT publish on SDK 11 reported, not fixed | 548ba85, aa41f2b, ef03b12, 368a057 | NL-310, NL-327 (with integration), NL-328 fixed; NL-300 note; new NL-338, NL-340 |
+| Integration | test clock fix, switch attribution seam, pruner wiring, three-node attribution proof, guides | 4751a26, 672ed61, 4c37998 | NL-326, NL-327 fixed; new NL-339 |
+
+Ledger note: the lanes' proposed IDs collided (W7-B suggested NL-331/NL-332; NL-331 already existed); the wave's new items are NL-332..NL-340. The hold times of in-memory MPP parts (W7-A) are a note under NL-321; the pre-NL-323 upgrade limit is a note under NL-323; the stale `IOnionReplayStore` remark is NL-340. NL-072 stays **open (partial)**: everything is wired, but `OptionAttributionData` stays experimental until an interop proof beyond NLightning exists (NL-332).
+
+Deviations accepted in wave 7:
+- `OptionAttributionData` stays in `ExperimentalFeatures` and default No: LND 0.20 does not implement it (proven by `AttributionFlowTests`), so the planned LND interop gate cannot pass (NL-332).
+- A fulfill refused because the peer is away now commits the set and settles the invoice at once (the part carries the preimage and is fulfilled on replay or claimed on chain); before, the invoice stayed Open until the replay.
+- A crash between the set's marks and the settle leaves the invoice Open with marked parts; the marks are honored only once the invoice is Settled, and replay normally completes the set.
+- Pre-NL-323 settled sets are failed with 0x400F on replay after an upgrade (no reconciliation; HTLCs are regtest-only).
+- A blinded forward drops the downstream fulfillment_payload (NL-339, left for M5).
+- Out-of-lane touches: `PaymentHop.HoldTime`/`PaymentModel.RecordHoldTimes` (Domain), `NLightningTestNode.ConfigureServices` hook, `PaymentSchemaRoundTrip.SeedAsync` internal (W7-A).
+
+### Carried into wave 8
+
+- **Mainnet gate (NL-094 O6-T4):** NL-311 (untracked resolution watches after a crash), NL-320 (upstream HTLCs of future/unknown closes), NL-337 (`HtlcExpiryMonitor` final-hop PreimageKnown from the record's mark); then open the HTLC gate on every network (template and default together).
+- **Wave 7 follow-ups:** NL-335 (expired invoice at the on-chain decision), NL-336 (`DustExposureHtlcSwitch` swallows the on-chain decision), NL-333 (retry policy ignores the attribution blame), NL-334 (reverted fulfill loses attribution), NL-340 (replay store doc), a three-node harness test of the forward-then-fail case of NL-325.
+- **attribution_data gating:** decide on NL-332 (un-gate on the NLightning proof plus CLN/Eclair, or wait for LND); NL-339 with M5.
+- **Payments persistence:** per-part MPP send rows (NL-321, also for hold times), forward failure reasons and an SCID map (NL-137).
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312..NL-315, NL-318, NL-329, NL-330, refused-broadcast abandonment for funding txs (NL-294, NL-259); O7 anchors (NL-314, `OptionAnchors`), O8 mempool (NL-098).
+- **Close follow-ups:** decide the `OptionSimpleClose` default (NL-285), NL-279, NL-286, NL-045, NL-277, wallet address reuse (NL-280).
+- **Switch/monitor:** NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290, NL-216, NL-298.
+- **Not started:** route blinding (M5, NL-079), BOLT 7 graph and pathfinding (NL-099), dual funding (NL-037).
+- **Test infra and platform:** NativeAOT publish (NL-338; SDK 10 comparison, Wasm on SDK 11, NL-300), NL-276 (host route), NL-319, NL-331, NL-295, NL-262, NL-261.
+- **Mutinynet / ops:** NL-303, NL-306, a longer live run with a force close; carried from earlier waves: NL-152 (disconnect IPC), NL-269, NL-260, NL-138, the Wasm risk.
 
 ### Wave 6: integrated into `wip/fafo` @ `3ce3cad` (2026-09-26), gates GREEN
 
