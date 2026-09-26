@@ -167,13 +167,15 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
     public async Task<OpenChannelIpcResponse> OpenChannelAsync(string nodeInfo, string amountSats,
                                                                string? pushSats = null,
-                                                               CancellationToken ct = default)
+                                                               CancellationToken ct = default,
+                                                               bool isPublic = false)
     {
         var req = new OpenChannelIpcRequest
         {
             NodeInfo = nodeInfo,
             Amount = LightningMoney.Satoshis(Convert.ToInt64(amountSats)),
-            PushAmount = pushSats is null ? null : LightningMoney.Satoshis(Convert.ToInt64(pushSats))
+            PushAmount = pushSats is null ? null : LightningMoney.Satoshis(Convert.ToInt64(pushSats)),
+            IsPublic = isPublic
         };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Handlers;
 
@@ -21,12 +22,17 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
+    private readonly GossipOptions _gossipOptions;
 
+    /// <param name="gossipOptions">Whether public channels are accepted (<see cref="GossipOptions.AcceptPublicChannels"/>,
+    /// default yes).</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
-                                      IBlockchainMonitor? blockchainMonitor = null)
+                                      IBlockchainMonitor? blockchainMonitor = null,
+                                      IOptions<GossipOptions>? gossipOptions = null)
     {
         _blockchainMonitor = blockchainMonitor;
+        _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _channelFactory = channelFactory;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
@@ -49,6 +55,12 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
         if (_blockchainMonitor is { IsChainProcessingHalted: true })
             throw new ChannelErrorException(ChainProcessingHalt.Refusal("open_channel"), payload.ChannelId,
                                             "Not accepting channels right now, try again later");
+
+        // BOLT 2: the receiver MAY fail a channel whose announce_channel it does not want (NL-341). The flag is stored
+        // with the channel by the factory
+        if (payload.ChannelFlags.AnnounceChannel && !_gossipOptions.AcceptPublicChannels)
+            throw new ChannelErrorException("Refusing a public channel: Gossip:AcceptPublicChannels is false",
+                                            payload.ChannelId, "We don't accept public channels");
 
         // Check if there's a temporary channel for this peer
         if (_channelMemoryRepository.TryGetTemporaryChannelState(peerPubKey, payload.ChannelId, out currentState))

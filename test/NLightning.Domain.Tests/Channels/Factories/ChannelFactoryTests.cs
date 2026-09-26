@@ -299,6 +299,85 @@ public class ChannelFactoryTests
         Assert.Equal(ChannelParty.Unknown, channel.ChannelParams.Remote);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_OpenChannelFlags_When_CreatingChannelAsNonInitiator_Then_TheAnnounceFlagIsStored(
+        bool announce)
+    {
+        // Arrange (NL-341, G1-T1: the opener's announce_channel bit is kept with the channel)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()),
+                                                channelFlags: announce ? ChannelFlag.AnnounceChannel
+                                                                       : ChannelFlag.None);
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+
+        // Assert
+        Assert.Equal(announce, channel.AnnounceChannel);
+        Assert.Equal(announce, channel.ChannelParams.WithRemote(channel.ChannelParams.Remote).AnnounceChannel);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.No)]
+    [InlineData(FeatureSupport.Optional)]
+    public async Task Given_PublicRequest_When_CreatingChannelAsInitiator_Then_AnnouncedWithoutScidAliasInTheType(
+        FeatureSupport scidAlias)
+    {
+        // Arrange (BOLT 2: announce_channel MUST NOT be used with option_scid_alias in the channel type)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var request = CreateRequest(LightningMoney.Satoshis(200_000));
+        request.IsPublic = true;
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(
+                          request, new FeatureOptions { ScidAlias = scidAlias }, s_remoteNodeId);
+
+        // Assert
+        Assert.True(channel.AnnounceChannel);
+        Assert.False(channel.ChannelParams.ToChannelType().IsFeatureSet(Feature.OptionScidAlias, true));
+        Assert.Equal(scidAlias == FeatureSupport.No ? FeatureSupport.No : FeatureSupport.Optional,
+                     channel.ChannelParams.UseScidAlias);
+    }
+
+    [Fact]
+    public async Task Given_PrivateRequestWithScidAliasNegotiated_When_CreatingChannelAsInitiator_Then_TheTypeHasIt()
+    {
+        // Arrange
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var request = CreateRequest(LightningMoney.Satoshis(200_000));
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(
+                          request, new FeatureOptions { ScidAlias = FeatureSupport.Optional }, s_remoteNodeId);
+
+        // Assert
+        Assert.False(channel.AnnounceChannel);
+        Assert.True(channel.ChannelParams.ToChannelType().IsFeatureSet(Feature.OptionScidAlias, true));
+    }
+
+    [Fact]
+    public async Task Given_PublicZeroConfRequest_When_CreatingChannelAsInitiator_Then_ChannelErrorIsThrown()
+    {
+        // Arrange (a zero-conf channel has no confirmed short channel id to announce)
+        var channelFactory = CreateNonInitiatorChannelFactory(new NodeOptions
+        {
+            MinimumChannelSize = LightningMoney.Satoshis(1_000),
+            Features = new FeatureOptions { ZeroConf = FeatureSupport.Optional }
+        });
+        var request = CreateRequest(LightningMoney.Satoshis(200_000));
+        request.IsPublic = true;
+        request.IsZeroConfChannel = true;
+
+        // Act / Assert
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelFactory.CreateChannelV1AsInitiatorAsync(
+                                request, new FeatureOptions { ZeroConf = FeatureSupport.Optional }, s_remoteNodeId));
+        Assert.Contains("public", exception.Message);
+    }
+
     private static NodeOptions CreateDistinctNodeOptions()
     {
         return new NodeOptions
@@ -332,9 +411,10 @@ public class ChannelFactoryTests
 
     private static OpenChannel1Message CreateOpenChannel1Message(ChannelTypeTlv? channelTypeTlv,
                                                                  LightningMoney? openerDustLimit = null,
-                                                                 LightningMoney? openerReserve = null)
+                                                                 LightningMoney? openerReserve = null,
+                                                                 ChannelFlag channelFlags = ChannelFlag.None)
     {
-        var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags((byte)0),
+        var payload = new OpenChannel1Payload(BitcoinNetwork.Mainnet.ChainHash, new ChannelFlags(channelFlags),
                                               s_temporaryChannelId, openerReserve ?? LightningMoney.Satoshis(1_000),
                                               s_remoteNodeId, openerDustLimit ?? LightningMoney.Satoshis(354),
                                               LightningMoney.Satoshis(1_000),

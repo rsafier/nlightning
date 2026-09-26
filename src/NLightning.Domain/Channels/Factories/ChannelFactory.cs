@@ -122,8 +122,13 @@ public class ChannelFactory : IChannelFactory
 
         // The channel type decides anchors, not the init features (the opener may pick a type without them)
         var optionAnchorOutputs = message.ChannelTypeTlv?.Features.IsFeatureSet(Feature.OptionAnchors, true) ?? false;
+        // The opener's announce_channel bit is stored with the channel (NL-341): a public channel is announced once it
+        // is deep enough (BOLT 7). The validator refused it together with option_scid_alias in the channel type
         var channelParams = new ChannelParams(localParams, remoteParams, payload.FeeRatePerKw, minimumDepth,
-                                              optionAnchorOutputs, useScidAlias);
+                                              optionAnchorOutputs, useScidAlias)
+        {
+            AnnounceChannel = payload.ChannelFlags.AnnounceChannel
+        };
 
         // Generate the commitment number (the remote is the opener: opener basepoint first)
         var commitmentNumber = new CommitmentNumber(remoteKeySet.PaymentCompactBasepoint,
@@ -210,6 +215,11 @@ public class ChannelFactory : IChannelFactory
         var minimumDepth = _nodeOptions.MinimumDepth;
         if (request.IsZeroConfChannel)
         {
+            // A zero-conf channel has no confirmed short channel id to announce (BOLT 7 plan: public + zeroconf is
+            // refused)
+            if (request.IsPublic)
+                throw new ChannelErrorException("A public channel can't be zero-conf");
+
             if (_nodeOptions.Features.ZeroConf == FeatureSupport.No)
                 throw new ChannelErrorException(
                     "ZeroConf feature not supported, change our configuration and try again");
@@ -257,13 +267,20 @@ public class ChannelFactory : IChannelFactory
                                            maxHtlcValueInFlight, request.ToSelfDelay ?? _nodeOptions.ToSelfDelay,
                                            localUpfrontShutdownScript);
 
-        // We put option_scid_alias in the channel type whenever the peer negotiated it
-        var useScidAlias = negotiatedFeatures.ScidAlias > FeatureSupport.No
-                               ? FeatureSupport.Compulsory
-                               : FeatureSupport.No;
+        // We put option_scid_alias in the channel type whenever the peer negotiated it, except for a public channel:
+        // BOLT 2 forbids option_scid_alias in the channel type together with announce_channel (the channel_ready alias
+        // is still exchanged when the feature is negotiated)
+        var useScidAlias = negotiatedFeatures.ScidAlias == FeatureSupport.No
+                               ? FeatureSupport.No
+                               : request.IsPublic
+                                   ? FeatureSupport.Optional
+                                   : FeatureSupport.Compulsory;
         var channelParams = new ChannelParams(localParams, ChannelParty.Unknown,
                                               request.FeeRatePerKw ?? currentFeeRatePerKw, minimumDepth,
-                                              negotiatedFeatures.OptionAnchors != FeatureSupport.No, useScidAlias);
+                                              negotiatedFeatures.OptionAnchors != FeatureSupport.No, useScidAlias)
+        {
+            AnnounceChannel = request.IsPublic
+        };
 
         try
         {

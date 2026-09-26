@@ -247,6 +247,10 @@ public static class NodeServiceExtensions
         // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));
 
+        // BOLT 7 public channels (optional Gossip section: AcceptPublicChannels, AllowPublicChannelsOnMainnet,
+        // AnnouncementDepth; G1-T1, NL-341)
+        services.Configure<GossipOptions>(configuration.GetSection(GossipOptions.SectionName));
+
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>
             Options.Create(sp.GetRequiredService<IOptions<NodeOptions>>().Value.Routing));

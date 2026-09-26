@@ -19,8 +19,13 @@ public sealed class OpenChannelIpcRequest
     /// </summary>
     [Key(3)] public LightningMoney? PushAmount { get; init; }
 
+    /// <summary>
+    /// Open a public channel (<c>openchannel --public</c>, BOLT 7 plan G1-T1); absent (an older client) means private.
+    /// </summary>
+    [Key(4)] public bool IsPublic { get; init; }
+
     public OpenChannelClientRequest ToClientRequest()
     {
-        return new OpenChannelClientRequest(NodeInfo, Amount) { PushAmount = PushAmount };
+        return new OpenChannelClientRequest(NodeInfo, Amount) { PushAmount = PushAmount, IsPublic = IsPublic };
     }
 }

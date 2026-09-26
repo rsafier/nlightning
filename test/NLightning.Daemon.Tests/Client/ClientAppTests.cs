@@ -77,6 +77,9 @@ public class ClientAppTests
     [InlineData("openchannel", "peer@host", "99999999999999999999")]
     [InlineData("openchannel", "peer@host", "9223372036854775808")]
     [InlineData("openchannel", "peer@host", "2100000000000001")]
+    [InlineData("openchannel", "peer@host", "--public")]
+    [InlineData("openchannel", "peer@host", "50000", "--private")]
+    [InlineData("openchannel", "peer@host", "50000", "0", "1")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -88,6 +91,22 @@ public class ClientAppTests
 
         // Assert
         Assert.Equal(ClientApp.UsageError, exitCode);
+    }
+
+    [Theory]
+    [InlineData(new[] { "peer@host", "50000" }, false)]
+    [InlineData(new[] { "peer@host", "50000", "--public" }, true)]
+    [InlineData(new[] { "--public", "peer@host", "50000", "20000" }, true)]
+    public void Given_OpenChannelArguments_When_Parsed_Then_PublicFlagAndPositionalArgumentsAreSplit(string[] args,
+        bool expectedPublic)
+    {
+        // Act
+        var positional = OpenChannelMessageHandler.ParseArguments(args, out var isPublic, out var error);
+
+        // Assert
+        Assert.Null(error);
+        Assert.Equal(expectedPublic, isPublic);
+        Assert.Equal(args.Where(a => a != OpenChannelMessageHandler.PublicOption), positional);
     }
 
     [Fact]
@@ -124,6 +143,9 @@ public class ClientAppTests
     [InlineData("openchannel", "peer@host", "50000", "0")]
     [InlineData("open-channel", "peer@host", "50000", "20000")]
     [InlineData("openchannel", "peer@host", "2100000000000000", "2099999999999999")]
+    [InlineData("openchannel", "peer@host", "50000", "--public")]
+    [InlineData("openchannel", "--public", "peer@host", "50000", "20000")]
+    [InlineData("open-channel", "peer@host", "50000", "20000", "--PUBLIC")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
         params string[] commandArgs)
     {

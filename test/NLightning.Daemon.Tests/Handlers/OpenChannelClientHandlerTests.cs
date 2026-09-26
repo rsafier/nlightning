@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Handlers;
 
@@ -252,6 +253,102 @@ public class OpenChannelClientHandlerTests
         // Assert: BOLT 2 funding_satoshis is the channel capacity, push_msat is taken out of it
         Assert.Equal(fundingAmount, sentFunding);
         Assert.Equal(pushAmount, sentPush);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_AnnounceFlag_When_HandleAsync_Then_OpenChannelCarriesIt(bool announce)
+    {
+        // Arrange (NL-341, G1-T1: the factory stores the flag, open_channel.channel_flags carries it)
+        var peerId = CreateDummyPubKey();
+        var nodeInfo = $"{peerId}@127.0.0.1:9735";
+        var fundingAmount = LightningMoney.Satoshis(1_000_000);
+        var request = new OpenChannelClientRequest(nodeInfo, fundingAmount);
+
+        var peerModel = new PeerModel(peerId, "127.0.0.1", 9735, "ipv4");
+        var peerServiceMock = new Mock<IPeerService>();
+        peerServiceMock.Setup(x => x.Features).Returns(new FeatureOptions());
+        peerModel.SetPeerService(peerServiceMock.Object);
+
+        _peerManagerMock.Setup(x => x.GetPeer(peerId)).Returns(peerModel);
+        _blockchainMonitorMock.Setup(x => x.LastProcessedBlockHeight).Returns(100u);
+        _utxoMemoryRepositoryMock.Setup(x => x.GetConfirmedBalance(100u)).Returns(LightningMoney.Satoshis(2_000_000));
+
+        var localKeySet = new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId);
+        var channelModel = new ChannelModel(new ChannelParams { AnnounceChannel = announce }, CreateRandomChannelId(),
+                                            null, null, true, null, null, fundingAmount, localKeySet, 0, 0,
+                                            LightningMoney.Zero, null, 0, peerId, 0, ChannelState.V1Opening,
+                                            ChannelVersion.V1);
+        var tempChannelId = channelModel.ChannelId;
+        _channelFactoryMock.Setup(x => x.CreateChannelV1AsInitiatorAsync(request, It.IsAny<FeatureOptions>(), peerId))
+                           .ReturnsAsync(channelModel);
+
+        ChannelFlags? sentFlags = null;
+        _messageFactoryMock.Setup(x => x.CreateOpenChannel1Message(It.IsAny<ChannelId>(), It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<ChannelParty>(),
+                                                                   It.IsAny<LightningMoney>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                                   It.IsAny<CompactPubKey>(), It.IsAny<ChannelFlags>(),
+                                                                   It.IsAny<ChannelTypeTlv>(),
+                                                                   It.IsAny<UpfrontShutdownScriptTlv>()))
+                           .Callback(new InvocationAction(invocation =>
+                                                              sentFlags = (ChannelFlags)invocation.Arguments[11]))
+                           .Returns(CreateDummyOpenChannel1Message(tempChannelId, fundingAmount, peerId));
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        _channelMemoryRepositoryMock.Raise(x => x.OnChannelUpgraded += null, null!,
+                                           new ChannelUpgradedEventArgs(tempChannelId, CreateRandomChannelId()));
+        await handleTask;
+
+        // Assert
+        Assert.NotNull(sentFlags);
+        Assert.Equal(announce, sentFlags.Value.AnnounceChannel);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task Given_PublicRequest_When_OnMainnetOrZeroConf_Then_RefusedBeforeConnecting(bool allowMainnet,
+        bool zeroConf)
+    {
+        // Arrange (BOLT 7 plan D12: public channels stay off on mainnet until Proof G1; zero-conf has nothing to
+        // announce)
+        var handler = new OpenChannelClientHandler(_blockchainMonitorMock.Object, _channelFactoryMock.Object,
+                                                   _channelManagerMock.Object, _channelMemoryRepositoryMock.Object,
+                                                   new Mock<ILogger<OpenChannelClientHandler>>().Object,
+                                                   _messageFactoryMock.Object, _peerManagerMock.Object,
+                                                   _utxoMemoryRepositoryMock.Object,
+                                                   Options.Create(new GossipOptions
+                                                   {
+                                                       AllowPublicChannelsOnMainnet = allowMainnet
+                                                   }),
+                                                   Options.Create(new NodeOptions
+                                                   {
+                                                       BitcoinNetwork = BitcoinNetwork.Mainnet
+                                                   }));
+        var request = new OpenChannelClientRequest($"{CreateDummyPubKey()}@127.0.0.1:9735",
+                                                   LightningMoney.Satoshis(1_000_000))
+        {
+            IsPublic = true,
+            IsZeroConfChannel = zeroConf
+        };
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ClientException>(
+                            () => handler.HandleAsync(request, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(ErrorCodes.InvalidOperation, exception.ErrorCode);
+        _peerManagerMock.Verify(x => x.GetPeer(It.IsAny<CompactPubKey>()), Times.Never);
+        _channelFactoryMock.Verify(x => x.CreateChannelV1AsInitiatorAsync(It.IsAny<OpenChannelClientRequest>(),
+                                                                          It.IsAny<FeatureOptions>(),
+                                                                          It.IsAny<CompactPubKey>()), Times.Never);
     }
 
     [Fact]

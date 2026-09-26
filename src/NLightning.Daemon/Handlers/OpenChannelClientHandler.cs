@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Handlers;
 
@@ -17,9 +18,11 @@ using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
+using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Protocol.Models;
 using Interfaces;
@@ -35,6 +38,8 @@ public sealed class OpenChannelClientHandler
     private readonly IMessageFactory _messageFactory;
     private readonly IPeerManager _peerManager;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly GossipOptions _gossipOptions;
+    private readonly NodeOptions _nodeOptions;
 
     private ChannelId _channelId = ChannelId.Zero;
     private IPeerService? _peerService;
@@ -45,8 +50,12 @@ public sealed class OpenChannelClientHandler
     public OpenChannelClientHandler(IBlockchainMonitor blockchainMonitor, IChannelFactory channelFactory,
                                     IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                                     ILogger<OpenChannelClientHandler> logger, IMessageFactory messageFactory,
-                                    IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository)
+                                    IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository,
+                                    IOptions<GossipOptions>? gossipOptions = null,
+                                    IOptions<NodeOptions>? nodeOptions = null)
     {
+        _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
+        _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
         _blockchainMonitor = blockchainMonitor;
         _channelFactory = channelFactory;
         _channelManager = channelManager;
@@ -66,6 +75,16 @@ public sealed class OpenChannelClientHandler
         // NL-216: no new channel while the node does not follow the chain (it could not see the funding confirm)
         if (_blockchainMonitor.IsChainProcessingHalted)
             throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("openchannel"));
+
+        // BOLT 7 plan D12: public channels stay off on mainnet until the Docker proof of G1 passed
+        if (request.IsPublic && _nodeOptions.BitcoinNetwork == BitcoinNetwork.Mainnet
+                             && !_gossipOptions.AllowPublicChannelsOnMainnet)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Public channels are not enabled on mainnet yet "
+                                    + "(Gossip:AllowPublicChannelsOnMainnet)");
+
+        if (request.IsPublic && request.IsZeroConfChannel)
+            throw new ClientException(ErrorCodes.InvalidOperation, "A public channel can't be zero-conf");
 
         // Check if either a PeerAddressInfo or a CompactPubKey was provided
         var isPeerAddressInfo = request.NodeInfo.Contains('@') && request.NodeInfo.Contains(':');
@@ -112,9 +131,10 @@ public sealed class OpenChannelClientHandler
                                                ? new UpfrontShutdownScriptTlv(channel.LocalUpfrontShutdownScript.Value)
                                                : new UpfrontShutdownScriptTlv(Array.Empty<byte>());
 
-            // Create the ChannelFlags. BOLT 2: announce_channel MUST NOT be set with option_scid_alias in the channel
-            // type, and we don't announce channels yet
-            var channelFlags = new ChannelFlags(ChannelFlag.None);
+            // Create the ChannelFlags (NL-341): announce_channel for a public channel, whose channel type the factory
+            // built without option_scid_alias (BOLT 2 forbids the two together)
+            var channelFlags = new ChannelFlags(channel.AnnounceChannel ? ChannelFlag.AnnounceChannel
+                                                                        : ChannelFlag.None);
 
             // Create the openChannel message
             // funding_satoshis is the whole channel; the pushed part is only the peer's opening balance

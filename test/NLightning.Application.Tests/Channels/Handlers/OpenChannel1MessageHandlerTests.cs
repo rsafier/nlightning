@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NLightning.Application.Channels.Handlers;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
@@ -375,5 +376,45 @@ public class OpenChannel1MessageHandlerTests
                                                                              It.IsAny<CompactPubKey>()), Times.Never);
         _mockChannelMemoryRepository.Verify(x => x.AddTemporaryChannel(It.IsAny<CompactPubKey>(),
                                                                         It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PublicChannelsRefused_When_APublicOpenChannelArrives_Then_ErrorWithoutAChannel()
+    {
+        // Arrange - NL-341: BOLT 2 lets the receiver fail a channel whose announce_channel it does not want
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object,
+                                                     gossipOptions: Options.Create(
+                                                         new GossipOptions { AcceptPublicChannels = false }));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert
+        Assert.True(_validMessage.Payload.ChannelFlags.AnnounceChannel);
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
+        Assert.Equal("We don't accept public channels", exception.PeerMessage);
+        _mockChannelFactory.Verify(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
+                                                                             It.IsAny<FeatureOptions>(),
+                                                                             It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PublicChannelsAccepted_When_APublicOpenChannelArrives_Then_ItIsAccepted()
+    {
+        // Arrange (the default)
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object,
+                                                     gossipOptions: Options.Create(new GossipOptions()));
+
+        // Act
+        var result = await handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
     }
 }
