@@ -196,12 +196,9 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
         // An HTLC of the old close already resolved may have been removed upstream (a fail at reasonable depth is
         // final); nothing re-checks it against the new close's HTLC outputs, so the operator is told
-        var resolvedHtlcs = rows.Where(r => r is
-                                       {
-                                           HtlcId: not null,
-                                           State: OutputResolutionState.Resolved or OutputResolutionState.Irrevocable
-                                       }
-                                       && r.TransactionId != newSpend)
+        var resolvedHtlcs = rows.Where(r => r.HtlcId is not null && r.TransactionId != newSpend
+                                         && r.State is OutputResolutionState.Resolved
+                                                    or OutputResolutionState.Irrevocable)
                                 .Select(r => $"{r.HtlcDirection} {r.HtlcId}")
                                 .ToList();
         if (resolvedHtlcs.Count > 0)

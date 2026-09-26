@@ -5,10 +5,10 @@ using NBitcoin;
 namespace NLightning.Application.Onchain.Reorg;
 
 using Domain.Bitcoin.Transactions.Models;
-using Gossip.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Persistence.Interfaces;
+using Gossip.Interfaces;
 
 /// <summary>
 /// NL-292 (BOLT 5 plan O6-T3): a funding transaction whose confirming block was disconnected is watched again by the
