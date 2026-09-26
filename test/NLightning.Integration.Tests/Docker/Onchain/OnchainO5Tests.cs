@@ -60,10 +60,8 @@ public class OnchainO5Tests : IAsyncLifetime
     /// Proof O5 (b): the cheater (funder) signs its local commitment k while it still holds most of the channel, pays
     /// the victim three more times (revoking k), goes offline and broadcasts k. The victim classifies the spend as
     /// revoked, penalizes every output and its wallet gains the whole channel less the two transaction fees.
-    /// Explicit until the W5-A on-chain watcher and executor are in the node (without them nothing records the funding
-    /// spend and it times out); the integrator runs it after the merge and drops <c>Explicit</c>.
     /// </summary>
-    [Fact(Explicit = true)]
+    [Fact]
     public async Task Given_NLightningCheaterBroadcastsRevokedCommitment_When_Confirmed_Then_VictimPenalizesEveryOutput()
     {
         // Arrange
@@ -227,9 +225,8 @@ public class OnchainO5Tests : IAsyncLifetime
     /// <c>channel.db</c> is copied while it is stopped, then three payments each way revoke that state; our node stops,
     /// david restarts on the copy and force-closes (it cannot know it is outdated: our node is down and sends no
     /// <c>channel_reestablish</c>). One block later our node starts, classifies the revoked commitment and penalizes it.
-    /// Explicit until the W5-A on-chain watcher and executor are in the node (see the (b) proof above).
     /// </summary>
-    [Fact(Explicit = true)]
+    [Fact]
     public async Task Given_LndRestartsOnAnOldChannelDb_When_ItForceCloses_Then_WePenalizeTheRevokedCommitment()
     {
         // Arrange / Act: david restarts on the old database and force-closes while we are down; we start again

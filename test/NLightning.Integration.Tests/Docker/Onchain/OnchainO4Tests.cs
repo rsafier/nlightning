@@ -143,10 +143,9 @@ public class OnchainO4Tests : IAsyncLifetime
             crashed.TrySetResult();
         };
         var invoice = await Node.CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "o4 (b) claim with preimage", ct);
-        await LndTestHelpers.ResetMissionControlAsync(david, ct);
-        _ = LndTestHelpers.SendPaymentV2Async(david, LndTestHelpers.PinnedPayment(invoice.Bolt11, [lndChannel.ChanId]),
-                                              ct, TimeSpan.FromMinutes(5));
-        await crashed.Task.WaitAsync(s_timeout, ct);
+        // LND lists the channel active before its router has the private channel's edge in its graph; until then
+        // pathfinding sees no local balance (insufficient_balance), so the payment is retried until the edge is there
+        await PayUntilSentAsync(david, invoice.Bolt11, lndChannel.ChanId, crashed.Task, ct);
         var htlc = Assert.Single(GetHtlcs(channel.ChannelId), h => h.Direction == HtlcDirection.Incoming);
         Assert.NotNull(htlc.Removal);
         Assert.True(htlc.Removal.IsFulfill);
@@ -446,6 +445,35 @@ public class OnchainO4Tests : IAsyncLifetime
         }, s_timeout, $"channel {channel.ChannelId} usable on both sides", ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [peer], [Node], ct);
         return channel;
+    }
+
+    /// <summary>
+    /// Starts a pinned LND payment and returns once <paramref name="sent"/> completes. A payment that LND fails at
+    /// once for want of a route (its router adds the private channel's edge a moment after the channel turns active)
+    /// is started again; any other end of the payment before <paramref name="sent"/> fails the test.
+    /// </summary>
+    private static async Task PayUntilSentAsync(LNDNodeConnection lnd, string bolt11, ulong chanId, Task sent,
+                                                CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(s_timeout);
+        while (true)
+        {
+            await LndTestHelpers.ResetMissionControlAsync(lnd, ct);
+            var payment = LndTestHelpers.SendPaymentV2Async(lnd, LndTestHelpers.PinnedPayment(bolt11, [chanId]), ct,
+                                                            TimeSpan.FromMinutes(5));
+            if (await Task.WhenAny(sent, payment).WaitAsync(deadline.Token) == sent)
+                return;
+
+            var result = await payment;
+            if (result.FailureReason is not (PaymentFailureReason.FailureReasonInsufficientBalance
+                                             or PaymentFailureReason.FailureReasonNoRoute))
+                Assert.Fail($"{lnd.LocalAlias}'s payment ended before it reached us: {result.Status} "
+                          + $"{result.FailureReason}");
+
+            Console.WriteLine($"{lnd.LocalAlias}'s payment failed with {result.FailureReason}; retrying");
+            await Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token);
+        }
     }
 
     /// <summary>LND <c>CloseChannel { force = true }</c>; returns the commitment's txid once it is broadcast.</summary>
