@@ -49,11 +49,12 @@ using Reorg;
 /// (<see cref="CatchUpSpendsAsync(ChannelId, IReadOnlyList{WatchedOutpointModel}, uint, CancellationToken)"/>).</para>
 /// <para>After a restart (NL-311) the monitor tracks every saved watch again, but a crash between a save and the
 /// tracking (or between the monitor's block save and the executor's handling of the spend) leaves blocks it already
-/// processed unscanned for those watches. So before a channel's first round in this process the saved watch of every
-/// unresolved output (<see cref="OutputResolutionState.Pending"/>, <see cref="OutputResolutionState.Waiting"/>,
-/// <see cref="OutputResolutionState.Broadcast"/>) is caught up the same way, from its parent's height (or from the
-/// spend recorded on it) (<see cref="CatchUpSavedWatchesAsync"/>); a scan that could not reach bitcoind's tip is tried
-/// again in the next round.</para>
+/// processed unscanned for those watches. So after the first round in this process (the time-critical resolution of
+/// every channel comes first) the saved watch of every unresolved output (<see cref="OutputResolutionState.Pending"/>,
+/// <see cref="OutputResolutionState.Waiting"/>, <see cref="OutputResolutionState.Broadcast"/>) is caught up the same
+/// way, from its parent's height (or from the spend recorded on it), in one scan for all channels
+/// (<see cref="CatchUpSavedWatchesAsync"/>); a scan that could not reach bitcoind's tip resumes in the next round at
+/// the first block it did not scan.</para>
 /// <para>Reorgs (BOLT 5 plan §3.8, O6-T3, NL-292): every block round first checks the chain facts the rows rely on. An
 /// output recorded <see cref="OutputResolutionState.Resolved"/> whose watched spend the chain monitor rolled back is
 /// unresolved again (<see cref="OutputResolutionState.Broadcast"/> when our transaction resolves it, which is made
@@ -80,6 +81,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly ConcurrentDictionary<ChannelId, uint> _fundingSpendGoneSince = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _graceBroadcastDone = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _savedWatchesCaughtUp = new();
+    private readonly ConcurrentDictionary<ChannelId, uint> _savedWatchesScannedTo = new();
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -150,12 +152,6 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                // NL-311: the first round of this process scans for spends of the channel's saved watches that the
-                // chain monitor processed before they were tracked (a crash between a save and the tracking)
-                if (!_savedWatchesCaughtUp.ContainsKey(channel.ChannelId)
-                 && await CatchUpSavedWatchesCoreAsync(channel.ChannelId, cancellationToken))
-                    _savedWatchesCaughtUp[channel.ChannelId] = 0;
-
                 await ResolveChannelAsync(channel.ChannelId, height, cancellationToken);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -167,6 +163,26 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 _logger.LogError(e, "On-chain resolution round of channel {ChannelId} at height {Height} failed",
                                  channel.ChannelId, height);
             }
+        }
+
+        // NL-311: after every channel's time-critical round, one scan for spends of the saved watches of the channels
+        // not caught up yet in this process that the chain monitor processed before they were tracked (a crash
+        // between a save and the tracking)
+        var pending = channels.Select(c => c.ChannelId).Where(id => !_savedWatchesCaughtUp.ContainsKey(id)).ToList();
+        if (pending.Count == 0)
+            return;
+
+        try
+        {
+            await CatchUpSavedWatchesCoreAsync(pending, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Catching up the saved resolution watches at height {Height} failed", height);
         }
     }
 
@@ -193,87 +209,138 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     }
 
     /// <inheritdoc />
-    public async Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default)
+    public Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default) =>
+        CatchUpSavedWatchesCoreAsync([channelId], cancellationToken);
+
+    /// <summary>
+    /// NL-311: the saved watch of every output of <paramref name="channelIds"/> that is not resolved yet
+    /// (<c>Pending</c>, <c>Waiting</c>, <c>Broadcast</c>) is caught up from its parent's height (the commitment's height,
+    /// our broadcast's confirmation, else the commitment's height); a watch whose spend the chain monitor recorded while
+    /// the row stayed unresolved (a crash after the block's save) from that spend's height. One scan over the blocks
+    /// serves every channel. A channel is marked caught up once the scan reached bitcoind's tip; when it stopped
+    /// earlier (the chain could not be read), the next attempt resumes at the first block it did not scan.
+    /// </summary>
+    private async Task CatchUpSavedWatchesCoreAsync(IReadOnlyList<ChannelId> channelIds,
+                                                    CancellationToken cancellationToken)
     {
-        if (await CatchUpSavedWatchesCoreAsync(channelId, cancellationToken))
-            _savedWatchesCaughtUp[channelId] = 0;
+        var watches = new List<(ChannelId ChannelId, WatchedOutpointModel Watch, uint FromHeight)>();
+        var scanning = new List<ChannelId>();
+        foreach (var channelId in channelIds)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var saved = await GetSavedWatchesAsync(channelId, cancellationToken);
+            if (saved is null || saved.Count == 0)
+            {
+                MarkSavedWatchesCaughtUp(channelId);
+                continue;
+            }
+
+            // Blocks below the resume height were scanned for this channel's watches by an earlier, interrupted pass
+            var resumeAt = _savedWatchesScannedTo.GetValueOrDefault(channelId);
+            scanning.Add(channelId);
+            watches.AddRange(saved.Select(w => (channelId, w.Watch, Math.Max(w.FromHeight, resumeAt))));
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation("Checking {Count} saved resolution watches of channel {ChannelId} for spends "
+                                     + "mined before they were tracked", saved.Count, channelId);
+        }
+
+        if (scanning.Count == 0)
+            return;
+
+        var stoppedAt = await ScanForSpendsAsync(watches, cancellationToken);
+        foreach (var channelId in scanning)
+        {
+            if (stoppedAt is { } next)
+                _savedWatchesScannedTo.AddOrUpdate(channelId, next, (_, known) => Math.Max(known, next));
+            else
+                MarkSavedWatchesCaughtUp(channelId);
+        }
+    }
+
+    private void MarkSavedWatchesCaughtUp(ChannelId channelId)
+    {
+        _savedWatchesCaughtUp[channelId] = 0;
+        _savedWatchesScannedTo.TryRemove(channelId, out _);
     }
 
     /// <summary>
-    /// NL-311: the saved watch of every output of the channel that is not resolved yet (<c>Pending</c>,
-    /// <c>Waiting</c>, <c>Broadcast</c>) is caught up from its parent's height (the commitment's height, our
-    /// broadcast's confirmation, else the commitment's height); a watch whose spend the chain monitor recorded while the
-    /// row stayed unresolved (a crash after the block's save) from that spend's height. Returns false when the scan did
-    /// not reach bitcoind's tip (it is tried again in the next round).
+    /// The saved watch of every unresolved output of the channel with its lower scan bound (NL-311), read under the
+    /// channel's lock; null when the channel is not resolving on chain (nothing to catch up).
     /// </summary>
-    private async Task<bool> CatchUpSavedWatchesCoreAsync(ChannelId channelId, CancellationToken cancellationToken)
+    private async Task<List<(WatchedOutpointModel Watch, uint FromHeight)>?> GetSavedWatchesAsync(
+        ChannelId channelId, CancellationToken cancellationToken)
     {
         var watches = new List<(WatchedOutpointModel Watch, uint FromHeight)>();
-        using (var scope = _serviceScopeFactory.CreateScope())
+        using var scope = _serviceScopeFactory.CreateScope();
+        using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
-            using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+             || channel.State != ChannelState.OnchainResolving)
+                return null;
+
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var close = await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId);
+            if (close is null)
+                return null;
+
+            var outputs = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
+            foreach (var output in outputs)
             {
-                if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
-                 || channel.State != ChannelState.OnchainResolving)
-                    return true;
+                if (output.State is not (OutputResolutionState.Pending or OutputResolutionState.Waiting
+                                         or OutputResolutionState.Broadcast))
+                    continue;
 
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                var close = await unitOfWork.OnchainResolutionDbRepository.GetCloseAsync(channelId);
-                if (close is null)
-                    return true;
+                var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(output.TransactionId,
+                                                                                output.OutputIndex);
+                if (watch is null)
+                    continue;
 
-                var outputs = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
-                foreach (var output in outputs)
-                {
-                    if (output.State is not (OutputResolutionState.Pending or OutputResolutionState.Waiting
-                                             or OutputResolutionState.Broadcast))
-                        continue;
-
-                    var watch = await unitOfWork.WatchedOutpointDbRepository.GetAsync(output.TransactionId,
-                                                                                    output.OutputIndex);
-                    if (watch is null)
-                        continue;
-
-                    var from = watch.SpentAtHeight
-                            ?? await CatchUpFromAsync(unitOfWork, close, null, watch, null);
-                    watches.Add((watch, from));
-                }
+                var from = watch.SpentAtHeight ?? await CatchUpFromAsync(unitOfWork, close, null, watch, null);
+                watches.Add((watch, from));
             }
         }
 
-        if (watches.Count > 0)
-            _logger.LogInformation("Checking {Count} saved resolution watches of channel {ChannelId} for spends "
-                                 + "mined before they were tracked", watches.Count, channelId);
-
-        return await CatchUpSpendsAsync(channelId, watches, cancellationToken);
+        return watches;
     }
 
     /// <summary>
     /// Scans the blocks from each watch's lower bound up to bitcoind's tip for a spend of a tracked watch that the
     /// chain monitor may have processed before the watch was tracked; a spend found is handled as the monitor's event
     /// would be and recorded on the watch in the same save. Harmless when the monitor raises it too (idempotent).
-    /// Returns false when the scan stopped before the tip (the chain could not be read).
     /// </summary>
-    private async Task<bool> CatchUpSpendsAsync(ChannelId channelId,
-                                          IReadOnlyList<(WatchedOutpointModel Watch, uint FromHeight)> watches,
-                                          CancellationToken cancellationToken)
+    private Task CatchUpSpendsAsync(ChannelId channelId,
+                                    IReadOnlyList<(WatchedOutpointModel Watch, uint FromHeight)> watches,
+                                    CancellationToken cancellationToken) =>
+        ScanForSpendsAsync(watches.Select(w => (channelId, w.Watch, w.FromHeight)).ToList(), cancellationToken);
+
+    /// <summary>
+    /// One pass over the blocks from the lowest bound of <paramref name="watches"/> (of any channels) up to bitcoind's
+    /// tip; each spend found is handled for its watch's channel. Returns null when the scan reached the tip, else the
+    /// first height it did not scan (the chain could not be read).
+    /// </summary>
+    private async Task<uint?> ScanForSpendsAsync(
+        IReadOnlyList<(ChannelId ChannelId, WatchedOutpointModel Watch, uint FromHeight)> watches,
+        CancellationToken cancellationToken)
     {
         if (watches.Count == 0)
-            return true;
+            return null;
 
         IBitcoinChainService? chain;
         using (var scope = _serviceScopeFactory.CreateScope())
             chain = scope.ServiceProvider.GetService<IBitcoinChainService>();
         if (chain is null)
-            return true;
+            return null;
 
-        var remaining = new Dictionary<OutPoint, uint>();
-        foreach (var (watch, from) in watches)
+        var remaining = new Dictionary<OutPoint, (ChannelId ChannelId, uint From)>();
+        foreach (var (channelId, watch, from) in watches)
         {
             var outPoint = new OutPoint(new uint256(watch.TransactionId), watch.OutputIndex);
-            remaining[outPoint] = remaining.TryGetValue(outPoint, out var known) ? Math.Min(known, from) : from;
+            remaining[outPoint] = remaining.TryGetValue(outPoint, out var known)
+                                      ? (known.ChannelId, Math.Min(known.From, from))
+                                      : (channelId, from);
         }
 
+        var lowest = remaining.Values.Min(r => r.From);
         uint tip;
         try
         {
@@ -281,12 +348,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            _logger.LogError(e, "Could not check the new watches of channel {ChannelId} for spends already mined",
-                             channelId);
-            return false;
+            _logger.LogError(e, "Could not check resolution watches for spends already mined");
+            return lowest;
         }
 
-        for (var height = remaining.Values.Min(); height <= tip && remaining.Count > 0; height++)
+        for (var height = lowest; height <= tip && remaining.Count > 0; height++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Block? block;
@@ -296,13 +362,13 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
-                _logger.LogError(e, "Could not read block {Height} to check the new watches of channel {ChannelId}",
-                                 height, channelId);
-                return false;
+                _logger.LogError(e, "Could not read block {Height} to check resolution watches for spends already mined",
+                                 height);
+                return height;
             }
 
             if (block is null)
-                return false;
+                return height;
 
             var blockHash = new Hash(block.GetHash().ToBytes());
             for (var index = 0; index < block.Transactions.Count && remaining.Count > 0; index++)
@@ -310,25 +376,25 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                 var transaction = block.Transactions[index];
                 foreach (var input in transaction.Inputs)
                 {
-                    if (!remaining.TryGetValue(input.PrevOut, out var from) || height < from)
+                    if (!remaining.TryGetValue(input.PrevOut, out var entry) || height < entry.From)
                         continue;
 
                     remaining.Remove(input.PrevOut);
                     var spendingTxId = new TxId(transaction.GetHash().ToBytes());
                     _logger.LogWarning("Resolution output {Outpoint} of channel {ChannelId} was spent by {TxId} at "
                                      + "height {Height} before its watch was tracked; handling it now",
-                                       input.PrevOut, channelId, Display(spendingTxId), height);
-                    var args = new OutpointSpentEventArgs(channelId,
+                                       input.PrevOut, entry.ChannelId, Display(spendingTxId), height);
+                    var args = new OutpointSpentEventArgs(entry.ChannelId,
                                                           new SignedTransaction(spendingTxId, transaction.ToBytes()),
                                                           height, (uint)index,
                                                           new TxId(input.PrevOut.Hash.ToBytes()), input.PrevOut.N,
                                                           blockHash);
-                    await RunChannelAsync(channelId, height, args, true, cancellationToken);
+                    await RunChannelAsync(entry.ChannelId, height, args, true, cancellationToken);
                 }
             }
         }
 
-        return true;
+        return null;
     }
 
     private async Task LoopAsync()
