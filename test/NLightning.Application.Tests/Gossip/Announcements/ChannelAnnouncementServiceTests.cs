@@ -200,6 +200,104 @@ public class ChannelAnnouncementServiceTests
         Assert.True(pair.Alice.Verifier.VerifyAll(ChannelAnnouncementBuilder.GetAllSignatureChecks(fromAlice)));
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public void Given_Mainnet_When_Checked_Then_AnnouncedOnlyWhenPublicChannelsAreAllowed(bool allow, bool expected)
+    {
+        // Arrange (plan D12: a public channel a peer opened to us is not announced on mainnet before Proof G1)
+        using var pair = new AnnouncementTestPair(
+            gossipOptions: new GossipOptions { AllowPublicChannelsOnMainnet = allow });
+        pair.Alice.NodeOptions.BitcoinNetwork = BitcoinNetwork.Mainnet;
+
+        // Act / Assert
+        Assert.Equal(expected, pair.Alice.Service.CanSendAnnouncementSignatures(pair.Alice.Channel));
+    }
+
+    [Fact]
+    public async Task Given_OurHalfDue_When_Prepared_Then_SavedMarkedAndNotRepeatedOnTheConnection()
+    {
+        // Arrange
+        using var pair = new AnnouncementTestPair();
+        var channel = pair.Alice.Channel;
+
+        // Act
+        var first = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                   pair.Alice.UnitOfWork.Object);
+        var again = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                   pair.Alice.UnitOfWork.Object);
+
+        // Assert: persisted before it is handed out, once per connection
+        Assert.NotNull(first);
+        Assert.Null(again);
+        Assert.NotNull(channel.LocalAnnouncementSignaturesSentAt);
+        Assert.Equal(1, pair.Alice.Saves);
+        pair.Alice.ChannelDb.Verify(r => r.UpdateAsync(channel), Times.Once);
+        Assert.True(pair.Alice.Service.WasSentOnConnection(AnnouncementTestPair.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_OurHalfLost_When_TheConnectionChanges_Then_ItIsDueAgain()
+    {
+        // Arrange (BOLT 7: on reconnection, while the peer's half is missing, MUST send its own again)
+        using var pair = new AnnouncementTestPair();
+        var channel = pair.Alice.Channel;
+        await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                       pair.Alice.UnitOfWork.Object);
+
+        // Act
+        pair.Alice.Service.OnPeerConnectionChanged(pair.Bob.NodeId);
+        var retransmitted = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(
+                                channel, pair.Bob.NodeId, pair.Alice.UnitOfWork.Object);
+
+        // Assert
+        Assert.NotNull(retransmitted);
+    }
+
+    [Fact]
+    public async Task Given_BothHalvesExchanged_When_Reconnected_Then_NothingIsDue()
+    {
+        // Arrange (a peer that lacks ours sends its own on reconnection, and gets ours as the reply)
+        using var pair = new AnnouncementTestPair();
+        var channel = pair.Alice.Channel;
+        var theirs = pair.Bob.Service.CreateAnnouncementSignatures(pair.Bob.Channel).Payload;
+        channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(theirs.NodeSignature, theirs.BitcoinSignature));
+        channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UtcNow);
+
+        // Act
+        var due = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                 pair.Alice.UnitOfWork.Object);
+
+        // Assert
+        Assert.Null(due);
+        Assert.Equal(0, pair.Alice.Saves);
+    }
+
+    [Fact]
+    public async Task Given_TheirHalfFirst_When_OursIsDue_Then_SentAndTheAnnouncementCompletes()
+    {
+        // Arrange (their half arrived before our funding had 6 confirmations)
+        using var pair = new AnnouncementTestPair();
+        var channel = pair.Alice.Channel;
+        var theirs = pair.Bob.Service.CreateAnnouncementSignatures(pair.Bob.Channel).Payload;
+        channel.SetRemoteAnnouncementSignatures(
+            new ChannelAnnouncementSignatures(theirs.NodeSignature, theirs.BitcoinSignature));
+
+        // Act
+        var ours = await pair.Alice.Service.PrepareOwnAnnouncementSignaturesAsync(channel, pair.Bob.NodeId,
+                                                                                  pair.Alice.UnitOfWork.Object);
+        pair.Alice.Service.CompleteAnnouncement(channel);
+        pair.Alice.Service.CompleteAnnouncement(channel);
+
+        // Assert
+        Assert.NotNull(ours);
+        Assert.True(pair.Alice.Service.IsAnnouncementComplete(AnnouncementTestPair.ChannelId));
+        var (announcement, _) = Assert.Single(pair.Alice.Sink.ChannelAnnouncements);
+        Assert.Same(announcement, Assert.Single(pair.Alice.Relay.Queued));
+        Assert.True(ChannelAnnouncementService.IsAnnounced(channel));
+    }
+
     [Fact]
     public void Given_OurOwnNodeId_When_Ordered_Then_Refused()
     {

@@ -9,6 +9,7 @@ namespace NLightning.Application.Tests.Gossip.Announcements;
 
 using Application.Channels.Handlers;
 using Application.Gossip.Announcements;
+using Application.Gossip.Relay.Interfaces;
 using Application.Protocol.Factories;
 using Channels.Harness;
 using Domain.Bitcoin.Interfaces;
@@ -129,6 +130,7 @@ internal sealed class AnnouncementTestNode : IDisposable
     public NodeOptions NodeOptions { get; } = new() { BitcoinNetwork = BitcoinNetwork.Regtest };
     public InMemoryChannelRepository Channels { get; } = new();
     public RecordingOwnGossipSink Sink { get; } = new();
+    public RecordingRelayScheduler Relay { get; } = new();
     public Mock<IChannelDbRepository> ChannelDb { get; } = new();
     public Mock<IUnitOfWork> UnitOfWork { get; } = new();
     public int Saves { get; private set; }
@@ -181,8 +183,8 @@ internal sealed class AnnouncementTestNode : IDisposable
 
         Service = new ChannelAnnouncementService(_blockchainMonitor.Object, Verifier, Signer,
                                                  NullLogger<ChannelAnnouncementService>.Instance,
-                                                 new MessageFactory(Options.Create(NodeOptions)), Sink,
-                                                 Options.Create(NodeOptions),
+                                                 new MessageFactory(Options.Create(NodeOptions)),
+                                                 new OwnGossipPublisher(Sink, Relay), Options.Create(NodeOptions),
                                                  Options.Create(gossipOptions ?? new GossipOptions()));
         Handler = new AnnouncementSignaturesMessageHandler(Service, Channels,
                                                            NullLogger<AnnouncementSignaturesMessageHandler>.Instance,
@@ -201,6 +203,32 @@ internal sealed class AnnouncementTestNode : IDisposable
     public void Dispose() => _provider.Dispose();
 }
 
+/// <summary>An <see cref="IGossipRelayScheduler"/> that records what it is given, in order.</summary>
+[ExcludeFromCodeCoverage]
+internal sealed class RecordingRelayScheduler : IGossipRelayScheduler
+{
+    public List<IMessagePayload> Queued { get; } = [];
+    public int Flushes { get; private set; }
+
+    public void EnqueueOwnChannelAnnouncement(ChannelAnnouncementPayload announcement) => Add(announcement);
+
+    public void EnqueueOwnChannelUpdate(ChannelUpdatePayload update) => Add(update);
+
+    public void EnqueueOwnNodeAnnouncement(NodeAnnouncementPayload announcement) => Add(announcement);
+
+    public Task FlushAsync(CancellationToken cancellationToken = default)
+    {
+        Flushes++;
+        return Task.CompletedTask;
+    }
+
+    private void Add(IMessagePayload payload)
+    {
+        lock (Queued)
+            Queued.Add(payload);
+    }
+}
+
 /// <summary>An <see cref="IOwnGossipSink"/> that records what it is given.</summary>
 [ExcludeFromCodeCoverage]
 internal sealed class RecordingOwnGossipSink : IOwnGossipSink
@@ -209,10 +237,21 @@ internal sealed class RecordingOwnGossipSink : IOwnGossipSink
     public List<ChannelUpdatePayload> ChannelUpdates { get; } = [];
     public List<NodeAnnouncementPayload> NodeAnnouncements { get; } = [];
 
-    public void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity) =>
-        ChannelAnnouncements.Add((announcement, capacity));
+    public void AddOwnChannelAnnouncement(ChannelAnnouncementPayload announcement, LightningMoney capacity)
+    {
+        lock (ChannelAnnouncements)
+            ChannelAnnouncements.Add((announcement, capacity));
+    }
 
-    public void AddOwnChannelUpdate(ChannelUpdatePayload update) => ChannelUpdates.Add(update);
+    public void AddOwnChannelUpdate(ChannelUpdatePayload update)
+    {
+        lock (ChannelUpdates)
+            ChannelUpdates.Add(update);
+    }
 
-    public void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement) => NodeAnnouncements.Add(announcement);
+    public void AddOwnNodeAnnouncement(NodeAnnouncementPayload announcement)
+    {
+        lock (NodeAnnouncements)
+            NodeAnnouncements.Add(announcement);
+    }
 }

@@ -298,4 +298,57 @@ public class NodeOptionsTests
         Assert.Equal((ushort)40, options.Routing.CltvExpiryDelta);
         Assert.Empty(options.GetValidationErrors());
     }
+
+    [Theory]
+    [InlineData("3399ff", new byte[] { 0x33, 0x99, 0xFF })]
+    [InlineData("#FF0000", new byte[] { 0xFF, 0x00, 0x00 })]
+    [InlineData(" 00a1b2 ", new byte[] { 0x00, 0xA1, 0xB2 })]
+    public void Given_AColor_When_Read_Then_ItIsTheRgbBytes(string color, byte[] expected)
+    {
+        // Arrange
+        var options = new NodeOptions { Color = color };
+
+        // Act / Assert
+        Assert.Equal(expected, options.GetColorBytes());
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("12345")]
+    [InlineData("1234567")]
+    [InlineData("zz99ff")]
+    public void Given_ABadColor_When_Validated_Then_ItIsAnError(string color)
+    {
+        // Arrange
+        var options = new NodeOptions { Color = color };
+
+        // Act / Assert
+        Assert.Throws<FormatException>(() => options.GetColorBytes());
+        Assert.Contains(options.GetValidationErrors(), e => e.Contains("Node:Color"));
+    }
+
+    [Fact]
+    public void Given_AnAliasOfMoreThan32Utf8Bytes_When_Validated_Then_ItIsAnError()
+    {
+        // Arrange: 11 three-byte characters are 33 bytes (BOLT 7: alias is 32 bytes)
+        var options = new NodeOptions { Alias = new string('\u20AC', 11) };
+        var fits = new NodeOptions { Alias = new string('\u20AC', 10) + "ab" };
+
+        // Act / Assert
+        Assert.Contains(options.GetValidationErrors(), e => e.Contains(nameof(NodeOptions.Alias)));
+        Assert.Empty(fits.GetValidationErrors());
+        Assert.Equal(32, Encoding.UTF8.GetByteCount(fits.Alias));
+    }
+
+    [Fact]
+    public void Given_Defaults_When_Read_Then_EmptyAliasAndLndColor()
+    {
+        // Arrange
+        var options = new NodeOptions();
+
+        // Act / Assert
+        Assert.Equal(string.Empty, options.Alias);
+        Assert.Equal(NodeOptions.DefaultColor, options.Color);
+    }
 }

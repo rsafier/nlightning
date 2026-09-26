@@ -11,10 +11,12 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
+using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
@@ -30,9 +32,12 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<ChannelAnnouncementService> _logger;
     private readonly IMessageFactory _messageFactory;
-    private readonly IOwnGossipSink _ownGossipSink;
+    private readonly OwnGossipPublisher _publisher;
+    private readonly IChannelUpdateService? _channelUpdateService;
+    private readonly INodeAnnouncementService? _nodeAnnouncementService;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
+    private readonly TimeProvider _timeProvider;
 
     // Channel id -> the peer whose current connection got our announcement_signatures
     private readonly ConcurrentDictionary<ChannelId, CompactPubKey> _sentOnConnection = new();
@@ -43,17 +48,37 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     public ChannelAnnouncementService(IBlockchainMonitor blockchainMonitor,
                                       IGossipSignatureVerifier signatureVerifier, ILightningSigner lightningSigner,
                                       ILogger<ChannelAnnouncementService> logger, IMessageFactory messageFactory,
-                                      IOwnGossipSink ownGossipSink, IOptions<NodeOptions> nodeOptions,
-                                      IOptions<GossipOptions>? gossipOptions = null)
+                                      OwnGossipPublisher publisher, IOptions<NodeOptions> nodeOptions,
+                                      IOptions<GossipOptions>? gossipOptions = null,
+                                      IChannelUpdateService? channelUpdateService = null,
+                                      INodeAnnouncementService? nodeAnnouncementService = null,
+                                      TimeProvider? timeProvider = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _signatureVerifier = signatureVerifier;
         _lightningSigner = lightningSigner;
         _logger = logger;
         _messageFactory = messageFactory;
-        _ownGossipSink = ownGossipSink;
+        _publisher = publisher;
+        _channelUpdateService = channelUpdateService;
+        _nodeAnnouncementService = nodeAnnouncementService;
         _nodeOptions = nodeOptions.Value;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Whether the channel is announced as far as its persisted state tells: public, confirmed, both halves of
+    /// <c>announcement_signatures</c> exchanged (ours sent at the announcement depth), and not closing. After a restart
+    /// this holds before the announcement is assembled again, so our <c>channel_update</c> stays public.
+    /// </summary>
+    public static bool IsAnnounced(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        return channel.AnnounceChannel && HasShortChannelId(channel)
+            && channel.RemoteAnnouncementSignatures is not null
+            && channel.LocalAnnouncementSignaturesSentAt is not null
+            && channel.State is ChannelState.Open or ChannelState.ShuttingDown or ChannelState.Negotiating;
     }
 
     /// <inheritdoc />
@@ -61,8 +86,10 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     {
         ArgumentNullException.ThrowIfNull(channel);
 
-        // BOLT 7: only with announce_channel, after channel_ready was sent and received and before any shutdown
+        // BOLT 7: only with announce_channel, after channel_ready was sent and received and before any shutdown; on
+        // mainnet only once public channels are allowed there (plan D12)
         return channel.AnnounceChannel
+            && _gossipOptions.ArePublicChannelsAllowed(_nodeOptions.BitcoinNetwork)
             && channel.State == ChannelState.Open
             && channel.LocalShutdownScript is null && channel.RemoteShutdownScript is null
             && !channel.DataLossDetected
@@ -148,7 +175,50 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         _announced[channel.ChannelId] = hash;
         _logger.LogInformation("Channel {ChannelId} is announced as {ShortChannelId}", channel.ChannelId,
                                announcement.ShortChannelId);
-        _ownGossipSink.AddOwnChannelAnnouncement(announcement, channel.FundingOutput!.Amount);
+        _publisher.PublishChannelAnnouncement(announcement, channel.FundingOutput!.Amount);
+
+        // BOLT 7: our update is public from now on (dont_forward clear, real short channel id), then our node
+        _channelUpdateService?.OnChannelAnnounced(channel);
+        _nodeAnnouncementService?.RequestAnnouncement();
+    }
+
+    /// <inheritdoc />
+    public bool IsAnnouncementComplete(ChannelId channelId) => _announced.ContainsKey(channelId);
+
+    /// <inheritdoc />
+    public async Task<AnnouncementSignaturesMessage?> PrepareOwnAnnouncementSignaturesAsync(
+        ChannelModel channel, CompactPubKey peerPubKey, IUnitOfWork unitOfWork)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (!CanSendAnnouncementSignatures(channel) || WasSentOnConnection(channel.ChannelId))
+            return null;
+
+        // BOLT 7: sent once at the depth, and again on a reconnection while the peer's half is missing (with both
+        // halves exchanged, a peer that lacks ours sends its own on reconnection and gets ours as the reply)
+        if (channel.RemoteAnnouncementSignatures is not null && channel.LocalAnnouncementSignaturesSentAt is not null)
+            return null;
+
+        var message = CreateAnnouncementSignatures(channel);
+        channel.MarkAnnouncementSignaturesSent(_timeProvider.GetUtcNow());
+        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await unitOfWork.SaveChangesAsync();
+        MarkSentOnConnection(channel.ChannelId, peerPubKey);
+
+        _logger.LogInformation("Sending our announcement_signatures for channel {ChannelId} ({ShortChannelId})",
+                               channel.ChannelId, channel.ShortChannelId);
+        return message;
+    }
+
+    /// <inheritdoc />
+    public void CompleteAnnouncement(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (IsAnnouncementComplete(channel.ChannelId) || !IsAnnounced(channel))
+            return;
+
+        if (TryAssembleAnnouncement(channel) is { } announcement)
+            OnChannelAnnounced(channel, announcement);
     }
 
     private ChainHash ChainHash => _nodeOptions.BitcoinNetwork.ChainHash;

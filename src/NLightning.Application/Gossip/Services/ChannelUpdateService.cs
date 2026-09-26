@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Gossip.Services;
 
+using Announcements;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
@@ -29,9 +30,11 @@ using Interfaces;
 /// outbox.
 /// </para>
 /// <para>
-/// Fields (BOLT 7): <c>must_be_one</c> and <c>dont_forward</c> (we never announce channels), <c>direction</c> = 1
-/// when our node id is the greater one, the real short channel id (for an <c>option_scid_alias</c> channel the alias
-/// the peer sent us instead: BOLT 2 forbids routing into it by the real one), the fee and CLTV delta of
+/// Fields (BOLT 7): <c>must_be_one</c>; <c>dont_forward</c> unless the channel is announced (public, both halves of
+/// <c>announcement_signatures</c> exchanged: <see cref="IsPublic"/>); <c>direction</c> = 1 when our node id is the
+/// greater one; the real short channel id (for an unannounced <c>option_scid_alias</c> channel the alias the peer sent
+/// us instead: BOLT 2 forbids routing into it by the real one; an announced channel always uses the real one, which
+/// its <c>channel_announcement</c> names); the fee and CLTV delta of
 /// <c>NodeOptions.Routing</c>, <c>htlc_minimum_msat</c> = the larger of the peer's <c>htlc_minimum_msat</c> and
 /// <c>Routing.HtlcMinimumMsat</c>, <c>htlc_maximum_msat</c> = the smallest of the capacity, the peer's
 /// <c>max_htlc_value_in_flight_msat</c> and <c>Routing.HtlcMaximumMsat</c>. No update is made when the minimum is
@@ -47,6 +50,12 @@ using Interfaces;
 /// (<see cref="SendChannelUpdatesToPeerAsync"/>, called by the peer manager), so the peer learns a policy that changed
 /// while it was disconnected or we were down. An unchanged policy goes out as the same message (same timestamp), as
 /// LND does on reconnect: LND ignores a same-policy "keep-alive" update younger than 24 h.
+/// </para>
+/// <para>
+/// Public mode (BOLT 7 plan G1-T5): once a channel is announced (<see cref="OnChannelAnnounced"/>) a new update is
+/// signed with <c>dont_forward</c> clear and sent to the peer, and every update made for an announced channel is also
+/// handed to the graph and the relay (<see cref="OwnGossipPublisher"/>). When an announced channel starts closing
+/// (shutdown, closing, failed) a <c>disable</c>d update is made once and handed to the relay only.
 /// </para>
 /// <para>
 /// Everything is in memory: the peer's update is forgotten on restart until it sends a new one.
@@ -67,11 +76,13 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly ILogger<ChannelUpdateService> _logger;
     private readonly NodeOptions _nodeOptions;
     private readonly TimeProvider _timeProvider;
+    private readonly OwnGossipPublisher? _ownGossipPublisher;
 
     private readonly ConcurrentDictionary<ChannelId, byte> _sentOnOpen = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdateMessage> _localUpdates = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdatePayload> _remoteUpdates = new();
     private readonly ConcurrentDictionary<ChannelId, uint> _lastLocalTimestamps = new();
+    private readonly ConcurrentDictionary<ChannelId, byte> _disabledOnClose = new();
 
     /// <inheritdoc/>
     public event EventHandler<ChannelUpdateReadyEventArgs>? OnChannelUpdateReady;
@@ -79,7 +90,8 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     public ChannelUpdateService(IChannelMemoryRepository channelMemoryRepository,
                                 IChannelLockProvider channelLockProvider, ILightningSigner lightningSigner,
                                 ISecureKeyManager secureKeyManager, IOptions<NodeOptions> nodeOptions,
-                                ILogger<ChannelUpdateService> logger, TimeProvider? timeProvider = null)
+                                ILogger<ChannelUpdateService> logger, TimeProvider? timeProvider = null,
+                                OwnGossipPublisher? ownGossipPublisher = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _channelLockProvider = channelLockProvider;
@@ -88,6 +100,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         _logger = logger;
         _nodeOptions = nodeOptions.Value;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _ownGossipPublisher = ownGossipPublisher;
 
         _channelMemoryRepository.OnChannelUpdated += HandleChannelUpdated;
     }
@@ -104,7 +117,49 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         var message = new ChannelUpdateMessage(unsigned.WithSignature(signature));
 
         _localUpdates[channel.ChannelId] = message;
+
+        // BOLT 7: only the update of an announced channel may be forwarded (dont_forward clear)
+        if (IsPublic(channel))
+            _ownGossipPublisher?.PublishChannelUpdate(message.Payload);
         return message;
+    }
+
+    /// <inheritdoc/>
+    public ChannelUpdateMessage? OnChannelAnnounced(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.State != ChannelState.Open || !IsPublic(channel))
+            return null;
+
+        if (!TryGetPolicy(channel, out _, out var reason))
+        {
+            _logger.LogWarning("No public channel_update for announced channel {ChannelId}: {Reason}",
+                               channel.ChannelId, reason);
+            return null;
+        }
+
+        // The update made at the open (if any) had dont_forward set; this one replaces it everywhere
+        _sentOnOpen.TryAdd(channel.ChannelId, 0);
+        var message = CreateChannelUpdate(channel);
+        _logger.LogInformation("Sending the public channel_update of announced channel {ChannelId} ({ShortChannelId})",
+                               channel.ChannelId, channel.ShortChannelId);
+
+        // Only enqueues (the caller holds the channel lock)
+        OnChannelUpdateReady?.Invoke(this, new ChannelUpdateReadyEventArgs(channel.RemoteNodeId, message));
+        return message;
+    }
+
+    /// <summary>
+    /// Whether our update for the channel is public (BOLT 7): the channel has <c>announce_channel</c>, its real short
+    /// channel id, and both halves of <c>announcement_signatures</c> were exchanged (ours only goes out at the
+    /// announcement depth). Before that, and for a private channel, <c>dont_forward</c> is set.
+    /// </summary>
+    public static bool IsPublic(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        return channel.AnnounceChannel && ((byte[]?)channel.ShortChannelId) is not null
+            && channel.RemoteAnnouncementSignatures is not null
+            && channel.LocalAnnouncementSignaturesSentAt is not null;
     }
 
     /// <inheritdoc/>
@@ -239,9 +294,18 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     /// <summary>
     /// Runs while the caller holds the channel's lock: only schedules the send, which waits for that lock.
     /// </summary>
-    private void HandleChannelUpdated(object? sender, ChannelUpdatedEventArgs args)
+    private void HandleChannelUpdated(object? sender, ChannelUpdatedEventArgs? args)
     {
-        var channel = args.Channel;
+        if (args?.Channel is not { } channel)
+            return;
+
+        if (channel.State is ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing
+                          or ChannelState.Failed)
+        {
+            DisableClosingPublicChannel(channel);
+            return;
+        }
+
         if (channel.State != ChannelState.Open || channel.ShortChannelId == default
                                                || !_sentOnOpen.TryAdd(channel.ChannelId, 0))
             return;
@@ -261,6 +325,32 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     }
 
     /// <summary>
+    /// An announced channel that starts closing: the rest of the network learns that it is no longer usable (BOLT 7:
+    /// MAY send a <c>disable</c>d update prior to an on-chain settlement). Once per channel, to the relay only (the
+    /// peer knows). Runs under the channel's lock.
+    /// </summary>
+    private void DisableClosingPublicChannel(ChannelModel channel)
+    {
+        if (_ownGossipPublisher is null || !IsPublic(channel) || !_disabledOnClose.TryAdd(channel.ChannelId, 0))
+            return;
+
+        try
+        {
+            if (!TryGetPolicy(channel, out _, out _))
+                return;
+
+            CreateChannelUpdate(channel, disabled: true);
+            _logger.LogInformation("Announced channel {ChannelId} is closing: its channel_update is now disabled",
+                                   channel.ChannelId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Could not make the disabled channel_update of closing channel {ChannelId}",
+                               channel.ChannelId);
+        }
+    }
+
+    /// <summary>
     /// The channel-dependent fields of our update (rules in the class remarks), or why the channel can't have one.
     /// </summary>
     private bool TryGetPolicy(ChannelModel channel, out UpdatePolicy policy, out string reason)
@@ -268,7 +358,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         policy = default;
 
         ShortChannelId shortChannelId;
-        if (channel.ChannelParams.UseScidAlias > FeatureSupport.No)
+        if (IsPublic(channel))
+        {
+            // BOLT 7: the announced channel is named by its real short channel id, alias or not
+            shortChannelId = channel.ShortChannelId;
+        }
+        else if (channel.ChannelParams.UseScidAlias > FeatureSupport.No)
         {
             // BOLT 2: MUST NOT allow incoming HTLCs to an option_scid_alias channel by its real short_channel_id
             if (channel.RemoteAlias is not { } remoteAlias)
@@ -332,10 +427,13 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         if (disabled)
             channelFlags |= ChannelUpdatePayload.ChannelFlagDisable;
 
+        // BOLT 7: dont_forward until the channel is announced
+        var messageFlags = IsPublic(channel)
+                               ? ChannelUpdatePayload.MessageFlagMustBeOne
+                               : (byte)(ChannelUpdatePayload.MessageFlagMustBeOne
+                                      | ChannelUpdatePayload.MessageFlagDontForward);
         return new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, _nodeOptions.BitcoinNetwork.ChainHash,
-                                        policy.ShortChannelId, timestamp,
-                                        ChannelUpdatePayload.MessageFlagMustBeOne
-                                      | ChannelUpdatePayload.MessageFlagDontForward, channelFlags,
+                                        policy.ShortChannelId, timestamp, messageFlags, channelFlags,
                                         routing.CltvExpiryDelta, policy.HtlcMinimumMsat, routing.FeeBaseMsat,
                                         routing.FeeProportionalMillionths, policy.HtlcMaximumMsat);
     }

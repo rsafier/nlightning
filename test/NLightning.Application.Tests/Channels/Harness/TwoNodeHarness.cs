@@ -16,6 +16,7 @@ using Application.Channels.Reestablish;
 using Application.Channels.Services;
 using Application.Channels.Switch;
 using Application.Protocol.Factories;
+using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -31,6 +32,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.ValueObjects;
@@ -69,6 +71,13 @@ internal sealed class TwoNodeHarness : IDisposable
     public const uint InitialFeeratePerKw = 2_500;
     public const uint BlockHeight = 500;
 
+    /// <summary>The funding height of an announced channel (<c>announceChannel</c>): 11 confirmations at
+    /// <see cref="BlockHeight"/>.</summary>
+    public const uint FundingHeight = 490;
+
+    /// <summary>The real short channel id of an announced channel (<c>announceChannel</c>).</summary>
+    public static readonly ShortChannelId ShortChannelId = new(FundingHeight, 3, 0);
+
     public static readonly ChannelId ChannelId = new(Enumerable.Repeat((byte)0x6B, 32).ToArray());
     public static readonly byte[] Onion = new byte[1366];
 
@@ -78,6 +87,7 @@ internal sealed class TwoNodeHarness : IDisposable
     private readonly CommitmentNumber _obscuring;
     private readonly bool _hasAnchors;
     private readonly bool _localOnlySwitch;
+    private readonly bool _announceChannel;
     private readonly Action<HarnessNode, IServiceCollection>? _configureServices;
 
     public HarnessNode Alice { get; private set; }
@@ -99,12 +109,16 @@ internal sealed class TwoNodeHarness : IDisposable
     /// <param name="bobState">Bob's channel state, as <paramref name="aliceState"/>.</param>
     /// <param name="configureServices">Adds or replaces services of each node (last registration wins), e.g. the
     /// close services (N10).</param>
+    /// <param name="announceChannel">A public channel (<c>announce_channel</c>) confirmed at
+    /// <see cref="FundingHeight"/> with the real <see cref="ShortChannelId"/> (BOLT 7 plan G1-T4).</param>
     public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false,
                           ChannelState aliceState = ChannelState.Open, ChannelState bobState = ChannelState.Open,
-                          Action<HarnessNode, IServiceCollection>? configureServices = null)
+                          Action<HarnessNode, IServiceCollection>? configureServices = null,
+                          bool announceChannel = false)
     {
         _hasAnchors = hasAnchors;
         _localOnlySwitch = localOnlySwitch;
+        _announceChannel = announceChannel;
         _configureServices = configureServices;
         Alice = new HarnessNode("Alice", 0xA1, localOnlySwitch, configureServices: configureServices);
         Bob = new HarnessNode("Bob", 0xB0, localOnlySwitch, configureServices: configureServices);
@@ -278,7 +292,7 @@ internal sealed class TwoNodeHarness : IDisposable
     {
         var isAlice = node.Name == "Alice";
         return CreateChannel(node, node.Peer, isAlice ? _aliceParty : _bobParty, isAlice ? _bobParty : _aliceParty,
-                             isAlice, _fundingTxId, _obscuring, _hasAnchors, state);
+                             isAlice, _fundingTxId, _obscuring, _hasAnchors, state, _announceChannel);
     }
 
     /// <summary>The <c>reason</c> the fake error onion returns: a marker, the failure code and its data.</summary>
@@ -309,10 +323,14 @@ internal sealed class TwoNodeHarness : IDisposable
 
     private static ChannelModel CreateChannel(HarnessNode self, HarnessNode peer, ChannelParty local,
                                               ChannelParty remote, bool isInitiator, TxId fundingTxId,
-                                              CommitmentNumber obscuring, bool hasAnchors, ChannelState state)
+                                              CommitmentNumber obscuring, bool hasAnchors, ChannelState state,
+                                              bool announceChannel)
     {
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3,
-                                              hasAnchors, FeatureSupport.No);
+                                              hasAnchors, FeatureSupport.No)
+        {
+            AnnounceChannel = announceChannel
+        };
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis),
                                                   self.Basepoints.FundingPubKey, peer.Basepoints.FundingPubKey,
                                                   fundingTxId, 0);
@@ -325,10 +343,13 @@ internal sealed class TwoNodeHarness : IDisposable
                                                   peer.Basepoints.DelayedPaymentBasepoint,
                                                   peer.Basepoints.HtlcBasepoint, peer.Point(0));
         var localSat = isInitiator ? FundingSatoshis - PushSatoshis : PushSatoshis;
-        return new ChannelModel(channelParams, ChannelId, obscuring, fundingOutput, isInitiator, null, null,
-                                LightningMoney.Satoshis(localSat), localKeySet, 0, 0,
-                                LightningMoney.Satoshis(FundingSatoshis - localSat), remoteKeySet, 0,
-                                peer.NodeId, 0, state, ChannelVersion.V1);
+        var channel = new ChannelModel(channelParams, ChannelId, obscuring, fundingOutput, isInitiator, null, null,
+                                       LightningMoney.Satoshis(localSat), localKeySet, 0, 0,
+                                       LightningMoney.Satoshis(FundingSatoshis - localSat), remoteKeySet, 0,
+                                       peer.NodeId, 0, state, ChannelVersion.V1);
+        if (announceChannel)
+            channel.ShortChannelId = ShortChannelId;
+        return channel;
     }
 }
 
@@ -354,6 +375,15 @@ internal sealed class HarnessNode : IDisposable
 
     /// <summary>The watched-transaction rows the node's unit of work stages (a loose mock).</summary>
     public Mock<IWatchedTransactionDbRepository> WatchedTransactions { get; } = new();
+
+    /// <summary>The graph rows the node's unit of work stages (a loose mock; our node_announcement's row).</summary>
+    public Mock<IGraphDbRepository> GraphDb { get; } = new();
+
+    /// <summary>
+    /// The node's chain monitor (services and channel manager): tip <see cref="TwoNodeHarness.BlockHeight"/> until
+    /// <see cref="RaiseBlockAsync"/> or <see cref="SetTip"/>.
+    /// </summary>
+    public Mock<IBlockchainMonitor> ChainMonitor { get; } = new();
 
     /// <summary>
     /// Whether the peer is connected: the liveness probe answers it (with the channel's link pinned at
@@ -420,6 +450,11 @@ internal sealed class HarnessNode : IDisposable
         var secureKeyManager = new Mock<ISecureKeyManager>();
         secureKeyManager.Setup(x => x.GetChannelKeyAtIndex(It.IsAny<uint>()))
                         .Returns((uint index) => (ExtPrivKey)rootKey.Derive((int)index, true).ToBytes());
+        var nodeKey = Enumerable.Repeat(seedTag, 32).ToArray();
+        CompactPubKey nodeId = new Key(nodeKey).PubKey.ToBytes();
+        secureKeyManager.Setup(x => x.GetNodeKeyPair())
+                        .Returns(() => new CryptoKeyPair(new PrivKey(nodeKey.ToArray()), nodeId));
+        secureKeyManager.Setup(x => x.GetNodePubKey()).Returns(nodeId);
 
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(Store);
@@ -430,14 +465,14 @@ internal sealed class HarnessNode : IDisposable
                  .ReturnsAsync((ChannelId id) => _channels.TryGetChannel(id, out var channel) ? channel : null);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
         unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(WatchedTransactions.Object);
+        unitOfWork.SetupGet(u => u.GraphDbRepository).Returns(GraphDb.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             Store.Commit();
             return Task.CompletedTask;
         });
 
-        var blockchainMonitor = new Mock<IBlockchainMonitor>();
-        blockchainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(TwoNodeHarness.BlockHeight);
+        SetTip(previous?.ChainMonitor.Object.LastProcessedBlockHeight ?? TwoNodeHarness.BlockHeight);
 
         // A final-hop peel with a per-node secret; the error onion only marks the failure it was given
         var failureOnion = new Mock<IFailureOnionService>();
@@ -462,7 +497,7 @@ internal sealed class HarnessNode : IDisposable
                                                        Verified));
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddSerializationInfrastructureServices();
-        services.AddSingleton(blockchainMonitor.Object);
+        services.AddSingleton(ChainMonitor.Object);
         services.AddSingleton<ISphinxService>(new FinalHopSphinx(new Secret(Enumerable.Repeat(seedTag, 32).ToArray())));
         services.AddSingleton(failureOnion.Object);
         services.AddSingleton<IChannelLockProvider>(_lockProvider);
@@ -494,8 +529,8 @@ internal sealed class HarnessNode : IDisposable
 
         Signer = _provider.GetRequiredService<ILightningSigner>();
         Basepoints = Signer.GetChannelBasepoints(KeyIndex);
-        NodeId = new Key(Enumerable.Repeat(seedTag, 32).ToArray()).PubKey.ToBytes();
-        ChannelManager = new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider, _channels,
+        NodeId = nodeId;
+        ChannelManager = new ChannelManager(ChainMonitor.Object, _lockProvider, _channels,
                                             NullLogger<ChannelManager>.Instance, Signer, _provider);
         ChannelManager.OnResponseMessageReady += (_, args) =>
         {
@@ -509,6 +544,21 @@ internal sealed class HarnessNode : IDisposable
     }
 
     public CompactPubKey Point(ulong commitmentNumber) => Signer.GetPerCommitmentPoint(KeyIndex, commitmentNumber);
+
+    /// <summary>Moves the chain tip the node's services see, without a block event.</summary>
+    public void SetTip(uint height) => ChainMonitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(height);
+
+    /// <summary>
+    /// A new block at <paramref name="height"/>: the tip moves and the channel manager's block handler runs; waits for
+    /// the announcement round it starts (BOLT 7 plan G1-T4).
+    /// </summary>
+    public async Task RaiseBlockAsync(uint height)
+    {
+        SetTip(height);
+        ChainMonitor.Raise(m => m.OnNewBlockDetected += null,
+                           new NewBlockEventArgs(height, new Hash(Enumerable.Repeat((byte)height, 32).ToArray())));
+        await ChannelManager.AnnouncementRound;
+    }
 
     /// <summary>Registers the opened channel and gives it its first commitment state (as channel_ready would).</summary>
     public void Open(ChannelModel channel)

@@ -9,7 +9,11 @@ using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Reestablish;
 using Application.Channels.Safety.Interfaces;
+using Application.Gossip.Announcements;
+using Application.Gossip.Announcements.Interfaces;
 using Application.Gossip.Interfaces;
+using Application.Gossip.Relay;
+using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Services;
 using Application.Payments.Invoices;
 using Application.Payments.Send;
@@ -25,6 +29,7 @@ using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
@@ -511,6 +516,69 @@ public class NodeServiceExtensionsTests
         Assert.Equal(TimeSpan.FromSeconds(90), switchOptions.MppTimeout);
         Assert.NotNull(attribution);
         Assert.Single(services, d => d.ServiceType == typeof(IAttributionDataService));
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheOwnGossipServicesResolve()
+    {
+        // Arrange (BOLT 7 plan G1-T4..T7: registered by AddApplicationServices, nothing to add in the daemon)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act / Assert
+        Assert.IsType<ChannelAnnouncementService>(provider.GetRequiredService<IChannelAnnouncementService>());
+        Assert.IsType<NodeAnnouncementService>(provider.GetRequiredService<INodeAnnouncementService>());
+        Assert.IsType<GossipRelayScheduler>(provider.GetRequiredService<IGossipRelayScheduler>());
+        Assert.IsType<PeerManagerGossipPeerDirectory>(provider.GetRequiredService<IGossipPeerDirectory>());
+        Assert.Empty(provider.GetRequiredService<IGossipPeerDirectory>().GetConnectedPeers());
+        Assert.IsType<NullOwnGossipSink>(provider.GetRequiredService<IOwnGossipSink>());
+    }
+
+    [Fact]
+    public void Given_GossipSection_When_Bound_Then_AddressesAndIntervalsAreRead()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Gossip:AnnounceAddresses:0", "203.0.113.5:9735"),
+                                                        ("Gossip:OwnGossipFlushInterval", "00:00:05"),
+                                                        ("Node:Alias", "nltg"), ("Node:Color", "#00ff00")),
+                                     new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var gossip = provider.GetRequiredService<IOptions<GossipOptions>>().Value;
+        var node = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+
+        // Assert
+        Assert.Equal(["203.0.113.5:9735"], gossip.AnnounceAddresses);
+        Assert.Equal(TimeSpan.FromSeconds(5), gossip.OwnGossipFlushInterval);
+        Assert.Equal("nltg", node.Alias);
+        Assert.Equal(new byte[] { 0x00, 0xFF, 0x00 }, node.GetColorBytes());
+    }
+
+    [Theory]
+    [InlineData("Gossip:AnnounceAddresses:0", "2001:db8::1:9735", "Gossip:AnnounceAddresses")]
+    [InlineData("Node:Color", "blue", "Node:Color")]
+    public void Given_ABadAnnouncementSetting_When_OptionsResolved_Then_ValidationFails(string key, string value,
+                                                                                        string expected)
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration((key, value)), new Mock<ISecureKeyManager>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        var exception = Assert.Throws<OptionsValidationException>(() =>
+        {
+            _ = provider.GetRequiredService<IOptions<GossipOptions>>().Value;
+            _ = provider.GetRequiredService<IOptions<NodeOptions>>().Value;
+        });
+
+        // Assert
+        Assert.Contains(exception.Failures, f => f.Contains(expected));
     }
 
     private static IConfiguration BuildConfiguration(params (string Key, string Value)[] extra)

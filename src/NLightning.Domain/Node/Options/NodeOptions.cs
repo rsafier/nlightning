@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace NLightning.Domain.Node.Options;
 
 using Money;
@@ -108,6 +110,40 @@ public class NodeOptions
     /// <see cref="FeeUpdateOptions"/>
     public FeeUpdateOptions FeeUpdates { get; set; } = new();
 
+    /// <summary>The longest <see cref="Alias"/> in UTF-8 bytes (the <c>alias</c> field of <c>node_announcement</c>).</summary>
+    public const int AliasMaxBytes = 32;
+
+    /// <summary>The default <see cref="Color"/> (LND's).</summary>
+    public const string DefaultColor = "3399ff";
+
+    /// <summary>
+    /// The alias of our <c>node_announcement</c> (BOLT 7; plan G1-T6): UTF-8, at most <see cref="AliasMaxBytes"/>
+    /// bytes, zero padded on the wire. Empty (the default) announces an all-zero alias. Configuration key
+    /// <c>Node:Alias</c>.
+    /// </summary>
+    public string Alias { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The <c>rgb_color</c> of our <c>node_announcement</c>: six hex digits <c>RRGGBB</c>, an optional leading
+    /// <c>#</c>. Configuration key <c>Node:Color</c>; default <see cref="DefaultColor"/>.
+    /// </summary>
+    public string Color { get; set; } = DefaultColor;
+
+    /// <summary>
+    /// <see cref="Color"/> as the three <c>rgb_color</c> bytes (red, green, blue).
+    /// </summary>
+    /// <exception cref="FormatException">The color is not six hex digits.</exception>
+    public byte[] GetColorBytes()
+    {
+        var hex = (Color ?? string.Empty).Trim();
+        if (hex.StartsWith('#'))
+            hex = hex[1..];
+        if (hex.Length != 6 || !hex.All(Uri.IsHexDigit))
+            throw new FormatException($"Node:Color '{Color}' is not six hex digits (RRGGBB).");
+
+        return Convert.FromHexString(hex);
+    }
+
     /// <summary>
     /// The default <see cref="MaxDustHtlcExposureMsat"/>: 50,000 sat, as CLN and Eclair.
     /// </summary>
@@ -130,7 +166,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/>, <see cref="CustomSignet"/> and the reconnect delays); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="CustomSignet"/>, the reconnect delays, <see cref="Alias"/> and <see cref="Color"/>); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -140,6 +176,17 @@ public class NodeOptions
             errors.Add($"{nameof(ReconnectInitialDelay)} must be positive.");
         if (ReconnectMaxDelay < ReconnectInitialDelay)
             errors.Add($"{nameof(ReconnectMaxDelay)} must be at least {nameof(ReconnectInitialDelay)}.");
+
+        if (Encoding.UTF8.GetByteCount(Alias ?? string.Empty) > AliasMaxBytes)
+            errors.Add($"{nameof(Alias)} must be at most {AliasMaxBytes} UTF-8 bytes.");
+        try
+        {
+            _ = GetColorBytes();
+        }
+        catch (FormatException e)
+        {
+            errors.Add(e.Message);
+        }
 
         errors.AddRange(Routing.GetValidationErrors());
         errors.AddRange(FeeUpdates.GetValidationErrors());
