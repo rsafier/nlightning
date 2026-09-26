@@ -23,6 +23,21 @@ public interface IPeerService : IDisposable
     FeatureOptions Features { get; }
 
     /// <summary>
+    /// When the last message of any type was received from the peer (UTC), or null before the first one.
+    /// </summary>
+    DateTimeOffset? LastMessageReceivedAt { get; }
+
+    /// <summary>
+    /// Sends a <c>ping</c> (or joins the one in flight) and waits for its <c>pong</c> (BOLT 2: before
+    /// <c>commitment_signed</c> when nothing was received recently). A timeout closes the connection (BOLT 1 MAY;
+    /// the channels are not failed).
+    /// </summary>
+    /// <param name="timeout">How long to wait for the pong.</param>
+    /// <param name="cancellationToken">Stops waiting.</param>
+    /// <returns>True when the pong arrived in time; false on a timeout or before the init exchange finished.</returns>
+    Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Event raised when the peer is disconnected.
     /// </summary>
     event EventHandler<PeerDisconnectedEventArgs> OnDisconnect;

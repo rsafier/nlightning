@@ -100,6 +100,60 @@ public class CommitSchedulerTests
     }
 
     [Fact]
+    public async Task Given_IdlePeer_When_Commit_Then_PingFirst()
+    {
+        // Arrange - B2-CS-S05: the ping goes out (and is answered) before the commitment is built and persisted
+        AddPendingOffer();
+        var ping = new Mock<IPingBeforeCommit>();
+        ping.Setup(p => p.EnsureResponsiveAsync(PeerNodeId, It.IsAny<CancellationToken>()))
+            .Callback(() => _context.Calls.Add("ping"))
+            .ReturnsAsync(true);
+        var scheduler = CreateScheduler(TimeSpan.Zero, ping.Object);
+
+        // Act
+        var signed = await scheduler.SignNowAsync(TestChannelId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(signed);
+        Assert.Equal(["ping", "apply", "save", "publish"], _context.Calls);
+    }
+
+    [Fact]
+    public async Task Given_IdlePeerThatDoesNotAnswerThePing_When_SigningNow_Then_NothingIsSigned()
+    {
+        // Arrange - NL-251: the changes stay pending for the reestablish of the next connection
+        AddPendingOffer();
+        var ping = new Mock<IPingBeforeCommit>();
+        ping.Setup(p => p.EnsureResponsiveAsync(PeerNodeId, It.IsAny<CancellationToken>())).ReturnsAsync(false);
+        var scheduler = CreateScheduler(TimeSpan.Zero, ping.Object);
+
+        // Act
+        var signed = await scheduler.SignNowAsync(TestChannelId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(signed);
+        Assert.Empty(_context.Calls);
+        Assert.Empty(_published);
+        Assert.Null(_context.State.RemoteNextCommit);
+    }
+
+    [Fact]
+    public async Task Given_NothingPending_When_SigningNow_Then_NoPingIsSent()
+    {
+        // Arrange
+        var ping = new Mock<IPingBeforeCommit>();
+        var scheduler = CreateScheduler(TimeSpan.Zero, ping.Object);
+
+        // Act
+        var signed = await scheduler.SignNowAsync(TestChannelId, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(signed);
+        ping.Verify(p => p.EnsureResponsiveAsync(It.IsAny<CompactPubKey>(), It.IsAny<CancellationToken>()),
+                    Times.Never);
+    }
+
+    [Fact]
     public async Task Given_LinkDropsBeforeTheLock_When_SigningNow_Then_NothingIsSigned()
     {
         // Arrange - the connection changes between the cheap check and the lock (a reconnection: no
@@ -179,7 +233,7 @@ public class CommitSchedulerTests
         _context.SetState(_context.State.SendAdd(20_000_000, HashOf(SecretOf((byte)(id + 1))), 600, Onion).Next);
     }
 
-    private CommitScheduler CreateScheduler(TimeSpan debounce)
+    private CommitScheduler CreateScheduler(TimeSpan debounce, IPingBeforeCommit? pingBeforeCommit = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.CreateTransitions());
@@ -188,6 +242,7 @@ public class CommitSchedulerTests
         return new CommitScheduler(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object,
                                    _publisher.Object, NullLogger<CommitScheduler>.Instance, _probe.Object,
                                    provider.GetRequiredService<IServiceScopeFactory>(),
-                                   Options.Create(new CommitSchedulerOptions { Debounce = debounce }));
+                                   Options.Create(new CommitSchedulerOptions { Debounce = debounce }),
+                                   pingBeforeCommit);
     }
 }
