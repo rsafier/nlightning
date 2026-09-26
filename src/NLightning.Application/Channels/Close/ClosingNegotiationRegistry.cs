@@ -44,6 +44,25 @@ public sealed class ClosingNegotiationRegistry
         /// <summary>The negotiation on the current connection, or null before its first <c>closing_signed</c>.</summary>
         public ClosingNegotiation? Negotiation { get; set; }
 
+        /// <summary>
+        /// <c>option_simple_close</c> was negotiated on the peer's current connection (set from the negotiated features
+        /// of the peer's <c>shutdown</c>, <c>closing_complete</c> or <c>closing_sig</c>): the close uses
+        /// <c>closing_complete</c>/<c>closing_sig</c> instead of <c>closing_signed</c> (BOLT2 plan N11).
+        /// </summary>
+        public bool SimpleClose { get; set; }
+
+        /// <summary>
+        /// Our <c>closing_complete</c> that still waits for its <c>closing_sig</c> (BOLT 2: no other one before it), or
+        /// null. Memory only: a new connection drops it (the peer answers nothing sent on the old one).
+        /// </summary>
+        public Simple.SimpleCloseProposal? SimpleProposal { get; set; }
+
+        /// <summary>
+        /// We already sent our own <c>closing_complete</c> on the current connection without being asked (a later one
+        /// is an RBF asked through the IPC <c>closechannel</c>).
+        /// </summary>
+        public bool SimpleProposalSentOnConnection { get; set; }
+
         /// <summary>The IPC caller's close request (feerate, fee_range use), or null for the defaults.</summary>
         public ChannelCloseRequest? Request { get; set; }
 
@@ -131,6 +150,9 @@ public sealed class ClosingNegotiationRegistry
             ShutdownReceivedOnConnection = false;
             AgreedClosingSignedSentOnConnection = false;
             Negotiation = null;
+            SimpleClose = false;
+            SimpleProposal = null;
+            SimpleProposalSentOnConnection = false;
             ReplyDueAt = null;
             EstimateFeeratePerKw = null;
             EstimateAttempted = false;
