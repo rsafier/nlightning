@@ -279,10 +279,13 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             throw new KeyNotFoundException($"Channel {channelId} is not loaded");
 
         prepared.Channel = channel;
-        if (channel.State is ChannelState.Closed or ChannelState.Stale or ChannelState.OnchainResolving
+        if (channel.State is ChannelState.Closing or ChannelState.Closed or ChannelState.Stale
+                                 or ChannelState.OnchainResolving
          || channel.State < ChannelState.V1FundingSigned)
         {
-            // Nothing of this channel can be broadcast any more (closed, or already resolving on chain)
+            // Nothing of this channel can be broadcast any more (closed, or already resolving on chain). A Closing
+            // channel is never turned Failed: its agreed mutual close is on its way, and our commitment against it
+            // would leave the channel Failed for good once the close confirms (wave 3 invariant, W5 review)
             _pendingPublishes.TryRemove(channelId, out _);
             prepared.EarlyOutcome = new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
             return prepared;
