@@ -735,7 +735,13 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
     private (ShortChannelId, ulong?)? Want(ShortChannelId shortChannelId, ChannelUpdatePair? timestamps, bool withFlags)
     {
         if (!_graphStore.TryGetChannel(shortChannelId, out var channel))
+        {
+            // NL-383: both updates stale or missing by the peer's own timestamps: an abandoned (zombie) channel
+            if (withFlags && timestamps is { } peerTimestamps && IsStaleByTimestamps(peerTimestamps))
+                return null;
+
             return (shortChannelId, withFlags ? GossipQueryCodec.QueryFlagAll : null);
+        }
 
         // B7-Q-01: never ask for a spent channel; without timestamps a known channel's updates cannot be compared
         // (the timestamp filter's backlog brings the newer ones)
@@ -748,6 +754,19 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         if (remote.Node2 > (channel.Policy2?.Timestamp ?? 0))
             flag |= GossipQueryCodec.QueryFlagChannelUpdate2;
         return flag != 0 ? (shortChannelId, flag) : null;
+    }
+
+    /// <summary>
+    /// True when both update timestamps of a <c>reply_channel_range</c> entry are older than
+    /// <see cref="GossipSyncOptions.SkipChannelsStaleFor"/> (0 = no update); never with the option at zero.
+    /// </summary>
+    private bool IsStaleByTimestamps(ChannelUpdatePair timestamps)
+    {
+        if (_options.SkipChannelsStaleFor <= TimeSpan.Zero)
+            return false;
+
+        var newest = Math.Max(timestamps.Node1, timestamps.Node2);
+        return (ulong)newest + (ulong)_options.SkipChannelsStaleFor.TotalSeconds < NowSeconds();
     }
 
     private async Task<bool> RunScidQueryAsync(PeerSession session, IReadOnlyList<(ShortChannelId Id, ulong? Flag)> entries,

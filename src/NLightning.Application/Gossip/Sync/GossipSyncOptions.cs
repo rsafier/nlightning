@@ -69,6 +69,17 @@ public sealed class GossipSyncOptions
     public TimeSpan SyncFilterBacklog { get; set; } = TimeSpan.FromSeconds(1_209_600);
 
     /// <summary>
+    /// A channel we do not know is not asked for when the peer's <c>reply_channel_range</c> timestamps (with
+    /// <c>gossip_queries_ex</c>) say both of its updates are older than this, or missing (BOLT 7's two weeks, the same
+    /// limit as <c>Gossip:StaleAfter</c>): the ingress would ignore those updates as stale and keep a channel nobody
+    /// can route through (LND's zombie rule; on mainnet about a quarter of what the peers list are abandoned channels
+    /// whose funding output is unspent but whose nodes stopped updating them, NL-383). It comes with a later sync or
+    /// the live gossip once one of its nodes updates it. Zero asks for every channel.
+    /// </summary>
+    /// <remarks>Configuration key <c>Gossip:SkipChannelsStaleFor</c>.</remarks>
+    public TimeSpan SkipChannelsStaleFor { get; set; } = TimeSpan.FromSeconds(1_209_600);
+
+    /// <summary>
     /// Queries of one peer waiting for an answer; a peer that sends more before we answered gets a warning and the
     /// query is dropped (BOLT 7: the sender MUST NOT send a query while one is outstanding; the receiver MAY warn).
     /// </summary>
@@ -97,6 +108,8 @@ public sealed class GossipSyncOptions
             errors.Add($"{nameof(MissedScidRetryInterval)} must be positive");
         if (SyncFilterBacklog < TimeSpan.Zero)
             errors.Add($"{nameof(SyncFilterBacklog)} must not be negative");
+        if (SkipChannelsStaleFor < TimeSpan.Zero)
+            errors.Add($"{nameof(SkipChannelsStaleFor)} must not be negative");
         if (MaxQueuedQueriesPerPeer < 1)
             errors.Add($"{nameof(MaxQueuedQueriesPerPeer)} must be at least 1");
         return errors;
