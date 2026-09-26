@@ -25,6 +25,7 @@ using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Gossip.Announcements;
+using Gossip.Graph.Interfaces;
 using Gossip.Interfaces;
 using Routing;
 
@@ -58,8 +59,9 @@ using Routing;
 /// <see cref="InvoiceRouteHintMode.Auto"/> (the default) an invoice carries no hint at all once one of our announced
 /// channels (<see cref="ChannelAnnouncementService.IsAnnounced"/>) is <c>Open</c>, has its link up and its peer can send
 /// us the amount (<see cref="GetPeerSpendable"/>; any inbound for an invoice without an amount): payers then find us
-/// through the gossip graph, and hints would only reveal our private channels. A node with only private channels keeps
-/// its hints. <see cref="InvoiceRouteHintMode.Always"/> forces the hints, <see cref="InvoiceRouteHintMode.Never"/> drops
+/// through the gossip graph, and hints would only reveal our private channels. The channel must also be in our own
+/// gossip graph with both policies for <see cref="InvoiceOptions.PublicChannelGracePeriod"/> (so the announcement
+/// reached the network first). A node with only private channels keeps its hints. <see cref="InvoiceRouteHintMode.Always"/> forces the hints, <see cref="InvoiceRouteHintMode.Never"/> drops
 /// them.</para>
 /// <para>Singleton; thread-safe.</para>
 /// </remarks>
@@ -78,6 +80,9 @@ public sealed class InvoiceService : IInvoiceService
     private readonly IChannelUpdateService? _channelUpdateService;
     private readonly IPeerLivenessProbe? _peerLivenessProbe;
     private readonly InvoiceRouteHintMode _routeHintMode;
+    private readonly TimeSpan _publicChannelGracePeriod;
+    private readonly IGraphStore? _graphStore;
+    private readonly TimeProvider _timeProvider;
 
     /// <param name="serviceScopeFactory">Scopes for persistence.</param>
     /// <param name="secureKeyManager">The node key that signs the invoices.</param>
@@ -90,14 +95,23 @@ public sealed class InvoiceService : IInvoiceService
     /// as up.</param>
     /// <param name="invoiceOptions">When invoices carry hints; without it <see cref="InvoiceRouteHintMode.Auto"/>.
     /// </param>
+    /// <param name="graphStore">Our gossip graph: an announced channel counts as public only once it is there with
+    /// both policies for <see cref="InvoiceOptions.PublicChannelGracePeriod"/>; without it every invoice keeps its hints.
+    /// </param>
+    /// <param name="timeProvider">The clock of that grace period (the system clock by default).</param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                           IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
                           IChannelMemoryRepository? channelMemoryRepository = null,
                           IChannelUpdateService? channelUpdateService = null,
                           IPeerLivenessProbe? peerLivenessProbe = null,
-                          IOptions<InvoiceOptions>? invoiceOptions = null)
+                          IOptions<InvoiceOptions>? invoiceOptions = null, IGraphStore? graphStore = null,
+                          TimeProvider? timeProvider = null)
     {
         _routeHintMode = invoiceOptions?.Value.RouteHints ?? InvoiceRouteHintMode.Auto;
+        _publicChannelGracePeriod = invoiceOptions?.Value.PublicChannelGracePeriod
+                                 ?? InvoiceOptions.DefaultPublicChannelGracePeriod;
+        _graphStore = graphStore;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
         _nodeOptions = nodeOptions;
@@ -237,7 +251,8 @@ public sealed class InvoiceService : IInvoiceService
         var needed = amount?.MilliSatoshi ?? 1;
         foreach (var channel in _channelMemoryRepository!.FindChannels(c => c.State == ChannelState.Open))
         {
-            if (!ChannelAnnouncementService.IsAnnounced(channel) || GetPeerSpendable(channel) < needed)
+            if (!ChannelAnnouncementService.IsAnnounced(channel) || GetPeerSpendable(channel) < needed
+             || !IsInOurGraph(channel))
                 continue;
 
             if (_peerLivenessProbe is not null
@@ -248,6 +263,30 @@ public sealed class InvoiceService : IInvoiceService
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Whether payers can plausibly route to us over <paramref name="channel"/>: our own graph holds it with both
+    /// directions' policies (the peer's towards us not disabled) and has held it for
+    /// <see cref="InvoiceOptions.PublicChannelGracePeriod"/>, so our announcement and both updates had time to reach
+    /// the network. Without a graph (none registered, or gossip off) nothing counts.
+    /// </summary>
+    private bool IsInOurGraph(ChannelModel channel)
+    {
+        var scid = channel.ShortChannelId;
+        if (_graphStore is null || scid == default)
+            return false;
+
+        if (!_graphStore.TryGetChannel(scid, out var graphChannel)
+         || graphChannel.GetPolicy(0) is null || graphChannel.GetPolicy(1) is null)
+            return false;
+
+        var peerDirection = graphChannel.NodeId1 == channel.RemoteNodeId ? (byte)0 : (byte)1;
+        if (graphChannel.GetPolicy(peerDirection)!.IsDisabled)
+            return false;
+
+        return _graphStore.TryGetChannelReceivedAt(scid, out var receivedAt)
+            && _timeProvider.GetUtcNow() - receivedAt >= _publicChannelGracePeriod;
     }
 
     /// <summary>

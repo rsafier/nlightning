@@ -142,6 +142,19 @@ public class MissionControlTests
     }
 
     [Fact]
+    public void Given_ANodeFailureFromOurPeer_When_Recorded_Then_ItIsNotPenalized()
+    {
+        // Arrange
+        var missionControl = Create();
+
+        // Act: hop 0 is our own peer (Carol)
+        missionControl.RecordFailure(Route(), 0, FailureCode.TemporaryNodeFailure);
+
+        // Assert
+        Assert.Empty(missionControl.GetSnapshot().PenalizedNodes);
+    }
+
+    [Fact]
     public void Given_AFailureFromThePayee_When_Recorded_Then_OnlyTheCarriedAmountsAreLearnt()
     {
         // Arrange

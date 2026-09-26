@@ -38,12 +38,19 @@ public class GraphRoutePlannerTests
     private static readonly LocalChannelCandidate s_toCarol =
         new(new ChannelId(Enumerable.Repeat((byte)0xC1, 32).ToArray()), s_carol, s_scidUc);
 
+    private static readonly ShortChannelId s_scidUd = new(301, 1, 0);
+
+    private static readonly LocalChannelCandidate s_toDavid =
+        new(new ChannelId(Enumerable.Repeat((byte)0xD1, 32).ToArray()), s_david, s_scidUd);
+
     private static readonly SyntheticGraph.Policy s_carolPolicy = new(2_000, 500, 40);
     private static readonly SyntheticGraph.Policy s_davidPolicy = new(1_000, 100, 30);
     private static readonly SyntheticGraph.Policy s_frankPolicy = new(5_000, 1_000, 30);
 
     private readonly RouteConstraints _constraints = new();
     private ulong _sendable = 5_000_000;
+    private readonly Dictionary<ChannelId, ulong> _sendableByChannel = [];
+    private readonly List<LocalChannelCandidate> _channels = [s_toCarol];
 
     private static PaymentRoutePlanner Planner() => new(Options.Create(new NodeOptions()));
 
@@ -69,10 +76,11 @@ public class GraphRoutePlannerTests
 
     private PaymentPlanRequest Request(PaymentTarget target, GraphRoutingContext? graph, ulong maxFee = 100_000,
                                        int maxParts = 1) =>
-        new(target, Amount, Amount, maxFee, maxParts, Height, s_us, [s_toCarol], (_, planned) =>
+        new(target, Amount, Amount, maxFee, maxParts, Height, s_us, _channels, (channelId, planned) =>
         {
+            var sendable = _sendableByChannel.GetValueOrDefault(channelId, _sendable);
             var used = planned.Aggregate(0UL, (sum, amount) => sum + amount);
-            return used >= _sendable ? 0 : _sendable - used;
+            return used >= sendable ? 0 : sendable - used;
         }, _constraints, 10_000, null, graph);
 
     /// <summary>David's and Carol's fees for 1,000,000 msat to Erin over David (BOLT 7 "HTLC Fees", rounded down).</summary>
@@ -325,19 +333,134 @@ public class GraphRoutePlannerTests
     }
 
     [Fact]
-    public void Given_AUsableHintAboveTheFeeLimit_When_PlannedWithAGraph_Then_TheGraphIsNotUsed()
+    public void Given_AUsableHintAboveTheFeeLimit_When_PlannedWithAGraph_Then_TheCheaperGraphRouteIsUsed()
     {
         // Arrange: Erin hints a channel from Carol (our peer) at 50,000 msat; the graph has a 3,600 msat route
         var target = Target(false, [new RoutingInfo(s_carol, new ShortChannelId(900, 1, 1), 50_000, 0, 40)]);
 
         // Act
-        var planned = Planner().TryPlan(Request(target, Context(Graph().Build()), maxFee: 10_000), out _,
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build()), maxFee: 10_000), out var parts,
                                         out var reason);
 
-        // Assert: the payee's own hint decides while it is usable (the per-call fee limit keeps its meaning)
+        // Assert: the hint does not fit the fee limit, the graph route does (plan D7: a third candidate source)
+        Assert.True(planned, reason);
+        var route = Assert.Single(parts!).Route;
+        Assert.Equal(s_scidDe, route.Hops[1].OutgoingShortChannelId);
+        Assert.Equal(3_600UL, route.Fee.MilliSatoshi);
+    }
+
+    [Fact]
+    public void Given_AHintAboveTheFeeLimitAndNoCheaperGraphRoute_When_Planned_Then_RefusedWithBothReasons()
+    {
+        // Arrange
+        var target = Target(false, [new RoutingInfo(s_carol, new ShortChannelId(900, 1, 1), 50_000, 0, 40)]);
+
+        // Act: the graph's cheapest route costs 3,600 msat
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build()), maxFee: 3_000), out _,
+                                        out var reason);
+
+        // Assert
         Assert.False(planned);
-        Assert.Contains("fee 50000 msat exceeds the limit of 10000 msat", reason);
-        Assert.DoesNotContain("graph", reason);
+        Assert.Contains("fee 50000 msat exceeds the limit of 3000 msat", reason);
+        Assert.Contains("graph has no path", reason);
+    }
+
+    [Fact]
+    public void Given_ThePayeeIsOurPeerOverADepletedChannel_When_PlannedWithAGraph_Then_TheGraphRouteIsUsed()
+    {
+        // Arrange: David is our peer and the payee, but our channel to him can send nothing; Carol forwards to him
+        _channels.Add(s_toDavid);
+        _sendableByChannel[s_toDavid.ChannelId] = 0;
+        var target = new PaymentTarget(s_david, Enumerable.Repeat((byte)0x11, 32).ToArray(),
+                                       Enumerable.Repeat((byte)0x22, 32).ToArray(), null, FinalDelta, []);
+
+        // Act
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build())), out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        var part = Assert.Single(parts!);
+        Assert.Equal(s_toCarol, part.Channel);
+        Assert.Equal([s_carol, s_david], part.Route.Hops.Select(h => h.NodeId));
+        Assert.Equal(s_scidCd, part.Route.Hops[0].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_AHintBoundedByATemporaryChannelFailure_When_PlannedWithAGraph_Then_TheGraphRouteIsUsed()
+    {
+        // Arrange: Erin's cheap hint from Carol could not forward 500,000 msat on an earlier round
+        var hintScid = new ShortChannelId(900, 1, 1);
+        var target = Target(false, [new RoutingInfo(s_carol, hintScid, 1_000, 0, 40)]);
+        _constraints.BoundChannelLiquidity(hintScid, 500_000);
+
+        // Act
+        var planned = Planner().TryPlan(Request(target, Context(Graph().Build())), out var parts, out var reason);
+
+        // Assert
+        Assert.True(planned, reason);
+        Assert.Equal(s_scidDe, Assert.Single(parts!).Route.Hops[1].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_OurPeerPenalizedByMissionControl_When_Planned_Then_TheGraphRouteStillGoesThroughIt()
+    {
+        // Arrange: Carol, our only peer, sent a temporary_node_failure to an earlier payment
+        var context = Context(Graph().Build(), penalized: new HashSet<CompactPubKey> { s_carol });
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), context), out var parts, out var reason);
+
+        // Assert: her live channel state decides, not a cross-payment penalty
+        Assert.True(planned, reason);
+        Assert.Equal(s_carol, Assert.Single(parts!).Route.Hops[0].NodeId);
+    }
+
+    [Fact]
+    public void Given_OurPeerExcludedByThisPayment_When_Planned_Then_NoGraphRoute()
+    {
+        // Arrange
+        _constraints.ExcludedNodes.Add(s_carol);
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), Context(Graph().Build())), out _, out var reason);
+
+        // Assert
+        Assert.False(planned);
+        Assert.Contains("graph has no path", reason);
+    }
+
+    [Fact]
+    public void Given_AFailureUpdateForTheOtherDirection_When_Planned_Then_TheGraphHopIsNotLimitedByIt()
+    {
+        // Arrange: David's update of David → Carol (htlc_maximum 100 msat) must not limit Carol → David
+        _constraints.PolicyOverrides[s_scidCd] = new HintChannelPolicy(1_000, 100, 30, 1, 100, 1_700_000_050);
+        var reverse = DirectedChannel.Between(s_scidCd, s_david, s_carol);
+        _constraints.GraphPolicyOverrides[reverse] =
+            new GraphPolicy(1_700_000_050, 1, reverse.Direction, 30, 1, 100, 1_000, 100);
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), Context(Graph().Build())), out var parts, out var reason);
+
+        // Assert: still the cheap route over Carol → David
+        Assert.True(planned, reason);
+        Assert.Equal(s_scidCd, Assert.Single(parts!).Route.Hops[0].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_AFailureUpdateForTheUsedDirection_When_Planned_Then_TheGraphHopRespectsIt()
+    {
+        // Arrange: Carol's update of Carol → David caps it at 100 msat for this payment
+        _constraints.PolicyOverrides[s_scidCd] = new HintChannelPolicy(2_000, 500, 40, 1, 100, 1_700_000_050);
+        var used = DirectedChannel.Between(s_scidCd, s_carol, s_david);
+        _constraints.GraphPolicyOverrides[used] = new GraphPolicy(1_700_000_050, 1, used.Direction, 40, 1, 100, 2_000,
+                                                                  500);
+
+        // Act
+        var planned = Planner().TryPlan(Request(Target(), Context(Graph().Build())), out var parts, out var reason);
+
+        // Assert: the route avoids Carol → David
+        Assert.True(planned, reason);
+        Assert.Equal(s_scidCf, Assert.Single(parts!).Route.Hops[0].OutgoingShortChannelId);
     }
 
     [Fact]

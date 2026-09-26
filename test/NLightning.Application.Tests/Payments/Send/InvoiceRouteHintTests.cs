@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Application.Tests.Payments.Send;
 
 using Application.Channels.Interfaces;
+using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Payments.Invoices;
 using Bolt11.Models;
@@ -13,6 +14,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Gossip.Graph;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Interfaces;
@@ -32,6 +34,8 @@ public class InvoiceRouteHintTests : IDisposable
     private readonly Mock<IChannelMemoryRepository> _channels = new();
     private readonly Mock<IChannelUpdateService> _updates = new();
     private readonly Mock<IPeerLivenessProbe> _links = new();
+    private readonly Mock<IGraphStore> _graph = new();
+    private readonly Dictionary<ShortChannelId, (GraphChannel Channel, DateTimeOffset ReceivedAt)> _graphChannels = [];
     private readonly List<ChannelModel> _open = [];
     private readonly ServiceProvider _provider;
 
@@ -42,6 +46,22 @@ public class InvoiceRouteHintTests : IDisposable
         _links.Setup(l => l.IsAliveAsync(It.IsAny<ChannelId>(), It.IsAny<CompactPubKey>(),
                                          It.IsAny<CancellationToken>()))
               .ReturnsAsync(true);
+        GraphChannel? found = null;
+        _graph.Setup(g => g.TryGetChannel(It.IsAny<ShortChannelId>(), out found))
+              .Returns((ShortChannelId scid, out GraphChannel? channel) =>
+               {
+                   var known = _graphChannels.TryGetValue(scid, out var entry);
+                   channel = known ? entry.Channel : null;
+                   return known;
+               });
+        var at = DateTimeOffset.MinValue;
+        _graph.Setup(g => g.TryGetChannelReceivedAt(It.IsAny<ShortChannelId>(), out at))
+              .Returns((ShortChannelId scid, out DateTimeOffset receivedAt) =>
+               {
+                   var known = _graphChannels.TryGetValue(scid, out var entry);
+                   receivedAt = known ? entry.ReceivedAt : default;
+                   return known;
+               });
 
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
@@ -233,6 +253,7 @@ public class InvoiceRouteHintTests : IDisposable
                                 remoteSat: 600_000);
         SetPeerUpdate(announced, 1_000, 1, 40);
         SetPeerUpdate(hidden, 1_000, 1, 40);
+        PutInGraph(announced, TimeSpan.FromHours(1));
 
         // Act
         var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "public", null,
@@ -269,6 +290,7 @@ public class InvoiceRouteHintTests : IDisposable
                                 remoteSat: 600_000);
         SetPeerUpdate(announced, 1_000, 1, 40);
         SetPeerUpdate(hidden, 1_000, 1, 40);
+        PutInGraph(announced, TimeSpan.FromHours(1));
 
         // Act
         var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "inbound", null,
@@ -291,6 +313,7 @@ public class InvoiceRouteHintTests : IDisposable
         SetPeerUpdate(hidden, 1_000, 1, 40);
         _links.Setup(l => l.IsAliveAsync(announced.ChannelId, announced.RemoteNodeId, It.IsAny<CancellationToken>()))
               .ReturnsAsync(false);
+        PutInGraph(announced, TimeSpan.FromHours(1));
 
         // Act
         var invoice = await CreateService().CreateInvoiceAsync(null, "down", null,
@@ -317,11 +340,72 @@ public class InvoiceRouteHintTests : IDisposable
         Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
     }
 
-    private InvoiceService CreateService(InvoiceRouteHintMode mode = InvoiceRouteHintMode.Auto) =>
+    [Theory]
+    [InlineData(false, true, 60)] // announced, but not in our graph yet
+    [InlineData(true, true, 5)] // in our graph for 5 minutes only (grace 10)
+    [InlineData(true, false, 60)] // in our graph without the peer's policy
+    public async Task Given_AnAnnouncedChannelPayersMayNotSeeYet_When_CreatingAnInvoice_Then_ThePrivateHintStays(
+        bool inGraph, bool bothPolicies, int minutesInGraph)
+    {
+        // Arrange
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announced: true);
+        var hidden = AddChannel(new TestNodeKeyManager(0x0e).NodeId, 2, new ShortChannelId(402, 2, 1),
+                                remoteSat: 600_000);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        SetPeerUpdate(hidden, 1_000, 1, 40);
+        if (inGraph)
+            PutInGraph(announced, TimeSpan.FromMinutes(minutesInGraph), bothPolicies);
+
+        // Act
+        var invoice = await CreateService().CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "early", null,
+                                                               TestContext.Current.CancellationToken);
+
+        // Assert: payers that route from their graph could not reach us without the hints
+        var hints = Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints;
+        Assert.Contains(hints, h => h.Any(e => e.CompactPubKey == hidden.RemoteNodeId));
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannelWithoutAGraphStore_When_CreatingAnInvoice_Then_HintsStay()
+    {
+        // Arrange
+        var announced = AddChannel(new TestNodeKeyManager(0x0c).NodeId, 1, new ShortChannelId(401, 2, 1),
+                                   remoteSat: 600_000, announced: true);
+        SetPeerUpdate(announced, 1_000, 1, 40);
+        PutInGraph(announced, TimeSpan.FromHours(1));
+
+        // Act
+        var invoice = await CreateService(withGraph: false)
+                         .CreateInvoiceAsync(null, "no graph", null, TestContext.Current.CancellationToken);
+
+        // Assert
+        var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
+        Assert.Equal(announced.RemoteNodeId, hint.CompactPubKey);
+    }
+
+    private void PutInGraph(ChannelModel channel, TimeSpan inGraphFor, bool bothPolicies = true)
+    {
+        var us = _us.NodeId;
+        var peer = channel.RemoteNodeId;
+        var (node1, node2) = GraphChannel.CompareNodeIds(us, peer) < 0 ? (us, peer) : (peer, us);
+        var graphChannel = new GraphChannel(channel.ShortChannelId, node1, node2, node1, node2, 2_000_000);
+        var peerDirection = node1 == peer ? (byte)0 : (byte)1;
+        graphChannel = graphChannel.WithPolicy(Policy((byte)(1 - peerDirection)));
+        if (bothPolicies)
+            graphChannel = graphChannel.WithPolicy(Policy(peerDirection));
+        _graphChannels[channel.ShortChannelId] = (graphChannel, DateTimeOffset.UtcNow - inGraphFor);
+
+        static GraphPolicy Policy(byte direction) =>
+            new(1_700_000_000, ChannelUpdatePayload.MessageFlagMustBeOne, direction, 40, 1, 1_000_000_000, 1_000, 1);
+    }
+
+    private InvoiceService CreateService(InvoiceRouteHintMode mode = InvoiceRouteHintMode.Auto, bool withGraph = true) =>
         new(_provider.GetRequiredService<IServiceScopeFactory>(), _us,
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
             NullLogger<InvoiceService>.Instance, _channels.Object, _updates.Object, _links.Object,
-            Microsoft.Extensions.Options.Options.Create(new InvoiceOptions { RouteHints = mode }));
+            Microsoft.Extensions.Options.Options.Create(new InvoiceOptions { RouteHints = mode }),
+            withGraph ? _graph.Object : null);
 
     private ChannelModel AddChannel(CompactPubKey peer, byte tag, ShortChannelId shortChannelId, ulong remoteSat,
                                     FeatureSupport scidAlias = FeatureSupport.No, bool weFunded = true,

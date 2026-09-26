@@ -47,9 +47,9 @@ public sealed class PaymentSendOptions
     public uint ExpiryTooSoonExtraBlocks { get; set; } = 6;
 
     /// <summary>
-    /// Route through the gossip graph (BOLT 7 plan G4-T3) when the payee is neither our peer nor reachable over the
-    /// invoice's route hints from one of our peers, and to find more paths for a split (default true). Without a graph
-    /// (gossip disabled) this changes nothing.
+    /// Route through the gossip graph (BOLT 7 plan G4-T3) when no direct channel to the payee and no path over the
+    /// invoice's route hints carries the whole amount, and to find more paths for a split, which may then combine
+    /// direct, hint and graph paths (default true). Without a graph (gossip disabled) this changes nothing.
     /// </summary>
     public bool UseGraph { get; set; } = true;
 

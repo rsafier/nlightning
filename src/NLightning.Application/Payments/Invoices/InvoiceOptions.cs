@@ -28,4 +28,14 @@ public sealed class InvoiceOptions
 
     /// <summary>When invoices carry route hints (default <see cref="InvoiceRouteHintMode.Auto"/>).</summary>
     public InvoiceRouteHintMode RouteHints { get; set; } = InvoiceRouteHintMode.Auto;
+
+    /// <summary>The default of <see cref="PublicChannelGracePeriod"/>: 10 minutes.</summary>
+    public static readonly TimeSpan DefaultPublicChannelGracePeriod = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// With <see cref="InvoiceRouteHintMode.Auto"/>, how long an announced channel must have been in our own gossip
+    /// graph (with both policies) before invoices leave the hints out, so our announcement and updates have had time to
+    /// be relayed (several gossip flush intervals; default 10 minutes).
+    /// </summary>
+    public TimeSpan PublicChannelGracePeriod { get; set; } = DefaultPublicChannelGracePeriod;
 }
