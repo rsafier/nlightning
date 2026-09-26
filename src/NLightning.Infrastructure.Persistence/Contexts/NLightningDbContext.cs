@@ -35,6 +35,8 @@ public class NLightningDbContext : DbContext
     public DbSet<WatchedOutpointEntity> WatchedOutpoints { get; set; }
     public DbSet<BroadcastTransactionEntity> BroadcastTransactions { get; set; }
     public DbSet<BlockHeaderEntity> BlockHeaders { get; set; }
+    public DbSet<FeeInputReservationEntity> FeeInputReservations { get; set; }
+    public DbSet<FeeInputReservationInputEntity> FeeInputReservationInputs { get; set; }
 
     // Channel DbSets
     public DbSet<ChannelEntity> Channels { get; set; }
@@ -79,6 +81,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureWatchedOutpointEntity(_databaseType);
         modelBuilder.ConfigureBroadcastTransactionEntity(_databaseType);
         modelBuilder.ConfigureBlockHeaderEntity(_databaseType);
+        modelBuilder.ConfigureFeeInputReservationEntity(_databaseType);
 
         // Channel entities
         modelBuilder.ConfigureChannelEntity(_databaseType);
