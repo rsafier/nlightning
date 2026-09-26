@@ -280,9 +280,10 @@ public class FinalHopProcessorTests
             AssertUnknownPaymentDetails(result);
     }
 
-    private FinalHopResult EvaluateMultiPart(InvoiceModel? invoice, HopPayload payload, ulong htlcAmountMsat) =>
+    private FinalHopResult EvaluateMultiPart(InvoiceModel? invoice, HopPayload payload, ulong htlcAmountMsat,
+                                             bool committed = false) =>
         _processor.Evaluate(invoice, s_paymentHash, LightningMoney.MilliSatoshis(htlcAmountMsat), HtlcCltv, payload,
-                            Height, acceptMultiPart: true);
+                            Height, acceptMultiPart: true, committedSetMember: committed);
 
     [Fact]
     public void Given_MultiPartSupported_When_PartOfTotalArrives_Then_AcceptedWithPartAndTotal()
@@ -353,11 +354,11 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
-    public void Given_SettledInvoice_When_MultiPartOfItsSetArrives_Then_AcceptedAsAlreadySettled()
+    public void Given_SettledInvoice_When_ACommittedPartOfItsSetArrives_Then_AcceptedAsAlreadySettled()
     {
-        // Act: the first fulfill settled the invoice for 100,000 msat; this part was held when it did
+        // Act: the invoice settled for 100,000 msat; this part was committed (preimage on its record) and held
         var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
-                                       CreatePayload(40_000, totalMsat: AmountMsat), 40_000);
+                                       CreatePayload(40_000, totalMsat: AmountMsat), 40_000, committed: true);
 
         // Assert
         Assert.True(result.IsAccepted, result.Reason);
@@ -366,11 +367,41 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
-    public void Given_SettledInvoice_When_PartCoveringTotalMsatAloneArrives_Then_AcceptedAsAlreadySettled()
+    public void Given_SettledInvoice_When_ACommittedPartCoveringTotalMsatAloneArrives_Then_AcceptedAsAlreadySettled()
     {
-        // Act: amt_to_forward = total_msat, yet it can be a part of the settled set (a payer that overpaid with parts
-        // of 40,000 and 100,000 msat); BOLT 4 also lets a paid hash be accepted (MAY)
-        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled), CreatePayload(), AmountMsat);
+        // Act: amt_to_forward = total_msat, yet it is a committed part of the settled set (a payer that overpaid with
+        // parts of 40,000 and 100,000 msat)
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled), CreatePayload(), AmountMsat,
+                                       committed: true);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.True(result.InvoiceAlreadySettled);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_SettledInvoice_When_AnHtlcOutsideItsSetArrives_Then_0x400F(bool acceptMultiPart)
+    {
+        // Act: NL-323: a duplicate payment (or a late part) with the right secret is not a part of the settled set
+        var result = _processor.Evaluate(CreateInvoice(status: InvoiceStatus.Settled), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(AmountMsat), HtlcCltv, CreatePayload(), Height,
+                                         acceptMultiPart);
+
+        // Assert
+        AssertUnknownPaymentDetails(result);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_ACommittedPartIsReplayedPastItsFinalCltvDelta_Then_StillAcceptedAsAlreadySettled()
+    {
+        // Act: the replay comes at a height where cltv_expiry < height + min_final_cltv_expiry_delta; the set was
+        // committed, so the part must be fulfilled anyway (BOLT 4: MUST fulfill the entire HTLC set)
+        var result = _processor.Evaluate(CreateInvoice(status: InvoiceStatus.Settled), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
+                                         CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
+                                         acceptMultiPart: true, committedSetMember: true);
 
         // Assert
         Assert.True(result.IsAccepted, result.Reason);
@@ -378,18 +409,43 @@ public class FinalHopProcessorTests
     }
 
     [Fact]
-    public void Given_SettledInvoice_When_APartIsReplayedPastItsFinalCltvDelta_Then_StillAcceptedAsAlreadySettled()
+    public void Given_SettledInvoiceWithoutMultiPartSupport_When_ACommittedPartArrives_Then_AcceptedAsAlreadySettled()
     {
-        // Act: the replay comes at a height where cltv_expiry < height + min_final_cltv_expiry_delta; the preimage is
-        // already out, so the part must be fulfilled anyway (BOLT 4: MUST fulfill the entire HTLC set)
+        // Act: a single-part set whose fulfill was refused was committed with the settle: its replay fulfills it
         var result = _processor.Evaluate(CreateInvoice(status: InvoiceStatus.Settled), s_paymentHash,
-                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
-                                         CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
-                                         acceptMultiPart: true);
+                                         LightningMoney.MilliSatoshis(AmountMsat), HtlcCltv, CreatePayload(), Height,
+                                         acceptMultiPart: false, committedSetMember: true);
 
         // Assert
         Assert.True(result.IsAccepted, result.Reason);
         Assert.True(result.InvoiceAlreadySettled);
+    }
+
+    [Fact]
+    public void Given_OpenInvoice_When_ACommittedPartArrivesPastItsFinalCltvDeltaAndExpiry_Then_Accepted()
+    {
+        // Act: committed before a crash that left the invoice Open: its replay is late and after the invoice expiry
+        var result = _processor.Evaluate(CreateInvoice(createdAt: DateTimeOffset.UtcNow.AddHours(-2)), s_paymentHash,
+                                         LightningMoney.MilliSatoshis(40_000), HtlcCltv,
+                                         CreatePayload(40_000, totalMsat: AmountMsat), HtlcCltv,
+                                         acceptMultiPart: true, committedSetMember: true);
+
+        // Assert
+        Assert.True(result.IsAccepted, result.Reason);
+        Assert.False(result.InvoiceAlreadySettled);
+    }
+
+    [Fact]
+    public void Given_SettledInvoice_When_ACommittedPartCarriesAWrongSecret_Then_0x400F()
+    {
+        // Act
+        var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
+                                       CreatePayload(40_000, totalMsat: AmountMsat,
+                                                     paymentSecret: Enumerable.Repeat((byte)1, 32).ToArray()),
+                                       40_000, committed: true);
+
+        // Assert
+        AssertUnknownPaymentDetails(result, 40_000);
     }
 
     [Fact]
@@ -420,7 +476,7 @@ public class FinalHopProcessorTests
     {
         // Act: the settled set received 100,000 msat, this part promises 150,000
         var result = EvaluateMultiPart(CreateInvoice(status: InvoiceStatus.Settled),
-                                       CreatePayload(40_000, totalMsat: 150_000), 40_000);
+                                       CreatePayload(40_000, totalMsat: 150_000), 40_000, committed: true);
 
         // Assert
         AssertUnknownPaymentDetails(result, 40_000);

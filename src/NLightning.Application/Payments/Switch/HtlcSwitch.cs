@@ -55,10 +55,13 @@ using Onion;
 ///   <see cref="FinalHopProcessor"/>, then <c>update_fulfill_htlc</c> is persisted with the invoice moved to
 ///   <c>Settled</c> (<c>Accept</c> then <c>Settle</c>, re-read and checked still <c>Open</c>) in the <b>same</b> save
 ///   (<see cref="IChannelOperations.FulfillHtlcAsync(ChannelId, ulong, Secret, Func{IUnitOfWork, Task}, CancellationToken)"/>):
-///   there is no crash window where one is stored without the other. A second HTLC for the same hash then sees
-///   <c>Settled</c>: without <c>basic_mpp</c> it fails with <c>incorrect_or_unknown_payment_details</c>; with it, it may
-///   be a held part of the settled set and is fulfilled (see <see cref="FinalHopProcessor"/>). A refused or failed
-///   fulfill leaves the invoice <c>Open</c> for the replay.</item>
+///   there is no crash window where one is stored without the other. The other parts of a set are committed before
+///   (the preimage persisted on their records, NL-322/NL-323), and a refused fulfill commits its part the same way
+///   with the settle, so a replayed committed part is fulfilled while any other HTLC for a <c>Settled</c> invoice fails
+///   with <c>incorrect_or_unknown_payment_details</c> (see <see cref="FinalHopProcessor"/>).</item>
+///   <item>A channel that is failed or on chain (NL-316): its HTLC is only accepted as our final hop, and committed with
+///   the preimage on its record instead of fulfilled; the BOLT 5 resolvers claim it on chain with it. Nothing is
+///   forwarded from such a channel and nothing on it is failed off chain.</item>
 ///   <item>Forward: the onion's <c>short_channel_id</c> is resolved to an open channel (its local aliases or the
 ///   peer's alias; the real scid only when <c>option_scid_alias</c> is off), checked by <see cref="IForwardingPolicy"/>
 ///   (a failure is returned with our signed <c>channel_update</c> for the UPDATE codes when its scid is the onion's,
@@ -285,6 +288,18 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             storedSecret is null ? new OnionReplayOwner(channelId, htlcId, htlc.CltvExpiry) : null;
         var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, replayOwner,
                                                         htlc.PathKey);
+
+        // A channel that can no longer carry an update (failed, or its commitment is on chain): its HTLC can only be
+        // claimed on chain, and only as our final hop (NL-316, B5-LCL-RO-02). Nothing is forwarded from it, and a
+        // failure cannot be sent: such an HTLC is left to time out on chain
+        if (IsOnchain(channelId) && result is not IncomingOnionFinal)
+        {
+            _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId}, which is closing on chain, does not "
+                                 + "pay us ({Result}): leaving it to time out on chain", htlcId, channelId,
+                                   result.GetType().Name);
+            return;
+        }
+
         switch (result)
         {
             case IncomingOnionMalformed malformed:
@@ -322,7 +337,10 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// <summary>
     /// Final hop (M4-T3, NL-253; <c>basic_mpp</c>, ABCD W6-B): check the HTLC under its payment hash lock, add it to
     /// the payment's HTLC set, and once the set's <c>amt_to_forward</c> reach <c>total_msat</c> fulfill every part,
-    /// settling the invoice in the first fulfill's save. A single-part payment is a set of one.
+    /// settling the invoice with one of them. A single-part payment is a set of one. A part on a channel that is
+    /// closing on chain (NL-316) is accepted the same way (the same <see cref="FinalHopProcessor"/> checks), but
+    /// "fulfilled" by persisting the preimage on its record, from which the BOLT 5 resolver claims it on chain; it is
+    /// never failed off chain.
     /// </summary>
     private async Task ReceiveAsync(ChannelId channelId, HtlcRecord htlc, IncomingOnionFinal final,
                                     CancellationToken cancellationToken)
@@ -332,7 +350,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         // A set's fulfill or timeout acts on the parts of other HTLCs without their incoming locks, under this hash
         // lock: this HTLC may have been resolved while we waited for it
-        if (GetAwaitingIncomingHtlc(channelId, htlc.Id) is null)
+        if (GetAwaitingIncomingHtlc(channelId, htlc.Id) is not { } current)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Incoming HTLC {HtlcId} of channel {ChannelId} was resolved with its HTLC set",
@@ -340,10 +358,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
-        // A part of a set that timed out while its failure could not be sent: fail it now
+        var onchain = IsOnchain(channelId);
+
+        // A part of a set that timed out while its failure could not be sent: fail it now (on chain it just times out)
         if (_timedOutParts.ContainsKey((channelId, htlc.Id)))
         {
-            await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.MppTimeout(), cancellationToken);
+            if (!onchain)
+                await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.MppTimeout(), cancellationToken);
             _timedOutParts.TryRemove((channelId, htlc.Id), out _);
             return;
         }
@@ -354,15 +375,21 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         {
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
+
+            // NL-323: a part of a set we committed to carries the invoice's preimage in its record
+            var committed = current.KnownPreimage is { } known && invoice is not null && known == invoice.Preimage;
             decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, amount, htlc.CltvExpiry,
-                                                   final.Payload, height, _acceptMultiPart);
+                                                   final.Payload, height, _acceptMultiPart, committed);
         }
 
         if (decision.InvoiceAlreadySettled)
         {
-            // A part of the set whose first fulfill settled the invoice (the others were refused, or we stopped in
+            // A committed part of the set that settled the invoice (its fulfill was refused, or we stopped in
             // between): BOLT 4 requires the whole set to be fulfilled, whatever the height of this replay (also before
-            // the monitor has one)
+            // the monitor has one). On chain its record already carries the preimage the resolver claims it with
+            if (onchain)
+                return;
+
             await _channelOperations.FulfillHtlcAsync(channelId, htlc.Id, decision.Preimage!.Value,
                                                       cancellationToken);
             _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId}, a part "
@@ -374,14 +401,20 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         // The payer reads the height to tell an expiry problem from an unknown hash: never report a height of 0
         if (height == 0)
         {
-            await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
-                                cancellationToken);
+            if (!onchain)
+                await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
+                                    cancellationToken);
             return;
         }
 
         if (!decision.IsAccepted)
         {
-            await FailBackAsync(channelId, htlc, final.SharedSecret, decision.Failure!, cancellationToken);
+            if (onchain)
+                _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId}, which is closing on chain, is not "
+                                     + "accepted as our final hop: leaving it to time out on chain", htlc.Id,
+                                       channelId);
+            else
+                await FailBackAsync(channelId, htlc, final.SharedSecret, decision.Failure!, cancellationToken);
             return;
         }
 
@@ -423,7 +456,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     {
         if (_htlcSets.TryGetValue(paymentHash, out var set))
         {
-            set.Prune(p => GetAwaitingIncomingHtlc(p.ChannelId, p.HtlcId) is not null);
+            set.Prune(IsPartWaiting);
             if (set.Parts.Count > 0)
                 return set;
 
@@ -443,85 +476,207 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     }
 
     /// <summary>
-    /// The set is complete: fulfill every part. The first fulfill that goes through stages the invoice's settlement
-    /// in its save (<c>Settled</c> means "the preimage is out"); a part whose fulfill is refused stays held and is
-    /// fulfilled on its replay (the invoice is then <c>Settled</c>, <see cref="FinalHopResult.InvoiceAlreadySettled"/>).
-    /// When every fulfill is refused nothing was revealed: the complete set stays held for the replays. Until the
-    /// first fulfill goes through, a set that is no longer complete (a part was resolved elsewhere meanwhile) is held
-    /// again instead. Under the payment hash lock.
+    /// The set is complete: commit to it, then fulfill every part (NL-322, NL-323).
     /// </summary>
+    /// <remarks>
+    /// <para>First the preimage is persisted on the record of every part but one (<see cref="MarkPartAsync"/>): from
+    /// then on a replay of such a part fulfills it (a committed member, see <see cref="FinalHopProcessor"/>), and on
+    /// chain the BOLT 5 resolvers claim it with that preimage. Then the remaining part settles the invoice in its own
+    /// save: its fulfill's, or, when its channel is closing on chain or the fulfill is refused (e.g. the peer is away),
+    /// its mark's. So a <c>Settled</c> invoice means every part of its set is fulfilled or carries the preimage, and an
+    /// HTLC for a <c>Settled</c> invoice without it is not a part of the set (failed, NL-323). The other parts are then
+    /// fulfilled (a refused one on its replay; one on chain is claimed by the resolver).</para>
+    /// <para>Until the invoice settles, a set that is no longer complete (a part was resolved elsewhere meanwhile) is
+    /// held again, and an invoice that left <c>Open</c> (canceled) fails the set: the marks are taken back and every
+    /// part that can still be failed off chain is. Under the payment hash lock.</para>
+    /// </remarks>
     private async Task FulfillSetAsync(HtlcSet set, Secret preimage, uint height, CancellationToken cancellationToken)
     {
         set.Timer?.Dispose();
         set.Timer = null;
-        var settled = false;
-        foreach (var part in set.Parts.ToList())
+        var marked = new List<HtlcSetPart>();
+        HtlcSetPart? settledBy = null;
+        try
         {
-            if (!settled)
+            while (settledBy is null)
             {
-                // Nothing is revealed yet: go on only with a set that is still complete
-                set.Prune(p => GetAwaitingIncomingHtlc(p.ChannelId, p.HtlcId) is not null);
+                set.Prune(IsPartWaiting);
                 if (!set.IsComplete)
                 {
                     HoldIncompleteSet(set);
                     return;
                 }
 
-                if (set.Parts.All(p => p.Key != part.Key))
-                    continue;
+                var candidate = set.Parts[0];
+                var complete = true;
+                foreach (var other in set.Parts.Skip(1).ToList())
+                {
+                    if (!await MarkPartAsync(other.ChannelId, other.HtlcId, preimage, null, cancellationToken))
+                    {
+                        // Resolved elsewhere meanwhile: check the set again
+                        complete = false;
+                        break;
+                    }
+
+                    marked.Add(other);
+                }
+
+                if (complete && await SettleWithAsync(candidate, set, preimage, cancellationToken))
+                    settledBy = candidate;
             }
-            else if (GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is null)
-            {
-                set.Remove(part);
+        }
+        catch (InvoiceNotOpenException e)
+        {
+            // Canceled since it was checked: nothing was settled, fail the whole set as for an unusable invoice
+            _logger.LogInformation("Invoice {PaymentHash} changed before its HTLC set was fulfilled: {Reason}",
+                                   set.PaymentHash, e.Message);
+            RemoveHtlcSet(set);
+            foreach (var part in marked)
+                await UnmarkPartAsync(part, preimage, cancellationToken);
+            foreach (var member in set.Parts.ToList())
+                await FailPartAsync(member, FailureMessage.IncorrectOrUnknownPaymentDetails(member.HtlcAmount, height),
+                                    cancellationToken);
+            return;
+        }
+
+        RemoveHtlcSet(set);
+        foreach (var part in set.Parts.Where(p => p.Key != settledBy.Key).ToList())
+        {
+            // Marked above: on chain the resolver claims it; one resolved elsewhere meanwhile is left alone
+            if (IsOnchain(part.ChannelId) || GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is null)
                 continue;
-            }
 
             try
             {
-                if (settled)
-                {
-                    await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage,
-                                                              cancellationToken);
-                }
-                else
-                {
-                    // The invoice settles in the fulfill's own save: no crash leaves one without the other. It
-                    // receives the parts still held (just pruned), whose amounts cover total_msat
-                    await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage,
-                                                              unitOfWork => SettleInvoiceAsync(
-                                                                  unitOfWork, set.PaymentHash, set.HtlcSum),
-                                                              cancellationToken);
-                    settled = true;
-                }
-
-                set.Remove(part);
-                _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId} "
-                                     + "for our invoice {PaymentHash}", part.HtlcId, part.HtlcAmount.MilliSatoshi,
-                                       part.ChannelId, set.PaymentHash);
+                await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage, cancellationToken);
+                LogFulfilled(part, set.PaymentHash);
             }
             catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
             {
+                // Its record carries the preimage: its replay (link-up, startup) fulfills it
                 _logger.LogWarning("Could not fulfill HTLC {HtlcId} of channel {ChannelId} for {PaymentHash} yet: "
                                  + "{Reason}", part.HtlcId, part.ChannelId, set.PaymentHash, e.Message);
             }
-            catch (InvoiceNotOpenException e)
+        }
+    }
+
+    /// <summary>
+    /// Settles the invoice with <paramref name="part"/>: in its fulfill's save, or, when its channel is closing on
+    /// chain or the fulfill is refused, in the save that persists the preimage on its record. False when the part no
+    /// longer waits (the caller checks the set again). Throws <see cref="InvoiceNotOpenException"/> when the invoice
+    /// left <c>Open</c> (nothing persisted).
+    /// </summary>
+    private async Task<bool> SettleWithAsync(HtlcSetPart part, HtlcSet set, Secret preimage,
+                                             CancellationToken cancellationToken)
+    {
+        // The parts still held (just pruned) cover total_msat: the invoice receives their amounts
+        var amount = set.HtlcSum;
+        Task Settle(IUnitOfWork unitOfWork) => SettleInvoiceAsync(unitOfWork, set.PaymentHash, amount);
+
+        if (!IsOnchain(part.ChannelId))
+        {
+            try
             {
-                // Canceled since it was checked: nothing was persisted, fail the whole set as for an unusable invoice
-                _logger.LogInformation("Invoice {PaymentHash} changed before its HTLC set was fulfilled: {Reason}",
-                                       set.PaymentHash, e.Message);
-                RemoveHtlcSet(set);
-                foreach (var member in set.Parts.ToList())
-                    await FailPartAsync(member,
-                                        FailureMessage.IncorrectOrUnknownPaymentDetails(member.HtlcAmount, height),
-                                        cancellationToken);
-                return;
+                await _channelOperations.FulfillHtlcAsync(part.ChannelId, part.HtlcId, preimage, Settle,
+                                                          cancellationToken);
+                LogFulfilled(part, set.PaymentHash);
+                return true;
+            }
+            catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+            {
+                // Nothing was persisted: commit to the set with the preimage on the record instead (its replay
+                // fulfills it, or the resolver claims it on chain)
+                _logger.LogWarning("Could not fulfill HTLC {HtlcId} of channel {ChannelId} for {PaymentHash} yet: "
+                                 + "{Reason}", part.HtlcId, part.ChannelId, set.PaymentHash, e.Message);
             }
         }
 
-        // Once settled, the parts still held are fulfilled on their replay; otherwise the complete set waits for it
-        if (settled || set.Parts.Count == 0)
-            RemoveHtlcSet(set);
+        if (!await MarkPartAsync(part.ChannelId, part.HtlcId, preimage, Settle, cancellationToken))
+            return false;
+
+        _logger.LogInformation("Settled invoice {PaymentHash} with incoming HTLC {HtlcId} of channel {ChannelId}, "
+                             + "which is {Resolution}", set.PaymentHash, part.HtlcId, part.ChannelId,
+                               IsOnchain(part.ChannelId) ? "claimed on chain" : "fulfilled on its replay");
+        return true;
     }
+
+    /// <summary>
+    /// Persists <paramref name="preimage"/> (or removes it, when null) on the record of an incoming HTLC we accepted as
+    /// final hop (<see cref="HtlcRecord.KnownPreimage"/>, NL-322/NL-323), with <paramref name="stage"/> (the invoice's
+    /// settle) in the same save, under the channel's lock; the loaded channel's snapshot gets it after the save. The
+    /// record is the proof that the HTLC is a part of a set we committed to: its replay fulfills it and the BOLT 5
+    /// resolvers claim it on chain with that preimage (B5-LCL-RO-02). False when the HTLC no longer waits for a
+    /// resolution (nothing written).
+    /// </summary>
+    private async Task<bool> MarkPartAsync(ChannelId channelId, ulong htlcId, Secret? preimage,
+                                           Func<IUnitOfWork, Task>? stage, CancellationToken cancellationToken)
+    {
+        using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+            throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+
+        if (channel.Commitments is not { } commitments
+         || commitments.GetHtlc(HtlcDirection.Incoming, htlcId) is not { State: HtlcState.RcvdAddAckRevocation } record)
+            return false;
+
+        if (record.KnownPreimage == preimage && stage is null)
+            return true;
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var next = commitments;
+        if (record.KnownPreimage != preimage)
+        {
+            var updated = record with { KnownPreimage = preimage };
+            next = ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
+                                              commitments.RemoteBalanceMsat,
+                                              commitments.Htlcs.SetItem(updated.Key, updated).Values,
+                                              commitments.FeeUpdates, commitments.LocalNextHtlcId,
+                                              commitments.RemoteNextHtlcId, commitments.LocalCommit,
+                                              commitments.RemoteCommit, commitments.RemoteNextCommit,
+                                              commitments.RemoteNextPerCommitmentPoint);
+            await unitOfWork.ChannelStateDbRepository.ApplyAsync(next, new ChannelTransition([updated], [], [], false,
+                                                                                             false, false, false));
+        }
+
+        if (stage is not null)
+            await stage(unitOfWork);
+
+        await unitOfWork.SaveChangesAsync();
+        channel.UpdateCommitments(next);
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("{Action} the preimage of incoming HTLC {HtlcId} of channel {ChannelId}",
+                             preimage is null ? "Removed" : "Stored", htlcId, channelId);
+        return true;
+    }
+
+    /// <summary>Takes a mark back (the invoice left <c>Open</c> before it settled); best effort.</summary>
+    private async Task UnmarkPartAsync(HtlcSetPart part, Secret preimage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is { } record && record.KnownPreimage == preimage)
+                await MarkPartAsync(part.ChannelId, part.HtlcId, null, null, cancellationToken);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not remove the preimage of HTLC {HtlcId} of channel {ChannelId}", part.HtlcId,
+                             part.ChannelId);
+        }
+    }
+
+    private void LogFulfilled(HtlcSetPart part, Hash paymentHash) =>
+        _logger.LogInformation("Fulfilled incoming HTLC {HtlcId} of {AmountMsat} msat on channel {ChannelId} for our "
+                             + "invoice {PaymentHash}", part.HtlcId, part.HtlcAmount.MilliSatoshi, part.ChannelId,
+                               paymentHash);
+
+    /// <summary>
+    /// A part still counts towards its set: its HTLC waits for a resolution and, on a channel closing on chain, can
+    /// still be claimed (the tip is below its <c>cltv_expiry</c>).
+    /// </summary>
+    private bool IsPartWaiting(HtlcSetPart part) =>
+        GetAwaitingIncomingHtlc(part.ChannelId, part.HtlcId) is { } htlc
+     && (!IsOnchain(part.ChannelId) || CurrentHeight < htlc.CltvExpiry);
 
     /// <summary>An incomplete set waits for more parts (or its timeout); an empty one is dropped.</summary>
     private void HoldIncompleteSet(HtlcSet set)
@@ -580,7 +735,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         if (_disposed || !_htlcSets.TryGetValue(set.PaymentHash, out var current) || !ReferenceEquals(current, set))
             return;
 
-        set.Prune(p => GetAwaitingIncomingHtlc(p.ChannelId, p.HtlcId) is not null);
+        set.Prune(IsPartWaiting);
         if (set.IsComplete)
             return;
 
@@ -600,6 +755,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private async Task<bool> FailPartAsync(HtlcSetPart part, FailureMessage failure,
                                            CancellationToken cancellationToken)
     {
+        if (IsOnchain(part.ChannelId))
+        {
+            // No failure can be sent any more: the HTLC times out on chain (the resolver claims nothing unmarked)
+            _logger.LogInformation("Incoming HTLC {HtlcId} of channel {ChannelId} ({Code}) is left to time out on chain",
+                                   part.HtlcId, part.ChannelId, failure.Code);
+            return true;
+        }
+
         try
         {
             var reason = _failureOnionService.CreateErrorPacket(part.SharedSecret, failure);
@@ -1165,6 +1328,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     #region Helpers
 
     private uint CurrentHeight => _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+
+    /// <summary>
+    /// The channel can no longer carry an update: it failed (our commitment is being broadcast) or a commitment is on
+    /// chain. Its incoming HTLCs are resolved on chain only (NL-316).
+    /// </summary>
+    private bool IsOnchain(ChannelId channelId) =>
+        _channelMemoryRepository.TryGetChannel(channelId, out var channel)
+     && channel.State is ChannelState.Failed or ChannelState.OnchainResolving;
 
     /// <summary>The incoming HTLC when it is locked in and no removal was sent for it yet.</summary>
     private HtlcRecord? GetAwaitingIncomingHtlc(ChannelId channelId, ulong htlcId) =>

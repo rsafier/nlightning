@@ -33,16 +33,17 @@ using Domain.Protocol.Onion.Models;
 /// list; since the HTLC-vs-onion errors carry no invoice information, reporting them first leaks nothing.</para>
 /// <para>Multi-part (<c>acceptMultiPart</c>): an accepted HTLC is one part of the payment's HTLC set
 /// (<see cref="FinalHopResult.TotalMsat"/>, <see cref="FinalHopResult.PartAmount"/>); the caller (HTLC switch) holds
-/// the parts until their <c>amt_to_forward</c> reach <c>total_msat</c>. An HTLC for a <c>Settled</c> invoice with the
-/// right secret, whose <c>total_msat</c> is covered by the amount received, is accepted with
-/// <see cref="FinalHopResult.InvoiceAlreadySettled"/>: the invoice settles in the save of the set's first fulfill, so a
-/// crash or a refused fulfill can leave other parts of the same set held, and BOLT 4 then requires them to be
-/// fulfilled too ("if it fulfills any HTLCs in the HTLC set: MUST fulfill the entire HTLC set"). Nothing persisted
-/// tells a held part from a new HTLC of the same hash, so this does not depend on <c>total_msat</c> &gt;
-/// <c>amt_to_forward</c> (a part that alone covers <c>total_msat</c> can belong to the set too) and skips the checks
-/// that depend on the time of the replay (the <c>cltv_expiry</c> against the current height): the preimage is already
-/// out, and fulfilling only claims funds. BOLT 4 lets a node accept an HTLC for a hash that is already paid (MAY), so a
-/// duplicate payment with the right secret is fulfilled too.</para>
+/// the parts until their <c>amt_to_forward</c> reach <c>total_msat</c>.</para>
+/// <para>Committed set members (<c>committedSetMember</c>, NL-322/NL-323): before the switch settles an invoice it
+/// persists the preimage on every part of the complete set whose removal is not persisted with the settle
+/// (<c>HtlcRecord.KnownPreimage</c> of the incoming HTLC). Such a part must be fulfilled (off chain, or claimed on
+/// chain) whatever happens next (BOLT 4: "if it fulfills any HTLCs in the HTLC set: MUST fulfill the entire HTLC
+/// set"), so for it the checks that depend on the time of its replay (invoice expiry, <c>cltv_expiry</c> against the
+/// current height) are skipped, and a <c>Settled</c> invoice is accepted with
+/// <see cref="FinalHopResult.InvoiceAlreadySettled"/> (with or without <c>basic_mpp</c>). Any other HTLC for a
+/// <c>Settled</c> invoice (a duplicate, or a late part of an already paid set) is failed with
+/// <c>incorrect_or_unknown_payment_details</c>, as LND does (NL-323; BOLT 4 lets a node accept a paid hash, MAY, but
+/// only the payer would lose).</para>
 /// <para>Stateless: <see cref="Evaluate"/> is pure; <see cref="ProcessAsync"/> only reads the invoice through the
 /// caller's repository (its unit of work). Neither mutates the invoice.</para>
 /// <para>Concurrency: the invoice check here is a read, not a check-and-mark. The caller (HTLC switch) runs it under a
@@ -71,10 +72,12 @@ public sealed class FinalHopProcessor
     /// <param name="currentBlockHeight">Our best block height.</param>
     /// <param name="acceptMultiPart">Whether we support <c>basic_mpp</c>: an HTLC may then be one part of the
     /// payment (<c>total_msat</c> &gt; <c>amt_to_forward</c>).</param>
+    /// <param name="committedSetMember">The HTLC carries the invoice's preimage in its record: it is a part of a set the
+    /// switch already committed to fulfill (see the class remarks).</param>
     public async Task<FinalHopResult> ProcessAsync(IInvoiceDbRepository invoices, Hash paymentHash,
                                                    LightningMoney htlcAmount, uint htlcCltvExpiry,
                                                    HopPayload payload, uint currentBlockHeight,
-                                                   bool acceptMultiPart = false)
+                                                   bool acceptMultiPart = false, bool committedSetMember = false)
     {
         ArgumentNullException.ThrowIfNull(invoices);
 
@@ -84,7 +87,7 @@ public sealed class FinalHopProcessor
 
         var invoice = await invoices.GetByPaymentHashAsync(paymentHash);
         return Evaluate(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                        acceptMultiPart);
+                        acceptMultiPart, committedSetMember);
     }
 
     /// <summary>
@@ -93,14 +96,14 @@ public sealed class FinalHopProcessor
     /// <inheritdoc cref="ProcessAsync" path="/param"/>
     public FinalHopResult Evaluate(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                    uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
-                                   bool acceptMultiPart = false)
+                                   bool acceptMultiPart = false, bool committedSetMember = false)
     {
         ArgumentNullException.ThrowIfNull(htlcAmount);
         ArgumentNullException.ThrowIfNull(payload);
 
         var result = CheckHtlcAgainstOnion(htlcAmount, htlcCltvExpiry, payload)
                   ?? CheckInvoice(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                                 acceptMultiPart);
+                                 acceptMultiPart, committedSetMember);
 
         return Log(paymentHash, result);
     }
@@ -123,7 +126,7 @@ public sealed class FinalHopProcessor
 
     private FinalHopResult CheckInvoice(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                         uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
-                                        bool acceptMultiPart)
+                                        bool acceptMultiPart, bool committedSetMember)
     {
         FinalHopResult Unknown(string reason) =>
             FinalHopResult.Fail(FailureMessage.IncorrectOrUnknownPaymentDetails(htlcAmount, currentBlockHeight),
@@ -145,15 +148,19 @@ public sealed class FinalHopProcessor
         {
             case InvoiceStatus.Canceled:
                 return Unknown("The invoice is canceled.");
-            case InvoiceStatus.Settled when acceptMultiPart:
-                // Possibly a part of the set whose first fulfill settled the invoice (checked below)
+            case InvoiceStatus.Settled when committedSetMember:
+                // A part of the set whose settle went through while its own removal did not (checked below)
                 alreadySettled = true;
                 break;
-            case InvoiceStatus.Accepted or InvoiceStatus.Settled:
+            case InvoiceStatus.Settled:
+                // NL-323: not a part of the settled set (a duplicate, or a late part)
+                return Unknown("The invoice is already Settled and this HTLC is not a part of its set.");
+            case InvoiceStatus.Accepted:
                 return Unknown($"The invoice is already {invoice.Status}.");
         }
 
-        if (invoice.IsExpired(_timeProvider.GetUtcNow()))
+        // A committed part is fulfilled whatever the time of its replay
+        if (!committedSetMember && invoice.IsExpired(_timeProvider.GetUtcNow()))
             return Unknown("The invoice is expired.");
 
         if (!paymentData.PaymentSecret.Equals(invoice.PaymentSecret))
@@ -179,8 +186,8 @@ public sealed class FinalHopProcessor
                              + $"{expected.MilliSatoshi} msat.");
         }
 
-        // A part of a settled set must be fulfilled whatever the height of its replay (BOLT 4 MUST)
-        if (!alreadySettled && (ulong)htlcCltvExpiry < (ulong)currentBlockHeight + invoice.MinFinalCltvExpiry)
+        // A committed part must be fulfilled whatever the height of its replay (BOLT 4 MUST)
+        if (!committedSetMember && (ulong)htlcCltvExpiry < (ulong)currentBlockHeight + invoice.MinFinalCltvExpiry)
             return Unknown($"cltv_expiry {htlcCltvExpiry} is below height {currentBlockHeight} + "
                          + $"min_final_cltv_expiry_delta {invoice.MinFinalCltvExpiry}.");
 

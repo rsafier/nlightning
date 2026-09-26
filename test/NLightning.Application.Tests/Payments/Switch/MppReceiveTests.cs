@@ -378,7 +378,7 @@ public class MppReceiveTests
     }
 
     [Fact]
-    public async Task Given_SingleHtlcForASettledInvoice_When_Received_Then_FulfilledAsBolt4Allows()
+    public async Task Given_SingleHtlcForASettledInvoice_When_Received_Then_FailedAsNotAPartOfTheSet()
     {
         // Arrange: the invoice is paid in two parts
         await using var harness = await CreateHarnessAsync();
@@ -388,17 +388,39 @@ public class MppReceiveTests
         await harness.PumpAsync();
         Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
 
-        // Act: a single-part payment of the same hash with the right secret. Nothing persisted tells it from a held
-        // part of the settled set, which must be fulfilled; BOLT 4 lets us accept a paid hash (MAY)
-        await PayPartAsync(harness, invoice, s_amount, s_amount);
+        // Act: a single-part payment of the same hash with the right secret (NL-323: the committed parts of the set
+        // carry the preimage in their records, this one does not)
+        var onion = await PayPartAsync(harness, invoice, s_amount, s_amount);
         await harness.PumpAsync();
 
-        // Assert: fulfilled, the invoice untouched
-        Assert.Equal(3, harness.Alice.PaymentHandler.Fulfilled.Count);
-        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        // Assert: failed as LND does, the invoice untouched
+        var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, Decrypt(harness, onion, failed).Code);
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
         var stored = await GetInvoiceAsync(harness, invoice);
         Assert.Equal(InvoiceStatus.Settled, stored.Status);
         Assert.Equal(s_amount, stored.AmountReceived);
+        AssertNoHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_LatePartForASettledInvoice_When_Received_Then_FailedAsNotAPartOfTheSet()
+    {
+        // Arrange: the invoice is paid in two parts
+        await using var harness = await CreateHarnessAsync();
+        var invoice = await CreateInvoiceAsync(harness);
+        await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await PayPartAsync(harness, invoice, s_secondPart, s_amount);
+        await harness.PumpAsync();
+
+        // Act: a third part of the same total arrives after the set settled (NL-323)
+        var onion = await PayPartAsync(harness, invoice, s_firstPart, s_amount);
+        await harness.PumpAsync();
+
+        // Assert
+        var failed = Assert.Single(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, Decrypt(harness, onion, failed).Code);
+        Assert.Equal(2, harness.Alice.PaymentHandler.Fulfilled.Count);
     }
 
     [Fact]
@@ -518,6 +540,11 @@ public class MppReceiveTests
         Assert.Equal(InvoiceStatus.Settled, (await GetInvoiceAsync(harness, invoice)).Status);
         Assert.Contains(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values,
                         h => h is { Direction: HtlcDirection.Incoming, Removal: null });
+
+        // NL-322/NL-323: every part left without its fulfill was committed first (the preimage on its record)
+        Assert.All(harness.Carol.Channel(ThreeNodeHarness.BobCarolChannelId).Commitments!.Htlcs.Values
+                          .Where(h => h is { Direction: HtlcDirection.Incoming, Removal: null }),
+                   h => Assert.Equal(invoice.Preimage, h.KnownPreimage));
     }
 
     private static Task<InvoiceModel> GetInvoiceAsync(ThreeNodeHarness harness, InvoiceModel invoice) =>
