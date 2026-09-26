@@ -204,6 +204,74 @@ public class ChannelCloseCoordinatorTests
         monitor.Verify(m => m.WatchBitcoinAddress(walletAddress), Times.Once);
     }
 
+    [Theory]
+    [InlineData(ChannelState.ShuttingDown, true)]
+    [InlineData(ChannelState.Negotiating, true)]
+    [InlineData(ChannelState.Closing, true)]
+    [InlineData(ChannelState.Closed, false)]
+    [InlineData(ChannelState.Failed, false)]
+    public async Task Given_AnotherCloseUsesTheUnusedAddress_When_GetLocalScript_Then_ChangeAddressUsed(
+        ChannelState otherState, bool expectChange)
+    {
+        // Arrange (NL-280, W3 review F3): the wallet hands out its first address without a UTXO to every caller, so a
+        // second concurrent close would pay to the same address and link the two channels on chain
+        var receive = WalletAddress(0, false, out var receiveScript);
+        var change = WalletAddress(0, true, out var changeScript);
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        var other = CreateChannel(otherState, isInitiator: false, channelIdTag: 0x21);
+        other.SetLocalShutdownScript(receiveScript);
+        var channel = CreateChannel(ChannelState.Open);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+              .Returns((Func<ChannelModel, bool> predicate) => new[] { other, channel }.Where(predicate).ToList());
+        var monitor = new Mock<IBlockchainMonitor>();
+        var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, monitor.Object,
+                                                  memory.Object);
+
+        // Act
+        var script = await provider.GetLocalScriptAsync(channel);
+
+        // Assert
+        Assert.Equal(expectChange ? changeScript : receiveScript, script);
+        monitor.Verify(m => m.WatchBitcoinAddress(expectChange ? change : receive), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_BothUnusedAddressesTaken_When_GetLocalScript_Then_ReceiveAddressKept()
+    {
+        // Arrange: two other closes already use both first unused addresses (the wallet can't give a third yet)
+        var receive = WalletAddress(0, false, out var receiveScript);
+        var change = WalletAddress(0, true, out var changeScript);
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        var first = CreateChannel(ChannelState.Negotiating, isInitiator: false, channelIdTag: 0x21);
+        first.SetLocalShutdownScript(receiveScript);
+        var second = CreateChannel(ChannelState.ShuttingDown, isInitiator: false, channelIdTag: 0x22);
+        second.SetLocalShutdownScript(changeScript);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+              .Returns((Func<ChannelModel, bool> predicate) => new[] { first, second }.Where(predicate).ToList());
+        var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, null,
+                                                  memory.Object);
+
+        // Act
+        var script = await provider.GetLocalScriptAsync(CreateChannel(ChannelState.Open));
+
+        // Assert
+        Assert.Equal(receiveScript, script);
+    }
+
+    private static WalletAddressModel WalletAddress(uint index, bool isChange, out BitcoinScript script)
+    {
+        var key = new Key();
+        script = key.PubKey.WitHash.ScriptPubKey.ToBytes();
+        return new WalletAddressModel(AddressType.P2Wpkh, index, isChange,
+                                      key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ToString());
+    }
+
     [Fact]
     public async Task Given_ShutdownSent_When_InitiateAgain_Then_NothingSent()
     {
@@ -622,7 +690,8 @@ public class ChannelCloseCoordinatorTests
 
     private static ChannelModel CreateChannel(ChannelState state, long localSat = 60_000, long remoteSat = 40_000,
                                               long dustLimitSat = 546, bool isInitiator = true,
-                                              BitcoinScript? localUpfront = null, BitcoinScript? remoteUpfront = null)
+                                              BitcoinScript? localUpfront = null, BitcoinScript? remoteUpfront = null,
+                                              byte channelIdTag = 0x0e)
     {
         var local = new ChannelParty(LightningMoney.Satoshis(dustLimitSat), LightningMoney.Satoshis(1_000),
                                      LightningMoney.MilliSatoshis(1_000), 30,
@@ -651,7 +720,7 @@ public class ChannelCloseCoordinatorTests
                                                   NormalOperationTestContext.Point(0x0b),
                                                   NormalOperationTestContext.Point(0x0c),
                                                   NormalOperationTestContext.Point(0x0d));
-        return new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray()), null,
+        return new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(channelIdTag, 32).ToArray()), null,
                                 fundingOutput, isInitiator, null, null, LightningMoney.Satoshis(localSat),
                                 localKeySet, 0, 0, LightningMoney.Satoshis(remoteSat), remoteKeySet, 0,
                                 NormalOperationTestContext.PeerNodeId, 0, state, ChannelVersion.V1);
