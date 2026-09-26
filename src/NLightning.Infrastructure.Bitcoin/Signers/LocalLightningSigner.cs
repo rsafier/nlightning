@@ -4,7 +4,6 @@ using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
 using NBitcoin.Crypto;
-using NBitcoin.Secp256k1;
 
 namespace NLightning.Infrastructure.Bitcoin.Signers;
 
@@ -26,6 +25,7 @@ using Domain.Onchain.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
 using Domain.Protocol.ValueObjects;
+using Gossip;
 
 public class LocalLightningSigner : ILightningSigner
 {
@@ -185,19 +185,9 @@ public class LocalLightningSigner : ILightningSigner
     public bool VerifyNodeMessage(Hash messageHash, CompactSignature signature, CompactPubKey nodeId)
     {
         ArgumentNullException.ThrowIfNull(signature);
-        if (signature.Value.Length != CryptoConstants.MaxSignatureSize
-         || !SecpECDSASignature.TryCreateFromCompact(signature.Value, out var ecdsaSignature)
-         || ecdsaSignature is null
-         || !ECPubKey.TryCreate((byte[])nodeId, NLightningCryptoContext.Instance, out _, out var ecPubKey)
-         || ecPubKey is null)
-            return false;
 
-        // libsecp256k1 verification rejects high-S signatures, but a relayed (malleated) one is still valid
-        var (r, s) = ecdsaSignature;
-        if (s.IsHigh)
-            ecdsaSignature = new SecpECDSASignature(r, s.Negate(), true);
-
-        return ecPubKey.SigVerify(ecdsaSignature, (byte[])messageHash);
+        // One BOLT 7 verification for the whole node (high-S accepted), shared with the gossip pipeline (G0-T3)
+        return GossipSignatureVerifier.VerifyCompact((byte[])messageHash, signature.Value, (byte[])nodeId);
     }
 
     /// <inheritdoc />
