@@ -9,9 +9,18 @@ public class NodeOptions
     // private FeatureOptions _features;
 
     /// <summary>
-    /// The network to connect to. Can be "mainnet", "testnet", or "regtest"
+    /// The network to connect to: "mainnet", "testnet", "regtest" or "signet" (a custom signet such as Mutinynet is
+    /// "signet" here, named by <see cref="CustomSignet"/>). Set it from configuration through
+    /// <see cref="BitcoinNetwork.Resolve"/>, which fails on an unknown name.
     /// </summary>
     public BitcoinNetwork BitcoinNetwork { get; set; } = NetworkConstants.Mainnet;
+
+    /// <summary>
+    /// The custom signet this node runs on, if any (configuration section <c>Node:CustomSignet</c>). Requires
+    /// <see cref="BitcoinNetwork"/> signet.
+    /// </summary>
+    /// <see cref="CustomSignetOptions"/>
+    public CustomSignetOptions? CustomSignet { get; set; }
 
     /// <summary>
     /// True if NLTG should run in Daemon mode (background)
@@ -121,7 +130,7 @@ public class NodeOptions
 
     /// <summary>
     /// Returns every configuration error of the options this class owns (currently <see cref="Routing"/>,
-    /// <see cref="FeeUpdates"/> and the reconnect delays); empty when valid. Feature errors are reported by
+    /// <see cref="FeeUpdates"/>, <see cref="CustomSignet"/> and the reconnect delays); empty when valid. Feature errors are reported by
     /// <see cref="FeatureOptions.GetValidationErrors"/>.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -134,6 +143,8 @@ public class NodeOptions
 
         errors.AddRange(Routing.GetValidationErrors());
         errors.AddRange(FeeUpdates.GetValidationErrors());
+        if (CustomSignet is not null)
+            errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
         return errors;
     }
 }
