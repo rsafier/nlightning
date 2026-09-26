@@ -233,8 +233,13 @@ public static class NodeConfigurationExtensions
     /// <param name="network">A built-in network or a custom signet name (e.g. <c>mutinynet</c>, which writes
     /// <c>Node:Network</c> <c>signet</c> and <c>Node:CustomSignet:Name</c> <c>mutinynet</c>).</param>
     /// <remarks>
-    /// <c>Node:EnableHtlcs</c> is written explicitly: true on regtest and signets (test coins), false elsewhere (on
+    /// <c>Node:EnableHtlcs</c> is written explicitly: true on regtest and signets (test coins), false on testnet (on
     /// signet this differs from leaving it unset, see <see cref="NodeOptions.HtlcsEnabled"/>), so the switch is visible.
+    /// On mainnet the key is present with <c>null</c>, which binds as unset: the code default of
+    /// <see cref="NodeOptions.HtlcsEnabled"/> applies (the BOLT 5 O6-T4 gate decides it; write true or false to
+    /// override). <c>Gossip</c> carries the BOLT 7 mainnet gate (plan D12, G5-T5): <c>Enabled</c> (the graph),
+    /// <c>SyncEnabled</c>, <c>RelayEnabled</c> and <c>AcceptPublicChannels</c> are false on mainnet and true elsewhere,
+    /// and <c>AllowPublicChannelsOnMainnet</c> is false; the code defaults agree, the file makes them visible.
     /// <c>Node:Routing</c> carries every <see cref="RoutingOptions"/> default except
     /// <see cref="RoutingOptions.HtlcMaximumMsat"/> (unset: the channel's own limits only). <c>FeeEstimation</c> reads
     /// mempool.space for the network (mutinynet.com for Mutinynet) in sat/vB, and a fixed rate on regtest.
@@ -250,7 +255,11 @@ public static class NodeConfigurationExtensions
         var customSignetName = BitcoinNetwork.IsCustomSignet(name) ? name : string.Empty;
         var routing = new RoutingOptions();
         var fees = new FeeEstimationOptions();
-        var enableHtlcs = resolved == BitcoinNetwork.Regtest || isSignet;
+        var isMainnet = resolved == BitcoinNetwork.Mainnet;
+        // Mainnet leaves the HTLC switch to NodeOptions' code default (null binds as unset); elsewhere it is explicit
+        var enableHtlcs = isMainnet ? "null" : resolved == BitcoinNetwork.Regtest || isSignet ? "true" : "false";
+        // BOLT 7 plan D12: the graph, gossip sync and relay and public channels stay off on mainnet until Proof G5
+        var gossipOn = isMainnet ? "false" : "true";
 
         var (feeSource, feeUrl) = name switch
         {
@@ -333,6 +342,13 @@ public static class NodeConfigurationExtensions
                      "HtlcMinimumMsat": {{HTLC_MINIMUM_MSAT}}
                    }
                  },
+                 "Gossip": {
+                   "Enabled": {{GOSSIP_ON}},
+                   "SyncEnabled": {{GOSSIP_ON}},
+                   "RelayEnabled": {{GOSSIP_ON}},
+                   "AcceptPublicChannels": {{GOSSIP_ON}},
+                   "AllowPublicChannelsOnMainnet": false
+                 },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
                    "Url": "{{FEE_URL}}",
@@ -365,7 +381,8 @@ public static class NodeConfigurationExtensions
                """.Replace("{{NETWORK}}", resolved.Name)
                   .Replace("{{CUSTOM_SIGNET}}", customSignet)
                   .Replace("{{DNS_SEEDS}}", dnsSeeds)
-                  .Replace("{{ENABLE_HTLCS}}", enableHtlcs ? "true" : "false")
+                  .Replace("{{ENABLE_HTLCS}}", enableHtlcs)
+                  .Replace("{{GOSSIP_ON}}", gossipOn)
                   .Replace("{{FEE_BASE_MSAT}}", Invariant(routing.FeeBaseMsat))
                   .Replace("{{FEE_PPM}}", Invariant(routing.FeeProportionalMillionths))
                   .Replace("{{CLTV_EXPIRY_DELTA}}", Invariant(routing.CltvExpiryDelta))
