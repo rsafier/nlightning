@@ -198,7 +198,8 @@ public sealed class RevokedCommitResolver : IOutputResolver
                                                                   or OutputDescriptorKind.PaymentToRemote))
         {
             var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);
-            needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor), GetDeadline(close, descriptor)));
+            needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor), GetDeadline(close, descriptor),
+                                      IsInDangerWindow(context, descriptor)));
         }
 
         var actions = round.Actions;
@@ -365,7 +366,8 @@ public sealed class RevokedCommitResolver : IOutputResolver
                 case ResolutionActionKind.Sweep:
                     if (spend is null && !IsFinished(row))
                         needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor),
-                                                  GetDeadline(round.Close, descriptor)));
+                                                  GetDeadline(round.Close, descriptor),
+                                                  IsInDangerWindow(context, descriptor)));
                     break;
 
                 case ResolutionActionKind.RaiseFulfilled when descriptor.Htlc is { } fulfilled
@@ -661,6 +663,18 @@ public sealed class RevokedCommitResolver : IOutputResolver
             OutputDescriptorKind.RevokedHtlc => descriptor.Htlc?.CltvExpiry,
             _ => null
         };
+
+    /// <summary>
+    /// O7-T3 (BOLT 5 §Revoked Transaction Close Handling, "if SIGHASH_SINGLE|SIGHASH_ANYONECANPAY is used"): on an
+    /// option_anchors channel the cheater's HTLC transactions can carry any extra inputs, so it can pin a spend of an
+    /// HTLC output it may already spend and hold back every penalty that shares a transaction with that output. An HTLC
+    /// we offered is such an output from the start (the cheater's HTLC-success needs only the preimage), so its penalty
+    /// stands alone at once; the cheater's own offered HTLCs open at their <c>cltv_expiry</c> and are split out
+    /// <c>security_delay</c> before it, as without anchors.
+    /// </summary>
+    private static bool IsInDangerWindow(RevokedCommitContext context, CommitmentOutputDescriptor descriptor) =>
+        context.Channel.ChannelParams.OptionAnchorOutputs
+     && descriptor is { Kind: OutputDescriptorKind.RevokedHtlc, Htlc.Direction: HtlcDirection.Outgoing };
 
     private CompactPubKey RevocationPubKey(RevokedCommitContext context) =>
         _keyDerivationService.DeriveRevocationPubKey(context.Channel.LocalKeySet.RevocationCompactBasepoint,
