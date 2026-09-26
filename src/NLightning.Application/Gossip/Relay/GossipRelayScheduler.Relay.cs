@@ -49,8 +49,10 @@ using Sync.Interfaces;
 /// </para>
 /// <para>
 /// <b>Bound:</b> each connection keeps at most <see cref="GossipRelayOptions.MaxRelayPendingPerPeer"/> messages
-/// waiting for its flush; a new one beyond it drops the oldest waiting one (counted in <see cref="GossipMetrics"/>), so
-/// a peer that drains slowly never gets more than that queued on its outbox per flush.
+/// waiting for its flush; a new one beyond it drops the oldest waiting <c>node_announcement</c>, else the oldest
+/// channel message, an announcement together with its waiting updates (counted in <see cref="GossipMetrics"/>), so a
+/// peer that drains slowly never gets more than that queued on its outbox per flush. A later update of a channel whose
+/// announcement was dropped goes out after that announcement again.
 /// </para>
 /// <para>
 /// <b>Backlog:</b> a new filter asks for the graph inside it: one pass over the snapshot taken at the next tick (per
@@ -276,7 +278,7 @@ public sealed partial class GossipRelayScheduler
 
     private async Task<int> FlushPeerAsync(GossipPeer peer, RelayPeerState state, GossipTimestampFilter filter)
     {
-        var items = state.TakePending()
+        var items = state.TakePending(AnnouncementToResend)
                          .OrderBy(i => i.Rank)
                          .ThenBy(i => QueryResponder.ToUInt64(i.ShortChannelId))
                          .ThenBy(i => i.Direction)
@@ -472,6 +474,12 @@ public sealed partial class GossipRelayScheduler
     private bool HasRelayablePolicy(GraphChannel channel) =>
         GetRelayablePolicy(channel, 0) is not null || GetRelayablePolicy(channel, 1) is not null;
 
+    /// <summary>The stored announcement of a channel still relayable (null when it is not).</summary>
+    private RelayItem? AnnouncementToResend(Domain.Channels.ValueObjects.ShortChannelId shortChannelId) =>
+        _graphStore!.TryGetChannel(shortChannelId, out var channel) && IsRelayable(channel)
+            ? new RelayItem(MessageTypes.ChannelAnnouncement, shortChannelId, 0, null, 0, channel.RawAnnouncement)
+            : null;
+
     private RelayPeerState GetRelayState(GossipPeer peer, DateTimeOffset now) =>
         _relayPeers.GetValue(peer.Service, _ => new RelayPeerState(now + GetRelayPhase(peer.NodeId),
                                                                    _relayOptions.MaxRelayPendingPerPeer));
@@ -576,14 +584,23 @@ public sealed partial class GossipRelayScheduler
 
     /// <summary>
     /// The relay state of one connection. The pending set is shared with the collect (under its own lock); the rest
-    /// is touched only by the connection's run (<see cref="TryBeginRun"/>, one at a time). The pending set holds at
-    /// most <c>maxPending</c> messages, the oldest dropped first (a replaced key counts as new).
+    /// is touched only by the connection's run (<see cref="TryBeginRun"/>, one at a time).
     /// </summary>
+    /// <remarks>
+    /// The pending set holds at most <c>maxPending</c> messages (a replaced key counts as new). Beyond it the oldest
+    /// <c>node_announcement</c> goes first, then the oldest channel message; a <c>channel_announcement</c> goes with
+    /// its waiting updates (BOLT 7: an update of a channel the peer does not know is ignored), and its short channel id
+    /// is remembered, so a later update of that channel is sent after the announcement again
+    /// (<see cref="TakePending"/>): the collect saw the dropped announcement already and never offers it twice.
+    /// </remarks>
     private sealed class RelayPeerState(DateTimeOffset nextFlushAt, int maxPending)
     {
         private readonly Lock _pendingLock = new();
         private readonly Dictionary<GossipMessageKey, (RelayItem Item, long Sequence)> _pending = [];
-        private readonly Queue<(GossipMessageKey Slot, long Sequence)> _order = new();
+        private readonly Queue<(GossipMessageKey Slot, long Sequence)> _channelOrder = new();
+        private readonly Queue<(GossipMessageKey Slot, long Sequence)> _nodeOrder = new();
+        private readonly HashSet<Domain.Channels.ValueObjects.ShortChannelId> _unsentAnnouncements = [];
+        private readonly Queue<Domain.Channels.ValueObjects.ShortChannelId> _unsentOrder = new();
         private long _sequence;
         private int _backlogRequested;
         private int _running;
@@ -610,7 +627,7 @@ public sealed partial class GossipRelayScheduler
             }
         }
 
-        /// <summary>Queues the newest version per key; returns how many old ones were dropped to stay in bounds.</summary>
+        /// <summary>Queues the newest version per key; returns how many were dropped to stay in bounds.</summary>
         public int AddPending(IEnumerable<RelayItem> items)
         {
             lock (_pendingLock)
@@ -620,55 +637,149 @@ public sealed partial class GossipRelayScheduler
                 {
                     var sequence = ++_sequence;
                     _pending[item.Slot] = (item, sequence);
-                    _order.Enqueue((item.Slot, sequence));
-                    while (_pending.Count > maxPending && _order.TryDequeue(out var oldest))
+                    (item.Type == MessageTypes.NodeAnnouncement ? _nodeOrder : _channelOrder)
+                       .Enqueue((item.Slot, sequence));
+                    if (item.Type == MessageTypes.ChannelAnnouncement)
+                        _unsentAnnouncements.Remove(item.ShortChannelId);
+
+                    while (_pending.Count > maxPending)
                     {
-                        // A stale order entry (its key was replaced since) removes nothing
-                        if (_pending.TryGetValue(oldest.Slot, out var live) && live.Sequence == oldest.Sequence)
-                        {
-                            _pending.Remove(oldest.Slot);
-                            dropped++;
-                        }
+                        var evicted = EvictOne();
+                        if (evicted == 0)
+                            break;
+                        dropped += evicted;
                     }
                 }
 
-                CompactOrder();
+                CompactOrder(_channelOrder);
+                CompactOrder(_nodeOrder);
                 return dropped;
             }
         }
 
-        public List<RelayItem> TakePending()
+        /// <summary>
+        /// Takes the waiting messages. An update of a channel whose announcement was dropped here gets that
+        /// announcement back (from <paramref name="announcementOf"/>, null when the channel left the graph).
+        /// </summary>
+        public List<RelayItem> TakePending(
+            Func<Domain.Channels.ValueObjects.ShortChannelId, RelayItem?> announcementOf)
         {
             lock (_pendingLock)
             {
                 var items = _pending.Values.Select(p => p.Item).ToList();
-                ClearLocked();
+                if (_unsentAnnouncements.Count > 0)
+                {
+                    var announced = items.Where(i => i.Type == MessageTypes.ChannelAnnouncement)
+                                         .Select(i => i.ShortChannelId)
+                                         .ToHashSet();
+                    var orphaned = items.Where(i => i.Type == MessageTypes.ChannelUpdate
+                                                 && _unsentAnnouncements.Contains(i.ShortChannelId))
+                                        .Select(i => i.ShortChannelId)
+                                        .Distinct()
+                                        .ToList();
+                    foreach (var shortChannelId in orphaned)
+                    {
+                        _unsentAnnouncements.Remove(shortChannelId);
+                        if (!announced.Contains(shortChannelId) && announcementOf(shortChannelId) is { } announcement)
+                            items.Add(announcement);
+                    }
+                }
+
+                _pending.Clear();
+                _channelOrder.Clear();
+                _nodeOrder.Clear();
                 return items;
             }
         }
 
+        /// <summary>Drops what waits (a new backlog sends every announcement with its updates again).</summary>
         public void ClearPending()
         {
             lock (_pendingLock)
-                ClearLocked();
+            {
+                _pending.Clear();
+                _channelOrder.Clear();
+                _nodeOrder.Clear();
+                _unsentAnnouncements.Clear();
+                _unsentOrder.Clear();
+            }
         }
 
-        private void ClearLocked()
+        /// <summary>
+        /// Drops the oldest <c>node_announcement</c>, else the oldest channel message (an announcement with its
+        /// updates); returns how many messages went.
+        /// </summary>
+        private int EvictOne()
         {
-            _pending.Clear();
-            _order.Clear();
+            if (TryDequeueLive(_nodeOrder, out var slot))
+            {
+                _pending.Remove(slot);
+                return 1;
+            }
+
+            if (!TryDequeueLive(_channelOrder, out slot))
+                return 0;
+
+            var item = _pending[slot].Item;
+            _pending.Remove(slot);
+            if (item.Type != MessageTypes.ChannelAnnouncement)
+                return 1;
+
+            var evicted = 1;
+            for (byte direction = 0; direction < 2; direction++)
+            {
+                if (_pending.Remove(GossipMessageKey.ChannelUpdate(item.ShortChannelId, direction, 0)))
+                    evicted++;
+            }
+
+            RememberUnsent(item.ShortChannelId);
+            return evicted;
+        }
+
+        private bool TryDequeueLive(Queue<(GossipMessageKey Slot, long Sequence)> order, out GossipMessageKey slot)
+        {
+            while (order.TryDequeue(out var oldest))
+            {
+                // A stale order entry (its key was replaced or evicted since) removes nothing
+                if (_pending.TryGetValue(oldest.Slot, out var live) && live.Sequence == oldest.Sequence)
+                {
+                    slot = oldest.Slot;
+                    return true;
+                }
+            }
+
+            slot = default;
+            return false;
+        }
+
+        /// <summary>At most <c>maxPending</c> short channel ids, the oldest forgotten first.</summary>
+        private void RememberUnsent(Domain.Channels.ValueObjects.ShortChannelId shortChannelId)
+        {
+            if (_unsentAnnouncements.Add(shortChannelId))
+                _unsentOrder.Enqueue(shortChannelId);
+
+            while (_unsentAnnouncements.Count > maxPending && _unsentOrder.TryDequeue(out var oldest))
+                _unsentAnnouncements.Remove(oldest);
+
+            if (_unsentOrder.Count > 2 * Math.Max(_unsentAnnouncements.Count, 16))
+            {
+                var live = _unsentOrder.Where(_unsentAnnouncements.Contains).Distinct().ToList();
+                _unsentOrder.Clear();
+                foreach (var entry in live)
+                    _unsentOrder.Enqueue(entry);
+            }
         }
 
         /// <summary>Drops the stale order entries once they outnumber the live ones (replaced keys).</summary>
-        private void CompactOrder()
+        private void CompactOrder(Queue<(GossipMessageKey Slot, long Sequence)> order)
         {
-            if (_order.Count <= 2 * Math.Max(_pending.Count, 16))
+            if (order.Count <= 2 * Math.Max(_pending.Count, 16))
                 return;
 
-            var live = _order.Where(o => _pending.TryGetValue(o.Slot, out var p) && p.Sequence == o.Sequence).ToList();
-            _order.Clear();
+            var live = order.Where(o => _pending.TryGetValue(o.Slot, out var p) && p.Sequence == o.Sequence).ToList();
+            order.Clear();
             foreach (var entry in live)
-                _order.Enqueue(entry);
+                order.Enqueue(entry);
         }
     }
 }

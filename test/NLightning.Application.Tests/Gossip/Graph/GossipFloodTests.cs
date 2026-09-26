@@ -11,9 +11,10 @@ using Domain.Protocol.Payloads;
 using Metrics;
 
 /// <summary>
-/// BOLT 7 plan G5-T2 proof (fuzz-style): a peer flooding gossip with invalid signatures through the real queues and
-/// workers is warned, disconnected and banned, its later gossip dropped at the door, while another peer's valid gossip,
-/// sent at the same time, is all applied and that peer is never warned or disconnected.
+/// BOLT 7 plan G5-T2 proof (fuzz-style): a peer flooding gossip with invalid signatures and bad encodings through the
+/// real queues and workers is warned, disconnected and banned, its later gossip dropped at the door, while another
+/// peer's valid gossip, sent at the same time, is all applied and that peer is never warned or disconnected. The
+/// flooder's node id is not in the graph, so its ban stays in memory (no <c>GraphBannedNodes</c> row).
 /// </summary>
 public class GossipFloodTests
 {
@@ -61,12 +62,16 @@ public class GossipFloodTests
         var afterBan = kit.Ingress.TryEnqueue(reconnected.Object, FuzzMessage(random, FloodSize));
         await kit.Ingress.StopAsync();
 
-        // Assert: the flooder is banned (persisted) and was told so, its flood mostly never validated
-        Assert.True(kit.Store.IsBanned(flooder.Object.PeerPubKey));
+        // Assert: the flooder is banned (in memory only: it is no graph node) and was told so, its flood mostly never
+        // validated
+        Assert.True(kit.Ingress.IsBannedForMisbehaviour(flooder.Object.PeerPubKey));
         flooder.Verify(p => p.Disconnect(It.Is<WarningException>(e => e.Message.Contains("Too much invalid gossip"))),
                        Times.Once);
+        Assert.InRange(flooderDisconnects, 1, FloodSize);
+        flooder.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.AtLeastOnce);
         Assert.False(afterBan);
-        Assert.Contains(kit.Repository.Bans.Keys, k => k == flooder.Object.PeerPubKey);
+        Assert.DoesNotContain(kit.Repository.Bans.Keys, k => k == flooder.Object.PeerPubKey);
+        Assert.False(kit.Store.IsBanned(flooder.Object.PeerPubKey));
         Assert.Equal(1, recorder.Sum("nlightning.gossip.peers.banned"));
         var bannedDrops = recorder.Sum("nlightning.gossip.messages.rejected",
                                        (GossipMetrics.ReasonTag, GossipMetricReasons.BannedPeer));
@@ -88,13 +93,17 @@ public class GossipFloodTests
 
     /// <summary>
     /// One fuzzed message: an update of the known channel, an announcement of one of its nodes or a new channel's
-    /// announcement, each with random signatures (sometimes not even a valid encoding) and random fields.
+    /// announcement, each with random signatures and random fields, or a new channel's validly signed announcement
+    /// with its node ids out of order (a bad encoding: a warning without a disconnection).
     /// </summary>
     private static IMessage FuzzMessage(Random random, int index)
     {
         var signature = new CompactSignature(RandomBytes(random, 64));
-        switch (index % 3)
+        switch (index % 4)
         {
+            case 3:
+                return GossipIngressLimitsTests.ReversedNodeIds(
+                    new ShortChannelId((uint)random.Next(100_000, 200_000), (uint)random.Next(1, 1_000), 0));
             case 0:
                 {
                     var update = new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, ChainConstants.Regtest,

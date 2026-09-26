@@ -19,8 +19,9 @@ using Sync;
 
 /// <summary>
 /// BOLT 7 plan G5-T2: the relay keeps at most <see cref="GossipRelayOptions.MaxRelayPendingPerPeer"/> messages waiting
-/// for one connection's flush, dropping the oldest first (counted), so a slow peer never gets more than that per flush
-/// on its outbox; and the relayed/dropped counters (G5-T4).
+/// for one connection's flush, dropping the oldest node announcement first, then the oldest channel with its updates
+/// (counted), so a slow peer never gets more than that per flush on its outbox and never an update without its
+/// channel's announcement; and the relayed/dropped counters (G5-T4).
 /// </summary>
 public class GossipRelayBacklogBoundTests : IDisposable
 {
@@ -125,36 +126,80 @@ public class GossipRelayBacklogBoundTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_AnUpdateReplacedWhileWaiting_When_TheCapIsReached_Then_TheReplacedKeyCountsAsNew()
+    public async Task Given_AnOverflowSplittingAChannel_When_Flushed_Then_NoUpdateGoesOutWithoutItsAnnouncement()
     {
-        // Arrange: a newer version of a waiting message replaces it and moves to the back of the line; a peer whose
-        // flush phase falls after two collects
-        var seed = Enumerable.Range(0x41, 100).Select(i => (byte)i)
-                             .First(b => _relay.GetRelayPhase(new FakeGossipPeer(b).PeerPubKey) is var phase
-                                      && phase > TimeSpan.FromSeconds(25) && phase < TimeSpan.FromSeconds(55));
-        var peer = AddPeer(seed);
+        // Arrange: 900 (announcement and two updates) then 901 (announcement and one update): five messages for a cap
+        // of three, so dropping the oldest three one by one would keep 900's second update without its announcement
+        var peer = AddPeer(0x41);
         await _relay.RelayTickAsync(TestContext.Current.CancellationToken);
-        var first = new ShortChannelId(800, 1, 0);
-        _graph.AddSignedChannel(first, SyncTestGraph.NodeA, SyncTestGraph.NodeB, 1_700_000_000, null);
-        await TickAfterAsync(TimeSpan.FromSeconds(10));
+        var split = new ShortChannelId(900, 1, 0);
+        var kept = new ShortChannelId(901, 1, 0);
+        _graph.AddSignedChannel(split, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddSignedChannel(kept, SyncTestGraph.NodeA, SyncTestGraph.NodeC, 1_700_000_000, null);
+
+        // Act
+        await FlushAllAsync();
+
+        // Assert: 900's announcement went with both its updates; 901 went whole
+        Assert.DoesNotContain(peer.Sent.OfType<ChannelUpdateMessage>(), u => u.Payload.ShortChannelId == split);
+        Assert.Single(peer.Sent.OfType<ChannelAnnouncementMessage>(), a => a.Payload.ShortChannelId == kept);
+        Assert.Single(peer.Sent.OfType<ChannelUpdateMessage>(), u => u.Payload.ShortChannelId == kept);
+        Assert.Equal(2, peer.Sent.Count);
+        Assert.Equal(3, _recorder.Sum("nlightning.gossip.messages.dropped",
+                                      (GossipMetrics.ReasonTag, GossipMetricReasons.RelayBacklogFull)));
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncementDroppedByTheCap_When_ItsChannelGetsANewUpdate_Then_TheAnnouncementGoesOutFirst()
+    {
+        // Arrange: 900's group is dropped by the cap (the relay saw its announcement and never offers it again)
+        var peer = AddPeer(0x41);
+        await _relay.RelayTickAsync(TestContext.Current.CancellationToken);
+        var dropped = new ShortChannelId(900, 1, 0);
+        _graph.AddSignedChannel(dropped, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddSignedChannel(new ShortChannelId(901, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeC);
+        await FlushAllAsync();
+        Assert.DoesNotContain(peer.Sent.OfType<ChannelAnnouncementMessage>(), a => a.Payload.ShortChannelId == dropped);
+        var before = peer.Sent.Count;
+
+        // Act: a newer update of 900's direction 0
         var (node1, _) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
-        var newer = GraphTestKit.SignedChannelUpdate(first, node1, 0, 1_700_000_100, 7_000).Payload;
-        Assert.True(_graph.Store.TryApplyPolicy(first, Domain.Gossip.Graph.GraphPolicy.FromChannelUpdate(newer) with
+        var newer = GraphTestKit.SignedChannelUpdate(dropped, node1, 0, 1_700_000_100, 7_000).Payload;
+        Assert.True(_graph.Store.TryApplyPolicy(dropped, Domain.Gossip.Graph.GraphPolicy.FromChannelUpdate(newer) with
         {
             RawUpdate = newer.GetBytes()
         }));
-        _graph.AddSignedChannel(new ShortChannelId(801, 1, 0), SyncTestGraph.NodeA, SyncTestGraph.NodeC,
-                                1_700_000_000, null);
+        await FlushAllAsync();
 
-        // Act: the second collect, then the flush
-        await TickAfterAsync(TimeSpan.FromSeconds(10));
-        await TickAfterAsync(TimeSpan.FromSeconds(50));
+        // Assert: the announcement goes out again, before the update
+        var sent = peer.Sent.Skip(before).ToList();
+        Assert.Equal(2, sent.Count);
+        var announcement = Assert.IsType<ChannelAnnouncementMessage>(sent[0]);
+        Assert.Equal(dropped, announcement.Payload.ShortChannelId);
+        var update = Assert.IsType<ChannelUpdateMessage>(sent[1]);
+        Assert.Equal(1_700_000_100u, update.Payload.Timestamp);
+    }
 
-        // Assert: the pending set held first's 256 + 258 then (replaced) 258, 801's 256 + 258: the cap of 3 kept
-        // first's newer 258 and 801's pair, and dropped first's announcement (the oldest)
-        var updates = peer.Sent.OfType<ChannelUpdateMessage>().ToList();
-        Assert.Contains(updates, u => u.Payload.ShortChannelId == first && u.Payload.Timestamp == 1_700_000_100);
-        Assert.DoesNotContain(peer.Sent.OfType<ChannelAnnouncementMessage>(), a => a.Payload.ShortChannelId == first);
+    [Fact]
+    public async Task Given_NodeAnnouncementsAndAChannel_When_TheCapIsReached_Then_TheNodeAnnouncementsGoFirst()
+    {
+        // Arrange: one channel (three messages) and the announcements of its two nodes, collected after it
+        var peer = AddPeer(0x41);
+        await _relay.RelayTickAsync(TestContext.Current.CancellationToken);
+        var scid = new ShortChannelId(950, 1, 0);
+        _graph.AddSignedChannel(scid, SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddNode(SyncTestGraph.NodeA);
+        _graph.AddNode(SyncTestGraph.NodeB);
+
+        // Act
+        await FlushAllAsync();
+
+        // Assert: the channel went whole; the node announcements (useless without it) were dropped
+        Assert.Equal(3, peer.Sent.Count);
+        Assert.Empty(peer.Sent.OfType<NodeAnnouncementMessage>());
+        Assert.Single(peer.Sent.OfType<ChannelAnnouncementMessage>());
+        Assert.Equal(2, _recorder.Sum("nlightning.gossip.messages.dropped",
+                                      (GossipMetrics.ReasonTag, GossipMetricReasons.RelayBacklogFull)));
     }
 
     private FakeGossipPeer AddPeer(byte seed)
