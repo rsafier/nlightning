@@ -28,6 +28,14 @@ public interface IBitcoinChainService
         Task.FromResult<(TxOut Output, uint Height)?>(null);
 
     /// <summary>
+    /// The output at <paramref name="outPoint"/> if it is confirmed and unspent in the active chain, ignoring mempool
+    /// spends (<c>gettxout</c> without the mempool), with the height of the block that holds it; null otherwise. Tells
+    /// a mempool spend from an on-chain one. The default is <see cref="GetUnspentOutputAsync"/>.
+    /// </summary>
+    Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) =>
+        GetUnspentOutputAsync(outPoint);
+
+    /// <summary>
     /// The hash and the transaction ids, in block order, of the active chain's block at <paramref name="height"/>
     /// (<c>getblockhash</c> + <c>getblock &lt;hash&gt; 1</c>: txids only, no txindex needed; BOLT 7 plan §3.4). Null
     /// when the height is above the tip or the block's data is not available (a pruned node). The default reads the

@@ -129,11 +129,25 @@ public class BitcoinChainService : IBitcoinChainService
         }
     }
 
-    public async Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint)
+    public Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>
+        GetUnspentOutputAsync(outPoint, true);
+
+    public Task<(TxOut Output, uint Height)?> GetConfirmedUnspentOutputAsync(OutPoint outPoint) =>
+        GetUnspentOutputAsync(outPoint, false);
+
+    /// <summary>
+    /// True for the <c>getblock</c> error of a pruned block (Bitcoin Core: RPC_MISC_ERROR "Block not available (pruned
+    /// data)"). Other RPC_MISC_ERRORs (such as "Block not found on disk") are failures, not a pruned answer.
+    /// </summary>
+    internal static bool IsPrunedBlockError(RPCErrorCode code, string? message) =>
+        code == RPCErrorCode.RPC_MISC_ERROR
+     && message?.Contains("pruned", StringComparison.OrdinalIgnoreCase) == true;
+
+    private async Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint, bool includeMempool)
     {
         try
         {
-            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, true);
+            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, includeMempool);
             if (response is null || response.Confirmations <= 0)
                 return null;
 
@@ -173,7 +187,7 @@ public class BitcoinChainService : IBitcoinChainService
 
             return (blockHash, txIds);
         }
-        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_MISC_ERROR)
+        catch (RPCException ex) when (IsPrunedBlockError(ex.RPCCode, ex.Message))
         {
             // "Block not available (pruned data)"
             if (_logger.IsEnabled(LogLevel.Debug))

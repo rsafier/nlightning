@@ -203,18 +203,12 @@ public class FundingOutputLookupTests
         Assert.Equal(FundingOutputStatus.OutputSpentOrMissing, result.Status);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Given_SpentFundingOutput_When_Lookup_Then_OutputSpentOrMissing(bool mined)
+    [Fact]
+    public async Task Given_FundingOutputSpentInBlock_When_Lookup_Then_OutputSpentOrMissingAndNotTransient()
     {
-        // Arrange: a close in the mempool counts as spent (gettxout with the mempool), and in a block too
-        var close = Network.RegTest.CreateTransaction();
-        close.Inputs.Add(new OutPoint(_fundingTx, 1));
-        close.Outputs.Add(Money.Satoshis(FundingSatoshis - 1_000), new Key().PubKey.WitHash.ScriptPubKey);
-        await _chain.SendTransactionAsync(close);
-        if (mined)
-            _chain.Inner.Mine();
+        // Arrange: a mined close
+        await _chain.SendTransactionAsync(CreateClose());
+        _chain.Inner.Mine();
         using var lookup = CreateLookup();
 
         // Act
@@ -222,6 +216,84 @@ public class FundingOutputLookupTests
 
         // Assert
         Assert.Equal(FundingOutputStatus.OutputSpentOrMissing, result.Status);
+        Assert.False(result.IsTransient);
+    }
+
+    [Fact]
+    public async Task Given_FundingOutputSpentOnlyInMempool_When_Lookup_Then_OutputSpentInMempoolAndTransient()
+    {
+        // Arrange: a close not mined yet; BOLT 7's "the output is spent" means on chain, and it may still be replaced
+        await _chain.SendTransactionAsync(CreateClose());
+        using var lookup = CreateLookup();
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingOutputStatus.OutputSpentInMempool, result.Status);
+        Assert.True(result.IsTransient);
+        Assert.False(result.IsFound);
+        Assert.Equal(1, _chain.ConfirmedUnspentOutputCalls);
+    }
+
+    [Fact]
+    public async Task Given_UnspentFundingOutput_When_Lookup_Then_NoSecondGetTxOut()
+    {
+        // Arrange
+        using var lookup = CreateLookup();
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(result.IsFound);
+        Assert.Equal(0, _chain.ConfirmedUnspentOutputCalls);
+    }
+
+    [Fact]
+    public async Task Given_BlockReplacedAfterGetTxOut_When_FundingTxAtOtherIndex_Then_OldScidNotFound()
+    {
+        // Arrange: right after gettxout, block 101 is replaced by one holding another tx at index 1 and the funding
+        // tx at index 2, so gettxout's height still matches but the txid list read before it is stale
+        var other = Network.RegTest.CreateTransaction();
+        other.Inputs.Add(new OutPoint(RandomUtils.GetUInt256(), 0));
+        other.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var reorged = false;
+        _chain.AfterUnspentOutput = () =>
+        {
+            if (reorged)
+                return;
+            reorged = true;
+            _chain.Inner.Reorg(FundingHeight - 1, 1, other, _fundingTx);
+        };
+        using var lookup = CreateLookup();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var oldScid = await lookup.LookupAsync(FundingScid, ct);
+        var newScid = await lookup.LookupAsync(new ShortChannelId(FundingHeight, 2, 1), ct);
+
+        // Assert: the retry reads the new block, whose index 1 has no output 1
+        Assert.True(reorged);
+        Assert.Equal(FundingOutputStatus.OutputSpentOrMissing, oldScid.Status);
+        Assert.Equal(FundingOutputStatus.Found, newScid.Status);
+        Assert.Equal(2, _chain.BlockTxIdCalls);
+    }
+
+    [Fact]
+    public async Task Given_BlockAlwaysReplacedAfterGetTxOut_When_Lookup_Then_RetriedOnceThenChainMoved()
+    {
+        // Arrange: every gettxout is followed by a new block 101 with the funding tx at the same index
+        _chain.AfterUnspentOutput = () => _chain.Inner.Reorg(FundingHeight - 1, 1, _fundingTx);
+        using var lookup = CreateLookup();
+
+        // Act
+        var result = await lookup.LookupAsync(FundingScid, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingOutputStatus.ChainMoved, result.Status);
+        Assert.True(result.IsTransient);
+        Assert.Equal(2, _chain.UnspentOutputCalls);
     }
 
     [Fact]
@@ -236,6 +308,7 @@ public class FundingOutputLookupTests
 
         // Assert
         Assert.Equal(FundingOutputStatus.BlockNotFound, result.Status);
+        Assert.True(result.IsTransient); // bitcoind behind the peer: retry once the tip reaches the height
         Assert.Equal(0, _chain.BlockTxIdCalls);
     }
 
@@ -526,6 +599,14 @@ public class FundingOutputLookupTests
         tx.Outputs.Add(Money.Satoshis(satoshis),
                        PayToMultiSigTemplate.Instance.GenerateScriptPubKey(2, ordered).WitHash.ScriptPubKey);
         return tx;
+    }
+
+    private Transaction CreateClose()
+    {
+        var close = Network.RegTest.CreateTransaction();
+        close.Inputs.Add(new OutPoint(_fundingTx, 1));
+        close.Outputs.Add(Money.Satoshis(FundingSatoshis - 1_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return close;
     }
 
     private static CompactPubKey Compact(PubKey key) => key.ToBytes();

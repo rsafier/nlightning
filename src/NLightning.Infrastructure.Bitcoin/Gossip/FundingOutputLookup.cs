@@ -30,7 +30,13 @@ using Wallet.Interfaces;
 /// <para>
 /// When <c>gettxout</c> reports the output at another height than the SCID's (a reorg between the two calls, or the
 /// tip moving between <c>gettxout</c> and <c>getblockcount</c>), the lookup drops the cached height and tries once
-/// more, then answers <see cref="FundingOutputStatus.ChainMoved"/>.
+/// more, then answers <see cref="FundingOutputStatus.ChainMoved"/>. The same goes when <c>getblockhash</c> names
+/// another block after <c>gettxout</c> than the one whose txid list was read (a reorg that could have mined the
+/// funding tx at the same height but another index).
+/// </para>
+/// <para>
+/// An output spent only by a mempool transaction is <see cref="FundingOutputStatus.OutputSpentInMempool"/> (a second
+/// <c>gettxout</c> without the mempool), which is transient like <see cref="FundingOutputStatus.BlockNotFound"/>.
 /// </para>
 /// </remarks>
 public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
@@ -184,17 +190,26 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         if (height > tip)
             return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound);
 
-        var txIds = await GetTxIdsAsync(height);
-        if (txIds is null)
+        var block = await GetTxIdsAsync(height);
+        if (block is not { } list)
             return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockUnavailable);
+
+        var txIds = list.TxIds;
 
         if (shortChannelId.TransactionIndex >= txIds.Count)
             return FundingOutputLookupResult.Failed(FundingOutputStatus.TransactionIndexOutOfRange);
 
         var txId = txIds[(int)shortChannelId.TransactionIndex];
-        var unspent = await _chain.GetUnspentOutputAsync(new OutPoint(txId, shortChannelId.OutputIndex));
+        var outPoint = new OutPoint(txId, shortChannelId.OutputIndex);
+        var unspent = await _chain.GetUnspentOutputAsync(outPoint);
         if (unspent is not { } found)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.OutputSpentOrMissing);
+        {
+            // Spent in a block, missing, or only spent by a mempool transaction (a close not mined yet: transient)
+            var confirmed = await _chain.GetConfirmedUnspentOutputAsync(outPoint);
+            return FundingOutputLookupResult.Failed(confirmed is { } c && c.Height == height
+                                                        ? FundingOutputStatus.OutputSpentInMempool
+                                                        : FundingOutputStatus.OutputSpentOrMissing);
+        }
 
         if (found.Height != height)
         {
@@ -204,13 +219,24 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
             return FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved);
         }
 
+        // A reorg between reading the txid list and gettxout can mine the same tx at the same height at another index:
+        // the list must still be the active chain's block at that height
+        var blockHashNow = await _chain.GetBlockHashAsync(height);
+        if (blockHashNow != list.BlockHash)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Block {Height} changed during the funding output lookup of {ShortChannelId}", height,
+                                 shortChannelId);
+            return FundingOutputLookupResult.Failed(FundingOutputStatus.ChainMoved);
+        }
+
         var confirmations = tip >= height ? tip - height + 1 : 1;
         return FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, new TxId(txId.ToBytes()),
                                                     LightningMoney.Satoshis(found.Output.Value.Satoshi),
                                                     found.Output.ScriptPubKey.ToBytes(), confirmations);
     }
 
-    private async Task<IReadOnlyList<uint256>?> GetTxIdsAsync(uint height)
+    private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(uint height)
     {
         var blockHash = await _chain.GetBlockHashAsync(height);
         lock (_cacheGate)
@@ -221,7 +247,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
                 {
                     _lru.Remove(node);
                     _lru.AddFirst(node);
-                    return node.Value.TxIds;
+                    return (node.Value.BlockHash, node.Value.TxIds);
                 }
 
                 // Another block at this height now: a reorg the monitor has not reported yet
@@ -238,7 +264,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         if (fetched.BlockHash == blockHash)
             Store(new CachedBlock(height, fetched.BlockHash, fetched.TxIds));
 
-        return fetched.TxIds;
+        return fetched;
     }
 
     private void Store(CachedBlock block)
