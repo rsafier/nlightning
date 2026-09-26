@@ -108,6 +108,12 @@ public class PeerCommunicationService : IPeerCommunicationService
 
         _messageService.OnExceptionRaised += HandleExceptionRaised;
         _pingPongService.DisconnectEvent += HandlePingPongDisconnect;
+
+        // Subscribed before _pingStarted can turn true: a PingAsync that passes that check must find its ping sent,
+        // or it and the keep-alive loop (which joins the same outstanding ping) would both time out and disconnect a
+        // healthy peer. HandlePingMessageReady sends nothing before the peer's init.
+        _pingPongService.OnPingMessageReady += HandlePingMessageReady;
+        _pingPongService.OnPongReceived += HandlePongReceived;
     }
 
     /// <inheritdoc />
@@ -257,9 +263,6 @@ public class PeerCommunicationService : IPeerCommunicationService
 
     private void SetupPingPongService()
     {
-        _pingPongService.OnPingMessageReady += HandlePingMessageReady;
-        _pingPongService.OnPongReceived += HandlePongReceived;
-
         // Setup Ping to keep connection alive
         _ = _pingPongService.StartPingAsync(_cts.Token).ContinueWith(_ =>
         {
@@ -456,6 +459,8 @@ public class PeerCommunicationService : IPeerCommunicationService
             _messageService.OnMessageReceived -= HandleMessageReceived;
         _messageService.OnExceptionRaised -= HandleExceptionRaised;
         _pingPongService.DisconnectEvent -= HandlePingPongDisconnect;
+        _pingPongService.OnPingMessageReady -= HandlePingMessageReady;
+        _pingPongService.OnPongReceived -= HandlePongReceived;
 
         // A Disconnect after Dispose must not touch the disposed _cts
         Interlocked.Exchange(ref _disconnecting, 1);
