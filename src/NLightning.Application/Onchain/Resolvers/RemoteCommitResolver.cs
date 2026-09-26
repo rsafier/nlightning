@@ -79,7 +79,9 @@ using Remote;
 /// depth has passed without a preimage (and the close is reasonably deep), every round until the upstream has its
 /// removal; the watched outputs keep the channel from closing until then. Waiting for <c>Closed</c> (100 blocks, or
 /// <c>cltv_expiry</c> + 100) could miss the upstream deadline and force-close the upstream channel too. A preimage
-/// that shows up in a spend first fulfills instead.
+/// that shows up in a spend first fulfills instead. Our own payment has no upstream deadline: it is failed only at
+/// <c>cltv_expiry</c> + the irrevocable depth (the peer can still claim the HTLC with its preimage until we could time
+/// it out, which we cannot here), and a failed payment keeps the unknown outputs watched until then.
 /// </para>
 /// </remarks>
 public sealed class RemoteCommitResolver : IOutputResolver
@@ -702,7 +704,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
         foreach (var record in OpenOutgoingHtlcs(context))
         {
             if (context.Height < record.CltvExpiry + _options.IrrevocableDepth
-             && !await IsUpstreamResolvedAsync(context, record.Id))
+             && !await IsSettledForIgnoreAsync(context, record.Id))
                 return;
         }
 
@@ -740,6 +742,13 @@ public sealed class RemoteCommitResolver : IOutputResolver
             }
 
             if (!expired)
+                continue;
+
+            // Our own payment has no upstream deadline: it stays in flight until the HTLC is long expired
+            // (cltv_expiry + the irrevocable depth, when the unknown outputs are ignored), so a preimage the peer
+            // reveals on chain until then still turns it into a success
+            if (await IsLocalPaymentAsync(context, record.Id)
+             && (ulong)context.Height < (ulong)record.CltvExpiry + _options.IrrevocableDepth)
                 continue;
 
             if (_logger.IsEnabled(LogLevel.Warning))
@@ -881,6 +890,30 @@ public sealed class RemoteCommitResolver : IOutputResolver
         var resolved = await ComputeUpstreamResolvedAsync(context, htlcId);
         context.UpstreamResolved[htlcId] = resolved;
         return resolved;
+    }
+
+    /// <summary>
+    /// Whether our offered HTLC <paramref name="htlcId"/> no longer needs the unknown outputs of a commitment we could
+    /// not rebuild watched before <c>cltv_expiry</c> + the irrevocable depth: a forward whose upstream is resolved, or
+    /// our payment once it succeeded. A failed payment keeps them watched (a preimage revealed later still settles it).
+    /// </summary>
+    private async Task<bool> IsSettledForIgnoreAsync(RemoteCommitContext context, ulong htlcId)
+    {
+        var origin = await context.UnitOfWork.ChannelStateDbRepository.GetHtlcOriginAsync(
+                         context.Channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, htlcId));
+        if (origin is not { Kind: HtlcOriginKind.Local, PaymentHash: { } paymentHash })
+            return await IsUpstreamResolvedAsync(context, htlcId);
+
+        var payment = await context.UnitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash);
+        return payment is null || payment.Status == PaymentStatus.Succeeded;
+    }
+
+    /// <summary>Whether our offered HTLC <paramref name="htlcId"/> pays our own payment (origin <c>Local</c>).</summary>
+    private static async Task<bool> IsLocalPaymentAsync(RemoteCommitContext context, ulong htlcId)
+    {
+        var origin = await context.UnitOfWork.ChannelStateDbRepository.GetHtlcOriginAsync(
+                         context.Channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, htlcId));
+        return origin is { Kind: HtlcOriginKind.Local, PaymentHash: not null };
     }
 
     private async Task<bool> ComputeUpstreamResolvedAsync(RemoteCommitContext context, ulong htlcId)

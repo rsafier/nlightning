@@ -512,9 +512,9 @@ public sealed class RemoteCommitResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_FutureCommitmentWithOurPayment_When_FailedUpstream_Then_NoMoreEventsAndOutputsIgnoredLongBeforeExpiryPlus100()
+    public async Task Given_FutureCommitmentWithOurPayment_When_ExpiredReasonablyDeep_Then_KeptInFlightUntilExpiryPlus100()
     {
-        // Arrange (NL-320)
+        // Arrange (NL-320 review): our own payment has no upstream deadline, so it is not failed at cltv_expiry + 6
         var preimage = RealSigningCommitmentPair.Preimage(5);
         var id = Pair.Add(Pair.Alice, 20_000_000, preimage, Cltv);
         Pair.Settle(Pair.Alice);
@@ -525,17 +525,68 @@ public sealed class RemoteCommitResolverTests : IDisposable
         var payment = AddLocalPayment(id, RealSigningCommitmentPair.Hash(preimage));
         _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.FutureCommitment);
         await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+
+        // Act: cltv_expiry + 6 .. + 99
         await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.ReasonableDepth);
-        Assert.IsType<OutgoingHtlcFailed>(Assert.Single(_context.SwitchEvents));
+        await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.IrrevocableDepth - 1);
+
+        // Assert: nothing failed, every unknown output still watched
+        Assert.Empty(_context.SwitchEvents);
+        Assert.All(_context.SavedRows().Where(r => r.Descriptor == OutputDescriptorKind.Unknown),
+                   r => Assert.Equal(OutputResolutionState.Pending, r.State));
+
+        // Act: cltv_expiry + 100
+        await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.IrrevocableDepth);
+
+        // Assert: failed now
+        var failed = Assert.IsType<OutgoingHtlcFailed>(Assert.Single(_context.SwitchEvents));
+        Assert.Equal(id, failed.HtlcId);
+        Assert.Equal(RemoteHtlcSwitchEvents.OnchainTimeoutKind, failed.Removal.Kind);
 
         // Act: the payment took the failure
         _context.Store.Payments[payment.PaymentHash] = Failed(payment);
-        await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.ReasonableDepth + 1);
+        await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.IrrevocableDepth + 1);
 
-        // Assert: nothing raised again, and the unknown outputs (the commitment is 100 deep) are ignored now
+        // Assert: nothing raised again, and the unknown outputs are ignored
         Assert.Single(_context.SwitchEvents);
         Assert.All(_context.SavedRows().Where(r => r.Descriptor == OutputDescriptorKind.Unknown),
                    r => Assert.Equal(OutputResolutionState.Ignored, r.State));
+    }
+
+    [Fact]
+    public async Task Given_FutureCommitmentWithOurPayment_When_PeerClaimsWithPreimageLongAfterExpiry_Then_PaymentFulfilledNeverFailed()
+    {
+        // Arrange (NL-320 review): Bob closes with a commitment we cannot rebuild and claims our payment's HTLC with its
+        // preimage at cltv_expiry + 50, well past the reasonable depth
+        var preimage = RealSigningCommitmentPair.Preimage(5);
+        var id = Pair.Add(Pair.Alice, 20_000_000, preimage, Cltv);
+        Pair.Settle(Pair.Alice);
+        var backup = Pair.Alice.State;
+        Pair.Add(Pair.Bob, 30_000_000, RealSigningCommitmentPair.Preimage(6), Cltv);
+        Pair.Settle(Pair.Bob);
+        _context.UseSnapshot(backup);
+        var future = Pair.Alice.State.RemoteCommit;
+        AddLocalPayment(id, RealSigningCommitmentPair.Hash(preimage));
+        _context.CloseWith(future, ChannelCloseKind.FutureCommitment);
+        var vout = _context.Mapper.Map(_context.Channel, CommitmentTxSpec.FromCommitmentSpec(future.Spec),
+                                       CommitmentCase.Remote, future.Number, future.PerCommitmentPoint)
+                           .Outputs.Single(o => o.Htlc is { Direction: HtlcDirection.Outgoing } h && h.Id == id)
+                           .Vout;
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        await _context.ResolveAsync(Cltv + RemoteResolutionTestContext.ReasonableDepth);
+        await _context.ResolveAsync(Cltv + 49);
+        Assert.Empty(_context.SwitchEvents);
+        Assert.Equal(OutputResolutionState.Pending, _context.Row(vout).State);
+
+        // Act
+        var spend = _context.PeerSpend(vout, _context.SuccessWitness(vout, preimage));
+        await _context.SpendAsync(vout, spend, Cltv + 50);
+
+        // Assert
+        Assert.NotEmpty(_context.SwitchEvents);
+        Assert.All(_context.SwitchEvents,
+                   e => Assert.Equal(preimage, Assert.IsType<OutgoingHtlcFulfilled>(e).PaymentPreimage));
+        Assert.Equal(preimage, _context.SavedHtlc(HtlcDirection.Outgoing, id)?.KnownPreimage);
     }
 
     [Fact]
@@ -604,7 +655,7 @@ public sealed class RemoteCommitResolverTests : IDisposable
         var id = Pair.Add(Pair.Alice, 20_000_000, preimage, Cltv);
         Pair.Settle(Pair.Alice);
         _context.UseSnapshot();
-        AddLocalPayment(id, RealSigningCommitmentPair.Hash(preimage));
+        AddUpstreamForward(id, preimage);
         var spend = _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.Unknown);
 
         // Act
