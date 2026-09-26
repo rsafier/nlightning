@@ -93,10 +93,18 @@ internal sealed class OnchainTestStore
                   .ReturnsAsync((TxId txId, uint index) => Watches.GetValueOrDefault((txId, index)));
         repository.Setup(r => r.MarkSpentAsync(It.IsAny<TxId>(), It.IsAny<uint>(), It.IsAny<TxId>(), It.IsAny<uint>(),
                                                It.IsAny<Hash>()))
-                  .Callback((TxId txId, uint index, TxId spendingTxId, uint height, Hash _) =>
+                  .Callback((TxId txId, uint index, TxId spendingTxId, uint height, Hash blockHash) =>
                    {
                        WatchSpends[(txId, index)] = (spendingTxId, height);
                        _undo.Add(() => WatchSpends.Remove((txId, index)));
+
+                       // The stored watch records the spend too (as the repository's row does)
+                       if (Watches.TryGetValue((txId, index), out var watch) && !watch.IsSpent)
+                       {
+                           watch.MarkSpent(spendingTxId, height, blockHash);
+                           _undo.Add(watch.ClearSpend);
+                       }
+
                        _pending.Add($"watch {index} spent");
                    })
                   .Returns(Task.CompletedTask);

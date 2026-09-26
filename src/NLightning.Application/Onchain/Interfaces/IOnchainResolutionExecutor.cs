@@ -35,6 +35,15 @@ public interface IOnchainResolutionExecutor
     Task CatchUpSpendsAsync(ChannelId channelId, IReadOnlyList<Domain.Onchain.Models.WatchedOutpointModel> watches,
                             uint fromHeight, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// NL-311: catches up the saved watch of every unresolved output of the channel from its parent's height (or from
+    /// the spend the chain monitor recorded on it) up to bitcoind's tip. A crash between a save and
+    /// <c>TrackWatchedOutpoint</c> leaves watches the monitor tracks again after the restart, but it never rescans the
+    /// blocks it processed in between. <see cref="RunRoundAsync"/> runs it once per channel and process before the
+    /// channel's first round. Takes the channel's lock itself; the caller must hold none. Idempotent.
+    /// </summary>
+    Task CatchUpSavedWatchesAsync(ChannelId channelId, CancellationToken cancellationToken = default);
+
     /// <summary>Waits until no scheduled round is running or pending (tests).</summary>
     Task WhenIdleAsync();
 }
