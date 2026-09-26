@@ -20,7 +20,7 @@ using Infrastructure.Crypto.Ciphers;
 /// <remarks>
 /// Order of checks, per BOLT 4 "Onion Decryption": version, public key, (route-blinding tweak), HMAC (constant time),
 /// then payload framing. The input packet is never modified. The replay check belongs to the caller and must record
-/// the HMAC only after this peel succeeded (see <c>IOnionReplayCache</c>).
+/// the HMAC only after this peel succeeded (see <c>IOnionReplayStore</c>).
 /// </remarks>
 internal sealed class OnionPeeler
 {

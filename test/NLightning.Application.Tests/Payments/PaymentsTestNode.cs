@@ -56,7 +56,7 @@ internal sealed class PaymentsTestNode : IDisposable
         services.AddLogging();
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
-        services.AddSingleton<IOnionReplayCache>(new OnionReplayCache());
+        services.AddSingleton<IOnionReplayStore>(new InMemoryOnionReplayStore());
         services.AddScoped<IInvoiceDbRepository>(_ => Invoices);
         services.AddScoped(_ => UnitOfWork.Object);
         services.AddSerializationInfrastructureServices();

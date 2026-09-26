@@ -4,13 +4,15 @@ using Channels.ValueObjects;
 
 /// <summary>
 /// The replay set of incoming payment onions, keyed by packet HMAC and kept until the HTLC's <c>cltv_expiry</c>
-/// (NL-078): the successor of <see cref="IOnionReplayCache"/>, shaped so a persistent implementation can back it.
+/// (NL-078). The node uses the persistent implementation (table <c>OnionReplayEntries</c>); an in-memory one serves
+/// compositions without a database.
 /// </summary>
 /// <remarks>
 /// <para>
 /// BOLT 4: "if the onion is for a payment: if <c>hmac</c> has previously been received: if the preimage is known MAY
 /// immediately redeem the HTLC using the preimage, otherwise MUST abort processing the packet and fail." Record an
-/// HMAC only after the peel verified it (see <see cref="IOnionReplayCache"/>).
+/// HMAC only after the peel verified it: recording unverified HMACs would let a peer fill the set with random values at
+/// no crypto cost (and, in a bounded store, evict genuine entries and then replay an onion it forwarded earlier).
 /// </para>
 /// <para>
 /// Each entry remembers the incoming HTLC that first carried the onion. Adding the same HMAC again for that same HTLC
@@ -25,10 +27,10 @@ using Channels.ValueObjects;
 /// meets an invoice already paid or failed. Call <see cref="PruneAsync"/> on every new block.
 /// </para>
 /// <para>
-/// Persistence (for the migration owner): one row per HMAC, <c>OnionReplayEntries(Hmac binary(32) primary key,
-/// ChannelId binary(32), HtlcId bigint, ExpiryHeight bigint)</c> with an index on <c>ExpiryHeight</c>.
-/// <see cref="TryAddAsync"/> is an insert that treats a primary-key conflict as "look at the owner"; it must be durable
-/// before the HTLC is forwarded or fulfilled (the HTLC's shared-secret save is the natural place).
+/// Persistence (migration <c>AddOnionReplaySet</c>): one row per HMAC, <c>OnionReplayEntries(Hmac primary key,
+/// ChannelId, HtlcId, ExpiryHeight)</c> with an index on <c>ExpiryHeight</c>, through
+/// <see cref="IOnionReplayDbRepository"/>. A new entry is durable when <see cref="TryAddAsync"/> returns, so before the
+/// HTLC is forwarded or fulfilled.
 /// </para>
 /// </remarks>
 public interface IOnionReplayStore

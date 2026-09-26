@@ -7,7 +7,6 @@ using Crypto.Hashes;
 using Domain.Crypto.Hashes;
 using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
-using Domain.Protocol.Onion.Interfaces;
 using Node.Factories;
 using Protocol.Factories;
 using Protocol.Onion;
@@ -23,7 +22,6 @@ public static class DependencyInjection
         // Singleton services (one instance throughout the application)
         services.AddSingleton<IChannelIdFactory, ChannelIdFactory>();
         services.AddSingleton<IMessageServiceFactory, MessageServiceFactory>();
-        services.AddSingleton<IOnionReplayCache, OnionReplayCache>();
         services.AddSingleton<IPeerServiceFactory, PeerServiceFactory>();
         services.AddSingleton<ITcpService, TcpService>();
         // Shared by singletons (ChannelFactory) and scoped users alike: per-thread state, so concurrent callers never
@@ -33,6 +31,10 @@ public static class DependencyInjection
 
         // TryAdd: AddSerializationInfrastructureServices also registers it so that it can be composed on its own
         services.TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>();
+
+        // The onion replay set (NL-078): persisted, owned by the incoming HTLC and pruned by its cltv_expiry. Every
+        // onion is processed through a scoped IUnitOfWork (AddRepositoriesInfrastructureServices)
+        services.AddPersistentOnionReplayStore();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

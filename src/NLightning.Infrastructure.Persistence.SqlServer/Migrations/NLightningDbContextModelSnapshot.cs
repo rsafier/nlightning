@@ -880,6 +880,28 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("Invoices");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", b =>
+                {
+                    b.Property<byte[]>("Hmac")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("ExpiryHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.HasKey("Hmac");
+
+                    b.HasIndex("ExpiryHeight");
+
+                    b.ToTable("OnionReplayEntries");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>
                 {
                     b.Property<byte[]>("PaymentHash")

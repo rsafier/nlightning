@@ -265,7 +265,7 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddSingleton<IChannelMemoryRepository>(_channels);
-        services.AddSingleton<IOnionReplayCache>(new OnionReplayCache());
+        services.AddSingleton<IOnionReplayStore>(new InMemoryOnionReplayStore());
         services.AddSerializationInfrastructureServices();
         services.AddBitcoinInfrastructure();
         services.AddSingleton(blockchainMonitor.Object);

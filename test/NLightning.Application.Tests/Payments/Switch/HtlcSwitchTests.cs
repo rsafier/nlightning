@@ -278,7 +278,7 @@ public class HtlcSwitchTests
         var options = Options.Create(new NodeOptions { EnableHtlcs = true });
         var onionProcessor = new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
                                                         new Mock<IHopPayloadSerializer>().Object,
-                                                        new Mock<IOnionReplayCache>().Object,
+                                                        new Mock<IOnionReplayStore>().Object,
                                                         NullLogger<IncomingOnionProcessor>.Instance);
         return new HtlcSwitch(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object, _operations.Object,
                               new Mock<IFailureOnionService>().Object,

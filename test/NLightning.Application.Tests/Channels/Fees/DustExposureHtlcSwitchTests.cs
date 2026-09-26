@@ -248,7 +248,7 @@ public class DustExposureHtlcSwitchTests
         // An empty payload fails validation, so the result carries the shared secret (IncomingOnionFailed)
         var payloads = new Mock<IHopPayloadSerializer>();
         payloads.Setup(p => p.DeserializeAsync(It.IsAny<ReadOnlyMemory<byte>>())).ReturnsAsync(new HopPayload());
-        return new IncomingOnionProcessor(_sphinx, payloads.Object, new Mock<IOnionReplayCache>().Object,
+        return new IncomingOnionProcessor(_sphinx, payloads.Object, new Mock<IOnionReplayStore>().Object,
                                           NullLogger<IncomingOnionProcessor>.Instance);
     }
 

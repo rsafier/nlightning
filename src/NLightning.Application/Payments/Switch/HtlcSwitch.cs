@@ -43,8 +43,9 @@ using Onion;
 ///   <c>Pending</c> circuit gets the outgoing HTLC that carries its origin, or is failed with
 ///   <c>temporary_channel_failure</c> when there is none (the offer never persisted); a <c>Fulfilled</c> one fulfills
 ///   with the preimage the outgoing HTLC learnt; any other waits for the outgoing HTLC's own (replayed) events.</item>
-///   <item>Otherwise the onion is processed by <see cref="IncomingOnionProcessor"/> (the replay cache is skipped when
-///   the HTLC's shared secret is already stored: we processed it before a restart or a reestablish), its shared
+///   <item>Otherwise the onion is processed by <see cref="IncomingOnionProcessor"/> (its HMAC is recorded in the
+///   persistent replay set for this HTLC until its <c>cltv_expiry</c>, NL-078; the check is skipped when the HTLC's
+///   shared secret is already stored: we processed it before a restart or a reestablish), its shared
 ///   secret is stored (<see cref="IChannelOperations.RecordOnionSecretAsync"/>), then it is failed
 ///   (<c>update_fail_malformed_htlc</c>, or <c>update_fail_htlc</c> with an error onion), paid (final hop) or
 ///   forwarded.</item>
@@ -216,9 +217,11 @@ public sealed class HtlcSwitch : IHtlcSwitch
             return;
         }
 
-        // A stored secret means we processed this onion before (restart, reestablish): its HMAC may be in the cache
+        // A stored secret means we processed this onion before (restart, reestablish). Otherwise the HMAC is recorded
+        // for this HTLC until its cltv_expiry (NL-078): a restart between that and the secret's save is not a replay
         var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, htlc.PathKey,
-                                                        checkReplay: storedSecret is null);
+                                                        checkReplay: storedSecret is null,
+                                                        new OnionReplayOwner(channelId, htlcId, htlc.CltvExpiry));
         switch (result)
         {
             case IncomingOnionMalformed malformed:

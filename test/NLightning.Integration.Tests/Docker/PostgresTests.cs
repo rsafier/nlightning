@@ -83,6 +83,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresRowsFromBeforeAddOnionReplaySet_When_Migrated_Then_TheyMoveForwardAndTheReplaySetWorks()
+    {
+        // Arrange (NL-078: rows written before the migration move forward; replay entries round-trip, are pruned by
+        // height, and the persistent store detects a replay across a restart on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_onion_replay");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await OnionReplaySchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                     DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddOnchainResolution_When_Migrated_Then_TheLogStartIsRecordedAndTheNewTablesRoundTrip()
     {
         // Arrange (BOLT 5 plan O1-T3: the revocation-log start is recorded for real rows; the revocation log, channel

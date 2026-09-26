@@ -23,10 +23,10 @@ public static class PaymentsServiceCollectionExtensions
     /// </summary>
     /// <remarks>
     /// Needs, from the other layers: <c>ISphinxService</c> (<c>AddBitcoinInfrastructure</c>),
-    /// <c>IHopPayloadSerializer</c> (<c>AddSerializationInfrastructureServices</c>), <c>IOnionReplayCache</c>
-    /// (<c>AddInfrastructureServices</c>), <c>ISecureKeyManager</c> and <c>IOptions&lt;NodeOptions&gt;</c> (host), and
-    /// a Scoped <c>IInvoiceDbRepository</c> sharing the scope's database context with <c>IUnitOfWork</c>
-    /// (<c>AddRepositoriesInfrastructureServices</c>, ABCD W1-C).
+    /// <c>IHopPayloadSerializer</c> (<c>AddSerializationInfrastructureServices</c>), <c>IOnionReplayStore</c>
+    /// (<c>AddInfrastructureServices</c>, persistent), <c>ISecureKeyManager</c> and
+    /// <c>IOptions&lt;NodeOptions&gt;</c> (host), and a Scoped <c>IInvoiceDbRepository</c> sharing the scope's
+    /// database context with <c>IUnitOfWork</c> (<c>AddRepositoriesInfrastructureServices</c>, ABCD W1-C).
     /// </remarks>
     public static IServiceCollection AddPaymentsServices(this IServiceCollection services)
     {

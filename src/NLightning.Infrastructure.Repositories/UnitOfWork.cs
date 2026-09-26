@@ -19,6 +19,7 @@ using Domain.Node.Models;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.Onion.Interfaces;
 using Persistence.Contexts;
 
 public class UnitOfWork : IUnitOfWork
@@ -56,6 +57,9 @@ public class UnitOfWork : IUnitOfWork
     private InvoiceDbRepository? _invoiceDbRepository;
     private PaymentDbRepository? _paymentDbRepository;
     private ForwardCircuitDbRepository? _forwardCircuitDbRepository;
+
+    // Onion replay set
+    private OnionReplayDbRepository? _onionReplayDbRepository;
 
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
@@ -107,6 +111,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IForwardCircuitDbRepository ForwardCircuitDbRepository =>
         _forwardCircuitDbRepository ??= new ForwardCircuitDbRepository(_context);
+
+    public IOnionReplayDbRepository OnionReplayDbRepository =>
+        _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
 
     public UnitOfWork(NLightningDbContext context, ILogger<UnitOfWork> logger, ISha256 sha256,
                       IUtxoMemoryRepository utxoMemoryRepository)
