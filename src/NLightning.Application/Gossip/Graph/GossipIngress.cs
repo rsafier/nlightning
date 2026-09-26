@@ -519,7 +519,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         var lookup = await _fundingOutputLookup.VerifyAsync(announcement.ShortChannelId, announcement.BitcoinKey1,
                                                             announcement.BitcoinKey2,
                                                             cancellationToken: cancellationToken);
-        _metrics?.RecordChainLookup(lookup.Status.ToString());
+        _metrics?.RecordChainLookup(GossipMetrics.TagValue(lookup.Status));
         ulong? capacitySat;
         var verification = GraphChannelVerification.Verified;
         switch (lookup.Status)
