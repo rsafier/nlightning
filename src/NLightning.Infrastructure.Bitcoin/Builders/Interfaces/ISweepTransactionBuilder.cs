@@ -19,10 +19,12 @@ public interface ISweepTransactionBuilder
     /// <param name="inputs">The outputs to spend, in input order.</param>
     /// <param name="destinationScript">The wallet scriptPubKey that receives the funds.</param>
     /// <param name="feeratePerKw">The feerate in sat per 1000 weight units.</param>
-    /// <param name="lockTime">A minimum <c>nLockTime</c> (block height); raised to the largest
-    /// <c>cltv_expiry</c> of the timeout claims.</param>
-    /// <exception cref="ArgumentException">An input lacks what its spend kind needs, or the output would be below the
-    /// destination's dust limit after the fee.</exception>
+    /// <param name="lockTime">A minimum <c>nLockTime</c> (block height); raised to the <c>cltv_expiry</c> of the
+    /// timeout claims.</param>
+    /// <exception cref="ArgumentException">An input lacks what its spend kind needs, the output would be below the
+    /// destination's dust limit after the fee, timeout claims are mixed with other spend kinds or with each other
+    /// across different <c>cltv_expiry</c> values, or a preimage claim's <c>cltv_expiry</c> is at or below the
+    /// <c>nLockTime</c>.</exception>
     UnsignedSweepTransaction Build(IReadOnlyList<SweepInput> inputs, byte[] destinationScript, uint feeratePerKw,
                                    uint lockTime = 0);
 

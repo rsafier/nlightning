@@ -21,7 +21,8 @@ public static class SweepWeights
     /// <summary>BOLT 5 <c>offered_htlc_penalty_witness</c> (exact for the 133-byte offered HTLC script).</summary>
     public const int OfferedHtlcPenaltyWitness = 243;
 
-    /// <summary>BOLT 5 <c>accepted_htlc_penalty_witness</c> (exact for the 138-byte received HTLC script).</summary>
+    /// <summary>BOLT 5 <c>accepted_htlc_penalty_witness</c> (exact for the 139-byte received HTLC script, a 3-byte
+    /// <c>cltv_expiry</c> push; 248 with a 2-byte push).</summary>
     public const int AcceptedHtlcPenaltyWitness = 249;
 
     /// <summary>Non-witness weight of one input: <c>4 * (32 + 4 + 1 + 4)</c>.</summary>

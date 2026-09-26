@@ -44,6 +44,7 @@ public class SweepInputFactoryTests
         Assert.Null(toRemote.WitnessScript);
         Assert.Equal((SweepSpendKind.HtlcTimeoutClaim, 600U), (timeout.SpendKind, timeout.CltvExpiry));
         Assert.Equal(s_preimage, preimage.Preimage);
+        Assert.Equal(600U, preimage.CltvExpiry); // the deadline the builder keeps nLockTime below
         Assert.Equal((SweepSpendKind.RevokedHtlc, s_secret, s_point),
                      (penalty.SpendKind, penalty.PerCommitmentSecret!.Value, penalty.WitnessPubKey!.Value));
         Assert.Equal((0U, SweepSpendKind.DelayedOutput, (ushort)144),

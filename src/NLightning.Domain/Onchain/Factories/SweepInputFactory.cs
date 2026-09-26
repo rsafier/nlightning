@@ -74,8 +74,8 @@ public static class SweepInputFactory
             throw new ArgumentException("A preimage claim needs the 32-byte preimage", nameof(preimage));
 
         return new SweepInput(commitmentTxId, output.Vout, output.AmountSat, SweepSpendKind.HtlcPreimageClaim,
-                              RequireScript(output), output.CsvDelay, PerCommitmentPoint: remotePerCommitmentPoint,
-                              Preimage: preimage);
+                              RequireScript(output), output.CsvDelay, output.Htlc?.CltvExpiry ?? 0,
+                              remotePerCommitmentPoint, Preimage: preimage);
     }
 
     /// <summary>

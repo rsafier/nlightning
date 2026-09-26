@@ -19,8 +19,16 @@ using Interfaces;
 /// <summary>
 /// Builds sweep and claim transactions from <see cref="SweepInput"/>s (BOLT 5 plan O3-T1): version 2, one output,
 /// every input BIP 125 replaceable (<c>nSequence</c> = the CSV delay where the script needs one, else
-/// <see cref="SweepFeePolicy.RbfSequence"/>), <c>nLockTime</c> = the largest <c>cltv_expiry</c> of the timeout claims.
+/// <see cref="SweepFeePolicy.RbfSequence"/>), <c>nLockTime</c> = the <c>cltv_expiry</c> of the timeout claims.
 /// Witnesses follow BOLT 3 §Commitment Transaction Outputs and BOLT 5.
+/// <para>
+/// Batching rules: <see cref="SweepSpendKind.HtlcTimeoutClaim"/> inputs are never mixed with any other spend kind, and
+/// every timeout claim of one transaction has the same <c>cltv_expiry</c>, so the caller (the sweep scheduler) groups
+/// timeout claims by expiry. A timeout claim's <c>nLockTime</c> would otherwise hold back a preimage claim past its
+/// deadline (the peer's HTLC-timeout path opens at that <c>cltv_expiry</c>) or a penalty, and a later expiry would delay
+/// failing our other offered HTLCs upstream. A <see cref="SweepSpendKind.HtlcPreimageClaim"/> is refused when the
+/// <c>nLockTime</c> is at or above its <c>cltv_expiry</c>.
+/// </para>
 /// </summary>
 public class SweepTransactionBuilder : ISweepTransactionBuilder
 {
@@ -128,6 +136,13 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
         if (effectiveLockTime >= LockTimeThreshold)
             throw new ArgumentException("The lock time must be a block height", nameof(lockTime));
 
+        var late = inputs.FirstOrDefault(i => i is { SpendKind: SweepSpendKind.HtlcPreimageClaim, CltvExpiry: > 0 } &&
+                                              effectiveLockTime >= i.CltvExpiry);
+        if (late is not null)
+            throw new ArgumentException(
+                $"A preimage claim with cltv_expiry {late.CltvExpiry} cannot wait for nLockTime {effectiveLockTime}: " +
+                "the peer can time the HTLC out from that height", nameof(lockTime));
+
         var tx = Transaction.Create(_network);
         tx.Version = SweepTransactionVersion;
         tx.LockTime = new LockTime(effectiveLockTime);
@@ -186,6 +201,20 @@ public class SweepTransactionBuilder : ISweepTransactionBuilder
             if (missing is not null)
                 throw new ArgumentException($"Input {i} ({input.SpendKind}) needs {missing}", nameof(inputs));
         }
+
+        var timeoutClaims = inputs.Where(i => i.SpendKind == SweepSpendKind.HtlcTimeoutClaim).ToList();
+        if (timeoutClaims.Count == 0)
+            return;
+
+        if (timeoutClaims.Count != inputs.Count)
+            throw new ArgumentException(
+                "HTLC timeout claims are never batched with other spends: their nLockTime would hold those back",
+                nameof(inputs));
+
+        if (timeoutClaims.Select(i => i.CltvExpiry).Distinct().Count() > 1)
+            throw new ArgumentException(
+                "HTLC timeout claims in one transaction must share their cltv_expiry; group them by expiry",
+                nameof(inputs));
     }
 
     private static bool ScriptHasHash160(byte[] witnessScript, CompactPubKey pubKey)

@@ -16,8 +16,9 @@ using Enums;
 /// <param name="WitnessScript">The P2WSH witness script; null only for a P2WPKH <c>to_remote</c>.</param>
 /// <param name="CsvDelay">The relative delay the witness script enforces (<c>to_self_delay</c> on a delayed output, 1
 /// on anchor HTLC and <c>to_remote</c> outputs, 0 when there is none); it becomes the input's <c>nSequence</c>.</param>
-/// <param name="CltvExpiry">The HTLC's <c>cltv_expiry</c> for <see cref="SweepSpendKind.HtlcTimeoutClaim"/>: the
-/// transaction's <c>nLockTime</c> is at least this.</param>
+/// <param name="CltvExpiry">The HTLC's <c>cltv_expiry</c>. For <see cref="SweepSpendKind.HtlcTimeoutClaim"/> the
+/// transaction's <c>nLockTime</c> is this; for <see cref="SweepSpendKind.HtlcPreimageClaim"/> it is the deadline (the
+/// peer's HTLC-timeout path opens there), so the transaction's <c>nLockTime</c> must stay below it (0: unknown).</param>
 /// <param name="PerCommitmentPoint">The point of the commitment the output belongs to (delayed outputs: ours; HTLC
 /// claims: the peer's).</param>
 /// <param name="PerCommitmentSecret">The peer's revealed secret, for penalties.</param>
