@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace NLightning.Application.Payments.Switch;
 
 using Channels.Interfaces;
+using Channels.Reestablish;
 using Domain.Channels.Interfaces;
 
 /// <summary>
@@ -15,7 +16,9 @@ public static class HtlcSwitchServiceCollectionExtensions
     /// Replaces the registered <see cref="IHtlcSwitch"/> (by default <c>LocalOnlyHtlcSwitch</c>, which fails every
     /// HTLC back) with <see cref="HtlcSwitch"/>, a singleton, and decorates the registered
     /// <see cref="IPeerLivenessProbe"/> with <see cref="LinkUpReplayingPeerLivenessProbe"/>, so every
-    /// <c>MarkLinkUp</c> replays the channel's pending HTLC events (<see cref="LinkUpEventReplayer"/>).
+    /// <c>MarkLinkUp</c> replays the channel's pending HTLC events (<see cref="LinkUpEventReplayer"/>), except right after
+    /// a channel_reestablish, whose events <c>ChannelManager</c> replays itself (NL-264; needs the registered
+    /// <see cref="ReestablishTracker"/>).
     /// </summary>
     /// <remarks>
     /// Call it after <c>AddChannelOperationsServices()</c> and <c>AddPaymentsServices()</c> (both inside
@@ -40,7 +43,8 @@ public static class HtlcSwitchServiceCollectionExtensions
         services.AddSingleton<LinkUpEventReplayer>();
         services.Replace(ServiceDescriptor.Singleton<IPeerLivenessProbe>(
                              sp => new LinkUpReplayingPeerLivenessProbe(CreateInner(sp, probe),
-                                                                        sp.GetRequiredService<LinkUpEventReplayer>())));
+                                                                        sp.GetRequiredService<LinkUpEventReplayer>(),
+                                                                        sp.GetService<ReestablishTracker>())));
         return services;
     }
 
