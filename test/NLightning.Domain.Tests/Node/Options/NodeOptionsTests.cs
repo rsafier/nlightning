@@ -8,11 +8,16 @@ using Domain.Protocol.ValueObjects;
 
 public class NodeOptionsTests
 {
-    [Fact]
-    public void Given_Regtest_When_EnableHtlcsUnset_Then_HtlcsEnabled()
+    [Theory]
+    [InlineData("mainnet")]
+    [InlineData("testnet")]
+    [InlineData("signet")]
+    [InlineData("regtest")]
+    [InlineData("Regtest")]
+    public void Given_AnyNetwork_When_EnableHtlcsUnset_Then_HtlcsEnabled(string network)
     {
-        // Arrange
-        var options = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest };
+        // Arrange (BOLT 5 plan O6-T4: the mainnet gate is open, unset means on everywhere)
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network) };
 
         // Assert
         Assert.Null(options.EnableHtlcs);
@@ -20,12 +25,13 @@ public class NodeOptionsTests
     }
 
     [Fact]
-    public void Given_RegtestSpelledInUpperCase_When_EnableHtlcsUnset_Then_HtlcsEnabled()
+    public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsEnabled()
     {
         // Arrange
-        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork("Regtest") };
+        var options = new NodeOptions();
 
         // Assert
+        Assert.Equal("mainnet", options.BitcoinNetwork.Name);
         Assert.True(options.HtlcsEnabled);
     }
 
@@ -33,20 +39,11 @@ public class NodeOptionsTests
     [InlineData("mainnet")]
     [InlineData("testnet")]
     [InlineData("signet")]
-    public void Given_NotRegtest_When_EnableHtlcsUnset_Then_HtlcsDisabled(string network)
+    [InlineData("regtest")]
+    public void Given_EnableHtlcsFalse_When_Read_Then_HtlcsDisabledOnEveryNetwork(string network)
     {
         // Arrange
-        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network) };
-
-        // Assert
-        Assert.False(options.HtlcsEnabled);
-    }
-
-    [Fact]
-    public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsDisabled()
-    {
-        // Arrange
-        var options = new NodeOptions();
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network), EnableHtlcs = false };
 
         // Assert
         Assert.False(options.HtlcsEnabled);
@@ -65,17 +62,18 @@ public class NodeOptionsTests
     }
 
     [Fact]
-    public void Given_NetworkChangedAfterConstruction_When_Read_Then_HtlcsEnabledFollowsIt()
+    public void Given_EnableHtlcsFalseAndNetworkSetAfterBinding_When_Read_Then_StillDisabled()
     {
         // Arrange (the daemon sets the network in PostConfigure, after binding)
         var options = new NodeOptions
         {
+            EnableHtlcs = false,
             // Act
             BitcoinNetwork = BitcoinNetwork.Regtest
         };
 
         // Assert
-        Assert.True(options.HtlcsEnabled);
+        Assert.False(options.HtlcsEnabled);
     }
 
     [Fact]
@@ -294,6 +292,7 @@ public class NodeOptionsTests
         // Assert
         Assert.NotNull(options);
         Assert.Null(options.EnableHtlcs);
+        Assert.True(options.HtlcsEnabled);
         Assert.Equal(TimeSpan.FromSeconds(5), options.ReconnectInitialDelay);
         Assert.Equal((ushort)40, options.Routing.CltvExpiryDelta);
         Assert.Empty(options.GetValidationErrors());
