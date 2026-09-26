@@ -221,7 +221,8 @@ public sealed class ChannelCloseCoordinator
 
         // option_simple_close lets the peer change its script (closing_complete, then its shutdown after a
         // reconnection); the legacy close does not
-        var changedScript = channel.RemoteShutdownScript is { } previous && previous != script;
+        var previous = channel.RemoteShutdownScript;
+        var changedScript = previous is not null && previous != script;
         if (changedScript && !simpleClose)
             throw new ChannelWarningException(
                 $"shutdown script {script} differs from the one received before ({previous})", channelId,
