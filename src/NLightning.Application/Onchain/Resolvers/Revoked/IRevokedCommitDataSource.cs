@@ -22,6 +22,15 @@ public interface IRevokedCommitDataSource
     Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, CancellationToken cancellationToken);
 
     /// <summary>
+    /// As <see cref="LoadAsync(ChannelCloseModel, CancellationToken)"/>, for a revoked commitment that is not in a block
+    /// yet (BOLT 5 plan O8: seen in the mempool): <paramref name="commitment"/> is used as it is instead of being read
+    /// from the block at <see cref="ChannelCloseModel.SpentAtHeight"/>.
+    /// </summary>
+    Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, ChainTx commitment,
+                                            CancellationToken cancellationToken) =>
+        LoadAsync(close, cancellationToken);
+
+    /// <summary>
     /// The confirmed spend of <paramref name="transactionId"/>:<paramref name="outputIndex"/> in the active chain, as
     /// recorded by the chain monitor (watched outpoint), with the spending transaction when it can be fetched; null when
     /// none is recorded. A recorded spend whose transaction cannot be fetched (RPC error, pruned block without

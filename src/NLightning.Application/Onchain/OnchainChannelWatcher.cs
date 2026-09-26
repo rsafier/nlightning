@@ -44,6 +44,10 @@ using Interfaces;
 /// <para>Idempotent: the chain monitor raises a spend again for a replayed block; a spend already recorded changes
 /// nothing. A different spend recorded before (a reorg) is recorded over it in one save that also ignores the old
 /// close's output rows and abandons the channel's other pending transactions (NL-292, O6-T3).</para>
+/// <para>Transactions prepared from the mempool (BOLT 5 plan O8: a penalty of a revoked commitment signed before it
+/// confirmed, <c>Mempool/MempoolReactor</c>) are settled in the same save: the rows of the outputs such a transaction
+/// spends name it as their resolving transaction (<see cref="OutputResolutionState.Broadcast"/>), so the resolver builds
+/// nothing twice, and one that spends another transaction than the confirmed spend is abandoned.</para>
 /// </remarks>
 public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 {
@@ -216,14 +220,45 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 State = OutputResolutionState.Ignored
             });
 
+        // A transaction prepared from the mempool for the new spend (O8) is kept: PersistAsync links it to the rows
         var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
-        foreach (var stale in broadcasts.Where(b => b.State == BroadcastState.Pending && b.TransactionId != newSpend))
+        foreach (var stale in broadcasts.Where(b => b.State == BroadcastState.Pending && b.TransactionId != newSpend
+                                                 && !SpendsFrom(b, newSpend)))
             await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
 
         _logger.LogWarning("Channel {ChannelId}: the {Count} output(s) of the reorged-out close {TxId} are ignored and "
                          + "its pending transactions abandoned", channelId, rows.Count,
                            Display(old.CommitmentTransactionId));
     }
+
+    /// <summary>
+    /// Classifies an unconfirmed spend of the channel's funding output (BOLT 5 plan O8) exactly as a confirmed one is
+    /// classified, without recording anything. Call it under the channel's lock; null when the channel has no funding
+    /// output.
+    /// </summary>
+    internal async Task<FundingSpendClassification?> ClassifyAsync(ChannelModel channel, ChainTx spend,
+                                                                   IUnitOfWork unitOfWork)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(spend);
+        if (channel.FundingOutput is not { TransactionId: { } fundingTxId, Index: { } fundingIndex })
+            return null;
+
+        var context = await BuildContextAsync(channel, fundingTxId, fundingIndex, unitOfWork);
+        return FundingSpendClassifier.Classify(spend, context);
+    }
+
+    /// <summary>
+    /// The purposes of the transactions the mempool reactor prepares before the funding spend confirms (O8); every
+    /// other purpose (our commitment, the funding transaction, an HTLC transaction) is never prepared that way.
+    /// </summary>
+    internal static bool IsPreparedPurpose(BroadcastPurpose purpose) =>
+        purpose is BroadcastPurpose.Penalty or BroadcastPurpose.Sweep or BroadcastPurpose.HtlcClaim;
+
+    /// <summary>True when an input of <paramref name="broadcast"/> spends an output of <paramref name="parent"/>.</summary>
+    internal static bool SpendsFrom(BroadcastTransactionModel broadcast, TxId parent) =>
+        ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) && transaction is not null
+     && transaction.Inputs.Any(i => i.PreviousTxId == parent);
 
     /// <summary>What the classifier compares the spend with (candidates rebuilt from the persisted state).</summary>
     private async Task<FundingSpendContext> BuildContextAsync(ChannelModel channel, TxId fundingTxId,
@@ -435,10 +470,12 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         await unitOfWork.OnchainResolutionDbRepository.UpsertCloseAsync(close);
 
         var ours = descriptors.Where(d => d.IsOurs).ToList();
+        var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
+        var prepared = await SettlePreparedAsync(unitOfWork, channelId, broadcasts, spend.TxId);
         var newWatches = new List<WatchedOutpointModel>();
         foreach (var descriptor in ours)
         {
-            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(new OutputResolutionModel
+            var row = new OutputResolutionModel
             {
                 TransactionId = spend.TxId,
                 OutputIndex = descriptor.Vout,
@@ -447,7 +484,18 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                 DescriptorData = OutputDescriptorData.FromDescriptor(descriptor, point).Encode(),
                 HtlcDirection = descriptor.Htlc?.Direction,
                 HtlcId = descriptor.Htlc?.Id
-            });
+            };
+
+            // O8: already spent by a transaction prepared while the commitment was in the mempool (our penalty)
+            if (prepared.TryGetValue(descriptor.Vout, out var resolving))
+                row = row with
+                {
+                    State = OutputResolutionState.Broadcast,
+                    ResolvingTransactionId = resolving,
+                    DeadlineHeight = GetRevokedDeadline(args.BlockHeight, descriptor)
+                };
+
+            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(row);
 
             if (await unitOfWork.WatchedOutpointDbRepository.GetAsync(spend.TxId, descriptor.Vout) is not null)
                 continue;
@@ -459,7 +507,6 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         }
 
         // The peer's transaction (or another of ours) won the funding output: our commitment can never confirm
-        var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
         foreach (var stale in broadcasts.Where(b => b.Purpose == BroadcastPurpose.LocalCommitment
                                                  && b.State == BroadcastState.Pending
                                                  && b.TransactionId != spend.TxId))
@@ -510,6 +557,54 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         return new Recorded(new FundingSpendOutcome(closeKind, ours.Count, false), newWatches, errorToSend,
                             channel.RemoteNodeId, alerts);
     }
+
+    /// <summary>
+    /// O8: the pending transactions prepared from the mempool before this funding spend confirmed. The ones that spend
+    /// outputs of <paramref name="spend"/> are returned by the vout they spend (the rows name them); the ones that spend
+    /// another transaction (a revoked commitment that was replaced or evicted) are abandoned in this save.
+    /// </summary>
+    private async Task<Dictionary<uint, TxId>> SettlePreparedAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                                   IReadOnlyList<BroadcastTransactionModel> broadcasts,
+                                                                   TxId spend)
+    {
+        var spentBy = new Dictionary<uint, TxId>();
+        foreach (var broadcast in broadcasts.Where(b => b.State == BroadcastState.Pending
+                                                     && IsPreparedPurpose(b.Purpose)))
+        {
+            if (!ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) || transaction is null)
+                continue;
+
+            var fromSpend = transaction.Inputs.Where(i => i.PreviousTxId == spend).ToList();
+            if (fromSpend.Count == 0)
+            {
+                _logger.LogWarning("Channel {ChannelId}: {Purpose} {TxId}, prepared from the mempool, spends a "
+                                 + "transaction that did not confirm; abandoning it", channelId, broadcast.Purpose,
+                                   Display(broadcast.TransactionId));
+                await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(broadcast.TransactionId);
+                continue;
+            }
+
+            foreach (var input in fromSpend)
+                spentBy[input.PreviousVout] = broadcast.TransactionId;
+            _logger.LogInformation("Channel {ChannelId}: {Purpose} {TxId}, prepared from the mempool, resolves "
+                                 + "{Count} output(s) of the confirmed {Spend}", channelId, broadcast.Purpose,
+                                   Display(broadcast.TransactionId), fromSpend.Count, Display(spend));
+        }
+
+        return spentBy;
+    }
+
+    /// <summary>
+    /// The deadline the penalty resolver gives a revoked output (its <c>to_local</c> once its CSV expires, an HTLC
+    /// output at its <c>cltv_expiry</c>); null for any other output.
+    /// </summary>
+    private static uint? GetRevokedDeadline(uint confirmedAt, CommitmentOutputDescriptor descriptor) =>
+        descriptor.Kind switch
+        {
+            OutputDescriptorKind.RevokedToLocal => confirmedAt + descriptor.CsvDelay,
+            OutputDescriptorKind.RevokedHtlc => descriptor.Htlc?.CltvExpiry,
+            _ => null
+        };
 
     private static ChannelCloseKind ToCloseKind(FundingSpendKind kind) => kind switch
     {

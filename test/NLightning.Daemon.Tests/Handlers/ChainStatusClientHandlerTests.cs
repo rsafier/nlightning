@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Handlers;
 
+using Application.Onchain.Mempool;
 using Daemon.Extensions;
 using Daemon.Handlers;
 using Daemon.Interfaces;
@@ -141,7 +142,7 @@ public class ChainStatusClientHandlerTests
     }
 
     [Fact]
-    public void Given_NodeServices_When_Composed_Then_TheChainStatusCommandResolves()
+    public void Given_NodeServices_When_Composed_Then_TheChainStatusCommandAndTheMempoolReactorResolve()
     {
         // Arrange
         var configuration = new ConfigurationBuilder()
@@ -169,6 +170,9 @@ public class ChainStatusClientHandlerTests
         Assert.IsType<ChainStatusClientHandler>(
             scope.ServiceProvider
                  .GetRequiredService<IClientCommandHandler<ChainStatusClientRequest, ChainStatusClientResponse>>());
+
+        // BOLT 5 O8: the hosted service starts the mempool reactor (one instance, with the penalty resolver)
+        Assert.Same(provider.GetRequiredService<MempoolReactor>(), provider.GetRequiredService<IMempoolReactor>());
     }
 
     [Fact]

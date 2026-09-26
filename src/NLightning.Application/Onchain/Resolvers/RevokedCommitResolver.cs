@@ -155,6 +155,68 @@ public sealed class RevokedCommitResolver : IOutputResolver
         return OncePerProcess(round.Actions);
     }
 
+    /// <summary>
+    /// BOLT 5 plan O8 (NL-098): the penalties for a revoked commitment that is still in the mempool, signed now so they
+    /// can be broadcast right behind it (a penalty may spend an unconfirmed commitment: no revocation path has a delay).
+    /// </summary>
+    /// <remarks>
+    /// Nothing is recorded: the caller stores and publishes the returned transactions, and the close, its rows and the
+    /// rest of the resolution wait for the commitment's confirmation (the watcher then links these transactions to the
+    /// rows, or abandons them when another transaction confirmed). Every output of ours is taken (the commitment's
+    /// <c>to_local</c> and HTLC outputs with the revocation key, our <c>to_remote</c>), with the deadlines counted
+    /// from <paramref name="height"/> + 1, the earliest block that can hold the commitment, and the same fee and split
+    /// rules as <see cref="ResolveAsync"/>. Unmapped outputs are only alerted: the confirmed rounds watch them.
+    /// </remarks>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="commitment">The revoked commitment, unconfirmed.</param>
+    /// <param name="commitmentNumber">Its commitment number (from the classifier).</param>
+    /// <param name="height">The chain tip.</param>
+    /// <param name="cancellationToken">Cancels the preparation.</param>
+    public async Task<IReadOnlyList<OutputResolverAction>> PrepareUnconfirmedPenaltiesAsync(
+        ChannelId channelId, ChainTx commitment, ulong commitmentNumber, uint height,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(commitment);
+        var close = new ChannelCloseModel(channelId, ChannelCloseKind.RevokedCommitment, commitment.TxId,
+                                          commitmentNumber, height + 1, Hash.Empty, DateTimeOffset.UtcNow);
+        var load = await _dataSource.LoadAsync(close, commitment, cancellationToken);
+        if (load.Context is not { } context)
+            return
+            [
+                new AlertAction("B5-REV-03",
+                                $"Channel {channelId}: revoked commitment {commitment.TxId} in the mempool cannot be "
+                              + $"penalized before it confirms: {load.Problem}")
+            ];
+
+        var round = new Round(context, close, [], height);
+        var map = Map(context);
+        ReportUnmapped(round, map);
+
+        var needs = new List<PenaltyNeed>();
+        foreach (var descriptor in map.Outputs.Where(d => d.Kind is OutputDescriptorKind.RevokedToLocal
+                                                                  or OutputDescriptorKind.RevokedHtlc
+                                                                  or OutputDescriptorKind.PaymentToRemote))
+        {
+            var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);
+            needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor), GetDeadline(close, descriptor)));
+        }
+
+        var actions = round.Actions;
+        if (needs.Count > 0)
+        {
+            var destination = await _dataSource.GetDestinationScriptAsync(channelId, cancellationToken);
+            var earliest = needs.Where(n => n.DeadlineHeight is not null).Select(n => n.DeadlineHeight).Min();
+            var estimate = await _dataSource.GetFeeratePerKwAsync(_composer.Policy.GetConfirmationTarget(height,
+                                                                      earliest), cancellationToken);
+            actions.AddRange(await _composer.ComposeAsync(channelId, needs, needs.Select(n => n.Row).ToList(),
+                                                          new Dictionary<(TxId, uint), TxId>(), height, estimate,
+                                                          destination, _ => Task.FromResult<ulong?>(null)));
+        }
+
+        // Only the transactions and the alerts: the rows are written when the commitment confirms
+        return actions.Where(a => a is BroadcastAction or AlertAction).ToList();
+    }
+
     /// <inheritdoc />
     public async Task<IReadOnlyList<OutputResolverAction>> OnOutputSpentAsync(ChannelCloseModel close,
                                                                               OutputResolutionModel output,

@@ -11,6 +11,7 @@ using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
 using Application.Onchain;
+using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
 using Application.Onchain.Resolvers.Revoked;
@@ -174,6 +175,9 @@ public static class NodeServiceExtensions
 
         // Add the Application services (also the Domain channel factories and validator)
         services.AddApplicationServices();
+
+        // BOLT 5 O8 (NL-098): preimages and revoked commitments seen in the mempool; the hosted service starts it
+        services.AddOnchainMempoolServices();
 
         // Add the Infrastructure services (AddBitcoinInfrastructure also registers the signer)
         services.AddBitcoinInfrastructure();
