@@ -220,7 +220,8 @@ public static class NodeServiceExtensions
                  })
                 .ValidateOnStart();
 
-        // Fee limit of our outgoing payments (optional section; PaymentSendOptions has defaults)
+        // Fee, part and retry limits of our outgoing payments (optional section; PaymentSendOptions has defaults; a
+        // payinvoice call may set its own fee and part limits, NL-270)
         services.Configure<PaymentSendOptions>(configuration.GetSection("Node:Payments"));
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
