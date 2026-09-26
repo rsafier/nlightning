@@ -105,7 +105,7 @@ All of them read `env.sh` (`MUTINYNET_DIR`, `NLTG_NETWORK` default `mutinynet`, 
 | Script | What |
 |---|---|
 | `build.sh` | builds `NLightning.Daemon` and `NLightning.Client` |
-| `start-daemon.sh` | runs the daemon in the foreground with `--password-file ~/.nltg/<network>/.password` (created with a random password, mode 600, if missing) and appends the output to `~/.nltg/<network>/daemon.out`. The first run writes the template and fails at the key step (bitcoind 401) |
+| `start-daemon.sh` | runs the daemon from `~/.nltg/<network>` (so the relative SQLite and log paths land there, NL-306) in the foreground with `--password-file ~/.nltg/<network>/.password` (created with a random password, mode 600, if missing) and appends the output to `~/.nltg/<network>/daemon.out`. The first run writes the template and fails at the key step (bitcoind 401) |
 | `configure.sh` | writes the local bitcoind RPC/ZMQ settings (from `~/mutinynet/.env`) and `Database:RunMigrations=true` into the template (needs `jq`) |
 | `cli.sh` | the CLI with `--network mutinynet` |
 | `faucet.sh invoice <sats>` / `faucet.sh withdraw <bolt11>` | the two no-login faucet calls above |
@@ -156,6 +156,11 @@ Observations from the run (ledger items, not fixed here):
   input.
 - NL-305: the deposit address `tb1qf2fz...5xt` was still "unused" after it received the deposit, so the cooperative
   close paid our output to it again (address reuse); `getaddress` moved on only after the close output arrived.
+- NL-306: the template's relative paths (`Database:ConnectionString` `Data Source=nltg.db`, Serilog `logs/log-.txt`)
+  resolve against the daemon's working directory, not `~/.nltg/<network>`: the run above first wrote its database
+  and logs into the repository checkout it was started from (moved to `~/.nltg/mutinynet` afterwards; the node
+  reloaded its closed channel and wallet from there). `start-daemon.sh` now `cd`s into the configuration directory;
+  the daemon should anchor relative paths itself.
 
 ## Known gaps
 
