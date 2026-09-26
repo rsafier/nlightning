@@ -646,9 +646,135 @@ public class LocalLightningSigner : ILightningSigner
         return SignHtlcTransaction(htlcBasepointSecret, htlcTransaction, SigHash.All);
     }
 
-    public bool SignWalletTransaction(SignedTransaction unsignedTransaction)
+    /// <inheritdoc />
+    public bool SignWalletTransaction(SignedTransaction unsignedTransaction) =>
+        SignWalletTransaction(unsignedTransaction, []);
+
+    /// <inheritdoc />
+    public bool SignWalletTransaction(SignedTransaction unsignedTransaction,
+                                      IReadOnlyList<SpentOutput> otherSpentOutputs)
     {
-        throw new NotImplementedException();
+        ArgumentNullException.ThrowIfNull(unsignedTransaction);
+        ArgumentNullException.ThrowIfNull(otherSpentOutputs);
+
+        Transaction tx;
+        try
+        {
+            tx = Transaction.Load(unsignedTransaction.RawTxBytes, _network);
+        }
+        catch (Exception ex)
+        {
+            throw new SignerException($"The wallet transaction {unsignedTransaction.TxId} does not parse", ex);
+        }
+
+        var inputCount = tx.Inputs.Count;
+        var walletUtxos = new UtxoModel?[inputCount];
+        var hasWalletInput = false;
+        var hasTaprootInput = false;
+
+        // Every wallet input is checked before anything is signed
+        for (var i = 0; i < inputCount; i++)
+        {
+            var prevOut = tx.Inputs[i].PrevOut;
+            var txId = new TxId(prevOut.Hash.ToBytes());
+            if (!_utxoMemoryRepository.TryGetUtxo(txId, prevOut.N, out var utxo))
+                continue;
+
+            if (utxo.LockedToChannelId is { } channelId)
+                throw new SignerException(
+                    $"Wallet input {i} ({prevOut}) is locked to the funding of channel {channelId}", channelId,
+                    "Signing error");
+            if (!_utxoMemoryRepository.TryGetFeeReservation(txId, prevOut.N, out _))
+                throw new SignerException($"Wallet input {i} ({prevOut}) is not reserved for this spend");
+            if (utxo.AddressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
+                throw new SignerException($"Wallet input {i} ({prevOut}) has unsupported type {utxo.AddressType}");
+
+            walletUtxos[i] = utxo;
+            hasWalletInput = true;
+            hasTaprootInput |= utxo.AddressType == AddressType.P2Tr;
+        }
+
+        if (!hasWalletInput)
+        {
+            _logger.LogWarning("Transaction {TxId} has no wallet input to sign", unsignedTransaction.TxId);
+            return false;
+        }
+
+        var signingKeys = new Key?[inputCount];
+        var taprootKeyPairs = new TaprootKeyPair?[inputCount];
+        try
+        {
+            // The spent outputs: the wallet's from their keys, the others from the caller
+            var prevOuts = new TxOut?[inputCount];
+            for (var i = 0; i < inputCount; i++)
+            {
+                if (walletUtxos[i] is { } utxo)
+                {
+                    prevOuts[i] = DeriveWalletPrevOut(utxo, out signingKeys[i], out taprootKeyPairs[i]);
+                    continue;
+                }
+
+                var prevOut = tx.Inputs[i].PrevOut;
+                var other = otherSpentOutputs.FirstOrDefault(o => o.Index == prevOut.N
+                                                               && o.TxId.Equals(new TxId(prevOut.Hash.ToBytes())));
+                if (other is not null)
+                    prevOuts[i] = new TxOut(Money.Satoshis(other.Amount.Satoshi), new Script((byte[])other.ScriptPubKey));
+            }
+
+            var allPrevOuts = prevOuts.All(p => p is not null) ? prevOuts.Select(p => p!).ToArray() : null;
+            if (hasTaprootInput && allPrevOuts is null)
+                throw new SignerException(
+                    $"A P2TR wallet input of {unsignedTransaction.TxId} needs every spent output (BIP 341)");
+
+            for (var i = 0; i < inputCount; i++)
+            {
+                if (walletUtxos[i] is null)
+                    continue;
+
+                if (taprootKeyPairs[i] is { } taprootKeyPair)
+                    SignP2TrInput(tx, i, taprootKeyPair, allPrevOuts!);
+                else
+                    SignP2WpkhInput(tx, i, signingKeys[i]!, prevOuts[i]!);
+            }
+
+            // Check every signature with the interpreter before it leaves the signer
+            var validator = allPrevOuts is null ? null : tx.CreateValidator(allPrevOuts);
+            for (var i = 0; i < inputCount; i++)
+            {
+                if (walletUtxos[i] is null)
+                    continue;
+
+                ScriptError? error;
+                if (validator is not null)
+                {
+                    var result = validator.ValidateInput(i);
+                    error = result.Error;
+                }
+                else
+                {
+                    error = tx.Inputs.FindIndexedInput(i).VerifyScript(prevOuts[i]!, out var inputError)
+                                ? null
+                                : inputError;
+                }
+
+                if (error is not null && error != ScriptError.OK)
+                    throw new SignerException($"Wallet input {i} of {unsignedTransaction.TxId} failed verification: "
+                                            + error);
+            }
+        }
+        finally
+        {
+            foreach (var key in signingKeys)
+                key?.Dispose();
+        }
+
+        unsignedTransaction.RawTxBytes = tx.ToBytes();
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Signed {Count} wallet input(s) of transaction {TxId}",
+                                   walletUtxos.Count(u => u is not null), tx.GetHash());
+
+        return true;
     }
 
     public bool SignFundingTransaction(ChannelId channelId, SignedTransaction unsignedTransaction)
@@ -1317,6 +1443,40 @@ public class LocalLightningSigner : ILightningSigner
             throw new SignerException($"HTLC signature {index} is not low S", channelId, "Signature is malleable");
 
         return ecdsaSignature;
+    }
+
+    /// <summary>
+    /// The spent output of a wallet UTXO and its key (and taproot key pair), derived from the UTXO's address index; the
+    /// extended key bytes the key manager returns are wiped once the key is built.
+    /// </summary>
+    private TxOut DeriveWalletPrevOut(UtxoModel utxo, out Key? signingKey, out TaprootKeyPair? taprootKeyPair)
+    {
+        signingKey = null;
+        taprootKeyPair = null;
+
+        byte[] extKeyBytes = utxo.AddressType == AddressType.P2Wpkh
+                                 ? _secureKeyManager.GetDepositP2WpkhKeyAtIndex(utxo.AddressIndex,
+                                                                                utxo.IsAddressChange)
+                                 : _secureKeyManager.GetDepositP2TrKeyAtIndex(utxo.AddressIndex,
+                                                                              utxo.IsAddressChange);
+        Key key;
+        try
+        {
+            key = ExtKey.CreateFromBytes(extKeyBytes).PrivateKey;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(extKeyBytes);
+        }
+
+        // The caller disposes the key; a taproot key pair signs with it
+        signingKey = key;
+        var amount = new Money(utxo.Amount.Satoshi);
+        if (utxo.AddressType == AddressType.P2Wpkh)
+            return new TxOut(amount, key.PubKey.WitHash.ScriptPubKey);
+
+        taprootKeyPair = key.CreateTaprootKeyPair();
+        return new TxOut(amount, taprootKeyPair.PubKey.ScriptPubKey);
     }
 
     private static Key GenerateFundingPrivateKey(ExtKey extKey)

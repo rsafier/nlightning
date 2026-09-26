@@ -1567,12 +1567,19 @@ public class BlockchainMonitorService : IBlockchainMonitor
         // The signer derives each input's key from the UTXO's wallet address, so load it too (NL-302)
         var utxoSet = (await uow.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true)).ToList();
         if (utxoSet.Count > 0)
+            GetUtxoMemoryRepository().Load(utxoSet);
+
+        // The fee input reservations (BOLT 5 plan O7-T1), before anything can select or lock wallet outputs
+        var reserved = await uow.FeeInputReservationDbRepository.GetReservedOutpointsAsync();
+        if (reserved.Count > 0)
         {
-            var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>() ??
-                                       throw new InvalidOperationException(
-                                           $"Error getting required service {nameof(IUtxoMemoryRepository)}");
-            utxoMemoryRepository.Load(utxoSet);
+            GetUtxoMemoryRepository().LoadFeeReservations(reserved);
+            _logger.LogInformation("Restored {Count} reserved fee input(s)", reserved.Count);
         }
+
+        IUtxoMemoryRepository GetUtxoMemoryRepository() =>
+            _serviceProvider.GetService<IUtxoMemoryRepository>()
+         ?? throw new InvalidOperationException($"Error getting required service {nameof(IUtxoMemoryRepository)}");
     }
 
     /// <summary>What one block changes, staged before the save and applied (and raised) after it.</summary>

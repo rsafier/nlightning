@@ -43,6 +43,7 @@ public class BlockchainMonitorServiceTests
     private readonly Mock<IWatchedTransactionDbRepository> _mockWatchedTransactionRepository;
     private readonly Mock<IWalletAddressesDbRepository> _mockWalletAddressesDbRepository;
     private readonly Mock<IUtxoDbRepository> _mockUtxoDbRepository;
+    private readonly Mock<IFeeInputReservationDbRepository> _mockFeeInputReservationRepository = new();
     private readonly Mock<IWatchedOutpointDbRepository> _mockWatchedOutpointRepository;
     private readonly Mock<IBroadcastTransactionDbRepository> _mockBroadcastRepository;
     private readonly Mock<IBlockHeaderDbRepository> _mockBlockHeaderRepository;
@@ -71,6 +72,7 @@ public class BlockchainMonitorServiceTests
         _mockUnitOfWork.Setup(x => x.WatchedOutpointDbRepository).Returns(_mockWatchedOutpointRepository.Object);
         _mockUnitOfWork.Setup(x => x.BroadcastTransactionDbRepository).Returns(_mockBroadcastRepository.Object);
         _mockUnitOfWork.Setup(x => x.BlockHeaderDbRepository).Returns(_mockBlockHeaderRepository.Object);
+        _mockUnitOfWork.Setup(x => x.FeeInputReservationDbRepository).Returns(_mockFeeInputReservationRepository.Object);
         _mockUnitOfWork.Setup(x => x.SaveChangesAsync()).Callback(() => _steps.Add("save")).Returns(Task.CompletedTask);
 
         _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
@@ -78,6 +80,7 @@ public class BlockchainMonitorServiceTests
         _mockWatchedOutpointRepository.Setup(x => x.GetActiveAsync()).ReturnsAsync([]);
         _mockBroadcastRepository.Setup(x => x.GetPendingAsync()).ReturnsAsync([]);
         _mockBlockHeaderRepository.Setup(x => x.GetAllAsync()).ReturnsAsync([]);
+        _mockFeeInputReservationRepository.Setup(x => x.GetReservedOutpointsAsync()).ReturnsAsync([]);
         _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
                                       .ReturnsAsync(new BlockchainState(100, Hash.Empty, DateTime.UtcNow));
 
@@ -119,6 +122,30 @@ public class BlockchainMonitorServiceTests
         // Assert
         _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(true), Times.Once);
         _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(false), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_PersistedFeeReservations_When_Starting_Then_TheyAreRestoredIntoTheUtxoSet()
+    {
+        // Arrange: a reservation made before a restart must keep its outputs from other spends (BOLT 5 plan O7-T1)
+        var reservationId = Guid.NewGuid();
+        var txId = new TxId(Enumerable.Repeat((byte)7, 32).ToArray());
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
+        _mockFeeInputReservationRepository.Setup(x => x.GetReservedOutpointsAsync())
+                                          .ReturnsAsync([(txId, 1u, reservationId)]);
+        var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), mockUtxoMemoryRepository.Object);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert
+        var expected = (txId, 1u, reservationId);
+        mockUtxoMemoryRepository.Verify(
+            x => x.LoadFeeReservations(
+                It.Is<IEnumerable<(TxId TxId, uint Index, Guid ReservationId)>>(r => r.Single().Equals(expected))),
+            Times.Once);
     }
 
     [Theory]

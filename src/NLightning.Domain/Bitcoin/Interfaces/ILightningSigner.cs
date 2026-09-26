@@ -262,9 +262,29 @@ public interface ILightningSigner
     CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context);
 
     /// <summary>
-    /// Sign a general transaction using the wallet signing context
+    /// Signs the wallet's inputs of a transaction (BOLT 5 plan O7-T1: the fee inputs of a CPFP child or of an anchor
+    /// HTLC transaction), in place in <see cref="SignedTransaction.RawTxBytes"/>, with <c>SIGHASH_ALL</c>.
     /// </summary>
+    /// <remarks>
+    /// A wallet input is one that spends an output of the wallet's UTXO set. Only outputs reserved through
+    /// <c>IFeeInputSelector</c> are signed: a wallet input that is not reserved, or is locked to a channel funding (see
+    /// <see cref="SignFundingTransaction"/>), fails the call before anything is signed. P2WPKH and P2TR (key path) inputs
+    /// are supported; keys are derived from the output's wallet address index and never leave the signer. Other inputs
+    /// are left untouched, for their own signer. Every signature is checked with the script interpreter before it is
+    /// returned. Equivalent to the overload with no other spent outputs, so a P2TR wallet input needs every input to be
+    /// the wallet's.
+    /// </remarks>
+    /// <returns>True when every wallet input is signed; false when the transaction has no wallet input.</returns>
+    /// <exception cref="Exceptions.SignerException">A wallet input cannot be signed (not reserved, locked to a channel,
+    /// unsupported type, P2TR without every spent output), or the transaction does not parse.</exception>
     bool SignWalletTransaction(SignedTransaction unsignedTransaction);
+
+    /// <summary>
+    /// <see cref="SignWalletTransaction(SignedTransaction)"/> with the outputs the transaction spends that are not the
+    /// wallet's, which a P2TR (BIP 341) signature commits to.
+    /// </summary>
+    bool SignWalletTransaction(SignedTransaction unsignedTransaction,
+                               IReadOnlyList<Wallet.Models.SpentOutput> otherSpentOutputs);
 
     /// <summary>
     /// Sign a funding transaction using the wallet signing context  and validating using the channel context
