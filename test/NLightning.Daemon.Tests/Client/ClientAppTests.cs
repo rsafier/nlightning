@@ -324,7 +324,7 @@ public class ClientAppTests
     public void GivenDescribeGraphArguments_WhenValidatedAndParsed_ThenFlagsAndPage()
     {
         // Arrange (BOLT 7 G5-T4)
-        string[] full = ["--channels", "--nodes", "--limit", "25", "--offset=50"];
+        string[] full = ["--channels", "--limit", "25", "--offset=50"];
 
         // Act
         var parsed = ClientApp.ParseDescribeGraphOptions(full, out var error);
@@ -332,7 +332,7 @@ public class ClientAppTests
 
         // Assert
         Assert.Null(error);
-        Assert.Equal(new DescribeGraphArguments(true, true, 50, 25), parsed);
+        Assert.Equal(new DescribeGraphArguments(true, false, 50, 25), parsed);
         Assert.Equal(new DescribeGraphArguments(false, false, 0, 100), plain);
         Assert.Null(ClientApp.ValidateArguments("describegraph", []));
         Assert.Null(ClientApp.ValidateArguments("describe-graph", ["--limit=1000", "--channels"]));
@@ -342,5 +342,9 @@ public class ClientAppTests
         Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--offset"]));
         Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["channels"]));
         Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--channels=yes"]));
+        // One offset cannot page both listings (they end at different offsets)
+        Assert.Null(ClientApp.ValidateArguments("describegraph", ["--channels", "--nodes", "--limit", "5"]));
+        Assert.Null(ClientApp.ValidateArguments("describegraph", ["--nodes", "--offset", "5"]));
+        Assert.NotNull(ClientApp.ValidateArguments("describegraph", ["--channels", "--nodes", "--offset", "5"]));
     }
 }

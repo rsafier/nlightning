@@ -69,7 +69,7 @@ public class DescribeGraphIpcHandlerTests
         Assert.Equal(1, payload.DisabledPolicies);
         Assert.Equal(2, payload.AnnouncedNodes);
         Assert.Equal(3, payload.GraphNodes);
-        Assert.Equal(1_000_000UL, payload.CapacitySat);
+        Assert.Equal(0UL, payload.CapacitySat); // ab is spent and bc unverified: neither counts
         Assert.Equal(store.PendingChanges, payload.PendingWrites);
         Assert.Equal(store.GetMemoryEstimate().StoreBytes, payload.EstimatedStoreBytes);
         Assert.Equal(store.GetMemoryEstimate().SnapshotBytes, payload.EstimatedSnapshotBytes);
@@ -99,11 +99,16 @@ public class DescribeGraphIpcHandlerTests
             IncludeNodes = true,
             Limit = 1
         }), ct));
-        var second = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest
+        var secondChannels = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest
         {
             IncludeChannels = true,
+            Offset = first.NextChannelOffset!.Value,
+            Limit = 1
+        }), ct));
+        var secondNodes = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest
+        {
             IncludeNodes = true,
-            Offset = 1,
+            Offset = first.NextNodeOffset!.Value,
             Limit = 1
         }), ct));
         var beyond = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest
@@ -117,15 +122,17 @@ public class DescribeGraphIpcHandlerTests
         Assert.Equal(s_alice, Assert.Single(first.NodePage).NodeId);
         Assert.Equal(1, first.NextChannelOffset);
         Assert.Equal(1, first.NextNodeOffset);
-        var ab = Assert.Single(second.ChannelPage);
+        var ab = Assert.Single(secondChannels.ChannelPage);
+        Assert.Empty(secondChannels.NodePage);
+        Assert.Empty(secondNodes.ChannelPage);
         Assert.Equal(ToNumber(s_ab), ab.ShortChannelId);
         Assert.Equal(250U, ab.SpentAtHeight);
         Assert.True(ab.Policy2!.IsDisabled);
-        var carol = Assert.Single(second.NodePage);
+        var carol = Assert.Single(secondNodes.NodePage);
         Assert.Equal(s_carol, carol.NodeId);
         Assert.Equal(1, carol.ChannelCount);
-        Assert.Null(second.NextChannelOffset);
-        Assert.Null(second.NextNodeOffset);
+        Assert.Null(secondChannels.NextChannelOffset);
+        Assert.Null(secondNodes.NextNodeOffset);
         Assert.Empty(beyond.ChannelPage);
         Assert.Null(beyond.NextChannelOffset);
         Assert.Empty(beyond.NodePage);
@@ -154,6 +161,30 @@ public class DescribeGraphIpcHandlerTests
         var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
                                                                 TestContext.Current.CancellationToken);
         Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+    }
+
+    [Fact]
+    public async Task Given_AnOffsetWithBothListings_When_DescribeGraph_Then_InvalidOperation()
+    {
+        // Arrange: the two listings end at different offsets, so one offset cannot page both
+        using var provider = BuildProvider(CreateGraph());
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var response = await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest
+        {
+            IncludeChannels = true,
+            IncludeNodes = true,
+            Offset = 1,
+            Limit = 1
+        }), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Error, response.Kind);
+        var error = MessagePackSerializer.Deserialize<IpcError>(response.Payload, s_options,
+                                                                TestContext.Current.CancellationToken);
+        Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+        Assert.Contains("not both", error.Message);
     }
 
     [Fact]

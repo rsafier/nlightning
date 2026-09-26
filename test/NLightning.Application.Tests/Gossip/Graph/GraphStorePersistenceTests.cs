@@ -89,6 +89,61 @@ public class GraphStorePersistenceTests
     }
 
     [Fact]
+    public async Task Given_ChangesBetweenTheLoadsBatches_When_Loaded_Then_TheInMemoryChangesWin()
+    {
+        // Arrange: a flushed graph (channels ab then bc, policies of ab then bc, nodes alice then carol) loaded one row
+        // per batch; the store is changed while the load waits for the next row, with the writer lock released
+        var kit = await GraphStoreTests.CreateGraphAsync();
+        await kit.Store.FlushAsync(TestContext.Current.CancellationToken);
+        Assert.True(kit.Store.TryGetChannel(s_bc, out var storedBc));
+        var restarted = new GraphTestKit(kit.Repository, loadBatchSize: 1);
+        var store = restarted.Store;
+        var carolToBob = GraphTestKit.DirectionOf(new TestGossipKey(3), s_bob);
+        var newerPolicy = new GraphPolicy(s_now + 10, 1, carolToBob, 40, 1, 990_000_000, 5, 5);
+        var inMemoryBc = new GraphChannel(s_bc, storedBc.NodeId1, storedBc.NodeId2, storedBc.BitcoinKey1,
+                                          storedBc.BitcoinKey2, 42);
+        var changes = new List<string>();
+        kit.Repository.BeforeStreamedRow = (stream, index) =>
+        {
+            switch (stream, index)
+            {
+                case ("channels", 1):
+                    // ab's row is applied, bc's is not: remove ab, add bc with our own value and a newer policy
+                    Assert.True(store.RemoveChannel(s_ab));
+                    Assert.True(store.TryAddChannel(inMemoryBc));
+                    Assert.True(store.TryApplyPolicy(s_bc, newerPolicy));
+                    changes.Add("channels");
+                    break;
+                case ("nodes", 1):
+                    // alice's row is applied, carol's is not
+                    Assert.True(store.RemoveNode(s_alice.PubKey));
+                    changes.Add("nodes");
+                    break;
+            }
+
+            return Task.CompletedTask;
+        };
+
+        // Act
+        await store.LoadAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the removed channel stays removed and its policy rows are skipped; the added channel keeps its
+        // in-memory value, and its newer policy wins over the older row
+        Assert.Equal(["channels", "nodes"], changes);
+        Assert.True(store.IsLoaded);
+        var snapshot = store.GetSnapshot();
+        Assert.False(snapshot.TryGetChannel(s_ab, out _));
+        Assert.True(snapshot.TryGetChannel(s_bc, out var bc));
+        Assert.Equal(42UL, bc.CapacitySat);
+        Assert.Equal(newerPolicy, bc.GetPolicy(carolToBob));
+        Assert.Null(bc.GetPolicy((byte)(1 - carolToBob)));
+        Assert.Equal(1, store.PolicyCount);
+        var nodes = snapshot.Nodes.Select(n => n.NodeId).ToList();
+        Assert.Equal([new TestGossipKey(3).PubKey], nodes);
+        Assert.Equal(Recompute(snapshot), store.GetMemoryEstimate());
+    }
+
+    [Fact]
     public async Task Given_ChangesOfEveryKind_When_TheEstimateIsRead_Then_ItEqualsOneComputedFromTheSnapshot()
     {
         // Arrange
