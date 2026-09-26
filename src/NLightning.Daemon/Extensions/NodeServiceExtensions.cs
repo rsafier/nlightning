@@ -11,6 +11,7 @@ using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
 using Application.Gossip.Graph;
+using Application.Gossip.Relay;
 using Application.Gossip.Sync;
 using Application.Onchain;
 using Application.Onchain.Mempool;
@@ -307,6 +308,24 @@ public static class NodeServiceExtensions
                      if (errors.Count > 0)
                          throw new OptionsValidationException(GossipSyncOptions.SectionName,
                                                               typeof(GossipSyncOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
+
+        // BOLT 7 relay of other nodes' gossip (G3-T3): per-peer filters, staggered flushes, origin suppression (the
+        // peer services' ingress records who sent what), backlog on a new filter. Gossip:RelayEnabled unset means on
+        // everywhere but mainnet (plan D12). Own and relayed gossip use the peer's outbox when the peer manager
+        // offers one (IPeerGossipOutbox, NL-351)
+        services.AddGossipRelayOriginTracking();
+        services.AddOptions<GossipRelayOptions>()
+                .BindConfiguration(GossipRelayOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipRelayOptions.SectionName,
+                                                              typeof(GossipRelayOptions), errors);
 
                      return true;
                  })
