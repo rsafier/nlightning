@@ -36,6 +36,33 @@ public class UtxoDbRepositoryTests
     }
 
     [Fact]
+    public async Task Given_SavedUtxo_When_GetUnspentAsyncWithWalletAddress_Then_AddressIsLoaded()
+    {
+        // Arrange (NL-302: the startup UTXO load needs the address to sign a funding transaction)
+        using var database = new SqliteTestDatabase();
+        var walletAddress = SqliteTestDatabase.CreateWalletAddress();
+        var utxo = SqliteTestDatabase.CreateUtxo(walletAddress);
+        await using (var context = database.CreateContext())
+        {
+            new WalletAddressesDbRepository(context).AddRange([walletAddress]);
+            new UtxoDbRepository(context).Add(utxo);
+            await context.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        await using var readContext = database.CreateContext();
+        var repository = new UtxoDbRepository(readContext);
+
+        // Act
+        var result = (await repository.GetUnspentAsync(includeWalletAddress: true)).Single();
+
+        // Assert
+        Assert.NotNull(result.WalletAddress);
+        Assert.Equal(walletAddress.Address, result.WalletAddress.Address);
+        Assert.Equal(walletAddress.Index, result.WalletAddress.Index);
+        Assert.Equal(walletAddress.IsChange, result.WalletAddress.IsChange);
+    }
+
+    [Fact]
     public async Task Given_UtxoLockedToChannelAndUsedInTransaction_When_Reloaded_Then_FieldsArePreserved()
     {
         // Arrange

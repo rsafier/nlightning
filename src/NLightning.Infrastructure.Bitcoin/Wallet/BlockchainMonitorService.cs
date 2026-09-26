@@ -1191,7 +1191,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
     {
         _logger.LogInformation("Loading Utxo set");
 
-        var utxoSet = (await uow.UtxoDbRepository.GetUnspentAsync()).ToList();
+        // The signer derives each input's key from the UTXO's wallet address, so load it too (NL-302)
+        var utxoSet = (await uow.UtxoDbRepository.GetUnspentAsync(includeWalletAddress: true)).ToList();
         if (utxoSet.Count > 0)
         {
             var utxoMemoryRepository = _serviceProvider.GetService<IUtxoMemoryRepository>() ??
