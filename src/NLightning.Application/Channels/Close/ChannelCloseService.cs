@@ -80,6 +80,14 @@ public sealed class ChannelCloseService : IChannelCloseService
                     _logger.LogInformation("Bumping the closing fee of channel {ChannelId} to {Feerate} sat/kw",
                                            channelId, bumpFeerate);
                     break;
+                case ChannelState.Closing when request.FeeRatePerKw is not null:
+                case ChannelState.Negotiating when request.FeeRatePerKw is not null
+                                              && _registry.Get(channelId).SimpleCloseSeen:
+                    // A bump the case above can't send: say so rather than drop it
+                    throw new InvalidOperationException(
+                        $"Channel {channelId} can't bump its closing fee now: option_simple_close is not active on the "
+                      + "peer's current connection (a legacy close, or the peer has not re-sent its shutdown since "
+                      + "the reconnection)");
                 case ChannelState.Closing or ChannelState.Closed:
                     return ToResult(channel);
                 case ChannelState.ShuttingDown or ChannelState.Negotiating:

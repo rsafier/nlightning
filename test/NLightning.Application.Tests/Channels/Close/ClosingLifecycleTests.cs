@@ -247,6 +247,59 @@ public class ClosingLifecycleTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_PeerReplacedItsScript_When_FundingSpentByEarlierSimpleCloseTx_Then_ClosingThenClosed(
+        bool withOurOutput)
+    {
+        // Arrange - regression: option_simple_close lets the peer change its script (a later closing_complete, or its
+        // shutdown after a reconnection); a closing transaction we signed before pays its old script and must still
+        // close the channel when it confirms instead of the stored one
+        var channel = CreateClosingChannel(ChannelState.Closing);
+        channel.SetClosingTransaction(s_closingTx);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        CreateManager();
+        var oldPeerScript = new Key().PubKey.WitHash.ScriptPubKey;
+        var spend = SimpleClose(channel, withOurOutput, oldPeerScript);
+
+        // Act
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, _monitor.Object,
+                       new OutpointSpentEventArgs(channelId, spend, 700, 3));
+
+        // Assert: recorded as the closing transaction, then closed at depth
+        await WaitUntilAsync(() => channel.ClosingTransaction?.TxId == spend.TxId);
+        Assert.Equal(ChannelState.Closing, channel.State);
+        _monitor.Raise(m => m.OnTransactionConfirmed += null, _monitor.Object, Confirmed(channelId, spend.TxId));
+        await WaitUntilAsync(() => channel.State == ChannelState.Closed);
+    }
+
+    [Fact]
+    public async Task Given_Negotiating_When_FundingSpentBySimpleCloseShapeWithTwoForeignOutputs_Then_NotAMutualClose()
+    {
+        // Arrange: a 0xFFFFFFFD spend with neither output to our script is not a closing transaction of ours
+        var channel = CreateClosingChannel(ChannelState.Negotiating);
+        var channelId = channel.ChannelId;
+        _memory.Setup(m => m.TryGetChannel(channelId, out channel)).Returns(true);
+        CreateManager();
+        var tx = Transaction.Load(SimpleClose(channel, false, new Key().PubKey.WitHash.ScriptPubKey).RawTxBytes,
+                                  Network.RegTest);
+        tx.Outputs.Add(new TxOut(Money.Satoshis(1_000), new Key().PubKey.WitHash.ScriptPubKey));
+        var spend = new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+
+        // Act
+        var isMutual = ChannelManager.IsMutualCloseOf(channel, spend);
+        _monitor.Raise(m => m.OnWatchedOutpointSpent += null, _monitor.Object,
+                       new OutpointSpentEventArgs(channelId, spend, 700, 3));
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(isMutual);
+        Assert.Null(channel.ClosingTransaction);
+        Assert.Empty(_persisted);
+    }
+
+    [Theory]
     [InlineData(ChannelState.ShuttingDown)]
     [InlineData(ChannelState.Negotiating)]
     public async Task Given_ClosingNegotiationAtStartup_When_PeerConnects_Then_ReestablishSent(ChannelState state)
@@ -313,6 +366,23 @@ public class ClosingLifecycleTests
                       sequence: Sequence.Final);
         tx.Outputs.Add(new TxOut(Money.Satoshis(600_000), new Script((byte[])channel.LocalShutdownScript!)));
         tx.Outputs.Add(new TxOut(Money.Satoshis(399_000), new Script((byte[])channel.RemoteShutdownScript!)));
+        return new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+    }
+
+    /// <summary>
+    /// An <c>option_simple_close</c> transaction of <paramref name="channel"/> (sequence 0xFFFFFFFD, lock time 777) to
+    /// <paramref name="peerScript"/>, with our output when <paramref name="withOurOutput"/>.
+    /// </summary>
+    private static SignedTransaction SimpleClose(ChannelModel channel, bool withOurOutput, Script peerScript)
+    {
+        var tx = Transaction.Create(Network.RegTest);
+        tx.Version = 2;
+        tx.LockTime = new LockTime(777);
+        tx.Inputs.Add(new OutPoint(new uint256((byte[])channel.FundingOutput!.TransactionId!.Value), 0),
+                      sequence: new Sequence(0xFFFFFFFD));
+        if (withOurOutput)
+            tx.Outputs.Add(new TxOut(Money.Satoshis(600_000), new Script((byte[])channel.LocalShutdownScript!)));
+        tx.Outputs.Add(new TxOut(Money.Satoshis(399_000), peerScript));
         return new SignedTransaction(new TxId(tx.GetHash().ToBytes()), tx.ToBytes());
     }
 

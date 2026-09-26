@@ -47,9 +47,26 @@ public sealed class ClosingNegotiationRegistry
         /// <summary>
         /// <c>option_simple_close</c> was negotiated on the peer's current connection (set from the negotiated features
         /// of the peer's <c>shutdown</c>, <c>closing_complete</c> or <c>closing_sig</c>): the close uses
-        /// <c>closing_complete</c>/<c>closing_sig</c> instead of <c>closing_signed</c> (BOLT2 plan N11).
+        /// <c>closing_complete</c>/<c>closing_sig</c> instead of <c>closing_signed</c> (BOLT2 plan N11). Setting it
+        /// also sets <see cref="SimpleCloseSeen"/>.
         /// </summary>
-        public bool SimpleClose { get; set; }
+        public bool SimpleClose
+        {
+            get;
+            set
+            {
+                field = value;
+                if (value)
+                    SimpleCloseSeen = true;
+            }
+        }
+
+        /// <summary>
+        /// <see cref="SimpleClose"/> was set on some connection since this process loaded the channel; unlike it, kept
+        /// across reconnections (tells a simple-close channel whose peer did not re-send its <c>shutdown</c> yet from a
+        /// legacy one).
+        /// </summary>
+        public bool SimpleCloseSeen { get; private set; }
 
         /// <summary>
         /// Our <c>closing_complete</c> that still waits for its <c>closing_sig</c> (BOLT 2: no other one before it), or
