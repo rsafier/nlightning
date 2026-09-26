@@ -7,6 +7,7 @@ namespace NLightning.Integration.Tests.Docker.Gossip;
 using Abcd;
 using Domain.Bitcoin.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
 using Fixtures;
@@ -20,8 +21,7 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// <para>Each test uses its own node (fresh key) and its own channel, and asserts only on that channel and node.</para>
-/// <para>(d) (NL-255 re-check: an LND private-channel invoice hinting through us) needs a private LND channel to our
-/// node and stays with the integrator (plan: "unverified LND behaviour; record the result").</para>
+/// <para>(d) (NL-255 re-check): once we are public, david's private-channel invoice hints through us.</para>
 /// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
@@ -128,6 +128,69 @@ public class PublicChannelFlowTests
         // Assert
         await AssertAnnouncedAsync(node, alice, bob, scid, ct);
         await AssertOurNodeAnnouncedAsync(node, bob, alias, ct);
+    }
+
+    /// <summary>
+    /// Proof G1 (d), NL-255 re-check: once our node is public (an announced channel to alice and our
+    /// <c>node_announcement</c>), david's private-channel invoice (<c>addinvoice --private</c>) over a private channel
+    /// we opened to him hints through us. Before G1, LND never hinted through a node it had no announcement of.
+    /// </summary>
+    /// <remarks>
+    /// Plan: "unverified LND behaviour; record the result": the hint david chose (or none) is logged before the
+    /// assertion. david learns our announcements from us directly (we relay our own gossip to every connected peer,
+    /// G1-T7).
+    /// </remarks>
+    [Fact]
+    public async Task Given_OurNodeIsPublic_When_DavidInvoicesOverOurPrivateChannel_Then_HisInvoiceHintsThroughUs()
+    {
+        // Arrange: a public channel to alice (announced), then a private channel we fund to david
+        var ct = TestContext.Current.CancellationToken;
+        var alice = _fixture.GetLndNode("alice");
+        var bob = _fixture.GetLndNode("bob");
+        var david = _fixture.GetLndNode("david");
+        const string alias = "nltg-g1d";
+        await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-g1d", alias, ct);
+        await node.FundWalletAsync(LightningMoney.Satoshis(3_000_000), AddressType.P2Wpkh, ct);
+        var aliceAddress = await node.ConnectToAsync(alice, ct);
+        var publicChannel = await node.OpenChannelAsync(GossipTestNodes.PublicChannelRequest(aliceAddress, s_capacity),
+                                                        ct);
+        var publicScid = await WaitForShortChannelIdAsync(node, publicChannel.ChannelId, ct);
+        await AssertAnnouncedAsync(node, alice, bob, publicScid, ct);
+
+        var davidAddress = await node.ConnectToAsync(david, ct);
+        var privateChannel = await node.OpenChannelAsync(new OpenChannelClientRequest(davidAddress, s_capacity)
+        {
+            FeeRatePerKw = LightningMoney.Satoshis(10_000)
+        }, ct);
+        await WaitForShortChannelIdAsync(node, privateChannel.ChannelId, ct);
+        var davidsChannel = await Poll.ForAsync(
+                                () => LndTestHelpers.GetChannelByPointAsync(david, privateChannel.ChannelPoint(), ct),
+                                s_timeout, "david lists our private channel", ct, GossipGraphProbe.PollInterval);
+        Assert.True(davidsChannel.Private);
+        await Poll.ForAsync(() => GossipGraphProbe.TryGetNodeInfoAsync(david, node.NodeIdHex, ct), s_timeout,
+                            "david has our node_announcement", ct, GossipGraphProbe.PollInterval);
+        await Poll.UntilAsync(async () => (await LndTestHelpers.GetChannelByPointAsync(
+                                               david, privateChannel.ChannelPoint(), ct))?.Active == true,
+                              s_timeout, "david's end of our private channel active", ct,
+                              GossipGraphProbe.PollInterval);
+
+        // Act
+        var invoice = await LndTestHelpers.AddInvoiceAsync(david, 10_000_000, [], ct, "G1 (d)", addPrivateHints: true);
+        var decoded = await david.LightningClient.DecodePayReqAsync(
+                          new PayReqString { PayReq = invoice.PaymentRequest }, cancellationToken: ct);
+
+        // Assert: a one-hop hint from our node over our private channel (LND names it by its SCID or an alias)
+        var davidsIds = new HashSet<ulong>(davidsChannel.AliasScids) { davidsChannel.ChanId, davidsChannel.PeerScidAlias };
+        foreach (var hint in decoded.RouteHints)
+            Console.WriteLine("NL-255 result: david's hint " + string.Join(
+                                  " -> ", hint.HopHints.Select(h => $"{h.NodeId[..16]}…/{h.ChanId}"
+                                                                  + $" (base {h.FeeBaseMsat}, ppm "
+                                                                  + $"{h.FeeProportionalMillionths}, delta "
+                                                                  + $"{h.CltvExpiryDelta})")));
+        Console.WriteLine($"NL-255 result: {decoded.RouteHints.Count} hints; our channel is {string.Join("/", davidsIds)}");
+        Assert.Contains(decoded.RouteHints.SelectMany(h => h.HopHints),
+                        h => string.Equals(h.NodeId, node.NodeIdHex, StringComparison.OrdinalIgnoreCase)
+                          && davidsIds.Contains(h.ChanId));
     }
 
     /// <summary>

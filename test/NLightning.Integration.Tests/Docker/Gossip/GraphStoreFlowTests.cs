@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net;
 using Google.Protobuf;
 using Lnrpc;
@@ -8,6 +9,7 @@ using ServiceStack;
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Fixtures;
 using Utils;
 
@@ -15,13 +17,15 @@ using Utils;
 /// BOLT 7 plan Proof G2 (validation and graph store) against LND 0.20: (a) connected to alice, our graph gets the
 /// fixture's LND-LND channels with both policies and the alice, bob and carol node announcements; (b) they are still
 /// there after a restart before any connection; (c) a public channel closed cooperatively is marked spent one block
-/// after the close, still stored (and spent) 70 blocks after the spend, and removed 72 blocks after it.
+/// after the close, still stored (and spent) 70 blocks after the spend, and removed 72 blocks after it; (d) with
+/// <c>Gossip:StaleAfter</c> at 2 minutes, carol's channels leave our routes once her updates are that old.
 /// </summary>
 /// <remarks>
 /// <para>(c) closes a channel the test opens itself (david-carol, public), not the fixture's alice-carol the plan
 /// names: the other proofs of this collection relay through the fixture channels, and test order is not fixed.</para>
-/// <para>(c)'s "excluded from getroute" waits for G4 (IPC <c>getroute</c>); (d) (stale after
-/// <c>Gossip:StaleAfter</c>) stops carol, a shared LND node, and stays with the integrator.</para>
+/// <para>(c)'s "excluded from getroute" is not asserted: the (c) node has no channel, so it has no route to anything.
+/// (d) (stale after <c>Gossip:StaleAfter</c>) keeps everyone but carol fresh instead of stopping carol, a shared LND
+/// node (see the test).</para>
 /// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
@@ -32,6 +36,15 @@ public class GraphStoreFlowTests
 
     private static readonly TimeSpan s_syncTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_timeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>(d): <c>Gossip:StaleAfter</c> of the node, the plan's 2 minutes.</summary>
+    private static readonly TimeSpan s_staleAfter = TimeSpan.FromMinutes(2);
+
+    /// <summary>(d): how often alice and bob re-announce their policies (under <see cref="s_staleAfter"/>).</summary>
+    private static readonly TimeSpan s_keepFreshInterval = TimeSpan.FromSeconds(40);
+
+    /// <summary>(d): LND stamps updates in whole seconds; our clock and LND's are the same host's.</summary>
+    private static readonly TimeSpan s_clockTolerance = TimeSpan.FromSeconds(5);
 
     /// <summary>How long (c) watches the spent channel stay stored one block short of the forget delay.</summary>
     private static readonly TimeSpan s_boundaryHold = TimeSpan.FromSeconds(5);
@@ -154,6 +167,118 @@ public class GraphStoreFlowTests
         await Poll.UntilAsync(async () => await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid) is null,
                               s_timeout, $"david-carol removed {SpentForgetDepth} blocks after its spend", ct,
                               GossipGraphProbe.PollInterval);
+    }
+
+    /// <summary>Proof G2 (d), NL-356.</summary>
+    /// <remarks>
+    /// The plan stops carol so her updates stop. carol is a shared LND node (restarting one moves its address,
+    /// NL-262), so instead every other policy is kept fresh: alice and bob re-announce theirs every
+    /// <see cref="s_keepFreshInterval"/> while carol stays silent after one refresh at the start. With
+    /// <c>Gossip:StaleAfter</c> at <see cref="s_staleAfter"/>, carol's channels (alice-carol, bob-carol: the older
+    /// direction decides, B7-PR-02) leave our routes once that long has passed, while alice-bob stays routable. Seen
+    /// through <c>getroute</c> (IPC 19): our node has a public channel to alice, so a route to carol exists before and
+    /// none after. The real two-week value is covered by the mocked-clock unit tests (G2-T5, pathfinder).
+    /// TODO(G-C integrator): this needs lane C2's pathfinder to take <c>StaleAfter</c> from <c>Gossip:StaleAfter</c>.
+    /// </remarks>
+    [Fact]
+    public async Task Given_StaleAfterTwoMinutes_When_CarolStopsUpdating_Then_HerChannelsLeaveOurRoutes()
+    {
+        // Arrange: our node (stale after 2 min) with a public channel to alice; the graph is read only after the
+        // refresh below (older updates are ignored on arrival with this StaleAfter)
+        var ct = TestContext.Current.CancellationToken;
+        var (alice, bob, carol) = (_fixture.GetLndNode("alice"), _fixture.GetLndNode("bob"),
+                                   _fixture.GetLndNode("carol"));
+        await using var node = await GossipTestNodes.StartGossipNodeAsync(
+                                   _fixture, "gossip-g2d", "nltg-g2d", ct,
+                                   n => n.ExtraConfiguration["Gossip:StaleAfter"] =
+                                            s_staleAfter.ToString("c", CultureInfo.InvariantCulture));
+        var channels = await PublicTopology.GetFixtureChannelsAsync(_fixture, ct);
+        var ours = await PublicTopology.OpenPublicChannelToAliceAsync(_fixture, node, null, [alice], ct,
+                                                                      syncGraph: false);
+        var aliceBob = channels.Where(c => IsBetween(c, alice, bob)).Select(c => c.ShortChannelId).ToList();
+        var aliceCarol = PublicTopology.FixtureChannelBetween(channels, alice, carol);
+        var bobCarol = PublicTopology.FixtureChannelBetween(channels, bob, carol);
+        var aliceKeeps = aliceBob.Append(aliceCarol).Append(ours.ShortChannelId).ToList();
+        var bobKeeps = aliceBob.Append(bobCarol).ToList();
+        var carolId = new CompactPubKey(carol.LocalNodePubKeyBytes);
+        var bobId = new CompactPubKey(bob.LocalNodePubKeyBytes);
+        const ulong amountMsat = 10_000_000;
+
+        var changes = new LndPolicyChanges();
+        try
+        {
+            await changes.RefreshAsync(carol, [aliceCarol, bobCarol], 1, ct);
+            var carolSilentSince = DateTimeOffset.UtcNow;
+            await changes.RefreshAsync(alice, aliceKeeps, 1, ct);
+            await changes.RefreshAsync(bob, bobKeeps, 1, ct);
+            await changes.WaitSeenByAsync(alice, ct);
+            await GossipTestNodes.SendFullTimestampFilterAsync(node, alice.LocalNodePubKeyBytes, ct);
+            var before = await GetRouteProbe.WaitForRouteAsync(node, carolId, amountMsat, r => r.Found,
+                                                               s_staleAfter, "a route to carol while fresh", ct);
+            Assert.True(DateTimeOffset.UtcNow - carolSilentSince < s_staleAfter,
+                        "the route to carol was only checked after carol's updates were already stale");
+            Assert.Contains(before.ShortChannelIds, s => s == aliceCarol || s == bobCarol);
+
+            // Act: alice and bob stay fresh, carol silent
+            using var keepFresh = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var keeper = KeepFreshAsync(changes, [(alice, aliceKeeps), (bob, bobKeeps)], keepFresh.Token);
+            RouteView after;
+            try
+            {
+                after = await GetRouteProbe.WaitForRouteAsync(node, carolId, amountMsat, r => !r.Found,
+                                                              s_staleAfter + s_timeout,
+                                                              "no route to carol once her updates are stale", ct);
+            }
+            finally
+            {
+                await keepFresh.CancelAsync();
+                await keeper;
+            }
+
+            // Assert: excluded only once stale, and alice-bob still routable
+            var silentFor = DateTimeOffset.UtcNow - carolSilentSince;
+            Console.WriteLine($"No route to carol after {silentFor} without her updates: {after}");
+            Assert.True(silentFor >= s_staleAfter - s_clockTolerance,
+                        $"carol's channels were excluded after {silentFor}, before {s_staleAfter}");
+            var toBob = await GetRouteProbe.GetRouteAsync(node, bobId, amountMsat, ct);
+            Assert.True(toBob.Found, $"no route to bob over the fresh alice-bob channels: {toBob}");
+            Assert.DoesNotContain(toBob.ShortChannelIds, s => s == aliceCarol || s == bobCarol);
+        }
+        finally
+        {
+            await changes.RestoreAsync();
+        }
+    }
+
+    /// <summary>
+    /// Re-announces each node's policies every <see cref="s_keepFreshInterval"/> until cancelled.
+    /// </summary>
+    private static async Task KeepFreshAsync(LndPolicyChanges changes,
+                                             IReadOnlyList<(LNDNodeConnection Lnd, List<ulong> Scids)> keepers,
+                                             CancellationToken cancellationToken)
+    {
+        var round = 1;
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(s_keepFreshInterval, cancellationToken);
+                round++;
+                foreach (var (lnd, scids) in keepers)
+                    await changes.RefreshAsync(lnd, scids, round, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // stopped by the test
+        }
+    }
+
+    private static bool IsBetween((ulong ShortChannelId, string Local, string Remote, bool Private) channel,
+                                  LNDNodeConnection a, LNDNodeConnection b)
+    {
+        var ids = new[] { a.LocalNodePubKey.ToLowerInvariant(), b.LocalNodePubKey.ToLowerInvariant() };
+        return ids.Contains(channel.Local) && ids.Contains(channel.Remote);
     }
 
     private static async Task AssertStillSpentAsync(NLightningTestNode node, ulong scid, uint spendHeight, string when)
