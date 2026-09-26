@@ -21,13 +21,24 @@ using Utils;
 /// LND david:
 /// <list type="bullet">
 ///   <item>(a) a channel opened at our opener's lowest feerate (1,000 sat/kw, about 4 sat/vB) while the estimate is
-///   10 sat/vB: at our
-///   force close a child spending our anchor and at least one wallet input is in the mempool, the package (commitment
-///   and child) pays at least the estimate, and both confirm in the same block; the child's change is ours.</item>
+///   10 sat/vB, no HTLC: at our force close a child spending our anchor and at least one wallet input is in the
+///   mempool, the package (commitment and child) pays at least the estimate, and both confirm in the same block
+///   although the commitment alone is not minable; the child's change is ours. This pins lane O7-X2's policy
+///   (<c>AnchorCpfpPolicy</c>): any commitment of ours that pays less than the floored estimate gets a child, a
+///   commitment without HTLCs too (estimated for <c>Node:Onchain:Anchors:NoDeadlineConfTarget</c>, fee capped at a
+///   share of our stake). BOLT 5 does not require that bump (nothing on the commitment has a deadline, and a 4 sat/vB
+///   commitment would confirm on regtest anyway); a deadline-only policy (as LND's sweeper) would fail this test while
+///   still conforming, so change the test with the policy.</item>
 ///   <item>(b) the same with our HTLC in the commitment (a deadline): while the miners leave the package out (empty
 ///   blocks through <c>generateblock</c>), the child is replaced by one with a higher fee (RBF of the child), and the
-///   commitment confirms before the HTLC's <c>cltv_expiry</c> once blocks take it.</item>
+///   commitment confirms with that child once blocks take it.</item>
 /// </list>
+/// The CPFP evidence is the package feerate (at least the estimate), the replacement's higher fee and, for "confirmed
+/// together", a block the commitment could not enter alone: before the block that takes the package the test lowers
+/// the commitment's fee to zero in bitcoind's block template (<c>prioritisetransaction</c>, below regtest's
+/// <c>blockmintxfee</c>), so only the child's ancestor feerate gets it mined. That the commitment confirms before the
+/// HTLC's <c>cltv_expiry</c> is a smoke check only: the test mines at most <see cref="MaxEmptyBlocks"/> + 1 blocks
+/// against a <see cref="HoldInvoiceCltvExpiry"/> delta, so it cannot miss the deadline.
 /// </summary>
 /// <remarks>
 /// The child is found in bitcoind's mempool as the transaction that spends our anchor, so the proof holds whatever
@@ -81,7 +92,8 @@ public class AnchorsCpfpTests : IAsyncLifetime
         var child = await WaitForAnchorChildAsync(anchorOutPoint, ct);
         await AssertCpfpChildAsync(commitment, commitmentFee, anchorOutPoint, child, ct);
 
-        // One block takes both (whatever child is current by then)
+        // One block takes both (whatever child is current by then), the commitment only through its child
+        await ExcludeCommitmentOnItsOwnAsync(commitment, commitmentFee, ct);
         await ChainSync.MineAndWaitAsync(_harness.Fixture, 1, [david], [node], ct);
         var mined = await AssertMinedTogetherAsync(commitment, anchorOutPoint, ct);
 
@@ -144,7 +156,8 @@ public class AnchorsCpfpTests : IAsyncLifetime
             Assert.DoesNotContain(first.GetHash(), await _harness.Fixture.Bitcoin.GetRawMempoolAsync(ct));
             await AssertCpfpChildAsync(commitment, commitmentFee, anchorOutPoint, replacement, ct);
 
-            // Blocks take it again: the commitment confirms before the HTLC's deadline
+            // Blocks take it again, the commitment only through its child; confirmed before the HTLC's deadline (smoke)
+            await ExcludeCommitmentOnItsOwnAsync(commitment, commitmentFee, ct);
             await ChainSync.MineAndWaitAsync(_harness.Fixture, 1, [david], [node], ct);
             await AssertMinedTogetherAsync(commitment, anchorOutPoint, ct);
             var info = await _harness.Fixture.Bitcoin.GetRawTransactionInfoAsync(commitment.GetHash(), ct);
@@ -207,6 +220,18 @@ public class AnchorsCpfpTests : IAsyncLifetime
         Console.WriteLine($"Child {child.GetHash()}: {child.Inputs.Count} inputs, fee {childFee} sat, vsize "
                         + $"{child.GetVirtualSize()}; package {packageRate:F2} sat/vB");
         Assert.True(packageRate >= MinimumPackageRateSatPerVByte, $"package at {packageRate:F2} sat/vB");
+    }
+
+    /// <summary>
+    /// Lowers the commitment's fee to zero in bitcoind's block template (<c>prioritisetransaction</c> with a negative
+    /// delta of its whole fee): below <c>blockmintxfee</c> it cannot be mined alone, only as the ancestor of a child
+    /// whose own fee carries the package. The delta only affects mining and leaves with the transaction once mined.
+    /// </summary>
+    private async Task ExcludeCommitmentOnItsOwnAsync(Transaction commitment, long commitmentFee, CancellationToken ct)
+    {
+        await _harness.Fixture.Bitcoin.SendCommandAsync("prioritisetransaction", ct, commitment.GetHash().ToString(),
+                                                        0, -commitmentFee);
+        Console.WriteLine($"Commitment {commitment.GetHash()} deprioritised by {commitmentFee} sat");
     }
 
     /// <summary>The commitment and a child spending our anchor are in the same block; returns that child.</summary>

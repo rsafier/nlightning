@@ -49,8 +49,10 @@ if ! [[ "$runs" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 # Without extra arguments the proof namespace(s) of ONCHAIN_SUITE run; with them (e.g. -class/-method) they pick the
-# tests
-if [ "$#" -eq 0 ]; then
+# tests, and the logs are named "custom" (ONCHAIN_SUITE is then ignored)
+if [ "$#" -gt 0 ]; then
+    suite="custom"
+else
     case "$suite" in
         legacy) set -- -namespace "$namespace" ;;
         anchors) set -- -namespace "$anchors_namespace" ;;

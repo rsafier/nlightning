@@ -34,7 +34,8 @@ using Utils;
 /// </list>
 /// </summary>
 /// <remarks>
-/// Needs lane O7-X3 (anchors CSV-1 spends in the remote resolver). Run with
+/// Passes on the pre-O7 resolvers already (the remote resolver spends the CSV-1 <c>to_remote</c> and claims the HTLCs
+/// with nSequence 1), so it guards the O7 lanes against regressions rather than gating O7-T3. Run with
 /// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]

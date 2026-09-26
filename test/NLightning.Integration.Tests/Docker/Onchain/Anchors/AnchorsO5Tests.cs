@@ -23,8 +23,11 @@ using Utils;
 /// fee input). The 330-sat anchors are left alone (sweeping them costs more than they hold).
 /// </summary>
 /// <remarks>
-/// The same breach as <c>OnchainO5Tests</c> (a) on an anchors channel. Needs lane O7-X3 (penalty and CSV-1 rules
-/// for anchors channels). Run with <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
+/// The same breach as <c>OnchainO5Tests</c> (a) on an anchors channel, on the confirmed path only (our node is down
+/// while the revoked commitment reaches the mempool; the mempool path is <c>AnchorsMempoolPenaltyTests</c>). Passes on
+/// the pre-O7 resolvers already (one transaction takes the penalty and the CSV-1 <c>to_remote</c>, valid once the
+/// commitment has a confirmation), so it guards the O7 lanes against regressions rather than gating O7-T3. Run with
+/// <c>ONCHAIN_SUITE=anchors scripts/run-onchain.sh</c>.
 /// </remarks>
 [Collection(OnchainRegtestCollection.Name)]
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]
