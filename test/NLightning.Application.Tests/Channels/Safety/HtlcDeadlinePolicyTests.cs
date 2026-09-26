@@ -166,6 +166,37 @@ public class HtlcDeadlinePolicyTests
         }
     }
 
+    public static TheoryData<uint, HtlcDeadlineAction> UnresolvedFinalHopRows => new()
+    {
+        // A payer's final HTLC: cltv_expiry = height + min_final_cltv_expiry (40) + 3, so it arrives at Cltv - 43.
+        // The forwarding distance would fail it back 3 blocks later; the final-hop deadline is cltv_expiry - S = 982
+        { Cltv - 40 - 3, HtlcDeadlineAction.None },
+        { Cltv - D, HtlcDeadlineAction.None },
+        { Cltv - S - 1, HtlcDeadlineAction.None },
+        { Cltv - S, HtlcDeadlineAction.FailBackUpstream },
+        { Cltv + G, HtlcDeadlineAction.FailBackUpstream }
+    };
+
+    [Theory]
+    [MemberData(nameof(UnresolvedFinalHopRows))]
+    public void Given_UnresolvedFinalHopHtlc_When_Evaluated_Then_FailedBackAtFulfillDeadline(uint height,
+        HtlcDeadlineAction expected)
+    {
+        // Arrange
+        var htlc = Htlc(HtlcDirection.Incoming, HtlcState.RcvdAddAckRevocation);
+
+        // Act
+        var decision = s_policy.Evaluate(htlc, height, IncomingHtlcResolution.UnresolvedFinalHop);
+
+        // Assert
+        Assert.Equal(expected, decision.Action);
+        if (expected == HtlcDeadlineAction.FailBackUpstream)
+        {
+            Assert.Equal("B2-CLTV-05", decision.RequirementId);
+            Assert.Equal(Cltv - S, decision.DeadlineHeight);
+        }
+    }
+
     [Theory]
     [InlineData(Cltv - D)]
     [InlineData(Cltv - S)]

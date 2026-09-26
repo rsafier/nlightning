@@ -344,11 +344,12 @@ public sealed class HtlcExpiryMonitor : IHtlcExpiryMonitor, IDisposable
         if (circuit is not null || outgoingKeys.Count > 0)
             return IncomingHtlcResolution.AwaitingDownstream;
 
-        // Final hop: our invoice for the hash was accepted/settled, so we hold the preimage
+        // Final hop: our invoice for the hash was accepted/settled, so we hold the preimage; otherwise the switch may
+        // still settle it, so it gets the final-hop (fulfillment) deadline, not the forwarding distance
         var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(htlc.PaymentHash);
         return invoice is { Status: InvoiceStatus.Accepted or InvoiceStatus.Settled }
                    ? IncomingHtlcResolution.PreimageKnown
-                   : IncomingHtlcResolution.Unresolved;
+                   : IncomingHtlcResolution.UnresolvedFinalHop;
     }
 
     private async Task FailBackAsync(IUnitOfWork unitOfWork, ChannelId channelId, HtlcRecord htlc, uint height,

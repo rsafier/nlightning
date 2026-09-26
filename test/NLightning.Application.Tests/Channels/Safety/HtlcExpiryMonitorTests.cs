@@ -11,6 +11,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Policies;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -37,6 +38,8 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
 {
     private const uint Cltv = 600;
     private const uint Delta = 40; // RoutingOptions.CltvExpiryDelta default
+    private const uint FulfillSafety = HtlcDeadlinePolicy.DefaultFulfillSafetyBlocks; // 18
+    private const uint MinFinalCltv = 40; // RoutingOptions.InvoiceMinFinalCltvExpiry default
 
     private readonly RealSigningCommitmentPair _pair = new(hasAnchors: false);
     private readonly Mock<IBlockchainMonitor> _blockchainMonitor = new();
@@ -129,7 +132,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_UnresolvedIncomingHtlc_When_BlockReachesCltvMinusDelta_Then_FailedBackUpstream()
+    public async Task Given_UnresolvedFinalHopHtlc_When_BlockReachesFulfillDeadline_Then_FailedBackUpstream()
     {
         // Arrange: Bob received Alice's HTLC and knows nothing about it (no invoice, no forward)
         var id = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
@@ -137,12 +140,13 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         UseChannel(_pair.Bob);
         var monitor = CreateMonitor();
 
-        // Act
-        await monitor.CheckAsync(Cltv - Delta - 1, TestContext.Current.CancellationToken);
-        _operations.VerifyNoOtherCalls();
+        // Act: the forwarding distance does not apply to a never-forwarded HTLC
         await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety - 1, TestContext.Current.CancellationToken);
+        _operations.VerifyNoOtherCalls();
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
 
-        // Assert (B2-FWD-03): temporary_node_failure encrypted with the stored shared secret
+        // Assert (B2-CLTV-05): temporary_node_failure encrypted with the stored shared secret
         _operations.Verify(o => o.FailHtlcAsync(_channel.ChannelId, id,
                                                 It.Is<ReadOnlyMemory<byte>>(r => r.ToArray().SequenceEqual(_errorPacket)),
                                                 It.IsAny<CancellationToken>()), Times.Once);
@@ -151,6 +155,49 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
                                                           m.Code == Domain.Protocol.Onion.Enums.FailureCode
                                                              .TemporaryNodeFailure),
                                                       It.IsAny<int>()));
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_FinalHopHtlcWithOpenInvoiceAndMinFinalCltv_When_NextBlocks_Then_NotFailedBack()
+    {
+        // Arrange: a payer's final HTLC, cltv_expiry = height + min_final_cltv_expiry + 3, not settled by the switch
+        // yet (the invoice is still Open); the forwarding distance (40) would fail it back within 3 blocks
+        const uint height = Cltv - MinFinalCltv - 3;
+        var preimage = RealSigningCommitmentPair.Preimage(1);
+        _pair.Add(_pair.Alice, 20_000_000, preimage, Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                 .ReturnsAsync(Invoice(RealSigningCommitmentPair.Hash(preimage), InvoiceStatus.Open));
+        var monitor = CreateMonitor();
+
+        // Act
+        for (var h = height; h < Cltv - FulfillSafety; h++)
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert: nothing before the fulfillment deadline
+        _operations.VerifyNoOtherCalls();
+        _failureService.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_IncomingContinuedByOutgoingOriginWithoutCircuit_When_PastIncomingDeadlines_Then_NeverFailedBack()
+    {
+        // Arrange: an outgoing HTLC carries this HTLC as its origin (no preimage yet): the downstream decides
+        var incomingId = _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1), Cltv);
+        _pair.Settle(_pair.Alice);
+        UseChannel(_pair.Bob);
+        _stateDb.Setup(r => r.FindHtlcsByOriginAsync(HtlcOrigin.Forwarded(_channel.ChannelId, incomingId)))
+                .ReturnsAsync([(_channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, 77))]);
+        var monitor = CreateMonitor();
+
+        // Act
+        foreach (var h in new[] { Cltv - Delta, Cltv - FulfillSafety, Cltv })
+            await monitor.CheckAsync(h, TestContext.Current.CancellationToken);
+
+        // Assert
+        _operations.VerifyNoOtherCalls();
         _failureService.VerifyNoOtherCalls();
     }
 
@@ -169,8 +216,8 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         var monitor = CreateMonitor();
 
         // Act
-        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
-        await monitor.CheckAsync(Cltv - Delta + 1, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety + 1, TestContext.Current.CancellationToken);
 
         // Assert
         _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
@@ -190,7 +237,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         var monitor = CreateMonitor();
 
         // Act
-        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
 
         // Assert
         _operations.VerifyNoOtherCalls();
@@ -325,7 +372,7 @@ public sealed class HtlcExpiryMonitorTests : IDisposable
         var monitor = CreateMonitor();
 
         // Act
-        await monitor.CheckAsync(Cltv - Delta, TestContext.Current.CancellationToken);
+        await monitor.CheckAsync(Cltv - FulfillSafety, TestContext.Current.CancellationToken);
 
         // Assert
         _operations.VerifyNoOtherCalls();

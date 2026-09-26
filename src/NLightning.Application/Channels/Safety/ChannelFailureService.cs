@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NBitcoin.RPC;
 
 namespace NLightning.Application.Channels.Safety;
 
@@ -37,9 +38,22 @@ using Interfaces;
 /// saved by <see cref="IBlockchainMonitor.PublishAndWatchTransactionAsync"/> before the publish. A broadcast
 /// repeated in the same process (a new block while the HTLC is still past its deadline) is skipped; after a restart
 /// the stored watch makes it a rebroadcast (<see cref="IBitcoinChainService.SendTransactionAsync"/>).</para>
+/// <para>A publish counts as done only when the node accepted it or already knows the transaction (in its mempool or
+/// chain, <see cref="IsKnownToNodeAsync"/>); any other refusal (node down, below the mempool minimum fee, a conflict)
+/// is <see cref="ChannelFailureStatus.PublishFailed"/> and, once <see cref="Start"/> ran, retried on every new block
+/// until it succeeds. <see cref="Start"/> also resumes, in the background, the broadcast of every loaded Failed
+/// channel (no data loss) that has an unconfirmed commitment watch: a publish interrupted by a crash or a node outage
+/// before the restart.</para>
 /// </remarks>
 public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 {
+    // bitcoind rejections that mean it already has the transaction (mempool or chain)
+    private static readonly string[] s_alreadyKnownRejections =
+    [
+        "txn-already-in-mempool", "txn-already-known", "txn-same-nonwitness-data-in-mempool",
+        "already in block chain"
+    ];
+
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelErrorSender _channelErrorSender;
     private readonly IChannelLockProvider _channelLockProvider;
@@ -55,6 +69,12 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     // Commitments published by this process, per channel (a repeated failure does not republish every block)
     private readonly ConcurrentDictionary<ChannelId, TxId> _published = new();
 
+    // Failures whose publish failed: retried on every new block until the publish succeeds
+    private readonly ConcurrentDictionary<ChannelId, ChannelFailureRequest> _pendingPublishes = new();
+
+    private CancellationTokenSource _stopping = new();
+    private Task _resumeTask = Task.CompletedTask;
+    private int _retryRunning;
     private int _started;
 
     public ChannelFailureService(IBlockchainMonitor blockchainMonitor, IChannelErrorSender channelErrorSender,
@@ -81,15 +101,101 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     /// <inheritdoc />
     public void Start()
     {
-        if (Interlocked.Exchange(ref _started, 1) == 0)
-            _blockchainMonitor.OnTransactionConfirmed += HandleTransactionConfirmed;
+        if (Interlocked.Exchange(ref _started, 1) != 0)
+            return;
+
+        _stopping = new CancellationTokenSource();
+        _blockchainMonitor.OnTransactionConfirmed += HandleTransactionConfirmed;
+        _blockchainMonitor.OnNewBlockDetected += HandleNewBlockDetected;
+
+        var token = _stopping.Token;
+        _resumeTask = Task.Run(() => ResumeInterruptedBroadcastsAsync(token), CancellationToken.None);
     }
 
     /// <inheritdoc />
     public void Stop()
     {
-        if (Interlocked.Exchange(ref _started, 0) == 1)
-            _blockchainMonitor.OnTransactionConfirmed -= HandleTransactionConfirmed;
+        if (Interlocked.Exchange(ref _started, 0) != 1)
+            return;
+
+        _blockchainMonitor.OnTransactionConfirmed -= HandleTransactionConfirmed;
+        _blockchainMonitor.OnNewBlockDetected -= HandleNewBlockDetected;
+        _stopping.Cancel();
+    }
+
+    /// <summary>The background resume started by <see cref="Start"/> (tests, diagnostics).</summary>
+    public Task WhenResumedAsync() => _resumeTask;
+
+    /// <summary>The channels whose publish failed and is retried on the next block (tests, diagnostics).</summary>
+    public bool IsPublishPending(ChannelId channelId) => _pendingPublishes.ContainsKey(channelId);
+
+    /// <summary>
+    /// Resumes the broadcast of every loaded <c>Failed</c> channel without data loss whose commitment watch is stored
+    /// but not confirmed (a publish interrupted by a crash, or refused before a restart). <see cref="Start"/> runs it.
+    /// </summary>
+    public async Task ResumeInterruptedBroadcastsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var failed = _channelMemoryRepository.FindChannels(
+                c => c.State == ChannelState.Failed && !c.DataLossDetected);
+            if (failed.Count == 0)
+                return;
+
+            List<ChannelId> toResume;
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var pending = await unitOfWork.WatchedTransactionDbRepository.GetAllPendingAsync();
+                toResume = failed.Where(c => pending.Any(w => w.ChannelId == c.ChannelId
+                                                           && !IsFundingTransaction(c, w.TransactionId)))
+                                 .Select(c => c.ChannelId)
+                                 .ToList();
+            }
+
+            foreach (var channelId in toResume)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var outcome = await FailCoreAsync(channelId,
+                                                  new ChannelFailureRequest("resuming the broadcast after a restart",
+                                                                            ChannelFailedException.DefaultPeerMessage),
+                                                  sendError: false, cancellationToken);
+                _logger.LogWarning("Resumed the broadcast of failed channel {ChannelId}: {Status} {TxId}", channelId,
+                                   outcome.Status, outcome.CommitmentTxId);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Stopping
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Resuming the broadcasts of failed channels failed");
+        }
+    }
+
+    /// <summary>Retries every failed publish once (what a new block triggers after <see cref="Start"/>).</summary>
+    public async Task RetryPendingPublishesAsync(CancellationToken cancellationToken = default)
+    {
+        foreach (var (channelId, request) in _pendingPublishes.ToArray())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var outcome = await FailCoreAsync(channelId, request, sendError: false, cancellationToken);
+                if (outcome.Status != ChannelFailureStatus.PublishFailed)
+                    _logger.LogWarning("Publish of the commitment of failed channel {ChannelId} retried: {Status} "
+                                     + "{TxId}", channelId, outcome.Status, outcome.CommitmentTxId);
+            }
+            catch (KeyNotFoundException)
+            {
+                _pendingPublishes.TryRemove(channelId, out _);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _logger.LogError(e, "Retrying the publish of failed channel {ChannelId} failed", channelId);
+            }
+        }
     }
 
     /// <inheritdoc />
@@ -106,10 +212,16 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<ChannelFailureOutcome> FailChannelAsync(ChannelId channelId, ChannelFailureRequest request,
-                                                              CancellationToken cancellationToken = default)
+    public Task<ChannelFailureOutcome> FailChannelAsync(ChannelId channelId, ChannelFailureRequest request,
+                                                        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        return FailCoreAsync(channelId, request, sendError: true, cancellationToken);
+    }
+
+    private async Task<ChannelFailureOutcome> FailCoreAsync(ChannelId channelId, ChannelFailureRequest request,
+                                                            bool sendError, CancellationToken cancellationToken)
+    {
 
         ErrorMessage error;
         ChannelModel channel;
@@ -124,7 +236,10 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             channel = loaded;
             if (channel.State is ChannelState.Closed or ChannelState.Stale
              || channel.State < ChannelState.V1FundingSigned)
+            {
+                _pendingPublishes.TryRemove(channelId, out _);
                 return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+            }
 
             _logger.LogCritical("Failing channel {ChannelId} ({RequirementId}): {Reason}; broadcast: {Broadcast}",
                                 channelId, request.RequirementId, request.Reason, request.Broadcast);
@@ -162,9 +277,21 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         }
 
         if (commitment is not null)
+        {
             outcome = await PublishAsync(channelId, commitment);
+            if (outcome.Status == ChannelFailureStatus.PublishFailed)
+                _pendingPublishes[channelId] = request;
+            else
+                _pendingPublishes.TryRemove(channelId, out _);
+        }
+        else
+        {
+            _pendingPublishes.TryRemove(channelId, out _);
+        }
 
-        await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
+        if (sendError)
+            await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
+
         return outcome!;
     }
 
@@ -172,7 +299,11 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     public bool TryGetPublishedCommitment(ChannelId channelId, out TxId txId) =>
         _published.TryGetValue(channelId, out txId);
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        Stop();
+        _stopping.Dispose();
+    }
 
     private async Task<ErrorMessage> PersistFailedAsync(IServiceScope scope, ChannelModel channel,
                                                         ChannelFailureRequest request)
@@ -230,17 +361,24 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
             if (watched)
             {
-                // Published before (an earlier run): send it again, the watch is already stored
+                // Published or attempted before (an earlier run, or a publish that failed after its watch was
+                // saved): send it again, the watch is already stored
                 var chainService = _serviceProvider.GetRequiredService<IBitcoinChainService>();
                 try
                 {
                     await chainService.SendTransactionAsync(Transaction.Load(commitment.Transaction.RawTxBytes,
                                                                              _network));
                 }
-                catch (Exception e)
+                catch (Exception e) when (e is not OperationCanceledException)
                 {
-                    // Already in the mempool or a block: nothing more to do
-                    _logger.LogInformation(e, "Rebroadcast of commitment {TxId} of channel {ChannelId} was refused",
+                    if (!await IsKnownToNodeAsync(chainService, txId, e))
+                    {
+                        _logger.LogCritical(e, "Rebroadcast of commitment {TxId} of failed channel {ChannelId} was "
+                                             + "refused; retrying on the next block", txId, channelId);
+                        return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
+                    }
+
+                    _logger.LogInformation("Commitment {TxId} of channel {ChannelId} is already known to the node",
                                            txId, channelId);
                 }
 
@@ -262,6 +400,54 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
                                 channelId);
             return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
         }
+    }
+
+    /// <summary>
+    /// True when a refused send still means the node has the transaction: bitcoind's "already in the chain"
+    /// (RPC -27) or "already in the mempool" rejections, or the transaction found through <c>getrawtransaction</c>.
+    /// Every other refusal (node unreachable, fee too low, missing or conflicting inputs) is a failed publish.
+    /// </summary>
+    private async Task<bool> IsKnownToNodeAsync(IBitcoinChainService chainService, TxId txId, Exception sendError)
+    {
+        if (sendError is RPCException { RPCCode: RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN })
+            return true;
+
+        var message = sendError.Message;
+        if (s_alreadyKnownRejections.Any(r => message.Contains(r, StringComparison.OrdinalIgnoreCase)))
+            return true;
+
+        try
+        {
+            return await chainService.GetTransactionAsync(new uint256(txId)) is not null;
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "Cannot check whether commitment {TxId} is known to the node", txId);
+            return false;
+        }
+    }
+
+    private void HandleNewBlockDetected(object? sender, NewBlockEventArgs args)
+    {
+        if (_pendingPublishes.IsEmpty || Interlocked.Exchange(ref _retryRunning, 1) == 1)
+            return;
+
+        var token = _stopping.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await RetryPendingPublishesAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Stopping
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _retryRunning, 0);
+            }
+        }, CancellationToken.None);
     }
 
     private void HandleTransactionConfirmed(object? sender, TransactionConfirmedEventArgs args)

@@ -68,6 +68,9 @@ public sealed class ChannelFailureServiceTests : IDisposable
                     channel = _channel;
                     return id == _channel.ChannelId;
                 }));
+        _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
+               .Returns((Func<ChannelModel, bool> predicate) => predicate(_channel) ? [_channel] : []);
+        _watchedDb.Setup(r => r.GetAllPendingAsync()).ReturnsAsync([]);
         _channelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
                   .Callback<ChannelModel>(c => _calls.Add($"persist {c.State}"))
                   .Returns(Task.CompletedTask);
@@ -271,6 +274,179 @@ public sealed class ChannelFailureServiceTests : IDisposable
         Assert.Equal(ChannelFailureStatus.Rebroadcast, outcome.Status);
         Assert.Empty(_published);
         _chainService.Verify(c => c.SendTransactionAsync(It.IsAny<Transaction>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_WatchStoredAndSendRefusedForAnotherReason_When_Failed_Then_PublishFailedAndPending()
+    {
+        // Arrange: the watch exists (an earlier publish saved it before its send failed); bitcoind refuses again,
+        // and does not know the transaction
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId id) => new WatchedTransactionModel(_channel.ChannelId, id, 1));
+        _chainService.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+                     .ThrowsAsync(new InvalidOperationException("min relay fee not met"));
+        var service = Service;
+
+        // Act
+        var outcome = await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "again"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert: not reported as a rebroadcast, not remembered as published, retried later
+        Assert.Equal(ChannelFailureStatus.PublishFailed, outcome.Status);
+        Assert.False(service.TryGetPublishedCommitment(_channel.ChannelId, out _));
+        Assert.True(service.IsPublishPending(_channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_SendRefusedButNodeKnowsTransaction_When_Rebroadcast_Then_Rebroadcast()
+    {
+        // Arrange: the refusal text is unknown, but getrawtransaction finds it (mempool or chain)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId id) => new WatchedTransactionModel(_channel.ChannelId, id, 1));
+        _chainService.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+                     .ThrowsAsync(new InvalidOperationException("some other wording"));
+        _chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>())).ReturnsAsync(Transaction.Create(Network.Main));
+        var service = Service;
+
+        // Act
+        var outcome = await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "again"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelFailureStatus.Rebroadcast, outcome.Status);
+        Assert.False(service.IsPublishPending(_channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_PublishFailsAfterWatchSavedAndResendFailsToo_When_Blocks_Then_RetriedUntilPublished()
+    {
+        // Arrange: the real monitor saves the watch, then the send throws (bitcoind down)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        WatchedTransactionModel? saved = null;
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId id) => saved is not null && saved.TransactionId == id ? saved : null);
+        _blockchainMonitor
+           .Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
+                                                         It.IsAny<uint>()))
+           .Callback<ChannelId, SignedTransaction, uint>((id, tx, depth) => saved = new WatchedTransactionModel(id, tx.TxId, depth))
+           .ThrowsAsync(new InvalidOperationException("bitcoind down"));
+        _chainService.SetupSequence(c => c.SendTransactionAsync(It.IsAny<Transaction>()))
+                     .ThrowsAsync(new InvalidOperationException("bitcoind down"))
+                     .ReturnsAsync(uint256.One);
+        var service = Service;
+        var first = await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                                   TestContext.Current.CancellationToken);
+        _calls.Clear();
+
+        // Act: two blocks' retries
+        await service.RetryPendingPublishesAsync(TestContext.Current.CancellationToken);
+        var pendingAfterSecondFailure = service.IsPublishPending(_channel.ChannelId);
+        await service.RetryPendingPublishesAsync(TestContext.Current.CancellationToken);
+
+        // Assert: failed, failed again (still pending), then sent; the error is not re-sent by the retries
+        Assert.Equal(ChannelFailureStatus.PublishFailed, first.Status);
+        Assert.True(pendingAfterSecondFailure);
+        Assert.False(service.IsPublishPending(_channel.ChannelId));
+        Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out var txId));
+        Assert.Equal(first.CommitmentTxId, txId);
+        _chainService.Verify(c => c.SendTransactionAsync(It.IsAny<Transaction>()), Times.Exactly(2));
+        Assert.DoesNotContain("error sent", _calls);
+    }
+
+    [Fact]
+    public async Task Given_StartedWithPendingPublish_When_NewBlock_Then_Retried()
+    {
+        // Arrange
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _blockchainMonitor
+           .SetupSequence(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
+                                                                 It.IsAny<uint>()))
+           .ThrowsAsync(new InvalidOperationException("bitcoind down"))
+           .Returns(Task.CompletedTask);
+        var service = Service;
+        service.Start();
+        await service.WhenResumedAsync();
+        await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                       TestContext.Current.CancellationToken);
+        Assert.True(service.IsPublishPending(_channel.ChannelId));
+
+        // Act
+        _blockchainMonitor.Raise(m => m.OnNewBlockDetected += null, new NewBlockEventArgs(501, new byte[32]));
+
+        // Assert
+        await WaitUntilAsync(() => !service.IsPublishPending(_channel.ChannelId));
+        Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out _));
+        service.Stop();
+    }
+
+    [Fact]
+    public async Task Given_FailedChannelWithUnconfirmedCommitmentWatchAfterRestart_When_Started_Then_BroadcastResumed()
+    {
+        // Arrange: a previous run persisted Failed and the watch of its commitment, then crashed before the send;
+        // the channel has no HTLC past a deadline, so the monitor would never ask again
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        var previousRun = await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                                         TestContext.Current.CancellationToken);
+        Assert.Equal(ChannelFailureStatus.Broadcast, previousRun.Status);
+        var watch = new WatchedTransactionModel(_channel.ChannelId, previousRun.CommitmentTxId!.Value, 1);
+        _watchedDb.Setup(r => r.GetAllPendingAsync()).ReturnsAsync([watch]);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(watch.TransactionId)).ReturnsAsync(watch);
+        _calls.Clear();
+
+        // A new process: a fresh service over the same channel memory and database
+        using var service = ActivatorUtilities.CreateInstance<ChannelFailureService>(_provider);
+
+        // Act
+        service.Start();
+        await service.WhenResumedAsync();
+
+        // Assert: sent again through the chain service; no new watch, no error to a peer that is not connected yet
+        _chainService.Verify(c => c.SendTransactionAsync(It.Is<Transaction>(t => t.GetHash() == new uint256(
+                                                                                 watch.TransactionId))), Times.Once);
+        Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out _));
+        Assert.DoesNotContain("error sent", _calls);
+        Assert.Single(_published); // only the previous run's PublishAndWatch
+    }
+
+    [Theory]
+    [InlineData(false, false)] // failed without broadcast and nothing watched: no intent to broadcast recorded
+    [InlineData(true, true)] // data loss: never broadcast (I12)
+    public async Task Given_FailedChannelWithoutBroadcastIntentOrWithDataLoss_When_Started_Then_NothingSent(
+        bool hasWatch, bool dataLoss)
+    {
+        // Arrange
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b", Broadcast: false),
+                                       TestContext.Current.CancellationToken);
+        if (dataLoss)
+            _channel.MarkDataLossDetected();
+        if (hasWatch)
+            _watchedDb.Setup(r => r.GetAllPendingAsync())
+                      .ReturnsAsync([new WatchedTransactionModel(_channel.ChannelId, new TxId(new byte[32]), 1)]);
+        var service = Service;
+
+        // Act
+        service.Start();
+        await service.WhenResumedAsync();
+
+        // Assert
+        _chainService.Verify(c => c.SendTransactionAsync(It.IsAny<Transaction>()), Times.Never);
+        Assert.Empty(_published);
+        service.Stop();
     }
 
     [Fact]
