@@ -35,14 +35,30 @@ public sealed class ProbeNode : IAsyncDisposable
     private readonly ProbeOptions _options;
     private ServiceProvider? _provider;
 
-    public ProbeNode(ProbeOptions options, ProbeLoggerProvider loggerProvider, PeerTraffic traffic, uint tip)
+    public ProbeNode(ProbeOptions options, ProbeLoggerProvider loggerProvider, PeerTraffic traffic, uint tip,
+                     RpcSettings? rpc = null)
     {
         _options = options;
         LoggerProvider = loggerProvider;
         Traffic = traffic;
         Tip = tip;
+        _rpc = rpc;
         FundingLookups = new CountingFundingOutputLookup();
     }
+
+    private readonly RpcSettings? _rpc;
+
+    /// <summary>RPC mode: the product's chain service, counted and timed (null in stub mode).</summary>
+    public CountingChainService? Chain { get; private set; }
+
+    /// <summary>RPC mode: the product's funding output lookup, timed (null in stub mode).</summary>
+    public TimedFundingOutputLookup? TimedLookups { get; private set; }
+
+    /// <summary>RPC mode: the block follower behind <see cref="IBlockchainMonitor"/> (null in stub mode).</summary>
+    public RpcBlockFollower? Follower { get; private set; }
+
+    /// <summary>Funding lookups asked for (the stub's count, or the product lookup's in RPC mode).</summary>
+    public long FundingLookupCount => TimedLookups?.Calls ?? FundingLookups.Lookups;
 
     public ProbeLoggerProvider LoggerProvider { get; }
     public PeerTraffic Traffic { get; }
@@ -66,10 +82,11 @@ public sealed class ProbeNode : IAsyncDisposable
             ["Node:ListenAddresses:0"] = $"127.0.0.1:{_options.ListenPort}",
             ["Database:Provider"] = "Sqlite",
             ["Database:ConnectionString"] = $"Data Source={DatabasePath}",
-            // No bitcoind: the stub monitor and lookup replace every chain reader the gossip stack uses
-            ["Bitcoin:RpcEndpoint"] = "http://127.0.0.1:1",
-            ["Bitcoin:RpcUser"] = "none",
-            ["Bitcoin:RpcPassword"] = "none",
+            // Stub mode: no bitcoind, the stub monitor and lookup replace every chain reader the gossip stack uses.
+            // RPC mode: the owner's bitcoind (the password stays in this in-memory configuration)
+            ["Bitcoin:RpcEndpoint"] = _rpc?.Url ?? "http://127.0.0.1:1",
+            ["Bitcoin:RpcUser"] = _rpc?.User ?? "none",
+            ["Bitcoin:RpcPassword"] = _rpc?.Password ?? "none",
             ["Bitcoin:ZmqHost"] = "127.0.0.1",
             ["Bitcoin:ZmqBlockPort"] = "1",
             ["Bitcoin:ZmqTxPort"] = "2",
@@ -81,11 +98,16 @@ public sealed class ProbeNode : IAsyncDisposable
             ["Gossip:Enabled"] = "true",
             ["Gossip:SyncEnabled"] = "true",
             ["Gossip:RelayEnabled"] = "false",
-            ["Gossip:AssumeChannelValid"] = "true",
+            ["Gossip:AssumeChannelValid"] = _rpc is null ? "true" : "false",
+            ["Gossip:FundingValidation"] = "Full",
             ["Gossip:AllowPublicChannelsOnMainnet"] = "false",
             ["Gossip:AcceptPublicChannels"] = "false",
             ["Gossip:SyncPeers"] = syncPeers.ToString(CultureInfo.InvariantCulture)
         };
+        if (_options.ChainConcurrency is { } concurrency)
+            settings["Gossip:ChainLookupConcurrency"] = concurrency.ToString(CultureInfo.InvariantCulture);
+        if (_options.ChainRate is { } rate)
+            settings["Gossip:ChainLookupsPerSecond"] = rate.ToString(CultureInfo.InvariantCulture);
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
 
         var services = new ServiceCollection();
@@ -96,10 +118,27 @@ public sealed class ProbeNode : IAsyncDisposable
                                               .AddFilter("Microsoft.EntityFrameworkCore", LogLevel.Warning));
         services.AddNltgNodeServices(configuration, keyManager);
 
-        // The chain: a fixed tip, no blocks, nothing published; funding lookups counted (must stay at 0)
-        var monitor = ChainMonitorStub.Create(Tip);
-        services.Replace(ServiceDescriptor.Singleton(monitor));
-        services.Replace(ServiceDescriptor.Singleton<IFundingOutputLookup>(FundingLookups));
+        if (_rpc is null)
+        {
+            // The chain: a fixed tip, no blocks, nothing published; funding lookups counted (must stay at 0)
+            var monitor = ChainMonitorStub.Create(Tip);
+            services.Replace(ServiceDescriptor.Singleton(monitor));
+            services.Replace(ServiceDescriptor.Singleton<IFundingOutputLookup>(FundingLookups));
+        }
+        else
+        {
+            // The product's BitcoinChainService and FundingOutputLookup (D3), counted and timed; the monitor follows
+            // bitcoind's blocks by polling (spend detection for the pruner) and reports Tip to the range sync
+            Decorate<IBitcoinChainService>(services, inner => Chain = new CountingChainService(inner));
+            Decorate<IFundingOutputLookup>(services, inner => TimedLookups = new TimedFundingOutputLookup(inner));
+            services.Replace(ServiceDescriptor.Singleton<IBlockchainMonitor>(sp =>
+            {
+                var (monitor, follower) = RpcBlockFollower.Create(sp.GetRequiredService<IBitcoinChainService>(), Tip,
+                                                                  _options.MaxBlocksPerPoll);
+                Follower = follower;
+                return monitor;
+            }));
+        }
 
         // Per-peer traffic counters around the peer services' gossip ports
         Decorate<IGossipIngress>(services, inner => new CountingGossipIngress(inner, Traffic));
@@ -114,8 +153,18 @@ public sealed class ProbeNode : IAsyncDisposable
         _ = Services.GetRequiredService<IOptions<GossipSyncOptions>>().Value;
         var relayOptions = Services.GetRequiredService<IOptions<GossipRelayOptions>>().Value;
         var network = Services.GetRequiredService<IOptions<NodeOptions>>().Value.BitcoinNetwork;
-        if (!graphOptions.AssumeChannelValid || relayOptions.IsRelayEnabledFor(network))
-            throw new InvalidOperationException("The probe must run with AssumeChannelValid on and relay off");
+        if (graphOptions.AssumeChannelValid != (_rpc is null) || relayOptions.IsRelayEnabledFor(network))
+            throw new InvalidOperationException(
+                "The probe must run with relay off, and AssumeChannelValid on without a chain, off with one");
+
+        if (_rpc is not null)
+        {
+            // Resolve the chain side now, so the decorators exist before anything runs
+            _ = Services.GetRequiredService<IFundingOutputLookup>();
+            _ = Services.GetRequiredService<IBlockchainMonitor>();
+            if (Chain is null || TimedLookups is null || Follower is null)
+                throw new InvalidOperationException("The probe's chain decorators were not used");
+        }
     }
 
     /// <summary>Creates the database schema (or applies new migrations).</summary>

@@ -48,6 +48,26 @@ public sealed class ProbeOptions
     public double VerifyRequestsPerSecond { get; private set; } = 2;
     public string EsploraUrl { get; private set; } = "https://mempool.space/api";
 
+    /// <summary><c>stub</c> (no bitcoind, <c>Gossip:AssumeChannelValid</c>) or <c>rpc</c> (the owner's bitcoind, D3).</summary>
+    public string Chain { get; private set; } = "stub";
+
+    public string RpcEnvFile { get; private set; } =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nltg-gossip-probe",
+                     "mainnet-rpc.env");
+
+    /// <summary><c>Gossip:ChainLookupConcurrency</c> (null: the product default).</summary>
+    public int? ChainConcurrency { get; private set; }
+
+    /// <summary><c>Gossip:ChainLookupsPerSecond</c> (null: the product default).</summary>
+    public int? ChainRate { get; private set; }
+
+    /// <summary><c>headers</c> (default: the range sync asks up to bitcoind's header height) or <c>blocks</c>.</summary>
+    public string SyncTip { get; private set; } = "headers";
+
+    public int BlockPollSeconds { get; private set; } = 15;
+    public int MaxBlocksPerPoll { get; private set; } = 10;
+    public bool IsRpc => Chain == "rpc";
+
     public static string Usage =>
         """
         nltg gossip probe (test harness; mainnet, gossip-only, no channels, no funds)
@@ -56,12 +76,18 @@ public sealed class ProbeOptions
           GossipProbe run    [--dir <path>] [--peer <id@ip:port>]... [--max-minutes 120] [--min-minutes 60]
                              [--plateau-minutes 15] [--sample-seconds 60] [--sync-peers <n>] [--tip <height>]
                              [--listen-port 19735] [--log-level Information|Debug] [--label <text>]
+                             [--chain stub|rpc] [--rpc-env <file>] [--chain-concurrency <n>] [--chain-rate <n/s>]
+                             [--sync-tip headers|blocks] [--block-poll-seconds 15] [--max-blocks-per-poll 10]
           GossipProbe verify [--dir <path>] [--sample 300] [--rate 2] [--esplora https://mempool.space/api]
+          GossipProbe chaininfo [--rpc-env <file>]
 
         run     connects to the peers (default: 5 well-known nodes), syncs the mainnet graph with
                 Gossip:AssumeChannelValid and relay off, and samples it every --sample-seconds into
                 <dir>/runs/<UTC time>/ until --min-minutes passed and the graph did not grow for --plateau-minutes,
                 or --max-minutes. The graph stays in <dir>/probe.db, so a second run measures the reload.
+                With --chain rpc the funding outputs are checked against the bitcoind of --rpc-env (the product's
+                FundingOutputLookup, AssumeChannelValid off) and new blocks are followed for the spend detection.
+        chaininfo  checks that this process reaches the bitcoind of --rpc-env (getblockchaininfo).
         verify  checks a random sample of the stored channels' funding outputs against an Esplora API (at most
                 --rate requests per second; stops on HTTP 429).
         """;
@@ -72,7 +98,7 @@ public sealed class ProbeOptions
         var i = 0;
         if (args.Length > 0 && !args[0].StartsWith("--", StringComparison.Ordinal))
             options.Command = args[i++];
-        if (options.Command is not ("run" or "verify"))
+        if (options.Command is not ("run" or "verify" or "chaininfo"))
             return null;
 
         for (; i < args.Length; i++)
@@ -98,6 +124,19 @@ public sealed class ProbeOptions
                 case "--sample": options.VerifySample = int.Parse(value, CultureInfo.InvariantCulture); break;
                 case "--rate": options.VerifyRequestsPerSecond = ParseDouble(value); break;
                 case "--esplora": options.EsploraUrl = value.TrimEnd('/'); break;
+                case "--chain" when value is "stub" or "rpc": options.Chain = value; break;
+                case "--rpc-env": options.RpcEnvFile = Path.GetFullPath(value); break;
+                case "--chain-concurrency":
+                    options.ChainConcurrency = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
+                case "--chain-rate": options.ChainRate = int.Parse(value, CultureInfo.InvariantCulture); break;
+                case "--sync-tip" when value is "headers" or "blocks": options.SyncTip = value; break;
+                case "--block-poll-seconds":
+                    options.BlockPollSeconds = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
+                case "--max-blocks-per-poll":
+                    options.MaxBlocksPerPoll = int.Parse(value, CultureInfo.InvariantCulture);
+                    break;
                 default: return null;
             }
         }

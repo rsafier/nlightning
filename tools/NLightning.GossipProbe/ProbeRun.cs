@@ -24,6 +24,7 @@ public sealed class ProbeRun
     private readonly Dictionary<string, PeerRecord> _peers = new(StringComparer.Ordinal);
     private readonly List<(double Minutes, int Channels, int Nodes, int Policies)> _history = [];
     private readonly Stopwatch _clock = new();
+    private RpcSettings? _rpc;
     private TimeSpan _lastCpu;
     private double _lastWallSeconds;
 
@@ -42,10 +43,30 @@ public sealed class ProbeRun
         using var meters = new GossipMeterCollector();
         var traffic = new PeerTraffic();
         traffic.OpenRangeLog(Path.Combine(_runDirectory, "range-replies.csv"));
-        var tip = _options.Tip > 0 ? _options.Tip : await EsploraClient.GetTipHeightAsync(_options.EsploraUrl);
-        Console.WriteLine($"Run directory {_runDirectory}; mainnet tip {tip}");
+        using var http = new HttpRequestCollector();
+        RpcSettings? rpc = null;
+        ChainInfo? chainAtStart = null;
+        uint tip;
+        if (_options.IsRpc)
+        {
+            rpc = RpcSettings.Load(_options.RpcEnvFile);
+            chainAtStart = await ChainInfo.ReadAsync(rpc);
+            tip = _options.Tip > 0
+                      ? _options.Tip
+                      : _options.SyncTip == "blocks" ? chainAtStart.Blocks : chainAtStart.Headers;
+            _summary["chain_at_start"] = chainAtStart;
+            Console.WriteLine($"bitcoind: blocks {chainAtStart.Blocks}, headers {chainAtStart.Headers}, IBD "
+                            + $"{chainAtStart.InitialBlockDownload}, pruned {chainAtStart.Pruned}");
+        }
+        else
+        {
+            tip = _options.Tip > 0 ? _options.Tip : await EsploraClient.GetTipHeightAsync(_options.EsploraUrl);
+        }
 
-        await using var node = new ProbeNode(_options, loggerProvider, traffic, tip);
+        Console.WriteLine($"Run directory {_runDirectory}; sync tip {tip}; chain {_options.Chain}");
+        _rpc = rpc;
+
+        await using var node = new ProbeNode(_options, loggerProvider, traffic, tip, rpc);
         _summary["started_utc"] = DateTime.UtcNow;
         _summary["tip"] = tip;
         _summary["peers_configured"] = _options.Peers;
@@ -80,6 +101,17 @@ public sealed class ProbeRun
         Console.WriteLine($"Graph loaded in {watch.Elapsed.TotalSeconds:F2} s: {store.ChannelCount} channels, "
                         + $"{store.NodeCount} nodes, {store.PolicyCount} policies");
 
+        // RPC mode: follow bitcoind's blocks from its current height (the pruner's spend detection)
+        using var followerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task? followerLoop = null;
+        if (node.Follower is { } follower && chainAtStart is not null)
+        {
+            node.TimedLookups!.OpenLog(Path.Combine(_runDirectory, "lookups.csv"));
+            await follower.StartAtAsync(chainAtStart.Blocks);
+            followerLoop = Task.Run(() => follower.RunAsync(TimeSpan.FromSeconds(_options.BlockPollSeconds),
+                                                            followerCts.Token), CancellationToken.None);
+        }
+
         var peerManager = node.Services.GetRequiredService<IPeerManager>();
         await peerManager.StartAsync(cancellationToken);
         foreach (var peer in _options.Peers)
@@ -98,7 +130,7 @@ public sealed class ProbeRun
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromSeconds(_options.SampleSeconds), cancellationToken);
-                await SampleAsync(node, describer, meters, peerManager, samples, peerSamples);
+                await SampleAsync(node, describer, meters, peerManager, samples, peerSamples, http);
                 if (ShouldStop(out var reason))
                 {
                     stopReason = reason;
@@ -112,6 +144,10 @@ public sealed class ProbeRun
         {
             stopReason = "cancelled";
         }
+
+        await followerCts.CancelAsync();
+        if (followerLoop is not null)
+            await followerLoop;
 
         _summary["stop_reason"] = stopReason;
         _summary["run_minutes"] = _clock.Elapsed.TotalMinutes;
@@ -131,7 +167,31 @@ public sealed class ProbeRun
         _summary["final_policies"] = store.PolicyCount;
         _summary["database_bytes_at_stop"] = FileSize(node.DatabasePath);
         _summary["wal_bytes_at_stop"] = FileSize(node.DatabasePath + "-wal");
-        _summary["funding_lookups"] = node.FundingLookups.Lookups;
+        _summary["funding_lookups"] = node.FundingLookupCount;
+        if (node.TimedLookups is { } timed)
+        {
+            timed.Flush();
+            _summary["chain"] = new Dictionary<string, object?>
+            {
+                ["lookup_statuses"] = new SortedDictionary<string, long>(timed.Statuses),
+                ["verify_latency"] = timed.Verify.Describe(),
+                ["lookup_latency"] = timed.Lookup.Describe(),
+                ["chain_service_calls"] = node.Chain!.Calls.OrderBy(c => c.Key, StringComparer.Ordinal)
+                                              .ToDictionary(c => c.Key, c => c.Value.Describe()),
+                ["http_requests"] = http.Requests.Describe(),
+                ["http_requests_per_minute"] = http.PerMinute,
+                ["follower"] = new
+                {
+                    node.Follower!.LastBlockHeight,
+                    node.Follower.BlocksProcessed,
+                    node.Follower.SpentOutpointsRaised,
+                    node.Follower.Reorgs,
+                    node.Follower.LastError
+                },
+                ["chain_at_stop"] = await TryReadChainAsync()
+            };
+            timed.Dispose();
+        }
         _summary["meter_counters"] = meters.Counters;
         _summary["meter_histograms"] = meters.Histograms.ToDictionary(h => h.Key,
                                                                       h => new { h.Value.Count, h.Value.Sum, h.Value.Max });
@@ -156,7 +216,8 @@ public sealed class ProbeRun
       + "assumed_or_unverified,spent,pending_writes,memory_estimate_mb,received,accepted,rejected,orphaned,dropped,"
       + "q_ingress,q_orphans,q_retries,q_rate_limited,q_write_behind,peers_connected,sync_complete,rss_mb,"
       + "private_mb,managed_heap_mb,gc_heap_size_mb,gc0,gc1,gc2,cpu_pct_one_core,db_mb,wal_mb,warnings,errors,"
-      + "funding_lookups,flushes,flush_seconds_sum,flush_seconds_max";
+      + "funding_lookups,flushes,flush_seconds_sum,flush_seconds_max,http_requests,http_failures,"
+      + "bitcoind_blocks,follower_height,follower_blocks,verified,spent_marked";
 
     private const string PeerHeader =
         "utc,elapsed_min,peer,connected,connects,disconnects_seen,initialized,queries,queries_ex,sync_peer,"
@@ -165,9 +226,13 @@ public sealed class ProbeRun
       + "reply_scids_end,queries_from_peer,filter_from_peer,encoding_zlib_replies";
 
     private async Task SampleAsync(ProbeNode node, GossipGraphDescriber describer, GossipMeterCollector meters,
-                                   IPeerManager peerManager, StreamWriter samples, StreamWriter peerSamples)
+                                   IPeerManager peerManager, StreamWriter samples, StreamWriter peerSamples,
+                                   HttpRequestCollector? http)
     {
         var d = describer.Describe();
+        var chainNow = _rpc is null ? null : await TryReadChainAsync();
+        var verified = node.Services.GetRequiredService<IGraphStore>().GetSnapshot().Channels
+                           .Count(c => c.Verification == Domain.Gossip.Graph.GraphChannelVerification.Verified);
         var gauges = meters.ReadGauges();
         var process = Process.GetCurrentProcess();
         process.Refresh();
@@ -198,15 +263,22 @@ public sealed class ProbeRun
             Mb(process.PrivateMemorySize64), Mb(GC.GetTotalMemory(false)), Mb(gcInfo.HeapSizeBytes),
             I(GC.CollectionCount(0)), I(GC.CollectionCount(1)), I(GC.CollectionCount(2)), F(cpuPct),
             Mb(FileSize(node.DatabasePath)), Mb(FileSize(node.DatabasePath + "-wal")),
-            I(node.LoggerProvider.Warnings), I(node.LoggerProvider.Errors), I(node.FundingLookups.Lookups),
-            I(flushes.Sum(f => f.Count)), F(flushes.Sum(f => f.Sum)), F(flushes.Count == 0 ? 0 : flushes.Max(f => f.Max))
+            I(node.LoggerProvider.Warnings), I(node.LoggerProvider.Errors), I(node.FundingLookupCount),
+            I(flushes.Sum(f => f.Count)), F(flushes.Sum(f => f.Sum)), F(flushes.Count == 0 ? 0 : flushes.Max(f => f.Max)),
+            I(http?.Requests.Count ?? 0), I(http?.Requests.Failures ?? 0), I(chainNow?.Blocks ?? 0),
+            I(node.Follower?.LastBlockHeight ?? 0), I(node.Follower?.BlocksProcessed ?? 0), I(verified), I(d.SpentChannels)
         ]);
+        node.TimedLookups?.Flush();
         await samples.WriteLineAsync(row);
         await samples.FlushAsync();
         Console.WriteLine($"[{minutes,6:F1} min] channels {d.Channels} nodes {d.GraphNodes} (announced "
                         + $"{d.AnnouncedNodes}) policies {d.Policies} peers {connected.Count} ingress "
                         + $"{gauges.GetValueOrDefault("ingress")} orphans {gauges.GetValueOrDefault("orphans")} "
-                        + $"rss {Mb(process.WorkingSet64)} MB cpu {cpuPct:F0}%");
+                        + $"rss {Mb(process.WorkingSet64)} MB cpu {cpuPct:F0}%"
+                        + (_rpc is null
+                               ? ""
+                               : $" verified {verified} lookups {node.FundingLookupCount} rpc {http?.Requests.Count} "
+                               + $"bitcoind {chainNow?.Blocks}"));
 
         var states = d.Sync?.Peers ?? [];
         foreach (var record in _peers.Values)
@@ -398,6 +470,22 @@ public sealed class ProbeRun
             ["newest_update_age"] = byAge,
             ["first_announced_by"] = byAnnouncer
         };
+    }
+
+    /// <summary>bitcoind's getblockchaininfo now (one RPC per sample), or null when it cannot be read.</summary>
+    private async Task<ChainInfo?> TryReadChainAsync()
+    {
+        if (_rpc is null)
+            return null;
+        try
+        {
+            return await ChainInfo.ReadAsync(_rpc);
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"getblockchaininfo failed: {e.GetType().Name}: {e.Message}");
+            return null;
+        }
     }
 
     private static long FileSize(string path) => File.Exists(path) ? new FileInfo(path).Length : 0;
