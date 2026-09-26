@@ -174,6 +174,25 @@ public class AcceptChannel1MessageHandlerTests
     }
 
     [Fact]
+    public async Task Given_ValidAcceptChannel_When_ChannelIsUpgraded_Then_UtxoLocksAlreadyCarryTheNewChannelId()
+    {
+        // Arrange (NL-263: OnChannelUpgraded listeners look the locks up by the new id at once)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        var utxosUpgraded = false;
+        var utxosUpgradedBeforeChannel = false;
+        _mockUtxoMemoryRepository.Setup(r => r.UpgradeChannelIdOnLockedUtxos(s_tempChannelId, s_newChannelId))
+                                 .Callback(() => utxosUpgraded = true);
+        _mockChannelMemoryRepository.Setup(r => r.UpgradeChannel(s_tempChannelId, It.IsAny<ChannelModel>()))
+                                    .Callback(() => utxosUpgradedBeforeChannel = utxosUpgraded);
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        Assert.True(utxosUpgradedBeforeChannel);
+    }
+
+    [Fact]
     public async Task Given_ErrorAfterChannelIdChanged_When_HandleAsync_Then_TempChannelIsRemovedAndUtxosReleased()
     {
         // Arrange

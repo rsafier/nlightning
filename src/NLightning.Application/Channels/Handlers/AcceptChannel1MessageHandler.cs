@@ -222,11 +222,12 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
                 _messageFactory.CreateFundingCreatedMessage(oldChannelId, fundingOutput.TransactionId.Value,
                                                             fundingOutput.Index.Value, ourSignature);
 
+            // Move the locked utxos to the real channel id first: UpgradeChannel raises OnChannelUpgraded, and the
+            // open-channel subscription looks the locks up by the new id as soon as it sees it (NL-263)
+            _utxoMemoryRepository.UpgradeChannelIdOnLockedUtxos(oldChannelId, tempChannel.ChannelId);
+
             // Upgrade the channel in the dictionary
             _channelMemoryRepository.UpgradeChannel(oldChannelId, tempChannel);
-
-            // Update the locked utxos
-            _utxoMemoryRepository.UpgradeChannelIdOnLockedUtxos(oldChannelId, tempChannel.ChannelId);
 
             return [fundingCreatedMessage];
         }
