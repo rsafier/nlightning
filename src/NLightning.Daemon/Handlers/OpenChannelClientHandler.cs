@@ -120,19 +120,24 @@ public sealed class OpenChannelClientHandler
 
         // Select UTXOs and mark them as toSpend for this channel: through the reserve service the funding keeps the
         // anchors reserve (NL-379), counting this channel when it has anchors, and skips outputs our own pending
-        // broadcasts spend (NL-385)
+        // broadcasts spend (NL-385); both checks count the funding transaction's fee. An anchors channel counts toward
+        // the reserve from the check until it is funded or fails (released in the finally below)
         if (_anchorReserveService is not null)
         {
-            var anchorsChannel = channel.ChannelParams.OptionAnchorOutputs;
             try
             {
-                await _anchorReserveService.EnsureCanFundAsync(request.FundingAmount, anchorsChannel, ct);
-                await _anchorReserveService.LockFundingUtxosAsync(request.FundingAmount, channel.ChannelId,
-                                                                  anchorsChannel, ct);
+                await _anchorReserveService.EnsureCanFundAsync(request.FundingAmount, channel, ct);
+                await _anchorReserveService.LockFundingUtxosAsync(request.FundingAmount, channel, ct);
             }
             catch (InsufficientFundsException e)
             {
+                _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
                 throw new ClientException(ErrorCodes.NotEnoughBalance, e.Message);
+            }
+            catch
+            {
+                _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
+                throw;
             }
         }
         else
@@ -195,6 +200,9 @@ public sealed class OpenChannelClientHandler
         }
         finally
         {
+            // Funded (it counts as a channel now) or failed: the open no longer holds anchors reserve as pending
+            _anchorReserveService?.ReleasePendingChannel(_channelId);
+
             //Unsubscribe from the events so we don't have dangling memory
             _peerService?.OnAttentionMessageReceived -= AttentionMessageHandlerEnvelope;
             _peerService?.OnDisconnect -= PeerDisconnectionEnvelope;

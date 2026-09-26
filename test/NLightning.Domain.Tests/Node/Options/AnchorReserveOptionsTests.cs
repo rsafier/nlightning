@@ -74,7 +74,8 @@ public class AnchorReserveOptionsTests
                            .AddInMemoryCollection(new Dictionary<string, string?>
                            {
                                ["Node:Anchors:ReservePerChannel"] = "25000",
-                               ["Node:Anchors:MaxReserve"] = "50000"
+                               ["Node:Anchors:MaxReserve"] = "50000",
+                               ["Node:Anchors:PendingOpenTimeout"] = "00:05:00"
                            })
                            .Build();
 
@@ -85,6 +86,20 @@ public class AnchorReserveOptionsTests
         Assert.Equal(25_000UL, options.Anchors.ReservePerChannel);
         Assert.Equal(50_000UL, options.Anchors.MaxReserve);
         Assert.Equal(50_000, options.Anchors.GetRequiredReserve(3).Satoshi);
+        Assert.Equal(TimeSpan.FromMinutes(5), options.Anchors.PendingOpenTimeout);
         Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_ANonPositivePendingOpenTimeout_When_Validated_Then_ReportsTheError()
+    {
+        // Arrange
+        var options = new NodeOptions { Anchors = new AnchorReserveOptions { PendingOpenTimeout = TimeSpan.Zero } };
+
+        // Act
+        var errors = options.GetValidationErrors();
+
+        // Assert
+        Assert.Contains(errors, e => e.Contains("PendingOpenTimeout"));
     }
 }
