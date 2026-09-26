@@ -186,7 +186,7 @@ public class FeatureOptionsTests
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
         Feature.OptionAnchors, Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionRouteBlinding,
-        Feature.OptionAttributionData, Feature.OptionSimpleClose
+        Feature.OptionAttributionData
     ];
 
     [Fact]
@@ -265,6 +265,28 @@ public class FeatureOptionsTests
         // Assert
         Assert.Empty(errors);
         Assert.True(features.IsFeatureSet(feature, false));
+    }
+
+    [Fact]
+    public void Given_SimpleCloseWithoutOptIn_When_Validating_Then_NoErrorAndAdvertised()
+    {
+        // Arrange: option_simple_close is implemented (BOLT2 plan N11), so no experimental opt-in is needed
+        var options = new FeatureOptions
+        {
+            OptionSimpleClose = FeatureSupport.Optional,
+            BeyondSegwitShutdown = FeatureSupport.Optional
+        };
+
+        // Act
+        var errors = options.GetValidationErrors();
+        var features = options.GetNodeFeatures(FeatureContext.Init);
+
+        // Assert
+        Assert.Empty(errors);
+        Assert.DoesNotContain(Feature.OptionSimpleClose, FeatureOptions.ExperimentalFeatures);
+        Assert.True(features.IsFeatureSet(Feature.OptionSimpleClose, false));
+        Assert.False(new FeatureOptions().GetNodeFeatures(FeatureContext.Init)
+                                         .IsFeatureSet(Feature.OptionSimpleClose, false));
     }
 
     [Fact]

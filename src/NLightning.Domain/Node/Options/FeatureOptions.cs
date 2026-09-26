@@ -18,8 +18,8 @@ public class FeatureOptions
     /// <remarks>
     /// Advertising a feature makes peers act on it: anchors need BOLT 5 CPFP / fee bumping (BOLT 2 plan N11), quiesce
     /// needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
-    /// attribution_data error attribution (onion M3b), simple_close the closing_complete/closing_sig flow,
-    /// onion_messages the onion_message handler and provide_storage peer_storage.
+    /// attribution_data error attribution (onion M3b), onion_messages the onion_message handler and provide_storage
+    /// peer_storage.
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
@@ -29,7 +29,6 @@ public class FeatureOptions
         Feature.OptionDualFund,
         Feature.OptionRouteBlinding,
         Feature.OptionAttributionData,
-        Feature.OptionSimpleClose,
         Feature.OptionOnionMessages,
         Feature.OptionProvideStorage
     };
@@ -180,6 +179,13 @@ public class FeatureOptions
     /// </summary>
     public FeatureSupport ZeroConf { get; set; } = FeatureSupport.No;
 
+    /// <summary>
+    /// option_simple_close (BOLT 2 closing_complete/closing_sig, BOLT2 plan N11; LND's "rbf-coop-close").
+    /// </summary>
+    /// <remarks>
+    /// Implemented (no longer experimental); defaults to No so the legacy closing_signed negotiation stays the default.
+    /// Needs <see cref="BeyondSegwitShutdown"/> (BOLT 9 dependency). Negotiated only when both sides signal it.
+    /// </remarks>
     public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.No;
 
     /// <summary>
