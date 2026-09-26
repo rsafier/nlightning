@@ -68,20 +68,19 @@ public class NodeOptions
     public LightningMoney MinimumChannelSize { get; set; } = LightningMoney.Satoshis(20_000);
 
     /// <summary>
-    /// Allows HTLCs (payments and forwarding) on our channels. Unset (the default) means "on for regtest only":
-    /// until the node can fail a channel on chain (BOLT2 plan N9-T4) and sweep it (BOLT 5, NL-094), real funds must
-    /// not sit in HTLCs. Set it explicitly to override; read the effective value from <see cref="HtlcsEnabled"/>.
+    /// Allows HTLCs (payments and forwarding) on our channels. Unset (the default) means on, on every network: the
+    /// node fails a channel on chain (BOLT2 plan N9-T4) and resolves, sweeps, penalizes, fee-bumps and re-resolves
+    /// after reorgs every output of it (BOLT 5 plan O2-O6, gate O6-T4 passed with Proofs O3-O6). Set it to false to
+    /// keep real funds out of HTLCs; read the effective value from <see cref="HtlcsEnabled"/>.
     /// </summary>
     /// <remarks>Configuration key <c>Node:EnableHtlcs</c>.</remarks>
     public bool? EnableHtlcs { get; set; }
 
     /// <summary>
-    /// The effective HTLC switch: <see cref="EnableHtlcs"/> when it is set, otherwise true only on regtest. It is
-    /// computed on every read, so it follows a <see cref="BitcoinNetwork"/> set after binding (the daemon's
-    /// <c>PostConfigure</c>).
+    /// The effective HTLC switch: <see cref="EnableHtlcs"/> when it is set, otherwise true on every network (BOLT 5
+    /// plan O6-T4; until ABCD wave 6 it was true only on regtest).
     /// </summary>
-    public bool HtlcsEnabled =>
-        EnableHtlcs ?? string.Equals(BitcoinNetwork.Name, NetworkConstants.Regtest, StringComparison.OrdinalIgnoreCase);
+    public bool HtlcsEnabled => EnableHtlcs ?? true;
 
     /// <summary>
     /// Wait before the first reconnection attempt to a peer with active channels that dropped or could not be reached

@@ -276,9 +276,10 @@ public class NodeServiceExtensionsTests
     [Theory]
     [InlineData("regtest", null, true)]
     [InlineData("regtest", "false", false)]
-    [InlineData("mainnet", null, false)]
+    [InlineData("mainnet", null, true)] // BOLT 5 plan O6-T4: on by default on every network
     [InlineData("mainnet", "true", true)]
-    [InlineData("testnet", null, false)]
+    [InlineData("mainnet", "false", false)]
+    [InlineData("testnet", null, true)]
     public void Given_EnableHtlcsConfig_When_NodeOptionsResolved_Then_HtlcsEnabledFollowsIt(
         string network, string? enableHtlcs, bool expected)
     {
