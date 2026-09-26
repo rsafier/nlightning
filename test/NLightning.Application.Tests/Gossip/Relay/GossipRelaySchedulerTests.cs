@@ -73,6 +73,41 @@ public class GossipRelaySchedulerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ANodeAnnouncementWithoutASentChannelAnnouncement_When_Flushed_Then_ItWaitsForTheChannel()
+    {
+        // Arrange (BOLT 7: a node_announcement for a node without a known channel SHOULD be ignored by the peer, so
+        // it must follow a channel_announcement of ours on the same connection)
+        var sent = AddPeer(s_node2);
+        _relay.EnqueueOwnChannelAnnouncement(ChannelAnnouncement());
+        _relay.EnqueueOwnNodeAnnouncement(NodeAnnouncement(100));
+
+        // Act
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+        var before = sent.Count;
+        _relay.EnqueueOwnChannelUpdate(ChannelUpdate(100));
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, before);
+        Assert.Equal([MessageTypes.ChannelAnnouncement, MessageTypes.ChannelUpdate, MessageTypes.NodeAnnouncement],
+                     sent.Select(m => m.Type));
+    }
+
+    [Fact]
+    public async Task Given_OnlyANodeAnnouncement_When_Flushed_Then_NothingIsSent()
+    {
+        // Arrange
+        var sent = AddPeer(s_node2);
+        _relay.EnqueueOwnNodeAnnouncement(NodeAnnouncement(100));
+
+        // Act
+        await _relay.FlushAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(sent);
+    }
+
+    [Fact]
     public async Task Given_AFlushedConnection_When_FlushedAgain_Then_NothingIsRepeatedButANewConnectionGetsAll()
     {
         // Arrange
@@ -115,7 +150,7 @@ public class GossipRelaySchedulerTests : IDisposable
         // Arrange (BOLT 7: SHOULD NOT forward gossip to a peer whose init networks exclude the chain)
         var mainnetOnly = AddPeer(s_node1, ChainConstants.Main);
         var anyChain = AddPeer(s_node2);
-        _relay.EnqueueOwnNodeAnnouncement(NodeAnnouncement(100));
+        _relay.EnqueueOwnChannelUpdate(ChannelUpdate(100));
 
         // Act
         await _relay.FlushAsync(TestContext.Current.CancellationToken);
@@ -142,7 +177,7 @@ public class GossipRelaySchedulerTests : IDisposable
             return Task.CompletedTask;
         });
         _peers.Add(new GossipPeer(s_node2, service.Object));
-        _relay.EnqueueOwnNodeAnnouncement(NodeAnnouncement(100));
+        _relay.EnqueueOwnChannelUpdate(ChannelUpdate(100));
 
         // Act
         await _relay.FlushAsync(TestContext.Current.CancellationToken);
