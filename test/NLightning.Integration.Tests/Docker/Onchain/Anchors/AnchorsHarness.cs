@@ -13,6 +13,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
+using Domain.Channels.Constants;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -63,8 +64,11 @@ internal sealed class AnchorsHarness
     /// <summary>The fixed fee answer of <see cref="NLightningTestNode"/> (10 sat/vB) in sat/kw.</summary>
     public static readonly LightningMoney EstimateFeeRatePerKw = LightningMoney.Satoshis(2_500);
 
-    /// <summary>BOLT 2's lowest feerate (253 sat/kw, about 1 sat/vB): a commitment that needs a child to confirm.</summary>
-    public static readonly LightningMoney FloorFeeRatePerKw = LightningMoney.Satoshis(253);
+    /// <summary>
+    /// The lowest feerate our opener accepts (<see cref="ChannelConstants.MinFeePerKw"/>, 1,000 sat/kw, about 4 sat/vB;
+    /// BOLT 3's floor is 253 sat/kw): a commitment well below the 10 sat/vB estimate, which needs a child.
+    /// </summary>
+    public static readonly LightningMoney LowFeeRatePerKw = ChannelConstants.MinFeePerKw;
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly List<NLightningTestNode> _nodes = [];
