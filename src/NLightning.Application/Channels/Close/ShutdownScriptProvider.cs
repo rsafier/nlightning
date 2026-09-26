@@ -16,9 +16,10 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// wallet, so the closing output is found as a deposit by the blockchain monitor.
 /// </summary>
 /// <remarks>
-/// Scoped: <see cref="IBitcoinWalletService"/> uses the scope's unit of work. The wallet hands an address out again
-/// once its deposits were spent, while the blockchain monitor stops watching an address after its first deposit, so
-/// the address is watched again here; otherwise the closing output would never reach the wallet.
+/// Scoped: <see cref="IBitcoinWalletService"/> uses the scope's unit of work. The address is handed to the blockchain
+/// monitor again (idempotent; the monitor keeps watching every wallet address after a deposit), so the closing output
+/// is credited to the wallet. Known gap: the wallet returns its first address without a UTXO, so two channels that
+/// close at the same time get the same shutdown address (both outputs are credited, but the address links them).
 /// </remarks>
 public class ShutdownScriptProvider
 {

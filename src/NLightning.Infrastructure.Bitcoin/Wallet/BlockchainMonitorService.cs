@@ -32,6 +32,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private readonly SemaphoreSlim _blockBacklogSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<uint256, WatchedTransactionModel> _watchedTransactions = new();
     private readonly ConcurrentDictionary<string, WalletAddressModel> _watchedAddresses = new();
+    private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
     private readonly OrderedDictionary<uint, Block> _blocksToProcess = new();
 
     private BlockchainState _blockchainState = new(0, Hash.Empty, DateTime.UtcNow);
@@ -45,6 +46,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
     public event EventHandler<TransactionConfirmedEventArgs>? OnTransactionConfirmed;
     public event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
+    public event EventHandler<OutpointSpentEventArgs>? OnWatchedOutpointSpent;
 
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
 
@@ -199,6 +201,40 @@ public class BlockchainMonitorService : IBlockchainMonitor
         _watchedTransactions[nBitcoinTxId] = watchedTx;
 
         await uow.SaveChangesAsync();
+    }
+
+    public void TrackWatchedTransaction(WatchedTransactionModel watchedTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(watchedTransaction);
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation(
+                "Watching transaction {TxId} for {RequiredDepth} confirmations for channel {channelId}",
+                watchedTransaction.TransactionId, watchedTransaction.RequiredDepth, watchedTransaction.ChannelId);
+
+        _watchedTransactions[new uint256(watchedTransaction.TransactionId)] = watchedTransaction;
+    }
+
+    public async Task PublishTransactionAsync(SignedTransaction signedTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(signedTransaction);
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Publishing transaction {TxId}", signedTransaction.TxId);
+
+        await _bitcoinChainService.SendTransactionAsync(Transaction.Load(signedTransaction.RawTxBytes, _network));
+    }
+
+    public void WatchOutpointSpend(ChannelId channelId, TxId txId, uint outputIndex)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Watching outpoint {TxId}:{Index} of channel {ChannelId} for a spend", txId,
+                                   outputIndex, channelId);
+
+        _watchedOutpoints[new OutPoint(new uint256(txId), outputIndex)] = channelId;
+    }
+
+    public void StopWatchingOutpointSpend(TxId txId, uint outputIndex)
+    {
+        _watchedOutpoints.TryRemove(new OutPoint(new uint256(txId), outputIndex), out _);
     }
 
     public void WatchBitcoinAddress(WalletAddressModel walletAddress)
@@ -523,6 +559,9 @@ public class BlockchainMonitorService : IBlockchainMonitor
         // Check for deposits in this block
         CheckBlockForWalletMovement(block.Transactions, height, uow);
 
+        // Check for spends of watched outpoints (channel funding outputs)
+        CheckBlockForWatchedSpends(block.Transactions, height);
+
         // Update blockchain state
         _blockchainState.UpdateState(blockHash.ToBytes(), height);
         uow.BlockchainStateDbRepository.Update(_blockchainState);
@@ -587,6 +626,41 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
     }
 
+    /// <summary>
+    /// Raises <see cref="OnWatchedOutpointSpent"/> for every transaction of the block that spends a watched outpoint.
+    /// The outpoint stays watched: a replayed block raises it again, so listeners must be idempotent.
+    /// </summary>
+    private void CheckBlockForWatchedSpends(List<Transaction> blockTransactions, uint blockHeight)
+    {
+        if (_watchedOutpoints.IsEmpty)
+            return;
+
+        for (var index = 0; index < blockTransactions.Count; index++)
+        {
+            var transaction = blockTransactions[index];
+            foreach (var input in transaction.Inputs)
+            {
+                if (!_watchedOutpoints.TryGetValue(input.PrevOut, out var channelId))
+                    continue;
+
+                var txId = transaction.GetHash();
+                _logger.LogInformation(
+                    "Watched outpoint {Outpoint} of channel {ChannelId} spent by {TxId} at height {Height}",
+                    input.PrevOut, channelId, txId, blockHeight);
+                try
+                {
+                    var spendingTransaction = new SignedTransaction(txId.ToBytes(), transaction.ToBytes());
+                    OnWatchedOutpointSpent?.Invoke(
+                        this, new OutpointSpentEventArgs(channelId, spendingTransaction, blockHeight, (uint)index));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error handling the spend of outpoint {Outpoint}", input.PrevOut);
+                }
+            }
+        }
+    }
+
     private void CheckBlockForWalletMovement(List<Transaction> transactions, uint blockHeight, IUnitOfWork uow)
     {
         if (_watchedAddresses.IsEmpty)
@@ -624,7 +698,6 @@ public class BlockchainMonitorService : IBlockchainMonitor
                     if (_logger.IsEnabled(LogLevel.Debug))
                         _logger.LogDebug("Utxo {TxId}:{Index} is already known, skipping", txId, i);
 
-                    _watchedAddresses.TryRemove(destinationAddress.ToString(), out _);
                     continue;
                 }
 
@@ -633,9 +706,9 @@ public class BlockchainMonitorService : IBlockchainMonitor
                                          blockHeight, watchedAddress);
                 uow.AddUtxo(utxo);
 
-                if (!_watchedAddresses.TryRemove(destinationAddress.ToString(), out _))
-                    _logger.LogError("Unable to remove watched address {DestinationAddress} from the list",
-                                     destinationAddress);
+                // The address stays watched (as after a restart, which reloads every wallet address): the wallet hands
+                // an address out again once its deposits are spent, and two channels closing at once can get the
+                // same shutdown address, so a later deposit to it must be found too
 
                 OnWalletMovementDetected
                   ?.Invoke(this, new WalletMovementEventArgs(destinationAddress.ToString(),

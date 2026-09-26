@@ -9,6 +9,7 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 using Bitcoin.Wallet;
 using Bitcoin.Wallet.Interfaces;
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
@@ -634,6 +635,105 @@ public class BlockchainMonitorServiceTests
         Assert.False(_service.IsChainProcessingHalted);
         Assert.Equal(Enumerable.Range(100, 22).Select(h => (uint)h), processedHeights);
         Assert.Equal(121u, _service.LastProcessedBlockHeight);
+    }
+
+    [Fact]
+    public void Given_WatchedOutpoint_When_BlockSpendsIt_Then_SpendRaisedWithTheTransaction()
+    {
+        // Arrange (N10: a mutual close the peer broadcast without us recording it)
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 1);
+        var unrelated = Network.RegTest.CreateTransaction();
+        unrelated.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 0));
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 1));
+        spend.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var raised = new List<OutpointSpentEventArgs>();
+        _service.OnWatchedOutpointSpent += (_, args) => raised.Add(args);
+
+        // Act
+        InvokePrivate("CheckBlockForWatchedSpends",
+                      new List<Transaction> { Network.RegTest.CreateTransaction(), unrelated, spend }, 700u);
+
+        // Assert
+        var args = Assert.Single(raised);
+        Assert.Equal(channelId, args.ChannelId);
+        Assert.Equal(new TxId(spend.GetHash().ToBytes()), args.SpendingTransaction.TxId);
+        Assert.Equal(spend.ToBytes(), args.SpendingTransaction.RawTxBytes);
+        Assert.Equal(700u, args.BlockHeight);
+        Assert.Equal(2u, args.TransactionIndex);
+    }
+
+    [Fact]
+    public void Given_OutpointNoLongerWatched_When_BlockSpendsIt_Then_NothingRaised()
+    {
+        // Arrange
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(new ChannelId(new byte[32]), fundingTxId, 0);
+        _service.StopWatchingOutpointSpend(fundingTxId, 0);
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 0));
+        var raised = 0;
+        _service.OnWatchedOutpointSpent += (_, _) => raised++;
+
+        // Act
+        InvokePrivate("CheckBlockForWatchedSpends", new List<Transaction> { spend }, 700u);
+
+        // Assert
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public void Given_AddressWithADeposit_When_ASecondDepositArrives_Then_BothAreRecorded()
+    {
+        // Arrange - regression: the address was dropped from the watch list after its first deposit, so a second
+        // channel closing to the same shutdown address never credited the wallet until a restart
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _service.WatchBitcoinAddress(walletAddress);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+        var first = Network.RegTest.CreateTransaction();
+        first.Outputs.Add(Money.Satoshis(40_000), address);
+        var second = Network.RegTest.CreateTransaction();
+        second.Outputs.Add(Money.Satoshis(60_000), address);
+
+        // Act
+        InvokePrivate("CheckBlockForWalletMovement", new List<Transaction> { first }, 700u, _mockUnitOfWork.Object);
+        InvokePrivate("CheckBlockForWalletMovement", new List<Transaction> { second }, 701u, _mockUnitOfWork.Object);
+
+        // Assert
+        Assert.Equal([40_000L, 60_000L], added.Select(u => u.Amount.Satoshi));
+    }
+
+    [Fact]
+    public void Given_TrackedWatch_When_Tracked_Then_NothingWrittenAndItIsFollowed()
+    {
+        // Arrange: the caller saved the row in its own save (the closing transaction with Closing)
+        var txId = new TxId(Enumerable.Repeat((byte)0x3c, 32).ToArray());
+        var watch = new WatchedTransactionModel(new ChannelId(new byte[32]), txId, 6);
+
+        // Act
+        _service.TrackWatchedTransaction(watch);
+
+        // Assert
+        _mockWatchedTransactionRepository.Verify(x => x.Add(It.IsAny<WatchedTransactionModel>()), Times.Never);
+        var watched = typeof(BlockchainMonitorService)
+                     .GetField("_watchedTransactions",
+                               System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                     .GetValue(_service) as ConcurrentDictionary<uint256, WatchedTransactionModel>;
+        Assert.Same(watch, watched![new uint256((byte[])txId)]);
+    }
+
+    private void InvokePrivate(string name, params object[] arguments)
+    {
+        var method = typeof(BlockchainMonitorService).GetMethod(name,
+                                                                System.Reflection.BindingFlags.NonPublic |
+                                                                System.Reflection.BindingFlags.Instance)
+                  ?? throw new InvalidOperationException($"Can't find {name}");
+        method.Invoke(_service, arguments);
     }
 
     private delegate bool TryGetUtxoCallback(TxId txId, uint index, out UtxoModel? utxo);

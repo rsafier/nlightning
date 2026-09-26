@@ -42,6 +42,15 @@ public class ChannelReadyMessageHandler : IChannelMessageHandler<ChannelReadyMes
 
         var payload = message.Payload;
 
+        // A closing channel was Open before its first shutdown: this is the retransmission BOLT 2 requires after a
+        // reconnection when neither side has signed a commitment since (B2-RE-15), not a protocol violation
+        if (currentState is ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing)
+        {
+            _logger.LogDebug("Ignoring a retransmitted channel_ready for channel {ChannelId} in state {State}",
+                             payload.ChannelId, Enum.GetName(currentState));
+            return [];
+        }
+
         if (currentState is not (ChannelState.V1FundingSigned
                               or ChannelState.ReadyForThem
                               or ChannelState.ReadyForUs

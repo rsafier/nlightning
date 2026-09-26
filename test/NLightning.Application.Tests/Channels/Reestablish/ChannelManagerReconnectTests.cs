@@ -115,11 +115,12 @@ public class ChannelManagerReconnectTests
         // Assert
         Assert.Empty(errors);
         var reestablishes = _raised.Select(r => Assert.IsType<ChannelReestablishMessage>(r.Message)).ToList();
-        Assert.Equal([_channels[0].ChannelId, _channels[1].ChannelId, _channels[2].ChannelId],
+        // A Closing channel (closing tx agreed, not confirmed) takes part too, so our shutdown is retransmitted
+        Assert.Equal([_channels[0].ChannelId, _channels[1].ChannelId, _channels[2].ChannelId, _channels[3].ChannelId],
                      reestablishes.Select(m => m.Payload.ChannelId).ToList());
         Assert.All(reestablishes, m => Assert.Equal(1UL, m.Payload.NextCommitmentNumber));
         Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[2].ChannelId));
-        Assert.Equal(ReestablishStatus.Awaiting, _tracker.GetStatus(_channels[3].ChannelId));
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(_channels[3].ChannelId));
     }
 
     [Fact]

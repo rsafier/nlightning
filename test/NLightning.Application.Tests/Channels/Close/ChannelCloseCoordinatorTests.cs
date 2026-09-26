@@ -9,6 +9,7 @@ using Application.Channels.Services;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -50,6 +51,7 @@ public class ChannelCloseCoordinatorTests
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
     private readonly Mock<ILightningSigner> _signer = new();
     private readonly Mock<IBlockchainMonitor> _monitor = new();
+    private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
     private readonly List<string> _calls = [];
     private readonly ClosingNegotiationRegistry _registry = new();
 
@@ -62,8 +64,12 @@ public class ChannelCloseCoordinatorTests
         _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => _calls.Add("save")).Returns(Task.CompletedTask);
         _signer.Setup(s => s.SignChannelTransaction(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>()))
                .Returns(s_signature);
-        _monitor.Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                              It.IsAny<uint>()))
+        _unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(_watchedDb.Object);
+        _watchedDb.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                  .Callback((WatchedTransactionModel w) => _calls.Add($"watch:{w.RequiredDepth}"));
+        _monitor.Setup(m => m.TrackWatchedTransaction(It.IsAny<WatchedTransactionModel>()))
+                .Callback(() => _calls.Add("track"));
+        _monitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
                 .Callback(() => _calls.Add("publish"))
                 .Returns(Task.CompletedTask);
     }
@@ -152,6 +158,9 @@ public class ChannelCloseCoordinatorTests
         Assert.Equal(s_localScript, reply.Payload.ScriptPubkey);
         Assert.Equal(ChannelState.ShuttingDown, channel.State);
         Assert.Equal(["update:ShuttingDown", "save", "update:ShuttingDown", "save"], _calls);
+        // From the first shutdown on, the peer can broadcast any proposal we sign: the funding output is watched
+        _monitor.Verify(m => m.WatchOutpointSpend(channel.ChannelId, channel.FundingOutput!.TransactionId!.Value, 0),
+                        Times.AtLeastOnce);
     }
 
     [Fact]
@@ -223,8 +232,8 @@ public class ChannelCloseCoordinatorTests
         // Assert
         Assert.Equal("B2-CLS-R10", failure.RequirementId);
         Assert.Equal(ChannelState.Negotiating, channel.State);
-        _monitor.Verify(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                               It.IsAny<uint>()), Times.Never);
+        _monitor.Verify(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()), Times.Never);
+        _watchedDb.Verify(r => r.Add(It.IsAny<WatchedTransactionModel>()), Times.Never);
     }
 
     [Fact]
@@ -273,7 +282,11 @@ public class ChannelCloseCoordinatorTests
         Assert.Equal(LightningMoney.Satoshis(500), echo.Payload.FeeAmount);
         Assert.Null(echo.FeeRangeTlv);
         Assert.Equal(ChannelState.Closing, channel.State);
-        Assert.Equal(["update:Closing", "save", "publish"], _calls);
+        // The watch is staged in the same (single) save as Closing, so no crash leaves Closing without it
+        Assert.Equal(["watch:6", "update:Closing", "save", "track", "publish"], _calls);
+        _watchedDb.Verify(r => r.Add(It.Is<WatchedTransactionModel>(w => w.TransactionId == channel.ClosingTransaction!.TxId
+                                                                     && w.ChannelId == channel.ChannelId)),
+                          Times.Once);
         var tx = Transaction.Load(channel.ClosingTransaction!.RawTxBytes, Network.RegTest);
         Assert.Equal(40_000, tx.Outputs.Single(o => o.ScriptPubKey.ToBytes().SequenceEqual((byte[])s_localScript))
                                 .Value.Satoshi);
@@ -288,8 +301,7 @@ public class ChannelCloseCoordinatorTests
         // Arrange: the peer broadcast first (already in the mempool)
         var channel = CreateNegotiatingChannel(localSat: 40_000, remoteSat: 60_000, dustLimitSat: 546,
                                                isInitiator: false);
-        _monitor.Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                              It.IsAny<uint>()))
+        _monitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
                 .ThrowsAsync(new InvalidOperationException("txn-already-in-mempool"));
 
         // Act
@@ -298,6 +310,56 @@ public class ChannelCloseCoordinatorTests
         // Assert
         Assert.Single(replies);
         Assert.Equal(ChannelState.Closing, channel.State);
+    }
+
+    [Fact]
+    public async Task Given_Closing_When_PeerRestartsNegotiation_Then_AnsweredWithTheAgreedFee()
+    {
+        // Arrange: we agreed at 500 sat; our echo was lost and the peer starts over after a reconnection
+        var channel = CreateNegotiatingChannel(localSat: 40_000, remoteSat: 60_000, dustLimitSat: 546,
+                                               isInitiator: false);
+        var coordinator = CreateCoordinator();
+        await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+        var closingTx = channel.ClosingTransaction!;
+        _calls.Clear();
+
+        // Act
+        var replies = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(800));
+
+        // Assert: our signature of the stored transaction at its fee; nothing persisted or broadcast again
+        var reply = Assert.IsType<ClosingSignedMessage>(Assert.Single(replies));
+        Assert.Equal(LightningMoney.Satoshis(500), reply.Payload.FeeAmount);
+        Assert.Null(reply.FeeRangeTlv);
+        _signer.Verify(s => s.SignChannelTransaction(channel.ChannelId,
+                                                     It.Is<SignedTransaction>(t => t.TxId == closingTx.TxId)),
+                       Times.Exactly(2));
+        Assert.Equal(ChannelState.Closing, channel.State);
+        Assert.Same(closingTx, channel.ClosingTransaction);
+        Assert.Empty(_calls);
+    }
+
+    [Fact]
+    public async Task Given_Closing_When_PeerSendsTheAgreedFeeTwice_Then_AnsweredOncePerConnection()
+    {
+        // Arrange: our echo was lost and the peer (same estimate) restarts with the agreed fee
+        var channel = CreateNegotiatingChannel(localSat: 40_000, remoteSat: 60_000, dustLimitSat: 546,
+                                               isInitiator: false);
+        var coordinator = CreateCoordinator();
+        await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+        _calls.Clear();
+
+        // Act
+        var first = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+        var second = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+        _registry.ResetConnection(channel.ChannelId);
+        var afterReconnect = await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(500));
+
+        // Assert: the peer can finish with our answer; a second one would let two Closing nodes echo forever
+        Assert.Equal(LightningMoney.Satoshis(500),
+                     Assert.IsType<ClosingSignedMessage>(Assert.Single(first)).Payload.FeeAmount);
+        Assert.Empty(second);
+        Assert.Single(afterReconnect);
+        Assert.Empty(_calls);
     }
 
     [Fact]
