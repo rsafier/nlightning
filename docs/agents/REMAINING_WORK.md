@@ -25,10 +25,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 - ~~**Enable HTLCs on mainnet.**~~ **Done in gossip wave G-D** (BOLT5 plan O6-T4, NL-094 fixed): HTLCs are on for every network by default and `Node:EnableHtlcs=false` turns them off (6de56ad); NL-315 fixed on the way; the integrator kept the flip after on-chain 24/24, LND 58/58 incl. N9, CLN 22/22 and ABCD 3 x 10/10 (`BOLT5_ONCHAIN_PLAN.md` "O6-T4 decision"). Remaining BOLT 5 follow-ups (NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336) are not fund-safety blockers.
 - **Anchor channels.**
-  - CPFP of our commitment and fee inputs for HTLC txs (BOLT5 plan O7).
-  - Wallet signing: `SignWalletTransaction` still throws (NL-067).
-  - Until then anchors stay experimental and channels are `static_remotekey` only.
-- **Signer and key persistence.** Done for channel signing data: the signer reloads it from the DB on first use (NL-067 first half, gossip wave G-A); `ChannelManager` no longer registers by hand (NL-343, gossip wave G-B). Wallet signing remains (above).
+  - Done in wave O7 (BOLT5 plan O7-T1..T3): wallet signing and persisted fee-input reservations (NL-067), CPFP of our commitment with RBF, anchors HTLC txs funded by wallet inputs, anchors penalties (NL-314); Docker anchors proofs 12/12 against LND.
+  - Left before `option_anchors` can be enabled (O7-T4): an on-chain wallet reserve per anchors channel (NL-379), package relay with `submitpackage` (NL-380), bumping the peer's commitment through our anchor (NL-381). Until then anchors stay experimental and channels are `static_remotekey` only.
+- **Signer and key persistence.** Done for channel signing data: the signer reloads it from the DB on first use (NL-067 first half, gossip wave G-A); `ChannelManager` no longer registers by hand (NL-343, gossip wave G-B). Wallet signing landed in wave O7 (NL-067 fixed).
 - **Operational hardening.**
   - Watchtower-free safety review.
   - Backup and restore story for channel state.

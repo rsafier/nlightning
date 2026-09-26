@@ -1,6 +1,38 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-D @ `48a8951`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave O7 @ `8364a01`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Wave O7 (BOLT 5 anchors): integrated into `wip/fafo` @ `8364a01` (2026-09-26), gates GREEN, O7-T4 held
+
+BOLT 5 plan O7 (anchors). Five lanes (X1 wallet signing and fee-input reservations (migration owner, `AddFeeInputReservations` for Postgres, SQLite and SQL Server), X2 anchor CPFP, X3 anchors HTLC resolution and penalties, X4 anchors Docker proofs, X5 small fixes), X1-X3 each with a review/fix step; lane commits cherry-picked with `-x` onto `26af95a` in the order X1 → X3 → X2 → X5 → X4 (two per-project `CLAUDE.md` conflicts, both sides kept). Integrator commits:
+- 658e086: wallet adapters `Application/Onchain/Wallet/` (`WalletAnchorFeeInputSource` for the CPFP port, `WalletAnchorFeeInputProvider` for the anchors HTLC port, over X1's persisted reservations), `AddAnchorWalletServices`/`AddAnchorCpfpServices` in `AddApplicationServices`, `AnchorCpfpOptions` from `Node:Onchain:Anchors`, the signer seam (`SignLocalHtlcTransaction` signs input 0 of a combined anchors HTLC tx), P2TR prevouts passed to `SignWalletTransaction`.
+- b76d661: from the first anchors Docker run (10/12): a deadline CPFP child is RBF-bumped every `RbfIntervalBlocks`; the mempool penalty of a revoked anchors commitment leaves out the CSV-1 `to_remote` (`non-BIP68-final`).
+- 8364a01: the O7 record and the O7-T4 decision in `BOLT5_ONCHAIN_PLAN.md`, `test/CLAUDE.md` note.
+
+Gates at `8364a01`:
+- Build: Release and Release.Native, net10.0 and net11.0, 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean, `check-sln-configs` OK. Schema: `AddFeeInputReservations` (all three providers, `HasPendingModelChanges` false).
+- Tests (net10.0, Release and Release.Native): **7282** non-Docker, no skips (Domain 2392, Application 1662, Integration 697, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 947, Bolt11 278, Daemon 385); one failure of `GossipFloodTests` in the final Release run that passed 5 times alone and in 2 full project reruns (NL-382, flake). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped; on `b76d661`): anchors `ONCHAIN_SUITE=anchors scripts/run-onchain.sh` **12/12**; on-chain with `-explicit on` **24/24**; LND suite **59/59** (G-D's 58 + the Postgres fee-reservation round trip); CLN **22/22**; ABCD **3 x 10/10**; gossip **24/24** (one run).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| X1 wallet signing + fee inputs (migration owner) | done: `SignWalletTransaction` (P2WPKH, P2TR key path, reserved inputs only, bound to a reservation, derived key checked against the UTXO address), `IFeeInputSelector` → `FeeInputSelector` with persisted outpoint-keyed reservations restored at startup; review: pending-broadcast outputs excluded, confirm only after the monitor's spend, startup sweep, Postgres round trip | 5c9a8c9, 9e75a2b, a56a013 | NL-067 fixed; NL-280 note; new NL-384, NL-385 |
+| X3 anchors HTLC resolution + penalties | done: `HtlcTransactionBuilder.AddFeeInputs` (Appendix F byte-exact alone, script-valid combined), `LocalCommitResolver` anchors HTLC txs through `IAnchorFeeInputProvider` (owner-keyed persistent reservations, conflict rebuild, RBF), our offered revoked HTLC penalized alone from the first round | 7b6b703, 91e35d2, 7947b63, 8363358 | NL-314 (fixed with X2 + integration); new NL-387 |
+| X2 anchor CPFP | done: `AnchorChildTransactionBuilder`, `SignAnchorInput`, `AnchorCpfpService` (CPFP through `to_local_anchor`, RBF, release, 16-block anchor sweep, confirmed commitment's child kept until its anchor is spent, fee cap by untrimmed stake, failure-path round scheduled) | d399ecb, 2ab70dc, d7d9efc | NL-314; new NL-380, NL-381, NL-386 |
+| X5 small fixes | done: CLI prints txids and block hashes in display order; soak script fixes | 83d48c6, ddcc598, c2b36a0 | NL-303 fixed; NL-376 note |
+| X4 anchors Docker proofs | done: `Docker/Onchain/Anchors/` (channel 2, O3 3, O4 3, O5 1, CPFP 2, mempool penalty 1), all green after the integration | 2bd830b, ddbb2a9, 1a740f3, 3d3b115 | O7-T4 evidence |
+| Integration | adapters, registrations, signer seam, P2TR prevouts, deadline RBF of the child, CSV-1 `to_remote` out of the mempool penalty, O7-T4 decision | 658e086, b76d661, 8364a01 | new NL-379, NL-382, NL-383 |
+
+Decision: **O7-T4 held, `option_anchors` stays experimental** although its gate (anchors O3-O5 + CPFP green against LND, full regression green) is met: NL-379 (no on-chain wallet reserve for anchors channels, high), NL-380 (no package relay) and NL-381 (the peer's commitment is never bumped through our anchor) are fund-safety gaps no proof covers. Deviation accepted: our offered revoked HTLC on an anchors channel is penalized alone from the first round (stricter than BOLT 5's split at `security_delay`).
+
+### Carried into the next wave (after O7)
+
+- **Anchors O7-T4:** the per-channel on-chain reserve (NL-379), `submitpackage` for a parent below the mempool minimum (NL-380), CPFP and sweep through our anchor on the peer's commitment (NL-381); then re-run `ONCHAIN_SUITE=anchors` and decide the flip. O7 follow-ups: NL-384, NL-385 (funding coin selection vs pending broadcasts, medium), NL-386, NL-387, NL-383; NL-280 (change-address reuse).
+- **Close BOLT 7 G5 and decide D12 on mainnet** (unchanged from G-D): NL-373 (interned node ids, `Gossip:MaxMemoryMb`), NL-376 (24 h soak evaluation, second sync peer), NL-360 remainder, NL-374, NL-366; G5 follow-ups NL-370, NL-371, NL-372, NL-375, NL-377, NL-378; NL-382 (gossip flood test flake).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367, NL-368, NL-369; B7-CU-01b.
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Tooling:** NL-276, NL-347.
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
 
 ### Gossip wave G-D: integrated into `wip/fafo` @ `48a8951` (2026-09-26), gates GREEN
 
