@@ -1,8 +1,10 @@
+using System.Buffers.Binary;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Protocol.Services;
 
 using Domain.Exceptions;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
@@ -25,6 +27,7 @@ internal sealed class MessageService : IMessageService
 
     private volatile bool _disposed;
     private readonly object _disposeLock = new();
+    private long _malformedGossipCount;
 
     private EventHandler<IMessage?>? _onMessageReceived;
     private bool _listening;
@@ -128,6 +131,7 @@ internal sealed class MessageService : IMessageService
     private void ReceiveMessage(object? _, MemoryStream stream)
     {
         Exception? malformedMessageException = null;
+        var messageType = PeekMessageType(stream);
         try
         {
             lock (_disposeLock)
@@ -142,7 +146,7 @@ internal sealed class MessageService : IMessageService
                 }
                 catch (Exception e)
                 {
-                    // Handled outside the lock, because it sends a warning and closes the connection
+                    // Handled outside the lock, because it sends a warning (and closes the connection)
                     malformedMessageException = e;
                     message = null;
                 }
@@ -159,8 +163,58 @@ internal sealed class MessageService : IMessageService
             RaiseException(this, e);
         }
 
-        if (malformedMessageException is not null)
+        if (malformedMessageException is null)
+            return;
+
+        if (messageType is { } type && IsGossipBroadcast(type))
+            HandleMalformedGossip(type, malformedMessageException);
+        else
             HandleMalformedMessage(malformedMessageException);
+    }
+
+    /// <summary>
+    /// The gossip broadcasts (<c>channel_announcement</c>, <c>node_announcement</c>, <c>channel_update</c>): relayed
+    /// on behalf of other nodes, so one that does not parse is not the sending peer's own fault.
+    /// </summary>
+    private static bool IsGossipBroadcast(ushort type) =>
+        type is (ushort)MessageTypes.ChannelAnnouncement or (ushort)MessageTypes.NodeAnnouncement
+                or (ushort)MessageTypes.ChannelUpdate;
+
+    /// <summary>The message type (the first two bytes, big-endian) without moving the stream; null when too short.</summary>
+    private static ushort? PeekMessageType(MemoryStream stream)
+    {
+        if (stream.Length - stream.Position < 2)
+            return null;
+
+        Span<byte> type = stackalloc byte[2];
+        var position = stream.Position;
+        stream.ReadExactly(type);
+        stream.Position = position;
+        return BinaryPrimitives.ReadUInt16BigEndian(type);
+    }
+
+    /// <summary>
+    /// A gossip broadcast we could not parse is ignored and the connection kept. Honest peers relay what they stored,
+    /// e.g. LND answers a gossip query with a pre-2022 <c>channel_update</c> without <c>htlc_maximum_msat</c> (128
+    /// bytes), which BOLT 7 now requires; closing the connection for it cut every mainnet LND peer off during a sync
+    /// (mainnet gossip probe, NL-380). BOLT 7 asks for a <c>warning</c> for invalid keys and lets the receiver keep the
+    /// connection, so one <c>warning</c> goes out per connection (the first such message) and the rest is only
+    /// logged.
+    /// </summary>
+    private void HandleMalformedGossip(ushort type, Exception exception)
+    {
+        var count = Interlocked.Increment(ref _malformedGossipCount);
+        var reason = exception.InnerException?.InnerException?.Message ?? exception.InnerException?.Message
+                  ?? exception.Message;
+        if (count == 1 || count % 1_000 == 0)
+            _logger.LogInformation("Ignoring malformed gossip message {Type} from the peer ({Count} so far on this "
+                                 + "connection): {Reason}", type, count, reason);
+        else
+            _logger.LogDebug("Ignoring malformed gossip message {Type}: {Reason}", type, reason);
+
+        if (count == 1)
+            SendMessageAsync(new WarningMessage(new ErrorPayload($"Ignoring malformed gossip message {type}: "
+                                                               + reason))).GetAwaiter().GetResult();
     }
 
     /// <summary>

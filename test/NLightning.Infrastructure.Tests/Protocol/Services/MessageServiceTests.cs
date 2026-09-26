@@ -125,6 +125,71 @@ public class MessageServiceTests
         Assert.IsType<ConnectionException>(raisedException);
     }
 
+    [Theory]
+    [InlineData(MessageTypes.ChannelAnnouncement)]
+    [InlineData(MessageTypes.NodeAnnouncement)]
+    [InlineData(MessageTypes.ChannelUpdate)]
+    public void Given_MalformedGossipBroadcast_When_Received_Then_IgnoredWithOneWarningAndConnectionKept(
+        MessageTypes type)
+    {
+        // Arrange (mainnet gossip probe: LND relays pre-2022 channel_updates without htlc_maximum_msat, 128 bytes)
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException(
+                                               "Error deserializing message",
+                                               new PayloadSerializationException(
+                                                   "Error deserializing ChannelUpdatePayload",
+                                                   new InvalidOperationException(
+                                                       "A channel_update payload is at least 136 bytes, got 128"))));
+        var sentMessages = new List<IMessage>();
+        transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+                            .Callback<IMessage, CancellationToken>((m, _) => sentMessages.Add(m))
+                            .Returns(Task.CompletedTask);
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+        var bytes = new byte[2 + 128];
+        bytes[0] = (byte)((ushort)type >> 8);
+        bytes[1] = (byte)(ushort)type;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream(bytes));
+
+        // Assert: one connection-level warning for the first, nothing for the second, and the connection stays
+        var warning = Assert.IsType<WarningMessage>(Assert.Single(sentMessages));
+        Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
+        Assert.Contains("136 bytes, got 128", System.Text.Encoding.UTF8.GetString(warning.Payload.Data!));
+        Assert.Null(raisedException);
+    }
+
+    [Fact]
+    public void Given_MalformedChannelMessage_When_Received_Then_StillWarnsAndCloses()
+    {
+        // Arrange: only the gossip broadcasts are ignored; a malformed update_add_htlc (128) still closes
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException("bad message"));
+        transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+                            .Returns(Task.CompletedTask);
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService,
+                                   new MemoryStream([0x00, (byte)MessageTypes.UpdateAddHtlc, 0x01]));
+
+        // Assert
+        Assert.IsType<ConnectionException>(raisedException);
+    }
+
     [Fact]
     public void Given_SubscriberThrows_When_MessageReceived_Then_NoWarningIsSent()
     {
