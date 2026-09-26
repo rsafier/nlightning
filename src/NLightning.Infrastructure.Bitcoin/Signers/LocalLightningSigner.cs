@@ -49,6 +49,11 @@ public class LocalLightningSigner : ILightningSigner
     // Invariant S1 (BOLT 5 plan §3.5): the local commitment number signed for broadcast per channel. Once set, the
     // secret of that commitment is never released and nothing later is signed for the channel.
     private readonly ConcurrentDictionary<ChannelId, ulong> _broadcastSignedNumbers = new();
+
+    // One lock per channel around every read-check-act on _localCommitmentNumbers and _broadcastSignedNumbers, so the
+    // I4/S1 checks, the broadcast signature and its mark are atomic against AdvanceLocalCommitment and
+    // RevealPerCommitmentSecret (System.Threading.Lock is reentrant: MarkBroadcastSigned runs inside the broadcast)
+    private readonly ConcurrentDictionary<ChannelId, Lock> _commitmentLocks = new();
     private readonly ILogger<LocalLightningSigner> _logger;
     private readonly Network _network;
 
@@ -225,9 +230,16 @@ public class LocalLightningSigner : ILightningSigner
 
         _channelSigningInfo.TryAdd(channelId, signingInfo);
 
-        // The guard only ever moves forward, also when a channel is registered again (e.g. reloaded from the database)
-        _localCommitmentNumbers.AddOrUpdate(channelId, signingInfo.LocalCommitmentNumber,
-                                            (_, current) => Math.Max(current, signingInfo.LocalCommitmentNumber));
+        lock (GetCommitmentLock(channelId))
+        {
+            // The guard only ever moves forward, also when a channel is registered again (reloaded from the database)
+            _localCommitmentNumbers.AddOrUpdate(channelId, signingInfo.LocalCommitmentNumber,
+                                                (_, current) => Math.Max(current, signingInfo.LocalCommitmentNumber));
+
+            // S1 across restarts: the persisted broadcast is marked before anything can reveal or advance
+            if (signingInfo.BroadcastSignedCommitmentNumber is { } broadcastNumber)
+                MarkBroadcastSigned(channelId, broadcastNumber);
+        }
 
         // Data loss is sticky: a registration never clears it
         if (signingInfo.DataLossDetected)
@@ -250,8 +262,9 @@ public class LocalLightningSigner : ILightningSigner
                                                   "Commitment numbers are 48-bit values");
 
         // Keep the lowest number: every commitment from it on stays unrevoked (sticky, never cleared)
-        _broadcastSignedNumbers.AddOrUpdate(channelId, commitmentNumber,
-                                            (_, current) => Math.Min(current, commitmentNumber));
+        lock (GetCommitmentLock(channelId))
+            _broadcastSignedNumbers.AddOrUpdate(channelId, commitmentNumber,
+                                                (_, current) => Math.Min(current, commitmentNumber));
 
         if (_logger.IsEnabled(LogLevel.Information))
             _logger.LogInformation(
@@ -322,6 +335,17 @@ public class LocalLightningSigner : ILightningSigner
     public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber,
                                                              SignedTransaction unsignedCommitment,
                                                              CompactSignature remoteSignature)
+    {
+        // S1 is a signer invariant: the I4/S1 checks, the signature and the mark hold the channel's commitment lock, so
+        // no AdvanceLocalCommitment/RevealPerCommitmentSecret can revoke the commitment in between
+        lock (GetCommitmentLock(channelId))
+            return SignLocalCommitmentForBroadcastLocked(channelId, commitmentNumber, unsignedCommitment,
+                                                         remoteSignature);
+    }
+
+    private SignedTransaction SignLocalCommitmentForBroadcastLocked(ChannelId channelId, ulong commitmentNumber,
+                                                                    SignedTransaction unsignedCommitment,
+                                                                    CompactSignature remoteSignature)
     {
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ArgumentNullException.ThrowIfNull(remoteSignature);
@@ -396,19 +420,24 @@ public class LocalLightningSigner : ILightningSigner
     {
         var signingInfo = GetRegisteredSigningInfo(channelId);
 
-        // NL-189: never reveal the secret of a commitment that has not been superseded by a persisted one
-        var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
-        if (commitmentNumber >= localCommitmentNumber)
-            throw new SignerException(
-                $"Refusing to reveal the per-commitment secret of unrevoked commitment {commitmentNumber} "
-              + $"(current local commitment is {localCommitmentNumber})", channelId, "Internal error");
+        lock (GetCommitmentLock(channelId))
+        {
+            // NL-189: never reveal the secret of a commitment that has not been superseded by a persisted one
+            var localCommitmentNumber = _localCommitmentNumbers.GetValueOrDefault(channelId);
+            if (commitmentNumber >= localCommitmentNumber)
+                throw new SignerException(
+                    $"Refusing to reveal the per-commitment secret of unrevoked commitment {commitmentNumber} "
+                  + $"(current local commitment is {localCommitmentNumber})", channelId, "Internal error");
 
-        // S1: the secret of a commitment signed for broadcast (and of any later one) is never released
-        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber >= broadcastNumber)
-            throw new SignerException(
-                $"Refusing to reveal the per-commitment secret of commitment {commitmentNumber}: local commitment "
-              + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
+            // S1: the secret of a commitment signed for broadcast (and of any later one) is never released
+            if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber)
+             && commitmentNumber >= broadcastNumber)
+                throw new SignerException(
+                    $"Refusing to reveal the per-commitment secret of commitment {commitmentNumber}: local commitment "
+                  + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
+        }
 
+        // Safe outside the lock: the checks passed for a commitment that is already revoked, and revocation is final
         return DerivePerCommitmentSecret(signingInfo.ChannelKeyIndex, commitmentNumber);
     }
 
@@ -421,24 +450,22 @@ public class LocalLightningSigner : ILightningSigner
 
         _ = GetRegisteredSigningInfo(channelId);
 
-        // S1: a newer local commitment would make the broadcast one revocable
-        if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber)
-         && newLocalCommitmentNumber > broadcastNumber)
-            throw new SignerException(
-                $"Refusing to advance the local commitment to {newLocalCommitmentNumber}: local commitment "
-              + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
-
-        while (true)
+        lock (GetCommitmentLock(channelId))
         {
+            // S1: a newer local commitment would make the broadcast one revocable
+            if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber)
+             && newLocalCommitmentNumber > broadcastNumber)
+                throw new SignerException(
+                    $"Refusing to advance the local commitment to {newLocalCommitmentNumber}: local commitment "
+                  + $"{broadcastNumber} is signed for broadcast", channelId, "Internal error");
+
             var current = _localCommitmentNumbers.GetValueOrDefault(channelId);
             if (newLocalCommitmentNumber < current)
                 throw new SignerException(
                     $"Local commitment number cannot go back from {current} to {newLocalCommitmentNumber}", channelId,
                     "Internal error");
 
-            if (newLocalCommitmentNumber == current
-             || _localCommitmentNumbers.TryUpdate(channelId, newLocalCommitmentNumber, current))
-                return;
+            _localCommitmentNumbers[channelId] = newLocalCommitmentNumber;
         }
     }
 
@@ -963,6 +990,9 @@ public class LocalLightningSigner : ILightningSigner
         return _keyDerivationService.GeneratePerCommitmentSecret(
             perCommitmentSeed.ToBytes(), PerCommitmentIndex.From(commitmentNumber));
     }
+
+    private Lock GetCommitmentLock(ChannelId channelId) =>
+        _commitmentLocks.GetOrAdd(channelId, static _ => new Lock());
 
     private ChannelSigningInfo GetRegisteredSigningInfo(ChannelId channelId)
     {

@@ -34,6 +34,14 @@ public record struct ChannelSigningInfo
     /// </summary>
     public bool DataLossDetected { get; init; }
 
+    /// <summary>
+    /// The local commitment number the channel's persisted commitment broadcast was signed at, if any (invariant S1,
+    /// BOLT 5 plan O2-T1). <c>ILightningSigner.RegisterChannel</c> applies it with
+    /// <c>ILightningSigner.MarkBroadcastSigned</c>, so after a restart the secret of that commitment is still never
+    /// released. The host fills it from the persisted commitment broadcast row (O2-T2).
+    /// </summary>
+    public ulong? BroadcastSignedCommitmentNumber { get; init; }
+
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
                               uint channelKeyIndex, CompactPubKey? remoteHtlcBasepoint = null,

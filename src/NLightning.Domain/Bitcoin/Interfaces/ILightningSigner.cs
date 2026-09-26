@@ -77,7 +77,10 @@ public interface ILightningSigner
     CompactPubKey GetPerCommitmentPoint(ChannelId channelId, ulong commitmentNumber);
 
     /// <summary>
-    /// Store channel information needed for signing
+    /// Store channel information needed for signing. The revocation guard only moves forward, and the sticky marks
+    /// are only ever added: <see cref="ChannelSigningInfo.DataLossDetected"/> applies <see cref="MarkDataLoss"/> and
+    /// <see cref="ChannelSigningInfo.BroadcastSignedCommitmentNumber"/> applies <see cref="MarkBroadcastSigned"/>
+    /// (invariant S1 across restarts).
     /// </summary>
     void RegisterChannel(ChannelId channelId, ChannelSigningInfo signingInfo);
 
@@ -157,7 +160,10 @@ public interface ILightningSigner
     /// (it is revoked: broadcasting it lets the peer take every output), and refuses everything after
     /// <see cref="MarkDataLoss"/> (the peer holds a newer state; broadcasting ours would be a revoked broadcast).
     /// Invariant S1: on success it records the number with <see cref="MarkBroadcastSigned"/> before returning, and once
-    /// a number is recorded any other number is refused.
+    /// a number is recorded any other number is refused. The checks, the signature and the mark are atomic per channel
+    /// with <see cref="AdvanceLocalCommitment"/>, <see cref="RevealPerCommitmentSecret"/> and
+    /// <see cref="MarkBroadcastSigned"/>: none of them interleaves with a broadcast signing of the same channel, so a
+    /// commitment is never revoked between the revocation check and the mark, whatever lock the caller holds.
     /// </remarks>
     /// <param name="channelId">The registered channel.</param>
     /// <param name="commitmentNumber">The number of the local commitment <paramref name="unsignedCommitment"/> is.</param>

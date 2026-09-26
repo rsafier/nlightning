@@ -232,6 +232,78 @@ public class LocalLightningSignerBroadcastTests
     }
 
     [Fact]
+    public void Given_SigningInfoWithBroadcastNumber_When_Registered_Then_S1Restored()
+    {
+        // Arrange: a restart; the channel is registered from its persisted state, which holds a broadcast of 5
+        var signer = new NodeASigner(withChannelKey: true);
+        var signingInfo = SigningInfo(false, localCommitmentNumber: 5) with { BroadcastSignedCommitmentNumber = 5 };
+
+        // Act
+        signer.RegisterChannel(s_channelId, signingInfo);
+
+        // Assert: marked by the registration itself, no separate MarkBroadcastSigned call
+        Assert.True(signer.TryGetBroadcastSignedCommitment(s_channelId, out var marked));
+        Assert.Equal(5UL, marked);
+        Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(s_channelId, 5));
+        Assert.Throws<SignerException>(() => signer.AdvanceLocalCommitment(s_channelId, 6));
+        Assert.Equal(32, ((byte[])signer.RevealPerCommitmentSecret(s_channelId, 4)).Length);
+    }
+
+    [Fact]
+    public void Given_SigningInfoWithoutBroadcastNumber_When_RegisteredAgain_Then_MarkKept()
+    {
+        // Arrange
+        var signer = new NodeASigner(withChannelKey: true);
+        signer.RegisterChannel(s_channelId, SigningInfo(false, localCommitmentNumber: 3) with
+        {
+            BroadcastSignedCommitmentNumber = 3
+        });
+
+        // Act: a later registration without the number never lifts the mark
+        signer.RegisterChannel(s_channelId, SigningInfo(false, localCommitmentNumber: 3));
+
+        // Assert
+        Assert.True(signer.TryGetBroadcastSignedCommitment(s_channelId, out var marked));
+        Assert.Equal(3UL, marked);
+        Assert.Throws<SignerException>(() => signer.AdvanceLocalCommitment(s_channelId, 4));
+    }
+
+    [Fact]
+    public async Task Given_BroadcastSigningInProgress_When_AdvancingConcurrently_Then_WaitsThenRefused()
+    {
+        // Arrange: while commitment 0 is being signed for broadcast (after its I4 check), another thread tries to
+        // persist commitment 1 and revoke 0 without holding any channel lock
+        Task? racer = null;
+        var racerFinishedDuringSigning = false;
+        var signer = new NodeASigner(withChannelKey: true);
+        signer.RegisterChannel(s_channelId, SigningInfo(false));
+        signer.OnFundingKey = () =>
+        {
+            signer.OnFundingKey = null;
+            racer = Task.Run(() =>
+            {
+                signer.AdvanceLocalCommitment(s_channelId, 1);
+                _ = signer.RevealPerCommitmentSecret(s_channelId, 0);
+            }, TestContext.Current.CancellationToken);
+
+            // Without the signer's per-channel lock the racer completes here and revokes commitment 0
+            racerFinishedDuringSigning = racer.Wait(TimeSpan.FromMilliseconds(300),
+                                                    TestContext.Current.CancellationToken);
+        };
+        var (unsigned, remoteSignature) = UnsignedCommitTx0();
+
+        // Act
+        var signed = signer.SignLocalCommitmentForBroadcast(s_channelId, 0, unsigned, remoteSignature);
+
+        // Assert: the racer waited for the broadcast and was then refused (S1); the secret of 0 never left
+        Assert.False(racerFinishedDuringSigning);
+        Assert.NotNull(racer);
+        await Assert.ThrowsAsync<SignerException>(() => racer!);
+        Assert.Equal(SignedCommitTx0Hex, Convert.ToHexString(signed.RawTxBytes).ToLowerInvariant());
+        Assert.Throws<SignerException>(() => signer.RevealPerCommitmentSecret(s_channelId, 0));
+    }
+
+    [Fact]
     public void Given_MarkedTwice_When_LowerNumberSecond_Then_LowerKept()
     {
         // Arrange
@@ -324,7 +396,13 @@ public class LocalLightningSignerBroadcastTests
                                NullLogger<LocalLightningSigner>.Instance, new NodeOptions(), KeyManager(withChannelKey),
                                new Mock<IUtxoMemoryRepository>().Object)
     {
-        protected override Key GenerateFundingPrivateKey(uint channelKeyIndex) =>
-            new(Bolt3AppendixCVectors.NodeAFundingPrivkey.ToBytes());
+        /// <summary>Runs inside the signing, after the guards and before the signature is made.</summary>
+        public Action? OnFundingKey { get; set; }
+
+        protected override Key GenerateFundingPrivateKey(uint channelKeyIndex)
+        {
+            OnFundingKey?.Invoke();
+            return new Key(Bolt3AppendixCVectors.NodeAFundingPrivkey.ToBytes());
+        }
     }
 }
