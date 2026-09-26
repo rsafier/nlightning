@@ -74,17 +74,52 @@ public class ChannelReestablishMessageHandlerTests
     }
 
     [Fact]
-    public async Task Given_AlreadyReestablished_When_ReestablishRepeats_Then_Ignored()
+    public async Task Given_AlreadyAnsweredOnThisConnection_When_ReestablishRepeats_Then_Ignored()
     {
         // Arrange
         var handler = CreateHandler();
-        _tracker.MarkOpened(s_channelId, s_peer);
+        _tracker.MarkSent(s_channelId, s_peer);
+        Assert.True(_tracker.TryMarkReestablished(s_channelId));
 
         // Act
         var replies = await handler.HandleAsync(Reestablish(1, 0), ChannelState.Open, new FeatureOptions(), s_peer);
 
         // Assert
         Assert.Empty(replies);
+    }
+
+    [Fact]
+    public async Task Given_OpenedOnThisConnection_When_ThePeersReestablishArrives_Then_OursThenChannelReady()
+    {
+        // Arrange - regression: LND sends channel_reestablish after channel_ready for a channel that was pending when
+        // the connection started (or whose channel_ready its funding manager queued first) and waits for ours forever
+        var handler = CreateHandler();
+        _tracker.MarkOpened(s_channelId, s_peer);
+
+        // Act
+        var replies = await handler.HandleAsync(Reestablish(1, 0), ChannelState.Open, new FeatureOptions(), s_peer);
+
+        // Assert - ours first, then the plan (channel_ready again: harmless); still usable meanwhile
+        Assert.Equal(2, replies.Count);
+        Assert.IsType<ChannelReestablishMessage>(replies[0]);
+        Assert.IsType<ChannelReadyMessage>(replies[1]);
+        Assert.Equal(ReestablishStatus.Sent, _tracker.GetStatus(s_channelId));
+        Assert.True(_tracker.IsReestablished(s_channelId));
+    }
+
+    [Fact]
+    public async Task Given_OursSentThenOpenedOnThisConnection_When_ThePeersReestablishArrives_Then_OnlyThePlan()
+    {
+        // Arrange - ours went out at connect, then channel_ready opened the channel before the peer's reestablish
+        var handler = CreateHandler();
+        _tracker.MarkSent(s_channelId, s_peer);
+        _tracker.MarkOpened(s_channelId, s_peer);
+
+        // Act
+        var replies = await handler.HandleAsync(Reestablish(1, 0), ChannelState.Open, new FeatureOptions(), s_peer);
+
+        // Assert - ours is not sent twice
+        Assert.IsType<ChannelReadyMessage>(Assert.Single(replies));
     }
 
     [Fact]

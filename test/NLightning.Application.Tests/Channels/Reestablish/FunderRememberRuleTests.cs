@@ -37,6 +37,12 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// after; a stop in between is resolved at startup by <c>ChannelManager</c> (see <see cref="StartupStateTests"/>).
 /// Before funding_signed nothing is persisted. These tests pin that order.
 /// </summary>
+/// <remarks>
+/// <see cref="IBlockchainMonitor"/> is mocked here. The real <c>BlockchainMonitorService.PublishAndWatchTransactionAsync</c>
+/// saves the watch first and publishes after, so a crash or a failed publish between the two leaves a watch for a
+/// transaction that never went out: the startup rule then keeps the channel as V1FundingSigned and nothing rebroadcasts
+/// the funding transaction (a known gap, reported to the ledger; it needs a publish-only path in the monitor).
+/// </remarks>
 public class FunderRememberRuleTests
 {
     private const ushort FundingOutputIndex = 1;
@@ -165,7 +171,8 @@ public class FunderRememberRuleTests
     [Fact]
     public async Task Given_TheBroadcastFails_When_Handled_Then_TheChannelStaysStoredAsFundingCreated()
     {
-        // Arrange - the startup rule (N7-T5) then keeps it only when the funding transaction was watched
+        // Arrange - the startup rule (N7-T5) then keeps it only when the funding transaction was watched (with the
+        // real monitor the watch is saved before the publish, so a failed publish is kept and waits: see the remarks)
         _blockchainMonitor
            .Setup(b => b.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
                                                          It.IsAny<uint>()))

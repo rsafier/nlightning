@@ -57,6 +57,37 @@ public class ReestablishTrackerTests
     }
 
     [Fact]
+    public void Given_OpenedOnThisConnection_When_Asked_Then_UsableButOurReestablishIsStillOwed()
+    {
+        // Arrange
+        var tracker = new ReestablishTracker();
+
+        // Act
+        tracker.MarkOpened(s_channel, s_peer);
+
+        // Assert - updates may flow, and the peer's channel_reestablish is still answered
+        Assert.True(tracker.IsReestablished(s_channel));
+        Assert.Equal(ReestablishStatus.Awaiting, tracker.GetStatus(s_channel));
+    }
+
+    [Fact]
+    public void Given_OursSent_When_TheChannelOpensAndThePeersArrives_Then_ItCompletesAndStaysUsable()
+    {
+        // Arrange
+        var tracker = new ReestablishTracker();
+        tracker.MarkSent(s_channel, s_peer);
+
+        // Act
+        tracker.MarkOpened(s_channel, s_peer);
+        var marked = tracker.TryMarkReestablished(s_channel);
+
+        // Assert - opening kept "ours sent", so the exchange still completes
+        Assert.True(marked);
+        Assert.Equal(ReestablishStatus.Reestablished, tracker.GetStatus(s_channel));
+        Assert.True(tracker.IsReestablished(s_channel));
+    }
+
+    [Fact]
     public void Given_ChannelsOfTwoPeers_When_OnePeerResets_Then_OnlyItsChannelsAreForgotten()
     {
         // Arrange

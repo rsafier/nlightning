@@ -33,7 +33,10 @@ using Services;
 /// error). Proven data loss (B2-RE-23) first persists <see cref="ChannelModel.DataLossDetected"/>, so we never sign or
 /// broadcast our commitment again (I12), then fails the channel without broadcast. On success the channel is marked
 /// reestablished in the <see cref="ReestablishTracker"/> by <c>ChannelManager</c>, which then pins the link and replays
-/// the pending HTLC events. A second <c>channel_reestablish</c> on the same connection is ignored.
+/// the pending HTLC events. A <c>channel_reestablish</c> on a channel that turned Open on this connection is still
+/// answered (with ours first, then the plan; LND sends one after channel_ready for a channel that was pending when the
+/// connection started, and waits for ours forever). Only a second one after we answered one on the same connection is
+/// ignored.
 /// </remarks>
 public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelReestablishMessage>
 {
@@ -96,10 +99,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         switch (_tracker.GetStatus(channelId))
         {
             case ReestablishStatus.Reestablished:
+                // Answered on this connection already (turning Open here does not count: see ReestablishTracker)
                 _logger.LogWarning("Ignoring a repeated channel_reestablish for channel {ChannelId}", channelId);
                 return [];
             case ReestablishStatus.Awaiting:
-                // Not sent on this connection yet (e.g. a channel still waiting for channel_ready): ours goes first
+                // Not sent on this connection yet (a channel waiting for channel_ready, or one that turned Open on this
+                // connection before the peer's reestablish arrived): ours goes first
                 replies.Add(await _reestablishService.CreateOwnAsync(channel));
                 _tracker.MarkSent(channelId, peerPubKey);
                 break;

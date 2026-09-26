@@ -91,7 +91,13 @@ internal sealed class TwoNodeHarness : IDisposable
     /// <summary>How many times a node was restarted after a simulated crash.</summary>
     public int Restarts { get; private set; }
 
-    public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false)
+    /// <param name="hasAnchors">Anchor outputs.</param>
+    /// <param name="localOnlySwitch">Hand events to the production <see cref="LocalOnlyHtlcSwitch"/>.</param>
+    /// <param name="aliceState">Alice's channel state: Open (usable on this connection), or a state before Open
+    /// (ReadyForUs, ReadyForThem, V1FundingSigned) with no commitment state yet, waiting for channel_ready.</param>
+    /// <param name="bobState">Bob's channel state, as <paramref name="aliceState"/>.</param>
+    public TwoNodeHarness(bool hasAnchors = false, bool localOnlySwitch = false,
+                          ChannelState aliceState = ChannelState.Open, ChannelState bobState = ChannelState.Open)
     {
         _hasAnchors = hasAnchors;
         _localOnlySwitch = localOnlySwitch;
@@ -110,8 +116,16 @@ internal sealed class TwoNodeHarness : IDisposable
         _obscuring = new CommitmentNumber(Alice.Basepoints.PaymentBasepoint, Bob.Basepoints.PaymentBasepoint,
                                           new Sha256());
 
-        Alice.Open(CreateChannelFor(Alice));
-        Bob.Open(CreateChannelFor(Bob));
+        OpenOrRegister(Alice, aliceState);
+        OpenOrRegister(Bob, bobState);
+    }
+
+    private void OpenOrRegister(HarnessNode node, ChannelState state)
+    {
+        if (state == ChannelState.Open)
+            node.Open(CreateChannelFor(node));
+        else
+            node.RegisterPending(CreateChannelFor(node, state));
     }
 
     /// <summary>
@@ -254,11 +268,11 @@ internal sealed class TwoNodeHarness : IDisposable
         }
     }
 
-    private ChannelModel CreateChannelFor(HarnessNode node)
+    private ChannelModel CreateChannelFor(HarnessNode node, ChannelState state = ChannelState.Open)
     {
         var isAlice = node.Name == "Alice";
         return CreateChannel(node, node.Peer, isAlice ? _aliceParty : _bobParty, isAlice ? _bobParty : _aliceParty,
-                             isAlice, _fundingTxId, _obscuring, _hasAnchors);
+                             isAlice, _fundingTxId, _obscuring, _hasAnchors, state);
     }
 
     /// <summary>The <c>reason</c> the fake error onion returns: a marker, the failure code and its data.</summary>
@@ -289,7 +303,7 @@ internal sealed class TwoNodeHarness : IDisposable
 
     private static ChannelModel CreateChannel(HarnessNode self, HarnessNode peer, ChannelParty local,
                                               ChannelParty remote, bool isInitiator, TxId fundingTxId,
-                                              CommitmentNumber obscuring, bool hasAnchors)
+                                              CommitmentNumber obscuring, bool hasAnchors, ChannelState state)
     {
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3,
                                               hasAnchors, FeatureSupport.No);
@@ -308,7 +322,7 @@ internal sealed class TwoNodeHarness : IDisposable
         return new ChannelModel(channelParams, ChannelId, obscuring, fundingOutput, isInitiator, null, null,
                                 LightningMoney.Satoshis(localSat), localKeySet, 0, 0,
                                 LightningMoney.Satoshis(FundingSatoshis - localSat), remoteKeySet, 0,
-                                peer.NodeId, 0, ChannelState.Open, ChannelVersion.V1);
+                                peer.NodeId, 0, state, ChannelVersion.V1);
     }
 }
 
@@ -390,7 +404,11 @@ internal sealed class HarnessNode : IDisposable
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(Store);
         unitOfWork.SetupGet(u => u.RemoteShachainDbRepository).Returns(Store);
-        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(new Mock<IChannelDbRepository>().Object);
+        // The channel row exists (channel_ready's handler checks it before it saves the state change)
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
+                 .ReturnsAsync((ChannelId id) => _channels.TryGetChannel(id, out var channel) ? channel : null);
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             Store.Commit();
@@ -480,6 +498,16 @@ internal sealed class HarnessNode : IDisposable
         Store.Seed(channel.Commitments!);
         Tracker.MarkOpened(channel.ChannelId, channel.RemoteNodeId);
         _provider.GetRequiredService<IPeerLivenessProbe>().MarkLinkUp(channel.ChannelId, channel.RemoteNodeId);
+    }
+
+    /// <summary>
+    /// Registers a channel still waiting for channel_ready (no commitment state, not usable): channel_ready builds
+    /// its first snapshot, as in production.
+    /// </summary>
+    public void RegisterPending(ChannelModel channel)
+    {
+        Signer.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
+        _channels.AddChannel(channel);
     }
 
     /// <summary>
