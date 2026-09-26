@@ -14,5 +14,16 @@ These files are verbatim copies of the official BOLT 4 JSON test vectors from
 | `blinded-payment-onion-test.json` | payment onion to a partially blinded route, per-hop `decrypt` data |
 | `blinded-onion-message-onion-test.json` | onion message over a blinded route, per-hop `decrypt` data |
 
+Two more files are transcriptions of the inline traces in `04-onion-routing.md` (same upstream commit), not spec
+JSON files:
+
+| File | Contents |
+|---|---|
+| `returning-errors-trace.json` | "Test Vector > Returning Errors": per-hop shared secret, `ammag` key/stream, error packet and attribution data |
+| `returning-success-trace.json` | "Test Vector > Returning success": per-hop attribution data without and with a `fulfillment_payload`, and the payload |
+
+In both traces the hold times are in return order: the erring/final node (node 4) reports 1 and node 0 reports 5,
+although the spec lists `htlc_hold_time[i]` next to `pubkey[i]`.
+
 Do not edit these files. To refresh them, re-download from a newer upstream commit and update the SHA above.
 The typed loader lives in `test/NLightning.Tests.Utils/Vectors/Bolt4Vectors.cs`.
