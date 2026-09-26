@@ -7,6 +7,7 @@ namespace NLightning.Daemon.Services;
 
 using Application.Channels.Fees;
 using Application.Channels.Safety.Interfaces;
+using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Client.Interfaces;
@@ -25,6 +26,7 @@ public class NltgDaemonService : BackgroundService
     private readonly IFeeUpdateScheduler _feeUpdateScheduler;
     private readonly IHtlcExpiryMonitor _htlcExpiryMonitor;
     private readonly ILogger<NltgDaemonService> _logger;
+    private readonly IMempoolReactor _mempoolReactor;
     private readonly INamedPipeIpcService _namedPipeIpcService;
     private readonly OnionReplayBlockPruner _onionReplayBlockPruner;
     private readonly IPeerManager _peerManager;
@@ -37,8 +39,10 @@ public class NltgDaemonService : BackgroundService
                              IFeeUpdateScheduler feeUpdateScheduler, IHtlcExpiryMonitor htlcExpiryMonitor,
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
                              OnionReplayBlockPruner onionReplayBlockPruner, IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
-                             IPeerManager peerManager, ISecureKeyManager secureKeyManager)
+                             IPeerManager peerManager, ISecureKeyManager secureKeyManager,
+                             IMempoolReactor mempoolReactor)
     {
+        _mempoolReactor = mempoolReactor;
         _blockchainMonitor = blockchainMonitor;
         _channelFailureService = channelFailureService;
         _configuration = configuration;
@@ -89,6 +93,9 @@ public class NltgDaemonService : BackgroundService
             _htlcExpiryMonitor.Start();
             await _feeUpdateScheduler.StartAsync(stoppingToken);
 
+            // BOLT 5 O8: react to unconfirmed spends of our outputs (subscribed before the monitor's mempool loop runs)
+            _mempoolReactor.Start();
+
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
 
@@ -115,8 +122,8 @@ public class NltgDaemonService : BackgroundService
         await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
         _channelFailureService.Stop();
 
-        // The replay pruner stops before the chain monitor that drives it
-        await _onionReplayBlockPruner.StopAsync();
+        // The replay pruner and the mempool reactor stop before the chain monitor that drives them
+        await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync());
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

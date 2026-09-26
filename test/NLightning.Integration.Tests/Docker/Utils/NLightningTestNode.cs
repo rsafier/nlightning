@@ -15,6 +15,7 @@ namespace NLightning.Integration.Tests.Docker.Utils;
 
 using Application.Channels.Fees;
 using Application.Channels.Safety.Interfaces;
+using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
 using Daemon.Interfaces;
@@ -285,6 +286,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             Services.GetRequiredService<IHtlcExpiryMonitor>().Start();
             await Services.GetRequiredService<IFeeUpdateScheduler>().StartAsync(cancellationToken);
             safetyStarted = true;
+            // As the daemon does: BOLT 5 O8, unconfirmed spends of our outputs (before the monitor's mempool loop)
+            Services.GetRequiredService<IMempoolReactor>().Start();
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
             // As the daemon does: prune the onion replay set on every block (NL-327)
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
@@ -311,7 +314,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             if (_started)
             {
                 await StopSafetyServicesAsync();
-                await Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync();
+                await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
+                                   Services.GetRequiredService<IMempoolReactor>().StopAsync());
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
             }
         }
@@ -581,7 +585,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
         try
         {
             if (safetyStarted)
+            {
                 await StopSafetyServicesAsync();
+                await Services.GetRequiredService<IMempoolReactor>().StopAsync();
+            }
             if (peerManagerStarted)
                 await PeerManager.StopAsync();
             if (feeServiceStarted)

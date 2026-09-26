@@ -117,6 +117,8 @@ internal sealed class OnchainTestStore
                   .ReturnsAsync((TxId txId) => Broadcasts.FirstOrDefault(b => b.TransactionId == txId));
         repository.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>()))
                   .ReturnsAsync((ChannelId id) => Broadcasts.Where(b => b.ChannelId == id).ToList());
+        repository.Setup(r => r.GetPendingAsync())
+                  .ReturnsAsync(() => Broadcasts.Where(b => b.State == BroadcastState.Pending).ToList());
         repository.Setup(r => r.MarkAbandonedAsync(It.IsAny<TxId>()))
                   .ReturnsAsync((TxId txId) =>
                    {

@@ -58,7 +58,18 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
     }
 
     /// <inheritdoc />
-    public async Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, CancellationToken cancellationToken)
+    public Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, CancellationToken cancellationToken) =>
+        LoadCoreAsync(close, null);
+
+    /// <inheritdoc />
+    public Task<RevokedCommitLoadResult> LoadAsync(ChannelCloseModel close, ChainTx commitment,
+                                                   CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(commitment);
+        return LoadCoreAsync(close, commitment);
+    }
+
+    private async Task<RevokedCommitLoadResult> LoadCoreAsync(ChannelCloseModel close, ChainTx? unconfirmed)
     {
         ArgumentNullException.ThrowIfNull(close);
         if (close.CommitmentNumber is not { } number)
@@ -96,7 +107,7 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
         var logEntry = await unitOfWork.RevokedCommitmentDbRepository.GetAsync(close.ChannelId, number);
         var logStart = await unitOfWork.RevokedCommitmentDbRepository.GetLogStartAsync(close.ChannelId);
 
-        var commitment = await GetTransactionAsync(close.CommitmentTransactionId, close.SpentAtHeight);
+        var commitment = unconfirmed ?? await GetTransactionAsync(close.CommitmentTransactionId, close.SpentAtHeight);
         if (commitment is null)
             return RevokedCommitLoadResult.Missing(
                 $"transaction {close.CommitmentTransactionId} is not in block {close.SpentAtHeight}");
