@@ -234,6 +234,32 @@ public sealed class OnchainReorgTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AbandonedSweepWhoseRivalSpendIsReorgedOut_When_Round_Then_SweepPendingAndPublishedAgain()
+    {
+        // Arrange: our sweep was abandoned when another spend took the output at SpentAt + 1 (row Resolved); only
+        // that block is reorged out, the commitment stays
+        var executor = CreateExecutor(irrevocableDepth: 2);
+        var sweepTxId = new TxId(Enumerable.Repeat((byte)0x5F, 32).ToArray());
+        var sweep = new BroadcastTransactionModel(new SignedTransaction(sweepTxId, [4, 5, 6]),
+                                                  BroadcastPurpose.Sweep, _channel.ChannelId, SpentAt);
+        sweep.MarkAbandoned();
+        _store.Broadcasts.Add(sweep);
+        AddOutput(0, OutputDescriptorKind.PaymentToRemote, OutputResolutionState.Resolved, SpentAt + 1, sweepTxId);
+        _chain.Mine();
+        _chain.Reorg(SpentAt, 3);
+
+        // Act: two rounds on the new branch
+        await executor.RunRoundAsync(_chain.TipHeight, TestContext.Current.CancellationToken);
+        await executor.RunRoundAsync(_chain.TipHeight + 1, TestContext.Current.CancellationToken);
+
+        // Assert: the row is back to Broadcast, our sweep pending again and published once, right after the save
+        var output = _store.Outputs[(_commitmentTxId, 0)];
+        Assert.Equal(OutputResolutionState.Broadcast, output.State);
+        Assert.Equal(BroadcastState.Pending, sweep.State);
+        Assert.Equal(sweepTxId, Assert.Single(_published).TransactionId);
+    }
+
+    [Fact]
     public async Task Given_FundingReconfirmedAtAnotherPosition_When_Handled_Then_ShortChannelIdMoves()
     {
         // Arrange (NL-292): an open channel whose funding transaction was confirmed at 500x3
