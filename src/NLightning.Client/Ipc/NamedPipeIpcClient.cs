@@ -322,6 +322,22 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
                                                                          new ChainStatusIpcRequest(), ct);
 
     /// <summary>
+    /// Lists the announced nodes of the gossip graph, or only <paramref name="nodeId"/> (ClientCommand 17).
+    /// </summary>
+    public Task<ListNodesIpcResponse> ListNodesAsync(CompactPubKey? nodeId, CancellationToken ct = default) =>
+        SendRequestAsync<ListNodesIpcRequest, ListNodesIpcResponse>(ClientCommand.ListNodes,
+                                                                     new ListNodesIpcRequest { NodeId = nodeId }, ct);
+
+    /// <summary>
+    /// Lists the channels of the gossip graph, optionally one short channel id and/or one node's (ClientCommand 18).
+    /// </summary>
+    public Task<ListGraphChannelsIpcResponse> ListGraphChannelsAsync(ulong? shortChannelId, CompactPubKey? nodeId,
+                                                                     CancellationToken ct = default) =>
+        SendRequestAsync<ListGraphChannelsIpcRequest, ListGraphChannelsIpcResponse>(
+            ClientCommand.ListGraphChannels,
+            new ListGraphChannelsIpcRequest { ShortChannelId = shortChannelId, NodeId = nodeId }, ct);
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)

@@ -152,6 +152,12 @@ public static class NodeServiceExtensions
         services.AddScoped<IClientCommandHandler<ChainStatusClientRequest, ChainStatusClientResponse>,
             ChainStatusClientHandler>();
 
+        // BOLT 7 G2-T6: the gossip graph's nodes (ClientCommand 17) and channels (18)
+        services.AddScoped<IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>,
+            ListNodesClientHandler>();
+        services.AddScoped<IClientCommandHandler<ListGraphChannelsClientRequest, ListGraphChannelsClientResponse>,
+            ListGraphChannelsClientHandler>();
+
         // Register IPC routing and command handlers
         services.AddSingleton<IIpcFraming, LengthPrefixedIpcFraming>();
         services.AddSingleton<IIpcRequestRouter, IpcRequestRouter>();
@@ -172,6 +178,8 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ForceCloseChannelIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, PendingSweepsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, ChainStatusIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListNodesIpcHandler>();
+        services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

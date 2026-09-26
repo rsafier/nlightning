@@ -9,6 +9,7 @@ using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Reestablish;
 using Application.Channels.Safety.Interfaces;
+using Application.Gossip.Graph;
 using Application.Gossip.Interfaces;
 using Application.Gossip.Services;
 using Application.Payments.Invoices;
@@ -81,6 +82,17 @@ public class NodeServiceExtensionsTests
         var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
         Assert.Contains(ClientCommand.ListChannels, commands);
         Assert.Equal(commands.Count, commands.Distinct().Count());
+
+        // BOLT 7 G2-T5/G2-T6: the graph pruner and the graph listings
+        Assert.Same(provider.GetRequiredService<GraphPruner>(), provider.GetRequiredService<GraphPruner>());
+        Assert.Contains(ClientCommand.ListNodes, commands);
+        Assert.Contains(ClientCommand.ListGraphChannels, commands);
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListNodesClientRequest,
+                                 ListNodesClientResponse>>());
+        Assert.NotNull(scope.ServiceProvider
+                            .GetRequiredService<IClientCommandHandler<ListGraphChannelsClientRequest,
+                                 ListGraphChannelsClientResponse>>());
     }
 
     [Fact]
