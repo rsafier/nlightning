@@ -258,19 +258,42 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task Given_PendingChildPayingTheEstimate_When_BumpIsDue_Then_Kept()
+    public async Task Given_PendingChildPayingTheEstimateWithoutDeadline_When_BumpIsDue_Then_Kept()
     {
-        // Arrange
-        BroadcastCommitment();
+        // Arrange: only a trimmed HTLC, so nothing has a deadline
+        BroadcastCommitment(htlcMsat: 500_000);
         await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        Assert.Single(_store.Children);
 
-        // Act: same estimate, the package still pays it
-        await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+        // Act: same estimate, the package still pays it, well past the no-deadline target
+        await Service.RunOnceAsync(500 + new AnchorCpfpOptions().NoDeadlineConfTarget + 10,
+                                   TestContext.Current.CancellationToken);
 
         // Assert
         var child = Assert.Single(_store.Children);
         Assert.Equal(BroadcastState.Pending, child.State);
         Assert.Single(_published);
+    }
+
+    [Fact]
+    public async Task Given_PendingChildPayingTheEstimateWithDeadline_When_BumpIsDue_Then_ReplacedAtTheBip125Minimum()
+    {
+        // Arrange: the HTLC gives the commitment a deadline; blocks keep leaving the package out at the same estimate
+        var commitment = BroadcastCommitment();
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+        var first = Assert.Single(_store.Children);
+
+        // Act
+        await Service.RunOnceAsync(502, TestContext.Current.CancellationToken);
+
+        // Assert: replaced with at least the BIP 125 minimum over the old fee (integrated wave O7: as SweepScheduler)
+        Assert.Equal(BroadcastState.Replaced, first.State);
+        var replacement = _store.Children.Single(c => c.TransactionId != first.TransactionId);
+        var oldFee = AnchorTx.ChildFee(Load(first), _wallet);
+        var newChild = Load(replacement);
+        var newFee = AnchorTx.ChildFee(newChild, _wallet);
+        Assert.True(newFee >= oldFee * 5 / 4, $"{newFee} < 1.25 x {oldFee}");
+        AnchorTx.AssertScriptsValid(newChild, Load(commitment), _wallet);
     }
 
     [Fact]

@@ -461,7 +461,10 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var oldTx = Transaction.Load(latest.RawTransaction, Network.Main);
         var oldWeight = GetWeight(oldTx);
         var oldFeeLower = (ulong)latest.FeeratePerKw * (ulong)oldWeight / 1000;
-        if (_policy.PackagePays(commitmentFee, commitmentWeight, oldFeeLower, oldWeight, estimate))
+        // With a deadline (an untrimmed HTLC) a package still unconfirmed after RbfIntervalBlocks is bumped by at least
+        // the BIP 125 minimum even when it pays the estimate, as SweepScheduler does for claims: the estimate lags when
+        // blocks keep leaving the package out, and the cap bounds the escalation. Without one it is kept while it pays
+        if (deadline is null && _policy.PackagePays(commitmentFee, commitmentWeight, oldFeeLower, oldWeight, estimate))
             return null;
 
         var oldFeeUpper = ((ulong)latest.FeeratePerKw + 1) * (ulong)oldWeight / 1000 + 1;

@@ -163,7 +163,8 @@ public sealed class RevokedCommitResolver : IOutputResolver
     /// Nothing is recorded: the caller stores and publishes the returned transactions, and the close, its rows and the
     /// rest of the resolution wait for the commitment's confirmation (the watcher then links these transactions to the
     /// rows, or abandons them when another transaction confirmed). Every output of ours is taken (the commitment's
-    /// <c>to_local</c> and HTLC outputs with the revocation key, our <c>to_remote</c>), with the deadlines counted
+    /// <c>to_local</c> and HTLC outputs with the revocation key, our <c>to_remote</c> except on an option_anchors channel,
+    /// where its 1-block CSV keeps it for the confirmed rounds), with the deadlines counted
     /// from <paramref name="height"/> + 1, the earliest block that can hold the commitment, and the same fee and split
     /// rules as <see cref="ResolveAsync"/>. Unmapped outputs are only alerted: the confirmed rounds watch them.
     /// </remarks>
@@ -192,10 +193,14 @@ public sealed class RevokedCommitResolver : IOutputResolver
         var map = Map(context);
         ReportUnmapped(round, map);
 
+        // On an option_anchors channel our to_remote is locked by a 1-block CSV (BOLT 3), so it cannot be spent while
+        // the commitment is unconfirmed (bitcoind refuses the batch as non-BIP68-final): it is left to the confirmed
+        // rounds, which sweep it on its own after one confirmation
+        var anchors = context.Channel.ChannelParams.OptionAnchorOutputs;
         var needs = new List<PenaltyNeed>();
         foreach (var descriptor in map.Outputs.Where(d => d.Kind is OutputDescriptorKind.RevokedToLocal
                                                                   or OutputDescriptorKind.RevokedHtlc
-                                                                  or OutputDescriptorKind.PaymentToRemote))
+                                                         || (d.Kind == OutputDescriptorKind.PaymentToRemote && !anchors)))
         {
             var row = CreateCommitmentRow(round, descriptor, context.PerCommitmentPoint);
             needs.Add(new PenaltyNeed(row, CreateInput(context, descriptor), GetDeadline(close, descriptor),

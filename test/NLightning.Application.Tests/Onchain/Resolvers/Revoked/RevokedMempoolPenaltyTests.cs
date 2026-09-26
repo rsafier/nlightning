@@ -43,6 +43,38 @@ public class RevokedMempoolPenaltyTests
     }
 
     [Fact]
+    public async Task Given_RevokedAnchorsCommitmentInTheMempool_When_Prepared_Then_ToRemoteLeftForTheConfirmedRounds()
+    {
+        // Arrange: the same breach on an option_anchors channel, whose to_remote has a 1-block CSV (BOLT 3)
+        using var kit = new RevokedBreachKit(hasAnchors: true);
+        var pair = kit.Pair;
+        pair.Add(pair.Bob, 40_000_000, RealSigningCommitmentPair.Preimage(0xB1), 700);
+        pair.Add(pair.Alice, 30_000_000, RealSigningCommitmentPair.Preimage(0xA1), 710);
+        pair.Settle(pair.Bob);
+        kit.CaptureRevokedState();
+        pair.UpdateFee(3_000);
+        pair.Settle(pair.Alice);
+        kit.Breach();
+
+        // Act
+        var actions = await kit.Resolver.PrepareUnconfirmedPenaltiesAsync(
+                          RealSigningCommitmentPair.ChannelId, kit.RevokedChainTx, kit.RevokedNumber,
+                          RevokedBreachKit.SpentAtHeight - 1, TestContext.Current.CancellationToken);
+        kit.Apply(actions);
+
+        // Assert: to_local and both HTLCs are penalized, script-valid; neither anchor nor the CSV-1 to_remote (an
+        // input with nSequence 1 is not BIP 68 final while the commitment is unconfirmed) is spent
+        var broadcasts = actions.OfType<BroadcastAction>().Select(a => a.Transaction).ToList();
+        Assert.NotEmpty(broadcasts);
+        var inputs = broadcasts.SelectMany(b => kit.LoadBroadcast(b.TransactionId).Inputs).ToList();
+        Assert.Equal(kit.RevokedCommitment.Outputs.Count - 3, inputs.Count);
+        Assert.DoesNotContain(inputs, i => i.Sequence.Value == 1);
+        foreach (var broadcast in broadcasts)
+            kit.AssertVerifies(broadcast.TransactionId);
+        Assert.Empty(kit.Rows);
+    }
+
+    [Fact]
     public async Task Given_NoContextForTheCommitment_When_Prepared_Then_OnlyAnAlert()
     {
         // Arrange: the victim's data cannot serve the breach (e.g. the secret is not in the shachain)
