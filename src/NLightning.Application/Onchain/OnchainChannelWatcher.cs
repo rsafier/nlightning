@@ -193,6 +193,24 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
                                                 TxId newSpend)
     {
         var rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
+
+        // An HTLC of the old close already resolved may have been removed upstream (a fail at reasonable depth is
+        // final); nothing re-checks it against the new close's HTLC outputs, so the operator is told
+        var resolvedHtlcs = rows.Where(r => r is
+                                       {
+                                           HtlcId: not null,
+                                           State: OutputResolutionState.Resolved or OutputResolutionState.Irrevocable
+                                       }
+                                       && r.TransactionId != newSpend)
+                                .Select(r => $"{r.HtlcDirection} {r.HtlcId}")
+                                .ToList();
+        if (resolvedHtlcs.Count > 0)
+            _logger.LogCritical("[B5-GEN-06] Channel {ChannelId}: the reorged-out close {TxId} had already resolved "
+                              + "HTLC output(s) {Htlcs}; their upstream removal (a fail at reasonable depth) may not "
+                              + "match the new close {NewTxId}, check them by hand", channelId,
+                                Display(old.CommitmentTransactionId), string.Join(", ", resolvedHtlcs),
+                                Display(newSpend));
+
         foreach (var row in rows.Where(r => r.TransactionId != newSpend
                                          && r.State is not (OutputResolutionState.Ignored
                                                             or OutputResolutionState.Irrevocable)))
