@@ -548,7 +548,8 @@ public class NodeServiceExtensionsTests
         Assert.IsType<GossipRelayScheduler>(provider.GetRequiredService<IGossipRelayScheduler>());
         Assert.IsType<PeerManagerGossipPeerDirectory>(provider.GetRequiredService<IGossipPeerDirectory>());
         Assert.Empty(provider.GetRequiredService<IGossipPeerDirectory>().GetConnectedPeers());
-        Assert.IsType<NullOwnGossipSink>(provider.GetRequiredService<IOwnGossipSink>());
+        // The graph ingress replaces lane B1's no-op sink (AddGossipGraphServices), so our own gossip reaches the graph
+        Assert.Same(provider.GetRequiredService<GossipIngress>(), provider.GetRequiredService<IOwnGossipSink>());
     }
 
     [Fact]

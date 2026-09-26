@@ -1,10 +1,10 @@
-using System.Reflection;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
+using Application.Gossip.Graph;
 using Daemon.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Client.Requests;
@@ -18,18 +18,14 @@ using Fixtures;
 using Utils;
 
 /// <summary>
-/// The gossip settings and calls of the BOLT 7 Docker proofs, written against the wave G-B contracts (plan §3.9, G1-T1,
-/// G1-T6): <c>OpenChannelClientRequest.IsPublic</c> (IPC key 4 of <c>openchannel</c>), the <c>Gossip</c> section
-/// (<c>SyncEnabled</c>, <c>RelayEnabled</c>, <c>AcceptPublicChannels</c>, <c>AnnounceAddresses</c>; plan D12, G1-T1,
-/// G1-T4) and <c>NodeOptions.Alias</c>/<c>Color</c>.
+/// The gossip settings and calls of the BOLT 7 Docker proofs (plan §3.9, G1-T1, G1-T6):
+/// <c>OpenChannelClientRequest.IsPublic</c> (IPC key 4 of <c>openchannel</c>), the <c>Gossip</c> section
+/// (<c>Enabled</c> of <c>GossipGraphOptions</c>, <c>AcceptPublicChannels</c> of <c>GossipOptions</c>; plan D12, G1-T1)
+/// and <c>NodeOptions.Alias</c>/<c>Color</c>.
 /// </summary>
 /// <remarks>
-/// Lane B3 wrote these tests in parallel with the lanes that implement the contracts (B1 public channels, B2 graph),
-/// so every setting goes through configuration keys (ignored by the binder until the property exists) and the public
-/// flag through <see cref="MarkPublic"/>. Each place a name may differ carries a <c>TODO(G-B integrator)</c>. A key
-/// the binder ignores would only show as a proof timing out, so <see cref="StartGossipNodeAsync"/> checks the bound
-/// options right after the start (<see cref="VerifyBoundGossipOptions"/>): a property that exists without the
-/// configured value fails the start at once.
+/// A key the binder ignores would only show as a proof timing out, so <see cref="StartGossipNodeAsync"/> checks the
+/// bound options right after the start (<see cref="VerifyBoundGossipOptions"/>).
 /// </remarks>
 public static class GossipTestNodes
 {
@@ -39,19 +35,16 @@ public static class GossipTestNodes
     /// </summary>
     public const string Color = "#1f7a4d";
 
-    // TODO(G-B integrator): check these names against B1/B2's GossipOptions and NodeOptions (Alias, Color). A wrong key
-    // is silently ignored by the configuration binder; VerifyBoundGossipOptions catches a property that exists with
-    // another value, but a property with another name is only logged as missing: fix s_gossipFlags then
     private const string GossipSection = "Gossip";
-    private const string GossipOptionsTypeName = "GossipOptions";
     private const string AliasKey = "Node:Alias";
     private const string ColorKey = "Node:Color";
 
     /// <summary>
-    /// The <c>Gossip</c> flags every proof node sets: sync and relay on whatever their default (plan D12
-    /// <c>Gossip:SyncEnabled</c>/<c>RelayEnabled</c>), and fundee acceptance of public channels (G1-T1).
+    /// The <c>Gossip</c> flags every proof node sets: the graph on (<c>GossipGraphOptions.Enabled</c>; default on
+    /// everywhere but mainnet, plan D12) and fundee acceptance of public channels (<c>GossipOptions</c>, G1-T1).
     /// </summary>
-    private static readonly string[] s_gossipFlags = ["SyncEnabled", "RelayEnabled", "AcceptPublicChannels"];
+    private static readonly string[] s_gossipFlags =
+        [nameof(GossipGraphOptions.Enabled), nameof(GossipOptions.AcceptPublicChannels)];
 
     private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_peerTimeout = TimeSpan.FromSeconds(30);
@@ -89,9 +82,7 @@ public static class GossipTestNodes
 
     /// <summary>
     /// Checks that the node bound what <see cref="StartGossipNodeAsync"/> configured: <c>NodeOptions.Alias</c> and
-    /// <c>Color</c>, and every flag of <see cref="s_gossipFlags"/> on the <c>GossipOptions</c> the node registered. A
-    /// property (or the options class) this build does not have yet is logged and skipped, since the contracts land in
-    /// parallel lanes; one that exists without the configured value throws.
+    /// <c>Color</c>, <c>GossipOptions.AcceptPublicChannels</c> and <c>GossipGraphOptions.Enabled</c>.
     /// </summary>
     /// <exception cref="InvalidOperationException">A bound option does not carry the configured value.</exception>
     public static void VerifyBoundGossipOptions(IServiceProvider services, string alias)
@@ -101,24 +92,10 @@ public static class GossipTestNodes
         CheckOption(nodeOptions, "Alias", alias, mismatches);
         CheckOption(nodeOptions, "Color", Color, mismatches);
 
-        var gossipOptionsType = FindGossipOptionsType();
-        if (gossipOptionsType is null)
-        {
-            Console.WriteLine($"{GossipOptionsTypeName} is not in this build: the {GossipSection} flags are not checked");
-        }
-        else
-        {
-            var optionsType = typeof(IOptions<>).MakeGenericType(gossipOptionsType);
-            var options = services.GetService(optionsType);
-            var gossipOptions = options is null
-                                    ? null
-                                    : optionsType.GetProperty(nameof(IOptions<object>.Value))!.GetValue(options);
-            if (gossipOptions is null)
-                mismatches.Add($"{gossipOptionsType.FullName} is not registered as IOptions<>");
-            else
-                foreach (var flag in s_gossipFlags)
-                    CheckOption(gossipOptions, flag, true, mismatches);
-        }
+        var gossipOptions = services.GetRequiredService<IOptions<GossipOptions>>().Value;
+        CheckOption(gossipOptions, nameof(GossipOptions.AcceptPublicChannels), true, mismatches);
+        var graphOptions = services.GetRequiredService<IOptions<GossipGraphOptions>>().Value;
+        CheckOption(graphOptions, nameof(GossipGraphOptions.Enabled), true, mismatches);
 
         if (mismatches.Count > 0)
             throw new InvalidOperationException(
@@ -128,14 +105,9 @@ public static class GossipTestNodes
     /// <summary>
     /// Asks for a public channel (<c>openchannel --public</c>, G1-T1).
     /// </summary>
-    /// <exception cref="InvalidOperationException">The build has no <c>IsPublic</c> flag yet (B1 not merged).</exception>
     public static OpenChannelClientRequest MarkPublic(OpenChannelClientRequest request)
     {
-        // TODO(G-B integrator): replace with `request.IsPublic = true` once B1 (G1-T1) is merged, and drop the reflection
-        var property = typeof(OpenChannelClientRequest).GetProperty("IsPublic")
-                    ?? throw new InvalidOperationException(
-                           "OpenChannelClientRequest.IsPublic does not exist in this build (wave G-B lane B1, G1-T1)");
-        property.SetValue(request, true);
+        request.IsPublic = true;
         return request;
     }
 
@@ -202,25 +174,6 @@ public static class GossipTestNodes
         await peerService.SendGossipMessageAsync(
             new GossipTimestampFilterMessage(new GossipTimestampFilterPayload(ChainConstants.Regtest, 0,
                                                                               uint.MaxValue)));
-    }
-
-    private static Type? FindGossipOptionsType() =>
-        AppDomain.CurrentDomain.GetAssemblies()
-                 .Where(a => a.GetName().Name?.StartsWith("NLightning.", StringComparison.Ordinal) == true
-                          && !a.GetName().Name!.EndsWith(".Tests", StringComparison.Ordinal))
-                 .SelectMany(LoadableTypes)
-                 .FirstOrDefault(t => t is { IsClass: true, IsAbstract: false, Name: GossipOptionsTypeName });
-
-    private static IEnumerable<Type> LoadableTypes(Assembly assembly)
-    {
-        try
-        {
-            return assembly.GetTypes();
-        }
-        catch (ReflectionTypeLoadException e)
-        {
-            return e.Types.OfType<Type>();
-        }
     }
 
     /// <summary>

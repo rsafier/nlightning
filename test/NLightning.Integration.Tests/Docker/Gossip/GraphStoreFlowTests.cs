@@ -84,9 +84,7 @@ public class GraphStoreFlowTests
         await node.StartAsync(ct);
 
         // Assert: read before any connection
-        // TODO(G-B integrator): NOT PROVEN until this reads through listgraphchannels/listnodes (IPC 18/17). Today it
-        // reads the persisted rows (GossipGraphProbe.TryGetOurGraphChannelAsync), which a restart does not delete, so
-        // it only fails if startup deletes the graph; the in-memory GraphStore reload is what (b) must show
+        // through listgraphchannels/listnodes (IPC 18/17), which read the in-memory GraphStore: this is its reload
         Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
         Assert.True(await GossipGraphProbe.OurGraphHasAsync(node, scids, lndNodes));
         Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
@@ -104,11 +102,11 @@ public class GraphStoreFlowTests
         await SyncFromAliceAsync(node, ct);
         var (scid, channelPoint) = await OpenPublicLndChannelAsync(david, carol, node, ct);
         await GossipGraphProbe.MineUntilAsync(
-            async () => await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid) is { Policies.Count: 2 },
+            async () => await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid) is { Policy1: not null, Policy2: not null },
             () => ChainSync.MineAndWaitAsync(_fixture, 1, _fixture.LndNodes, [node], ct), TimeSpan.FromSeconds(20), 6,
             s_syncTimeout, "our graph has david-carol with both policies", ct);
         var stored = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
-        Assert.Null(stored!.Value.Channel.SpentAtHeight);
+        Assert.Null(stored!.SpentAtHeight);
 
         // Act 1: david closes cooperatively; the close confirms in one block
         await CloseCooperativelyAsync(david, channelPoint, ct);
@@ -120,8 +118,8 @@ public class GraphStoreFlowTests
                               {
                                   var channel = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
                                   Console.WriteLine(
-                                      $"{new ShortChannelId(scid)} spent at {channel?.Channel.SpentAtHeight?.ToString() ?? "-"}");
-                                  return channel?.Channel.SpentAtHeight == spendHeight;
+                                      $"{new ShortChannelId(scid)} spent at {channel?.SpentAtHeight?.ToString() ?? "-"}");
+                                  return channel?.SpentAtHeight == spendHeight;
                               }, s_timeout, $"david-carol marked spent at {spendHeight}", ct,
                               GossipGraphProbe.PollInterval);
 
@@ -149,9 +147,9 @@ public class GraphStoreFlowTests
     {
         var stored = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
         Console.WriteLine($"At {when}: {new ShortChannelId(scid)} "
-                        + (stored is null ? "removed" : $"stored, spent at {stored.Value.Channel.SpentAtHeight}"));
+                        + (stored is null ? "removed" : $"stored, spent at {stored.SpentAtHeight}"));
         Assert.NotNull(stored);
-        Assert.Equal(spendHeight, stored.Value.Channel.SpentAtHeight);
+        Assert.Equal(spendHeight, stored.SpentAtHeight);
     }
 
     private IReadOnlyList<LNDNodeConnection> GossipLndNodes() =>

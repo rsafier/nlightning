@@ -19,6 +19,7 @@ using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
 using Daemon.Interfaces;
+using Daemon.Services;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
@@ -96,6 +97,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     private CrashableTcpService? _tcpService;
     private IFeeService? _feeService;
+    private GossipGraphHostedService? _gossipGraph;
     private ServiceProvider? _serviceProvider;
     private bool _started;
     private bool _disposed;
@@ -290,6 +292,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             _feeService = Services.GetRequiredService<IFeeService>();
             await _feeService.StartAsync(cancellationToken);
             feeServiceStarted = true;
+            // As the daemon does (GossipGraphHostedService runs before NltgDaemonService): load the gossip graph and
+            // subscribe its pruner before the peers connect and the chain monitor processes a block (G2-T4/G2-T5)
+            _gossipGraph = ActivatorUtilities.CreateInstance<GossipGraphHostedService>(Services);
+            await _gossipGraph.StartAsync(cancellationToken);
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
@@ -330,6 +336,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
                                    Services.GetRequiredService<IMempoolReactor>().StopAsync());
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
+                // Last, as the daemon does: the ingress writes the pending graph changes once nothing feeds it
+                await StopGossipGraphAsync();
             }
         }
         finally
@@ -606,6 +614,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await PeerManager.StopAsync();
             if (feeServiceStarted)
                 await _feeService!.StopAsync();
+            await StopGossipGraphAsync();
         }
         catch (Exception e)
         {
@@ -615,6 +624,15 @@ public sealed class NLightningTestNode : IAsyncDisposable
         {
             await DisposeServiceProviderAsync();
         }
+    }
+
+    /// <summary>Stops the gossip graph's pruner and ingress (writes the pending graph) if they were started.</summary>
+    private async Task StopGossipGraphAsync()
+    {
+        var gossipGraph = _gossipGraph;
+        _gossipGraph = null;
+        if (gossipGraph is not null)
+            await gossipGraph.StopAsync(CancellationToken.None);
     }
 
     /// <summary>

@@ -5,10 +5,12 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
+using Daemon.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Requests;
+using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
-using Domain.Gossip.Persistence;
-using Domain.Persistence.Interfaces;
+using Domain.Gossip.Graph;
 using Utils;
 
 /// <summary>
@@ -106,38 +108,32 @@ public static class GossipGraphProbe
     }
 
     /// <summary>
-    /// Our node's persisted graph: the channel, its stored policies, or null when it is not stored.
+    /// Our node's graph channel <paramref name="shortChannelId"/> as <c>listgraphchannels</c> (IPC 18) reports it (the
+    /// in-memory <c>GraphStore</c>, so a restart proves its reload), or null when the graph does not have it.
     /// </summary>
-    /// <remarks>
-    /// TODO(G-B integrator): Proof G2 reads <c>listgraphchannels</c> (IPC 18) and <c>listnodes</c> (IPC 17). Their
-    /// request/response types did not exist when lane B3 wrote this, so the probe reads the store behind them
-    /// (<see cref="IUnitOfWork.GraphDbRepository"/>, migration <c>AddGossipGraph</c>): switch these two reads to the
-    /// client handlers (as <c>Abcd/NodeClientCalls</c> does) once B2 (G2-T6) is merged. The store is written behind
-    /// (plan D2), so callers poll.
-    /// </remarks>
-    public static async Task<(GraphChannelRecord Channel, IReadOnlyList<GraphPolicyRecord> Policies)?>
-        TryGetOurGraphChannelAsync(NLightningTestNode node, ulong shortChannelId)
+    public static async Task<GraphChannel?> TryGetOurGraphChannelAsync(NLightningTestNode node, ulong shortChannelId)
     {
         using var scope = node.Services.CreateScope();
-        var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().GraphDbRepository;
-        var scid = new ShortChannelId(shortChannelId);
-        var channel = await repository.GetChannelAsync(scid);
-        if (channel is null)
-            return null;
-
-        var policies = await repository.GetPoliciesAsync(scid);
-        return (channel, policies);
+        var handler = scope.ServiceProvider
+                           .GetRequiredService<IClientCommandHandler<ListGraphChannelsClientRequest,
+                                ListGraphChannelsClientResponse>>();
+        var response = await handler.HandleAsync(
+                           new ListGraphChannelsClientRequest { ShortChannelId = new ShortChannelId(shortChannelId) },
+                           CancellationToken.None);
+        return response.Channels.SingleOrDefault();
     }
 
     /// <summary>
-    /// Our node's persisted announcement of <paramref name="nodeId"/>, or null (see
-    /// <see cref="TryGetOurGraphChannelAsync"/> for the TODO).
+    /// Our node's announcement of <paramref name="nodeId"/> as <c>listnodes</c> (IPC 17) reports it, or null.
     /// </summary>
-    public static async Task<GraphNodeRecord?> TryGetOurGraphNodeAsync(NLightningTestNode node, byte[] nodeId)
+    public static async Task<GraphNode?> TryGetOurGraphNodeAsync(NLightningTestNode node, byte[] nodeId)
     {
         using var scope = node.Services.CreateScope();
-        return await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().GraphDbRepository
-                          .GetNodeAsync(new CompactPubKey(nodeId));
+        var handler = scope.ServiceProvider
+                           .GetRequiredService<IClientCommandHandler<ListNodesClientRequest, ListNodesClientResponse>>();
+        var response = await handler.HandleAsync(new ListNodesClientRequest { NodeId = new CompactPubKey(nodeId) },
+                                                 CancellationToken.None);
+        return response.Nodes.SingleOrDefault()?.Node;
     }
 
     /// <summary>
@@ -153,8 +149,8 @@ public static class GossipGraphProbe
             var stored = await TryGetOurGraphChannelAsync(node, scid);
             if (stored is null)
                 missing.Add($"channel {new ShortChannelId(scid)}");
-            else if (stored.Value.Policies.Select(p => p.Direction).Distinct().Count() < 2)
-                missing.Add($"policies of {new ShortChannelId(scid)} ({stored.Value.Policies.Count} stored)");
+            else if (stored is not { Policy1: not null, Policy2: not null })
+                missing.Add($"a policy of {new ShortChannelId(scid)}");
         }
 
         foreach (var lnd in nodeIds)
