@@ -119,7 +119,11 @@ public class FeeUpdateHarnessTests
                   .ReturnsAsync(LightningMoney.Satoshis(estimatePerKw));
         return new FeeUpdateScheduler(channels.Object, node.Operations, feeService.Object,
                                       NullLogger<FeeUpdateScheduler>.Instance,
-                                      Options.Create(new NodeOptions { EnableHtlcs = true }));
+                                      Options.Create(new NodeOptions
+                                      {
+                                          EnableHtlcs = true,
+                                          FeeUpdates = new FeeUpdateOptions { NonAnchorFeerateMarginPercent = 100 }
+                                      }));
     }
 
     private static void AssertAgreement(TwoNodeHarness harness)

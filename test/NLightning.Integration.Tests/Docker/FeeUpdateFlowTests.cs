@@ -12,7 +12,6 @@ using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
-using Domain.Client.Responses;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Fixtures;
@@ -58,9 +57,10 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
     /// <summary>
-    /// We fund a channel to alice at 10,000 sat/kw. The estimate rises to 12,500 sat/kw: our scheduler sends one
-    /// <c>update_fee</c>, LND commits it (its <c>fee_per_kw</c> follows) and payments work both ways; then the
-    /// estimate falls to 5,000 sat/kw and LND follows again.
+    /// We fund a (legacy, non-anchor) channel to alice at 10,000 sat/kw. The estimate rises to 6,250 sat/kw: with the
+    /// default 200 % non-anchor margin our scheduler sends one <c>update_fee</c> of 12,500 sat/kw, LND commits it (its
+    /// <c>fee_per_kw</c> follows) and payments work both ways; then the estimate falls to 2,500 sat/kw (5,000 with the
+    /// margin) and LND follows again.
     /// </summary>
     [Fact]
     public async Task Given_OurFundedChannel_When_EstimateMoves_Then_LndAcceptsOurUpdateFeeAndPaymentsWork()
@@ -80,10 +80,10 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         var channelId = opened.ChannelId;
         var channelPoint = opened.ChannelPoint();
         await MineUntilUsableAsync(node, alice, channelId, channelPoint, ct);
-        var feeService = new FixedFeeService(12_500);
+        var feeService = new FixedFeeService(6_250);
         var scheduler = CreateScheduler(node, feeService);
 
-        // Act 1 - the estimate rose 25 %
+        // Act 1 - the estimate, with the default margin, is 25 % above the feerate
         var outcome = Assert.Single(await scheduler.RunOnceAsync(ct));
 
         // Assert 1 - LND committed our feerate and the channel is still usable
@@ -99,7 +99,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         await AssertBalancesAgreeAsync(node, alice, channelId, channelPoint, weAreFunder: true, ct);
 
         // Act 3 - the estimate falls
-        feeService.FeeratePerKw = 5_000;
+        feeService.FeeratePerKw = 2_500;
         var lower = Assert.Single(await scheduler.RunOnceAsync(ct));
 
         // Assert 3
@@ -164,7 +164,8 @@ public class FeeUpdateFlowTests : IAsyncLifetime
 
     /// <summary>
     /// The receiving side of <c>update_fee</c> on the real stack (TCP, BOLT 8, SQLite): one of our nodes funds a
-    /// channel to another; the funder's scheduler raises the feerate, the fundee accepts it and both commit it, and
+    /// channel to another; the funder's scheduler raises the feerate (7,500 sat/kw estimate, 15,000 with the default
+    /// non-anchor margin), the fundee accepts it and both commit it, and
     /// payments work both ways afterwards.
     /// </summary>
     [Fact]
@@ -196,7 +197,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         await ChainSync.WaitAllAtTipAsync(_fixture, [funder, fundee], ct);
 
         // Act 1
-        var outcome = Assert.Single(await CreateScheduler(funder, new FixedFeeService(15_000)).RunOnceAsync(ct));
+        var outcome = Assert.Single(await CreateScheduler(funder, new FixedFeeService(7_500)).RunOnceAsync(ct));
 
         // Assert 1 - the fundee received update_fee and both commitments carry it on both sides
         Assert.True(outcome.Sent, outcome.Reason);

@@ -9,7 +9,8 @@ using static FeeTestKit;
 /// </summary>
 public class FeeUpdatePolicyTests
 {
-    private static readonly FeeUpdateOptions s_options = new();
+    /// <summary>The defaults without the non-anchor margin, so the targets below read as the estimate.</summary>
+    private static readonly FeeUpdateOptions s_options = new() { NonAnchorFeerateMarginPercent = 100 };
 
     [Fact]
     public void Given_EstimateUp20Pct_When_Deciding_Then_UpdateToEstimate()
@@ -256,7 +257,8 @@ public class FeeUpdatePolicyTests
                 ThresholdPercent = 0,
                 MinFeeratePerKw = 100,
                 MaxFeeratePerKw = 50,
-                MaxAnchorFeeratePerKw = 50
+                MaxAnchorFeeratePerKw = 50,
+                NonAnchorFeerateMarginPercent = 99
             }
         };
 
@@ -264,7 +266,53 @@ public class FeeUpdatePolicyTests
         var errors = options.GetValidationErrors();
 
         // Assert
-        Assert.Equal(5, errors.Count);
+        Assert.Equal(6, errors.Count);
         Assert.All(errors, e => Assert.StartsWith("FeeUpdates:", e));
+    }
+
+    [Theory]
+    [InlineData(false, 200U, 3_000U, 6_000U)]
+    [InlineData(false, 500U, 3_000U, 15_000U)]
+    [InlineData(false, 200U, 40_000U, 50_000U)]
+    [InlineData(true, 200U, 2_000U, 2_000U)]
+    public void Given_NonAnchorMargin_When_Targeting_Then_MarginAppliesOnlyWithoutAnchors(bool anchors, uint margin,
+        uint estimate, uint expected)
+    {
+        // Arrange - BOLT 2: the funder SHOULD keep the feerate sufficient "by a significant margin"; a legacy
+        // commitment cannot be CPFP-bumped
+        var options = new FeeUpdateOptions { NonAnchorFeerateMarginPercent = margin };
+
+        // Act
+        var target = FeeUpdatePolicy.TargetFeeratePerKw(estimate, anchors, options);
+
+        // Assert
+        Assert.Equal(expected, target);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_EstimateFalls_Then_NonAnchorFeerateStaysAtTheMargin()
+    {
+        // Arrange - a legacy channel at 10,000 sat/kw; the estimate falls to 4,000 sat/kw
+        var commitments = Create(800_000, 200_000, 10_000);
+
+        // Act
+        var decision = FeeUpdatePolicy.Decide(commitments, 4_000, new FeeUpdateOptions(), null);
+
+        // Assert - the default 200 % margin: down to 8,000, never to the raw estimate
+        Assert.True(decision.ShouldSend);
+        Assert.Equal(8_000U, decision.FeeratePerKw);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_EstimateAtHalfTheFeerate_Then_NoDecrease()
+    {
+        // Arrange - the feerate already is twice the estimate
+        var commitments = Create(800_000, 200_000, 10_000);
+
+        // Act
+        var decision = FeeUpdatePolicy.Decide(commitments, 5_000, new FeeUpdateOptions(), null);
+
+        // Assert
+        Assert.False(decision.ShouldSend);
     }
 }

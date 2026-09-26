@@ -6,7 +6,8 @@ namespace NLightning.Domain.Node.Options;
 /// </summary>
 /// <remarks>
 /// Every <see cref="Interval"/> the fee scheduler reads the node's fee estimate (sat/kw) and, for each open channel we
-/// fund, moves the commitment feerate to it when it differs by at least <see cref="ThresholdPercent"/> (hysteresis, so
+/// fund, moves the commitment feerate to it (times <see cref="NonAnchorFeerateMarginPercent"/> without
+/// <c>option_anchors</c>) when it differs by at least <see cref="ThresholdPercent"/> (hysteresis, so
 /// a noisy estimate does not cause an update every round), clamped to
 /// [<see cref="MinFeeratePerKw"/>, <see cref="MaxFeeratePerKw"/>] (<see cref="MaxAnchorFeeratePerKw"/> for
 /// <c>option_anchors</c> channels, which can be bumped with CPFP). Call <see cref="GetValidationErrors"/> (through
@@ -37,6 +38,16 @@ public class FeeUpdateOptions
     public uint ThresholdPercent { get; set; } = 20;
 
     /// <summary>
+    /// The safety margin (percent of the estimate) we aim for on a channel without <c>option_anchors</c>: 200 means
+    /// twice the estimate. BOLT 2: the funder SHOULD keep the feerate sufficient "by a significant margin"; a legacy
+    /// commitment cannot be bumped with CPFP, so it must confirm at the feerate it was signed with. Because the margin is
+    /// part of the target, a falling estimate never takes the feerate below margin x estimate. Anchor channels use the
+    /// estimate as is (CPFP on the anchor adds the rest). At least 100; the result is still clamped to
+    /// <see cref="MaxFeeratePerKw"/>.
+    /// </summary>
+    public uint NonAnchorFeerateMarginPercent { get; set; } = 200;
+
+    /// <summary>
     /// The lowest feerate we ever set; never below <see cref="FeeratePerKwFloor"/>.
     /// </summary>
     public uint MinFeeratePerKw { get; set; } = FeeratePerKwFloor;
@@ -64,6 +75,8 @@ public class FeeUpdateOptions
             errors.Add($"FeeUpdates:{nameof(Interval)} must be positive.");
         if (ThresholdPercent is 0 or >= 100)
             errors.Add($"FeeUpdates:{nameof(ThresholdPercent)} must be between 1 and 99.");
+        if (NonAnchorFeerateMarginPercent < 100)
+            errors.Add($"FeeUpdates:{nameof(NonAnchorFeerateMarginPercent)} must be at least 100.");
         if (MinFeeratePerKw < FeeratePerKwFloor)
             errors.Add($"FeeUpdates:{nameof(MinFeeratePerKw)} must be at least {FeeratePerKwFloor} sat/kw.");
         if (MaxFeeratePerKw < MinFeeratePerKw)

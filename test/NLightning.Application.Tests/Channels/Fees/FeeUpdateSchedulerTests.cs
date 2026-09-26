@@ -24,7 +24,11 @@ public class FeeUpdateSchedulerTests
     private readonly Mock<IChannelMemoryRepository> _channels = new();
     private readonly Mock<IChannelOperations> _operations = new();
     private readonly Mock<IFeeService> _feeService = new();
-    private readonly NodeOptions _nodeOptions = new() { EnableHtlcs = true };
+    private readonly NodeOptions _nodeOptions = new()
+    {
+        EnableHtlcs = true,
+        FeeUpdates = new FeeUpdateOptions { NonAnchorFeerateMarginPercent = 100 }
+    };
 
     [Fact]
     public async Task Given_EstimateUp20Pct_When_RoundRuns_Then_UpdateFeeQueued()
