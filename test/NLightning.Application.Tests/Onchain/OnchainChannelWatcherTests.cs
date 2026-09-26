@@ -211,6 +211,41 @@ public sealed class OnchainChannelWatcherTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AnotherSpendAfterAReorg_When_Raised_Then_OldRowsIgnoredAndOldPendingTransactionsAbandoned()
+    {
+        // Arrange (O6-T3, NL-292): our commitment was recorded and a sweep of it is pending; a reorg took it out and
+        // the peer's commitment confirmed instead
+        var local = _pair.Alice.State.LocalCommit;
+        var ours = BuildCommitment(CommitmentSide.Local, local.Spec, local.Number, null);
+        await Watcher.HandleFundingSpentAsync(SpentBy(ours), TestContext.Current.CancellationToken);
+        var oldRows = _store.Outputs.Values.Where(o => o.TransactionId == ours.TxId).ToList();
+        Assert.NotEmpty(oldRows);
+        var sweep = new BroadcastTransactionModel(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x77, 32)
+                                                                                    .ToArray()), [1, 2, 3]),
+                                                  BroadcastPurpose.Sweep, _channel.ChannelId, SpendHeight + 1);
+        _store.Broadcasts.Add(sweep);
+        var remote = _pair.Alice.State.RemoteCommit;
+        var theirs = BuildCommitment(CommitmentSide.Remote, remote.Spec, remote.Number, remote.PerCommitmentPoint);
+        var reorged = new OutpointSpentEventArgs(_channel.ChannelId, theirs, SpendHeight + 2, 1,
+                                                 _channel.FundingOutput!.TransactionId!.Value,
+                                                 _channel.FundingOutput.Index!.Value, OnchainTestStore.BlockHash(9));
+
+        // Act
+        var outcome = await Watcher.HandleFundingSpentAsync(reorged, TestContext.Current.CancellationToken);
+
+        // Assert: the new close with its own rows; every row of the old close ignored, the old sweep abandoned; the
+        // channel still resolving on chain (never back to Open)
+        Assert.Equal(ChannelCloseKind.RemoteCommitment, outcome!.Kind);
+        Assert.Equal(theirs.TxId, _store.Closes[_channel.ChannelId].CommitmentTransactionId);
+        Assert.All(_store.Outputs.Values.Where(o => o.TransactionId == ours.TxId),
+                   o => Assert.Equal(OutputResolutionState.Ignored, o.State));
+        Assert.Contains(_store.Outputs.Values, o => o.TransactionId == theirs.TxId
+                                                 && o.State == OutputResolutionState.Pending);
+        Assert.Equal(BroadcastState.Abandoned, sweep.State);
+        Assert.Equal(ChannelState.OnchainResolving, _channel.State);
+    }
+
+    [Fact]
     public async Task Given_PeersCurrentCommitment_When_FundingSpent_Then_RemoteCloseAndOurPendingCommitmentAbandoned()
     {
         // Arrange: we had failed the channel and our commitment was never confirmed (its row is pending)

@@ -11,6 +11,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Classifiers;
 using Domain.Onchain.Enums;
@@ -41,8 +42,8 @@ using Interfaces;
 /// swept, and the channel closes after the irrevocable depth. A mutual close is left to the channel manager (it only
 /// arrives for a channel in its close negotiation).</para>
 /// <para>Idempotent: the chain monitor raises a spend again for a replayed block; a spend already recorded changes
-/// nothing. A different spend recorded before (a reorg) is recorded again over it (the old output rows stay, NL-292).
-/// </para>
+/// nothing. A different spend recorded before (a reorg) is recorded over it in one save that also ignores the old
+/// close's output rows and abandons the channel's other pending transactions (NL-292, O6-T3).</para>
 /// </remarks>
 public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 {
@@ -149,6 +150,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
 
             var closeKind = ToCloseKind(classification.Kind);
             var (descriptors, point, unmapped) = await MapOutputsAsync(scope, channel, classification, spend);
+            if (existing is not null)
+                await RetireReplacedCloseAsync(unitOfWork, channelId, existing, spend.TxId);
             recorded = await PersistAsync(scope, channel, args, spend, classification, closeKind, descriptors, point,
                                           unmapped);
         }
@@ -178,6 +181,33 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
         }
 
         return recorded.Outcome;
+    }
+
+    /// <summary>
+    /// O6-T3 (NL-292): another transaction now spends the funding output than the one recorded (the old one was reorged
+    /// out). Every output row of the old close is <see cref="OutputResolutionState.Ignored"/> (its transaction is not on
+    /// chain) and every pending broadcast of the channel but the new spend is abandoned (it spends outputs of a
+    /// transaction that is not on chain, or conflicts with the new spend), in the save that records the new close.
+    /// </summary>
+    private async Task RetireReplacedCloseAsync(IUnitOfWork unitOfWork, ChannelId channelId, ChannelCloseModel old,
+                                                TxId newSpend)
+    {
+        var rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channelId);
+        foreach (var row in rows.Where(r => r.TransactionId != newSpend
+                                         && r.State is not (OutputResolutionState.Ignored
+                                                            or OutputResolutionState.Irrevocable)))
+            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(row with
+            {
+                State = OutputResolutionState.Ignored
+            });
+
+        var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
+        foreach (var stale in broadcasts.Where(b => b.State == BroadcastState.Pending && b.TransactionId != newSpend))
+            await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
+
+        _logger.LogWarning("Channel {ChannelId}: the {Count} output(s) of the reorged-out close {TxId} are ignored and "
+                         + "its pending transactions abandoned", channelId, rows.Count,
+                           Display(old.CommitmentTransactionId));
     }
 
     /// <summary>What the classifier compares the spend with (candidates rebuilt from the persisted state).</summary>
