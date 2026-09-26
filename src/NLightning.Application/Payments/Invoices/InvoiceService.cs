@@ -24,6 +24,7 @@ using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Gossip.Announcements;
 using Gossip.Interfaces;
 using Routing;
 
@@ -41,8 +42,8 @@ using Routing;
 /// <para>Persistence goes through a fresh DI scope per call: <see cref="IInvoiceDbRepository"/> stages, the scope's
 /// <see cref="IUnitOfWork"/> commits. Both must share the scope's database context (see the Payments
 /// <c>CLAUDE.md</c> section for the registration).</para>
-/// <para>Route hints (NL-245): our channels are never announced, so a payer that is not our peer can only reach us
-/// through an <c>r</c> field. Each <c>Open</c> channel whose link is up (<see cref="IPeerLivenessProbe"/>, as LND skips
+/// <para>Route hints (NL-245): a payer that is not our peer can reach a node without announced channels only through
+/// an <c>r</c> field. Each <c>Open</c> channel whose link is up (<see cref="IPeerLivenessProbe"/>, as LND skips
 /// inactive channels) and whose peer sent us its <c>channel_update</c>
 /// (<see cref="IChannelUpdateService.TryGetRemoteChannelUpdate"/>, not disabled) gets a one-hop hint: the peer's node
 /// id, the channel's short channel id (the peer's alias <c>RemoteAlias</c> for an <c>option_scid_alias</c> channel)
@@ -53,6 +54,13 @@ using Routing;
 /// are skipped. At most <see cref="MaxRouteHints"/> hints, the peers with the largest spendable balance first (as
 /// LND). A channel whose peer's update we do not have gets no hint
 /// (LND does the same).</para>
+/// <para>Public channels (BOLT 7 plan G4, <see cref="InvoiceOptions.RouteHints"/>): with
+/// <see cref="InvoiceRouteHintMode.Auto"/> (the default) an invoice carries no hint at all once one of our announced
+/// channels (<see cref="ChannelAnnouncementService.IsAnnounced"/>) is <c>Open</c>, has its link up and its peer can send
+/// us the amount (<see cref="GetPeerSpendable"/>; any inbound for an invoice without an amount): payers then find us
+/// through the gossip graph, and hints would only reveal our private channels. A node with only private channels keeps
+/// its hints. <see cref="InvoiceRouteHintMode.Always"/> forces the hints, <see cref="InvoiceRouteHintMode.Never"/> drops
+/// them.</para>
 /// <para>Singleton; thread-safe.</para>
 /// </remarks>
 public sealed class InvoiceService : IInvoiceService
@@ -69,6 +77,7 @@ public sealed class InvoiceService : IInvoiceService
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly IChannelUpdateService? _channelUpdateService;
     private readonly IPeerLivenessProbe? _peerLivenessProbe;
+    private readonly InvoiceRouteHintMode _routeHintMode;
 
     /// <param name="serviceScopeFactory">Scopes for persistence.</param>
     /// <param name="secureKeyManager">The node key that signs the invoices.</param>
@@ -79,12 +88,16 @@ public sealed class InvoiceService : IInvoiceService
     /// carry none.</param>
     /// <param name="peerLivenessProbe">Which channels have their link up; without it every <c>Open</c> channel counts
     /// as up.</param>
+    /// <param name="invoiceOptions">When invoices carry hints; without it <see cref="InvoiceRouteHintMode.Auto"/>.
+    /// </param>
     public InvoiceService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                           IOptions<NodeOptions> nodeOptions, ILogger<InvoiceService> logger,
                           IChannelMemoryRepository? channelMemoryRepository = null,
                           IChannelUpdateService? channelUpdateService = null,
-                          IPeerLivenessProbe? peerLivenessProbe = null)
+                          IPeerLivenessProbe? peerLivenessProbe = null,
+                          IOptions<InvoiceOptions>? invoiceOptions = null)
     {
+        _routeHintMode = invoiceOptions?.Value.RouteHints ?? InvoiceRouteHintMode.Auto;
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
         _nodeOptions = nodeOptions;
@@ -167,8 +180,19 @@ public sealed class InvoiceService : IInvoiceService
     internal async Task<IReadOnlyList<RoutingInfoCollection>> BuildRouteHintsAsync(LightningMoney? amount,
                                                                                  CancellationToken cancellationToken)
     {
-        if (_channelMemoryRepository is null || _channelUpdateService is null)
+        if (_channelMemoryRepository is null || _channelUpdateService is null
+                                            || _routeHintMode == InvoiceRouteHintMode.Never)
             return [];
+
+        if (_routeHintMode == InvoiceRouteHintMode.Auto
+         && await HasReachablePublicChannelAsync(amount, cancellationToken) is { } publicChannel)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("No route hints: our announced channel {ShortChannelId} can receive {Amount}",
+                                 publicChannel.ShortChannelId,
+                                 amount is null ? "payments" : $"{amount.MilliSatoshi} msat");
+            return [];
+        }
 
         var candidates = new List<(ulong Spendable, RoutingInfo Hint)>();
         foreach (var channel in _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open))
@@ -201,6 +225,29 @@ public sealed class InvoiceService : IInvoiceService
                          .Take(MaxRouteHints)
                          .Select(c => new RoutingInfoCollection { c.Hint })
                          .ToList();
+    }
+
+    /// <summary>
+    /// One of our announced channels that is <c>Open</c>, has its link up and whose peer can send us
+    /// <paramref name="amount"/> (any amount when null); null when there is none.
+    /// </summary>
+    private async Task<ChannelModel?> HasReachablePublicChannelAsync(LightningMoney? amount,
+                                                                    CancellationToken cancellationToken)
+    {
+        var needed = amount?.MilliSatoshi ?? 1;
+        foreach (var channel in _channelMemoryRepository!.FindChannels(c => c.State == ChannelState.Open))
+        {
+            if (!ChannelAnnouncementService.IsAnnounced(channel) || GetPeerSpendable(channel) < needed)
+                continue;
+
+            if (_peerLivenessProbe is not null
+             && !await _peerLivenessProbe.IsAliveAsync(channel.ChannelId, channel.RemoteNodeId, cancellationToken))
+                continue;
+
+            return channel;
+        }
+
+        return null;
     }
 
     /// <summary>
