@@ -2,7 +2,6 @@ using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
 using NBitcoin;
-using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
 
 namespace NLightning.Integration.Tests.Docker.Onchain;
@@ -88,11 +87,9 @@ public class OnchainO6Tests : IAsyncLifetime
         await WaitInMempoolAsync(sweepTxId, ct);
         var sweepBlockHeight = await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
         var sweepBlock = await _fixture.Bitcoin.GetBlockHashAsync((int)sweepBlockHeight, ct);
-        await Poll.UntilAsync(async () => await GetRowAsync(node, channel.ChannelId, commitmentTxId,
-                                                            toLocal.OutputIndex) is
-                                          { State: OutputResolutionState.Resolved } row
-                                       && row.ResolvedHeight == sweepBlockHeight, s_timeout,
-                              "to_local resolved by our sweep", ct);
+        await Poll.UntilAsync(() => IsResolvedAtAsync(node, channel.ChannelId, commitmentTxId, toLocal.OutputIndex,
+                                                      sweepBlockHeight), s_timeout, "to_local resolved by our sweep",
+                              ct);
         Assert.Equal(BroadcastState.Confirmed, (await GetBroadcastAsync(node, sweepTxId)).State);
 
         // Act: the sweep's block is invalidated, bitcoind forgets the sweep, a competing empty block wins
@@ -105,11 +102,12 @@ public class OnchainO6Tests : IAsyncLifetime
         await ChainSync.WaitAllAtTipAsync(_fixture, [david], [node], ct);
 
         // Assert: rolled back and sent again by us (bitcoind had forgotten it); the channel still resolving
-        await Poll.UntilAsync(async () => (await GetBroadcastAsync(node, sweepTxId)).State == BroadcastState.Pending
-                                       && await GetRowAsync(node, channel.ChannelId, commitmentTxId,
-                                                            toLocal.OutputIndex) is
-                                          { State: OutputResolutionState.Broadcast, ResolvedHeight: null },
-                              s_timeout, "the sweep's confirmation and the output's resolution rolled back", ct);
+        await Poll.UntilAsync(async () =>
+        {
+            var row = await GetRowAsync(node, channel.ChannelId, commitmentTxId, toLocal.OutputIndex);
+            return (await GetBroadcastAsync(node, sweepTxId)).State == BroadcastState.Pending
+                && row?.State == OutputResolutionState.Broadcast && row.ResolvedHeight is null;
+        }, s_timeout, "the sweep's confirmation and the output's resolution rolled back", ct);
         await WaitInMempoolAsync(sweepTxId, ct);
         Assert.Equal(ChannelState.OnchainResolving, (await node.GetChannelAsync(channel.ChannelId, ct)).State);
 
@@ -117,10 +115,8 @@ public class OnchainO6Tests : IAsyncLifetime
         var reconfirmedAt = await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
 
         // Assert: confirmed again, one block higher, and the output resolved from that block
-        await Poll.UntilAsync(async () => await GetRowAsync(node, channel.ChannelId, commitmentTxId,
-                                                            toLocal.OutputIndex) is
-                                          { State: OutputResolutionState.Resolved } row
-                                       && row.ResolvedHeight == reconfirmedAt, s_timeout,
+        await Poll.UntilAsync(() => IsResolvedAtAsync(node, channel.ChannelId, commitmentTxId, toLocal.OutputIndex,
+                                                      reconfirmedAt), s_timeout,
                               "to_local resolved again from the new block", ct);
         var broadcast = await GetBroadcastAsync(node, sweepTxId);
         Assert.Equal(BroadcastState.Confirmed, broadcast.State);
@@ -246,10 +242,8 @@ public class OnchainO6Tests : IAsyncLifetime
         // Assert: the last replacement confirmed and resolved to_remote; the wallet gained its output
         var final = await _fixture.Bitcoin.GetRawTransactionInfoAsync(new uint256((byte[])sweeps[^1]), ct);
         Assert.True(final.Confirmations > 0);
-        await Poll.UntilAsync(async () => await GetRowAsync(node, channel.ChannelId, commitmentTxId,
-                                                            toRemote.OutputIndex) is
-                                          { State: OutputResolutionState.Resolved } row
-                                       && row.ResolvedHeight == minedAt, s_timeout,
+        await Poll.UntilAsync(() => IsResolvedAtAsync(node, channel.ChannelId, commitmentTxId, toRemote.OutputIndex,
+                                                      minedAt), s_timeout,
                               "to_remote resolved by the last replacement", ct);
         var gained = final.Transaction.Outputs.Sum(o => o.Value.Satoshi);
         await Poll.UntilAsync(() => Task.FromResult((WalletBalance(node) - walletBefore).Satoshi == gained),
@@ -341,9 +335,8 @@ public class OnchainO6Tests : IAsyncLifetime
         Assert.NotNull(outcome.CommitmentTxId);
         await WaitInMempoolAsync(outcome.CommitmentTxId.Value, ct);
         var height = await ChainSync.MineAndWaitAsync(_fixture, 1, [peer], [node], ct);
-        await Poll.UntilAsync(async () => await GetCloseAsync(node, channel.ChannelId) is
-                                          { Kind: ChannelCloseKind.LocalCommitment } close
-                                       && close.CommitmentTransactionId == outcome.CommitmentTxId.Value, s_timeout,
+        await Poll.UntilAsync(() => IsClosedByAsync(node, channel.ChannelId, ChannelCloseKind.LocalCommitment,
+                                                    outcome.CommitmentTxId.Value), s_timeout,
                               "the funding spend classified as our local commitment", ct);
         return (outcome.CommitmentTxId.Value, height);
     }
@@ -373,10 +366,8 @@ public class OnchainO6Tests : IAsyncLifetime
         var commitment = new TxId(pending.Txid.ToByteArray());
         await WaitInMempoolAsync(commitment, ct);
         await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [node], ct);
-        await Poll.UntilAsync(async () => await GetCloseAsync(node, channel.ChannelId) is
-                                          { Kind: ChannelCloseKind.RemoteCommitment } close
-                                       && close.CommitmentTransactionId == commitment, s_timeout,
-                              "david's commitment classified", ct);
+        await Poll.UntilAsync(() => IsClosedByAsync(node, channel.ChannelId, ChannelCloseKind.RemoteCommitment,
+                                                    commitment), s_timeout, "david's commitment classified", ct);
         return commitment;
     }
 
@@ -472,11 +463,20 @@ public class OnchainO6Tests : IAsyncLifetime
                                                                   TxId txId, uint vout) =>
         (await GetRowsAsync(node, channelId)).FirstOrDefault(r => r.TransactionId == txId && r.OutputIndex == vout);
 
-    private static async Task<ChannelCloseModel?> GetCloseAsync(NLightningTestNode node, ChannelId channelId)
+    private static async Task<bool> IsResolvedAtAsync(NLightningTestNode node, ChannelId channelId, TxId txId,
+                                                      uint vout, uint height)
+    {
+        var row = await GetRowAsync(node, channelId, txId, vout);
+        return row is { State: OutputResolutionState.Resolved } && row.ResolvedHeight == height;
+    }
+
+    private static async Task<bool> IsClosedByAsync(NLightningTestNode node, ChannelId channelId,
+                                                    ChannelCloseKind kind, TxId commitmentTxId)
     {
         using var scope = node.Services.CreateScope();
-        return await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().OnchainResolutionDbRepository
-                          .GetCloseAsync(channelId);
+        var close = await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().OnchainResolutionDbRepository
+                               .GetCloseAsync(channelId);
+        return close is not null && close.Kind == kind && close.CommitmentTransactionId == commitmentTxId;
     }
 
     private static async Task<BroadcastTransactionModel> GetBroadcastAsync(NLightningTestNode node, TxId txId)
