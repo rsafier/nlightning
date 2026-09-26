@@ -9,13 +9,26 @@ using Domain.Protocol.ValueObjects;
 /// <summary>
 /// Collects the <c>reply_channel_range</c> messages answering one of our <c>query_channel_range</c>s and checks them
 /// against BOLT 7 (B7-Q-04, plan G3-T2): the chain is ours; the first reply has <c>first_blocknum</c> &lt;= the
-/// query's and ends after it; each later reply has a <c>first_blocknum</c> no lower than the previous one; the reply
-/// with <c>sync_complete</c> = 1 reaches the query's end; <c>encoded_short_ids</c> and the TLVs decode (encoding 0).
-/// A violation is a <see cref="WarningException"/>: the sync with that peer ends with a <c>warning</c>.
+/// query's and ends after it; each later reply has a <c>first_blocknum</c> no lower than the previous one, or starts
+/// where the previous one ended (see below); the reply with <c>sync_complete</c> = 1 reaches the query's end;
+/// <c>encoded_short_ids</c> and the TLVs decode (encoding 0). A violation is a <see cref="WarningException"/>: the
+/// sync with that peer ends with a <c>warning</c>.
 /// </summary>
 /// <remarks>
-/// Short channel ids outside the blocks their reply claims to cover, or outside the query, are dropped (not a
-/// violation: BOLT 7 has no rule for them, and we never ask for what we did not query).
+/// <para>
+/// Core Lightning (seen on mainnet, 2026-09) answers with replies whose short channel ids are not in ascending order
+/// and whose <c>number_of_blocks</c> is the 32-bit difference between the last and the first one's block, so it wraps
+/// (e.g. <c>918664 + 4294956303</c>): the next reply then starts at the wrapped end (907671), below the previous
+/// <c>first_blocknum</c>. LND accepts that because it checks continuity in 32-bit arithmetic (a reply must start at
+/// the previous reply's last block or the one after); we accept the same continuation (a later reply whose
+/// <c>first_blocknum</c> is the previous reply's wrapped end or the block before it), so a CLN peer can be synced
+/// from (NL-400). Only a reply with <c>sync_complete</c> = 1 can end the sync, and it must reach the query's end.
+/// </para>
+/// <para>
+/// Short channel ids outside the query are dropped; ids outside the blocks their own reply claims to cover are kept
+/// (not a violation: BOLT 7 has no rule for them, the CLN replies above carry them, and every id we then ask for is
+/// validated like any other gossip).
+/// </para>
 /// </remarks>
 internal sealed class RangeReplyCollector
 {
@@ -24,6 +37,7 @@ internal sealed class RangeReplyCollector
     private readonly ulong _queryEnd;
     private readonly Dictionary<ShortChannelId, ChannelUpdatePair?> _entries = [];
     private uint? _previousFirst;
+    private uint _previousWrappedEnd;
 
     /// <param name="chainHash">Our chain (the query's).</param>
     /// <param name="queryFirst">The query's <c>first_blocknum</c>.</param>
@@ -71,10 +85,12 @@ internal sealed class RangeReplyCollector
                     $"reply_channel_range: the first reply ({first}+{payload.NumberOfBlocks}) does not start the "
                   + $"queried range at {_queryFirst}");
         }
-        else if (first < _previousFirst.Value)
+        else if (first < _previousFirst.Value && first != _previousWrappedEnd
+                                                 && first != unchecked(_previousWrappedEnd - 1))
         {
             throw new WarningException(
-                $"reply_channel_range: first_blocknum {first} is lower than the previous reply's {_previousFirst}");
+                $"reply_channel_range: first_blocknum {first} is lower than the previous reply's {_previousFirst} "
+              + $"and does not continue it (previous end {_previousWrappedEnd})");
         }
 
         var shortChannelIds = GossipQueryCodec.DecodeShortChannelIds(payload.EncodedShortIds.Span,
@@ -92,13 +108,14 @@ internal sealed class RangeReplyCollector
         for (var i = 0; i < shortChannelIds.Length; i++)
         {
             var height = shortChannelIds[i].BlockHeight;
-            if (height < first || height >= end || height < _queryFirst || height >= _queryEnd)
+            if (height < _queryFirst || height >= _queryEnd)
                 continue;
 
             _entries[shortChannelIds[i]] = timestamps?[i];
         }
 
         _previousFirst = first;
+        _previousWrappedEnd = unchecked(first + payload.NumberOfBlocks);
         ReplyCount++;
         IsComplete = payload.SyncComplete;
     }
