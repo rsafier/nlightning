@@ -43,6 +43,11 @@ maintainers.
 Before submitting a pull request, you MUST execute `dotnet format` to ensure code style consistency. If you fail to run
 this command, the CI pipeline will fail, and your pull request will not be merged.
 
+CI builds, formats and tests with SDK 11 (so every project is built and tested for both net10.0 and net11.0), while
+the Wasm jobs use SDK 10. SDK 11's analyzers ask for a few more style fixes than SDK 10's (for example IDE0031,
+`handler?.Event += h`), so if you only have SDK 10, CI may still report formatting issues; the fixes are valid C# 14
+and build on both SDKs. Code must build for both frameworks: when an API differs, use `#if NET11_0_OR_GREATER`.
+
 ### Setting up pre-commit hook
 
 To automatically format code before every commit, run the following command in your project directory:
