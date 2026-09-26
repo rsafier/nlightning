@@ -489,8 +489,7 @@ public sealed record ChannelCommitments
     {
         ArgumentNullException.ThrowIfNull(sha256);
         Span<byte> hash = stackalloc byte[CryptoConstants.Sha256HashLen];
-        sha256.AppendData(preimage);
-        sha256.GetHashAndReset(hash);
+        sha256.ComputeHash(preimage, hash);
         return hash.SequenceEqual(paymentHash);
     }
 
