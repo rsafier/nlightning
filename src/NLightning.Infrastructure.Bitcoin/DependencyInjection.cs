@@ -8,6 +8,7 @@ using Builders;
 using Builders.Interfaces;
 using Crypto.Functions;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.Interfaces;
 using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
@@ -74,6 +75,9 @@ public static class DependencyInjection
                                             secureKeyManager, utxoMemoryRepository,
                                             sp.GetService<IChannelSigningInfoSource>());
         });
+
+        // Fee inputs for CPFP and anchor HTLC transactions (BOLT 5 plan O7-T1)
+        services.AddSingleton<IFeeInputSelector, FeeInputSelector>();
 
         // Register Scoped Services
         services.AddScoped<IBitcoinWalletService, BitcoinWalletService>();
