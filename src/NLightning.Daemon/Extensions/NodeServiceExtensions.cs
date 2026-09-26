@@ -10,6 +10,7 @@ namespace NLightning.Daemon.Extensions;
 using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
+using Application.Gossip.Graph;
 using Application.Onchain;
 using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
@@ -246,6 +247,22 @@ public static class NodeServiceExtensions
 
         // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));
+
+        // BOLT 7 graph: ingress, store and write-behind (G2-T4). Gossip:Enabled unset means on everywhere but
+        // mainnet (plan D12); the peer services hand graph gossip to the ingress and ask gossip peers for their graph
+        services.AddGossipGraphServices();
+        services.AddOptions<GossipGraphOptions>()
+                .BindConfiguration(GossipGraphOptions.SectionName)
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipGraphOptions.SectionName,
+                                                              typeof(GossipGraphOptions), errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>
