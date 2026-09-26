@@ -91,8 +91,10 @@ using Resolvers.Local;
 /// increment, up to the cap. Without <c>submitpackage</c> (older node, or no chain service) this is logged once and the
 /// pair is only sent one by one.</para>
 /// <para>The peer's commitment (NL-381): see <c>AnchorCpfpService.Peer.cs</c>.</para>
-/// <para>Not covered: a commitment that alone pays the estimate but not the mempool minimum gets no child, so it is
-/// not packaged either.</para>
+/// <para>Mempool minimum: the estimate a child targets is raised to bitcoind's current mempool minimum
+/// (<see cref="IBitcoinChainService.GetMempoolMinFeeRatePerKwAsync"/>), so a commitment that pays the estimate but not
+/// that minimum gets a child and is packaged too, and a replacement after a fee refusal targets at least what the
+/// mempool takes (plus the BIP 125 increment).</para>
 /// </remarks>
 public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 {
@@ -121,11 +123,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     private readonly Dictionary<TxId, uint> _anchorSpentSeenAtTip = [];
     private readonly ConcurrentDictionary<ChannelId, PeerCommitmentSeen> _peerCommitments = new();
     private readonly Dictionary<TxId, (uint Height, int Count)> _peerCommitmentMissing = [];
+    private readonly ConcurrentDictionary<ChannelId, byte> _peerChildChannels = new();
 
     private CancellationTokenSource _stopping = new();
     private int _started;
     private int _pendingHeight = -1;
     private int _roundRunning;
+    private int _peerChildChannelsLoaded;
     private int _scheduledRounds;
 
     public AnchorCpfpService(IBlockchainMonitor blockchainMonitor, IAnchorChildTransactionBuilder builder,
@@ -251,6 +255,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         await _roundLock.WaitAsync(cancellationToken);
         try
         {
+            await LoadPersistedPeerChildChannelsAsync();
             foreach (var channel in _channelMemoryRepository.FindChannels(IsRoundChannel))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -271,14 +276,56 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
     }
 
     /// <summary>
-    /// An anchor channel that is failed or resolving on chain, or whose peer commitment was seen in the mempool (the
-    /// channel may still be <c>Open</c> then: the peer force-closed).
+    /// An anchor channel that is failed or resolving on chain, or whose peer commitment was seen in the mempool or has
+    /// a pending child of ours (the channel may still be <c>Open</c> then: the peer force-closed).
     /// </summary>
     private bool IsRoundChannel(ChannelModel channel) =>
         channel.ChannelParams.OptionAnchorOutputs
      && (channel.State is ChannelState.Failed or ChannelState.OnchainResolving
-      || (_peerCommitments.ContainsKey(channel.ChannelId)
+      || ((_peerCommitments.ContainsKey(channel.ChannelId) || _peerChildChannels.ContainsKey(channel.ChannelId))
        && channel.State is not (ChannelState.Closed or ChannelState.Stale)));
+
+    /// <summary>
+    /// Once per process (retried at the next round when the database cannot be read): the channels with a pending
+    /// child of the peer's commitment (its anchor input spends no <c>LocalCommitment</c> row of the channel). The
+    /// mempool reactor's hand-over is memory only and the monitor does not report a mempool transaction again after a
+    /// restart, so without this an <c>Open</c> channel whose peer force-closed would get no RBF, no abandonment and no
+    /// release until something else fails it.
+    /// </summary>
+    private async Task LoadPersistedPeerChildChannelsAsync()
+    {
+        if (Volatile.Read(ref _peerChildChannelsLoaded) != 0)
+            return;
+
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().BroadcastTransactionDbRepository;
+            var channelIds = (await repository.GetPendingAsync())
+                            .Where(b => b.Purpose == BroadcastPurpose.AnchorCpfp)
+                            .Select(b => b.ChannelId)
+                            .OfType<ChannelId>()
+                            .Distinct()
+                            .ToList();
+            foreach (var channelId in channelIds)
+            {
+                var rows = await repository.GetByChannelIdAsync(channelId);
+                var localTxIds = rows.Where(b => b.Purpose == BroadcastPurpose.LocalCommitment)
+                                     .Select(b => b.TransactionId)
+                                     .ToHashSet();
+                if (rows.Any(b => b is { Purpose: BroadcastPurpose.AnchorCpfp, State: BroadcastState.Pending }
+                               && ParentOf(b) is { } parent && !localTxIds.Contains(parent)))
+                    _peerChildChannels.TryAdd(channelId, 0);
+            }
+
+            Volatile.Write(ref _peerChildChannelsLoaded, 1);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            LogOnce("peer-children:load", e, "Cannot read the pending anchor children of the peers' commitments; "
+                                            + "retried at the next block");
+        }
+    }
 
     /// <summary>One channel's round; never throws but for cancellation.</summary>
     private async Task RunChannelAsync(ChannelModel channel, uint height, CancellationToken cancellationToken)
@@ -326,6 +373,13 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var local = await RunLocalLockedAsync(channel, unitOfWork, broadcasts, localChildren,
                                               peerChildren.Any(c => c.State == BroadcastState.Pending), height,
                                               result, cancellationToken);
+
+        // A peer child keeps an Open channel in the rounds (also after a restart) until none can confirm any more
+        if (peer == PathState.Active
+         && (result.PeerChild is not null || peerChildren.Any(c => c.State == BroadcastState.Pending)))
+            _peerChildChannels.TryAdd(channel.ChannelId, 0);
+        else if (peer != PathState.Active)
+            _peerChildChannels.TryRemove(channel.ChannelId, out _);
 
         // The wallet inputs are shared by every child of the channel: they go back only when no child of either
         // commitment can confirm any more (once per process: also a reservation a crash left without its child row)
@@ -694,6 +748,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
         var target = _policy.GetConfirmationTarget(height, deadline);
         var estimate = await FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
+        estimate = await FloorAtMempoolMinimumAsync(estimate);
         var cap = _policy.GetFeeCap(stakeSat, deadline is not null);
         var anchor = new AnchorOutpoint(parent.TxId, anchorVout, fundingPubKey);
 
@@ -753,6 +808,29 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         var row = new BroadcastTransactionModel(signed.Value.Transaction, BroadcastPurpose.AnchorCpfp, channelId,
                                                 height, signed.Value.FeeratePerKw, latest.TransactionId);
         return new PlannedChild(row, latest.TransactionId, false);
+    }
+
+    /// <summary>
+    /// The estimate raised to bitcoind's current mempool minimum: a commitment that pays the estimate but not
+    /// that minimum is refused alone, so it needs a child (and a package) all the same, and a replacement after a fee
+    /// refusal targets at least what the mempool takes. The estimate unchanged when bitcoind cannot tell.
+    /// </summary>
+    private async Task<uint> FloorAtMempoolMinimumAsync(uint estimate)
+    {
+        if (_chainService is null)
+            return estimate;
+
+        uint? minimum;
+        try
+        {
+            minimum = await _chainService.GetMempoolMinFeeRatePerKwAsync();
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            return estimate;
+        }
+
+        return minimum is { } floor && floor > estimate ? floor : estimate;
     }
 
     private async Task<PlannedChild?> PlanFirstChildAsync(ChannelModel channel, AnchorOutpoint anchor,

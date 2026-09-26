@@ -95,7 +95,11 @@ public sealed partial class AnchorCpfpService
             else
                 _peerCommitments.TryRemove(channelId, out _);
 
-            return children.Count > 0 ? PathState.Done : PathState.None;
+            // The funding output is spent on chain, so no new child is made: a reservation without a child row (a
+            // crash between the reservation's save and the child's) goes back too
+            return children.Count > 0 || await HoldsUnreleasedReservationAsync(channelId, cancellationToken)
+                       ? PathState.Done
+                       : PathState.None;
         }
 
         var found = await FindPeerCommitmentInMempoolAsync(channel, pendingChildren);
@@ -147,6 +151,22 @@ public sealed partial class AnchorCpfpService
                          + "its anchor children {TxIds} are abandoned", channelId,
                            string.Join(", ", pendingChildren.Select(c => Display(c.TransactionId))));
         return PathState.Done;
+    }
+
+    /// <summary>
+    /// True when the fee-input source holds inputs for the channel that this process has not released yet (checked
+    /// once released: never again).
+    /// </summary>
+    private async Task<bool> HoldsUnreleasedReservationAsync(ChannelId channelId, CancellationToken cancellationToken)
+    {
+        if (_feeInputSource is null)
+            return false;
+
+        lock (_released)
+            if (_released.Contains(channelId))
+                return false;
+
+        return (await _feeInputSource.GetReservedAsync(channelId, cancellationToken)).Count > 0;
     }
 
     /// <summary>
