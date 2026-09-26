@@ -68,12 +68,45 @@ public class AttributionHandlerTests
     }
 
     [Fact]
-    public async Task Given_FulfillmentPayloadAbove32KiB_When_Handled_Then_TheChannelFailsAndNothingIsPersisted()
+    public async Task Given_FulfillmentPayloadAbove32KiBWithAValidPreimage_When_Handled_Then_ThePreimageIsKeptAndTheChannelFails()
     {
-        // Arrange - BOLT 2: "MUST send an error and fail the channel" (NL-325)
+        // Arrange - BOLT 2: "MUST send an error and fail the channel" (NL-325); the preimage must still be kept and
+        // reach the switch, or a forwarded HTLC the downstream peer claims on chain cannot be fulfilled upstream
         var htlc = _context.LockIn(HtlcDirection.Outgoing, 50_000_000, SecretOf(1));
         var handler = CreateFulfillHandler();
+        var attribution = Bytes(OnionConstants.AttributionDataLength, 0xA7);
         var message = new UpdateFulfillHtlcMessage(new UpdateFulfillHtlcPayload(TestChannelId, htlc.Id, SecretOf(1)),
+                                                   new AttributionDataTlv(attribution),
+                                                   new FulfillmentPayloadTlv(
+                                                       new byte[OnionConstants.MaxFulfillmentPayloadLength + 1]));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelFailedException>(
+                            () => handler.HandleAsync(message, ChannelState.Open, new FeatureOptions(), PeerNodeId));
+
+        // Assert: the channel fails, after one save that kept the preimage (without the oversized payload)
+        Assert.Equal(TestChannelId, exception.ChannelId);
+        Assert.Contains("32768", exception.PeerMessage);
+        Assert.Equal(["apply", "save"], _context.Calls);
+        Assert.Equal(SecretOf(1), _context.State.GetHtlc(HtlcDirection.Outgoing, htlc.Id)!.KnownPreimage);
+        var (_, transition, _) = Assert.Single(_context.Applied);
+        var removal = Assert.Single(transition.UpsertedHtlcs).Removal!;
+        Assert.Equal(HtlcRemovalKind.Fulfill, removal.Kind);
+        Assert.True(removal.FulfillmentPayload.IsEmpty);
+        Assert.Equal(attribution, removal.AttributionData.ToArray());
+        // and the switch gets the fulfill (ChannelManager drains the queue even after the handler threw)
+        var fulfilled = Assert.IsType<OutgoingHtlcFulfilled>(Assert.Single(_context.Events.Drain()));
+        Assert.Equal(SecretOf(1), fulfilled.PaymentPreimage);
+        Assert.True(fulfilled.FulfillmentPayload.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Given_FulfillmentPayloadAbove32KiBWithAWrongPreimage_When_Handled_Then_TheChannelFailsAndNothingIsPersisted()
+    {
+        // Arrange
+        var htlc = _context.LockIn(HtlcDirection.Outgoing, 50_000_000, SecretOf(1));
+        var handler = CreateFulfillHandler();
+        var message = new UpdateFulfillHtlcMessage(new UpdateFulfillHtlcPayload(TestChannelId, htlc.Id, SecretOf(2)),
                                                    null,
                                                    new FulfillmentPayloadTlv(
                                                        new byte[OnionConstants.MaxFulfillmentPayloadLength + 1]));
@@ -83,10 +116,10 @@ public class AttributionHandlerTests
                             () => handler.HandleAsync(message, ChannelState.Open, new FeatureOptions(), PeerNodeId));
 
         // Assert
-        Assert.Equal(TestChannelId, exception.ChannelId);
         Assert.Contains("32768", exception.PeerMessage);
         Assert.Empty(_context.Calls);
         Assert.Null(_context.State.GetHtlc(HtlcDirection.Outgoing, htlc.Id)!.KnownPreimage);
+        Assert.Empty(_context.Events.Drain());
     }
 
     [Fact]
