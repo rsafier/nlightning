@@ -24,6 +24,9 @@ public sealed record HtlcRemoval(
     public static HtlcRemoval FailMalformed(ushort failureCode, ReadOnlyMemory<byte> sha256OfOnion) =>
         new(HtlcRemovalKind.FailMalformed, FailureCode: failureCode, Sha256OfOnion: sha256OfOnion);
 
+    /// <summary>An HTLC we offered that was settled on chain without a preimage (BOLT 5 plan O3-T4).</summary>
+    public static HtlcRemoval OnchainTimeout() => new(HtlcRemovalKind.OnchainTimeout);
+
     /// <summary>True for a fulfill: the amount goes to the receiver of the HTLC.</summary>
     public bool IsFulfill => Kind == HtlcRemovalKind.Fulfill;
 }

@@ -414,6 +414,15 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                                 + $"({malformed}, 0x{removal.FailureCode:X4}).");
         }
 
+        if (removal.Kind == HtlcRemovalKind.OnchainTimeout)
+        {
+            // BOLT 5 plan O3-T4: our HTLC was timed out on chain (the channel to our peer was force closed); no hop
+            // sent an error, we are the erring node
+            return (FailureCode.PermanentChannelFailure, null,
+                    $"The channel to our peer {DescribeHop(payment, 0)} was closed on chain and the HTLC timed out "
+                  + "there (permanent_channel_failure); not retried.");
+        }
+
         if (payment.Route.Count == 0)
             return (null, null, "The HTLC failed and the route's shared secrets were not recorded; the error onion "
                               + "cannot be read.");
