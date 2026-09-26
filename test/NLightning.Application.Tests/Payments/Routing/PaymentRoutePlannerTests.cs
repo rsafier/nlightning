@@ -6,6 +6,7 @@ using Application.Payments.Routing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Models;
+using Domain.Money;
 using Domain.Node.Options;
 
 /// <summary>
@@ -260,6 +261,56 @@ public class PaymentRoutePlannerTests
         // Assert: one part fits neither alone through the bounded channel, so the second hint carries it
         Assert.True(planned);
         Assert.Equal(s_scidCd2, Assert.Single(parts!).Route.Hops[0].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_APartInFlightOverABoundedHintChannel_When_PlanningTheRest_Then_TheBoundCountsIt()
+    {
+        // Arrange: Carol could not forward 600,000 msat over the hint channel; a part of 400,000 msat is still in
+        // flight over it, so another 300,000 msat would bring it to the bound again
+        _liquidity[s_toCarol1.ChannelId] = 2_000_000;
+        _constraints.BoundChannelLiquidity(s_scidCd, 600_000);
+        var target = Target(true, [CarolHint()], [CarolHint(s_scidCd2)]);
+        var inFlight = HintRouteBuilder.BuildAlong([CarolHint()], target,
+                                                   LightningMoney.MilliSatoshis(400_000),
+                                                   Height + FinalDelta + HintRouteBuilder.FinalCltvSafetyOffset,
+                                                   LightningMoney.MilliSatoshis(700_000));
+        var request = new PaymentPlanRequest(target, 300_000, 700_000, 10_000, 16, Height, s_us, [s_toCarol1],
+                                             Sendable, _constraints, MinPart,
+                                             PaymentRoutePlanner.SumHintForwards([inFlight]));
+
+        // Act
+        var planned = Planner().TryPlan(request, out var parts, out var reason);
+        var plannedAlone = Planner().TryPlan(request with { HintForwardsInFlightMsat = null }, out var partsAlone,
+                                             out _);
+
+        // Assert: with the part in flight counted, the rest goes over the second hint; without it, over the first
+        Assert.True(planned, reason);
+        Assert.Equal(s_scidCd2, Assert.Single(parts!).Route.Hops[0].OutgoingShortChannelId);
+        Assert.True(plannedAlone);
+        Assert.Equal(s_scidCd, Assert.Single(partsAlone!).Route.Hops[0].OutgoingShortChannelId);
+    }
+
+    [Fact]
+    public void Given_APartInFlightOverABoundedHintChannel_When_OnlyThatChannelIsLeft_Then_NoPlan()
+    {
+        // Arrange
+        _liquidity[s_toCarol1.ChannelId] = 2_000_000;
+        _constraints.BoundChannelLiquidity(s_scidCd, 600_000);
+        var target = Target(true, [CarolHint()]);
+        var inFlight = PaymentRoutePlanner.SumHintForwards(
+            [HintRouteBuilder.BuildAlong([CarolHint()], target, LightningMoney.MilliSatoshis(400_000),
+                                         Height + FinalDelta + HintRouteBuilder.FinalCltvSafetyOffset)]);
+        var request = new PaymentPlanRequest(target, 300_000, 700_000, 10_000, 16, Height, s_us, [s_toCarol1],
+                                             Sendable, _constraints, MinPart, inFlight);
+
+        // Act
+        var planned = Planner().TryPlan(request, out _, out var reason);
+
+        // Assert: neither one part nor a split fits beside the 400,000 msat in flight
+        Assert.Equal(400_000UL, inFlight[s_scidCd]);
+        Assert.False(planned);
+        Assert.Contains($"channel {s_scidCd} could not forward 600000 msat", reason);
     }
 
     [Fact]

@@ -61,8 +61,10 @@ using Routing;
 ///   </item>
 ///   <item><c>IChannelOperations.OfferHtlcAsync</c> with <c>HtlcOrigin.Local(hash)</c> for each part; the row's HTLC
 ///   id is recorded in the next save. An offer the engine refuses (<see cref="CommitmentRefusedException"/>) bounds
-///   that channel below the refused amount and the round plans again; any other exception stops the payment unless
-///   channel memory shows the HTLC was added after all.</item>
+///   that channel below the refused amount when a smaller HTLC may pass the broken rule (balance, reserve, fees,
+///   in-flight value, dust exposure), else the channel is not used again by this payment (link down, HTLCs disabled,
+///   channel failed or shutting down, data loss, HTLC count), and the round plans again; any other exception stops
+///   the payment unless channel memory shows the HTLC was added after all.</item>
 ///   <item>Wait for the outcome until the timeout or the cancellation; return the stored payment.</item>
 /// </list>
 /// <para>Outcome while the call's session lives: a fulfill whose preimage hashes to the payment hash succeeds the
@@ -78,7 +80,11 @@ using Routing;
 /// before a retry round replaces it (<c>AddAsync</c> over a failed row), so a crash never leaves it <c>InFlight</c>
 /// without an HTLC. Parts added while others are in flight are not persisted (their HTLCs carry
 /// <c>HtlcOrigin.Local(hash)</c>, so their outcomes still reach the payment after a restart, but their errors can then
-/// no longer be decrypted); the row's fee is the fee of the round that created it.</para>
+/// no longer be decrypted). The row always records a part that was offered: when the recorded part is refused by the
+/// engine or fails while other parts are in flight, the row is rewritten to one of those (route, shared secrets, HTLC
+/// id, the fees in flight). On success the row holds the fulfilled part's route and HTLC and, as its fee, the fees of
+/// the parts in flight at the fulfill (the ones the payee settles; failed parts cost nothing). The route and fee
+/// change only by replacing the row (<c>AddAsync</c> over the row failed in the same save).</para>
 /// <para>Outcome without a session (after a restart, or a hash this process never paid): by the recorded
 /// (channel, HTLC id); when no id is recorded, the HTLC must not carry another origin
 /// (<c>IChannelStateDbRepository.GetHtlcOriginAsync</c>), its record in channel memory (when still there) must match
@@ -112,6 +118,14 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
     private readonly IOptions<PaymentSendOptions> _sendOptions;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
+
+    /// <summary>
+    /// The engine's sender rules (<c>UpdateValidator.ValidateSendAdd</c>) that a smaller HTLC on the same channel may
+    /// pass: our balance above the reserve and the commitment fees (B2-ADD-S01..S04), the peer's
+    /// <c>max_htlc_value_in_flight_msat</c> (B2-ADD-S09) and the dust exposure (B2-DUST-03/04).
+    /// </summary>
+    private static readonly HashSet<string> s_liquidityRules =
+        ["B2-ADD-S01", "B2-ADD-S02", "B2-ADD-S03", "B2-ADD-S04", "B2-ADD-S09", "B2-DUST-03", "B2-DUST-04"];
 
     private readonly Dictionary<Hash, HashLock> _hashLocks = [];
     private readonly Lock _hashLocksSync = new();
@@ -488,7 +502,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                                                  partsAllowed, height, _secureKeyManager.GetNodePubKey(),
                                                  channels.Select(ToCandidate).ToList(),
                                                  CreateLiquidityProbe(channels, height), session.Constraints,
-                                                 _sendOptions.Value.MinPartMsat);
+                                                 _sendOptions.Value.MinPartMsat,
+                                                 PaymentRoutePlanner.SumHintForwards(
+                                                     session.InFlightParts.Select(p => p.Route)));
             if (!_planner.TryPlan(request, out var planned, out var noRouteReason))
             {
                 if (session.HasPartsInFlight)
@@ -522,6 +538,9 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
                 if (await OfferPartAsync(session, part, packet) == OfferOutcome.Error)
                     break;
             }
+
+            // The engine refused the round's recorded part while others were offered: the row follows a live one
+            await MovePrimaryPartAsync(session);
 
             session.MaxPartsInFlight = Math.Max(session.MaxPartsInFlight, session.InFlightParts.Count());
             if (round.Count > 1 && _logger.IsEnabled(LogLevel.Information))
@@ -590,12 +609,14 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         }
         catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
         {
-            // Nothing was persisted or sent for the HTLC: plan without it
+            // Nothing was persisted or sent for the HTLC: plan without it. Only a refusal over the amount bounds the
+            // channel; any other (link down, HTLCs disabled, channel failed or shutting down, data loss, HTLC count)
+            // refuses every HTLC on it, so it is not tried again
             part.Status = PaymentPartStatus.Failed;
-            if (e is KeyNotFoundException)
-                session.Constraints.ExcludedLocalChannels.Add(channelId);
-            else
+            if (e is CommitmentRefusedException { RequirementId: var rule } && s_liquidityRules.Contains(rule))
                 session.Constraints.BoundLocalLiquidity(channelId, route.FirstHopAmount.MilliSatoshi);
+            else
+                session.Constraints.ExcludedLocalChannels.Add(channelId);
 
             session.LastFailure = (null, null, $"The HTLC could not be offered on channel {channelId}: {e.Message}");
             _logger.LogInformation("Payment {PaymentHash}: the HTLC of {Amount} msat on channel {ChannelId} was "
@@ -802,6 +823,59 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
     }
 
+    /// <summary>
+    /// When the part the row records is no longer in flight (the engine refused it, or it failed) while other offered
+    /// parts are, rewrites the row to one of those: its route and shared secrets, its HTLC, and the fees of the parts
+    /// in flight. A failed save is logged: the row then keeps the old part (its outcomes still reach the payment
+    /// through the session, or after a restart through the HTLCs' <c>Local</c> origin).
+    /// </summary>
+    private async Task MovePrimaryPartAsync(PaymentSession session)
+    {
+        if (session.PrimaryPart is { Status: PaymentPartStatus.InFlight, HtlcId: not null } || !session.RowCreated)
+            return;
+        if (session.InFlightParts.FirstOrDefault(p => p.HtlcId is not null) is not { } next)
+            return;
+
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
+            if (await repository.GetByPaymentHashAsync(session.PaymentHash) is not { Status: PaymentStatus.InFlight }
+                stored)
+                return;
+
+            var row = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId, stored.Amount,
+                                           LightningMoney.MilliSatoshis(session.FeesInFlightMsat), stored.CreatedAt,
+                                           PaymentStatus.InFlight, next.Channel.ChannelId, next.HtlcId!.Value, null,
+                                           null, null, null, null, next.Hops);
+            await StageReplacementAsync(repository, stored, row, "Superseded by another part in flight.");
+            await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
+            session.PrimaryPart = next;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not record HTLC {HtlcId} on channel {ChannelId} as the part of payment "
+                              + "{PaymentHash}", next.HtlcId, next.Channel.ChannelId, session.PaymentHash);
+        }
+    }
+
+    /// <summary>
+    /// Stages <paramref name="replacement"/> over the stored row (not saved): only a failed row can be replaced
+    /// (<see cref="IPaymentDbRepository.AddAsync"/>), so an in-flight one is marked failed first, in the same unit of
+    /// work (the save writes only the replacement). The route and fee of a row change only this way.
+    /// </summary>
+    private async Task StageReplacementAsync(IPaymentDbRepository repository, PaymentModel stored,
+                                             PaymentModel replacement, string reason)
+    {
+        if (stored.Status == PaymentStatus.InFlight)
+        {
+            stored.Fail(null, null, reason, _timeProvider.GetUtcNow());
+            await repository.UpdateAsync(stored);
+        }
+
+        await repository.AddAsync(replacement);
+    }
+
     private void CompleteSession(PaymentSession session)
     {
         _sessions.TryRemove(KeyValuePair.Create(session.PaymentHash, session));
@@ -834,18 +908,36 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         }
 
         var now = _timeProvider.GetUtcNow();
-        if (payment.Status == PaymentStatus.InFlight)
+        // The parts in flight are the ones the payee settles: the row's fee is theirs, and its route the fulfilled
+        // part's (the parts of earlier rounds that failed are not paid for)
+        var settledFee = LightningMoney.MilliSatoshis(session.FeesInFlightMsat);
+        if (part is { Status: PaymentPartStatus.InFlight }
+         && (settledFee != payment.Fee || !ReferenceEquals(part, session.PrimaryPart)
+                                       || payment.OutgoingHtlcId != part.HtlcId))
         {
-            if (payment.OutgoingHtlcId is null)
-                payment.AddOutgoingHtlc(fulfilled.ChannelId, fulfilled.HtlcId);
-            payment.Succeed(fulfilled.PaymentPreimage, now);
+            var succeeded = PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId,
+                                                 payment.Amount, settledFee, payment.CreatedAt,
+                                                 PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
+                                                 fulfilled.PaymentPreimage, null, null, null, now, part.Hops);
+            await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
+            payment = succeeded;
         }
         else
         {
-            payment = WithPreimage(payment, fulfilled, now);
+            if (payment.Status == PaymentStatus.InFlight)
+            {
+                if (payment.OutgoingHtlcId is null)
+                    payment.AddOutgoingHtlc(fulfilled.ChannelId, fulfilled.HtlcId);
+                payment.Succeed(fulfilled.PaymentPreimage, now);
+            }
+            else
+            {
+                payment = WithPreimage(payment, fulfilled, now);
+            }
+
+            await repository.UpdateAsync(payment);
         }
 
-        await repository.UpdateAsync(payment);
         await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
         part?.Status = PaymentPartStatus.Succeeded;
         LogSucceeded(payment);
@@ -876,6 +968,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
         if (session.HasPartsInFlight)
         {
+            // The row must not keep the route and HTLC of a part that is gone while others are live
+            await MovePrimaryPartAsync(session);
             if (retry)
                 ScheduleRound(session);
             return true;

@@ -303,6 +303,8 @@ public class PaymentRetryHarnessTests
         var amount = LightningMoney.Satoshis(700_000);
         var invoice = await harness.David.CreateMppInvoiceAsync(
                           amount, [new RoutingInfo(harness.Carol.NodeId, PaymentHarness.ScidCarolDavid, 2_000, 500, 40)]);
+        var before = harness.Bob.Channel(harness.BobCarol).LocalBalance.MilliSatoshi
+                   + harness.Bob.Channel(harness.BobCarol2).LocalBalance.MilliSatoshi;
         var field = CarolUpdateField(harness, 3_000, 1_000);
         var refused = 0;
         harness.Carol.Switch.ForwardInterceptor = (htlc, _) =>
@@ -324,7 +326,71 @@ public class PaymentRetryHarnessTests
         Assert.Equal(result.Attempts - 1, received.Length);
         Assert.All(received, r => Assert.Equal(amount.MilliSatoshi, r.TotalMsat));
         Assert.Equal(amount.MilliSatoshi, received.Aggregate(0UL, (sum, r) => sum + r.AmountMsat));
+
+        // The stored fee is what the settled parts paid Carol (the refused part's old fee is not counted, the re-sent
+        // part's new fee is), and the row records a settled part's route and HTLC
+        var spent = before - harness.Bob.Channel(harness.BobCarol).LocalBalance.MilliSatoshi
+                  - harness.Bob.Channel(harness.BobCarol2).LocalBalance.MilliSatoshi;
+        Assert.Equal(spent - amount.MilliSatoshi, result.Payment.Fee.MilliSatoshi);
+        Assert.Equal(amount + result.Payment.Fee, result.Payment.TotalAmount);
+        Assert.NotNull(result.Payment.OutgoingHtlcId);
+        Assert.Equal(harness.Bob.Channel(result.Payment.OutgoingChannelId!.Value).ShortChannelId,
+                     result.Payment.Route[0].ShortChannelId);
         AssertNoPendingHtlcs(harness);
+    }
+
+    [Fact]
+    public async Task Given_HtlcsDisabledOnBob_When_HePays_Then_EachChannelIsTriedOnceAndTheRefusalIsReported()
+    {
+        // Arrange: the engine's preconditions refuse every HTLC (B2-NO-02), whatever its amount
+        using var harness = Harness(new PaymentHarnessTopology(SecondBobCarol: true));
+        var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(100_000), []);
+        harness.Bob.Options.EnableHtlcs = false;
+
+        // Act
+        var result = await PayAsync(harness, invoice.Bolt11);
+
+        // Assert: one offer per channel, not a search down to smaller amounts or parts until the attempt budget is used
+        Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
+        Assert.Equal(2, result.Attempts);
+        Assert.Contains("HTLCs are disabled", result.Payment.FailureReason);
+        Assert.Contains("failed earlier", result.Payment.FailureReason);
+        Assert.Empty(harness.Carol.Switch.Received);
+    }
+
+    [Fact]
+    public async Task Given_TheRoundsFirstPartIsRefused_When_TheOtherIsOffered_Then_TheRowRecordsTheOfferedPart()
+    {
+        // Arrange: two Bob-Carol channels; a first payment over one of them leaves the other the fuller one, so the
+        // split of the second payment puts its first part there; that channel then lost data, so the engine refuses it
+        using var harness = Harness(new PaymentHarnessTopology(SecondBobCarol: true, BobCarolFundingSatoshis: 1_000_000,
+                                                               BobCarolPushSatoshis: 500_000));
+        var first = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(50_000), []);
+        Assert.Equal(PaymentStatus.Succeeded, (await PayAsync(harness, first.Bolt11)).Payment.Status);
+        var fuller = harness.Bob.Channel(harness.BobCarol).LocalBalance > harness.Bob.Channel(harness.BobCarol2)
+                                                                                 .LocalBalance
+                         ? harness.BobCarol
+                         : harness.BobCarol2;
+        var other = fuller == harness.BobCarol ? harness.BobCarol2 : harness.BobCarol;
+        harness.Bob.Channel(fuller).MarkDataLossDetected();
+        var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(700_000), []);
+
+        // Act: the part on the other channel is held by Carol (the rest cannot be sent), so the call times out
+        var result = await PayAsync(harness, invoice.Bolt11, new PayInvoiceOptions
+        {
+            Timeout = TimeSpan.FromSeconds(2)
+        });
+
+        // Assert: the row holds the offered part's HTLC, route and fee, not the refused part's
+        Assert.Equal(PaymentStatus.InFlight, result.Payment.Status);
+        Assert.Equal(2, result.Attempts);
+        Assert.Equal(other, result.Payment.OutgoingChannelId);
+        var htlc = Assert.Single(harness.Bob.Channel(other).Commitments!.Htlcs.Values);
+        Assert.Equal(htlc.Id, result.Payment.OutgoingHtlcId);
+        Assert.Equal(harness.Bob.Channel(other).ShortChannelId, result.Payment.Route[0].ShortChannelId);
+        Assert.Equal(htlc.AmountMsat, result.Payment.Route[0].Amount.MilliSatoshi);
+        Assert.True(result.Payment.Fee.IsZero);
+        Assert.Empty(harness.Bob.Channel(fuller).Commitments!.Htlcs);
     }
 
     [Fact]
