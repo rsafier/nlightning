@@ -1,5 +1,8 @@
+using System.Net;
+
 namespace NLightning.Domain.Node.Options;
 
+using Gossip.Addresses;
 using Protocol.ValueObjects;
 
 /// <summary>
@@ -37,6 +40,25 @@ public sealed class GossipOptions
     public uint AnnouncementDepth { get; set; } = MinimumAnnouncementDepth;
 
     /// <summary>
+    /// The addresses our <c>node_announcement</c> gives (BOLT 7 address descriptors), each <c>host:port</c>: an IPv4
+    /// address, a bracketed IPv6 address (<c>[::1]:9735</c>), a Tor v3 <c>.onion</c> name or one DNS hostname. Empty by
+    /// default (plan D11): the listen addresses are not announced on their own, for privacy.
+    /// </summary>
+    public List<string> AnnounceAddresses { get; set; } = [];
+
+    /// <summary>
+    /// How often our own gossip (<c>channel_announcement</c>, <c>channel_update</c>, <c>node_announcement</c>) goes
+    /// out to the connected peers (BOLT 7: SHOULD flush outgoing gossip every 60 seconds). Default 60 s.
+    /// </summary>
+    public TimeSpan OwnGossipFlushInterval { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// How old our <c>node_announcement</c> may get before it is signed again with a new timestamp, so peers that prune
+    /// nodes after two weeks without news keep ours (LND/CLN practice). Default 13 days.
+    /// </summary>
+    public TimeSpan NodeAnnouncementRefreshInterval { get; set; } = TimeSpan.FromDays(13);
+
+    /// <summary>
     /// The depth in effect on <paramref name="network"/>: <see cref="AnnouncementDepth"/> (at least 1) on regtest,
     /// else at least <see cref="MinimumAnnouncementDepth"/>.
     /// </summary>
@@ -44,4 +66,69 @@ public sealed class GossipOptions
         network == BitcoinNetwork.Regtest
             ? Math.Max(1U, AnnouncementDepth)
             : Math.Max(MinimumAnnouncementDepth, AnnouncementDepth);
+
+    /// <summary>
+    /// Whether our channels may be announced on <paramref name="network"/> (plan D12): everywhere but mainnet, and on
+    /// mainnet only with <see cref="AllowPublicChannelsOnMainnet"/>. It gates <c>openchannel --public</c> and also our
+    /// <c>announcement_signatures</c> for a public channel a peer opened to us.
+    /// </summary>
+    public bool ArePublicChannelsAllowed(BitcoinNetwork network) =>
+        network != BitcoinNetwork.Mainnet || AllowPublicChannelsOnMainnet;
+
+    /// <summary>
+    /// <see cref="AnnounceAddresses"/> as address descriptors in the order BOLT 7 requires (ascending type; the order
+    /// given is kept within a type).
+    /// </summary>
+    /// <exception cref="ArgumentException">An entry does not parse, has port 0 or is a Tor v2 name, or more than one
+    /// DNS hostname is given (BOLT 7 origin rules).</exception>
+    public IReadOnlyList<AddressDescriptor> GetAnnounceAddressDescriptors()
+    {
+        var descriptors = (AnnounceAddresses ?? []).Select(ParseAnnounceAddress)
+                                                   .OrderBy(d => d.Type)
+                                                   .ToList();
+        _ = AddressDescriptorCodec.EncodeList(descriptors);
+        return descriptors;
+    }
+
+    /// <summary>
+    /// Every configuration error of these options (the announced addresses); empty when valid.
+    /// </summary>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        try
+        {
+            _ = GetAnnounceAddressDescriptors();
+            return [];
+        }
+        catch (ArgumentException e)
+        {
+            return [$"{SectionName}:{nameof(AnnounceAddresses)}: {e.Message}"];
+        }
+    }
+
+    /// <summary>
+    /// One <c>host:port</c> entry: IPv4, bracketed IPv6, a <c>.onion</c> name (Tor v3) or a DNS hostname.
+    /// </summary>
+    private static AddressDescriptor ParseAnnounceAddress(string entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry))
+            throw new ArgumentException("An announced address is empty.", nameof(entry));
+
+        var text = entry.Trim();
+        var separator = text.LastIndexOf(':');
+        if (separator <= 0 || !ushort.TryParse(text[(separator + 1)..], out var port) || port == 0)
+            throw new ArgumentException($"'{entry}' is not host:port with a port from 1 to 65535.", nameof(entry));
+
+        var host = text[..separator];
+        if (host.StartsWith('[') && host.EndsWith(']'))
+            return AddressDescriptor.FromHost(AddressDescriptorType.IPv6, host[1..^1], port);
+        if (host.Contains(':'))
+            throw new ArgumentException($"'{entry}': write an IPv6 address in brackets ([::1]:9735).", nameof(entry));
+        if (IPAddress.TryParse(host, out var ip))
+            return AddressDescriptor.FromIpAddress(ip, port);
+        if (host.EndsWith(".onion", StringComparison.OrdinalIgnoreCase))
+            return AddressDescriptor.FromHost(AddressDescriptorType.TorV3, host, port);
+
+        return AddressDescriptor.FromDnsHostname(host, port);
+    }
 }
