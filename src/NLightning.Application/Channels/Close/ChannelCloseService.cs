@@ -19,6 +19,7 @@ using Interfaces;
 public sealed class ChannelCloseService : IChannelCloseService
 {
     private readonly IChannelLockProvider _channelLockProvider;
+    private readonly ClosingFeeEstimator? _feeEstimator;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelMessagePublisher _channelMessagePublisher;
     private readonly ILogger<ChannelCloseService> _logger;
@@ -30,8 +31,9 @@ public sealed class ChannelCloseService : IChannelCloseService
                                IChannelMemoryRepository channelMemoryRepository,
                                IChannelMessagePublisher channelMessagePublisher, ILogger<ChannelCloseService> logger,
                                IPeerLivenessProbe peerLivenessProbe, ClosingNegotiationRegistry registry,
-                               IServiceScopeFactory serviceScopeFactory)
+                               IServiceScopeFactory serviceScopeFactory, ClosingFeeEstimator? feeEstimator = null)
     {
+        _feeEstimator = feeEstimator;
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
         _channelMessagePublisher = channelMessagePublisher;
@@ -46,6 +48,10 @@ public sealed class ChannelCloseService : IChannelCloseService
                                                             CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // The close's fee estimate is fetched here, before the lock: under it the coordinator waits only briefly
+        if (request.FeeRatePerKw is null && _feeEstimator is not null)
+            await _feeEstimator.PrefetchAsync(cancellationToken);
 
         using var scope = _serviceScopeFactory.CreateScope();
         ChannelModel channel;

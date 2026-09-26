@@ -55,7 +55,8 @@ public sealed record ChannelFailureRequest(string Reason, string PeerMessage, bo
     /// <summary>
     /// Checked under the channel's lock before anything is done: false means the reason went away while the caller
     /// waited for the lock (e.g. the peer's reply to a timed-out <c>closing_signed</c> arrived), and the call returns
-    /// <see cref="ChannelFailureStatus.NotApplicable"/>. Null for an unconditional failure.
+    /// <see cref="ChannelFailureStatus.NotApplicable"/> without touching anything, not even the per-block retry of an
+    /// earlier failure's refused publish. Null for an unconditional failure.
     /// </summary>
     public Func<Domain.Channels.Models.ChannelModel, bool>? StillApplies { get; init; }
 }

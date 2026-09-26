@@ -265,6 +265,94 @@ public class ChannelCloseCoordinatorTests
         Assert.Equal(receiveScript, script);
     }
 
+    [Fact]
+    public async Task Given_TwoConcurrentClosesBeforeEitherScriptIsStored_When_GetLocalScript_Then_DifferentAddresses()
+    {
+        // Arrange (NL-280 partial, W4-E review F4): two closes on different channels (different locks) ask the wallet
+        // before either stores its shutdown script, so the memory check alone sees nothing; the registry's
+        // process-wide reservation tells them apart
+        var receive = WalletAddress(0, false, out var receiveScript);
+        var change = WalletAddress(0, true, out var changeScript);
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false)).ReturnsAsync(receive);
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true)).ReturnsAsync(change);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+        ShutdownScriptProvider Provider() =>
+            new(Options.Create(new NodeOptions()), wallet.Object, null, memory.Object, null, _registry);
+        var first = CreateChannel(ChannelState.Open, channelIdTag: 0x21);
+        var second = CreateChannel(ChannelState.Open, channelIdTag: 0x22);
+
+        // Act
+        var scripts = await Task.WhenAll(Provider().GetLocalScriptAsync(first),
+                                         Provider().GetLocalScriptAsync(second));
+        var firstAgain = await Provider().GetLocalScriptAsync(first);
+
+        // Assert: one gets the receive address, the other the change address; a channel keeps its own claim
+        Assert.Equal(new[] { receiveScript, changeScript }.OrderBy(s => s.ToString()),
+                     scripts.OrderBy(s => s.ToString()));
+        Assert.Equal(scripts[0], firstAgain);
+    }
+
+    [Fact]
+    public async Task Given_ClosedChannelsReservation_When_Removed_Then_AddressFreeAgain()
+    {
+        // Arrange
+        var receive = WalletAddress(0, false, out var receiveScript);
+        var wallet = new Mock<IBitcoinWalletService>();
+        wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, It.IsAny<bool>())).ReturnsAsync(receive);
+        var provider = new ShutdownScriptProvider(Options.Create(new NodeOptions()), wallet.Object, null, null, null,
+                                                  _registry);
+        var closed = CreateChannel(ChannelState.Open, channelIdTag: 0x21);
+        await provider.GetLocalScriptAsync(closed);
+
+        // Act
+        _registry.Remove(closed.ChannelId);
+
+        // Assert
+        Assert.True(_registry.TryReserveShutdownScript(CreateChannel(ChannelState.Open, channelIdTag: 0x22).ChannelId,
+                                                       receiveScript));
+    }
+
+    [Fact]
+    public async Task Given_EstimatorHangs_When_NegotiationUnderLock_Then_WaitsOnceBrieflyAndUsesCachedFee()
+    {
+        // Arrange (W4-E review F3): the estimate fetch runs under the channel lock, in the peer's inbound loop; an
+        // unreachable estimator must neither stall it for the HttpClient timeout nor be retried on every message
+        var hanging = new TaskCompletionSource<LightningMoney>();
+        var feeService = new Mock<IFeeService>();
+        feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Satoshis(1_000));
+        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>())).Returns(hanging.Task);
+        var options = Options.Create(new ChannelCloseOptions { FeeEstimateWaitUnderLock = TimeSpan.FromMilliseconds(50) });
+        var estimator = new ClosingFeeEstimator(feeService.Object, options, NullLogger<ClosingFeeEstimator>.Instance);
+        var channel = CreateFunderReadyToPropose();
+        var coordinator = CreateCoordinator(feeService: feeService.Object, feeEstimator: estimator);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Act: the opening proposal, then two answers of the peer at a fee we accept as a counter-proposal
+        var proposal = Assert.IsType<ClosingSignedMessage>(Assert.Single(await coordinator.AdvanceAsync(channel)));
+        for (var i = 0; i < 2; i++)
+        {
+            try
+            {
+                await coordinator.ReceiveClosingSignedAsync(channel, ClosingSigned(2_000 + (ulong)i));
+            }
+            catch (ChannelWarningException)
+            {
+                // The fake signature is valid for no transaction; only the wait matters here
+            }
+        }
+
+        stopwatch.Stop();
+
+        // Assert: one fetch, started once; the proposal used the cached 1,000 sat/kw
+        feeService.Verify(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()), Times.Once);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"took {stopwatch.Elapsed}");
+        var weight = ClosingFeeCalculator.EstimateWeight(s_localScript.Length, s_remoteScript.Length);
+        Assert.Equal(LightningMoney.Satoshis(ClosingFeeCalculator.FeeSat(1_000, weight)), proposal.Payload.FeeAmount);
+        hanging.SetResult(LightningMoney.Satoshis(2_500));
+    }
+
     private static WalletAddressModel WalletAddress(uint index, bool isChange, out BitcoinScript script)
     {
         var key = new Key();
@@ -295,13 +383,16 @@ public class ChannelCloseCoordinatorTests
     {
         // Arrange (B2-CLS-R10): dust limits of 300 sat keep a 320 sat P2WSH output, below its 330 sat threshold
         var channel = CreateNegotiatingChannel(localSat: 99_680, remoteSat: 320, dustLimitSat: 300);
+        _registry.Get(channel.ChannelId).FeeRangeDueAt = DateTimeOffset.UtcNow.AddMinutes(5);
 
         // Act
         var failure = await Assert.ThrowsAsync<ChannelFailedException>(
                           () => CreateCoordinator().ReceiveClosingSignedAsync(channel, ClosingSigned(500)));
 
-        // Assert
+        // Assert: the channel leaves the negotiation, so no closing deadline is left to fire (W4-E review F2)
         Assert.Equal("B2-CLS-R10", failure.RequirementId);
+        Assert.Null(_registry.Get(channel.ChannelId).FeeRangeDueAt);
+        Assert.Null(_registry.Get(channel.ChannelId).ReplyDueAt);
         Assert.Equal(ChannelState.Negotiating, channel.State);
         _monitor.Verify(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()), Times.Never);
         _watchedDb.Verify(r => r.Add(It.IsAny<WatchedTransactionModel>()), Times.Never);
@@ -640,7 +731,8 @@ public class ChannelCloseCoordinatorTests
 
     private ChannelCloseCoordinator CreateCoordinator(ShutdownScriptProvider? provider = null,
                                                       ClosingTimeoutMonitor? timeouts = null,
-                                                      IFeeService? feeService = null)
+                                                      IFeeService? feeService = null,
+                                                      ClosingFeeEstimator? feeEstimator = null)
     {
         var nodeOptions = Options.Create(new NodeOptions());
         var memory = new Mock<IChannelMemoryRepository>();
@@ -666,7 +758,7 @@ public class ChannelCloseCoordinatorTests
                                            NullLogger<ChannelCloseCoordinator>.Instance, messageFactory,
                                            Options.Create(new ChannelCloseOptions()), _registry,
                                            provider ?? new FixedProvider(s_localScript), transitions,
-                                           _unitOfWork.Object, _monitor.Object, timeouts);
+                                           _unitOfWork.Object, _monitor.Object, timeouts, feeEstimator);
     }
 
     /// <summary>A timeout monitor over this test's registry, a manual clock and a mocked fail-the-channel service

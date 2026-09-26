@@ -6,7 +6,9 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Channels.Close;
 
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Interfaces;
 using Safety.Interfaces;
 
 /// <summary>
@@ -20,7 +22,8 @@ using Safety.Interfaces;
 /// <para>Singleton. The deadlines live in <see cref="ClosingNegotiationRegistry.Entry"/> and are set and cleared by
 /// <see cref="ChannelCloseCoordinator"/> under the channel's lock; this class only runs one timer per channel. The reply
 /// deadline is dropped when the connection changes (BOLT 2 restarts the negotiation on reconnection, B2-RE-29, and our
-/// <c>closing_signed</c> on the new connection sets it again), so a peer that is away is not failed for it; the
+/// <c>closing_signed</c> on the new connection sets it again), and it only counts while the peer is on the connection the
+/// channel's link is pinned to (<see cref="IPeerLivenessProbe"/>), so a peer that is away is not failed for it; the
 /// <c>fee_range</c> deadline survives reconnections (a peer that keeps sending a range we can't accept must not escape
 /// it by reconnecting). Both are memory only: a restart restarts the negotiation.</para>
 /// <para>When a timer fires, the failure runs only if, under the channel's lock, the channel is still
@@ -97,10 +100,14 @@ public sealed class ClosingTimeoutMonitor : IDisposable
         if (!_registry.TryGet(channelId, out var entry) || entry is null)
             return null;
 
-        if (entry.GetExpired(Now) is not { } expired)
+        // B2-CLS-03 counts on the connection our closing_signed went out on: a peer that dropped is not failed for
+        // it (the next connection restarts the negotiation and clears the deadline)
+        var replyApplies = entry.ReplyDueAt is not { } replyDue || replyDue > Now
+                        || await IsLinkUpAsync(channelId, cancellationToken);
+        if (entry.GetExpired(Now, replyApplies) is not { } expired)
         {
-            // A deadline moved later since the timer was set
-            Schedule(channelId);
+            // A deadline moved later since the timer was set, or only the reply deadline of a dropped link is past
+            Schedule(channelId, replyApplies);
             return null;
         }
 
@@ -114,7 +121,8 @@ public sealed class ClosingTimeoutMonitor : IDisposable
 
         var request = new ChannelFailureRequest(expired.Reason, expired.PeerMessage, true, expired.RequirementId)
         {
-            StillApplies = channel => channel.State == ChannelState.Negotiating && entry.GetExpired(Now) is not null
+            StillApplies = channel => channel.State == ChannelState.Negotiating
+                                   && entry.GetExpired(Now, replyApplies) is not null
         };
 
         try
@@ -144,11 +152,31 @@ public sealed class ClosingTimeoutMonitor : IDisposable
         _timers.Clear();
     }
 
-    private void Schedule(ChannelId channelId)
+    /// <summary>
+    /// True when the channel's peer is still on the connection the channel's link is pinned to (the one our
+    /// <c>closing_signed</c> went out on); true without a probe or when the channel is not loaded.
+    /// </summary>
+    private async Task<bool> IsLinkUpAsync(ChannelId channelId, CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) != 0 || !_registry.TryGet(channelId, out var entry) || entry is null
-         || entry.NextDeadline is not { } due)
+        var probe = _serviceProvider.GetService<IPeerLivenessProbe>();
+        var channels = _serviceProvider.GetService<IChannelMemoryRepository>();
+        if (probe is null || channels is null || !channels.TryGetChannel(channelId, out var channel))
+            return true;
+
+        return await probe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken);
+    }
+
+    private void Schedule(ChannelId channelId, bool includeReply = true)
+    {
+        if (Volatile.Read(ref _disposed) != 0 || !_registry.TryGet(channelId, out var entry) || entry is null)
             return;
+
+        if (entry.GetNextDeadline(includeReply) is not { } due)
+        {
+            if (_timers.TryRemove(channelId, out var stale))
+                stale.Dispose();
+            return;
+        }
 
         var delay = due - Now;
         if (delay < TimeSpan.Zero)

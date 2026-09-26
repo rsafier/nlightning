@@ -50,6 +50,7 @@ public sealed class ChannelFailureServiceTests : IDisposable
     private readonly List<string> _calls = [];
     private readonly List<SignedTransaction> _published = [];
     private readonly List<WatchedTransactionModel> _storedWatches = [];
+    private readonly RecordingLogger<ChannelFailureService> _log = new();
     private ServiceProvider _provider = null!;
     private ChannelModel _channel = null!;
 
@@ -127,6 +128,7 @@ public sealed class ChannelFailureServiceTests : IDisposable
         services.AddSingleton<IMessageFactory, MessageFactory>();
         services.AddScoped(_ => unitOfWork.Object);
         services.AddChannelSafetyServices();
+        services.AddSingleton<ILogger<ChannelFailureService>>(_log);
         _provider = services.BuildServiceProvider();
     }
 
@@ -561,6 +563,89 @@ public sealed class ChannelFailureServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_PublishPending_When_RequestNoLongerApplies_Then_RetryKeptAndNextBlockPublishes()
+    {
+        // Arrange (W4-E review F2): an earlier failure's publish was refused (bitcoind down), so it waits for the
+        // next block; then a closing deadline's failure arrives whose precondition no longer holds (the channel is
+        // Failed, not Negotiating)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        WatchedTransactionModel? saved = null;
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId id) => saved is not null && saved.TransactionId == id ? saved : null);
+        _watchedDb.Setup(r => r.Add(It.IsAny<WatchedTransactionModel>()))
+                  .Callback<WatchedTransactionModel>(w => saved = w);
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new InvalidOperationException("bitcoind down"));
+        _chainService.Setup(c => c.SendTransactionAsync(It.IsAny<Transaction>())).ReturnsAsync(uint256.One);
+        var service = Service;
+        var first = await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("reestablish", "b"),
+                                                   TestContext.Current.CancellationToken);
+        var stale = new ChannelFailureRequest("no satisfying fee_range in time", "no fee_range", true, "B2-CLS-R04")
+        {
+            StillApplies = c => c.State == ChannelState.Negotiating
+        };
+
+        // Act
+        var outcome = await service.FailChannelAsync(_channel.ChannelId, stale, TestContext.Current.CancellationToken);
+        var pendingAfterStaleRequest = service.IsPublishPending(_channel.ChannelId);
+        await service.RetryPendingPublishesAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the stale request changed nothing, and the next block still published the commitment
+        Assert.Equal(ChannelFailureStatus.PublishFailed, first.Status);
+        Assert.Equal(ChannelFailureStatus.NotApplicable, outcome.Status);
+        Assert.True(pendingAfterStaleRequest);
+        Assert.False(service.IsPublishPending(_channel.ChannelId));
+        Assert.True(service.TryGetPublishedCommitment(_channel.ChannelId, out var txId));
+        Assert.Equal(first.CommitmentTxId, txId);
+    }
+
+    [Fact]
+    public async Task Given_PublishPending_When_FailedAgainWithoutBroadcast_Then_RetryKept()
+    {
+        // Arrange: a refused publish waits for the next block, then the Failed channel is failed again without a
+        // broadcast (e.g. a handler's ChannelFailedException without MustBroadcast)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+        _blockchainMonitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                          .ThrowsAsync(new InvalidOperationException("bitcoind down"));
+        var service = Service;
+        await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                       TestContext.Current.CancellationToken);
+
+        // Act
+        var outcome = await service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("c", "d", false),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(ChannelFailureStatus.FailedWithoutBroadcast, outcome.Status);
+        Assert.True(service.IsPublishPending(_channel.ChannelId));
+    }
+
+    [Fact]
+    public async Task Given_CommitmentBroadcast_When_Logged_Then_TxIdInDisplayOrder()
+    {
+        // Arrange (NL-275): the txid in the logs must be the one bitcoind, LND and explorers show (the reversed hash)
+        _pair.Add(_pair.Alice, 20_000_000, RealSigningCommitmentPair.Preimage(1));
+        _pair.Settle(_pair.Alice);
+        _channel.UpdateCommitments(_pair.Alice.State);
+
+        // Act
+        var outcome = await Service.FailChannelAsync(_channel.ChannelId, new ChannelFailureRequest("a", "b"),
+                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        var published = Assert.Single(_published);
+        var displayed = Transaction.Load(published.RawTxBytes, Network.Main).GetHash().ToString();
+        var internalOrder = Convert.ToHexString((byte[])outcome.CommitmentTxId!.Value).ToLowerInvariant();
+        Assert.NotEqual(internalOrder, displayed);
+        Assert.Contains(_log.Messages, m => m.Contains(displayed, StringComparison.Ordinal));
+        Assert.DoesNotContain(_log.Messages, m => m.Contains(internalOrder, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Given_ChannelFailedExceptionWithoutBroadcast_When_Failed_Then_OnlyPersisted()
     {
         // Arrange
@@ -674,5 +759,31 @@ public sealed class ChannelFailureServiceTests : IDisposable
             await Task.Delay(10);
 
         Assert.True(condition());
+    }
+
+    /// <summary>Keeps every formatted log message.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _messages = [];
+
+        public IReadOnlyList<string> Messages
+        {
+            get
+            {
+                lock (_messages)
+                    return _messages.ToList();
+            }
+        }
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            lock (_messages)
+                _messages.Add(formatter(state, exception));
+        }
     }
 }

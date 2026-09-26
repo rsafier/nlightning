@@ -24,9 +24,11 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// monitor again (idempotent; the monitor keeps watching every wallet address after a deposit), so the closing output
 /// is credited to the wallet. The wallet returns its first address without a UTXO (NL-280), so two channels that close
 /// at the same time would get the same shutdown address, which links them on chain: an address that is the shutdown
-/// script of another channel whose close is not confirmed yet is skipped for the first unused change address (also a
-/// wallet address, so the output is credited the same way). A third concurrent close can still collide (logged) until
-/// the wallet hands out each address once (NL-280).
+/// script of another channel whose close is not confirmed yet, or that another close of this process claimed first
+/// (<see cref="ClosingNegotiationRegistry.TryReserveShutdownScript"/>, atomic across channel locks), is skipped for the
+/// first unused change address (also a wallet address, so the output is credited the same way). A third concurrent
+/// close can still collide (logged), and the change address is also the one the next funding transaction's change
+/// output gets, until the wallet reserves each address it hands out (NL-280).
 /// </remarks>
 public class ShutdownScriptProvider
 {
@@ -34,13 +36,16 @@ public class ShutdownScriptProvider
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
     private readonly ILogger<ShutdownScriptProvider>? _logger;
     private readonly Network _network;
+    private readonly ClosingNegotiationRegistry? _registry;
     private readonly IBitcoinWalletService _walletService;
 
     public ShutdownScriptProvider(IOptions<NodeOptions> nodeOptions, IBitcoinWalletService walletService,
                                   IBlockchainMonitor? blockchainMonitor = null,
                                   IChannelMemoryRepository? channelMemoryRepository = null,
-                                  ILogger<ShutdownScriptProvider>? logger = null)
+                                  ILogger<ShutdownScriptProvider>? logger = null,
+                                  ClosingNegotiationRegistry? registry = null)
     {
+        _registry = registry;
         _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ??
                    throw new ArgumentException("Invalid Bitcoin network specified", nameof(nodeOptions));
         _walletService = walletService;
@@ -65,11 +70,11 @@ public class ShutdownScriptProvider
 
         var address = await _walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
         var script = ToScript(address);
-        if (IsShutdownScriptOfAnotherOpenClose(channel, script))
+        if (!TryClaim(channel, script))
         {
             var changeAddress = await _walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
             var changeScript = ToScript(changeAddress);
-            if (IsShutdownScriptOfAnotherOpenClose(channel, changeScript))
+            if (!TryClaim(channel, changeScript))
             {
                 _logger?.LogWarning("Shutdown address {Address} of channel {ChannelId} is also the shutdown address of "
                                   + "another channel being closed; the two closes are linked on chain (NL-280)",
@@ -88,6 +93,15 @@ public class ShutdownScriptProvider
 
     private BitcoinScript ToScript(WalletAddressModel address) =>
         BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
+
+    /// <summary>
+    /// True when <paramref name="script"/> is free for <paramref name="channel"/>'s close: no loaded channel in close
+    /// pays to it, and the registry's process-wide reservation (atomic, covering a concurrent close whose script is
+    /// not stored yet) is ours.
+    /// </summary>
+    private bool TryClaim(ChannelModel channel, BitcoinScript script) =>
+        !IsShutdownScriptOfAnotherOpenClose(channel, script)
+     && (_registry?.TryReserveShutdownScript(channel.ChannelId, script) ?? true);
 
     /// <summary>
     /// True when another loaded channel whose close is not confirmed yet (ShuttingDown, Negotiating, Closing) already
