@@ -27,6 +27,7 @@ using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Serialization.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using static Channels.Handlers.NormalOperationTestContext;
 
 /// <summary>
@@ -201,7 +202,60 @@ public class OnchainEventsTests
                                                    It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    private HtlcSwitch CreateSwitch()
+    [Fact]
+    public async Task Given_OfferedCircuitOnAClosedOutgoingChannel_When_ExpiredReasonablyDeepAndLockInReplayed_Then_FailedUpstream()
+    {
+        // Arrange (NL-320): the outgoing channel closed on chain (Closed, no longer loaded) and its record shows no
+        // preimage; the resolver's upstream event never reached the switch, so the circuit is still Offered. The
+        // outgoing HTLC's cltv_expiry is 600
+        var status = ForwardCircuitStatus.Offered;
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id)).ReturnsAsync(() => Circuit(status));
+        _circuits.Setup(r => r.UpdateAsync(It.IsAny<ForwardCircuitModel>()))
+                 .Callback((ForwardCircuitModel c) => status = c.Status)
+                 .Returns(Task.CompletedTask);
+        var closed = new NormalOperationTestContext(state: ChannelState.Closed).Channel;
+        _context.ChannelDbRepository.Setup(r => r.GetByIdAsync(s_downstreamChannelId)).ReturnsAsync(closed);
+
+        // Act: before cltv_expiry + 6 the replay waits
+        await CreateSwitch(605).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                            TestContext.Current.CancellationToken);
+        Assert.Empty(_createdFailures);
+        var htlcSwitch = CreateSwitch(606);
+        await htlcSwitch.HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                     TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                     TestContext.Current.CancellationToken);
+
+        // Assert: failed once, with our own permanent_channel_failure, and the circuit Failed
+        var failure = Assert.Single(_createdFailures);
+        Assert.Equal(FailureCode.PermanentChannelFailure, failure.Code);
+        Assert.Equal(ForwardCircuitStatus.Failed, status);
+        _operations.Verify(o => o.FailHtlcAsync(TestChannelId, _incoming.Id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                                It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData(ChannelState.OnchainResolving)]
+    [InlineData(ChannelState.Failed)]
+    public async Task Given_OfferedCircuitOnAnOutgoingChannelNotClosed_When_LongExpiredAndLockInReplayed_Then_NotFailed(
+        ChannelState state)
+    {
+        // Arrange (NL-320): only a Closed outgoing channel is settled for good; one still resolving decides itself
+        var stored = new NormalOperationTestContext(state: state).Channel;
+        _context.ChannelDbRepository.Setup(r => r.GetByIdAsync(s_downstreamChannelId)).ReturnsAsync(stored);
+
+        // Act
+        await CreateSwitch(800).HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                            TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_createdFailures);
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+    }
+
+    private HtlcSwitch CreateSwitch(uint? height = null)
     {
         var services = new ServiceCollection();
         services.AddScoped(_ => _context.UnitOfWork.Object);
@@ -214,7 +268,15 @@ public class OnchainEventsTests
         return new HtlcSwitch(new ChannelLockProvider(), _context.ChannelMemoryRepository.Object, _operations.Object,
                               _failureOnions.Object, new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance),
                               new HtlcForwardingPolicy(options), NullLogger<HtlcSwitch>.Instance, onionProcessor,
-                              new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>());
+                              new Mock<IPeerLivenessProbe>().Object, provider.GetRequiredService<IServiceScopeFactory>(),
+                              blockchainMonitor: height is { } tip ? Monitor(tip) : null);
+    }
+
+    private static IBlockchainMonitor Monitor(uint height)
+    {
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(height);
+        return monitor.Object;
     }
 
     private ForwardCircuitModel Circuit(ForwardCircuitStatus status)

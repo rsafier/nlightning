@@ -70,7 +70,16 @@ using Remote;
 /// <para>
 /// Data loss (no rebuild possible): every output of the commitment gets a row and a watch; <c>to_remote</c> is swept,
 /// the others stay <see cref="OutputDescriptorKind.Unknown"/> and any spend of them is searched for the preimage of our
-/// still-open offered HTLCs. They are ignored only once none of those HTLCs can matter any more.
+/// still-open offered HTLCs. They are ignored only once none of those HTLCs can matter any more. A funding spend that is
+/// no known commitment (<see cref="ChannelCloseKind.Unknown"/>, B5-GEN-06) is handled the same way.
+/// </para>
+/// <para>
+/// Upstream after data loss (NL-320): an offered HTLC of such a commitment has no output we can claim, so its upstream
+/// HTLC is failed (<see cref="RemoteHtlcSwitchEvents.OnchainTimeout"/>) once its <c>cltv_expiry</c> plus the reasonable
+/// depth has passed without a preimage (and the close is reasonably deep), every round until the upstream has its
+/// removal; the watched outputs keep the channel from closing until then. Waiting for <c>Closed</c> (100 blocks, or
+/// <c>cltv_expiry</c> + 100) could miss the upstream deadline and force-close the upstream channel too. A preimage
+/// that shows up in a spend first fulfills instead.
 /// </para>
 /// </remarks>
 public sealed class RemoteCommitResolver : IOutputResolver
@@ -110,7 +119,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
     /// <inheritdoc />
     public bool CanResolve(ChannelCloseKind kind) =>
         kind is ChannelCloseKind.RemoteCommitment or ChannelCloseKind.RemoteNextCommitment
-            or ChannelCloseKind.FutureCommitment;
+            or ChannelCloseKind.FutureCommitment or ChannelCloseKind.Unknown;
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<OutputResolverAction>> ResolveAsync(ChannelCloseModel close,
@@ -145,6 +154,8 @@ public sealed class RemoteCommitResolver : IOutputResolver
 
         if (!context.IsDataLoss)
             await ResolveHtlcsWithoutOutputAsync(context, actions);
+        else
+            await ResolveUnrebuildableHtlcsAsync(context, actions);
 
         return actions;
     }
@@ -364,12 +375,15 @@ public sealed class RemoteCommitResolver : IOutputResolver
             AddRow(context, vout, found?.Kind ?? OutputDescriptorKind.Unknown, data, null, actions);
         }
 
-        actions.Add(new AlertAction("B5-RMT-03",
-                                    $"The peer's commitment {context.Close.CommitmentNumber} ({context.Close.Kind}, "
-                                  + $"{Display(context.CommitmentTxId)}) of channel {context.Channel.ChannelId} cannot "
-                                  + $"be rebuilt: only our to_remote ({toRemote.Count} output(s)) is swept; every other "
-                                  + "output is watched for the preimages of our offered HTLCs, and any HTLC in it may be "
-                                  + "lost"));
+        var what = context.Close.Kind == ChannelCloseKind.Unknown
+                       ? $"The funding spend {Display(context.CommitmentTxId)} of channel {context.Channel.ChannelId} "
+                       + "is no known commitment"
+                       : $"The peer's commitment {context.Close.CommitmentNumber} ({context.Close.Kind}, "
+                       + $"{Display(context.CommitmentTxId)}) of channel {context.Channel.ChannelId} cannot be rebuilt";
+        actions.Add(new AlertAction(context.Close.Kind == ChannelCloseKind.Unknown ? "B5-GEN-06" : "B5-RMT-03",
+                                    $"{what}: only our to_remote ({toRemote.Count} output(s)) is swept; every other "
+                                  + "output is watched for the preimages of our offered HTLCs, which are failed "
+                                  + "upstream once expired and reasonably deep, and any HTLC in it may be lost"));
     }
 
     private static void AddRow(RemoteCommitContext context, uint vout, OutputDescriptorKind kind,
@@ -698,6 +712,43 @@ public sealed class RemoteCommitResolver : IOutputResolver
     #endregion
 
     #region HTLCs without an output
+
+    /// <summary>
+    /// NL-320: our offered HTLCs when the commitment on chain cannot be rebuilt (<see cref="ChannelCloseKind.FutureCommitment"/>
+    /// after data loss, or <see cref="ChannelCloseKind.Unknown"/>). With a known preimage (off chain, or found in a spend
+    /// and staged on the record) the upstream is fulfilled; without one, it is failed once the tip is
+    /// <c>cltv_expiry</c> + the reasonable depth and the close itself is reasonably deep: we cannot time the HTLC out on
+    /// chain, and holding the upstream HTLC longer only makes the upstream channel fail too (BOLT 5: fail the incoming
+    /// HTLC once the outgoing one timed out reasonably deep). Repeated every round until the upstream HTLC has its
+    /// removal (or the payment is final).
+    /// </summary>
+    private async Task ResolveUnrebuildableHtlcsAsync(RemoteCommitContext context, List<OutputResolverAction> actions)
+    {
+        var closeDeep = Depth(context.Height, context.Close.SpentAtHeight) >= _options.ReasonableDepth;
+        foreach (var record in OpenOutgoingHtlcs(context).ToList())
+        {
+            var preimage = OutgoingPreimage(record);
+            var expired = closeDeep && (ulong)context.Height >= (ulong)record.CltvExpiry + _options.ReasonableDepth;
+            if ((preimage is null && !expired) || await IsUpstreamResolvedAsync(context, record.Id))
+                continue;
+
+            var htlc = ToSpec(record);
+            if (preimage is not null && Hashes(preimage, record.PaymentHash))
+            {
+                AddFulfill(context, htlc, new Secret(preimage), actions);
+                continue;
+            }
+
+            if (!expired)
+                continue;
+
+            if (_logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Channel {ChannelId}: our HTLC {HtlcId} (cltv_expiry {CltvExpiry}) on a commitment we "
+                                 + "cannot rebuild expired without a preimage on chain; failing it upstream at height "
+                                 + "{Height}", context.Channel.ChannelId, record.Id, record.CltvExpiry, context.Height);
+            AddFail(context, htlc, record, actions);
+        }
+    }
 
     /// <summary>
     /// B5-RMT-LO-03: our offered HTLCs the engine still tracks that have no output in the commitment on chain

@@ -45,6 +45,7 @@ internal sealed class RemoteResolutionTestContext : IDisposable
     public const uint CloseHeight = 500;
     public const ulong FeeratePerKw = 1_000;
     public const uint IrrevocableDepth = 100;
+    public const uint ReasonableDepth = 6;
 
     public static readonly byte[] Destination =
         new Key(Enumerable.Repeat((byte)0x55, 32).ToArray()).PubKey.WitHash.ScriptPubKey.ToBytes();

@@ -38,8 +38,10 @@ using Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>Every commitment kind moves the channel to <c>OnchainResolving</c> (37), which refuses every channel operation
-/// and every peer message (the stored error is sent again). An unknown spend does too, with no output: nothing can be
-/// swept, and the channel closes after the irrevocable depth. A mutual close is left to the channel manager (it only
+/// and every peer message (the stored error is sent again). An unknown spend does too, with no output here: the remote
+/// commitment resolver then treats it like a commitment it cannot rebuild (every output watched, a <c>to_remote</c> of
+/// ours swept, our offered HTLCs failed upstream once expired and reasonably deep, NL-320), and the channel closes once
+/// those outputs are irrevocable or ignored. A mutual close is left to the channel manager (it only
 /// arrives for a channel in its close negotiation).</para>
 /// <para>Idempotent: the chain monitor raises a spend again for a replayed block; a spend already recorded changes
 /// nothing. A different spend recorded before (a reorg) is recorded over it in one save that also ignores the old

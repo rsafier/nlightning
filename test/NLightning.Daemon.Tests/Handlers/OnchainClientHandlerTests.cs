@@ -277,6 +277,7 @@ public class OnchainClientHandlerTests
     [InlineData(ChannelCloseKind.RemoteCommitment, typeof(RemoteCommitResolver))]
     [InlineData(ChannelCloseKind.RemoteNextCommitment, typeof(RemoteCommitResolver))]
     [InlineData(ChannelCloseKind.FutureCommitment, typeof(RemoteCommitResolver))]
+    [InlineData(ChannelCloseKind.Unknown, typeof(RemoteCommitResolver))]
     [InlineData(ChannelCloseKind.RevokedCommitment, typeof(RevokedCommitResolver))]
     public void Given_NodeServices_When_Composed_Then_ExactlyOneResolverHandlesEachCommitmentKind(
         ChannelCloseKind kind, Type expectedResolver)
@@ -310,11 +311,12 @@ public class OnchainClientHandlerTests
         Assert.Equal(20U, provider.GetRequiredService<IOptions<RevokedCommitResolverOptions>>().Value.IrrevocableDepth);
     }
 
-    [Theory]
-    [InlineData(ChannelCloseKind.Mutual)]
-    [InlineData(ChannelCloseKind.Unknown)]
-    public void Given_NodeServices_When_Composed_Then_NoResolverHandlesMutualOrUnknown(ChannelCloseKind kind)
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_NoResolverHandlesMutual()
     {
+        // NL-320: an Unknown spend is resolved by the remote resolver like a commitment it cannot rebuild
+        const ChannelCloseKind kind = ChannelCloseKind.Mutual;
+
         // Arrange
         var configuration = new ConfigurationBuilder()
                            .AddInMemoryCollection(new Dictionary<string, string?>
