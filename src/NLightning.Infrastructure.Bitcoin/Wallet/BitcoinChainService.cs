@@ -98,6 +98,19 @@ public class BitcoinChainService : IBitcoinChainService
         }
     }
 
+    public async Task<uint256> GetBlockHashAsync(uint height)
+    {
+        try
+        {
+            return await _rpcClient.GetBlockHashAsync((int)height);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get the hash of block {Height}", height);
+            throw;
+        }
+    }
+
     public async Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {
         try

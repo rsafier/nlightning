@@ -23,6 +23,7 @@ using Domain.Onchain.Events;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Interfaces;
+using Networks;
 using Options;
 
 /// <summary>
@@ -122,9 +123,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
         _bitcoinChainService = bitcoinChainService;
         _logger = logger;
         _serviceProvider = serviceProvider;
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork)
-                ?? throw new InvalidOperationException(
-                       $"Unknown bitcoin network '{nodeOptions.Value.BitcoinNetwork}'");
+        // Fails on an unknown network; signet and custom signets (Mutinynet) map to NBitcoin's signet (W4-D)
+        _network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
     }
 
     public async Task StartAsync(uint heightOfBirth, CancellationToken cancellationToken)
