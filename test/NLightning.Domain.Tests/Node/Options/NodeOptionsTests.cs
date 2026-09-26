@@ -33,20 +33,34 @@ public class NodeOptionsTests
     [InlineData("mainnet")]
     [InlineData("testnet")]
     [InlineData("signet")]
-    public void Given_NotRegtest_When_EnableHtlcsUnset_Then_HtlcsDisabled(string network)
+    public void Given_NotRegtest_When_EnableHtlcsUnset_Then_HtlcsEnabled(string network)
     {
-        // Arrange
+        // Arrange (BOLT 5 plan O6-T4: the mainnet gate opened once Proofs O3-O6 passed)
         var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network) };
 
         // Assert
-        Assert.False(options.HtlcsEnabled);
+        Assert.Null(options.EnableHtlcs);
+        Assert.True(options.HtlcsEnabled);
     }
 
     [Fact]
-    public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsDisabled()
+    public void Given_DefaultOptions_When_Read_Then_MainnetWithHtlcsEnabled()
     {
         // Arrange
         var options = new NodeOptions();
+
+        // Assert
+        Assert.True(options.HtlcsEnabled);
+    }
+
+    [Theory]
+    [InlineData("mainnet")]
+    [InlineData("signet")]
+    [InlineData("regtest")]
+    public void Given_EnableHtlcsFalse_When_Read_Then_HtlcsDisabledOnEveryNetwork(string network)
+    {
+        // Arrange: the operator's switch still turns HTLCs off
+        var options = new NodeOptions { BitcoinNetwork = new BitcoinNetwork(network), EnableHtlcs = false };
 
         // Assert
         Assert.False(options.HtlcsEnabled);
