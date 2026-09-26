@@ -33,7 +33,7 @@ public class DaemonUtils
         Console.WriteLine("  nltg --status       Show daemon status");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest) [default: mainnet]");
+        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest, signet, mutinynet) [default: mainnet]");
         Console.WriteLine("  --config, -c <path>        Path to custom configuration file");
         Console.WriteLine("  --daemon [true|false]      Run as a daemon [default: false]");
         Console.WriteLine("  --password-file <path>     Read the key encryption password from a file");

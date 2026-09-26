@@ -14,7 +14,6 @@ using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
-using Domain.Bitcoin.Interfaces;
 using Domain.Client.Constants;
 using Domain.Client.Exceptions;
 using Domain.Client.Interfaces;
@@ -28,6 +27,7 @@ using Handlers;
 using Infrastructure;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Managers;
+using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Services;
 using Infrastructure.Persistence;
@@ -144,12 +144,12 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ListPaymentsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, CloseChannelIpcHandler>();
 
-        // Add HttpClient for FeeService with configuration
-        services.AddHttpClient<IFeeService, FeeService>(client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(30);
-            client.DefaultRequestHeaders.Add("Accept", "application/json");
-        });
+        // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
+        // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate
+        services.AddFeeServices();
+
+        // The node's services take ILogger<T>; AddHttpClient used to register logging implicitly (hosts add providers)
+        services.AddLogging();
 
         // Add the Application services (also the Domain channel factories and validator)
         services.AddApplicationServices();
@@ -160,6 +160,10 @@ public static class NodeServiceExtensions
         services.AddPersistenceInfrastructureServices(configuration);
         services.AddRepositoriesInfrastructureServices();
         services.AddSerializationInfrastructureServices();
+
+        // BOLT 5 on-chain building blocks (output mapper, sweep and penalty builders); they need the commitment model
+        // factory from AddApplicationServices and the commitment builder from AddBitcoinInfrastructure
+        services.AddOnchainBitcoinServices();
 
         // Register options with values from configuration
         services.AddOptions<BitcoinOptions>().BindConfiguration("Bitcoin").ValidateOnStart();
@@ -179,7 +183,9 @@ public static class NodeServiceExtensions
                      var networkString = configuration.GetValue<string>("Node:Network");
                      if (!string.IsNullOrWhiteSpace(networkString))
                      {
-                         options.BitcoinNetwork = new BitcoinNetwork(networkString);
+                         // Fail fast on an unknown network; a configured custom signet (Mutinynet) resolves to signet
+                         options.CustomSignet?.Register();
+                         options.BitcoinNetwork = BitcoinNetwork.Resolve(networkString);
                      }
 
                      options.Features.ChainHashes = [options.BitcoinNetwork.ChainHash];

@@ -549,7 +549,7 @@ public class BlockchainMonitorServiceTests
     public void Given_UnknownNetwork_When_Constructed_Then_ItThrowsInsteadOfUsingMainnet()
     {
         // Act & Assert
-        Assert.Throws<InvalidOperationException>(() => CreateService(_chain, "notanetwork"));
+        Assert.Throws<ArgumentException>(() => CreateService(_chain, "notanetwork"));
     }
 
     [Fact]

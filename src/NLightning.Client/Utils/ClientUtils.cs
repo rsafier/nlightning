@@ -9,7 +9,7 @@ public static class ClientUtils
         Console.WriteLine("  nltg [options] [command]");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest) [default: mainnet]");
+        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest, signet, mutinynet) [default: mainnet]");
         Console.WriteLine("  --cookie, -c <path>        Path to cookie file");
         Console.WriteLine("  --help, -h, -?             Show this help message");
         Console.WriteLine();

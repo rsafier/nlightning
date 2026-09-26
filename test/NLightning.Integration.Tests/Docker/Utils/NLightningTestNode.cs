@@ -34,6 +34,7 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Fixtures;
+using Infrastructure.Bitcoin.Services;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Persistence.Contexts;
 using Infrastructure.Transport.Interfaces;
@@ -264,7 +265,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // A fresh database starts scanning at the current tip; a restarted node resumes from its stored state
             var currentHeight = (uint)await Bitcoin.GetBlockCountAsync(cancellationToken);
 
-            // IFeeService is a transient typed HttpClient, so keep the instance we start (the daemon does the same)
+            // IFeeService is one shared singleton (AddFeeServices): the instance we start is the one every consumer reads
             _feeService = Services.GetRequiredService<IFeeService>();
             await _feeService.StartAsync(cancellationToken);
             feeServiceStarted = true;
@@ -639,8 +640,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         services.AddNltgNodeServices(configuration, SecureKeyManager);
 
         // Test-only overrides: a fixed fee estimate, our own port and network, and a TCP service CrashAsync can reset
-        services.AddHttpClient<IFeeService, Infrastructure.Bitcoin.Services.FeeService>()
-                .ConfigurePrimaryHttpMessageHandler(CreateFixedFeeHandler);
+        services.AddFeeServices(_ => CreateFixedFeeHandler());
         services.AddOptions<NodeOptions>()
                 .PostConfigure(options =>
                  {

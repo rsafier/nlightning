@@ -57,6 +57,7 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IFundingTransactionModelFactory>());
         Assert.NotNull(provider.GetRequiredService<ILightningSigner>());
         Assert.NotNull(provider.GetRequiredService<IFeeService>());
+        Assert.Same(provider.GetRequiredService<IFeeService>(), provider.GetRequiredService<IFeeService>());
         Assert.NotNull(provider.GetRequiredService<IChannelManager>());
         Assert.NotNull(provider.GetRequiredService<IPeerManager>());
         Assert.NotNull(scope.ServiceProvider
