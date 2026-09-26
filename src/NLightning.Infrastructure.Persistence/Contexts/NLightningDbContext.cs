@@ -4,11 +4,13 @@ namespace NLightning.Infrastructure.Persistence.Contexts;
 
 using Entities.Bitcoin;
 using Entities.Channel;
+using Entities.Gossip;
 using Entities.Node;
 using Entities.Onchain;
 using Entities.Payment;
 using EntityConfiguration.Bitcoin;
 using EntityConfiguration.Channel;
+using EntityConfiguration.Gossip;
 using EntityConfiguration.Node;
 using EntityConfiguration.Onchain;
 using EntityConfiguration.Payment;
@@ -59,6 +61,12 @@ public class NLightningDbContext : DbContext
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
 
+    // Gossip graph DbSets (BOLT 7 plan G2-T3)
+    public DbSet<GraphNodeEntity> GraphNodes { get; set; }
+    public DbSet<GraphChannelEntity> GraphChannels { get; set; }
+    public DbSet<GraphChannelPolicyEntity> GraphChannelPolicies { get; set; }
+    public DbSet<GraphBannedNodeEntity> GraphBannedNodes { get; set; }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -95,5 +103,11 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigurePaymentEntity(_databaseType);
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
+
+        // Gossip graph entities
+        modelBuilder.ConfigureGraphNodeEntity(_databaseType);
+        modelBuilder.ConfigureGraphChannelEntity(_databaseType);
+        modelBuilder.ConfigureGraphChannelPolicyEntity(_databaseType);
+        modelBuilder.ConfigureGraphBannedNodeEntity(_databaseType);
     }
 }

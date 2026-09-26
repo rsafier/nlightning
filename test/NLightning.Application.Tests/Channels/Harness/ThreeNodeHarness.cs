@@ -37,6 +37,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Gossip.Interfaces;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -717,6 +718,8 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IChannelStateDbRepository ChannelStateDbRepository =>
         new HookedChannelStateRepository(inner.ChannelStateDbRepository, node);
     public IRemoteShachainDbRepository RemoteShachainDbRepository => inner.RemoteShachainDbRepository;
+    public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
+    public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => new HookedInvoiceRepository(inner.InvoiceDbRepository, node);
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;

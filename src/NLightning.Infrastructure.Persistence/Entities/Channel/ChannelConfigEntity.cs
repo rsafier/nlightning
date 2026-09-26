@@ -115,6 +115,12 @@ public class ChannelConfigEntity
     public bool HasInferredParams { get; set; }
 
     /// <summary>
+    /// The <c>announce_channel</c> bit of <c>open_channel.channel_flags</c> (<see cref="ChannelParams.AnnounceChannel"/>).
+    /// False for every row that existed before migration <c>AddGossipGraph</c>.
+    /// </summary>
+    public bool AnnounceChannel { get; set; }
+
+    /// <summary>
     /// Default constructor for EF Core.
     /// </summary>
     internal ChannelConfigEntity()

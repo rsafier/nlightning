@@ -90,6 +90,28 @@ public class ChannelModel
 
     #endregion
 
+    #region Announcement state (BOLT 7 plan G1)
+
+    /// <summary>
+    /// Whether the channel is public (<c>announce_channel</c> in <c>open_channel.channel_flags</c>); stored with the
+    /// channel parameters (<see cref="ChannelParams.AnnounceChannel"/>).
+    /// </summary>
+    public bool AnnounceChannel => ChannelParams.AnnounceChannel;
+
+    /// <summary>
+    /// The peer's <c>announcement_signatures</c> for the channel's current short channel id, or null while none was
+    /// received (or after <see cref="ResetAnnouncementSignatures"/>).
+    /// </summary>
+    public ChannelAnnouncementSignatures? RemoteAnnouncementSignatures { get; private set; }
+
+    /// <summary>
+    /// When we last sent our <c>announcement_signatures</c>, or null while we have not (persisted before it goes out,
+    /// so a restart re-sends it until the peer's signatures are stored).
+    /// </summary>
+    public DateTimeOffset? LocalAnnouncementSignaturesSentAt { get; private set; }
+
+    #endregion
+
     #region Signatures
 
     public CompactSignature? LastSentSignature { get; private set; }
@@ -343,6 +365,29 @@ public class ChannelModel
         ClosingTransaction = closingTransaction;
     }
 
+    /// <summary>Stores the peer's <c>announcement_signatures</c> for the channel's current short channel id.</summary>
+    public void SetRemoteAnnouncementSignatures(ChannelAnnouncementSignatures signatures)
+    {
+        ArgumentNullException.ThrowIfNull(signatures);
+        RemoteAnnouncementSignatures = signatures;
+    }
+
+    /// <summary>Records when we sent our <c>announcement_signatures</c>.</summary>
+    public void MarkAnnouncementSignaturesSent(DateTimeOffset sentAt)
+    {
+        LocalAnnouncementSignaturesSentAt = sentAt;
+    }
+
+    /// <summary>
+    /// Forgets both sides' announcement state, e.g. when a reorg moved the short channel id: the signatures of the old
+    /// one are useless for the new announcement.
+    /// </summary>
+    public void ResetAnnouncementSignatures()
+    {
+        RemoteAnnouncementSignatures = null;
+        LocalAnnouncementSignaturesSentAt = null;
+    }
+
     /// <summary>Records that <c>channel_reestablish</c> proved we lost data (never cleared).</summary>
     public void MarkDataLossDetected()
     {
@@ -354,6 +399,10 @@ public class ChannelModel
         return new ChannelSigningInfo(FundingOutput!.TransactionId!.Value, FundingOutput.Index!.Value,
                                       FundingOutput.Amount, LocalKeySet.FundingCompactPubKey,
                                       RemoteKeySet!.FundingCompactPubKey, LocalKeySet.KeyIndex,
-                                      RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected);
+                                      RemoteKeySet.HtlcCompactBasepoint, LocalCommitmentNumber, DataLossDetected)
+        {
+            RemoteNodeId = RemoteNodeId,
+            ShortChannelId = ((byte[]?)ShortChannelId)?.Length > 0 ? ShortChannelId : (ShortChannelId?)null
+        };
     }
 }

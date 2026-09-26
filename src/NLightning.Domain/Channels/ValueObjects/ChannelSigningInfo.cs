@@ -42,6 +42,18 @@ public record struct ChannelSigningInfo
     /// </summary>
     public ulong? BroadcastSignedCommitmentNumber { get; init; }
 
+    /// <summary>
+    /// The peer's node id, when known. <c>ILightningSigner.SignChannelAnnouncement</c> then requires the announcement
+    /// to name it as the other node.
+    /// </summary>
+    public CompactPubKey? RemoteNodeId { get; init; }
+
+    /// <summary>
+    /// The channel's real short channel id once the funding transaction confirmed, else null.
+    /// <c>ILightningSigner.SignChannelAnnouncement</c> signs only an announcement of this short channel id.
+    /// </summary>
+    public ShortChannelId? ShortChannelId { get; init; }
+
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,
                               uint channelKeyIndex, CompactPubKey? remoteHtlcBasepoint = null,

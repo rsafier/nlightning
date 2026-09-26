@@ -183,6 +183,20 @@ public class ChannelEntity
     /// <summary>The fully signed mutual close transaction (persisted before it is broadcast), or null.</summary>
     public byte[]? ClosingTransaction { get; set; }
 
+    /// <summary>
+    /// The peer's <c>announcement_signatures</c> node signature for the channel's current short channel id, or null
+    /// (migration <c>AddGossipGraph</c>, BOLT 7 plan G1).
+    /// </summary>
+    public byte[]? RemoteAnnouncementNodeSig { get; set; }
+
+    /// <summary>The peer's <c>announcement_signatures</c> bitcoin signature, or null (with the node signature).</summary>
+    public byte[]? RemoteAnnouncementBitcoinSig { get; set; }
+
+    /// <summary>
+    /// When we sent our <c>announcement_signatures</c>, UTC ticks (<c>UtcTicksConverter</c>), or null while we have not.
+    /// </summary>
+    public DateTimeOffset? LocalAnnouncementSigsSentAt { get; set; }
+
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
 

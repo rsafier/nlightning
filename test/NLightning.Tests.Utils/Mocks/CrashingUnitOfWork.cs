@@ -2,6 +2,7 @@ using NLightning.Domain.Bitcoin.Interfaces;
 using NLightning.Domain.Bitcoin.ValueObjects;
 using NLightning.Domain.Bitcoin.Wallet.Models;
 using NLightning.Domain.Channels.Interfaces;
+using NLightning.Domain.Gossip.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
 using NLightning.Domain.Onchain.Interfaces;
@@ -56,6 +57,8 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IChannelKeySetDbRepository ChannelKeySetDbRepository => inner.ChannelKeySetDbRepository;
     public IChannelStateDbRepository ChannelStateDbRepository => inner.ChannelStateDbRepository;
     public IRemoteShachainDbRepository RemoteShachainDbRepository => inner.RemoteShachainDbRepository;
+    public IChannelSigningInfoDbRepository ChannelSigningInfoDbRepository => inner.ChannelSigningInfoDbRepository;
+    public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => inner.InvoiceDbRepository;
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;

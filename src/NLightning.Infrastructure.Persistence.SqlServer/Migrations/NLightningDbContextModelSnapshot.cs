@@ -249,6 +249,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("ChannelId")
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<bool>("AnnounceChannel")
+                        .HasColumnType("bit");
+
                     b.Property<long>("FeeRatePerKwSatoshis")
                         .HasColumnType("bigint");
 
@@ -365,6 +368,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("LastSentSignature")
                         .HasColumnType("varbinary(64)");
 
+                    b.Property<long?>("LocalAnnouncementSigsSentAt")
+                        .HasColumnType("bigint");
+
                     b.Property<long>("LocalBalanceMsat")
                         .HasColumnType("bigint");
 
@@ -388,6 +394,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte[]>("RemoteAlias")
                         .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("RemoteAnnouncementBitcoinSig")
+                        .HasColumnType("varbinary(64)");
+
+                    b.Property<byte[]>("RemoteAnnouncementNodeSig")
+                        .HasColumnType("varbinary(64)");
 
                     b.Property<long>("RemoteBalanceMsat")
                         .HasColumnType("bigint");
@@ -677,6 +689,153 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("ChannelId", "Number");
 
                     b.ToTable("RevokedCommitments");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<long>("Until")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("GraphBannedNodes");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", b =>
+                {
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("BitcoinKey1")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("BitcoinKey2")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<long>("CapacitySat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Features")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("NodeId1")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("NodeId2")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("RawAnnouncement")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("ReceivedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("SpentAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Verification")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("ShortChannelId");
+
+                    b.HasIndex("NodeId1");
+
+                    b.HasIndex("NodeId2");
+
+                    b.HasIndex("SpentAtHeight");
+
+                    b.ToTable("GraphChannels");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", b =>
+                {
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte>("ChannelFlags")
+                        .HasColumnType("tinyint");
+
+                    b.Property<int>("CltvExpiryDelta")
+                        .HasColumnType("int");
+
+                    b.Property<long>("FeeBaseMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("FeePpm")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("HtlcMaximumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<decimal>("HtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte>("MessageFlags")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("RawUpdate")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ShortChannelId", "Direction");
+
+                    b.ToTable("GraphChannelPolicies");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("Addresses")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("Alias")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("Color")
+                        .IsRequired()
+                        .HasColumnType("varbinary(3)");
+
+                    b.Property<byte[]>("Features")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("RawAnnouncement")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("ReceivedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("GraphNodes");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
@@ -1100,6 +1259,15 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
                         .WithMany()
                         .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ShortChannelId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

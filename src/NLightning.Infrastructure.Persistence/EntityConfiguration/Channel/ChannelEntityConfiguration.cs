@@ -74,6 +74,11 @@ public static class ChannelEntityConfiguration
                   .HasConversion<TxIdConverter>()
                   .IsRequired(false);
             entity.Property(e => e.ClosingTransaction).IsRequired(false);
+            entity.Property(e => e.RemoteAnnouncementNodeSig).IsRequired(false);
+            entity.Property(e => e.RemoteAnnouncementBitcoinSig).IsRequired(false);
+            entity.Property(e => e.LocalAnnouncementSigsSentAt)
+                  .HasConversion<UtcTicksConverter>()
+                  .IsRequired(false);
 
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
@@ -127,5 +132,9 @@ public static class ChannelEntityConfiguration
         entity.Property(e => e.RemoteShutdownScript).HasColumnType("varbinary(max)");
         entity.Property(e => e.ClosingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
         entity.Property(e => e.ClosingTransaction).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RemoteAnnouncementNodeSig)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
+        entity.Property(e => e.RemoteAnnouncementBitcoinSig)
+              .HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
     }
 }
