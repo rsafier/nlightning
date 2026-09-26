@@ -16,7 +16,9 @@
 #                end; a bitcoind restart also clears it) to count RPC calls from its console log; 0 skips the rate
 # SOAK_BUILD     1 (default) builds the daemon and CLI first (build.sh); 0 stages the existing build
 # The binaries and these scripts are copied to ~/.nltg/<network>/soak/bin and the sampler runs from there, so
-# rebuilding, editing or removing the checkout does not touch a running soak.
+# rebuilding, editing or removing the checkout does not touch a running soak. The staged copy
+# (~/.nltg/<network>/soak/bin/scripts/soak-gossip.sh) takes the same commands but never builds or restages: its
+# start reuses the staged build (restage by running start from the checkout, whose path is in soak/bin/repo_root).
 # Output: ~/.nltg/<network>/soak/soak-<UTC date>.log (samples), soak/sampler.out, and the daemon's usual daemon.out.
 # Credentials: bitcoind is asked through ~/mutinynet/cli.sh (cookie auth in the container); nothing prints the RPC
 # settings of appsettings.json.
@@ -39,6 +41,17 @@ mkdir -p "$soak_dir"
 staged_daemon="$bin_dir/daemon/NLightning.Daemon"
 staged_client="$bin_dir/client/NLightning.Client"
 
+# 1 when this is the staged copy of the script: env.sh then resolves repo_root to the soak directory, not a checkout,
+# so nothing may build or stage from it
+from_staged_copy=0
+if [[ -d "$bin_dir/scripts" && "$(cd "$script_dir" && pwd -P)" == "$(cd "$bin_dir/scripts" && pwd -P)" ]]; then
+    from_staged_copy=1
+fi
+
+# Set before any trap can read them (set -u): whether this sampler started the daemon and turned on rpc logging
+started_daemon=0
+rpc_logging=0
+
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
 bitcoin_cli() { "$MUTINYNET_DIR/cli.sh" "$@"; }
@@ -51,6 +64,15 @@ daemon_pid() {
 }
 
 stage_build() {
+    if [[ "$from_staged_copy" == "1" ]]; then
+        if [[ -f "$staged_daemon" && -f "$staged_client" ]]; then
+            log "running from the staged copy; keeping the staged build (restage with start from the checkout" \
+                "$(cat "$bin_dir/repo_root" 2>/dev/null || echo "<checkout>")/scripts/mutinynet/soak-gossip.sh)"
+            return 0
+        fi
+        log "no staged build in $bin_dir; run start from the checkout's scripts/mutinynet/soak-gossip.sh"
+        return 1
+    fi
     if [[ "$SOAK_BUILD" == "1" ]]; then
         "$script_dir/build.sh"
     fi
@@ -70,6 +92,7 @@ stage_build() {
     mkdir -p "$bin_dir/scripts"
     cp "$script_dir"/*.sh "$bin_dir/scripts/"
     git -C "$repo_root" rev-parse HEAD > "$bin_dir/commit" 2>/dev/null || true
+    echo "$repo_root" > "$bin_dir/repo_root"
     log "staged the build of $(cat "$bin_dir/commit" 2>/dev/null || echo unknown) in $bin_dir"
 }
 
@@ -106,13 +129,27 @@ ensure_peer() {
 
 rpc_log_on() {
     [[ "$SOAK_RPC_LOG" == "1" ]] || return 0
-    bitcoin_cli logging '["rpc"]' > /dev/null 2>&1 && log "bitcoind rpc logging on" \
-        || log "could not turn on bitcoind rpc logging; the RPC rate is not logged"
+    if bitcoin_cli logging '["rpc"]' > /dev/null 2>&1; then
+        rpc_logging=1
+        log "bitcoind rpc logging on"
+    else
+        log "could not turn on bitcoind rpc logging; the RPC rate is not logged"
+    fi
 }
 
 rpc_log_off() {
-    [[ "$SOAK_RPC_LOG" == "1" ]] || return 0
+    [[ "$rpc_logging" == "1" ]] || return 0
     bitcoin_cli logging '[]' '["rpc"]' > /dev/null 2>&1 || true
+    rpc_logging=0
+}
+
+# The sampler's EXIT trap. It can run after run() returned, so it reads only globals
+on_exit() {
+    rpc_log_off
+    if [[ "$started_daemon" == "1" ]]; then
+        stop_daemon
+    fi
+    rm -f "$runner_pid_file"
 }
 
 sample() {
@@ -134,7 +171,9 @@ sample() {
     nodes="$(cli listnodes 2>/dev/null | sed -n 's/^Graph nodes: \([0-9]*\)$/\1/p' | head -n 1)"
     peers="$(cli listpeers 2>/dev/null | grep -c 'Connected:   Yes' || true)"
     # The database with its write-ahead log
-    db_kb="$(cat "$NLTG_DIR/nltg.db" "$NLTG_DIR/nltg.db-wal" 2>/dev/null | wc -c | awk '{ printf "%d", $1 / 1024 }')"
+    # (a missing file, e.g. a checkpointed WAL, must not end the sampler under set -e and pipefail)
+    db_kb="$( (cat "$NLTG_DIR/nltg.db" "$NLTG_DIR/nltg.db-wal" 2>/dev/null || true) | wc -c \
+        | awk '{ printf "%d", $1 / 1024 }')"
     # Warnings and errors the daemon logged since the soak started
     daemon_log="$(tail -n "+$out_start" "$NLTG_DIR/daemon.out" 2>/dev/null || true)"
     wrn="$(grep -c ' WRN\] ' <<< "$daemon_log" || true)"
@@ -155,25 +194,28 @@ sample() {
 
 run() {
     echo $$ > "$runner_pid_file"
-    local log_file started last out_start started_daemon=0
+    # The traps come first, so an interrupt while the daemon starts still cleans up
+    trap on_exit EXIT
+    trap 'exit 0' TERM INT
+    local log_file started last out_start
     log_file="$soak_dir/soak-$(date -u +%Y%m%d).log"
-    out_start=$(( $(wc -l < "$NLTG_DIR/daemon.out" 2>/dev/null || echo 0) + 1 ))
+    out_start=$(( $( (wc -l < "$NLTG_DIR/daemon.out") 2>/dev/null || echo 0) + 1 ))
     started="$(date +%s)"
     [[ -f "$staged_daemon" ]] || stage_build
     if [[ -z "$(daemon_pid)" ]]; then
-        start_daemon
         started_daemon=1
+        start_daemon
     fi
     rpc_log_on
-    trap 'rpc_log_off; [[ $started_daemon == 1 ]] && stop_daemon; rm -f "$runner_pid_file"' EXIT
-    trap 'exit 0' TERM INT
     echo "# soak start $(date -u +%Y-%m-%dT%H:%M:%SZ) commit $(cat "$bin_dir/commit" 2>/dev/null || echo unknown)" \
         "network $NLTG_NETWORK peer ${SOAK_PEER%%@*} interval ${SOAK_INTERVAL}s duration ${SOAK_DURATION}s" \
         >> "$log_file"
     log "sampling to $log_file"
     ensure_peer
     last="$started"
-    sleep 5
+    # In the background, so TERM/INT end the sampler at once instead of after the sleep
+    sleep 5 &
+    wait $!
     while :; do
         if [[ -z "$(daemon_pid)" ]]; then
             echo "# $(date -u +%Y-%m-%dT%H:%M:%SZ) daemon not running; restarting" >> "$log_file"

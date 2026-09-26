@@ -151,7 +151,9 @@ Observations from the run (ledger items, not fixed here):
 
 - NL-303: `info` prints the best block hash, and `openchannel`/`listchannels` print the funding txid, in internal
   byte order (`bf2416f6...0000` for block `00000284...24bf`; `dc37ddc9...eb17:0` for funding tx `17eb2731...37dc`). The
-  closing txid is printed in the usual order. Display only.
+  closing txid is printed in the usual order. Display only. Fixed in gossip wave o7 (lane x5): the printers go through
+  `Client/Printers/DisplayOrder.ToHex`, pinned by `test/NLightning.Daemon.Tests/Client/TxIdDisplayTests` with the
+  funding tx of the public channel below (display `12482a42...8d0c`, internal `0c8daa69...4812`) and the genesis hash.
 - NL-304: `LocalLightningSigner.SignFundingTransaction` logs a warning for an input it cannot sign (no UTXO or no wallet
   address), leaves it null and then fails with a NullReferenceException; it should throw a `SignerException` naming the
   input. Fixed in the w5e review: the signer now throws `SignerException` naming the input and its outpoint
@@ -180,6 +182,15 @@ start. The RPC count comes from bitcoind's console log: the sampler turns the `r
 (86400 s) it stops the daemon it started. `soak-gossip.sh status` shows the last samples, `stop` ends it early. It
 opens no channel and spends nothing.
 
+The staged copy `~/.nltg/<network>/soak/bin/scripts/soak-gossip.sh` takes the same commands (`start`, `run`, `stop`,
+`status`) but never builds or restages: there `env.sh` resolves `repo_root` to the soak directory, so its `start`
+reuses the staged build (and says so), and without one it stops with a pointer to the checkout, whose path
+`stage_build` writes to `soak/bin/repo_root`. To run a new build, `stop` the soak and run `start` from the checkout.
+Before the o7 fix a `start` from the staged copy removed `soak/bin` and then failed to copy from the wrong root, and
+the sampler's EXIT trap read `started_daemon`, a local of `run()`, after `run()` had returned: under `set -u` it failed
+with `line 1: started_daemon: unbound variable`, so the daemon the sampler had started kept running and the pid file
+stayed. The flags are globals set before the traps now, and the traps are set before the daemon starts.
+
 First results (gossip wave G-D lane d3, 2026-09-26, `wip/fafo` @ 4dc0f77 plus the lane's commits, Release, SQLite,
 one peer: the faucet's LND, which reports 895 channels). The existing `~/.nltg/mutinynet` node from the wave 5 smoke
 test (one closed channel) was migrated on start.
@@ -201,6 +212,24 @@ reply to the sync's `query_channel_range` needed nothing new). RSS grew 29 MB in
 (+1 MB in the last 5); the database grows about 130 KB per 5 minutes (WAL, not yet checkpointed). Still open: the
 24 h run itself (started with `nohup` at 19:10:53 UTC, `soak-20260926.log`), a second sync peer, and the RSS and WAL
 trends over a day; mainnet gossip stays off (template and code defaults).
+
+The soak has a restart gap from 19:51 to 20:02 UTC, around the public channel open below: the sampler stopped early
+with the `started_daemon` trap error above and did not restart the daemon, so there are no samples in that window.
+
+## Public channel (gossip wave G-D, 2026-09-26)
+
+Our first announced channel on Mutinynet, opened with `openchannel --public` from the soak node (node id
+`030f7defc57e05273c109870dbc15ec0f1ade96872852a06247c42c75bfac2495a`):
+
+| Item | Value |
+|---|---|
+| Peer | the faucet LND, `02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b@45.79.52.207:9735` |
+| Capacity | 200,000 sat, funded by us |
+| Opened | ~19:45 UTC |
+| Funding outpoint | `12482a42baf84a4945374ad40c3a77dcd16de1590cfe7374306ae21169aa8d0c:0` (the CLI of that build printed the internal order `0c8daa6911e26a307473fe0c59e16dd1dc773a0cd44a3745494af8ba422a4812`, NL-303) |
+| SCID | `3458334x7x0` |
+| node_announcement | alias `NLightningFAFO`, color `#ff0000`, at 20:02:10 UTC |
+| Explorer | mutinynet.com lists the node with 1 active channel of 200,000 sat |
 
 ## Known gaps
 
