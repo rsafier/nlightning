@@ -28,7 +28,9 @@ public sealed class GossipOptions
     public bool AcceptPublicChannels { get; set; } = true;
 
     /// <summary>
-    /// Whether <c>openchannel --public</c> is allowed on mainnet. Public channels stay off on mainnet until the BOLT 7
+    /// Whether public channels are allowed on mainnet: <c>openchannel --public</c>, and accepting a peer's
+    /// <c>open_channel</c> with <c>announce_channel</c> (refused with an <c>error</c> otherwise, since BOLT 7 would
+    /// oblige us to send <c>announcement_signatures</c> for it). Public channels stay off on mainnet until the BOLT 7
     /// plan's Proof G1 passed (D12). Default false.
     /// </summary>
     public bool AllowPublicChannelsOnMainnet { get; set; }
@@ -69,8 +71,8 @@ public sealed class GossipOptions
 
     /// <summary>
     /// Whether our channels may be announced on <paramref name="network"/> (plan D12): everywhere but mainnet, and on
-    /// mainnet only with <see cref="AllowPublicChannelsOnMainnet"/>. It gates <c>openchannel --public</c> and also our
-    /// <c>announcement_signatures</c> for a public channel a peer opened to us.
+    /// mainnet only with <see cref="AllowPublicChannelsOnMainnet"/>. It gates <c>openchannel --public</c>, a peer's public
+    /// <c>open_channel</c> (refused where not allowed) and our <c>announcement_signatures</c>.
     /// </summary>
     public bool ArePublicChannelsAllowed(BitcoinNetwork network) =>
         network != BitcoinNetwork.Mainnet || AllowPublicChannelsOnMainnet;
