@@ -373,6 +373,27 @@ public class RevokedResolutionTests
     }
 
     [Fact]
+    public async Task Given_CheaterSweptItsToLocal_When_ManyBlocksFollow_Then_LossAlertedOnce()
+    {
+        // Arrange: we were too late: the cheater spent its to_local after the CSV
+        using var kit = CreateBreach();
+        await kit.RunAsync(RevokedBreachKit.SpentAtHeight + 1);
+        var toLocal = Assert.Single(kit.Rows, r => r.Descriptor == OutputDescriptorKind.RevokedToLocal);
+        var theirSweep = new ChainTx(new TxId(Enumerable.Repeat((byte)0xCC, 32).ToArray()), 2, 0,
+                                     [new ChainTxInput(toLocal.TransactionId, toLocal.OutputIndex, 100, [[1], [2]])],
+                                     [new ChainTxOutput(1_000, RevokedBreachKit.Destination)]);
+        await kit.ConfirmAsync(theirSweep, RevokedBreachKit.SpentAtHeight + 101);
+
+        // Act
+        for (var h = RevokedBreachKit.SpentAtHeight + 101; h < RevokedBreachKit.SpentAtHeight + 111; h++)
+            await kit.RunAsync(h);
+
+        // Assert
+        var alert = Assert.Single(kit.Alerts, a => a.RequirementId == "B5-REV-03");
+        Assert.Contains($"Output {toLocal.OutputIndex}", alert.Message);
+    }
+
+    [Fact]
     public void Given_Kinds_When_CanResolve_Then_OnlyRevokedCommitment()
     {
         // Arrange
