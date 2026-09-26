@@ -65,6 +65,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
     private readonly ILogger<RevokedCommitResolver> _logger;
     private readonly ICommitmentOutputMapper _mapper;
     private readonly RevokedCommitResolverOptions _options;
+    private readonly ConcurrentDictionary<string, byte> _alerted = new();
     private readonly ConcurrentDictionary<(ChannelId, ulong, bool), byte> _raised = new();
     private readonly ConcurrentDictionary<(TxId, uint), (ChainTx Transaction, uint Height)> _seenSpends = new();
 
@@ -97,12 +98,12 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
         var load = await _dataSource.LoadAsync(close, cancellationToken);
         if (load.Context is not { } context)
-            return
+            return OncePerProcess(
             [
                 new AlertAction("B5-REV-03",
                                 $"Channel {close.ChannelId}: revoked commitment {close.CommitmentTransactionId} cannot "
                               + $"be penalized: {load.Problem}")
-            ];
+            ]);
 
         var round = new Round(context, close, outputs, height);
         var map = Map(context);
@@ -136,7 +137,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
                                                                 txId => GetFeeAsync(txId, amounts)));
         }
 
-        return round.Actions;
+        return OncePerProcess(round.Actions);
     }
 
     /// <inheritdoc />
@@ -159,7 +160,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
 
         var load = await _dataSource.LoadAsync(close, cancellationToken);
         if (load.Context is not { } context)
-            return [new AlertAction("B5-REV-06", $"Channel {close.ChannelId}: {load.Problem}")];
+            return OncePerProcess([new AlertAction("B5-REV-06", $"Channel {close.ChannelId}: {load.Problem}")]);
 
         var descriptor = Map(context).GetOutput(output.OutputIndex);
         if (descriptor?.Htlc is not { } htlc)
@@ -191,7 +192,7 @@ public sealed class RevokedCommitResolver : IOutputResolver
          && !IsUpstreamResolved(context.Channel, htlc))
             Raise(actions, new OutgoingHtlcFulfilled(close.ChannelId, htlc.Id, htlc.PaymentHash, preimage));
 
-        return actions;
+        return OncePerProcess(actions);
     }
 
     private async Task PlanOutputAsync(Round round, CommitmentOutputMap map, CommitmentOutputDescriptor descriptor,
@@ -599,6 +600,16 @@ public sealed class RevokedCommitResolver : IOutputResolver
             return;
 
         actions.Add(new RaiseChannelEventAction(channelEvent));
+    }
+
+    /// <summary>
+    /// Drops the alerts already returned by this process: the planner repeats a loss every block until the output is
+    /// irrevocably resolved, the operator needs it once (and again after a restart).
+    /// </summary>
+    private List<OutputResolverAction> OncePerProcess(List<OutputResolverAction> actions)
+    {
+        actions.RemoveAll(a => a is AlertAction alert && !_alerted.TryAdd($"{alert.RequirementId} {alert.Message}", 0));
+        return actions;
     }
 
     private void Remember(TxId txId, uint vout, ChainTx spendingTransaction, uint height)
