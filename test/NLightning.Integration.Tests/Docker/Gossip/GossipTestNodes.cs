@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -38,6 +39,7 @@ public static class GossipTestNodes
     private const string GossipSection = "Gossip";
     private const string AliasKey = "Node:Alias";
     private const string ColorKey = "Node:Color";
+    private const string RoutingSection = "Node:Routing";
 
     /// <summary>
     /// The <c>Gossip</c> flags every proof node sets: the graph on (<c>GossipGraphOptions.Enabled</c>; default on
@@ -59,9 +61,39 @@ public static class GossipTestNodes
     public static async Task<NLightningTestNode> StartGossipNodeAsync(LightningRegtestNetworkFixture fixture,
                                                                       string name, string alias,
                                                                       CancellationToken cancellationToken,
-                                                                      Action<NLightningTestNode>? configure = null)
+                                                                      Action<NLightningTestNode>? configure = null) =>
+        await StartGossipNodeAsync(await NLightningTestNode.CreateAsync(fixture, name), alias, cancellationToken,
+                                   configure);
+
+    /// <summary>
+    /// As <see cref="StartGossipNodeAsync(LightningRegtestNetworkFixture, string, string, CancellationToken,
+    /// Action{NLightningTestNode}?)"/>, on a bitcoind outside the shared LND network (e.g. the CLN fixture's).
+    /// </summary>
+    public static async Task<NLightningTestNode> StartGossipNodeAsync(RegtestBitcoinEndpoint bitcoin, string name,
+                                                                      string alias,
+                                                                      CancellationToken cancellationToken,
+                                                                      Action<NLightningTestNode>? configure = null) =>
+        await StartGossipNodeAsync(await NLightningTestNode.CreateAsync(bitcoin, name), alias, cancellationToken,
+                                   configure);
+
+    /// <summary>
+    /// Sets the forwarding policy the node announces in its <c>channel_update</c>s (<c>Node:Routing</c>).
+    /// </summary>
+    public static void SetRoutingPolicy(NLightningTestNode node, uint feeBaseMsat, uint feeProportionalMillionths,
+                                        ushort cltvExpiryDelta)
     {
-        var node = await NLightningTestNode.CreateAsync(fixture, name);
+        node.ExtraConfiguration[$"{RoutingSection}:{nameof(RoutingOptions.FeeBaseMsat)}"] =
+            feeBaseMsat.ToString(CultureInfo.InvariantCulture);
+        node.ExtraConfiguration[$"{RoutingSection}:{nameof(RoutingOptions.FeeProportionalMillionths)}"] =
+            feeProportionalMillionths.ToString(CultureInfo.InvariantCulture);
+        node.ExtraConfiguration[$"{RoutingSection}:{nameof(RoutingOptions.CltvExpiryDelta)}"] =
+            cltvExpiryDelta.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static async Task<NLightningTestNode> StartGossipNodeAsync(NLightningTestNode node, string alias,
+                                                                       CancellationToken cancellationToken,
+                                                                       Action<NLightningTestNode>? configure)
+    {
         foreach (var flag in s_gossipFlags)
             node.ExtraConfiguration[$"{GossipSection}:{flag}"] = "true";
         node.ExtraConfiguration[AliasKey] = alias;
