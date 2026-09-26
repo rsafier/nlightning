@@ -11,6 +11,9 @@ using Application;
 using Application.Channels.Close;
 using Application.Channels.Safety;
 using Application.Onchain;
+using Application.Onchain.Resolvers.Local;
+using Application.Onchain.Resolvers.Remote;
+using Application.Onchain.Resolvers.Revoked;
 using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
@@ -180,6 +183,11 @@ public static class NodeServiceExtensions
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
         services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
         services.Configure<OnchainOptions>(configuration.GetSection(OnchainOptions.SectionName));
+        // The BOLT 5 resolvers read the same Node:Onchain depths (ReasonableDepth, IrrevocableDepth; FeePolicy for the
+        // penalty resolver) as the executor
+        services.Configure<LocalCommitResolverOptions>(configuration.GetSection(OnchainOptions.SectionName));
+        services.Configure<RemoteResolutionOptions>(configuration.GetSection(OnchainOptions.SectionName));
+        services.Configure<RevokedCommitResolverOptions>(configuration.GetSection(OnchainOptions.SectionName));
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>

@@ -28,6 +28,9 @@ using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
 using Onchain;
+using Onchain.Resolvers.Local;
+using Onchain.Resolvers.Remote;
+using Onchain.Resolvers.Revoked;
 using Payments;
 using Payments.Send;
 using Payments.Switch;
@@ -96,6 +99,10 @@ public static class DependencyInjection
         services.AddPaymentSendServices();
         services.AddChannelSafetyServices();
         services.AddOnchainServices();
+        // BOLT 5 resolvers the on-chain executor dispatches to by close kind (ABCD W5-B/C/D)
+        services.AddLocalCommitResolutionServices();
+        services.AddRemoteCommitResolutionServices();
+        services.AddRevokedCommitResolver();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers

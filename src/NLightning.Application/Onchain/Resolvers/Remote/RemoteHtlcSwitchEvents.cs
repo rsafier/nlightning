@@ -14,10 +14,9 @@ public static class RemoteHtlcSwitchEvents
 {
     /// <summary>
     /// <c>HtlcRemovalKind.OnchainTimeout = 4</c> of BOLT 5 plan O3-T4 (no reason bytes: the switch creates
-    /// <c>permanent_channel_failure</c> as the erring node). The switch lane adds the enum member; until then the
-    /// value is used as is.
+    /// <c>permanent_channel_failure</c> as the erring node).
     /// </summary>
-    public const HtlcRemovalKind OnchainTimeoutKind = (HtlcRemovalKind)4;
+    public const HtlcRemovalKind OnchainTimeoutKind = HtlcRemovalKind.OnchainTimeout;
 
     /// <summary>The preimage of our offered HTLC is known (seen on chain or learned off chain): fulfill upstream at
     /// once (B5-RMT-LO-01).</summary>

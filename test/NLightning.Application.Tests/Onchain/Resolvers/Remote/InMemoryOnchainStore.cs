@@ -168,6 +168,16 @@ internal sealed class InMemoryOnchainStore
             Task.FromResult(_broadcasts.GetValueOrDefault(transactionId)
                          ?? store.Broadcasts.GetValueOrDefault(transactionId));
 
+        public Task<IReadOnlyList<BroadcastTransactionModel>> GetByChannelIdAsync(ChannelId channelId) =>
+            Task.FromResult<IReadOnlyList<BroadcastTransactionModel>>(
+                store.Broadcasts.Values.Concat(_broadcasts.Values)
+                     .Where(b => b.ChannelId == channelId)
+                     .DistinctBy(b => b.TransactionId)
+                     .OrderBy(b => b.CreatedAt)
+                     .ToList());
+
+        public Task<bool> MarkAbandonedAsync(TxId transactionId) => throw new NotSupportedException();
+
         public Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync() => throw new NotSupportedException();
 
         public Task MarkConfirmedAsync(TxId transactionId, uint height, Hash blockHash) =>

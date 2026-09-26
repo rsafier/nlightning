@@ -8,6 +8,10 @@ namespace NLightning.Daemon.Tests.Handlers;
 using Application.Channels.Safety.Interfaces;
 using Application.Onchain;
 using Application.Onchain.Interfaces;
+using Application.Onchain.Resolvers;
+using Application.Onchain.Resolvers.Local;
+using Application.Onchain.Resolvers.Remote;
+using Application.Onchain.Resolvers.Revoked;
 using Daemon.Extensions;
 using Daemon.Handlers;
 using Daemon.Interfaces;
@@ -266,6 +270,73 @@ public class OnchainClientHandlerTests
         Assert.Equal(20U, provider.GetRequiredService<IOptions<OnchainOptions>>().Value.IrrevocableDepth);
         Assert.Equal(15, (int)ClientCommand.PendingSweeps);
         Assert.Equal(14, (int)ClientCommand.ForceCloseChannel);
+    }
+
+    [Theory]
+    [InlineData(ChannelCloseKind.LocalCommitment, typeof(LocalCommitResolver))]
+    [InlineData(ChannelCloseKind.RemoteCommitment, typeof(RemoteCommitResolver))]
+    [InlineData(ChannelCloseKind.RemoteNextCommitment, typeof(RemoteCommitResolver))]
+    [InlineData(ChannelCloseKind.FutureCommitment, typeof(RemoteCommitResolver))]
+    [InlineData(ChannelCloseKind.RevokedCommitment, typeof(RevokedCommitResolver))]
+    public void Given_NodeServices_When_Composed_Then_ExactlyOneResolverHandlesEachCommitmentKind(
+        ChannelCloseKind kind, Type expectedResolver)
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Network"] = "regtest",
+                               ["Database:Provider"] = "Sqlite",
+                               ["Database:ConnectionString"] = "Data Source=:memory:",
+                               ["Node:Onchain:ReasonableDepth"] = "3",
+                               ["Node:Onchain:IrrevocableDepth"] = "20"
+                           })
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        // Act
+        var resolvers = scope.ServiceProvider.GetServices<IOutputResolver>().Where(r => r.CanResolve(kind)).ToList();
+
+        // Assert
+        var resolver = Assert.Single(resolvers);
+        Assert.IsType(expectedResolver, resolver);
+        Assert.Equal(3U, provider.GetRequiredService<IOptions<LocalCommitResolverOptions>>().Value.ReasonableDepth);
+        Assert.Equal(3U, provider.GetRequiredService<IOptions<RemoteResolutionOptions>>().Value.ReasonableDepth);
+        Assert.Equal(20U, provider.GetRequiredService<IOptions<RevokedCommitResolverOptions>>().Value.IrrevocableDepth);
+    }
+
+    [Theory]
+    [InlineData(ChannelCloseKind.Mutual)]
+    [InlineData(ChannelCloseKind.Unknown)]
+    public void Given_NodeServices_When_Composed_Then_NoResolverHandlesMutualOrUnknown(ChannelCloseKind kind)
+    {
+        // Arrange
+        var configuration = new ConfigurationBuilder()
+                           .AddInMemoryCollection(new Dictionary<string, string?>
+                           {
+                               ["Node:Network"] = "regtest",
+                               ["Database:Provider"] = "Sqlite",
+                               ["Database:ConnectionString"] = "Data Source=:memory:"
+                           })
+                           .Build();
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(configuration, new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using var scope = provider.CreateScope();
+
+        // Act
+        var resolvers = scope.ServiceProvider.GetServices<IOutputResolver>().ToList();
+
+        // Assert
+        Assert.Equal(3, resolvers.Count);
+        Assert.DoesNotContain(resolvers, r => r.CanResolve(kind));
     }
 
     private delegate bool TryGetStateCallback(ChannelId channelId, out ChannelState state);
