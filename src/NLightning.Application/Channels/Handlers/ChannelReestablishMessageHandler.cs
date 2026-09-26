@@ -95,7 +95,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
         if (channel.State is not (ChannelState.V1FundingSigned or ChannelState.ReadyForThem
                                or ChannelState.ReadyForUs or ChannelState.Open or ChannelState.ShuttingDown
-                               or ChannelState.Negotiating))
+                               or ChannelState.Negotiating or ChannelState.Closing))
             throw new ChannelWarningException(
                 $"Ignoring channel_reestablish on channel {channelId} in state {Enum.GetName(channel.State)}", channelId,
                 "channel_reestablish ignored: channel not active");
@@ -126,16 +126,26 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             channelId, local.LocalCommitmentNumber + 1, local.RemoteCommitmentNumber, peer.NextCommitmentNumber,
             peer.NextRevocationNumber, plan.Outcome, string.Join(", ", plan.Steps));
 
+        // A Closing channel's transaction is agreed, persisted and broadcast: a mismatch can't fail it (that would
+        // broadcast a commitment against the close); only our shutdown is retransmitted
+        if (channel.State == ChannelState.Closing && plan.Outcome != ReestablishOutcome.Resume)
+        {
+            _logger.LogWarning(
+                "channel_reestablish mismatch on closing channel {ChannelId} ({Requirement}: {Reason}); waiting for the closing transaction",
+                channelId, plan.RequirementId, plan.Reason);
+            plan = plan with { Steps = [] };
+        }
+
         switch (plan.Outcome)
         {
-            case ReestablishOutcome.DataLoss:
+            case ReestablishOutcome.DataLoss when channel.State != ChannelState.Closing:
                 await PersistDataLossAsync(channel, plan);
                 throw new ChannelFailedException(channelId, $"[{plan.RequirementId}] {plan.Reason}",
                                                  "we lost channel state, please fail the channel")
                 {
                     RequirementId = plan.RequirementId
                 };
-            case ReestablishOutcome.Fail:
+            case ReestablishOutcome.Fail when channel.State != ChannelState.Closing:
                 throw new ChannelFailedException(channelId, $"[{plan.RequirementId}] {plan.Reason}",
                                                  $"channel_reestablish mismatch: {plan.Reason}")
                 {
@@ -171,8 +181,10 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 ];
 
             case ReestablishStep.ChannelReady:
-                // Only a channel_ready we already sent is retransmitted (not while we wait for our own confirmation)
-                if (channel.State is not (ChannelState.ReadyForUs or ChannelState.Open))
+                // Only a channel_ready we already sent is retransmitted (not while we wait for our own confirmation). A
+                // closing channel was Open before its first shutdown, so it sent one too (B2-RE-15: both next numbers 1)
+                if (channel.State is not (ChannelState.ReadyForUs or ChannelState.Open or ChannelState.ShuttingDown
+                                       or ChannelState.Negotiating or ChannelState.Closing))
                     return [];
 
                 var secondPoint = _lightningSigner.GetPerCommitmentPoint(channelId, local.LocalCommitmentNumber + 1);

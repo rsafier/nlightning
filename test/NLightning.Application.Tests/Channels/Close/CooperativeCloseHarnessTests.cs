@@ -230,6 +230,78 @@ public class CooperativeCloseHarnessTests
     }
 
     [Fact]
+    public async Task Given_IdleChannelShuttingDown_When_Reconnect_Then_ChannelReadyAndShutdownRetransmitted()
+    {
+        // Arrange - regression: a channel closed before any payment (both next_commitment_numbers still 1) skipped
+        // the channel_ready retransmission BOLT 2 requires, and a retransmitted channel_ready in ShuttingDown was
+        // answered with an error. Only Alice's shutdown reaches Bob; Bob's reply is lost with the link
+        using var close = new CloseHarness();
+        await close.CloseService(close.Alice).CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                                TestContext.Current.CancellationToken);
+        close.Harness.DeliveryBudget = 1;
+        await close.Harness.PumpAsync();
+        Assert.Equal(ChannelState.ShuttingDown, close.Alice.Channel.State);
+        Assert.Equal(ChannelState.Negotiating, close.Bob.Channel.State);
+        await close.Harness.DisconnectAsync();
+        Assert.Contains(close.Bob.Lost, m => m is ShutdownMessage);
+        var bobBefore = close.Bob.Received.Count;
+        var aliceBefore = close.Alice.Received.Count;
+
+        // Act
+        close.Harness.DeliveryBudget = null;
+        await close.Harness.ReconnectAsync();
+        await close.Harness.PumpAsync();
+
+        // Assert (B2-RE-15, B2-RE-28): reestablish, channel_ready, shutdown on both sides, then the close completes
+        foreach (var after in new[]
+                 {
+                     close.Bob.Received.Skip(bobBefore).ToList(), close.Alice.Received.Skip(aliceBefore).ToList()
+                 })
+        {
+            Assert.IsType<ChannelReestablishMessage>(after[0]);
+            Assert.IsType<ChannelReadyMessage>(after[1]);
+            Assert.IsType<ShutdownMessage>(after[2]);
+        }
+
+        close.AssertClosedTogether();
+    }
+
+    [Fact]
+    public async Task Given_ClosingWithEchoLost_When_Reconnect_Then_PeerRestartsAndBothClose()
+    {
+        // Arrange - regression: Bob agreed (Closing) but his final closing_signed was lost with the link; a Closing
+        // channel sent no channel_reestablish and ignored the restarted negotiation, so Alice stayed Negotiating
+        using var close = new CloseHarness(aliceSendsFeeRange: false, bobSendsFeeRange: false);
+        await close.CloseService(close.Alice).CloseChannelAsync(TwoNodeHarness.ChannelId, new ChannelCloseRequest(),
+                                                                TestContext.Current.CancellationToken);
+        while (close.Bob.Channel.State != ChannelState.Closing)
+        {
+            close.Harness.DeliveryBudget = close.Harness.Delivered + 1;
+            await close.Harness.PumpAsync();
+        }
+
+        Assert.Equal(ChannelState.Negotiating, close.Alice.Channel.State);
+        await close.Harness.DisconnectAsync();
+        Assert.Contains(close.Bob.Lost, m => m is ClosingSignedMessage);
+        var bobBefore = close.Bob.Received.Count;
+        var aliceBefore = close.Alice.Received.Count;
+
+        // Act
+        close.Harness.DeliveryBudget = null;
+        await close.Harness.ReconnectAsync();
+        await close.Harness.PumpAsync();
+
+        // Assert: Bob took part in the reestablish, re-sent his shutdown and answered Alice's restarted proposal
+        var bobAfter = close.Bob.Received.Skip(bobBefore).ToList();
+        var aliceAfter = close.Alice.Received.Skip(aliceBefore).ToList();
+        Assert.IsType<ChannelReestablishMessage>(bobAfter[0]);
+        Assert.IsType<ChannelReestablishMessage>(aliceAfter[0]);
+        Assert.Contains(aliceAfter, m => m is ShutdownMessage);
+        Assert.Single(aliceAfter.OfType<ClosingSignedMessage>());
+        close.AssertClosedTogether();
+    }
+
+    [Fact]
     public async Task Given_Closing_When_CloseAgain_Then_ReportsTheClosingTransaction()
     {
         // Arrange

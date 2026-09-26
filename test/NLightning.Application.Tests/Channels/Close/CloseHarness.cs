@@ -13,7 +13,6 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
-using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Messages;
@@ -62,9 +61,8 @@ internal sealed class CloseHarness : IDisposable
 
             var monitor = new Mock<IBlockchainMonitor>();
             monitor.SetupGet(m => m.LastProcessedBlockHeight).Returns(TwoNodeHarness.BlockHeight);
-            monitor.Setup(m => m.PublishAndWatchTransactionAsync(It.IsAny<ChannelId>(), It.IsAny<SignedTransaction>(),
-                                                                 It.IsAny<uint>()))
-                   .Callback((ChannelId _, SignedTransaction tx, uint _) =>
+            monitor.Setup(m => m.PublishTransactionAsync(It.IsAny<SignedTransaction>()))
+                   .Callback((SignedTransaction tx) =>
                     {
                         lock (published)
                             published.Add(tx);
@@ -84,7 +82,7 @@ internal sealed class CloseHarness : IDisposable
     public IChannelCloseService CloseService(HarnessNode node) =>
         node.Services.GetRequiredService<IChannelCloseService>();
 
-    /// <summary>The closing transactions <paramref name="node"/> asked the monitor to publish and watch.</summary>
+    /// <summary>The closing transactions <paramref name="node"/> asked the monitor to publish.</summary>
     public IReadOnlyList<SignedTransaction> Published(HarnessNode node)
     {
         var published = _published[node.Name];

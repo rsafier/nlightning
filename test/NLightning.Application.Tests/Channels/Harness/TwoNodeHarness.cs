@@ -352,6 +352,9 @@ internal sealed class HarnessNode : IDisposable
     public InMemoryChannelStateStore Store { get; }
     public ReestablishTracker Tracker { get; }
 
+    /// <summary>The watched-transaction rows the node's unit of work stages (a loose mock).</summary>
+    public Mock<IWatchedTransactionDbRepository> WatchedTransactions { get; } = new();
+
     /// <summary>
     /// Whether the peer is connected: the liveness probe answers it (with the channel's link pinned at
     /// <see cref="Open"/>), and while it is false every message this node raises is dropped, as
@@ -420,6 +423,7 @@ internal sealed class HarnessNode : IDisposable
         channelDb.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
                  .ReturnsAsync((ChannelId id) => _channels.TryGetChannel(id, out var channel) ? channel : null);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.WatchedTransactionDbRepository).Returns(WatchedTransactions.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             Store.Commit();

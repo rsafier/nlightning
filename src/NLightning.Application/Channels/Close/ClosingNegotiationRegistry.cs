@@ -31,6 +31,12 @@ public sealed class ClosingNegotiationRegistry
         /// <summary>The peer's <c>shutdown</c> arrived on its current connection.</summary>
         public bool ShutdownReceivedOnConnection { get; set; }
 
+        /// <summary>
+        /// Our <c>closing_signed</c> for the agreed transaction went out on the current connection in answer to the
+        /// same fee (a Closing channel answers that once per connection, so two Closing nodes never echo forever).
+        /// </summary>
+        public bool AgreedClosingSignedSentOnConnection { get; set; }
+
         /// <summary>The negotiation on the current connection, or null before its first <c>closing_signed</c>.</summary>
         public ClosingNegotiation? Negotiation { get; set; }
 
@@ -64,6 +70,7 @@ public sealed class ClosingNegotiationRegistry
         {
             ShutdownSentOnConnection = false;
             ShutdownReceivedOnConnection = false;
+            AgreedClosingSignedSentOnConnection = false;
             Negotiation = null;
         }
     }

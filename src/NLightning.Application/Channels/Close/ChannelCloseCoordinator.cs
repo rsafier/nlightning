@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBitcoinTransaction = NBitcoin.Transaction;
 
 namespace NLightning.Application.Channels.Close;
 
@@ -140,6 +141,7 @@ public sealed class ChannelCloseCoordinator
         if (channel.State < ChannelState.ShuttingDown)
             channel.UpdateState(ChannelState.ShuttingDown);
         await PersistAsync(channel);
+        WatchFundingSpend(channel);
 
         _registry.Get(channel.ChannelId).ShutdownSentOnConnection = true;
         _logger.LogInformation("Sending shutdown for channel {ChannelId} to {Script}", channel.ChannelId, script);
@@ -213,6 +215,7 @@ public sealed class ChannelCloseCoordinator
             if (channel.State < ChannelState.ShuttingDown)
                 channel.UpdateState(ChannelState.ShuttingDown);
             await PersistAsync(channel);
+            WatchFundingSpend(channel);
             _logger.LogInformation("Peer {Peer} sent shutdown for channel {ChannelId} to {Script}",
                                    channel.RemoteNodeId, channelId, script);
         }
@@ -294,6 +297,17 @@ public sealed class ChannelCloseCoordinator
 
         if (channel.State is ChannelState.Closing or ChannelState.Closed)
         {
+            // The peer restarted the negotiation after a reconnection (our final closing_signed may have been lost):
+            // answer with the agreed fee and our signature of the stored transaction
+            if (channel.State == ChannelState.Closing
+             && CreateAgreedClosingSigned(channel, (ulong)message.Payload.FeeAmount.Satoshi) is { } agreed)
+            {
+                _logger.LogInformation(
+                    "closing_signed for closing channel {ChannelId}: answering with the agreed fee of {Fee} sat",
+                    channelId, (ulong)agreed.Payload.FeeAmount.Satoshi);
+                return [agreed];
+            }
+
             _logger.LogInformation("Ignoring closing_signed for channel {ChannelId}: the closing transaction is out",
                                    channelId);
             return [];
@@ -401,7 +415,12 @@ public sealed class ChannelCloseCoordinator
 
         channel.SetClosingTransaction(closingTransaction);
         channel.UpdateState(ChannelState.Closing);
+
+        // The watch is saved in the same save as Closing, so no crash leaves a Closing channel without it
+        var watch = StageClosingWatch(channel, closingTransaction.TxId);
         await PersistAsync(channel);
+        if (watch is not null)
+            _blockchainMonitor?.TrackWatchedTransaction(watch);
         _registry.Get(channel.ChannelId).CompleteWaiters(closingTransaction.TxId);
         _logger.LogInformation("Channel {ChannelId} agreed on closing transaction {TxId} with a fee of {Fee} sat",
                                channel.ChannelId, closingTransaction.TxId, decision.FeeSat);
@@ -416,8 +435,22 @@ public sealed class ChannelCloseCoordinator
     }
 
     /// <summary>
-    /// Publishes and watches the closing transaction (the watch is saved first, so a restart keeps waiting for it). A
-    /// failed broadcast is logged: the peer broadcasts the same transaction, and it is stored for a rebroadcast.
+    /// The watch of the closing transaction, staged on this unit of work (saved with <see cref="ChannelState.Closing"/>),
+    /// or null without a blockchain monitor.
+    /// </summary>
+    private WatchedTransactionModel? StageClosingWatch(ChannelModel channel, TxId closingTxId)
+    {
+        if (_blockchainMonitor is null)
+            return null;
+
+        var watch = new WatchedTransactionModel(channel.ChannelId, closingTxId, _options.ConfirmationDepth);
+        _unitOfWork.WatchedTransactionDbRepository.Add(watch);
+        return watch;
+    }
+
+    /// <summary>
+    /// Publishes the closing transaction (its watch was saved with Closing). A failed broadcast is logged: the peer
+    /// broadcasts the same transaction, and it is stored for a rebroadcast at startup.
     /// </summary>
     private async Task BroadcastAsync(ChannelModel channel, SignedTransaction closingTransaction)
     {
@@ -426,8 +459,7 @@ public sealed class ChannelCloseCoordinator
 
         try
         {
-            await _blockchainMonitor.PublishAndWatchTransactionAsync(channel.ChannelId, closingTransaction,
-                                                                     _options.ConfirmationDepth);
+            await _blockchainMonitor.PublishTransactionAsync(closingTransaction);
         }
         catch (Exception e)
         {
@@ -532,6 +564,29 @@ public sealed class ChannelCloseCoordinator
     private SignedVariant? FindSignedVariant(ChannelModel channel, CloseContext context, ulong feeSat,
                                              CompactSignature signature)
     {
+        foreach (var (model, unsigned) in BuildVariants(context, feeSat))
+        {
+            try
+            {
+                _lightningSigner.ValidateSignature(channel.ChannelId, signature, unsigned);
+                return new SignedVariant(model, unsigned);
+            }
+            catch (SignerException)
+            {
+                // Not this variant
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The distinct closing transactions at <paramref name="feeSat"/> either side may have signed (B2-CLS-R01): trimmed
+    /// by the peer's dust limit, the same without the peer's output, or trimmed by our dust limit.
+    /// </summary>
+    private IEnumerable<(ClosingTransactionModel Model, SignedTransaction Unsigned)> BuildVariants(
+        CloseContext context, ulong feeSat)
+    {
         var seen = new HashSet<TxId>();
         foreach (var (dustLimit, variant) in new[]
                  {
@@ -554,24 +609,69 @@ public sealed class ChannelCloseCoordinator
             }
 
             var unsigned = _closingTransactionBuilder.Build(model);
-            if (!seen.Add(unsigned.TxId))
+            if (seen.Add(unsigned.TxId))
+                yield return (model, unsigned);
+        }
+    }
+
+    /// <summary>
+    /// Our <c>closing_signed</c> for the stored closing transaction (its fee, our signature of it), or null when we
+    /// already answered that fee on this connection, or the stored transaction is none of our variants (e.g. recorded
+    /// from the chain).
+    /// </summary>
+    private ClosingSignedMessage? CreateAgreedClosingSigned(ChannelModel channel, ulong receivedFeeSat)
+    {
+        if (channel is not { ClosingTransaction: { } stored, FundingOutput: { } funding }
+         || channel.LocalShutdownScript is null || channel.RemoteShutdownScript is null)
+            return null;
+
+        ulong feeSat;
+        try
+        {
+            var outputsSat = NBitcoinTransaction.Load(stored.RawTxBytes, NBitcoin.Network.Main).Outputs
+                                                .Sum(o => o.Value.Satoshi);
+            feeSat = (ulong)(funding.Amount.Satoshi - outputsSat);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "The stored closing transaction of channel {ChannelId} can't be read",
+                               channel.ChannelId);
+            return null;
+        }
+
+        // The peer sending our fee is either its echo (nothing to answer) or its restart after it lost ours: answered
+        // once per connection, which also ends a crossing of two echoes
+        var entry = _registry.Get(channel.ChannelId);
+        if (feeSat == receivedFeeSat && entry.AgreedClosingSignedSentOnConnection)
+            return null;
+
+        var context = BuildContext(channel, entry);
+        foreach (var (_, unsigned) in BuildVariants(context, feeSat))
+        {
+            if (unsigned.TxId != stored.TxId)
                 continue;
 
-            try
-            {
-                _lightningSigner.ValidateSignature(channel.ChannelId, signature, unsigned);
-                return new SignedVariant(model, unsigned);
-            }
-            catch (SignerException)
-            {
-                // Not this variant
-            }
+            var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, unsigned);
+            if (feeSat == receivedFeeSat)
+                entry.AgreedClosingSignedSentOnConnection = true;
+            return CreateClosingSigned(channel.ChannelId, feeSat, null, signature);
         }
 
         return null;
     }
 
     #endregion
+
+    /// <summary>
+    /// From the first <c>shutdown</c> on, every proposal we sign can be broadcast by the peer, so a spend of the funding
+    /// output is watched (<c>ChannelManager</c> records a mutual close it did not agree on this connection, e.g. when
+    /// the peer's final <c>closing_signed</c> was lost). <c>ChannelManager</c> registers it again at startup.
+    /// </summary>
+    private void WatchFundingSpend(ChannelModel channel)
+    {
+        if (channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex })
+            _blockchainMonitor?.WatchOutpointSpend(channel.ChannelId, fundingTxId, fundingIndex);
+    }
 
     private async Task PersistAsync(ChannelModel channel)
     {
