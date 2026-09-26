@@ -97,6 +97,27 @@ public class GossipOriginTrackerTests
     }
 
     [Fact]
+    public void Given_TheRelayOff_When_APeerHandsOverGossip_Then_ItIsPassedOnButNotRecorded()
+    {
+        // Arrange: NL-384, nobody reads the origins while others' gossip is not relayed
+        var tracker = new GossipOriginTracker();
+        var inner = new Mock<IGossipIngress>();
+        inner.SetupGet(i => i.IsEnabled).Returns(true);
+        inner.Setup(i => i.TryEnqueue(It.IsAny<IPeerService>(), It.IsAny<IMessage>())).Returns(true);
+        var peer = new FakeGossipPeer(0x41);
+        var update = GraphTestKit.SignedChannelUpdate(s_scid, SyncTestGraph.NodeA, 0, 100);
+        var ingress = new OriginTrackingGossipIngress(inner.Object, tracker, recordOrigins: false);
+
+        // Act
+        var queued = ingress.TryEnqueue(peer, update);
+
+        // Assert
+        Assert.True(queued);
+        inner.Verify(i => i.TryEnqueue(peer, update), Times.Once);
+        Assert.Equal(0, tracker.Count);
+    }
+
+    [Fact]
     public void Given_TheGraphDisabled_When_APeerHandsOverGossip_Then_NothingIsRecorded()
     {
         // Arrange
