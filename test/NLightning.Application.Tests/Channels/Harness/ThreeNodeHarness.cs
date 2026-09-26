@@ -96,6 +96,12 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     public static readonly ShortChannelId AliceBobScid = new(400, 1, 0);
     public static readonly ShortChannelId BobCarolScid = new(400, 2, 1);
 
+    /// <summary>Bob's alias of the Bob-Carol channel (the scid Carol puts in her route hints).</summary>
+    public static readonly ShortChannelId BobCarolBobAlias = new(16_000_000, 1, 1);
+
+    /// <summary>Carol's alias of the Bob-Carol channel.</summary>
+    public static readonly ShortChannelId BobCarolCarolAlias = new(16_000_000, 2, 1);
+
     /// <summary>Bob's forwarding policy (distinct values so a fee mix-up shows).</summary>
     public static RoutingOptions BobRouting => new()
     {
@@ -125,7 +131,11 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
 
     /// <param name="beforeStart">Runs before the nodes start, e.g. to set <see cref="SwitchNode.ConfigureServices"/>.
     /// </param>
-    public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null)
+    /// <param name="bobCarolScidAlias">The Bob-Carol channel's <c>option_scid_alias</c>: <c>No</c>, negotiated only
+    /// (<c>Optional</c>) or in its channel type (<c>Compulsory</c>). Unless <c>No</c>, both ends carry aliases
+    /// (<see cref="BobCarolBobAlias"/>, <see cref="BobCarolCarolAlias"/>).</param>
+    public static async Task<ThreeNodeHarness> CreateAsync(Action<ThreeNodeHarness>? beforeStart = null,
+                                                           FeatureSupport bobCarolScidAlias = FeatureSupport.No)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-three-node-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
@@ -135,7 +145,8 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
             await node.StartAsync(migrate: true);
 
         await harness.OpenChannelAsync(harness.Alice, 1, harness.Bob, 1, AliceBobChannelId, AliceBobScid, 0x71);
-        await harness.OpenChannelAsync(harness.Bob, 2, harness.Carol, 1, BobCarolChannelId, BobCarolScid, 0x72);
+        await harness.OpenChannelAsync(harness.Bob, 2, harness.Carol, 1, BobCarolChannelId, BobCarolScid, 0x72,
+                                       bobCarolScidAlias, BobCarolBobAlias, BobCarolCarolAlias);
         return harness;
     }
 
@@ -253,15 +264,18 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     /// CLTV at height + <paramref name="finalCltvDelta"/>. <paramref name="payee"/> replaces Carol's node id in the
     /// onion (to make Carol's peel fail).
     /// </summary>
+    /// <param name="bobCarolScid">The scid of the Bob-Carol channel in Bob's hop payload (default
+    /// <see cref="BobCarolScid"/>, the real one).</param>
     public PaymentRoute RouteToCarol(LightningMoney amount, Hash paymentHash, Secret paymentSecret,
-                                     uint finalCltvDelta = 43, CompactPubKey? payee = null)
+                                     uint finalCltvDelta = 43, CompactPubKey? payee = null,
+                                     ShortChannelId? bobCarolScid = null)
     {
         var routing = BobRouting;
         var finalCltv = BlockHeight + finalCltvDelta;
         var bobFee = ForwardingFeeOf(routing, amount);
         var hops = new List<RouteHop>
         {
-            new(Bob.NodeId, amount, finalCltv, BobCarolScid),
+            new(Bob.NodeId, amount, finalCltv, bobCarolScid ?? BobCarolScid),
             new(payee ?? Carol.NodeId, amount, finalCltv, null)
         };
         return new PaymentRoute(hops, amount + bobFee, finalCltv + routing.CltvExpiryDelta, paymentHash,
@@ -345,7 +359,9 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     }
 
     private async Task OpenChannelAsync(SwitchNode funder, uint funderKeyIndex, SwitchNode fundee, uint fundeeKeyIndex,
-                                        ChannelId channelId, ShortChannelId scid, byte fundingTag)
+                                        ChannelId channelId, ShortChannelId scid, byte fundingTag,
+                                        FeatureSupport scidAlias = FeatureSupport.No,
+                                        ShortChannelId? funderAlias = null, ShortChannelId? fundeeAlias = null)
     {
         var funderParty = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(20_000),
                                            LightningMoney.MilliSatoshis(1_000), 30,
@@ -360,9 +376,16 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
                                              new Sha256());
 
         var funderChannel = CreateChannel(funder, funderKeyIndex, fundee, fundeeKeyIndex, funderParty, fundeeParty,
-                                          true, channelId, scid, fundingTxId, obscuring);
+                                          true, channelId, scid, fundingTxId, obscuring, scidAlias);
         var fundeeChannel = CreateChannel(fundee, fundeeKeyIndex, funder, funderKeyIndex, fundeeParty, funderParty,
-                                          false, channelId, scid, fundingTxId, obscuring);
+                                          false, channelId, scid, fundingTxId, obscuring, scidAlias);
+        if (scidAlias != FeatureSupport.No && funderAlias is { } a && fundeeAlias is { } b)
+        {
+            funderChannel.LocalAliases = [a];
+            funderChannel.RemoteAlias = b;
+            fundeeChannel.LocalAliases = [b];
+            fundeeChannel.RemoteAlias = a;
+        }
 
         await funder.OpenAsync(funderChannel, fundee.Point(fundeeKeyIndex, 0), fundee.Point(fundeeKeyIndex, 1));
         await fundee.OpenAsync(fundeeChannel, funder.Point(funderKeyIndex, 0), funder.Point(funderKeyIndex, 1));
@@ -371,12 +394,13 @@ internal sealed class ThreeNodeHarness : IAsyncDisposable
     private static ChannelModel CreateChannel(SwitchNode self, uint selfKeyIndex, SwitchNode peer, uint peerKeyIndex,
                                               ChannelParty local, ChannelParty remote, bool isInitiator,
                                               ChannelId channelId, ShortChannelId scid, TxId fundingTxId,
-                                              CommitmentNumber obscuring)
+                                              CommitmentNumber obscuring,
+                                              FeatureSupport scidAlias = FeatureSupport.No)
     {
         var selfBasepoints = self.Basepoints(selfKeyIndex);
         var peerBasepoints = peer.Basepoints(peerKeyIndex);
         var channelParams = new ChannelParams(local, remote, LightningMoney.Satoshis(InitialFeeratePerKw), 3, false,
-                                              FeatureSupport.No);
+                                              scidAlias);
         var funderKey = isInitiator ? selfBasepoints.FundingPubKey : peerBasepoints.FundingPubKey;
         var fundeeKey = isInitiator ? peerBasepoints.FundingPubKey : selfBasepoints.FundingPubKey;
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(FundingSatoshis), funderKey, fundeeKey,
