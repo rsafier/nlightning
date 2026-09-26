@@ -91,6 +91,43 @@ public class GraphModelTests
     }
 
     [Fact]
+    public void Given_TwoPoliciesWithEqualContentInDistinctBuffers_When_Compared_Then_TheyAreEqual()
+    {
+        // Arrange: NL-354, a policy reloaded from the database carries copies of the byte fields
+        var original = GraphTestKit.Policy(7) with
+        {
+            ExtraData = new byte[] { 0x01, 0x02 },
+            RawUpdate = new byte[] { 0xAA, 0xBB }
+        };
+        var reloaded = GraphTestKit.Policy(7) with
+        {
+            ExtraData = new byte[] { 0x01, 0x02 },
+            RawUpdate = new byte[] { 0xAA, 0xBB }
+        };
+        var channel = new GraphChannel(s_scid, s_node1, s_node2, s_node1, s_node2, 1_000);
+
+        // Act / Assert
+        Assert.Equal(original, reloaded);
+        Assert.Equal(original.GetHashCode(), reloaded.GetHashCode());
+        Assert.Equal(channel.WithPolicy(original), channel.WithPolicy(reloaded));
+    }
+
+    [Fact]
+    public void Given_PoliciesDifferingInExtraDataOrFields_When_Compared_Then_TheyDiffer()
+    {
+        // Arrange
+        var policy = GraphTestKit.Policy(7) with { ExtraData = new byte[] { 0x01 } };
+
+        // Act / Assert: the unknown trailing fields are signed policy content; the raw bytes are not compared
+        Assert.NotEqual(policy, policy with { ExtraData = new byte[] { 0x02 } });
+        Assert.NotEqual(policy, policy with { ExtraData = default });
+        Assert.NotEqual(policy, policy with { FeeProportionalMillionths = policy.FeeProportionalMillionths + 1 });
+        Assert.NotEqual(policy, policy with { MessageFlags = (byte)(policy.MessageFlags ^ 0x02) });
+        Assert.Equal(policy, policy with { RawUpdate = new byte[] { 0x42 } });
+        Assert.Equal(policy with { ExtraData = default }, policy with { ExtraData = Array.Empty<byte>() });
+    }
+
+    [Fact]
     public void Given_NodeAnnouncementFields_When_BuildingNode_Then_AliasAndColorRead()
     {
         // Arrange
