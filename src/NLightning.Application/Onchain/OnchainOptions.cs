@@ -1,5 +1,6 @@
 namespace NLightning.Application.Onchain;
 
+using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
 
 /// <summary>
@@ -21,4 +22,16 @@ public sealed class OnchainOptions
     /// <c>Closed</c> once the funding spend and every output's resolution are this deep. Only lower it on regtest.
     /// </summary>
     public uint IrrevocableDepth { get; set; } = OutputResolutionFacts.DefaultIrrevocableDepth;
+
+    /// <summary>
+    /// The fee rules of our sweeps, claims and penalties (<c>Node:Onchain:FeePolicy</c>, BOLT 5 plan §3.7): the
+    /// <see cref="SweepFeePolicy"/> singleton the resolvers and the <c>SweepScheduler</c> share.
+    /// </summary>
+    public SweepFeePolicyOptions FeePolicy { get; set; } = new();
+
+    /// <summary>
+    /// Blocks to wait for the peer's commitment to confirm again after a reorg took it out of the chain before we
+    /// broadcast our own latest commitment (<c>Node:Onchain:ReorgGraceBlocks</c>, BOLT 5 plan §3.8, O6-T3).
+    /// </summary>
+    public uint ReorgGraceBlocks { get; set; } = 6;
 }

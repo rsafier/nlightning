@@ -8,6 +8,7 @@ namespace NLightning.Application.Tests.Onchain;
 
 using Application.Channels.Services;
 using Application.Onchain;
+using Application.Onchain.Fees;
 using Channels.Services;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
@@ -40,6 +41,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
     private readonly Mock<IOutpointWatcher> _outpointWatcher = new();
     private readonly Mock<IHtlcSwitch> _htlcSwitch = new();
     private readonly FakeResolver _resolver = new();
+    private readonly FakeSweepScheduler _sweepScheduler = new();
     private readonly FakeBitcoinChain _chain = new(SpentAt - 1);
     private readonly List<string> _calls = [];
     private readonly ServiceProvider _provider;
@@ -80,6 +82,7 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
         services.AddScoped<IOutputResolver>(_ => _resolver);
+        services.AddSingleton<ISweepScheduler>(_sweepScheduler);
         services.AddSingleton(_htlcSwitch.Object);
         services.AddSingleton<IBitcoinChainService>(_chain);
         _provider = services.BuildServiceProvider();
@@ -407,6 +410,64 @@ public sealed class OnchainResolutionExecutorTests : IDisposable
         transaction.Inputs.Add(new OutPoint(new uint256(spent), vout));
         transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
         return new SignedTransaction(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
+    }
+
+    [Fact]
+    public async Task Given_SchedulerReplacesASweep_When_Round_Then_ReplacementSavedWithTheResolverActionsThenPublished()
+    {
+        // Arrange: a pending sweep the scheduler replaces (O6-T1)
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal, OutputResolutionState.Broadcast);
+        var replacement = CreateBroadcast(0x61);
+        _sweepScheduler.OnPlan = (_, outputs, height) =>
+        [
+            new UpsertOutputAction(outputs[0] with { ResolvingTransactionId = replacement.TransactionId }),
+            new BroadcastAction(replacement)
+        ];
+
+        // Act
+        await CreateExecutor().RunRoundAsync(SpentAt + 40, TestContext.Current.CancellationToken);
+
+        // Assert: planned after the resolver, at the round's height, with the resolver's rows; one save, then publish
+        Assert.Equal(SpentAt + 40, _sweepScheduler.LastHeight);
+        Assert.Equal(["output 0 Broadcast", "broadcast Sweep"], Assert.Single(_store.Saves));
+        Assert.Equal(["save", "publish Sweep"], _calls);
+        Assert.Equal(replacement.TransactionId, _store.Outputs.Values.Single().ResolvingTransactionId);
+    }
+
+    [Fact]
+    public async Task Given_SpendEvent_When_Handled_Then_SchedulerNotAsked()
+    {
+        // Arrange: bumping is a per-block decision, not a reaction to a spend
+        AddOutput(0, OutputDescriptorKind.DelayedToLocal);
+        var spend = CreateSpend(s_commitmentTxId, 0);
+
+        // Act
+        await CreateExecutor().HandleOutputSpentAsync(
+            new OutpointSpentEventArgs(_channel.ChannelId, spend, SpentAt + 3, 1, s_commitmentTxId, 0,
+                                       OnchainTestStore.BlockHash(3)), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(_sweepScheduler.LastHeight);
+    }
+
+    /// <summary>A sweep scheduler whose answers the test sets.</summary>
+    private sealed class FakeSweepScheduler : ISweepScheduler
+    {
+        public Func<ChannelCloseModel, IReadOnlyList<OutputResolutionModel>, uint,
+            IReadOnlyList<OutputResolverAction>>? OnPlan
+        { get; set; }
+
+        public uint? LastHeight { get; private set; }
+
+        public Task<IReadOnlyList<OutputResolverAction>> PlanAsync(ChannelCloseModel close,
+                                                                   IReadOnlyList<OutputResolutionModel> outputs,
+                                                                   uint height,
+                                                                   Domain.Persistence.Interfaces.IUnitOfWork unitOfWork,
+                                                                   CancellationToken cancellationToken)
+        {
+            LastHeight = height;
+            return Task.FromResult(OnPlan?.Invoke(close, outputs, height) ?? []);
+        }
     }
 
     /// <summary>A resolver whose answers the test sets; it records what it was asked.</summary>

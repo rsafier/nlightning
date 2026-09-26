@@ -77,6 +77,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// staged writes lost, as when the round's save failed).</summary>
     public bool NotifySpends { get; set; } = true;
 
+    /// <summary>True: mined blocks leave the mempool out (a fee too low to be mined, O6-T1 tests).</summary>
+    public bool HoldMempool { get; set; }
+
     /// <summary>False: <c>IBitcoinChainService.GetTransactionAsync</c> finds nothing (pruned node, RPC down).</summary>
     public bool ChainServiceFindsTransactions { get; set; } = true;
 
@@ -97,6 +100,8 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
         var feeService = new Mock<IFeeService>();
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(() => LightningMoney.Satoshis(FeeEstimatePerKw));
+        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<uint>(), It.IsAny<CancellationToken>()))
                   .ReturnsAsync(() => LightningMoney.Satoshis(FeeEstimatePerKw));
         var chainService = new Mock<IBitcoinChainService>();
         chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>()))
@@ -156,8 +161,11 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     public async Task MineAsync(params Transaction[] transactions)
     {
         Height++;
-        var block = Mempool.Concat(transactions).ToList();
-        Mempool.Clear();
+        var block = (HoldMempool ? [] : Mempool).Concat(transactions).ToList();
+        if (!HoldMempool)
+            Mempool.Clear();
+        foreach (var tx in transactions)
+            Mempool.RemoveAll(m => m.GetHash() == tx.GetHash());
         foreach (var tx in block)
         {
             _knownTransactions[tx.GetHash()] = tx;
@@ -233,6 +241,15 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         Pair.Dispose();
     }
 
+    /// <summary>A unit of work over the harness's rows (for the sweep scheduler).</summary>
+    public IUnitOfWork CreateUnitOfWorkForTests() => CreateUnitOfWork().Object;
+
+    /// <summary>Applies actions as the executor would (rows, broadcasts to the mempool, stages, then events).</summary>
+    public Task ApplyActionsAsync(IReadOnlyList<OutputResolverAction> actions) => ApplyAsync(actions);
+
+    /// <summary>A service of the harness's container (the signer, the fee service).</summary>
+    public T GetService<T>() where T : notnull => _provider.GetRequiredService<T>();
+
     private async Task ApplyAsync(IReadOnlyList<OutputResolverAction> actions)
     {
         var unitOfWork = CreateUnitOfWork().Object;
@@ -245,6 +262,8 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                     break;
                 case BroadcastAction broadcast when !Broadcasts.ContainsKey(broadcast.Transaction.TransactionId):
                     Broadcasts[broadcast.Transaction.TransactionId] = broadcast.Transaction;
+                    if (broadcast.Transaction.ReplacesTransactionId is { } replaced)
+                        Mempool.RemoveAll(m => new TxId(m.GetHash().ToBytes()) == replaced); // BIP 125
                     Mempool.Add(Transaction.Load(broadcast.Transaction.RawTransaction, Network.Main));
                     Log.Add($"broadcast {broadcast.Transaction.Purpose}");
                     break;
@@ -302,6 +321,25 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
         broadcasts.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
                   .ReturnsAsync((TxId txId) => Broadcasts.GetValueOrDefault(txId));
+        broadcasts.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                  .ReturnsAsync(() => Broadcasts.Values.OrderBy(b => b.CreatedAt).ToList());
+        broadcasts.Setup(r => r.MarkReplacedAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId txId) =>
+                   {
+                       if (Broadcasts.GetValueOrDefault(txId) is not { State: BroadcastState.Pending } broadcast)
+                           return false;
+                       broadcast.MarkReplaced();
+                       return true;
+                   });
+        broadcasts.Setup(r => r.MarkAbandonedAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((TxId txId) =>
+                   {
+                       if (Broadcasts.GetValueOrDefault(txId) is not { State: BroadcastState.Pending } broadcast)
+                           return false;
+                       broadcast.MarkAbandoned();
+                       Mempool.RemoveAll(m => new TxId(m.GetHash().ToBytes()) == txId);
+                       return true;
+                   });
 
         var resolutions = new Mock<IOnchainResolutionDbRepository>();
         resolutions.Setup(r => r.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))

@@ -146,6 +146,14 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
     }
 
     /// <inheritdoc />
+    public async Task<uint> GetFeeratePerKwAsync(uint confirmationTarget, CancellationToken cancellationToken)
+    {
+        var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService, confirmationTarget, _logger,
+                                                                 cancellationToken);
+        return estimate > 0 ? estimate : await GetFeeratePerKwAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<uint> GetFeeratePerKwAsync(CancellationToken cancellationToken)
     {
         try

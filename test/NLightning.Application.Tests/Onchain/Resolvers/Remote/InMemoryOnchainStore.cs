@@ -178,6 +178,10 @@ internal sealed class InMemoryOnchainStore
 
         public Task<bool> MarkAbandonedAsync(TxId transactionId) => throw new NotSupportedException();
 
+        public Task<bool> MarkReplacedAsync(TxId transactionId) => throw new NotSupportedException();
+
+        public Task<bool> MarkPendingAsync(TxId transactionId) => throw new NotSupportedException();
+
         public Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync() => throw new NotSupportedException();
 
         public Task MarkConfirmedAsync(TxId transactionId, uint height, Hash blockHash) =>

@@ -578,8 +578,10 @@ public sealed class LocalCommitResolver : IOutputResolver
     {
         var destination = await _destinationProvider.GetDestinationScriptAsync(cancellationToken);
         var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
-        var decision = _feePolicy.Decide(input.AmountSat, weight, await GetFeeEstimateAsync(cancellationToken), false,
-                                         context.Height, null);
+        var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService,
+                                                            _feePolicy.GetConfirmationTarget(context.Height, null),
+                                                            _logger, cancellationToken);
+        var decision = _feePolicy.Decide(input.AmountSat, weight, estimate, false, context.Height, null);
         var dust = ShutdownScriptValidator.GetDustThresholdSat(destination);
         var floorFee = SweepWeights.FeeSat(_feePolicy.Options.MinFeeratePerKw, weight);
         if (decision.Abandon || input.AmountSat < floorFee + dust)
@@ -629,20 +631,6 @@ public sealed class LocalCommitResolver : IOutputResolver
         };
         ReplaceRow(context, swept, actions);
         return swept;
-    }
-
-    private async Task<uint> GetFeeEstimateAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var estimate = await _feeService.GetFeeRatePerKwAsync(cancellationToken);
-            return (uint)Math.Clamp(estimate.Satoshi, 0, uint.MaxValue);
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            _logger.LogWarning("No fee estimate for a sweep ({Reason}); using the floor", e.Message);
-            return 0;
-        }
     }
 
     /// <summary>

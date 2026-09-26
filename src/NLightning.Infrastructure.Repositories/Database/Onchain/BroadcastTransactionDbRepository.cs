@@ -74,6 +74,28 @@ public class BroadcastTransactionDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<bool> MarkReplacedAsync(TxId transactionId)
+    {
+        var entity = await DbSet.FindAsync(transactionId);
+        if (entity is null || entity.State != (byte)BroadcastState.Pending)
+            return false;
+
+        entity.State = (byte)BroadcastState.Replaced;
+        return true;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> MarkPendingAsync(TxId transactionId)
+    {
+        var entity = await DbSet.FindAsync(transactionId);
+        if (entity is null || entity.State is not ((byte)BroadcastState.Abandoned or (byte)BroadcastState.Replaced))
+            return false;
+
+        entity.State = (byte)BroadcastState.Pending;
+        return true;
+    }
+
+    /// <inheritdoc />
     public async Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync()
     {
         const byte pending = (byte)BroadcastState.Pending;
