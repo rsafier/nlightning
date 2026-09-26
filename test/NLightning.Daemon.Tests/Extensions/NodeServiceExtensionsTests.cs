@@ -5,8 +5,10 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
+using Application.Channels.Fees;
 using Application.Channels.Interfaces;
 using Application.Channels.Reestablish;
+using Application.Channels.Safety.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Gossip.Services;
 using Application.Payments.Invoices;
@@ -63,6 +65,11 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<ListChannelsClientRequest,
                                  ListChannelsClientResponse>>());
+        // W3: the N9 safety services, the update_fee scheduler and the dust exposure decorator on the switch
+        Assert.NotNull(provider.GetRequiredService<IChannelFailureService>());
+        Assert.NotNull(provider.GetRequiredService<IHtlcExpiryMonitor>());
+        Assert.NotNull(provider.GetRequiredService<IFeeUpdateScheduler>());
+        Assert.IsType<DustExposureHtlcSwitch>(provider.GetRequiredService<IHtlcSwitch>());
         var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
         Assert.Contains(ClientCommand.ListChannels, commands);
         Assert.Equal(commands.Count, commands.Distinct().Count());
@@ -139,7 +146,8 @@ public class NodeServiceExtensionsTests
         var sendOptions = provider.GetRequiredService<IOptions<PaymentSendOptions>>().Value;
 
         // Assert
-        Assert.IsType<HtlcSwitch>(htlcSwitch);
+        // The switch is decorated with the dust exposure check (AddChannelFeeServices, N9-T3)
+        Assert.IsType<HtlcSwitch>(Assert.IsType<DustExposureHtlcSwitch>(htlcSwitch).Inner);
         Assert.IsType<PaymentService>(paymentService);
         Assert.Same(paymentService, outcomeHandler);
         Assert.IsType<PaymentOutcomeSwitchHandler>(Assert.Single(localHandlers));

@@ -13,6 +13,8 @@ using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
+using Application.Channels.Fees;
+using Application.Channels.Safety.Interfaces;
 using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
 using Daemon.Interfaces;
@@ -250,6 +252,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
         _serviceProvider = BuildServiceProvider();
         var feeServiceStarted = false;
         var peerManagerStarted = false;
+        var safetyStarted = false;
         try
         {
             using (var scope = _serviceProvider.CreateScope())
@@ -269,12 +272,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
             peerManagerStarted = true;
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
             await Services.GetRequiredService<IPaymentOutcomeHandler>().ReconcileInFlightPaymentsAsync(cancellationToken);
+            // As the daemon does: the N9 safety services and the update_fee rounds (off unless a test enables them)
+            Services.GetRequiredService<IChannelFailureService>().Start();
+            Services.GetRequiredService<IHtlcExpiryMonitor>().Start();
+            await Services.GetRequiredService<IFeeUpdateScheduler>().StartAsync(cancellationToken);
+            safetyStarted = true;
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
             _started = true;
         }
         catch
         {
-            await AbortStartAsync(feeServiceStarted, peerManagerStarted);
+            await AbortStartAsync(feeServiceStarted, peerManagerStarted, safetyStarted);
             throw;
         }
     }
@@ -291,7 +299,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
         try
         {
             if (_started)
+            {
+                await StopSafetyServicesAsync();
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
+            }
         }
         finally
         {
@@ -554,10 +565,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
     /// Undoes a failed <see cref="StartAsync"/>: stops what was started (best effort; the start failure is the error
     /// that matters) and disposes the service graph.
     /// </summary>
-    private async Task AbortStartAsync(bool feeServiceStarted, bool peerManagerStarted)
+    private async Task AbortStartAsync(bool feeServiceStarted, bool peerManagerStarted, bool safetyStarted)
     {
         try
         {
+            if (safetyStarted)
+                await StopSafetyServicesAsync();
             if (peerManagerStarted)
                 await PeerManager.StopAsync();
             if (feeServiceStarted)
@@ -571,6 +584,17 @@ public sealed class NLightningTestNode : IAsyncDisposable
         {
             await DisposeServiceProviderAsync();
         }
+    }
+
+    /// <summary>
+    /// Stops the HTLC deadline monitor, the fail-the-channel service and the fee rounds, before the chain monitor and
+    /// the peers they use (the daemon's order).
+    /// </summary>
+    private async Task StopSafetyServicesAsync()
+    {
+        await Task.WhenAll(Services.GetRequiredService<IHtlcExpiryMonitor>().StopAsync(),
+                           Services.GetRequiredService<IFeeUpdateScheduler>().StopAsync());
+        Services.GetRequiredService<IChannelFailureService>().Stop();
     }
 
     private async Task DisposeServiceProviderAsync()
@@ -600,7 +624,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             new("Bitcoin:ZmqHost", endpoint.ZmqHost),
             new("Bitcoin:ZmqBlockPort", endpoint.ZmqBlockPort.ToString()),
             new("Bitcoin:ZmqTxPort", endpoint.ZmqTxPort.ToString()),
-            new("FeeEstimation:CacheFile", FeeCacheFilePath)
+            new("FeeEstimation:CacheFile", FeeCacheFilePath),
+            // Deterministic Docker runs: no periodic update_fee (FeeUpdateFlowTests run rounds by hand; a test can turn
+            // it on through configureNodeOptions)
+            new("Node:FeeUpdates:Enabled", "false")
         ];
         var configuration = new ConfigurationBuilder().AddInMemoryCollection(inMemoryConfiguration).Build();
 

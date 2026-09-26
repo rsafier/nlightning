@@ -6,11 +6,13 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application;
 
 using Channels.Close;
+using Channels.Fees;
 using Channels.Handlers;
 using Channels.Handlers.Interfaces;
 using Channels.Interfaces;
 using Channels.Managers;
 using Channels.Reestablish;
+using Channels.Safety;
 using Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
@@ -91,6 +93,7 @@ public static class DependencyInjection
         services.AddPaymentsServices();
         services.AddHtlcSwitchServices();
         services.AddPaymentSendServices();
+        services.AddChannelSafetyServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers
@@ -98,6 +101,9 @@ public static class DependencyInjection
 
         // Add scoped services
         services.AddScoped<FundingConfirmedMessageHandler>();
+
+        // Last: decorates the IHtlcSwitch registered above with the dust exposure check (N9-T3)
+        services.AddChannelFeeServices();
 
         return services;
     }

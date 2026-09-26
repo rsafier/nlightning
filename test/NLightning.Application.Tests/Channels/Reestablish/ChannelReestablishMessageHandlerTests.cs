@@ -144,6 +144,7 @@ public class ChannelReestablishMessageHandlerTests
         _context.ChannelDbRepository.Verify(r => r.UpdateAsync(It.Is<ChannelModel>(c => c.DataLossDetected)),
                                             Times.Once);
         Assert.Contains("save", _context.Calls);
+        _context.LightningSigner.Verify(s => s.MarkDataLoss(s_channelId), Times.Once);
     }
 
     [Fact]
@@ -161,6 +162,7 @@ public class ChannelReestablishMessageHandlerTests
         // Assert
         Assert.Equal("B2-RE-21", exception.RequirementId);
         Assert.False(_context.Channel.DataLossDetected);
+        _context.LightningSigner.Verify(s => s.MarkDataLoss(It.IsAny<ChannelId>()), Times.Never);
     }
 
     [Fact]

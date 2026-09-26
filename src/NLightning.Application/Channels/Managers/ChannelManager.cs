@@ -32,6 +32,7 @@ using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 using Reestablish;
+using Safety.Interfaces;
 using Services;
 
 public class ChannelManager : IChannelManager, IChannelMessagePublisher
@@ -356,6 +357,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
             if (reestablished)
                 ScheduleCommit(channelId);
+        }
+        catch (ChannelFailedException cfe) when (cfe.MustBroadcast)
+        {
+            // Failed and the error are persisted; the lock is released now, so the failure service can take it to
+            // build, sign and broadcast our latest commitment (BOLT 2 B2-RE-14; N9-T4)
+            await BroadcastFailedChannelAsync(cfe);
+            throw;
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
         {
@@ -828,6 +836,33 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     /// be sent (re-sent on reconnection, B2-RE-05) before the exception reaches the send path. A failure to persist is
     /// logged; the error is still sent.
     /// </summary>
+    /// <summary>
+    /// Hands a failure that must broadcast our commitment to <see cref="IChannelFailureService"/>. Call it without
+    /// holding any channel lock. A missing service (tests) or a failed broadcast is logged; the error still goes out.
+    /// </summary>
+    private async Task BroadcastFailedChannelAsync(ChannelFailedException failure)
+    {
+        var failureService = _serviceProvider.GetService<IChannelFailureService>();
+        if (failureService is null)
+        {
+            _logger.LogWarning("No channel failure service: channel {ChannelId} is failed without a broadcast",
+                               failure.FailedChannelId);
+            return;
+        }
+
+        try
+        {
+            var outcome = await failureService.FailChannelAsync(failure);
+            _logger.LogWarning("Failed channel {ChannelId}: {Status} {TxId}", failure.FailedChannelId, outcome.Status,
+                               outcome.CommitmentTxId);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Broadcasting the commitment of failed channel {ChannelId} failed",
+                             failure.FailedChannelId);
+        }
+    }
+
     private async Task PersistFailedChannelAsync(IServiceScope scope, ChannelFailedException failure)
     {
         var channelId = failure.FailedChannelId;

@@ -1,34 +1,24 @@
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 
 namespace NLightning.Integration.Tests.Docker;
 
 using Abcd;
 using Application.Channels.Safety;
-using Application.Payments.Onion;
 using Domain.Bitcoin.Enums;
-using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
-using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
-using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
-using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
-using Domain.Protocol.Onion.Interfaces;
 using Fixtures;
-using Infrastructure.Bitcoin.Builders.Interfaces;
-using Infrastructure.Bitcoin.Wallet.Interfaces;
 using TestCollections;
 using Utils;
 
@@ -87,7 +77,7 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
             o.Routing.FeeProportionalMillionths = OurFeeProportionalMillionths;
         });
         await _node.StartAsync(TestContext.Current.CancellationToken);
-        (_failureService, _expiryMonitor) = StartSafetyServices(_node);
+        (_failureService, _expiryMonitor) = GetSafetyServices(_node);
     }
 
     [Fact]
@@ -294,45 +284,17 @@ public class ChannelSafetyFlowTests : IAsyncLifetime
             await DockerDiagnostics.DumpContainerLogsAsync(["alice", "david"]);
         }
 
-        if (_expiryMonitor is not null)
-            await _expiryMonitor.StopAsync();
-        _failureService?.Stop();
         if (_node is not null)
             await _node.DisposeAsync();
         GC.SuppressFinalize(this);
     }
 
     /// <summary>
-    /// Builds the N9 safety services over the node's service graph and starts them, as the daemon will once they are
-    /// registered (<c>AddChannelSafetyServices</c>).
+    /// The node's N9 safety services (<c>AddChannelSafetyServices</c>), started by <see cref="NLightningTestNode.StartAsync"/>
+    /// as the daemon starts them.
     /// </summary>
-    private static (ChannelFailureService, HtlcExpiryMonitor) StartSafetyServices(NLightningTestNode node)
-    {
-        var services = node.Services;
-        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
-        var nodeOptions = services.GetRequiredService<IOptions<NodeOptions>>();
-        var builder = new LocalCommitmentBroadcastBuilder(
-            services.GetRequiredService<ICommitmentTransactionModelFactory>(),
-            services.GetRequiredService<ICommitmentTransactionBuilder>(),
-            services.GetRequiredService<ILightningSigner>());
-        var failureService = new ChannelFailureService(
-            services.GetRequiredService<IBlockchainMonitor>(),
-            new PeerChannelErrorSender(loggerFactory.CreateLogger<PeerChannelErrorSender>(), services),
-            services.GetRequiredService<IChannelLockProvider>(), services.GetRequiredService<IChannelMemoryRepository>(),
-            builder, services.GetRequiredService<ILightningSigner>(),
-            loggerFactory.CreateLogger<ChannelFailureService>(), services.GetRequiredService<IServiceScopeFactory>(),
-            services, nodeOptions);
-        var monitor = new HtlcExpiryMonitor(
-            services.GetRequiredService<IBlockchainMonitor>(), failureService,
-            services.GetRequiredService<IChannelMemoryRepository>(), services.GetRequiredService<IChannelOperations>(),
-            services.GetRequiredService<IFailureOnionService>(), loggerFactory.CreateLogger<HtlcExpiryMonitor>(),
-            nodeOptions, services.GetRequiredService<IServiceScopeFactory>(),
-            incomingOnionProcessor: services.GetRequiredService<IncomingOnionProcessor>());
-
-        failureService.Start();
-        monitor.Start();
-        return (failureService, monitor);
-    }
+    private static (ChannelFailureService, HtlcExpiryMonitor) GetSafetyServices(NLightningTestNode node) =>
+        (node.Services.GetRequiredService<ChannelFailureService>(), node.Services.GetRequiredService<HtlcExpiryMonitor>());
 
     private async Task<OpenChannelClientSubscriptionResponse> OpenUsableChannelAsync(NLightningTestNode node,
         LNDNodeConnection peer, LightningMoney? push, CancellationToken ct)

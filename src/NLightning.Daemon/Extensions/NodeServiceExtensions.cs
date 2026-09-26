@@ -9,6 +9,7 @@ namespace NLightning.Daemon.Extensions;
 
 using Application;
 using Application.Channels.Close;
+using Application.Channels.Safety;
 using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
@@ -164,6 +165,7 @@ public static class NodeServiceExtensions
         services.AddOptions<BitcoinOptions>().BindConfiguration("Bitcoin").ValidateOnStart();
         services.AddOptions<FeeEstimationOptions>().BindConfiguration("FeeEstimation").ValidateOnStart();
         services.AddOptions<ChannelCloseOptions>().BindConfiguration(ChannelCloseOptions.SectionName);
+        services.Configure<ChannelSafetyOptions>(configuration.GetSection(ChannelSafetyOptions.SectionName));
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>

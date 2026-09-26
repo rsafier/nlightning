@@ -5,6 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Services;
 
+using Application.Channels.Fees;
+using Application.Channels.Safety.Interfaces;
 using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Client.Interfaces;
@@ -16,8 +18,11 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 public class NltgDaemonService : BackgroundService
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IChannelFailureService _channelFailureService;
     private readonly IConfiguration _configuration;
     private readonly IFeeService _feeService;
+    private readonly IFeeUpdateScheduler _feeUpdateScheduler;
+    private readonly IHtlcExpiryMonitor _htlcExpiryMonitor;
     private readonly ILogger<NltgDaemonService> _logger;
     private readonly INamedPipeIpcService _namedPipeIpcService;
     private readonly IPeerManager _peerManager;
@@ -25,14 +30,19 @@ public class NltgDaemonService : BackgroundService
     private readonly IPaymentOutcomeHandler _paymentOutcomeHandler;
     private readonly ISecureKeyManager _secureKeyManager;
 
-    public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IConfiguration configuration, IFeeService feeService,
+    public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
+                             IConfiguration configuration, IFeeService feeService,
+                             IFeeUpdateScheduler feeUpdateScheduler, IHtlcExpiryMonitor htlcExpiryMonitor,
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
                              IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
                              IPeerManager peerManager, ISecureKeyManager secureKeyManager)
     {
         _blockchainMonitor = blockchainMonitor;
+        _channelFailureService = channelFailureService;
         _configuration = configuration;
         _feeService = feeService;
+        _feeUpdateScheduler = feeUpdateScheduler;
+        _htlcExpiryMonitor = htlcExpiryMonitor;
         _logger = logger;
         _namedPipeIpcService = namedPipeIpcService;
         _peerManager = peerManager;
@@ -70,6 +80,12 @@ public class NltgDaemonService : BackgroundService
             // Every stored channel is in memory now: settle the payments a crash left without an HTLC id (W2-C)
             await _paymentOutcomeHandler.ReconcileInFlightPaymentsAsync(stoppingToken);
 
+            // Channel safety (N9): fail-the-channel broadcasts (and their resumption), the HTLC deadline monitor and
+            // the update_fee rounds of the channels we fund
+            _channelFailureService.Start();
+            _htlcExpiryMonitor.Start();
+            await _feeUpdateScheduler.StartAsync(stoppingToken);
+
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
 
@@ -88,6 +104,10 @@ public class NltgDaemonService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("NLTG shutdown requested");
+
+        // The safety services and the fee rounds stop before the chain monitor and the peers they use
+        await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
+        _channelFailureService.Stop();
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

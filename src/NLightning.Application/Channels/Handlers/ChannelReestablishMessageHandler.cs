@@ -238,5 +238,8 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
         _channelMemoryRepository.UpdateChannel(channel);
         await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         await _unitOfWork.SaveChangesAsync();
+
+        // The signer refuses every signature for this channel from now on, broadcast included (I12)
+        _lightningSigner.MarkDataLoss(channel.ChannelId);
     }
 }

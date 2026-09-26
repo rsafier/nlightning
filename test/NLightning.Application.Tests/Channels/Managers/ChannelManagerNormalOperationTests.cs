@@ -7,6 +7,7 @@ using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Interfaces;
 using Application.Channels.Managers;
+using Application.Channels.Safety.Interfaces;
 using Application.Channels.Services;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
@@ -162,6 +163,50 @@ public class ChannelManagerNormalOperationTests
         Assert.Equal((byte)((ushort)MessageTypes.Error >> 8), _context.Channel.ErrorSent!.Value.Span[0]);
         Assert.Equal((byte)MessageTypes.Error, _context.Channel.ErrorSent!.Value.Span[1]);
         Assert.Equal(["update", "save"], _context.Calls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Given_HandlerFailsTheChannel_When_BroadcastIsRequired_Then_TheFailureServiceGetsItAfterTheLock(
+        bool mustBroadcast)
+    {
+        // Arrange - B2-RE-14 (reestablish with next_commitment_number 0): broadcast our commitment, never under the lock
+        var message = CreateMessage(MessageTypes.RevokeAndAck);
+        var failure = new ChannelFailedException(TestChannelId, "[B2-RE-14] peer lost its state", "state lost")
+        {
+            MustBroadcast = mustBroadcast
+        };
+        var handler = new Mock<IChannelMessageHandler<RevokeAndAckMessage>>();
+        handler.Setup(h => h.HandleAsync(It.IsAny<RevokeAndAckMessage>(), It.IsAny<ChannelState>(),
+                                         It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+               .ThrowsAsync(failure);
+        _services.AddSingleton(handler.Object);
+        _context.ChannelDbRepository.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>())).Returns(Task.CompletedTask);
+        var lockFreeDuringBroadcast = false;
+        var failureService = new Mock<IChannelFailureService>();
+        failureService.Setup(f => f.FailChannelAsync(failure, It.IsAny<CancellationToken>()))
+                      .Returns(async () =>
+                       {
+                           using var probe = await _lockProvider.AcquireAsync(TestChannelId)
+                                                                .WaitAsync(TimeSpan.FromSeconds(5));
+                           lockFreeDuringBroadcast = true;
+                           return new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, null);
+                       });
+        _services.AddSingleton(failureService.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelFailedException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           PeerNodeId));
+
+        // Assert - the error still leaves for the peer; the broadcast is asked for only when required
+        Assert.Same(failure, exception);
+        Assert.Equal(ChannelState.Failed, _context.Channel.State);
+        failureService.Verify(f => f.FailChannelAsync(failure, It.IsAny<CancellationToken>()),
+                              mustBroadcast ? Times.Once() : Times.Never());
+        Assert.Equal(mustBroadcast, lockFreeDuringBroadcast);
     }
 
     [Fact]
