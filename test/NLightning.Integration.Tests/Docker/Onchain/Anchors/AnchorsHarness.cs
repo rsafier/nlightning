@@ -1,3 +1,4 @@
+using Google.Protobuf;
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
@@ -94,15 +95,22 @@ internal sealed class AnchorsHarness
     /// A started node with anchors enabled; <paramref name="configure"/> runs after <see cref="EnableAnchors"/>, and
     /// <paramref name="beforeStart"/> before the start (extra configuration, services).
     /// </summary>
+    /// <param name="bitcoin">The bitcoind the node talks to (default: the fixture's miner), e.g. a
+    /// <see cref="RelayBitcoind"/>.</param>
     public async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct,
                                                           Action<NodeOptions>? configure = null,
-                                                          Action<NLightningTestNode>? beforeStart = null)
+                                                          Action<NLightningTestNode>? beforeStart = null,
+                                                          RegtestBitcoinEndpoint? bitcoin = null)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: o =>
+        void Configure(NodeOptions o)
         {
             EnableAnchors(o);
             configure?.Invoke(o);
-        });
+        }
+
+        var node = bitcoin is null
+                       ? await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: Configure)
+                       : await NLightningTestNode.CreateAsync(bitcoin, name, configureNodeOptions: Configure);
         _nodes.Add(node);
         beforeStart?.Invoke(node);
         await node.StartAsync(ct);
@@ -610,6 +618,91 @@ internal sealed class AnchorsHarness
                 && theirs is not null && theirs.PendingHtlcs.Count == 0
                 && theirs.LocalBalance == (long)ours.RemoteBalance.Satoshi;
         }, Timeout, "the payment settled with LND", ct);
+    }
+
+    /// <summary>
+    /// Starts a pinned LND payment and returns once <paramref name="sent"/> completes; a payment LND fails at once for
+    /// want of a route (its router adds the private edge a moment after the channel turns active, NL-319) is started
+    /// again.
+    /// </summary>
+    public static async Task PayUntilSentAsync(LNDNodeConnection lnd, string bolt11, ulong chanId, Task sent,
+                                               CancellationToken ct)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(Timeout);
+        while (true)
+        {
+            await LndTestHelpers.ResetMissionControlAsync(lnd, ct);
+            var payment = LndTestHelpers.SendPaymentV2Async(lnd, LndTestHelpers.PinnedPayment(bolt11, [chanId]), ct,
+                                                            TimeSpan.FromMinutes(5));
+            if (await Task.WhenAny(sent, payment).WaitAsync(deadline.Token) == sent)
+                return;
+
+            var result = await payment;
+            if (result.FailureReason is not (PaymentFailureReason.FailureReasonInsufficientBalance
+                                             or PaymentFailureReason.FailureReasonNoRoute))
+                Assert.Fail($"{lnd.LocalAlias}'s payment ended before it reached us: {result.Status} "
+                          + $"{result.FailureReason}");
+
+            Console.WriteLine($"{lnd.LocalAlias}'s payment failed with {result.FailureReason}; retrying");
+            await Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token);
+        }
+    }
+
+    #endregion
+
+    #region LND wallet
+
+    /// <summary>
+    /// Leases every output of <paramref name="lnd"/>'s wallet (<c>walletrpc.LeaseOutput</c>) for
+    /// <paramref name="duration"/>, so LND cannot fund a CPFP child of its own commitment through its anchor: whatever
+    /// bumps that commitment then is ours. Returns the leased outpoints for <see cref="ReleaseLndWalletAsync"/>.
+    /// </summary>
+    public static async Task<IReadOnlyList<Lnrpc.OutPoint>> LeaseLndWalletAsync(LNDNodeConnection lnd, byte[] leaseId,
+                                                                               TimeSpan duration,
+                                                                               CancellationToken ct)
+    {
+        var unspent = await lnd.WalletKitClient.ListUnspentAsync(new Walletrpc.ListUnspentRequest
+        {
+            MinConfs = 0,
+            MaxConfs = int.MaxValue
+        }, cancellationToken: ct);
+        var leased = new List<Lnrpc.OutPoint>();
+        foreach (var utxo in unspent.Utxos)
+        {
+            await lnd.WalletKitClient.LeaseOutputAsync(new Walletrpc.LeaseOutputRequest
+            {
+                Id = ByteString.CopyFrom(leaseId),
+                Outpoint = utxo.Outpoint,
+                ExpirationSeconds = (ulong)duration.TotalSeconds
+            }, cancellationToken: ct);
+            leased.Add(utxo.Outpoint);
+        }
+
+        Console.WriteLine($"Leased {leased.Count} outputs of {lnd.LocalAlias}'s wallet for {duration}");
+        return leased;
+    }
+
+    /// <summary>Releases the leases of <see cref="LeaseLndWalletAsync"/> (best effort; they also expire).</summary>
+    public static async Task ReleaseLndWalletAsync(LNDNodeConnection lnd, byte[] leaseId,
+                                                   IEnumerable<Lnrpc.OutPoint> leased)
+    {
+        foreach (var outPoint in leased)
+        {
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await lnd.WalletKitClient.ReleaseOutputAsync(new Walletrpc.ReleaseOutputRequest
+                {
+                    Id = ByteString.CopyFrom(leaseId),
+                    Outpoint = outPoint
+                }, cancellationToken: timeoutCts.Token);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"Could not release {outPoint.TxidStr}:{outPoint.OutputIndex}: {e.Message}");
+            }
+        }
     }
 
     #endregion
