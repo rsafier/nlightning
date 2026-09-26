@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Vectors;
+
 namespace NLightning.Application.Tests.Gossip.Sync;
 
 using Application.Gossip.Sync;
@@ -330,6 +332,47 @@ public class QueryResponderTests
 
         // Act / Assert
         Assert.Throws<WarningException>(() => responder.CreateRangeReplies(query, s_chain));
+    }
+
+    [Fact]
+    public void Given_ClnsChannelAndUpdates_When_QueriedWithTimestampsAndChecksums_Then_OurReplyEqualsClns()
+    {
+        // Arrange (G3-T4 interop vector: the channel of CLN's captured reply_channel_range with CLN's two updates;
+        // the announcement's signatures are not part of a range reply)
+        var update0 = ChannelUpdatePayload.Parse(Bolt7QueryVectors.ClnUpdateDirection0.Payload);
+        var update1 = ChannelUpdatePayload.Parse(Bolt7QueryVectors.ClnUpdateDirection1.Payload);
+        var cln = Bolt7QueryVectors.ClnReplyChannelRange.Payload;
+        var graph = new SyncTestGraph();
+        var (node1, node2) = SyncTestGraph.Ordered(SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        var announcement = new ChannelAnnouncementPayload(ChannelAnnouncementPayload.EmptySignature,
+                                                          ChannelAnnouncementPayload.EmptySignature,
+                                                          ChannelAnnouncementPayload.EmptySignature,
+                                                          ChannelAnnouncementPayload.EmptySignature,
+                                                          ReadOnlyMemory<byte>.Empty, s_chain, update0.ShortChannelId,
+                                                          node1.PubKey, node2.PubKey, node1.PubKey, node2.PubKey);
+        Assert.True(graph.Store.TryAddChannel(new GraphChannel(update0.ShortChannelId, node1.PubKey, node2.PubKey,
+                                                               node1.PubKey, node2.PubKey, 1_000_000)
+        {
+            RawAnnouncement = announcement.GetBytes()
+        }));
+        foreach (var update in new[] { update0, update1 })
+            Assert.True(graph.Store.TryApplyPolicy(update.ShortChannelId, GraphPolicy.FromChannelUpdate(update) with
+            {
+                RawUpdate = update.GetBytes()
+            }));
+        var responder = CreateResponder(graph);
+
+        // Act: CLN's query was (0, 0x73) with query_option 3
+        var reply = responder.CreateRangeReplies(Query(0, 0x73, 3), s_chain).Single();
+
+        // Assert: every field and both TLV values equal CLN's reply
+        Assert.Equal(cln[..32], ((byte[])reply.Payload.ChainHash));
+        Assert.Equal(0u, reply.Payload.FirstBlocknum);
+        Assert.Equal(0x73u, reply.Payload.NumberOfBlocks);
+        Assert.True(reply.Payload.SyncComplete);
+        Assert.Equal(cln[43..52], reply.Payload.EncodedShortIds.ToArray());
+        Assert.Equal(cln[54..63], reply.TimestampsTlv!.Value);
+        Assert.Equal(cln[65..73], reply.ChecksumsTlv!.Value);
     }
 
     internal static QueryResponder CreateResponder(SyncTestGraph graph, int maxPerReply = 8_000) =>

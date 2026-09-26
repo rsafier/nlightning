@@ -63,22 +63,24 @@ public class FeatureOptions
     /// Enable gossip queries.
     /// </summary>
     /// <remarks>
-    /// Kept Optional even though BOLT 7 gossip is not implemented: without it, peers dump the full gossip map on us
-    /// instead of waiting for a gossip_timestamp_filter. Incoming gossip must be known-and-ignored (NL-100), and
-    /// gossip queries are answered with "no channels known" (see PeerService).
+    /// Optional: peers then wait for our <c>gossip_timestamp_filter</c> instead of dumping their graph on us, our sync
+    /// queries them (<c>GossipSyncManager</c>, G3-T2) and their queries are answered from the graph
+    /// (<c>QueryResponder</c>, G3-T1; from an empty graph while <c>Gossip:Enabled</c> is off).
     /// </remarks>
     public FeatureSupport GossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport VarOnionOptIn { get; private set; } = FeatureSupport.Compulsory;
 
     /// <summary>
-    /// Enable expanded gossip queries.
+    /// Enable expanded gossip queries (gossip_queries_ex, bits 10/11).
     /// </summary>
     /// <remarks>
-    /// Defaults to No: we keep no gossip, so query_option / query_flags are parsed but never answered with timestamps
-    /// or checksums.
+    /// Optional since BOLT 7 plan G3-T4: the graph answers <c>query_option</c> with <c>timestamps_tlv</c> and
+    /// <c>checksums_tlv</c> (byte-identical to Core Lightning's reply for the same channel, the captured
+    /// <c>Bolt7QueryVectors</c>) and <c>query_flags</c> bits 0-4, and our range sync asks for timestamps and sends
+    /// <c>query_flags</c> when both sides offer it.
     /// </remarks>
-    public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.No;
+    public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport OptionStaticRemoteKey { get; private set; } = FeatureSupport.Compulsory;
 

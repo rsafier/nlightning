@@ -10,7 +10,8 @@ using Domain.Serialization.Interfaces;
 using Infrastructure.Serialization.Messages;
 
 /// <summary>
-/// Records the raw wire bytes (type prefix included) of every BOLT 7 gossip message (256-259) a node receives, before
+/// Records the raw wire bytes (type prefix included) of every BOLT 7 gossip message (256-259, and the query reply
+/// <c>reply_channel_range</c> 264) a node receives, before
 /// they are parsed, so a capture test can turn what LND or CLN really sent into vectors
 /// (<c>Tests.Utils/Vectors/Bolt7Vectors.cs</c>, plan G0-T5).
 /// </summary>
@@ -52,7 +53,7 @@ public sealed class RawGossipRecorder
             return;
 
         var type = BinaryPrimitives.ReadUInt16BigEndian(wire);
-        if (type is >= 256 and <= 259)
+        if (type is >= 256 and <= 259 or 264)
             _received.Enqueue(new RecordedGossip(type, wire, DateTimeOffset.UtcNow));
     }
 
