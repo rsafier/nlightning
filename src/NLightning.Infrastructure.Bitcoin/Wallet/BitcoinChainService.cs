@@ -8,6 +8,7 @@ namespace NLightning.Infrastructure.Bitcoin.Wallet;
 
 using Domain.Node.Options;
 using Interfaces;
+using Networks;
 using Options;
 
 public class BitcoinChainService : IBitcoinChainService
@@ -19,7 +20,8 @@ public class BitcoinChainService : IBitcoinChainService
                                IOptions<NodeOptions> nodeOptions)
     {
         _logger = logger;
-        var network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ?? Network.Main;
+        // Fails on an unknown network instead of talking to bitcoind as if it were mainnet
+        var network = nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork();
 
         var rpcCredentials = new RPCCredentialString
         {

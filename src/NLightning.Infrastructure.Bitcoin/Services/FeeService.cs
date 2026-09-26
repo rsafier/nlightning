@@ -1,20 +1,29 @@
+using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NBitcoin.RPC;
 
 namespace NLightning.Infrastructure.Bitcoin.Services;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Money;
+using Domain.Node.Options;
+using Networks;
 using Options;
 
+/// <summary>
+/// The node's fee estimate in sat/kw, from the source <see cref="FeeEstimationOptions.Source"/> selects: a
+/// mempool.space-style HTTP API (default), bitcoind's <c>estimatesmartfee</c> or a fixed rate. Every rate goes through
+/// <see cref="FeeRateConverter"/> (NL-288: sat/vB x 250, not x 1000) and is at least 253 sat/kw.
+/// </summary>
 public class FeeService : IFeeService
 {
     private const string FeeCacheFileName = "fee_cache.bin";
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
 
     private DateTime _lastFetchTime = DateTime.MinValue;
-    private readonly LightningMoney _cachedFeeRate = LightningMoney.Zero;
+    private long _cachedFeeRatePerKw;
     private Task? _feeTask;
     private CancellationTokenSource? _cts;
 
@@ -23,12 +32,41 @@ public class FeeService : IFeeService
     private readonly TimeSpan _cacheTimeExpiration;
     private readonly string _cacheFilePath;
     private readonly FeeEstimationOptions _feeEstimationOptions;
+    private readonly Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? _bitcoindEstimator;
 
-    public FeeService(IOptions<FeeEstimationOptions> feeOptions, HttpClient httpClient, ILogger<FeeService> logger)
+    /// <remarks>
+    /// <paramref name="bitcoinOptions"/> and <paramref name="nodeOptions"/> are only used by
+    /// <see cref="FeeEstimationOptions.SourceBitcoind"/>, which talks to bitcoind with its own RPC client, created on the
+    /// first estimate.
+    /// </remarks>
+    public FeeService(IOptions<FeeEstimationOptions> feeOptions, HttpClient httpClient, ILogger<FeeService> logger,
+                      IOptions<BitcoinOptions>? bitcoinOptions = null, IOptions<NodeOptions>? nodeOptions = null)
+        : this(feeOptions.Value, httpClient, logger, CreateBitcoindEstimator(bitcoinOptions, nodeOptions))
     {
-        _feeEstimationOptions = feeOptions.Value;
+    }
+
+    /// <param name="feeOptions">The fee source settings; invalid settings throw.</param>
+    /// <param name="httpClient">The client for <see cref="FeeEstimationOptions.SourceHttp"/>.</param>
+    /// <param name="logger">The logger.</param>
+    /// <param name="bitcoindEstimator">For <see cref="FeeEstimationOptions.SourceBitcoind"/>: bitcoind's
+    /// <c>estimatesmartfee</c> in sat/vB for a confirmation target and mode, or null when it has no estimate.</param>
+    /// <exception cref="InvalidOperationException">The options are invalid.</exception>
+    internal FeeService(FeeEstimationOptions feeOptions, HttpClient httpClient, ILogger<FeeService> logger,
+                        Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? bitcoindEstimator)
+    {
+        _feeEstimationOptions = feeOptions;
         _httpClient = httpClient;
         _logger = logger;
+        _bitcoindEstimator = bitcoindEstimator;
+
+        var errors = _feeEstimationOptions.GetValidationErrors();
+        if (errors.Count > 0)
+            throw new InvalidOperationException("Invalid FeeEstimation configuration: " + string.Join(" ", errors));
+
+        if (!string.IsNullOrWhiteSpace(_feeEstimationOptions.RateMultiplier) && _logger.IsEnabled(LogLevel.Warning))
+            _logger.LogWarning("FeeEstimation:RateMultiplier ({RateMultiplier}) is ignored: the HTTP value is read in "
+                             + "FeeEstimation:RateUnit ({RateUnit}) and converted to sat/kw (NL-288)",
+                               _feeEstimationOptions.RateMultiplier, _feeEstimationOptions.RateUnit);
 
         _cacheFilePath = ParseFilePath(_feeEstimationOptions);
         _cacheTimeExpiration = ParseCacheTime(_feeEstimationOptions.CacheExpiration);
@@ -77,27 +115,31 @@ public class FeeService : IFeeService
     {
         if (IsCacheValid())
         {
-            return _cachedFeeRate;
+            return GetCachedFeeRatePerKw();
         }
 
         using var linkedCts = CancellationTokenSource
            .CreateLinkedTokenSource(cancellationToken, _cts?.Token ?? CancellationToken.None);
 
         await RefreshFeeRateAsync(linkedCts.Token);
-        return _cachedFeeRate;
+        return GetCachedFeeRatePerKw();
     }
 
+    /// <summary>
+    /// The cached rate (sat/kw in <see cref="LightningMoney.Satoshi"/>), as a new value, so a caller can't change the
+    /// cache.
+    /// </summary>
     public LightningMoney GetCachedFeeRatePerKw()
     {
-        return _cachedFeeRate;
+        return LightningMoney.Satoshis(Interlocked.Read(ref _cachedFeeRatePerKw));
     }
 
     public async Task RefreshFeeRateAsync(CancellationToken cancellationToken)
     {
         try
         {
-            var feeRate = await FetchFeeRateFromApiAsync(cancellationToken);
-            _cachedFeeRate.Satoshi = feeRate;
+            var feeRate = await FetchFeeRatePerKwAsync(cancellationToken);
+            Interlocked.Exchange(ref _cachedFeeRatePerKw, feeRate);
             _lastFetchTime = DateTime.UtcNow;
             await SaveToFileAsync();
         }
@@ -107,8 +149,36 @@ public class FeeService : IFeeService
         }
         catch (Exception e)
         {
-            _logger.LogError(e, "Error fetching fee rate from API");
+            _logger.LogError(e, "Error fetching the fee rate from {Source}", _feeEstimationOptions.Source);
         }
+    }
+
+    private async Task<long> FetchFeeRatePerKwAsync(CancellationToken cancellationToken)
+    {
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceFixed))
+            return Math.Max(FeeRateConverter.FeeratePerKwFloor, _feeEstimationOptions.FixedFeeRatePerKw);
+
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceBitcoind))
+            return await FetchFeeRateFromBitcoindAsync(cancellationToken);
+
+        return await FetchFeeRateFromApiAsync(cancellationToken);
+    }
+
+    private async Task<long> FetchFeeRateFromBitcoindAsync(CancellationToken cancellationToken)
+    {
+        if (_bitcoindEstimator is null)
+            throw new InvalidOperationException(
+                "FeeEstimation:Source is Bitcoind, but the Bitcoin RPC settings or the node's network are missing.");
+
+        var mode = _feeEstimationOptions.EstimateMode.Equals("ECONOMICAL", StringComparison.OrdinalIgnoreCase)
+                       ? EstimateSmartFeeMode.Economical
+                       : EstimateSmartFeeMode.Conservative;
+        var satPerVByte =
+            await _bitcoindEstimator(_feeEstimationOptions.ConfirmationTarget, mode, cancellationToken)
+         ?? throw new InvalidOperationException(
+                $"bitcoind has no fee estimate for {_feeEstimationOptions.ConfirmationTarget} blocks yet.");
+
+        return FeeRateConverter.SatPerVByteToSatPerKw(satPerVByte);
     }
 
     private async Task<long> FetchFeeRateFromApiAsync(CancellationToken cancellationToken)
@@ -131,7 +201,7 @@ public class FeeService : IFeeService
                 response = await _httpClient.PostAsync(_feeEstimationOptions.Url, content, cancellationToken);
             }
         }
-        catch (Exception e)
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             throw new InvalidOperationException("Error fetching from API", e);
         }
@@ -145,27 +215,37 @@ public class FeeService : IFeeService
         var root = document.RootElement;
 
         // Extract the preferred fee rate from the JSON response
-        if (!root.TryGetProperty(_feeEstimationOptions.PreferredFeeRate, out var feeRateElement))
+        if (!root.TryGetProperty(_feeEstimationOptions.PreferredFeeRate, out var feeRateElement)
+         || !feeRateElement.TryGetDecimal(out var feeRate))
         {
             throw new InvalidOperationException(
                 $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
         }
 
-        // Parse the fee rate value
-        if (!feeRateElement.TryGetDecimal(out var feeRate))
-        {
-            throw new InvalidOperationException(
-                $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
-        }
+        // From the API's unit (sat/vB for mempool.space) to sat/kw (NL-288)
+        return FeeRateConverter.ToSatPerKw(feeRate, _feeEstimationOptions.RateUnit);
+    }
 
-        // Apply the multiplier to convert to sat/kw
-        if (decimal.TryParse(_feeEstimationOptions.RateMultiplier, out var multiplier))
-        {
-            return (long)(feeRate * multiplier);
-        }
+    private static Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? CreateBitcoindEstimator(
+        IOptions<BitcoinOptions>? bitcoinOptions, IOptions<NodeOptions>? nodeOptions)
+    {
+        if (bitcoinOptions is null || nodeOptions is null)
+            return null;
 
-        throw new InvalidOperationException(
-            $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
+        RPCClient? rpcClient = null;
+        return async (confirmationTarget, mode, cancellationToken) =>
+        {
+            // Created on first use, so a node that estimates another way never reads these settings here
+            rpcClient ??= new RPCClient(
+                new RPCCredentialString
+                {
+                    UserPassword =
+                        new NetworkCredential(bitcoinOptions.Value.RpcUser, bitcoinOptions.Value.RpcPassword)
+                }, bitcoinOptions.Value.RpcEndpoint, nodeOptions.Value.BitcoinNetwork.ToNBitcoinNetwork());
+
+            var response = await rpcClient.TryEstimateSmartFeeAsync(confirmationTarget, mode, cancellationToken);
+            return response?.FeeRate.SatoshiPerByte;
+        };
     }
 
     private async Task RunPeriodicRefreshAsync(CancellationToken cancellationToken)
@@ -255,7 +335,7 @@ public class FeeService : IFeeService
 
     private bool IsCacheValid()
     {
-        return !_cachedFeeRate.IsZero && DateTime.UtcNow.Subtract(_lastFetchTime).CompareTo(_cacheTimeExpiration) <= 0;
+        return Interlocked.Read(ref _cachedFeeRatePerKw) > 0 && DateTime.UtcNow.Subtract(_lastFetchTime).CompareTo(_cacheTimeExpiration) <= 0;
     }
 
     private static TimeSpan ParseCacheTime(string cacheTime)
