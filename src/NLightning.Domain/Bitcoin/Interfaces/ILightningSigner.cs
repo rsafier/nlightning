@@ -2,6 +2,7 @@ namespace NLightning.Domain.Bitcoin.Interfaces;
 
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
+using Onchain.Models;
 using Transactions.Models;
 using ValueObjects;
 
@@ -199,6 +200,27 @@ public interface ILightningSigner
     /// The local commitment number the channel was signed for broadcast at (<see cref="MarkBroadcastSigned"/>), if any.
     /// </summary>
     bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber);
+
+    /// <summary>
+    /// Sign one input of a sweep, claim or penalty (BOLT 5 plan §3.5, O3-T1): <c>SIGHASH_ALL</c>, BIP 143, low-S,
+    /// RFC 6979, with the channel key <see cref="SweepSigningContext.KeyKind"/> names:
+    /// <see cref="Onchain.Enums.SweepKeyKind.DelayedPayment"/> (<c>delayed_payment_basepoint_secret</c> tweaked by our point),
+    /// <see cref="Onchain.Enums.SweepKeyKind.Payment"/> (<c>payment_basepoint_secret</c>, static_remotekey),
+    /// <see cref="Onchain.Enums.SweepKeyKind.HtlcRemotePoint"/> (<c>htlc_basepoint_secret</c> tweaked by the peer's point) or
+    /// <see cref="Onchain.Enums.SweepKeyKind.Revocation"/> (<c>revocationprivkey</c> from our revocation basepoint secret and the
+    /// peer's revealed per-commitment secret).
+    /// </summary>
+    /// <remarks>
+    /// The derived public key (or its HASH160, as in the HTLC scripts' revocation branch) must appear in the witness
+    /// script, so a wrong key kind, point or secret is refused instead of producing a useless signature. For
+    /// <see cref="Onchain.Enums.SweepKeyKind.Revocation"/> a point given along the secret must equal <c>secret * G</c>; the caller
+    /// takes the secret from the peer's shachain, which holds secrets of revoked commitments only. Not blocked by data
+    /// loss or by a broadcast mark (S1): these signatures only move channel outputs that are already on chain to us.
+    /// </remarks>
+    /// <returns>The 64-byte compact signature; the transaction builder appends the sighash byte.</returns>
+    /// <exception cref="Exceptions.SignerException">The channel is not registered, the context is incomplete for its
+    /// key kind, the transaction does not parse or has no such input, or the key is not in the script.</exception>
+    CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context);
 
     /// <summary>
     /// Sign a general transaction using the wallet signing context
