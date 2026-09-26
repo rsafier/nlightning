@@ -87,5 +87,37 @@ public class NativeCryptoProviderTests
         Assert.Equal(AeadXChacha20Poly1305IetfVector.Message.Length, clenP);
         Assert.Equal(AeadXChacha20Poly1305IetfVector.Message, message.ToArray());
     }
+
+    [Fact]
+    public void Given_Rfc8439A1Vector5_When_StreamChaCha20IetfXorCalled_Then_OutputMatchesKeystream()
+    {
+        // Arrange
+        // RFC 8439 A.1 test vector #5: key = 0^32, nonce = 0^11 || 0x02, block counter = 0
+        using var cryptoProvider = new NativeCryptoProvider();
+        var key = new byte[32];
+        var nonce = Convert.FromHexString("000000000000000000000002");
+        var expected = Convert.FromHexString(
+            "c2c64d378cd536374ae204b9ef933fcd1a8b2288b3dfa49672ab765b54ee27c7" +
+            "8a970e0e955c14f3a88e741b97c286f75f8fc299e8148362fa198a39531bed6d");
+        var output = new byte[64];
+
+        // Act
+        var result = cryptoProvider.StreamChaCha20IetfXor(key, nonce, new byte[64], output);
+
+        // Assert
+        Assert.Equal(0, result);
+        Assert.Equal(expected, output);
+    }
+
+    [Fact]
+    public void Given_InvalidNonceLength_When_StreamChaCha20IetfXorCalled_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        using var cryptoProvider = new NativeCryptoProvider();
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => cryptoProvider.StreamChaCha20IetfXor(new byte[32], new byte[8],
+                                                                                     new byte[64], new byte[64]));
+    }
 }
 #endif

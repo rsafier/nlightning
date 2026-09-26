@@ -14,13 +14,15 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.5"/>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.5">
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.12"/>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.5"/>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12"/>
+    <!-- Pin: EF Core Sqlite 10.0.5 pulled SQLitePCLRaw.lib.e_sqlite3 2.1.11 (NU1903, NL-170); 10.0.12 pulls 2.1.12, the pin keeps the floor. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12"/>
   </ItemGroup>
 
   <ItemGroup>

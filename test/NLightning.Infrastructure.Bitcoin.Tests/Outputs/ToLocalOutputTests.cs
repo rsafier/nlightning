@@ -136,4 +136,19 @@ public class ToLocalOutputTests
         // Then
         Assert.NotEqual(0, comparison); // The actual comparison is handled by TransactionOutputComparer
     }
+
+    [Fact]
+    public void Given_ToLocalOutput_When_SettingAmount_Then_AmountAndTxOutReflectNewValue()
+    {
+        // Arrange
+        var toLocalOutput = new ToLocalOutput(_amount, _localDelayedPubKey, _revocationPubKey, ToSelfDelay);
+        var newAmount = LightningMoney.Satoshis(2_500);
+
+        // Act
+        toLocalOutput.Amount = newAmount;
+
+        // Assert
+        Assert.Equal(newAmount, toLocalOutput.Amount);
+        Assert.Equal(2_500, toLocalOutput.ToTxOut().Value.Satoshi);
+    }
 }

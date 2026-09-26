@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NBitcoin;
@@ -8,51 +10,48 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Bitcoin.Wallet;
 using Bitcoin.Wallet.Interfaces;
+using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Money;
+using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Interfaces;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Options;
 
+/// <summary>
+/// Unit tests of the chain monitor over a <see cref="FakeBitcoinChain"/> and a mocked unit of work. The persistence
+/// semantics (one save per block, reorg rollback, rebroadcast after a restart) are proven on SQLite in
+/// <c>Integration.Tests/Persistence/ChainMonitorPersistenceTests</c>.
+/// </summary>
 public class BlockchainMonitorServiceTests
 {
-    private readonly Mock<IOptions<BitcoinOptions>> _mockBitcoinOptions;
-    private readonly Mock<IBitcoinChainService> _mockBitcoinChainService;
-    private readonly Mock<ILogger<BlockchainMonitorService>> _mockLogger;
-    private readonly Mock<IOptions<Domain.Node.Options.NodeOptions>> _mockNodeOptions;
+    // Never 28332: a local signet bitcoind publishes real blocks there (NL-310)
+    private static readonly SilentZmqEndpoint s_zmq = new();
+
+    private readonly FakeBitcoinChain _chain = new(110);
     private readonly FakeServiceProvider _fakeServiceProvider;
     private readonly Mock<IUnitOfWork> _mockUnitOfWork;
     private readonly Mock<IBlockchainStateDbRepository> _mockBlockchainStateRepository;
     private readonly Mock<IWatchedTransactionDbRepository> _mockWatchedTransactionRepository;
     private readonly Mock<IWalletAddressesDbRepository> _mockWalletAddressesDbRepository;
     private readonly Mock<IUtxoDbRepository> _mockUtxoDbRepository;
+    private readonly Mock<IWatchedOutpointDbRepository> _mockWatchedOutpointRepository;
+    private readonly Mock<IBroadcastTransactionDbRepository> _mockBroadcastRepository;
+    private readonly Mock<IBlockHeaderDbRepository> _mockBlockHeaderRepository;
+    private readonly List<string> _steps = [];
 
     private readonly BlockchainMonitorService _service;
 
     public BlockchainMonitorServiceTests()
     {
-        // Set up mock dependencies
-        _mockBitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
-        _mockBitcoinOptions.Setup(x => x.Value).Returns(new BitcoinOptions
-        {
-            RpcEndpoint = "",
-            RpcUser = "",
-            RpcPassword = "",
-            ZmqHost = "127.0.0.1",
-            ZmqBlockPort = 28332,
-            ZmqTxPort = 28333
-        });
-
-        _mockBitcoinChainService = new Mock<IBitcoinChainService>();
-        _mockLogger = new Mock<ILogger<BlockchainMonitorService>>();
-
-        _mockNodeOptions = new Mock<IOptions<Domain.Node.Options.NodeOptions>>();
-        _mockNodeOptions.Setup(x => x.Value).Returns(new Domain.Node.Options.NodeOptions
-        {
-            BitcoinNetwork = "regtest"
-        });
-
         _mockUnitOfWork = new Mock<IUnitOfWork>();
         _fakeServiceProvider = new FakeServiceProvider();
         _fakeServiceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
@@ -60,344 +59,951 @@ public class BlockchainMonitorServiceTests
         _mockWatchedTransactionRepository = new Mock<IWatchedTransactionDbRepository>();
         _mockWalletAddressesDbRepository = new Mock<IWalletAddressesDbRepository>();
         _mockUtxoDbRepository = new Mock<IUtxoDbRepository>();
+        _mockWatchedOutpointRepository = new Mock<IWatchedOutpointDbRepository>();
+        _mockBroadcastRepository = new Mock<IBroadcastTransactionDbRepository>();
+        _mockBlockHeaderRepository = new Mock<IBlockHeaderDbRepository>();
 
         // Set up unit of work to return repositories
         _mockUnitOfWork.Setup(x => x.BlockchainStateDbRepository).Returns(_mockBlockchainStateRepository.Object);
         _mockUnitOfWork.Setup(x => x.WatchedTransactionDbRepository).Returns(_mockWatchedTransactionRepository.Object);
         _mockUnitOfWork.Setup(x => x.WalletAddressesDbRepository).Returns(_mockWalletAddressesDbRepository.Object);
         _mockUnitOfWork.Setup(x => x.UtxoDbRepository).Returns(_mockUtxoDbRepository.Object);
+        _mockUnitOfWork.Setup(x => x.WatchedOutpointDbRepository).Returns(_mockWatchedOutpointRepository.Object);
+        _mockUnitOfWork.Setup(x => x.BroadcastTransactionDbRepository).Returns(_mockBroadcastRepository.Object);
+        _mockUnitOfWork.Setup(x => x.BlockHeaderDbRepository).Returns(_mockBlockHeaderRepository.Object);
+        _mockUnitOfWork.Setup(x => x.SaveChangesAsync()).Callback(() => _steps.Add("save")).Returns(Task.CompletedTask);
 
-        // Create the service
-        _service = new BlockchainMonitorService(
-            _mockBitcoinOptions.Object,
-            _mockBitcoinChainService.Object,
-            _mockLogger.Object,
-            _mockNodeOptions.Object,
-            _fakeServiceProvider);
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync()).ReturnsAsync([]);
+        _mockWatchedOutpointRepository.Setup(x => x.AddMissingFundingOutpointsAsync()).ReturnsAsync([]);
+        _mockWatchedOutpointRepository.Setup(x => x.GetActiveAsync()).ReturnsAsync([]);
+        _mockBroadcastRepository.Setup(x => x.GetPendingAsync()).ReturnsAsync([]);
+        _mockBlockHeaderRepository.Setup(x => x.GetAllAsync()).ReturnsAsync([]);
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
+                                      .ReturnsAsync(new BlockchainState(100, Hash.Empty, DateTime.UtcNow));
+
+        _service = CreateService(_chain);
     }
 
     [Fact]
-    public async Task StartAsync_WithExistingBlockchainState_LoadsStateAndPendingTransactions()
+    public async Task Given_ExistingState_When_Starting_Then_StateAndWatchesLoadedAndBlocksUpToTheTipProcessed()
     {
         // Arrange
-        var state = new BlockchainState(100, new byte[32], DateTime.UtcNow);
-        var pendingTransactions = new List<WatchedTransactionModel>
-        {
-            new(new ChannelId(new byte[32]), new TxId(new byte[32]), 6)
-        };
-
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync(state);
-
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(pendingTransactions);
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(110u);
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+        var heights = new List<uint>();
+        _service.OnNewBlockDetected += (_, args) => heights.Add(args.Height);
 
         // Act
-        await _service.StartAsync(0, CancellationToken.None);
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
 
-        // Assert
+        // Assert (NL-215: the tip, 110, is processed too)
         _mockBlockchainStateRepository.Verify(x => x.GetStateAsync(), Times.Once);
         _mockWatchedTransactionRepository.Verify(x => x.GetAllPendingAsync(), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetCurrentBlockHeightAsync(), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(100), Times.Once);
+        _mockWatchedOutpointRepository.Verify(x => x.AddMissingFundingOutpointsAsync(), Times.Once);
+        _mockWatchedOutpointRepository.Verify(x => x.GetActiveAsync(), Times.Once);
+        _mockBroadcastRepository.Verify(x => x.GetPendingAsync(), Times.Once);
+        Assert.Equal(Enumerable.Range(100, 11).Select(h => (uint)h), heights);
+        Assert.Equal(110u, _service.LastProcessedBlockHeight);
+        _mockBlockchainStateRepository.Verify(x => x.Add(It.IsAny<BlockchainState>()), Times.Never);
     }
 
     [Fact]
-    public async Task StartAsync_WithNoBlockchainState_CreatesNewState()
+    public async Task Given_StoredUtxos_When_Starting_Then_LoadedWithTheirWalletAddresses()
     {
-        // Arrange
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync((BlockchainState)null!);
-
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(100u);
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+        // Arrange: without the wallet address the signer cannot derive the key of a UTXO received before a restart
+        // and the funding transaction fails to sign (NL-302, found on Mutinynet)
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
 
         // Act
-        await _service.StartAsync(0, CancellationToken.None);
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
 
         // Assert
-        _mockBlockchainStateRepository.Verify(x => x.Add(It.IsAny<BlockchainState>()), Times.Once);
+        _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(true), Times.Once);
+        _mockUtxoDbRepository.Verify(x => x.GetUnspentAsync(false), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(50u)]
+    public async Task Given_NoState_When_Starting_Then_StateCreatedAtTheHeightOfBirthAndSavedBeforeAnyBlock(
+        uint heightOfBirth)
+    {
+        // Arrange
+        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync()).ReturnsAsync((BlockchainState?)null);
+        uint? created = null;
+        _mockBlockchainStateRepository.Setup(x => x.Add(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s =>
+                                       {
+                                           created = s.LastProcessedHeight;
+                                           _steps.Add("add state");
+                                       });
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s => _steps.Add($"update {s.LastProcessedHeight}"));
+
+        // Act
+        await _service.StartAsync(heightOfBirth, TestContext.Current.CancellationToken);
+        await _service.StopAsync();
+
+        // Assert: the state exists (saved) before the first block updates it; every block from the height of birth on
+        Assert.Equal(heightOfBirth, created);
+        Assert.Equal(["add state", "save", $"update {heightOfBirth}", "save"], _steps.Take(4));
+        Assert.Equal(110u, _service.LastProcessedBlockHeight);
     }
 
     [Fact]
-    public async Task WatchTransactionAsync_AddsTransactionToDbAndInMemory()
+    public async Task Given_WatchTransaction_When_Called_Then_AddedAndSaved()
     {
         // Arrange
         var channelId = new ChannelId(new byte[32]);
         var txId = new TxId(new byte[32]);
-        const uint requiredDepth = 6;
 
         // Act
-        await _service.WatchTransactionAsync(channelId, txId, requiredDepth);
+        await _service.WatchTransactionAsync(channelId, txId, 6);
 
         // Assert
         _mockWatchedTransactionRepository.Verify(
-            x => x.Add(
-                It.Is<WatchedTransactionModel>(t => t.ChannelId.Equals(channelId)
-                                                 && t.TransactionId.Equals(txId)
-                                                 && t.RequiredDepth == requiredDepth)),
-            Times.Once);
-
+            x => x.Add(It.Is<WatchedTransactionModel>(t => t.ChannelId.Equals(channelId) && t.TransactionId.Equals(txId)
+                                                        && t.RequiredDepth == 6)), Times.Once);
         _mockUnitOfWork.Verify(x => x.SaveChangesAsync(), Times.Once);
     }
 
     [Fact]
-    public async Task ProcessNewBlock_AddsMissingBlocksAndProcessesThem()
+    public async Task Given_NewBlockAfterMissedOnes_When_Delivered_Then_EachIsProcessedInOrderWithItsOwnSave()
     {
         // Arrange
-        const uint currentBlockHeight = 110u;
-        var block = Consensus.Main.ConsensusFactory.CreateBlock();
-
-        // Setup to simulate blockchain state at height 100
-        var state = new BlockchainState(100, new byte[32], DateTime.UtcNow);
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync(state);
-
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(currentBlockHeight);
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(block);
-
-        await _service.StartAsync(0, CancellationToken.None);
-
-        // Setup for tracking new block events
-        var newBlockEventCalled = false;
-        _service.OnNewBlockDetected += (_, _) => newBlockEventCalled = true;
-
-        // Create a private method invoker to test ProcessNewBlock which is private
-        var processNewBlockMethod = typeof(BlockchainMonitorService).GetMethod("ProcessNewBlock",
-                                                                               System.Reflection.BindingFlags
-                                                                                  .NonPublic |
-                                                                               System.Reflection.BindingFlags.Instance)
-                                 ?? throw new InvalidCastException("Can't find ProcessNewBlock method");
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        _chain.Mine();
+        _chain.Mine();
+        var block = _chain.Mine();
+        var heights = new List<uint>();
+        _service.OnNewBlockDetected += (_, args) => heights.Add(args.Height);
+        var saves = _steps.Count(s => s == "save");
 
         // Act
-        await (processNewBlockMethod.Invoke(_service, [block, currentBlockHeight]) as Task ??
-               throw new InvalidCastException("Can't box ProcessNewBlock method as Task"));
+        await _service.ProcessNewBlockAsync(block, 113);
 
         // Assert
-        Assert.True(newBlockEventCalled, "New block event should have been raised");
-        _mockBlockchainStateRepository.Verify(x => x.Update(It.IsAny<BlockchainState>()), Times.AtLeastOnce);
-        _mockUnitOfWork.Verify(x => x.SaveChangesAsync(), Times.AtLeastOnce);
+        Assert.Equal([111u, 112u, 113u], heights);
+        Assert.Equal(saves + 3, _steps.Count(s => s == "save"));
+        _mockBlockHeaderRepository.Verify(x => x.AddOrReplaceAsync(It.Is<BlockHeaderModel>(h => h.Height == 113)),
+                                          Times.Once);
     }
 
     [Fact]
-    public async Task StopAsync_CancelsTasksAndCleansUp()
+    public async Task Given_WatchWithDepthOne_When_ItsBlockIsProcessed_Then_ConfirmedAfterTheSaveWithItsBlockIndex()
     {
         // Arrange
-        await _service.StartAsync(0, CancellationToken.None);
-
-        // Act
-        await _service.StopAsync();
-
-        // Assert - Nothing to verify explicitly, just ensuring it doesn't throw
-    }
-
-    [Fact]
-    public void OnTransactionConfirmed_RaisedWhenTransactionReachesRequiredDepth()
-    {
-        // Arrange
-        var channelId = new ChannelId(new byte[32]);
-        var txId = new TxId(new byte[32]);
-        const uint requiredDepth = 1;
-
-        var watchedTx = new WatchedTransactionModel(channelId, txId, requiredDepth);
-        watchedTx.SetHeightAndIndex(100, 1);
-
-        var transactionConfirmedCalled = false;
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var unrelated = CreateTransaction(0x01);
+        var watched = CreateTransaction(0x02);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x03, 32).ToArray());
+        _service.TrackWatchedTransaction(new WatchedTransactionModel(channelId,
+                                                                     new TxId(watched.GetHash().ToBytes()), 1));
+        _mockWatchedTransactionRepository.Setup(x => x.Update(It.IsAny<WatchedTransactionModel>()))
+                                         .Callback((WatchedTransactionModel w) =>
+                                                       _steps.Add($"update watch {w.IsCompleted}"));
+        TransactionConfirmedEventArgs? confirmed = null;
         _service.OnTransactionConfirmed += (_, args) =>
         {
-            transactionConfirmedCalled = true;
-            Assert.Equal(watchedTx, args.WatchedTransaction);
+            _steps.Add("confirmed");
+            confirmed = args;
         };
 
-        // Use reflection to access private methods/fields for testing
-        var checkWatchedTransactionsDepthMethod = typeof(BlockchainMonitorService).GetMethod(
-                                                      "CheckWatchedTransactionsDepth",
-                                                      System.Reflection.BindingFlags.NonPublic |
-                                                      System.Reflection.BindingFlags.Instance) ??
-                                                  throw new NullReferenceException(
-                                                      "Can't find CheckWatchedTransactionsDepth method");
-
-        var watchedTransactionsField = typeof(BlockchainMonitorService).GetField("_watchedTransactions",
-                                           System.Reflection.BindingFlags.NonPublic |
-                                           System.Reflection.BindingFlags.Instance) ??
-                                       throw new NullReferenceException("Can't find watchedTransactions field");
-
-        var lastProcessedBlockHeightField = typeof(BlockchainMonitorService).GetField("_lastProcessedBlockHeight",
-                                                System.Reflection.BindingFlags.NonPublic |
-                                                System.Reflection.BindingFlags.Instance)
-                                         ?? throw new NullReferenceException(
-                                                "Can't find lastProcessedBlockHeight field");
-
-        // Set the private fields
-        var watchedTransactions =
-            watchedTransactionsField.GetValue(_service) as ConcurrentDictionary<uint256, WatchedTransactionModel> ??
-            throw new InvalidCastException("Can't get watchedTransactions field");
-        watchedTransactions[new uint256(txId)] = watchedTx;
-
-        lastProcessedBlockHeightField.SetValue(_service, 101u); // Setting block height to 101 to trigger confirmation
-
         // Act
-        checkWatchedTransactionsDepthMethod.Invoke(_service, [_mockUnitOfWork.Object]);
+        await _service.ProcessNewBlockAsync(_chain.Mine(unrelated, watched), 111);
 
-        // Assert
-        Assert.True(transactionConfirmedCalled, "Transaction confirmed event should have been raised");
-        _mockWatchedTransactionRepository.Verify(
-            x => x.Update(
-                It.Is<WatchedTransactionModel>(t => t.ChannelId.Equals(channelId) &&
-                                                    t.IsCompleted)), Times.Once);
+        // Assert: coinbase 0, unrelated 1, watched 2 (BOLT 7 short_channel_id index)
+        Assert.NotNull(confirmed);
+        Assert.Equal(111u, confirmed.Height);
+        Assert.Equal(111u, confirmed.WatchedTransaction.FirstSeenAtHeight);
+        Assert.Equal(2u, confirmed.WatchedTransaction.TransactionIndex);
+        Assert.True(confirmed.WatchedTransaction.IsCompleted);
+        var tail = _steps.SkipWhile(s => s != "update watch False").ToList();
+        Assert.Equal(["update watch False", "update watch True", "save", "confirmed"], tail);
+        _mockWatchedOutpointRepository.Verify(
+            x => x.AddFundingOutpointIfMissingAsync(channelId, new TxId(watched.GetHash().ToBytes())), Times.Once);
     }
 
     [Fact]
-    public async Task StartAsync_WithHeightOfBirth_CreatesStateAtSpecifiedHeight()
+    public async Task Given_BlockProcessingThrows_When_ProcessingQueue_Then_RoundHaltsAndLaterRoundResumes()
     {
         // Arrange
-        const uint heightOfBirth = 50;
-        uint? capturedStateHeight = null;
+        var failing = true;
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s =>
+                                       {
+                                           if (failing)
+                                               throw new InvalidOperationException("db down");
 
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync((BlockchainState)null!);
-
-        _mockBlockchainStateRepository.Setup(x => x.Add(It.IsAny<BlockchainState>()))
-                                      .Callback<BlockchainState>(state => capturedStateHeight =
-                                                                              state.LastProcessedHeight);
-
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(100u);
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+                                           processedHeights.Add(s.LastProcessedHeight);
+                                       });
+        var raised = 0;
+        var chain = new FakeBitcoinChain(102);
+        var service = CreateService(chain);
+        service.OnNewBlockDetected += (_, _) => raised++;
+        service.MaxBlockProcessingAttempts = 3;
+        service.BlockRetryBaseDelay = TimeSpan.FromMilliseconds(1);
 
         // Act
-        await _service.StartAsync(heightOfBirth, CancellationToken.None);
+        await service.StartAsync(0, TestContext.Current.CancellationToken)
+                     .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert: block 100 (re-queued on start) was tried exactly MaxBlockProcessingAttempts times, 101 never, and
+        // no event was raised for a block whose save failed
+        _mockBlockchainStateRepository.Verify(x => x.Update(It.IsAny<BlockchainState>()), Times.Exactly(3));
+        Assert.Equal(100u, service.LastProcessedBlockHeight);
+        Assert.True(service.IsChainProcessingHalted);
+        Assert.Equal("block 100 failed 3 times in a row", service.ChainProcessingHaltReason); // NL-216 (chainstatus)
+        Assert.Empty(processedHeights);
+        Assert.Equal(0, raised);
+
+        // Act: the failure clears and a new block arrives
+        failing = false;
+        await service.ProcessNewBlockAsync(chain.Mine(), 103);
+        await service.StopAsync();
+
+        // Assert: the queue resumes from the failed block, in order, without skipping any
+        Assert.Equal([100u, 101u, 102u, 103u], processedHeights);
+        Assert.Equal(103u, service.LastProcessedBlockHeight);
+        Assert.False(service.IsChainProcessingHalted);
+        Assert.Null(service.ChainProcessingHaltReason);
+        Assert.Equal(4, raised);
+    }
+
+    [Fact]
+    public async Task Given_DepositInLastProcessedBlock_When_RestartingWithNewBlocks_Then_NewBlocksAreProcessed()
+    {
+        // Arrange
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+
+        var depositTx = Network.RegTest.CreateTransaction();
+        depositTx.Outputs.Add(Money.Satoshis(50_000), address);
+        var chain = new FakeBitcoinChain(99);
+        chain.Mine(depositTx);
+        chain.Mine();
+
+        // The deposit in block 100 was already processed and saved before the restart
+        var knownUtxo = new UtxoModel(new TxId(depositTx.GetHash().ToBytes()), 0, LightningMoney.Satoshis(50_000),
+                                      100, walletAddress);
+
+        // Mirror UnitOfWork.AddUtxo + UtxoMemoryRepository.Add, which throw on a duplicate outpoint
+        var utxoSet = new Dictionary<(TxId, uint), UtxoModel>();
+        var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        mockUtxoMemoryRepository.Setup(x => x.Load(It.IsAny<List<UtxoModel>>()))
+                                .Callback<List<UtxoModel>>(list => list.ForEach(u => utxoSet[(u.TxId, u.Index)] = u));
+        UtxoModel? found;
+        mockUtxoMemoryRepository
+           .Setup(x => x.TryGetUtxo(It.IsAny<TxId>(), It.IsAny<uint>(), out found))
+           .Returns(new TryGetUtxoCallback((TxId txId, uint index, out UtxoModel? utxo) =>
+                                               utxoSet.TryGetValue((txId, index), out utxo)));
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), mockUtxoMemoryRepository.Object);
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>()))
+                       .Callback<UtxoModel>(u =>
+                        {
+                            if (!utxoSet.TryAdd((u.TxId, u.Index), u))
+                                throw new InvalidOperationException("Cannot add Utxo");
+                        });
+
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([knownUtxo]);
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        var service = CreateService(chain);
+        var depositEvents = 0;
+        service.OnWalletMovementDetected += (_, _) => depositEvents++;
+
+        // Act
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        await service.StopAsync();
+
+        // Assert
+        Assert.Equal(101u, service.LastProcessedBlockHeight);
+        Assert.False(service.IsChainProcessingHalted);
+        Assert.Equal(0, depositEvents);
+        _mockUnitOfWork.Verify(x => x.AddUtxo(It.IsAny<UtxoModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_LongBacklogAndSmallQueue_When_Starting_Then_AllMissedBlocksAreProcessedInOrder()
+    {
+        // Arrange
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s => processedHeights.Add(s.LastProcessedHeight));
+        _service.MaxQueuedBlocks = 3;
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
         await _service.StopAsync();
 
         // Assert
-        Assert.NotNull(capturedStateHeight);
-        Assert.Equal(heightOfBirth, capturedStateHeight);
+        Assert.Equal(Enumerable.Range(100, 11).Select(h => (uint)h), processedHeights);
     }
 
     [Fact]
-    public async Task StartAsync_WithExistingStateAndHeightOfBirth_UsesExistingState()
+    public async Task Given_HaltedQueue_When_NewBlocksArrive_Then_QueueStaysBoundedAndRecoversWithoutSkipping()
     {
         // Arrange
-        const uint heightOfBirth = 50;
-        const uint existingHeight = 100;
-        var state = new BlockchainState(existingHeight, new byte[32], DateTime.UtcNow);
+        var chain = new FakeBitcoinChain(101);
+        var failing = true;
+        var processedHeights = new List<uint>();
+        _mockBlockchainStateRepository.Setup(x => x.Update(It.IsAny<BlockchainState>()))
+                                      .Callback<BlockchainState>(s =>
+                                       {
+                                           if (failing)
+                                               throw new InvalidOperationException("db down");
 
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync(state);
+                                           processedHeights.Add(s.LastProcessedHeight);
+                                       });
+        var service = CreateService(chain);
+        service.MaxBlockProcessingAttempts = 1;
+        service.BlockRetryBaseDelay = TimeSpan.Zero;
+        service.MaxQueuedBlocks = 4;
 
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
+        var queueField = typeof(BlockchainMonitorService).GetField("_blocksToProcess",
+                             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                      ?? throw new InvalidCastException("Can't find _blocksToProcess field");
+        var queue = queueField.GetValue(service) as OrderedDictionary<uint, Block>
+                 ?? throw new InvalidCastException("Can't get _blocksToProcess field");
 
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(110u);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        Assert.True(service.IsChainProcessingHalted);
 
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
-
-        // Act
-        await _service.StartAsync(heightOfBirth, CancellationToken.None);
+        // Act: many blocks arrive while halted
+        for (var height = 102u; height <= 120u; height++)
+            await service.ProcessNewBlockAsync(chain.Mine(), height);
 
         // Assert
-        // Should not create a new state since one already exists
-        _mockBlockchainStateRepository.Verify(
-            x => x.Add(It.IsAny<BlockchainState>()),
-            Times.Never);
+        Assert.True(queue.Count <= 4, $"Queue grew to {queue.Count} blocks while halted");
 
-        // Should use the existing height, not the height of birth
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(existingHeight), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(heightOfBirth), Times.Never);
+        // Act: the failure clears and one more block arrives
+        failing = false;
+        await service.ProcessNewBlockAsync(chain.Mine(), 121);
+        await service.StopAsync();
+
+        // Assert: every block from the halted one onwards is processed in order
+        Assert.False(service.IsChainProcessingHalted);
+        Assert.Equal(Enumerable.Range(100, 22).Select(h => (uint)h), processedHeights);
+        Assert.Equal(121u, service.LastProcessedBlockHeight);
     }
 
     [Fact]
-    public async Task StartAsync_WithHigherHeightOfBirth_ProcessesMissingBlocks()
+    public async Task Given_WatchedOutpoint_When_BlockSpendsIt_Then_SpendRecordedAndRaisedWithTheTransaction()
     {
-        // Arrange
-        const uint heightOfBirth = 50;
-
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync((BlockchainState)null!);
-
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(55u); // The current height is higher than the height of birth
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+        // Arrange (N10: a mutual close the peer broadcast without us recording it; O0-T2: any spend)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 1);
+        var unrelated = Network.RegTest.CreateTransaction();
+        unrelated.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 0));
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 1));
+        spend.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var raised = new List<OutpointSpentEventArgs>();
+        _service.OnWatchedOutpointSpent += (_, args) => raised.Add(args);
 
         // Act
-        await _service.StartAsync(heightOfBirth, CancellationToken.None);
+        var block = _chain.Mine(unrelated, spend);
+        await _service.ProcessNewBlockAsync(block, 111);
 
         // Assert
-        // Should fetch blocks from heightOfBirth to current height
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(heightOfBirth), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(51), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(52), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(53), Times.Once);
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(54), Times.Once);
+        var args = Assert.Single(raised);
+        var spendTxId = new TxId(spend.GetHash().ToBytes());
+        Assert.Equal(channelId, args.ChannelId);
+        Assert.Equal(spendTxId, args.SpendingTransaction.TxId);
+        Assert.Equal(spend.ToBytes(), args.SpendingTransaction.RawTxBytes);
+        Assert.Equal(111u, args.BlockHeight);
+        Assert.Equal(2u, args.TransactionIndex);
+        Assert.Equal(fundingTxId, args.SpentTransactionId);
+        Assert.Equal(1u, args.SpentOutputIndex);
+        var blockHash = new Hash(block.GetHash().ToBytes());
+        Assert.Equal(blockHash, args.BlockHash);
+        _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(fundingTxId, 1, spendTxId, 111, blockHash),
+                                              Times.Once);
     }
 
     [Fact]
-    public async Task StartAsync_WithHeightOfBirthZero_StartsFromGenesis()
+    public async Task Given_MempoolSpendOfWatchedOutpoint_When_Announced_Then_RaisedOnceAndNothingConfirmed()
     {
-        // Arrange
-        const uint heightOfBirth = 0;
-        uint? capturedStateHeight = null;
+        // Arrange (BOLT 5 plan O8, NL-098)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 1);
+        var spend = CreateSpend(fundingTxId, 1);
+        var mempool = new List<MempoolSpendEventArgs>();
+        var confirmed = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, args) => mempool.Add(args);
+        _service.OnWatchedOutpointSpent += (_, _) => confirmed++;
 
-        _mockBlockchainStateRepository.Setup(x => x.GetStateAsync())
-                                      .ReturnsAsync((BlockchainState)null!);
+        // Act: bitcoind announces the transaction twice (mempool acceptance, then again for a block)
+        var first = _service.ProcessMempoolTransaction(spend);
+        var second = _service.ProcessMempoolTransaction(spend);
 
-        _mockBlockchainStateRepository.Setup(x => x.Add(It.IsAny<BlockchainState>()))
-                                      .Callback<BlockchainState>(state => capturedStateHeight =
-                                                                              state.LastProcessedHeight);
+        // Assert: one event with the spent outpoint; no spend recorded, no confirmed spend raised
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        var args = Assert.Single(mempool);
+        Assert.Equal(channelId, args.ChannelId);
+        Assert.Equal(new TxId(spend.GetHash().ToBytes()), args.SpendingTransaction.TxId);
+        Assert.Equal(spend.ToBytes(), args.SpendingTransaction.RawTxBytes);
+        Assert.Equal(fundingTxId, args.SpentTransactionId);
+        Assert.Equal(1u, args.SpentOutputIndex);
+        Assert.False(args.SpendsUnconfirmedParent);
+        Assert.Equal(0, confirmed);
+        _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(It.IsAny<TxId>(), It.IsAny<uint>(),
+                                                                    It.IsAny<TxId>(), It.IsAny<uint>(),
+                                                                    It.IsAny<Hash>()), Times.Never);
+    }
 
-        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
-                                         .ReturnsAsync(
-                                              new List<WatchedTransactionModel>());
-
-        _mockBitcoinChainService.Setup(x => x.GetCurrentBlockHeightAsync())
-                                .ReturnsAsync(5u);
-
-        _mockBitcoinChainService.Setup(x => x.GetBlockAsync(It.IsAny<uint>()))
-                                .ReturnsAsync(Consensus.RegTest.ConsensusFactory.CreateBlock());
+    [Fact]
+    public async Task Given_MempoolSpendReported_When_ItIsMinedLater_Then_TheBlockStillRecordsAndRaisesTheSpend()
+    {
+        // Arrange: the mempool sighting must not stand in for the confirmation (O8)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var spend = CreateSpend(fundingTxId, 0);
+        var confirmed = new List<OutpointSpentEventArgs>();
+        _service.OnWatchedOutpointSpent += (_, args) => confirmed.Add(args);
+        _service.ProcessMempoolTransaction(spend);
 
         // Act
-        await _service.StartAsync(heightOfBirth, CancellationToken.None);
+        await _service.ProcessNewBlockAsync(_chain.Mine(spend), 111);
 
         // Assert
-        Assert.NotNull(capturedStateHeight);
-        Assert.Equal(heightOfBirth, capturedStateHeight);
+        Assert.Equal(111u, Assert.Single(confirmed).BlockHeight);
+        _mockWatchedOutpointRepository.Verify(x => x.MarkSpentAsync(fundingTxId, 0,
+                                                                    new TxId(spend.GetHash().ToBytes()), 111,
+                                                                    It.IsAny<Hash>()), Times.Once);
+    }
 
-        // Should fetch blocks from genesis (0) onwards
-        _mockBitcoinChainService.Verify(x => x.GetBlockAsync(0), Times.Once);
+    [Fact]
+    public void Given_TransactionSpendingAReportedMempoolTransaction_When_Announced_Then_RaisedForItsParent()
+    {
+        // Arrange: a commitment in the mempool, then the HTLC-success spending it before either is mined
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var commitment = CreateSpend(fundingTxId, 0);
+        var htlcSuccess = CreateSpend(commitment, 0);
+        var grandChild = CreateSpend(htlcSuccess, 0);
+        var unrelatedChild = CreateSpend(CreateTransaction(0x33), 0);
+        var mempool = new List<MempoolSpendEventArgs>();
+        _service.OnWatchedOutpointSpentInMempool += (_, args) => mempool.Add(args);
+
+        // Act
+        _service.ProcessMempoolTransaction(commitment);
+        _service.ProcessMempoolTransaction(htlcSuccess);
+        _service.ProcessMempoolTransaction(unrelatedChild);
+        _service.ProcessMempoolTransaction(grandChild);
+
+        // Assert: the child is reported with its unconfirmed parent (and so is the grandchild, one level each)
+        Assert.Equal(3, mempool.Count);
+        Assert.False(mempool[0].SpendsUnconfirmedParent);
+        Assert.True(mempool[1].SpendsUnconfirmedParent);
+        Assert.Equal(new TxId(commitment.GetHash().ToBytes()), mempool[1].SpentTransactionId);
+        Assert.Equal(channelId, mempool[1].ChannelId);
+        Assert.Equal(new TxId(htlcSuccess.GetHash().ToBytes()), mempool[2].SpentTransactionId);
+    }
+
+    [Fact]
+    public void Given_MoreTransactionsThanRemembered_When_AnOldOneIsAnnouncedAgain_Then_ItIsRaisedAgain()
+    {
+        // Arrange: the memory of seen txids is bounded
+        _service.MaxRememberedMempoolTransactions = 2;
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x0e, 32).ToArray());
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(channelId, fundingTxId, 0);
+        var spend = CreateSpend(fundingTxId, 0);
+        var raised = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => raised++;
+        _service.ProcessMempoolTransaction(spend);
+
+        // Act: two other transactions push it out, then it is announced again (e.g. re-broadcast after eviction)
+        _service.ProcessMempoolTransaction(CreateTransaction(0x41));
+        _service.ProcessMempoolTransaction(CreateTransaction(0x42));
+        _service.ProcessMempoolTransaction(spend);
+
+        // Assert
+        Assert.Equal(2, raised);
+    }
+
+    [Fact]
+    public void Given_ThrowingMempoolHandler_When_Announced_Then_OtherHandlersStillRun()
+    {
+        // Arrange
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(new ChannelId(new byte[32]), fundingTxId, 0);
+        var raised = 0;
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => throw new InvalidOperationException("handler bug");
+        _service.OnWatchedOutpointSpentInMempool += (_, _) => raised++;
+
+        // Act
+        var count = _service.ProcessMempoolTransaction(CreateSpend(fundingTxId, 0));
+
+        // Assert: the monitor catches a handler's failure and still calls the next handler
+        Assert.Equal(1, count);
+        Assert.Equal(1, raised);
+    }
+
+    [Fact]
+    public async Task Given_BlockInputsListener_When_ABlockIsProcessed_Then_EveryNonCoinbaseInputIsRaisedAfterTheBlock()
+    {
+        // Arrange (BOLT 7 G2-T5: the graph pruner checks every spent outpoint, watched or not)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var first = new TxId(Enumerable.Repeat((byte)0x21, 32).ToArray());
+        var second = new TxId(Enumerable.Repeat((byte)0x22, 32).ToArray());
+        var spendA = CreateSpend(first, 3);
+        var spendB = CreateSpend(second, 0);
+        spendB.Inputs.Add(new OutPoint(new uint256((byte[])first), 7));
+        var order = new List<string>();
+        var raised = new List<BlockInputsEventArgs>();
+        _service.OnNewBlockDetected += (_, _) => order.Add("block");
+        _service.OnBlockInputs += (_, args) =>
+        {
+            order.Add("inputs");
+            raised.Add(args);
+        };
+
+        // Act
+        var block = _chain.Mine(spendA, spendB);
+        await _service.ProcessNewBlockAsync(block, 111);
+
+        // Assert: the coinbase's null prevout is not listed
+        var args = Assert.Single(raised);
+        Assert.Equal(111u, args.Height);
+        Assert.Equal(new Hash(block.GetHash().ToBytes()), args.BlockHash);
+        Assert.Equal([(first, 3u), (second, 0u), (first, 7u)], args.SpentOutpoints);
+        Assert.Equal(["block", "inputs"], order);
+    }
+
+    [Fact]
+    public async Task Given_OutpointNoLongerWatched_When_BlockSpendsIt_Then_NothingRaised()
+    {
+        // Arrange
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var fundingTxId = new TxId(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        _service.WatchOutpointSpend(new ChannelId(new byte[32]), fundingTxId, 0);
+        _service.StopWatchingOutpointSpend(fundingTxId, 0);
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(new uint256((byte[])fundingTxId), 0));
+        var raised = 0;
+        _service.OnWatchedOutpointSpent += (_, _) => raised++;
+
+        // Act
+        await _service.ProcessNewBlockAsync(_chain.Mine(spend), 111);
+
+        // Assert
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
+    public async Task Given_StoredWatchedOutpoints_When_Starting_Then_TheyAreWatched()
+    {
+        // Arrange
+        var funding = CreateTransaction(0x20);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x21, 32).ToArray());
+        _mockWatchedOutpointRepository
+           .Setup(x => x.GetActiveAsync())
+           .ReturnsAsync([
+                new WatchedOutpointModel(new TxId(funding.GetHash().ToBytes()), 0, channelId,
+                                         WatchedOutpointPurpose.FundingOutput)
+            ]);
+        var raised = new List<OutpointSpentEventArgs>();
+        _service.OnWatchedOutpointSpent += (_, args) => raised.Add(args);
+
+        // Act
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.ProcessNewBlockAsync(_chain.Mine(CreateSpend(funding, 0)), 111);
+
+        // Assert
+        Assert.Equal(channelId, Assert.Single(raised).ChannelId);
+    }
+
+    [Fact]
+    public async Task Given_AddressWithADeposit_When_ASecondDepositArrives_Then_BothAreRecorded()
+    {
+        // Arrange - regression: the address was dropped from the watch list after its first deposit, so a second
+        // channel closing to the same shutdown address never credited the wallet until a restart
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var address = new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _service.WatchBitcoinAddress(walletAddress);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+        var first = Network.RegTest.CreateTransaction();
+        first.Outputs.Add(Money.Satoshis(40_000), address);
+        var second = Network.RegTest.CreateTransaction();
+        second.Outputs.Add(Money.Satoshis(60_000), address);
+        var movements = 0;
+        _service.OnWalletMovementDetected += (_, _) => movements++;
+
+        // Act
+        await _service.ProcessNewBlockAsync(_chain.Mine(first), 111);
+        await _service.ProcessNewBlockAsync(_chain.Mine(second), 112);
+
+        // Assert
+        Assert.Equal([40_000L, 60_000L], added.Select(u => u.Amount.Satoshi));
+        Assert.Equal(2, movements);
+    }
+
+    [Fact]
+    public void Given_TrackedWatch_When_Tracked_Then_NothingWrittenAndItIsFollowed()
+    {
+        // Arrange: the caller saved the row in its own save (the closing transaction with Closing)
+        var txId = new TxId(Enumerable.Repeat((byte)0x3c, 32).ToArray());
+        var watch = new WatchedTransactionModel(new ChannelId(new byte[32]), txId, 6);
+
+        // Act
+        _service.TrackWatchedTransaction(watch);
+
+        // Assert
+        _mockWatchedTransactionRepository.Verify(x => x.Add(It.IsAny<WatchedTransactionModel>()), Times.Never);
+        var watched = typeof(BlockchainMonitorService)
+                     .GetField("_watchedTransactions",
+                               System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                     .GetValue(_service) as ConcurrentDictionary<uint256, WatchedTransactionModel>;
+        Assert.Same(watch, watched![new uint256((byte[])txId)]);
+    }
+
+    [Fact]
+    public async Task Given_PublishAndWatch_When_Called_Then_TheWatchAndTheRawTransactionAreSavedTogetherBeforeTheSend()
+    {
+        // Arrange (NL-258)
+        var transaction = CreateTransaction(0x30);
+        var signed = ToSigned(transaction);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x31, 32).ToArray());
+        _mockWatchedTransactionRepository.Setup(x => x.Add(It.IsAny<WatchedTransactionModel>()))
+                                         .Callback(() => _steps.Add("add watch"));
+        _mockBroadcastRepository.Setup(x => x.Add(It.IsAny<BroadcastTransactionModel>()))
+                                .Callback((BroadcastTransactionModel b) => _steps.Add($"add {b.State}"));
+        _chain.SendFailure = new InvalidOperationException("node down");
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _service.PublishAndWatchTransactionAsync(channelId, signed, 3));
+
+        // Assert: saved before the (refused) send, which the caller still sees
+        Assert.Equal(["add watch", "add Pending", "save"], _steps);
+        Assert.Single(_chain.SendAttempts);
+    }
+
+    [Fact]
+    public async Task Given_TransactionAlreadyInTheMempool_When_Published_Then_ItCountsAsAccepted()
+    {
+        // Arrange
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x32)), BroadcastPurpose.Sweep, null,
+                                                      100);
+        _chain.SendFailure = new InvalidOperationException("txn-already-in-mempool");
+
+        // Act
+        var accepted = await _service.PublishAsync(broadcast);
+
+        // Assert
+        Assert.True(accepted);
+    }
+
+    [Fact]
+    public async Task Given_ASavedBroadcast_When_SavedAndPublishedAgain_Then_NoSecondRowIsAdded()
+    {
+        // Arrange
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x33)), BroadcastPurpose.Penalty,
+                                                      null, 100);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(broadcast.TransactionId)).ReturnsAsync(broadcast);
+
+        // Act
+        var accepted = await _service.SaveAndPublishAsync(broadcast);
+
+        // Assert
+        Assert.True(accepted);
+        _mockBroadcastRepository.Verify(x => x.Add(It.IsAny<BroadcastTransactionModel>()), Times.Never);
+        Assert.Single(_chain.SendAttempts);
+    }
+
+    [Fact]
+    public void Given_UnknownNetwork_When_Constructed_Then_ItThrowsInsteadOfUsingMainnet()
+    {
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => CreateService(_chain, "notanetwork"));
+    }
+
+    [Fact]
+    public void Given_BitcoinInfrastructure_When_ResolvingTheOnchainPorts_Then_TheyAreTheChainMonitor()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddBitcoinInfrastructure();
+        var monitor = new Mock<IBlockchainMonitor>().Object;
+        services.Replace(ServiceDescriptor.Singleton(monitor));
+        using var provider = services.BuildServiceProvider();
+
+        // Act & Assert
+        Assert.Same(monitor, provider.GetRequiredService<IChainBroadcaster>());
+        Assert.Same(monitor, provider.GetRequiredService<IOutpointWatcher>());
+    }
+
+    [Fact]
+    public async Task Given_ABroadcastTheNodeKeepsRefusing_When_BlocksArrive_Then_ItIsWarnedAboutFirstAndThenPeriodically()
+    {
+        // Arrange: a stored funding transaction the node refuses for good (e.g. its inputs are gone)
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.RefusalWarningInterval = 3;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x34)), BroadcastPurpose.Funding,
+                                                      null, 110);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act: the first send, then six blocks (a rebroadcast after each)
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 6; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: 7 refusals, a warning at the 1st, 3rd and 6th, the others at Debug
+        var refusals = logger.Entries.Where(e => e.Message.Contains("was refused")).ToList();
+        Assert.Equal(7, refusals.Count);
+        Assert.Equal([
+                         LogLevel.Warning, LogLevel.Debug, LogLevel.Warning, LogLevel.Debug, LogLevel.Debug,
+                         LogLevel.Warning, LogLevel.Debug
+                     ], refusals.Select(e => e.Level));
+        Assert.Contains("(6 time(s) in a row)", refusals[5].Message);
+
+        // Act: the node accepts it again, then refuses it again
+        _chain.SendFailure = null;
+        await service.PublishAsync(broadcast);
+        _chain.SendFailure = new InvalidOperationException("node down");
+        await service.PublishAsync(broadcast);
+
+        // Assert: the count started over
+        var (level, message) = logger.Entries.Last(e => e.Message.Contains("was refused"));
+        Assert.Equal(LogLevel.Warning, level);
+        Assert.Contains("(1 time(s) in a row)", message);
+    }
+
+    [Fact]
+    public async Task Given_APendingBroadcastReplacedByRbf_When_TheNextBlockArrives_Then_ItIsNotSentAgain()
+    {
+        // Arrange (NL-294, O6-T1): a sweep sent once, then replaced by the sweep scheduler (its row is Replaced)
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        var original = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x36)), BroadcastPurpose.Sweep, null,
+                                                     110);
+        var other = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x37)), BroadcastPurpose.Sweep, null, 110);
+        Assert.True(await _service.PublishAsync(original));
+        Assert.True(await _service.PublishAsync(other));
+        var stored = BroadcastTransactionModel.Restore(original.TransactionId, original.RawTransaction,
+                                                       original.Purpose, null, 0, null, 110, BroadcastState.Replaced,
+                                                       null, null, DateTimeOffset.UtcNow);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(original.TransactionId)).ReturnsAsync(stored);
+        _mockBroadcastRepository.Setup(x => x.GetByTransactionIdAsync(other.TransactionId)).ReturnsAsync(other);
+        var sendsBefore = _chain.SendAttempts.Count;
+
+        // Act: a block that holds neither (both left the mempool of the fake chain's miner)
+        _chain.Mempool.Clear();
+        await _service.ProcessNewBlockAsync(_chain.Mine(), 111);
+
+        // Assert: only the still pending one is sent again
+        var sent = _chain.SendAttempts.Skip(sendsBefore).Select(t => new TxId(t.GetHash().ToBytes())).ToList();
+        Assert.Equal([other.TransactionId], sent);
+    }
+
+    [Fact]
+    public async Task Given_WatchCompletedInADisconnectedBlock_When_Reorged_Then_ItIsPendingAgainAndConfirmedFromTheNewBranch()
+    {
+        // Arrange (NL-292): a funding transaction reached its depth in block 111, which a reorg disconnects; the new
+        // branch holds it one block higher
+        var funding = CreateTransaction(0x30);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x31, 32).ToArray());
+        var fundingTxId = new TxId(funding.GetHash().ToBytes());
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        _service.TrackWatchedTransaction(new WatchedTransactionModel(channelId, fundingTxId, 1));
+        var confirmations = new List<TransactionConfirmedEventArgs>();
+        _service.OnTransactionConfirmed += (_, args) => confirmations.Add(args);
+        await _service.ProcessNewBlockAsync(_chain.Mine(funding), 111);
+        var completed = new WatchedTransactionModel(channelId, fundingTxId, 1);
+        completed.SetHeightAndIndex(111, 1);
+        completed.MarkAsCompleted();
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(110)).ReturnsAsync([completed]);
+        _mockWatchedTransactionRepository.Setup(x => x.GetAllPendingAsync())
+                                         .ReturnsAsync([new WatchedTransactionModel(channelId, fundingTxId, 1)]);
+        var updates = new List<WatchedTransactionModel>();
+        _mockWatchedTransactionRepository.Setup(x => x.Update(It.IsAny<WatchedTransactionModel>()))
+                                         .Callback<WatchedTransactionModel>(updates.Add);
+
+        // Act: block 111 is replaced by an empty block and the funding transaction moves to 112
+        _chain.Reorg(110, 1);
+        var tip = _chain.Mine(false, funding);
+        await _service.ProcessNewBlockAsync(tip, 112);
+
+        // Assert: the rewind reset the completed watch (not completed, no height) and the new branch confirmed it at
+        // its new position
+        Assert.Contains(updates, u => u.TransactionId == fundingTxId && !u.IsCompleted && u.FirstSeenAtHeight is null);
+        Assert.Equal(2, confirmations.Count);
+        Assert.Equal(111u, confirmations[0].WatchedTransaction.FirstSeenAtHeight);
+        Assert.Equal(112u, confirmations[1].WatchedTransaction.FirstSeenAtHeight);
+        Assert.Equal(1u, confirmations[1].WatchedTransaction.TransactionIndex);
+    }
+
+    [Fact]
+    public async Task Given_WalletDepositAndSpendInDisconnectedBlocks_When_Reorged_Then_DepositRemovedAndSpentOutputRestored()
+    {
+        // Arrange (NL-293): a wallet output confirmed at 105 and spent at 111; another deposit at 111
+        var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        var older = Network.RegTest.CreateTransaction();
+        older.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x40, 32).ToArray()), 0));
+        older.Outputs.Add(Money.Satoshis(70_000), address.ScriptPubKey);
+        var olderBlockChain = new FakeBitcoinChain(104);
+        olderBlockChain.Mine(older);
+        for (var i = 0; i < 5; i++)
+            olderBlockChain.Mine();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(It.IsAny<uint>()))
+                                         .ReturnsAsync([]);
+        var service = CreateService(olderBlockChain);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(older.GetHash(), 0));
+        spend.Inputs[0].WitScript = new WitScript([new byte[71], key.PubKey.ToBytes()]);
+        spend.Outputs.Add(Money.Satoshis(60_000), new Key().PubKey.WitHash.ScriptPubKey);
+        var deposit = Network.RegTest.CreateTransaction();
+        deposit.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x41, 32).ToArray()), 0));
+        deposit.Outputs.Add(Money.Satoshis(30_000), address.ScriptPubKey);
+        await service.ProcessNewBlockAsync(olderBlockChain.Mine(spend, deposit), 111);
+
+        var depositTxId = new TxId(deposit.GetHash().ToBytes());
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>()))
+                             .ReturnsAsync([new UtxoModel(depositTxId, 0, LightningMoney.Satoshis(30_000), 111,
+                                                          walletAddress)]);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+
+        // Act: block 111 is replaced by two empty blocks
+        var newBranch = olderBlockChain.Reorg(110, 2);
+        await service.ProcessNewBlockAsync(newBranch[^1], 112);
+
+        // Assert: the deposit of the disconnected block is gone, the output it spent is back at its height
+        _mockUnitOfWork.Verify(x => x.TrySpendUtxo(depositTxId, 0), Times.Once);
+        var restored = Assert.Single(added);
+        Assert.Equal(new TxId(older.GetHash().ToBytes()), restored.TxId);
+        Assert.Equal(0u, restored.Index);
+        Assert.Equal(70_000, restored.Amount.Satoshi);
+        Assert.Equal(105u, restored.BlockHeight);
+        Assert.Equal(112u, service.LastProcessedBlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_WalletOutputWhoseSpendIsBackInTheMempool_When_Reorged_Then_NotRestored()
+    {
+        // Arrange (NL-293): a wallet output confirmed at 105 and spent at 111 by our own transaction (a funding)
+        var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        var older = Network.RegTest.CreateTransaction();
+        older.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x42, 32).ToArray()), 0));
+        older.Outputs.Add(Money.Satoshis(70_000), address.ScriptPubKey);
+        var chain = new FakeBitcoinChain(104);
+        chain.Mine(older);
+        for (var i = 0; i < 5; i++)
+            chain.Mine();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(It.IsAny<uint>()))
+                                         .ReturnsAsync([]);
+        var service = CreateService(chain);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(older.GetHash(), 0));
+        spend.Inputs[0].WitScript = new WitScript([new byte[71], key.PubKey.ToBytes()]);
+        spend.Outputs.Add(Money.Satoshis(60_000), new Key().PubKey.WitHash.ScriptPubKey);
+        await service.ProcessNewBlockAsync(chain.Mine(spend), 111);
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+
+        // Act: block 111 is replaced by two empty blocks and bitcoind puts the spend back into its mempool
+        var newBranch = chain.Reorg(110, 2);
+        chain.Mempool.Add(spend);
+        await service.ProcessNewBlockAsync(newBranch[^1], 112);
+
+        // Assert: the output is not spendable again (coin selection would double-spend the pending transaction)
+        Assert.Empty(added);
+        Assert.Equal(112u, service.LastProcessedBlockHeight);
+    }
+
+    private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
+                                                   ILogger<BlockchainMonitorService>? logger = null)
+    {
+        var bitcoinOptions = new Mock<IOptions<BitcoinOptions>>();
+        bitcoinOptions.Setup(x => x.Value).Returns(new BitcoinOptions
+        {
+            RpcEndpoint = "",
+            RpcUser = "",
+            RpcPassword = "",
+            ZmqHost = s_zmq.Host,
+            ZmqBlockPort = s_zmq.BlockPort,
+            ZmqTxPort = s_zmq.TxPort
+        });
+        var nodeOptions = new Mock<IOptions<NodeOptions>>();
+        nodeOptions.Setup(x => x.Value).Returns(new NodeOptions { BitcoinNetwork = network });
+        return new BlockchainMonitorService(bitcoinOptions.Object, chain,
+                                            logger ?? new Mock<ILogger<BlockchainMonitorService>>().Object,
+                                            nodeOptions.Object,
+                                            _fakeServiceProvider)
+        {
+            BlockRetryBaseDelay = TimeSpan.Zero
+        };
+    }
+
+    private static Transaction CreateTransaction(byte seed)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat(seed, 32).ToArray()), seed));
+        transaction.Outputs.Add(Money.Satoshis(100_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return transaction;
+    }
+
+    private static Transaction CreateSpend(TxId spentTxId, uint outputIndex)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(new uint256((byte[])spentTxId), outputIndex));
+        transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return transaction;
+    }
+
+    private static Transaction CreateSpend(Transaction spent, uint outputIndex)
+    {
+        var transaction = Network.RegTest.CreateTransaction();
+        transaction.Inputs.Add(new OutPoint(spent.GetHash(), outputIndex));
+        transaction.Outputs.Add(Money.Satoshis(10_000), new Key().PubKey.WitHash.ScriptPubKey);
+        return transaction;
+    }
+
+    private static SignedTransaction ToSigned(Transaction transaction) =>
+        new(new TxId(transaction.GetHash().ToBytes()), transaction.ToBytes());
+
+    private delegate bool TryGetUtxoCallback(TxId txId, uint index, out UtxoModel? utxo);
+
+    /// <summary>Keeps every log entry at every level (a Moq logger reports every level as disabled).</summary>
+    private sealed class RecordingLogger : ILogger<BlockchainMonitorService>
+    {
+        public ConcurrentQueue<(LogLevel Level, string Message)> Entries { get; } = new();
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                                Func<TState, Exception?, string> formatter)
+        {
+            Entries.Enqueue((logLevel, formatter(state, exception) + (exception is null ? "" : " " + exception)));
+        }
     }
 }

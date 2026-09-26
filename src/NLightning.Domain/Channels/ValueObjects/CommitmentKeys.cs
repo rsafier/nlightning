@@ -39,21 +39,16 @@ public record struct CommitmentKeys
     public CompactPubKey RemoteHtlcPubKey { get; init; }
 
     /// <summary>
-    /// The per-commitment point used to derive all the above keys.
+    /// The per-commitment point used to derive all the above keys. There is deliberately no per-commitment secret here:
+    /// keys are derived from the point, and a secret leaves the signer only through
+    /// <c>ILightningSigner.RevealPerCommitmentSecret</c> once its commitment is revoked (NL-189).
     /// Generated as: per_commitment_secret * G
     /// </summary>
     public CompactPubKey PerCommitmentPoint { get; init; }
 
-    /// <summary>
-    /// The per-commitment secret used to generate the per-commitment point.
-    /// Only available for our own commitments, not for remote commitments.
-    /// </summary>
-    public Secret? PerCommitmentSecret { get; init; }
-
     public CommitmentKeys(CompactPubKey localPubKey, CompactPubKey localDelayedPubKey,
                           CompactPubKey revocationPubKey, CompactPubKey localHtlcPubKey,
-                          CompactPubKey remoteHtlcPubKey, CompactPubKey perCommitmentPoint,
-                          Secret? perCommitmentSecret)
+                          CompactPubKey remoteHtlcPubKey, CompactPubKey perCommitmentPoint)
     {
         LocalPubKey = localPubKey;
         LocalDelayedPubKey = localDelayedPubKey;
@@ -61,6 +56,5 @@ public record struct CommitmentKeys
         LocalHtlcPubKey = localHtlcPubKey;
         RemoteHtlcPubKey = remoteHtlcPubKey;
         PerCommitmentPoint = perCommitmentPoint;
-        PerCommitmentSecret = perCommitmentSecret;
     }
 }

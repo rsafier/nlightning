@@ -12,34 +12,39 @@ public class InteractiveTransactionService : IInteractiveTransactionService
     private readonly Dictionary<ulong, TxAddInputPayload> _inputs = [];
     private readonly Dictionary<ulong, TxAddOutputPayload> _outputs = [];
 
+    // Every message handled here comes from the peer, so the sender is the initiator only when we are not.
+    private bool IsPeerInitiator => !_isInitiator;
+
+    /// <param name="dustLimitAmount">The dust limit applied to outputs added by the peer.</param>
+    /// <param name="isInitiator">Whether the local node is the negotiation initiator.</param>
     public InteractiveTransactionService(LightningMoney dustLimitAmount, bool isInitiator)
     {
         _dustLimitAmount = dustLimitAmount;
         _isInitiator = isInitiator;
     }
 
-    public void AddInput(TxAddInputPayload input)
+    public async Task AddInputAsync(TxAddInputPayload input)
     {
-        TxAddInputValidator.Validate(_isInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
+        await TxAddInputValidator.ValidateAsync(IsPeerInitiator, input, _inputs.Count, IsValidPrevTx, IsUniqueInput, IsSerialIdUnique);
         _inputs.Add(input.SerialId, input);
     }
 
     public void AddOutput(TxAddOutputPayload output)
     {
-        TxAddOutputValidator.Validate(_isInitiator, output, _outputs.Count, IsSerialIdUnique, IsStandardScript,
+        TxAddOutputValidator.Validate(IsPeerInitiator, output, _outputs.Count, IsSerialIdUnique, IsStandardScript,
                                       _dustLimitAmount);
         _outputs.Add(output.SerialId, output);
     }
 
     public void RemoveInput(TxRemoveInputPayload input)
     {
-        TxRemoveInputValidator.Validate(_isInitiator, input, IsSerialIdPresent);
+        TxRemoveInputValidator.Validate(IsPeerInitiator, input, IsInputSerialIdPresent);
         _inputs.Remove(input.SerialId);
     }
 
     public void RemoveOutput(TxRemoveOutputPayload output)
     {
-        TxRemoveOutputValidator.Validate(_isInitiator, output, IsSerialIdPresent);
+        TxRemoveOutputValidator.Validate(IsPeerInitiator, output, IsOutputSerialIdPresent);
         _outputs.Remove(output.SerialId);
     }
 
@@ -54,14 +59,20 @@ public class InteractiveTransactionService : IInteractiveTransactionService
         return !_inputs.Values.Any(i => i.PrevTx.SequenceEqual(prevTx) && i.PrevTxVout == prevTxVout);
     }
 
+    // serial_ids share one namespace across the inputs and outputs of the transaction
     private bool IsSerialIdUnique(ulong serialId)
     {
-        return !_inputs.ContainsKey(serialId);
+        return !_inputs.ContainsKey(serialId) && !_outputs.ContainsKey(serialId);
     }
 
-    private bool IsSerialIdPresent(ulong serialId)
+    private bool IsInputSerialIdPresent(ulong serialId)
     {
         return _inputs.ContainsKey(serialId);
+    }
+
+    private bool IsOutputSerialIdPresent(ulong serialId)
+    {
+        return _outputs.ContainsKey(serialId);
     }
 
     private bool IsStandardScript(byte[] script)

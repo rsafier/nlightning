@@ -1,116 +1,103 @@
-using System.Net;
-using System.Net.Sockets;
 using Docker.DotNet;
-using Docker.DotNet.Models;
 using LNUnit.Setup;
+using Npgsql;
 
 namespace NLightning.Integration.Tests.Fixtures;
 
+/// <summary>
+/// A Postgres container whose port is published on <c>127.0.0.1</c> (no dependency on the bridge IP being routable
+/// from the host, which only OrbStack and Linux provide).
+/// </summary>
 // ReSharper disable once ClassNeverInstantiated.Global
 public class PostgresFixture : IDisposable
 {
-    private const string ContainerName = "postgres";
-    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
-    private string? _containerId;
-    private string? _ip;
+    public const string DefaultContainerName = "postgres";
+    private const string Image = "postgres";
+    private const string Tag = "16.2-alpine";
+    private const string DefaultDatabase = "nlightning";
+    private static readonly TimeSpan s_readyTimeout = TimeSpan.FromMinutes(2);
 
-    public PostgresFixture()
+    private readonly DockerClient _client = new DockerClientConfiguration().CreateClient();
+
+    public PostgresFixture() : this(DefaultContainerName)
     {
-        StartPostgres().GetAwaiter().GetResult();
     }
 
+    private PostgresFixture(string containerName)
+    {
+        ContainerName = containerName;
+        try
+        {
+            StartPostgres().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            // Dispose is never called on a fixture whose constructor threw: do not leave the container behind
+            Dispose();
+            throw;
+        }
+    }
+
+    public string ContainerName { get; }
+
+    /// <summary>
+    /// The host port the container's 5432 is published on (on <c>127.0.0.1</c>).
+    /// </summary>
+    public int HostPort { get; private set; }
+
+    /// <summary>
+    /// Connection string to the <c>nlightning</c> database.
+    /// </summary>
     public string? DbConnectionString { get; private set; }
+
+    /// <summary>
+    /// Starts a Postgres container under another name, for a test that must not share the <c>postgres</c> collection's
+    /// container. Dispose it when done.
+    /// </summary>
+    public static PostgresFixture StartNamed(string containerName) => new(containerName);
+
+    /// <summary>
+    /// A connection string to another database on the same server (EF's migrate creates it).
+    /// </summary>
+    public string ConnectionStringFor(string databaseName)
+    {
+        ArgumentNullException.ThrowIfNull(DbConnectionString);
+        return new NpgsqlConnectionStringBuilder(DbConnectionString) { Database = databaseName }.ConnectionString;
+    }
 
     public void Dispose()
     {
         GC.SuppressFinalize(this);
 
         // Remove containers
-        RemoveContainer(ContainerName).GetAwaiter().GetResult();
+        DockerContainerUtils.RemoveContainerAsync(_client, ContainerName).GetAwaiter().GetResult();
 
         _client.Dispose();
     }
 
     public async Task StartPostgres()
     {
-        await _client.PullImageAndWaitForCompleted("postgres", "16.2-alpine");
-        await RemoveContainer(ContainerName);
-        var nodeContainer = await _client.Containers.CreateContainerAsync(new CreateContainerParameters
-        {
-            Image = "postgres:16.2-alpine",
-            HostConfig = new HostConfig
-            {
-                NetworkMode = "bridge"
-            },
-            Name = $"{ContainerName}",
-            Hostname = $"{ContainerName}",
-            Env =
-            [
-                "POSTGRES_PASSWORD=superuser",
-                "POSTGRES_USER=superuser",
-                "POSTGRES_DB=nlightning"
-            ]
-        }) ?? throw new NullReferenceException("Failed to create postgres container");
-        _containerId = nodeContainer.ID;
-        _ = await _client.Containers.StartContainerAsync(_containerId, new ContainerStartParameters());
+        await _client.PullImageAndWaitForCompleted(Image, Tag);
+        await DockerContainerUtils.RemoveContainerAsync(_client, ContainerName);
 
-        //Build connection string
-        var ipAddressReady = false;
-        while (!ipAddressReady)
-        {
-            var listContainers = await _client.Containers.ListContainersAsync(new ContainersListParameters());
+        HostPort = await DockerContainerUtils.StartWithLoopbackPortAsync(_client, $"{Image}:{Tag}", ContainerName,
+                                                                         5432,
+                                                                         [
+                                                                             "POSTGRES_PASSWORD=superuser",
+                                                                             "POSTGRES_USER=superuser",
+                                                                             $"POSTGRES_DB={DefaultDatabase}"
+                                                                         ]);
+        DbConnectionString =
+            $"Host=127.0.0.1;Port={HostPort};Database={DefaultDatabase};Username=superuser;Password=superuser";
 
-            var db = listContainers.FirstOrDefault(x => x.ID == nodeContainer.ID);
-            if (db != null)
-            {
-                _ip = db.NetworkSettings.Networks.First().Value.IPAddress;
-                DbConnectionString = $"Host={_ip};Database=nlightning;Username=superuser;Password=superuser";
-                ipAddressReady = true;
-            }
-            else
-            {
-                await Task.Delay(100);
-            }
-        }
-
-        //wait for TCP socket to open
-        var tcpConnectable = false;
-        while (!tcpConnectable)
+        // Postgres restarts once after initdb, so a successful query is the only reliable readiness signal
+        await DockerContainerUtils.WaitUntilReadyAsync(ContainerName, async ct =>
         {
-            try
-            {
-                TcpClient c = new()
-                {
-                    ReceiveTimeout = 1,
-                    SendTimeout = 1
-                };
-                if (_ip != null)
-                    await c.ConnectAsync(new IPEndPoint(IPAddress.Parse(_ip), 5432));
-
-                if (c.Connected)
-                {
-                    tcpConnectable = true;
-                }
-            }
-            catch (Exception)
-            {
-                await Task.Delay(50);
-            }
-        }
-    }
-
-    private async Task RemoveContainer(string name)
-    {
-        try
-        {
-            await _client.Containers.RemoveContainerAsync(name,
-                                                          new ContainerRemoveParameters
-                                                          { Force = true, RemoveVolumes = true });
-        }
-        catch
-        {
-            // ignored
-        }
+            await using var connection = new NpgsqlConnection(DbConnectionString);
+            await connection.OpenAsync(ct);
+            await using var command = new NpgsqlCommand("SELECT 1", connection);
+            await command.ExecuteScalarAsync(ct);
+        }, s_readyTimeout);
     }
 
     public async Task<bool> IsRunning()

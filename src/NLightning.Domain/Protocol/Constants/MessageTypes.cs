@@ -25,6 +25,8 @@ public enum MessageTypes : ushort
     ChannelReady = 36,
     Shutdown = 38,
     ClosingSigned = 39,
+    ClosingComplete = 40,
+    ClosingSig = 41,
     OpenChannel2 = 64,
     AcceptChannel2 = 65,
 
@@ -59,10 +61,15 @@ public enum MessageTypes : ushort
 
     #region Routing
 
-    AnnouncementSignatures = 259,
     ChannelAnnouncement = 256,
     NodeAnnouncement = 257,
-    ChannelUpdate = 258
+    ChannelUpdate = 258,
+    AnnouncementSignatures = 259,
+    QueryShortChannelIds = 261,
+    ReplyShortChannelIdsEnd = 262,
+    QueryChannelRange = 263,
+    ReplyChannelRange = 264,
+    GossipTimestampFilter = 265
 
     #endregion
 }

@@ -63,14 +63,61 @@ public class ExpiryTimeTaggedFieldTests
     }
 
     [Fact]
-    public void FromBitReader_ThrowsArgumentException_ForInvalidLength()
+    public void Given_EmptyField_When_FromBitReader_Then_ValueIsZero()
     {
         // Arrange
-        var buffer = new byte[50];
-        var bitReader = new Domain.Utils.BitReader(buffer);
+        var bitReader = new BitReader(new byte[50]);
+
+        // Act
+        var taggedField = ExpiryTimeTaggedField.FromBitReader(bitReader, 0);
+
+        // Assert
+        Assert.Equal(0, taggedField.Value);
+        Assert.True(taggedField.IsValid());
+    }
+
+    [Fact]
+    public void Given_SevenGroupField_When_FromBitReader_Then_ValueWiderThan32BitsIsRead()
+    {
+        // Arrange
+        // 7 groups: 0b00100 then six 0 groups = 4 << 30 = 2^32
+        var bitReader = new BitReader([0x20, 0x00, 0x00, 0x00, 0x00]);
+
+        // Act
+        var taggedField = ExpiryTimeTaggedField.FromBitReader(bitReader, 7);
+
+        // Assert
+        Assert.Equal(1L << 32, taggedField.Value);
+    }
+
+    [Theory]
+    [InlineData(1L << 30, 7)]
+    [InlineData((1L << 30) + 5, 7)]
+    [InlineData(long.MaxValue, 13)]
+    public void Given_ValueWiderThan32Bits_When_RoundTripping_Then_ValueIsPreserved(long value, short expectedLength)
+    {
+        // Arrange
+        var taggedField = new ExpiryTimeTaggedField(value);
+        using var bitWriter = new BitWriter(taggedField.Length * 5);
+
+        // Act
+        taggedField.WriteToBitWriter(bitWriter);
+        var parsed = ExpiryTimeTaggedField.FromBitReader(new BitReader(bitWriter.ToArray()), taggedField.Length);
+
+        // Assert
+        Assert.Equal(expectedLength, taggedField.Length);
+        Assert.Equal(value, parsed.Value);
+    }
+
+    [Fact]
+    public void Given_ValueWiderThan63Bits_When_FromBitReader_Then_ThrowsArgumentException()
+    {
+        // Arrange
+        // 13 groups of 0b11111 = 2^65 - 1
+        var bitReader = new BitReader(Enumerable.Repeat((byte)0xFF, 9).ToArray());
 
         // Act & Assert
-        Assert.Throws<ArgumentException>(() => ExpiryTimeTaggedField.FromBitReader(bitReader, 0));
+        Assert.Throws<ArgumentException>(() => ExpiryTimeTaggedField.FromBitReader(bitReader, 13));
     }
 
     [Fact]

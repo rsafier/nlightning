@@ -2,10 +2,14 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Infrastructure.Tests.Protocol.Services;
 
+using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
+using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
 using Domain.Transport;
+using Infrastructure.Exceptions;
 using Infrastructure.Protocol.Services;
 
 public class MessageServiceTests
@@ -62,6 +66,107 @@ public class MessageServiceTests
 
         Assert.NotNull(receivedMessage.Arguments);
         Assert.Same(messageMock.Object, receivedMessage.Arguments);
+    }
+
+    [Fact]
+    public void Given_MalformedMessage_When_ReceiveMessageAsync_IsInvoked_Then_SendsWarningInsteadOfAllZeroError()
+    {
+        // Arrange
+        var loggerMock = new Mock<ILogger<MessageService>>();
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new MessageSerializationException("bad message"));
+        IMessage? sentMessage = null;
+        transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+                            .Callback<IMessage, CancellationToken>((m, _) => sentMessage = m)
+                            .Returns(Task.CompletedTask);
+        var messageService =
+            new MessageService(loggerMock.Object, _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
+
+        // Assert
+        var warning = Assert.IsType<WarningMessage>(sentMessage);
+        Assert.Equal(MessageTypes.Warning, warning.Type);
+        Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
+        Assert.NotNull(raisedException);
+    }
+
+    [Fact]
+    public void Given_UnknownEvenMessageType_When_Received_Then_SendsWarningAndRaisesConnectionException()
+    {
+        // Arrange (BOLT 1: an unknown even message closes the connection; we send a warning first)
+        var transportServiceMock = new Mock<ITransportService>();
+        transportServiceMock.Setup(t => t.IsConnected).Returns(true);
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ThrowsAsync(new InvalidMessageException("Unknown message type 100"));
+        IMessage? sentMessage = null;
+        transportServiceMock.Setup(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()))
+                            .Callback<IMessage, CancellationToken>((m, _) => sentMessage = m)
+                            .Returns(Task.CompletedTask);
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => { };
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
+
+        // Assert
+        var warning = Assert.IsType<WarningMessage>(sentMessage);
+        Assert.Equal(ChannelId.Zero, warning.Payload.ChannelId);
+        Assert.Equal("Unknown message type 100", System.Text.Encoding.UTF8.GetString(warning.Payload.Data!));
+        Assert.IsType<ConnectionException>(raisedException);
+    }
+
+    [Fact]
+    public void Given_SubscriberThrows_When_MessageReceived_Then_NoWarningIsSent()
+    {
+        // Arrange (only deserialization failures are the peer's fault)
+        var transportServiceMock = new Mock<ITransportService>();
+        _messageSerializerMock.Setup(m => m.DeserializeMessageAsync(It.IsAny<Stream>()))
+                              .ReturnsAsync(new Mock<IMessage>().Object);
+        var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                _messageSerializerMock.Object, transportServiceMock.Object);
+        messageService.OnMessageReceived += (_, _) => throw new InvalidOperationException("subscriber failed");
+        Exception? raisedException = null;
+        messageService.OnExceptionRaised += (_, e) => raisedException = e;
+
+        // Act
+        transportServiceMock.Raise(t => t.MessageReceived += null, messageService, new MemoryStream());
+
+        // Assert
+        transportServiceMock.Verify(t => t.WriteMessageAsync(It.IsAny<IMessage>(), It.IsAny<CancellationToken>()),
+                                    Times.Never);
+        Assert.IsType<ConnectionException>(raisedException);
+    }
+
+    [Fact]
+    public void Given_NoSubscriber_When_Constructed_Then_DoesNotListenToTheTransport()
+    {
+        // Arrange - NL-239: listening (which starts the transport's read loop) before anyone subscribed here raised
+        // the peer's init to nobody
+        var transportServiceMock = new Mock<ITransportService>();
+        var subscriptions = 0;
+        transportServiceMock.SetupAdd(t => t.MessageReceived += It.IsAny<EventHandler<MemoryStream>>())
+                            .Callback(() => subscriptions++);
+
+        // Act
+        using var messageService = new MessageService(new Mock<ILogger<MessageService>>().Object,
+                                                      _messageSerializerMock.Object, transportServiceMock.Object);
+        var beforeSubscriber = subscriptions;
+        messageService.OnMessageReceived += (_, _) => { };
+        messageService.OnMessageReceived += (_, _) => { };
+
+        // Assert
+        Assert.Equal(0, beforeSubscriber);
+        Assert.Equal(1, subscriptions);
     }
 
     [Fact]

@@ -299,7 +299,7 @@ public class OpenChannelClientSubscriptionHandlerTests
 
     private static ChannelModel CreateDummyChannel(ChannelId channelId, CompactPubKey peerId)
     {
-        return new ChannelModel(new ChannelConfig(), channelId, null, null, true, null, null,
+        return new ChannelModel(new ChannelParams(), channelId, null, null, true, null, null,
                                 LightningMoney.Satoshis(100000),
                                 new ChannelKeySetModel(0, peerId, peerId, peerId, peerId, peerId, peerId), 0, 0,
                                 LightningMoney.Zero, null, 0, peerId, 0, ChannelState.V1Opening, ChannelVersion.V1);

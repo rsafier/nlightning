@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Services.Ipc;
@@ -15,6 +16,13 @@ using Transport.Ipc;
 /// </summary>
 internal sealed class NamedPipeIpcService : INamedPipeIpcService
 {
+    /// <summary>
+    /// How many pipe instances (connected clients) can exist at once. A <c>PayInvoice</c> holds one for its whole wait
+    /// (up to <c>PayInvoiceClientHandler.MaxTimeoutSeconds</c>), so the cap must leave room for the short commands
+    /// (listchannels, listpayments) polled meanwhile; the CLI gives up connecting after 2 s.
+    /// </summary>
+    internal const int MaxServerInstances = 64;
+
     private readonly ILogger<NamedPipeIpcService> _logger;
     private readonly IIpcAuthenticator _authenticator;
     private readonly IIpcFraming _framing;
@@ -41,17 +49,18 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     {
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        EnsureCookieExists();
+        WriteNewCookie();
 
-        _listenerTask = ListenToIpcClientAsync(cancellationToken);
+        _listenerTask = ListenToIpcClientAsync(_cts.Token);
 
         return Task.CompletedTask;
     }
 
     public async Task StopAsync()
     {
+        // Nothing to stop if StartAsync never ran
         if (_cts is null)
-            throw new InvalidOperationException("Service is not running");
+            return;
 
         await _cts.CancelAsync();
 
@@ -66,6 +75,8 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
                 // Expected during cancellation
             }
         }
+
+        DeleteCookie();
     }
 
     private async Task ListenToIpcClientAsync(CancellationToken cancellationToken)
@@ -76,7 +87,7 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 try
                 {
-                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 10,
+                    var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxServerInstances,
                                                            PipeTransmissionMode.Byte,
                                                            PipeOptions.Asynchronous);
                     await server.WaitForConnectionAsync(cancellationToken);
@@ -142,7 +153,10 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
         }
     }
 
-    private void EnsureCookieExists()
+    /// <summary>
+    /// Writes a fresh random cookie on every start, so a leaked cookie stops working after a restart.
+    /// </summary>
+    private void WriteNewCookie()
     {
         try
         {
@@ -150,16 +164,33 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            if (File.Exists(_cookiePath))
-                return;
+            // Delete first, so the file is recreated with owner-only permissions
+            File.Delete(_cookiePath);
 
-            var token = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
-            File.WriteAllText(_cookiePath, token);
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows())
+                options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            using var writer = new StreamWriter(_cookiePath, options);
+            writer.Write(token);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to ensure IPC cookie exists at {Path}", _cookiePath);
+            _logger.LogError(ex, "Failed to write the IPC cookie at {Path}", _cookiePath);
             throw;
+        }
+    }
+
+    private void DeleteCookie()
+    {
+        try
+        {
+            File.Delete(_cookiePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to delete the IPC cookie at {Path}", _cookiePath);
         }
     }
 }

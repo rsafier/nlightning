@@ -18,8 +18,16 @@ public readonly struct ShortChannelId : IEquatable<ShortChannelId>, IValueObject
     public readonly uint TransactionIndex;
     public readonly ushort OutputIndex;
 
+    /// <summary>
+    /// Maximum value of the 3-byte block height and transaction index fields (BOLT 7).
+    /// </summary>
+    public const uint MaxThreeByteValue = 0xFFFFFF;
+
     public ShortChannelId(uint blockHeight, uint transactionIndex, ushort outputIndex)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(blockHeight, MaxThreeByteValue);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(transactionIndex, MaxThreeByteValue);
+
         BlockHeight = blockHeight;
         TransactionIndex = transactionIndex;
         OutputIndex = outputIndex;
@@ -52,9 +60,9 @@ public readonly struct ShortChannelId : IEquatable<ShortChannelId>, IValueObject
     }
 
     public ShortChannelId(ulong channelId) : this(
-        (uint)((channelId >> 40) & 0xFFFFFF), // BLOCK_HEIGHT
-        (uint)((channelId >> 16) & 0xFFFF), // TRANSACTION_INDEX
-        (ushort)(channelId & 0xFF) // OUTPUT_INDEX
+        (uint)((channelId >> 40) & 0xFFFFFF), // BLOCK_HEIGHT: 3 bytes
+        (uint)((channelId >> 16) & 0xFFFFFF), // TRANSACTION_INDEX: 3 bytes
+        (ushort)(channelId & 0xFFFF) // OUTPUT_INDEX: 2 bytes
     )
     {
     }

@@ -22,9 +22,9 @@ public class RoutingInfoTaggedFieldIntegrationTests
         // ShortChannelId created from human-readable form
         var scid = ShortChannelId.Parse("539268x845x1");
 
-        const int feeBaseMsat = 1000;
-        const int feeProportionalMillionths = 250;
-        const short cltvDelta = 40;
+        const uint feeBaseMsat = 1000;
+        const uint feeProportionalMillionths = 250;
+        const ushort cltvDelta = 40;
 
         return new RoutingInfo(pubkey, scid, feeBaseMsat, feeProportionalMillionths, cltvDelta);
     }
@@ -41,9 +41,9 @@ public class RoutingInfoTaggedFieldIntegrationTests
                                                 (ushort)(baseRi.ShortChannelId.OutputIndex + i));
             col.Add(new RoutingInfo(baseRi.CompactPubKey,
                                     variedScid,
-                                    baseRi.FeeBaseMsat + i,
-                                    baseRi.FeeProportionalMillionths + i,
-                                    (short)(baseRi.CltvExpiryDelta + i)));
+                                    baseRi.FeeBaseMsat + (uint)i,
+                                    baseRi.FeeProportionalMillionths + (uint)i,
+                                    (ushort)(baseRi.CltvExpiryDelta + i)));
         }
 
         return col;

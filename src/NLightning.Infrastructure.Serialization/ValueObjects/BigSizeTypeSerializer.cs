@@ -10,6 +10,11 @@ using Converters;
 public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
 {
     /// <summary>
+    /// Error message used when a BigSize is not minimally encoded (BOLT 1 Appendix A).
+    /// </summary>
+    public const string NonCanonicalErrorMessage = "decoded bigsize is not canonical";
+
+    /// <summary>
     /// Serializes a BigSize value into a stream.
     /// </summary>
     /// <param name="valueObject">The BigSize value to serialize.</param>
@@ -48,7 +53,11 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
     /// </summary>
     /// <param name="stream">The stream from which the BigSize value will be deserialized.</param>
     /// <returns>A task that represents the asynchronous deserialization operation, containing the deserialized BigSize value.</returns>
-    /// <exception cref="ArgumentException">Thrown when the stream is empty or contains insufficient data for deserialization.</exception>
+    /// <remarks>Decoding is canonical: a value that could have been encoded in fewer bytes is rejected.</remarks>
+    /// <exception cref="ArgumentException">
+    /// Thrown when the stream is empty, contains insufficient data for deserialization, or the value is not minimally
+    /// encoded.
+    /// </exception>
     /// <exception cref="IOException">Thrown when an I/O error occurs during the read operation.</exception>
     public async Task<BigSize> DeserializeAsync(Stream stream)
     {
@@ -74,6 +83,9 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
                     {
                         await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(ushort)]);
                         value = EndianBitConverter.ToUInt16BigEndian(buffer[..sizeof(ushort)]);
+                        if (value < 0xfd)
+                            throw new ArgumentException(NonCanonicalErrorMessage);
+
                         break;
                     }
                 case 0xfe when stream.Position + 4 > stream.Length:
@@ -82,6 +94,9 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
                     {
                         await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(uint)]);
                         value = EndianBitConverter.ToUInt32BigEndian(buffer[..sizeof(uint)]);
+                        if (value < 0x10000)
+                            throw new ArgumentException(NonCanonicalErrorMessage);
+
                         break;
                     }
                 default:
@@ -93,6 +108,9 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
 
                         await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(ulong)]);
                         value = EndianBitConverter.ToUInt64BigEndian(buffer[..sizeof(ulong)]);
+                        if (value < 0x100000000)
+                            throw new ArgumentException(NonCanonicalErrorMessage);
+
                         break;
                     }
             }
@@ -104,6 +122,7 @@ public class BigSizeTypeSerializer : IValueObjectTypeSerializer<BigSize>
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
+
     async Task<IValueObject> IValueObjectTypeSerializer.DeserializeAsync(Stream stream)
     {
         return await DeserializeAsync(stream);

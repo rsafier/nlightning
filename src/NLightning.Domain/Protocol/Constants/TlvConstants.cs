@@ -85,10 +85,68 @@ public static class TlvConstants
     public static readonly BigSize BlindedPath = 0;
 
     /// <summary>
+    /// Attribution Data TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>update_fulfill_htlc_tlvs</c> and <c>update_fail_htlc_tlvs</c> type 1 (<c>attribution_data</c>):
+    /// [<c>20*u32</c>:<c>htlc_hold_times</c>] [<c>210*sha256[..4]</c>:<c>truncated_hmacs</c>].
+    /// </remarks>
+    public static readonly BigSize AttributionData = 1;
+
+    /// <summary>
+    /// Fulfillment Payload TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>update_fulfill_htlc_tlvs</c> type 3 (<c>fulfillment_payload</c>): an opaque blob for the origin.
+    /// </remarks>
+    public static readonly BigSize FulfillmentPayload = 3;
+
+    /// <summary>
     /// Next Funding TLV Type
     /// </summary>
     /// <remarks>
-    /// The "Next Funding" is used in the ChannelReestablishMessage
+    /// The "Next Funding" is used in the ChannelReestablishMessage (BOLT 2 <c>channel_reestablish_tlvs</c> type 1)
     /// </remarks>
-    public static readonly BigSize NextFunding = 0;
+    public static readonly BigSize NextFunding = 1;
+
+    /// <summary>
+    /// Funding TxId TLV Type
+    /// </summary>
+    /// <remarks>
+    /// The "Funding TxId" is used in the CommitmentSignedMessage (BOLT 2 <c>commitment_signed_tlvs</c> type 1)
+    /// </remarks>
+    public static readonly BigSize FundingTxId = 1;
+
+    /// <summary>
+    /// Query Flags TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>query_short_channel_ids_tlvs</c> type 1 (<c>query_flags</c>): encoding type byte followed by one
+    /// bigsize flag per short_channel_id.
+    /// </remarks>
+    public static readonly BigSize QueryFlags = 1;
+
+    /// <summary>
+    /// Query Option TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>query_channel_range_tlvs</c> type 1 (<c>query_option</c>): a bigsize bitfield.
+    /// </remarks>
+    public static readonly BigSize QueryOption = 1;
+
+    /// <summary>
+    /// Timestamps TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>reply_channel_range_tlvs</c> type 1 (<c>timestamps_tlv</c>).
+    /// </remarks>
+    public static readonly BigSize ReplyChannelRangeTimestamps = 1;
+
+    /// <summary>
+    /// Checksums TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 7 <c>reply_channel_range_tlvs</c> type 3 (<c>checksums_tlv</c>).
+    /// </remarks>
+    public static readonly BigSize ReplyChannelRangeChecksums = 3;
 }

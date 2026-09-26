@@ -16,6 +16,13 @@ public sealed class OpenChannelClientRequest
     public LightningMoney? FeeRatePerKw { get; set; }
     public bool IsZeroConfChannel { get; set; }
 
+    /// <summary>
+    /// Open a public channel: <c>announce_channel</c> is set in <c>open_channel.channel_flags</c> and the channel type
+    /// leaves out <c>option_scid_alias</c> (BOLT 2); the channel is announced (BOLT 7) once it is deep enough. Refused
+    /// together with <see cref="IsZeroConfChannel"/>.
+    /// </summary>
+    public bool IsPublic { get; set; }
+
     public OpenChannelClientRequest(string nodeInfo, LightningMoney fundingAmount)
     {
         NodeInfo = nodeInfo;

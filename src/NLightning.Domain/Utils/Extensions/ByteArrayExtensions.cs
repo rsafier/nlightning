@@ -2,9 +2,9 @@ namespace NLightning.Domain.Utils.Extensions;
 
 public static class ByteArrayExtensions
 {
-    public static int GetByteArrayHashCode(this byte[] bytes)
+    public static int GetByteArrayHashCode(this byte[]? bytes)
     {
-        if (bytes.Length == 0)
+        if (bytes is null || bytes.Length == 0)
             return 0;
 
         unchecked

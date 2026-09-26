@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Handlers;
@@ -103,7 +104,7 @@ public class FundingCreatedMessageHandlerTests
         _validMessage = new FundingCreatedMessage(payload);
 
         // Setup mock channel
-        var channelConfig = new ChannelConfig(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
+        var channelConfig = TestChannelParams.Create(LightningMoney.Zero, LightningMoney.Zero, LightningMoney.Zero,
                                               LightningMoney.Zero, 0, LightningMoney.Zero, 3, false,
                                               LightningMoney.Zero, 144, FeatureSupport.No);
         var keySet = new ChannelKeySetModel(0, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey, emptyPubKey,
@@ -118,16 +119,17 @@ public class FundingCreatedMessageHandlerTests
 
         // Setup mock commitment transactions
         var mockLocalCommitmentTx =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Zero, fundingOutputInfo);
+            new CommitmentTransactionModel(commitmentNumber, 0, LightningMoney.Zero, fundingOutputInfo);
         var mockRemoteCommitmentTx =
-            new CommitmentTransactionModel(commitmentNumber, LightningMoney.Zero, fundingOutputInfo);
+            new CommitmentTransactionModel(commitmentNumber, 0, LightningMoney.Zero, fundingOutputInfo);
 
+        // Both first commitments are commitment number 0 (NL-188)
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local))
+           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Local, 0UL))
            .Returns(mockLocalCommitmentTx);
 
         mockCommitmentTransactionModelFactory
-           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote))
+           .Setup(x => x.CreateCommitmentTransactionModel(It.IsAny<ChannelModel>(), CommitmentSide.Remote, 0UL))
            .Returns(mockRemoteCommitmentTx);
 
         // Setup mock transactions
@@ -187,7 +189,7 @@ public class FundingCreatedMessageHandlerTests
 
         // Assert
         Assert.NotNull(result);
-        Assert.IsType<FundingSignedMessage>(result);
+        Assert.IsType<FundingSignedMessage>(Assert.Single(result));
 
         // Verify transaction ID and output index were set on the channel
         Assert.Equal(_fundingTxId, _channel.FundingOutput?.TransactionId);
@@ -226,6 +228,41 @@ public class FundingCreatedMessageHandlerTests
         // Verify channel management operations
         _mockChannelMemoryRepository.Verify(x => x.AddChannel(_channel), Times.Once);
         _mockChannelMemoryRepository.Verify(x => x.TryRemoveTemporaryChannel(_peerPubKey, _tempChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ValidMessage_When_HandleAsync_Then_FundingCreatedAtBlockHeightIsCurrentHeight()
+    {
+        // Arrange
+        const uint currentHeight = 850_000;
+        _mockBlockchainMonitor.SetupGet(x => x.LastProcessedBlockHeight).Returns(currentHeight);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     out It.Ref<ChannelState>.IsAny))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelState state) =>
+            {
+                state = ChannelState.V1Opening;
+            })
+           .Returns(true);
+        _mockChannelMemoryRepository
+           .Setup(x => x.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                out It.Ref<ChannelModel>.IsAny!))
+           .Callback((CompactPubKey _, ChannelId _, out ChannelModel? channel) =>
+            {
+                channel = _channel;
+            })
+           .Returns(true);
+        uint persistedHeight = 0;
+        _mockChannelDbRepository.Setup(x => x.AddAsync(It.IsAny<ChannelModel>()))
+                                .Callback((ChannelModel c) => persistedHeight = c.FundingCreatedAtBlockHeight)
+                                .Returns(Task.CompletedTask);
+
+        // Act
+        await _handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.Equal(currentHeight, _channel.FundingCreatedAtBlockHeight);
+        Assert.Equal(currentHeight, persistedHeight);
     }
 
     [Fact]

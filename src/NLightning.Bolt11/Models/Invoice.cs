@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using NBitcoin;
@@ -34,6 +35,8 @@ public partial class Invoice
 
     private static readonly InvoiceValidationService s_invoiceValidationService = new();
 
+    private static readonly long s_maxUnixTimeSeconds = DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
     private static readonly Dictionary<string, BitcoinNetwork> s_supportedNetworks = new()
     {
         { InvoiceConstants.PrefixMainet, BitcoinNetwork.Mainnet },
@@ -54,6 +57,11 @@ public partial class Invoice
     private readonly TaggedFieldList _taggedFields = [];
 
     private string? _invoiceString;
+
+    /// <summary>
+    /// The payee key recovered from the signature of a decoded invoice that has no <c>n</c> field
+    /// </summary>
+    private PubKey? _recoveredPayeePubKey;
 
     #endregion
 
@@ -109,15 +117,17 @@ public partial class Invoice
         }
         internal set
         {
-            _taggedFields.Add(new PaymentHashTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PaymentHash, new PaymentHashTaggedField(value));
         }
     }
 
     /// <summary>
-    /// The Routing Information of the invoice
+    /// The Routing Information of the invoice (the first, most preferred, <c>r</c> field)
     /// </summary>
     /// <remarks>
-    /// The routing information is used to hint about the route the payment could take
+    /// The routing information is used to hint about the route the payment could take.
+    /// An invoice may carry several <c>r</c> fields; use <see cref="RouteHints"/> to read all of them and
+    /// <see cref="AddRouteHint"/> to add more.
     /// </remarks>
     /// <seealso cref="RoutingInfoCollection"/>
     /// <seealso cref="RoutingInfo"/>
@@ -132,8 +142,31 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.Add(new RoutingInfoTaggedField(value));
+            // Replaces every `r` field with this single route
+            var oldRouteHints = RouteHints;
+            _taggedFields.Replace(TaggedFieldTypes.RoutingInfo, new RoutingInfoTaggedField(value));
+            foreach (var oldRouteHint in oldRouteHints)
+                oldRouteHint.Changed -= OnTaggedFieldsChanged;
+
             value.Changed += OnTaggedFieldsChanged;
+        }
+    }
+
+    /// <summary>
+    /// All routing hints (<c>r</c> fields) of the invoice, most preferred first
+    /// </summary>
+    /// <remarks>
+    /// Each entry is one private route from a public node to the payee (BOLT 11 allows several <c>r</c> fields).
+    /// Empty when the invoice has no <c>r</c> field.
+    /// </remarks>
+    public IReadOnlyList<RoutingInfoCollection> RouteHints
+    {
+        get
+        {
+            return _taggedFields.TryGetAll(TaggedFieldTypes.RoutingInfo,
+                                           out List<RoutingInfoTaggedField>? routingInfoFields)
+                       ? routingInfoFields.Select(x => x.Value).ToList()
+                       : [];
         }
     }
 
@@ -141,7 +174,8 @@ public partial class Invoice
     /// The features of the invoice
     /// </summary>
     /// <remarks>
-    /// The features are used to specify the features the payer should support
+    /// The features are used to specify the features the payer should support.
+    /// Like every tagged-field property, setting it again replaces the previous value.
     /// </remarks>
     /// <seealso cref="FeatureSet"/>
     [DisallowNull]
@@ -155,7 +189,10 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.Add(new FeaturesTaggedField(value));
+            var oldFeatures = Features;
+            _taggedFields.Replace(TaggedFieldTypes.Features, new FeaturesTaggedField(value));
+            oldFeatures?.Changed -= OnTaggedFieldsChanged;
+
             value.Changed += OnTaggedFieldsChanged;
         }
     }
@@ -171,14 +208,18 @@ public partial class Invoice
     {
         get
         {
-            return _taggedFields.TryGet<ExpiryTimeTaggedField>(TaggedFieldTypes.ExpiryTime, out var expireIn)
-                       ? DateTimeOffset.FromUnixTimeSeconds(Timestamp + expireIn.Value)
-                       : DateTimeOffset.FromUnixTimeSeconds(Timestamp + InvoiceConstants.DefaultExpirationSeconds);
+            if (!_taggedFields.TryGet<ExpiryTimeTaggedField>(TaggedFieldTypes.ExpiryTime, out var expireIn))
+                return DateTimeOffset.FromUnixTimeSeconds(Timestamp + InvoiceConstants.DefaultExpirationSeconds);
+
+            // `x` has no upper bound; an expiry past what DateTimeOffset can hold never expires
+            return expireIn.Value > s_maxUnixTimeSeconds - Timestamp
+                       ? DateTimeOffset.MaxValue
+                       : DateTimeOffset.FromUnixTimeSeconds(Timestamp + expireIn.Value);
         }
         set
         {
             var expireIn = value.ToUnixTimeSeconds() - Timestamp;
-            _taggedFields.Add(new ExpiryTimeTaggedField((int)expireIn));
+            _taggedFields.Replace(TaggedFieldTypes.ExpiryTime, new ExpiryTimeTaggedField(expireIn));
         }
     }
 
@@ -202,7 +243,7 @@ public partial class Invoice
         }
         set
         {
-            _taggedFields.AddRange(value.Select(x => new FallbackAddressTaggedField(x)));
+            _taggedFields.Replace(TaggedFieldTypes.FallbackAddress, value.Select(x => new FallbackAddressTaggedField(x)));
         }
     }
 
@@ -224,7 +265,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new DescriptionTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.Description, new DescriptionTaggedField(value));
             }
             else
             {
@@ -251,7 +292,7 @@ public partial class Invoice
         }
         internal set
         {
-            _taggedFields.Add(new PaymentSecretTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PaymentSecret, new PaymentSecretTaggedField(value));
         }
     }
 
@@ -259,7 +300,8 @@ public partial class Invoice
     /// The payee pubkey of the invoice
     /// </summary>
     /// <remarks>
-    /// The payee pubkey is the pubkey of the payee
+    /// The payee pubkey is the pubkey of the payee: the <c>n</c> field when present, otherwise (for a decoded invoice)
+    /// the key recovered from the signature. A recovered key is not written back as an <c>n</c> field.
     /// </remarks>
     /// <seealso cref="PubKey"/>
     [DisallowNull]
@@ -269,11 +311,11 @@ public partial class Invoice
         {
             return _taggedFields.TryGet<PayeePubKeyTaggedField>(TaggedFieldTypes.PayeePubKey, out var payeePubKey)
                        ? payeePubKey.Value
-                       : null;
+                       : _recoveredPayeePubKey;
         }
         set
         {
-            _taggedFields.Add(new PayeePubKeyTaggedField(value));
+            _taggedFields.Replace(TaggedFieldTypes.PayeePubKey, new PayeePubKeyTaggedField(value));
         }
     }
 
@@ -297,7 +339,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new DescriptionHashTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.DescriptionHash, new DescriptionHashTaggedField(value));
             }
             else
             {
@@ -311,21 +353,22 @@ public partial class Invoice
     /// The min final cltv expiry of the invoice
     /// </summary>
     /// <remarks>
-    /// The min final cltv expiry is the minimum final cltv expiry the payer should use
+    /// The min final cltv expiry is the minimum final cltv expiry delta the payer should use.
+    /// When the invoice has no <c>c</c> field, BOLT 11 requires a default of
+    /// <see cref="InvoiceConstants.DefaultMinFinalCltvExpiryDelta"/> (18).
     /// </remarks>
-    [DisallowNull]
-    public ushort? MinFinalCltvExpiry
+    public ushort MinFinalCltvExpiry
     {
         get
         {
             return _taggedFields.TryGet<MinFinalCltvExpiryTaggedField>(TaggedFieldTypes.MinFinalCltvExpiry,
                                                                        out var minFinalCltvExpiry)
                        ? minFinalCltvExpiry.Value
-                       : null;
+                       : InvoiceConstants.DefaultMinFinalCltvExpiryDelta;
         }
         set
         {
-            _taggedFields.Add(new MinFinalCltvExpiryTaggedField(value.Value));
+            _taggedFields.Replace(TaggedFieldTypes.MinFinalCltvExpiry, new MinFinalCltvExpiryTaggedField(value));
         }
     }
 
@@ -347,7 +390,7 @@ public partial class Invoice
         {
             if (value != null)
             {
-                _taggedFields.Add(new MetadataTaggedField(value));
+                _taggedFields.Replace(TaggedFieldTypes.Metadata, new MetadataTaggedField(value));
             }
             else
             {
@@ -476,6 +519,12 @@ public partial class Invoice
         Signature = signature;
 
         _taggedFields.Changed += OnTaggedFieldsChanged;
+
+        // Editing a decoded invoice's features or route hints must drop the cached string too
+        Features?.Changed += OnTaggedFieldsChanged;
+
+        foreach (var routeHint in RouteHints)
+            routeHint.Changed += OnTaggedFieldsChanged;
     }
 
     #endregion
@@ -548,9 +597,10 @@ public partial class Invoice
 
             var timestamp = bitReader.ReadInt64FromBits(35);
 
-            var taggedFields = TaggedFieldList.FromBitReader(bitReader, network);
-
-            // TODO: Check feature bits
+            // The data part is everything between the separator and the signature (104 groups) + checksum (6)
+            var dataGroups = invoiceString.Length - (hrp.Length + 1) - 104 - 6;
+            // Throws on malformed known fields and on unknown even feature bits in `9`
+            var taggedFields = TaggedFieldList.FromBitReader(bitReader, network, dataGroups * 5 - 35);
 
             var invoice = new Invoice(invoiceString, hrp, network, amount, timestamp, taggedFields,
                                       new CompactSignature(signature[^1], signature[..^1]));
@@ -577,18 +627,36 @@ public partial class Invoice
     /// </summary>
     /// <param name="nodeKey">The private key of the node used to sign the invoice.</param>
     /// <returns>The encoded lightning invoice as a string.</returns>
+    /// <remarks>
+    /// Adds var_onion_optin and payment_secret as compulsory when the <c>9</c> field lacks them (basic_mpp is never
+    /// added), then runs <see cref="InvoiceValidationService.ValidateForEncoding"/>; nothing is signed when it fails.
+    /// </remarks>
     /// <exception cref="InvoiceSerializationException">
-    /// Thrown when an error occurs during the encoding process.
+    /// Thrown when an error occurs during the encoding process, including a failed validation (the inner
+    /// <see cref="InvalidOperationException"/> lists the errors).
     /// </exception>
     public string Encode(Key nodeKey)
     {
         try
         {
+            EnsureRequiredFeatures();
+
+            // A field can become invalid after it was added (e.g. a route hint collection that was emptied)
+            var invalidField = _taggedFields.FirstOrDefault(x => !x.IsValid());
+            if (invalidField is not null)
+                throw new InvalidOperationException($"Invalid {invalidField.Type} field: field validation failed");
+
+            // BOLT 11 writer rules (NL-120): never sign an invoice a reader would reject
+            var validationResult = s_invoiceValidationService.ValidateForEncoding(this);
+            if (!validationResult.IsValid)
+                throw new InvalidOperationException(string.Join(", ", validationResult.Errors));
+
             // Calculate the size needed for the buffer
             var sizeInBits = 35 + (_taggedFields.CalculateSizeInBits() * 5) + (_taggedFields.Count * 15);
 
             // Initialize the BitWriter buffer
-            var bitWriter = new BitWriter(sizeInBits);
+            // Dispose returns the pooled buffer
+            using var bitWriter = new BitWriter(sizeInBits);
 
             // Write the timestamp
             bitWriter.WriteInt64AsBits(Timestamp, 35);
@@ -605,6 +673,9 @@ public partial class Invoice
             var bech32Encoder = new Bech32Encoder(HumanReadablePart);
             _invoiceString = bech32Encoder.EncodeLightningInvoice(bitWriter, signature);
 
+            // Without an `n` field the payee is whoever signed, so drop any key recovered from an earlier signature
+            _recoveredPayeePubKey = nodeKey.PubKey;
+
             return _invoiceString;
         }
         catch (Exception e)
@@ -617,18 +688,46 @@ public partial class Invoice
     /// Encodes the invoice into its string representation using the secure key manager.
     /// </summary>
     /// <returns>The encoded invoice string.</returns>
-    /// <exception cref="NullReferenceException">Thrown when the secure key manager is not set.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the secure key manager is not set.</exception>
     public string Encode()
     {
         if (_secureKeyManager is null)
-            throw new NullReferenceException("Secure key manager is not set, please use Encode(Key nodeKey) instead");
+            throw new InvalidOperationException(
+                "Secure key manager is not set, please use Encode(Key nodeKey) or ToString(Key nodeKey) instead");
 
-        var nodeKey = _secureKeyManager.GetNodeKeyPair().PrivKey;
-        return Encode(new Key(nodeKey));
+        // Copy the node key before use: ISecureKeyManager does not promise the returned buffer is a fresh copy,
+        // so only our own copy is zeroed once the invoice is signed
+        var nodeKeyBytes = _secureKeyManager.GetNodeKeyPair().PrivKey.Value.ToArray();
+        try
+        {
+            using var nodeKey = new Key(nodeKeyBytes);
+            return Encode(nodeKey);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(nodeKeyBytes);
+        }
+    }
+
+    /// <summary>
+    /// Adds another routing hint (<c>r</c> field) after the existing ones
+    /// </summary>
+    /// <param name="routingInfos">The route, as ordered entries from a public node to the payee</param>
+    public void AddRouteHint(RoutingInfoCollection routingInfos)
+    {
+        _taggedFields.Add(new RoutingInfoTaggedField(routingInfos));
+        routingInfos.Changed += OnTaggedFieldsChanged;
     }
 
     #region Overrides
 
+    /// <summary>
+    /// Returns the encoded invoice, encoding and signing it with the secure key manager if needed.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when the invoice has not been encoded yet and no secure key manager is set; use
+    /// <see cref="ToString(Key)"/> instead.
+    /// </exception>
     public override string ToString()
     {
         return string.IsNullOrWhiteSpace(_invoiceString) ? Encode() : _invoiceString;
@@ -778,11 +877,13 @@ public partial class Invoice
         // Check if recovery is necessary
         if (PayeePubKey is null)
         {
-            PayeePubKey = PubKey.RecoverCompact(nBitcoinHash, Signature);
+            _recoveredPayeePubKey = PubKey.RecoverCompact(nBitcoinHash, Signature);
             return;
         }
 
+        // BOLT 11: with an `n` field the signature MUST be low-S (high-S is only allowed for key recovery)
         if (NBitcoin.Crypto.ECDSASignature.TryParseFromCompact(Signature.Signature, out var ecdsa)
+         && ecdsa.IsLowS
          && PayeePubKey.Verify(nBitcoinHash, ecdsa))
             return;
 
@@ -821,6 +922,30 @@ public partial class Invoice
             throw new ArgumentException("Unsupported prefix in invoice", nameof(invoiceString));
 
         return network;
+    }
+
+    /// <summary>
+    /// Makes sure the <c>9</c> field advertises <c>var_onion_optin</c> and <c>payment_secret</c>
+    /// </summary>
+    /// <remarks>
+    /// Both are ASSUMED in BOLT 9, but every BOLT 11 example sets them (as compulsory) and older payers rely on them.
+    /// A bit already set as optional is kept as is.
+    /// </remarks>
+    private void EnsureRequiredFeatures()
+    {
+        var features = Features;
+        if (features is null)
+        {
+            // var_onion_optin (8) and payment_secret (14) as compulsory
+            Features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+            return;
+        }
+
+        if (!features.IsFeatureSet(Feature.VarOnionOptin))
+            features.SetFeature(Feature.VarOnionOptin, true);
+
+        if (!features.IsFeatureSet(Feature.PaymentSecret))
+            features.SetFeature(Feature.PaymentSecret, true);
     }
 
     private void OnTaggedFieldsChanged(object? sender, EventArgs args)

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using Microsoft.Extensions.Configuration;
 using Serilog;
 
@@ -8,8 +7,23 @@ namespace NLightning.Daemon.Utilities;
 
 using Contracts.Constants;
 
-public partial class DaemonUtils
+public class DaemonUtils
 {
+    private const string DashDashDaemon = "--daemon";
+    private const string DashDashDaemonChild = "--daemon-child";
+
+    /// <summary>
+    /// Shell script that starts "$0" with "$@" detached from the terminal and prints its PID.
+    /// </summary>
+    internal const string UnixDaemonLauncherScript = "nohup \"$0\" \"$@\" </dev/null >/dev/null 2>&1 & echo $!";
+
+    private static readonly HashSet<string> s_bareFlags = new(StringComparer.OrdinalIgnoreCase)
+    {
+        DashDashDaemon, DashDashDaemonChild, "--stop", "--status", "--help"
+    };
+
+    private static readonly HashSet<string> s_shortSwitches = ["-n", "-c", "-h", "-?"];
+
     public static void ShowUsage()
     {
         Console.WriteLine("NLTG - NLightning Daemon");
@@ -19,9 +33,12 @@ public partial class DaemonUtils
         Console.WriteLine("  nltg --status       Show daemon status");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest) [default: mainnet]");
+        Console.WriteLine("  --network, -n <network>    Network to use (mainnet, testnet, regtest, signet, mutinynet) [default: mainnet]");
         Console.WriteLine("  --config, -c <path>        Path to custom configuration file");
-        Console.WriteLine("  --daemon <true|false>      Run as a daemon [default: false]");
+        Console.WriteLine("  --daemon [true|false]      Run as a daemon [default: false]");
+        Console.WriteLine("  --password-file <path>     Read the key encryption password from a file");
+        Console.WriteLine("  --password-stdin           Read the key encryption password from stdin");
+        Console.WriteLine("  --password <password>      Key encryption password (insecure: visible in the process list)");
         Console.WriteLine("  --stop                     Stop a running daemon");
         Console.WriteLine("  --status                   Show daemon status information");
         Console.WriteLine("  --help, -h, -?             Show this help message");
@@ -30,6 +47,7 @@ public partial class DaemonUtils
         Console.WriteLine("  NLTG_NETWORK               Network to use");
         Console.WriteLine("  NLTG_CONFIG                Path to custom configuration file");
         Console.WriteLine("  NLTG_DAEMON                Run as a daemon");
+        Console.WriteLine("  NLTG_PASSWORD              Key encryption password");
         Console.WriteLine();
         Console.WriteLine("Configuration File:");
         Console.WriteLine("  Default path: ~/.nltg/{network}/appsettings.json");
@@ -40,6 +58,86 @@ public partial class DaemonUtils
         Console.WriteLine("  }");
         Console.WriteLine();
         Console.WriteLine("PID file location: ~/.nltg/{network}/nltg.pid");
+    }
+
+    /// <summary>
+    /// Rewrites the command line so the configuration provider reads it as intended.
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    /// <item><c>-n</c> and <c>-c</c> become <c>--network</c> and <c>--config</c>.</item>
+    /// <item>Bare flags become <c>--flag=true</c>, so they don't swallow the next argument as their value. An option
+    /// is bare when it is a known flag, is last, or is followed by another option name (<c>--x</c> or a known short
+    /// switch); values that merely start with '-' are kept.
+    /// <c>--daemon true|false</c> is kept as a pair.</item>
+    /// <item>Password options are dropped: they are not configuration and must not end up in it.</item>
+    /// </list>
+    /// </remarks>
+    public static string[] NormalizeArgs(string[] args)
+    {
+        var normalized = new List<string>(args.Length);
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            var passwordOptionLength = PasswordUtils.GetPasswordOptionLength(arg);
+            if (passwordOptionLength > 0)
+            {
+                i += passwordOptionLength - 1;
+                continue;
+            }
+
+            if (arg == "-n")
+                arg = "--network";
+            else if (arg == "-c")
+                arg = "--config";
+
+            var hasNext = i + 1 < args.Length;
+            if (arg.Equals(DashDashDaemon, StringComparison.OrdinalIgnoreCase)
+             && hasNext && bool.TryParse(args[i + 1], out var daemonValue))
+            {
+                normalized.Add($"{DashDashDaemon}={daemonValue.ToString().ToLowerInvariant()}");
+                i++;
+                continue;
+            }
+
+            if (arg.StartsWith("--") && !arg.Contains('=')
+             && (s_bareFlags.Contains(arg) || !hasNext || IsOptionName(args[i + 1])))
+            {
+                normalized.Add($"{arg}=true");
+                continue;
+            }
+
+            normalized.Add(arg);
+        }
+
+        return normalized.ToArray();
+    }
+
+    /// <summary>
+    /// Checks whether an argument names an option rather than being a value, so values that start with '-' (like
+    /// negative numbers or passwords) are kept.
+    /// </summary>
+    private static bool IsOptionName(string arg) =>
+        arg.StartsWith("--") || s_shortSwitches.Contains(arg);
+
+    /// <summary>
+    /// Checks the command line for <c>--daemon</c>, <c>--daemon=&lt;bool&gt;</c> or <c>--daemon &lt;bool&gt;</c>.
+    /// </summary>
+    /// <returns>The requested value, or null when the command line doesn't say.</returns>
+    public static bool? GetDaemonArgument(string[] args)
+    {
+        bool? isDaemonRequested = null;
+        foreach (var arg in NormalizeArgs(args))
+        {
+            if (!arg.StartsWith(DashDashDaemon + "=", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (bool.TryParse(arg[(DashDashDaemon.Length + 1)..], out var value))
+                isDaemonRequested = value;
+        }
+
+        return isDaemonRequested;
     }
 
     public static bool IsStopRequested(string[] args)
@@ -61,9 +159,10 @@ public partial class DaemonUtils
     /// <param name="configuration">Configuration</param>
     /// <param name="pidFilePath">Path where to store the PID file</param>
     /// <param name="logger">Logger for startup messages</param>
+    /// <param name="password">Key password, handed to the daemon process through its environment</param>
     /// <returns>True if the parent process should exit, false to continue execution</returns>
     public static bool StartDaemonIfRequested(string[] args, IConfiguration configuration, string pidFilePath,
-                                              ILogger logger)
+                                              ILogger logger, string password)
     {
         // Check if we're already running as a daemon child process
         if (IsRunningAsDaemon())
@@ -71,25 +170,9 @@ public partial class DaemonUtils
             return false; // Continue execution as a daemon child
         }
 
-        // Check command line args (the highest priority)
-        var isDaemonRequested = Array.Exists(args, arg =>
-                                                 arg.Equals("--daemon", StringComparison.OrdinalIgnoreCase) ||
-                                                 arg.Equals("--daemon=true", StringComparison.OrdinalIgnoreCase));
-
-        // Check environment variable (middle priority)
-        if (!isDaemonRequested)
-        {
-            var envDaemon = Environment.GetEnvironmentVariable("NLTG_DAEMON");
-            isDaemonRequested = !string.IsNullOrEmpty(envDaemon) &&
-                                (envDaemon.Equals("true", StringComparison.OrdinalIgnoreCase) ||
-                                 envDaemon.Equals("1", StringComparison.OrdinalIgnoreCase));
-        }
-
-        // Check configuration file (lowest priority)
-        if (!isDaemonRequested)
-        {
-            isDaemonRequested = configuration.GetValue<bool>("Node:Daemon");
-        }
+        // Check command line args (the highest priority), then the environment variable, then the config file
+        var isDaemonRequested = GetDaemonArgument(args) ?? GetDaemonEnvironmentVariable()
+                             ?? configuration.GetValue<bool>("Node:Daemon");
 
         if (!isDaemonRequested)
         {
@@ -98,40 +181,88 @@ public partial class DaemonUtils
 
         logger.Information("Daemon mode requested, starting background process");
 
-        // Platform-specific daemon implementation
+        // Both paths re-exec the current program: fork() is unsafe once the .NET runtime has started threads
         return RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                   ? StartWindowsDaemon(args, pidFilePath, logger)
-                   : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-                       ? StartMacOsDaemon(args, pidFilePath,
-                                          logger) // Special implementation for macOS to avoid fork() issues
-                       : StartUnixDaemon(pidFilePath, logger); // Linux and other Unix systems
+                   ? StartWindowsDaemon(args, pidFilePath, logger, password)
+                   : StartUnixDaemon(args, pidFilePath, logger, password);
     }
 
-    private static bool StartWindowsDaemon(string[] args, string pidFilePath, ILogger logger)
+    /// <summary>
+    /// Builds the daemon child's arguments: drops <c>--daemon</c> and every password option, and appends
+    /// <c>--daemon-child</c>.
+    /// </summary>
+    public static string[] BuildDaemonChildArgs(string[] args)
+    {
+        var childArgs = new List<string>(args.Length + 1);
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            var passwordOptionLength = PasswordUtils.GetPasswordOptionLength(arg);
+            if (passwordOptionLength > 0)
+            {
+                i += passwordOptionLength - 1;
+                continue;
+            }
+
+            if (arg.Equals(DashDashDaemon, StringComparison.OrdinalIgnoreCase))
+            {
+                // Also drop the value of `--daemon true|false`
+                if (i + 1 < args.Length && bool.TryParse(args[i + 1], out _))
+                    i++;
+
+                continue;
+            }
+
+            if (arg.StartsWith(DashDashDaemon + "=", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            childArgs.Add(arg);
+        }
+
+        childArgs.Add(DashDashDaemonChild);
+        return childArgs.ToArray();
+    }
+
+    private static bool? GetDaemonEnvironmentVariable()
+    {
+        var envDaemon = Environment.GetEnvironmentVariable("NLTG_DAEMON");
+        if (string.IsNullOrEmpty(envDaemon))
+            return null;
+
+        return envDaemon.Equals("true", StringComparison.OrdinalIgnoreCase) || envDaemon.Equals("1");
+    }
+
+    /// <summary>
+    /// Gets the program to re-exec: the apphost, or <c>dotnet &lt;app.dll&gt;</c> when started through the muxer.
+    /// </summary>
+    private static (string FileName, string[] PrefixArgs) GetCurrentProgram()
+    {
+        var processPath = Environment.ProcessPath
+                       ?? throw new InvalidOperationException("Unable to determine the current process path");
+
+        var isDotnetHost = Path.GetFileNameWithoutExtension(processPath)
+                               .Equals("dotnet", StringComparison.OrdinalIgnoreCase);
+        return isDotnetHost ? (processPath, [Environment.GetCommandLineArgs()[0]]) : (processPath, []);
+    }
+
+    private static bool StartWindowsDaemon(string[] args, string pidFilePath, ILogger logger, string password)
     {
         try
         {
-            // Create a new process info
+            var (fileName, prefixArgs) = GetCurrentProgram();
             var startInfo = new ProcessStartInfo
             {
-                FileName = Process.GetCurrentProcess().MainModule?.FileName,
-                UseShellExecute = true,
+                FileName = fileName,
+                UseShellExecute = false,
                 CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
                 WorkingDirectory = Environment.CurrentDirectory
             };
 
-            // Copy all args except --daemon
-            foreach (var arg in args)
-            {
-                if (!arg.StartsWith("--daemon", StringComparison.OrdinalIgnoreCase))
-                {
-                    startInfo.ArgumentList.Add(arg);
-                }
-            }
+            foreach (var arg in prefixArgs.Concat(BuildDaemonChildArgs(args)))
+                startInfo.ArgumentList.Add(arg);
 
-            // Add a special flag to indicate we're already in daemon mode
-            startInfo.ArgumentList.Add("--daemon-child");
+            startInfo.Environment[PasswordUtils.PasswordEnvironmentVariable] = password;
 
             // Start the new process
             var process = Process.Start(startInfo);
@@ -155,152 +286,54 @@ public partial class DaemonUtils
     }
 
     /// <summary>
-    /// Start daemon on macOS - uses a different approach than Linux to avoid fork() issues
+    /// Starts the daemon on Linux and macOS by re-executing this program in the background under <c>nohup</c>.
     /// </summary>
-    private static bool StartMacOsDaemon(string[] args, string pidFilePath, ILogger logger)
+    private static bool StartUnixDaemon(string[] args, string pidFilePath, ILogger logger, string password)
     {
         try
         {
-            logger.Information("Using macOS-specific daemon startup");
+            var (fileName, prefixArgs) = GetCurrentProgram();
 
-            // Build the command line
-            var processPath = Process.GetCurrentProcess().MainModule?.FileName;
-            var arguments = new StringBuilder();
-
-            // Add all the original arguments except --daemon
-            foreach (var arg in args)
+            // "$0" "$@" passes every argument through verbatim, without any shell quoting
+            var startInfo = new ProcessStartInfo
             {
-                if (arg.StartsWith("--daemon", StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                // Quote the argument if it contains spaces
-                if (arg.Contains(' '))
-                {
-                    arguments.Append($"\"{arg}\" ");
-                }
-                else
-                {
-                    arguments.Append($"{arg} ");
-                }
-            }
-
-            // Add daemon-child argument
-            arguments.Append("--daemon-child");
-
-            // Create a shell script to launch the process and disown it
-            var scriptPath = Path.Combine(Path.GetTempPath(), $"nltg_daemon_{Guid.NewGuid()}.sh");
-
-            // Write the shell script
-            var scriptContent = $"""
-                                 #!/bin/bash
-                                 # Auto-generated daemon launcher for NLTG
-                                 nohup "{processPath}" {arguments} > /dev/null 2>&1 &
-                                 echo $! > "{pidFilePath}"
-
-                                 """;
-            File.WriteAllText(scriptPath, scriptContent);
-
-            // Make the script executable
-            var chmodProcess = Process.Start(new ProcessStartInfo
-            {
-                FileName = "chmod",
-                Arguments = $"+x \"{scriptPath}\"",
+                FileName = "/bin/sh",
                 UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            chmodProcess?.WaitForExit();
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+                WorkingDirectory = Environment.CurrentDirectory
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add(UnixDaemonLauncherScript);
+            startInfo.ArgumentList.Add(fileName);
+            foreach (var arg in prefixArgs.Concat(BuildDaemonChildArgs(args)))
+                startInfo.ArgumentList.Add(arg);
 
-            // Run the script
-            var scriptProcess = Process.Start(new ProcessStartInfo
-            {
-                FileName = "/bin/bash",
-                Arguments = $"\"{scriptPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-            scriptProcess?.WaitForExit();
+            startInfo.Environment[PasswordUtils.PasswordEnvironmentVariable] = password;
 
-            // Clean up the script file
-            try
+            using var shell = Process.Start(startInfo);
+            if (shell is null)
             {
-                File.Delete(scriptPath);
-            }
-            catch
-            {
-                // Ignore cleanup errors
+                logger.Error("Failed to start daemon process");
+                return false;
             }
 
-            // Verify the PID file was created
-            if (File.Exists(pidFilePath))
+            var pidText = shell.StandardOutput.ReadLine()?.Trim();
+            shell.WaitForExit();
+
+            if (!int.TryParse(pidText, out var pid))
             {
-                var pidContent = File.ReadAllText(pidFilePath).Trim();
-                logger.Information("macOS daemon started with PID {PID}", pidContent);
-                return true;
+                logger.Error("Failed to start daemon process: no PID reported");
+                return false;
             }
 
-            logger.Warning("PID file not created, daemon may not have started correctly");
-            return true; // Parent still exits even if there might be an issue
+            File.WriteAllText(pidFilePath, pid.ToString());
+            logger.Information("Daemon started with PID {PID}", pid);
+            return true; // Parent should exit
         }
         catch (Exception ex)
         {
-            logger.Error(ex, "Error starting macOS daemon process");
-            return false;
-        }
-    }
-
-    private static bool StartUnixDaemon(string pidFilePath, ILogger logger)
-    {
-        try
-        {
-            // First fork
-            var pid = Fork();
-            switch (pid)
-            {
-                case < 0:
-                    logger.Error("First fork failed");
-                    return false;
-                case > 0:
-                    // Parent process exits
-                    logger.Information("Forked first process with PID {PID}", pid);
-                    return true;
-            }
-
-            // Detach from terminal
-            _ = Setsid();
-
-            // Second fork
-            pid = Fork();
-            switch (pid)
-            {
-                case < 0:
-                    logger.Error("Second fork failed");
-                    return false;
-                case > 0:
-                    // Exit the intermediate process
-                    Environment.Exit(0);
-                    break;
-            }
-
-            // Child process continues
-            // Change working directory
-            Directory.SetCurrentDirectory("/");
-
-            // Close standard file descriptors
-            Console.SetIn(StreamReader.Null);
-            Console.SetOut(StreamWriter.Null);
-            Console.SetError(StreamWriter.Null);
-
-            // Write the PID file
-            var currentPid = Environment.ProcessId;
-            File.WriteAllText(pidFilePath, currentPid.ToString());
-
-            return false; // Continue execution in the child
-        }
-        catch (Exception ex)
-        {
-            logger.Error(ex, "Error starting Unix daemon process");
+            logger.Error(ex, "Error starting daemon process");
             return false;
         }
     }
@@ -311,7 +344,7 @@ public partial class DaemonUtils
     public static bool IsRunningAsDaemon()
     {
         return Array.Exists(Environment.GetCommandLineArgs(),
-                            arg => arg.Equals("--daemon-child", StringComparison.OrdinalIgnoreCase));
+                            arg => arg.Equals(DashDashDaemonChild, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
@@ -403,38 +436,4 @@ public partial class DaemonUtils
     {
         Process.Start("taskkill", $"/PID {process.Id}").WaitForExit();
     }
-
-    #region Native Methods
-
-    [LibraryImport("libc")]
-    private static partial int fork();
-
-    [LibraryImport("libc")]
-    private static partial int setsid();
-
-    private static int Fork()
-    {
-        // If not on Unix, simulate the fork by returning -1
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
-            !RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            return -1;
-        }
-
-        return fork();
-    }
-
-    private static int Setsid()
-    {
-        // If not on Unix, simulate setsid by returning -1
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
-            !RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            return -1;
-        }
-
-        return setsid();
-    }
-
-    #endregion
 }

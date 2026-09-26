@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace NLightning.Infrastructure;
 
@@ -8,6 +9,7 @@ using Domain.Node.Interfaces;
 using Domain.Protocol.Interfaces;
 using Node.Factories;
 using Protocol.Factories;
+using Protocol.Onion;
 using Protocol.Services;
 using Transport.Factories;
 using Transport.Interfaces;
@@ -22,8 +24,17 @@ public static class DependencyInjection
         services.AddSingleton<IMessageServiceFactory, MessageServiceFactory>();
         services.AddSingleton<IPeerServiceFactory, PeerServiceFactory>();
         services.AddSingleton<ITcpService, TcpService>();
-        services.AddSingleton<ISha256, Sha256>();
+        // Shared by singletons (ChannelFactory) and scoped users alike: per-thread state, so concurrent callers never
+        // mix their data (NL-247)
+        services.AddSingleton<ISha256, ThreadLocalSha256>();
         services.AddSingleton<ITransportServiceFactory, TransportServiceFactory>();
+
+        // TryAdd: AddSerializationInfrastructureServices also registers it so that it can be composed on its own
+        services.TryAddSingleton<ITlvConverterFactory, TlvConverterFactory>();
+
+        // The onion replay set (NL-078): persisted, owned by the incoming HTLC and pruned by its cltv_expiry. Every
+        // onion is processed through a scoped IUnitOfWork (AddRepositoriesInfrastructureServices)
+        services.AddPersistentOnionReplayStore();
 
         // Transient services (new instance each time requested)
         services.AddTransient<IPingPongService, PingPongService>();

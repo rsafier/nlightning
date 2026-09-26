@@ -37,13 +37,46 @@ public class BigSizeTypeSerializerTests
             // Arrange
             using var memoryStream = new MemoryStream(testVector.Bytes);
 
+            // Act
+            var exception = await Assert.ThrowsAsync<ArgumentException>(Deserialize);
+
             // Assert
-            await Assert.ThrowsAnyAsync<Exception>(Deserialize);
+            Assert.Equal(testVector.Error, exception.Message);
             continue;
 
-            // Act
             Task Deserialize() => bigSizeSerializer.DeserializeAsync(memoryStream);
         }
+    }
+
+    [Theory]
+    [InlineData("fd00fc")]
+    [InlineData("fd0000")]
+    [InlineData("fe0000ffff")]
+    [InlineData("fe00000000")]
+    [InlineData("ff00000000ffffffff")]
+    [InlineData("ff0000000000000000")]
+    public async Task Given_NonMinimalEncoding_When_DeserializeBigSize_Then_NotCanonicalErrorIsThrown(string hex)
+    {
+        // Arrange
+        var bigSizeSerializer = new BigSizeTypeSerializer();
+        using var memoryStream = new MemoryStream(Convert.FromHexString(hex));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ArgumentException>(() => bigSizeSerializer.DeserializeAsync(memoryStream));
+
+        // Assert
+        Assert.Equal(BigSizeTypeSerializer.NonCanonicalErrorMessage, exception.Message);
+    }
+
+    [Fact]
+    public void Given_VectorFile_When_Read_Then_ContainsAllBolt1AppendixAVectors()
+    {
+        // Act
+        var testVectors = ReadTestVectors("Vectors/BigSize.txt");
+
+        // Assert
+        Assert.Equal(18, testVectors.Count);
+        Assert.Equal(3, testVectors.Count(x => x.Error == BigSizeTypeSerializer.NonCanonicalErrorMessage));
     }
 
     [Fact]

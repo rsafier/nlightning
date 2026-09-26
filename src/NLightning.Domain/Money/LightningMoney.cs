@@ -15,6 +15,7 @@ public class LightningMoney
     public const ulong Coin = 100 * 1000 * 1000 * 1000UL;
     public const ulong Cent = Coin / 100;
     public const ulong Nano = Cent / 100;
+    public const ulong Bit = Coin / 1_000_000;
 
     public ulong MilliSatoshi
     {
@@ -198,7 +199,7 @@ public class LightningMoney
     {
         // overflow safe.
         // decimal operations are checked by default
-        return new LightningMoney(bits * Cent, LightningMoneyUnit.MilliSatoshi);
+        return new LightningMoney(bits * Bit, LightningMoneyUnit.MilliSatoshi);
     }
 
     public static LightningMoney Cents(decimal cents)

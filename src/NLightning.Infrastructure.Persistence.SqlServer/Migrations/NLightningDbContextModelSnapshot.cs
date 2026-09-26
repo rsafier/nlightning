@@ -17,10 +17,28 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.9")
+                .HasAnnotation("ProductVersion", "10.0.12")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockHeaderEntity", b =>
+                {
+                    b.Property<long>("Height")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("BlockHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("PreviousBlockHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("Height");
+
+                    b.ToTable("BlockHeaders");
+                });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BlockchainStateEntity", b =>
                 {
@@ -41,6 +59,56 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("BlockchainStates");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.BroadcastTransactionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("CommitmentNumber")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ConfirmedBlockHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("ConfirmedHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("FirstBroadcastHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Purpose")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("RawTransaction")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("ReplacesTransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("TransactionId");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("ConfirmedHeight");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("BroadcastTransactions");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
@@ -109,6 +177,42 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("WalletAddresses");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedOutpointEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Purpose")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long?>("SpentAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("SpentBlockHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("SpentByTransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("TransactionId", "OutputIndex");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("SpentAtHeight");
+
+                    b.ToTable("WatchedOutpoints");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WatchedTransactionEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -130,8 +234,8 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("RequiredDepth")
                         .HasColumnType("bigint");
 
-                    b.Property<int?>("TransactionIndex")
-                        .HasColumnType("int");
+                    b.Property<long?>("TransactionIndex")
+                        .HasColumnType("bigint");
 
                     b.HasKey("TransactionId");
 
@@ -145,26 +249,35 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("ChannelId")
                         .HasColumnType("varbinary(32)");
 
-                    b.Property<long?>("ChannelReserveAmountSats")
-                        .HasColumnType("bigint");
+                    b.Property<bool>("AnnounceChannel")
+                        .HasColumnType("bit");
 
                     b.Property<long>("FeeRatePerKwSatoshis")
                         .HasColumnType("bigint");
 
-                    b.Property<decimal>("HtlcMinimumMsat")
-                        .HasColumnType("decimal(20,0)");
+                    b.Property<bool>("HasInferredParams")
+                        .HasColumnType("bit");
+
+                    b.Property<long>("LocalChannelReserveAmountSats")
+                        .HasColumnType("bigint");
 
                     b.Property<long>("LocalDustLimitAmountSats")
                         .HasColumnType("bigint");
 
-                    b.Property<byte[]>("LocalUpfrontShutdownScript")
-                        .HasColumnType("varbinary(max)");
+                    b.Property<decimal>("LocalHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
 
-                    b.Property<int>("MaxAcceptedHtlcs")
+                    b.Property<int>("LocalMaxAcceptedHtlcs")
                         .HasColumnType("int");
 
-                    b.Property<decimal>("MaxHtlcAmountInFlight")
+                    b.Property<decimal>("LocalMaxHtlcValueInFlightMsat")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("LocalToSelfDelay")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("LocalUpfrontShutdownScript")
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("MinimumDepth")
                         .HasColumnType("bigint");
@@ -172,14 +285,26 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<bool>("OptionAnchorOutputs")
                         .HasColumnType("bit");
 
+                    b.Property<long>("RemoteChannelReserveAmountSats")
+                        .HasColumnType("bigint");
+
                     b.Property<long>("RemoteDustLimitAmountSats")
                         .HasColumnType("bigint");
 
+                    b.Property<decimal>("RemoteHtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("RemoteMaxAcceptedHtlcs")
+                        .HasColumnType("int");
+
+                    b.Property<decimal>("RemoteMaxHtlcValueInFlightMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<int>("RemoteToSelfDelay")
+                        .HasColumnType("int");
+
                     b.Property<byte[]>("RemoteUpfrontShutdownScript")
                         .HasColumnType("varbinary(max)");
-
-                    b.Property<int>("ToSelfDelay")
-                        .HasColumnType("int");
 
                     b.Property<byte>("UseScidAlias")
                         .HasColumnType("tinyint");
@@ -206,6 +331,18 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte?>("ChangeAddressType")
                         .HasColumnType("tinyint");
 
+                    b.Property<byte[]>("ClosingTransaction")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("ClosingTxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<bool>("DataLossDetected")
+                        .HasColumnType("bit");
+
+                    b.Property<byte[]>("ErrorSent")
+                        .HasColumnType("varbinary(max)");
+
                     b.Property<long>("FundingAmountSatoshis")
                         .HasColumnType("bigint");
 
@@ -225,11 +362,20 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("LastReceivedSignature")
                         .HasColumnType("varbinary(64)");
 
+                    b.Property<byte>("LastSentOrder")
+                        .HasColumnType("tinyint");
+
                     b.Property<byte[]>("LastSentSignature")
                         .HasColumnType("varbinary(64)");
 
-                    b.Property<long>("LocalBalanceSatoshis")
+                    b.Property<long?>("LocalAnnouncementSigsSentAt")
                         .HasColumnType("bigint");
+
+                    b.Property<long>("LocalBalanceMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("LocalCommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<decimal>("LocalNextHtlcId")
                         .HasColumnType("decimal(20,0)");
@@ -237,21 +383,54 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<decimal>("LocalRevocationNumber")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<byte[]>("LocalShutdownScript")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal?>("MaxDustHtlcExposureMsat")
+                        .HasColumnType("decimal(20,0)");
+
                     b.Property<byte[]>("PeerEntityNodeId")
                         .HasColumnType("varbinary(33)");
 
-                    b.Property<long>("RemoteBalanceSatoshis")
+                    b.Property<byte[]>("RemoteAlias")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("RemoteAnnouncementBitcoinSig")
+                        .HasColumnType("varbinary(64)");
+
+                    b.Property<byte[]>("RemoteAnnouncementNodeSig")
+                        .HasColumnType("varbinary(64)");
+
+                    b.Property<long>("RemoteBalanceMsat")
                         .HasColumnType("bigint");
+
+                    b.Property<decimal>("RemoteCommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<decimal>("RemoteNextHtlcId")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<byte[]>("RemoteNextPerCommitmentPoint")
+                        .HasColumnType("varbinary(33)");
+
                     b.Property<byte[]>("RemoteNodeId")
                         .IsRequired()
-                        .HasColumnType("varbinary(32)");
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<decimal>("RemoteRevocationNumber")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("RemoteShutdownScript")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal?>("RevocationLogFromNumber")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("SentCommitDiff")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
 
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
@@ -298,9 +477,6 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("KeyIndex")
                         .HasColumnType("bigint");
 
-                    b.Property<byte[]>("LastRevealedPerCommitmentSecret")
-                        .HasColumnType("varbinary(max)");
-
                     b.Property<byte[]>("PaymentBasepoint")
                         .IsRequired()
                         .HasColumnType("varbinary(33)");
@@ -314,6 +490,79 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.ToTable("ChannelKeySets");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", b =>
+                {
+                    b.Property<byte[]>("Alias")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("Alias");
+
+                    b.HasIndex("ChannelId");
+
+                    b.ToTable("ChannelLocalAliases");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("Slot")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("HtlcSignatures")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("Htlcs")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal>("LocalMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<decimal>("Number")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("PerCommitmentPoint")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<decimal>("RemoteMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("Signature")
+                        .HasColumnType("varbinary(64)");
+
+                    b.HasKey("ChannelId", "Slot");
+
+                    b.ToTable("Commitments");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("Sequence")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("ChannelId", "Sequence");
+
+                    b.ToTable("FeeUpdates");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
@@ -325,18 +574,51 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte>("Direction")
                         .HasColumnType("tinyint");
 
-                    b.Property<byte[]>("AddMessageBytes")
-                        .IsRequired()
-                        .HasColumnType("varbinary(max)");
+                    b.Property<long?>("AddedAt")
+                        .HasColumnType("bigint");
 
                     b.Property<decimal>("AmountMsat")
                         .HasColumnType("decimal(20,0)");
 
+                    b.Property<byte[]>("AttributionData")
+                        .HasColumnType("varbinary(920)");
+
                     b.Property<long>("CltvExpiry")
                         .HasColumnType("bigint");
 
-                    b.Property<decimal>("ObscuredCommitmentNumber")
+                    b.Property<byte[]>("FailReason")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("FulfillmentPayload")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("KnownPreimage")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("OnionRoutingPacket")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("OnionSharedSecret")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("OriginIncomingChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal?>("OriginIncomingHtlcId")
                         .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte?>("OriginKind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("OriginPaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("PathKey")
+                        .HasColumnType("varbinary(33)");
 
                     b.Property<byte[]>("PaymentHash")
                         .IsRequired()
@@ -345,15 +627,218 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("PaymentPreimage")
                         .HasColumnType("varbinary(32)");
 
-                    b.Property<byte[]>("Signature")
-                        .HasColumnType("varbinary(max)");
+                    b.Property<byte?>("RemovalKind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("Sha256OfOnion")
+                        .HasColumnType("varbinary(32)");
 
                     b.Property<byte>("State")
                         .HasColumnType("tinyint");
 
                     b.HasKey("ChannelId", "HtlcId", "Direction");
 
+                    b.HasIndex("OriginPaymentHash");
+
+                    b.HasIndex("OriginIncomingChannelId", "OriginIncomingHtlcId");
+
                     b.ToTable("Htlcs");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("Bucket")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("Index")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Secret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.HasKey("ChannelId", "Bucket");
+
+                    b.ToTable("RemoteShachains");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("Number")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long>("FeeratePerKw")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Htlcs")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal>("LocalMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<decimal>("RemoteMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.HasKey("ChannelId", "Number");
+
+                    b.ToTable("RevokedCommitments");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphBannedNodeEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<long>("Until")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("GraphBannedNodes");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", b =>
+                {
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("BitcoinKey1")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("BitcoinKey2")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<long>("CapacitySat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("Features")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("FundingTxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("NodeId1")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("NodeId2")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("RawAnnouncement")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("ReceivedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("SpentAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Verification")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("ShortChannelId");
+
+                    b.HasIndex("NodeId1");
+
+                    b.HasIndex("NodeId2");
+
+                    b.HasIndex("SpentAtHeight");
+
+                    b.ToTable("GraphChannels");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", b =>
+                {
+                    b.Property<byte[]>("ShortChannelId")
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte>("Direction")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte>("ChannelFlags")
+                        .HasColumnType("tinyint");
+
+                    b.Property<int>("CltvExpiryDelta")
+                        .HasColumnType("int");
+
+                    b.Property<long>("FeeBaseMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("FeePpm")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("HtlcMaximumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<decimal>("HtlcMinimumMsat")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte>("MessageFlags")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("RawUpdate")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ShortChannelId", "Direction");
+
+                    b.ToTable("GraphChannelPolicies");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphNodeEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("Addresses")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("Alias")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("Color")
+                        .IsRequired()
+                        .HasColumnType("varbinary(3)");
+
+                    b.Property<byte[]>("Features")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("RawAnnouncement")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<long>("ReceivedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Timestamp")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("GraphNodes");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
@@ -378,6 +863,302 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.HasKey("NodeId");
 
                     b.ToTable("Peers");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("BlockHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal?>("CommitmentNumber")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("CommitmentTxId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("SpentAtHeight")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("ChannelId");
+
+                    b.ToTable("ChannelCloses");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("OutputIndex")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("DeadlineHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Descriptor")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("DescriptorData")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte?>("HtlcDirection")
+                        .HasColumnType("tinyint");
+
+                    b.Property<decimal?>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long?>("ResolvedHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("ResolvingTxId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long?>("WaitUntilHeight")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TransactionId", "OutputIndex");
+
+                    b.HasIndex("ChannelId");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("OutputResolutions");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.ForwardCircuitEntity", b =>
+                {
+                    b.Property<byte[]>("IncomingChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal>("IncomingHtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("IncomingAmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("IncomingCltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("IncomingSharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("OutgoingAmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("OutgoingChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("OutgoingCltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal?>("OutgoingHtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("OutgoingShortChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(8)");
+
+                    b.Property<byte[]>("PaymentHash")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("ResolvedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("IncomingChannelId", "IncomingHtlcId");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("OutgoingChannelId", "OutgoingHtlcId");
+
+                    b.ToTable("ForwardCircuits");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("AmountReceivedMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Bolt11")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("ExpirySeconds")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("MinFinalCltvExpiry")
+                        .HasColumnType("int");
+
+                    b.Property<byte[]>("PaymentSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("Preimage")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("SettledAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("PaymentHash");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.ToTable("Invoices");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", b =>
+                {
+                    b.Property<byte[]>("Hmac")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("ExpiryHeight")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("HtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.HasKey("Hmac");
+
+                    b.HasIndex("ExpiryHeight");
+
+                    b.ToTable("OnionReplayEntries");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Bolt11")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long?>("CompletedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("FailureCode")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FailureReason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("FailureSourceIndex")
+                        .HasColumnType("int");
+
+                    b.Property<long>("FeeMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("OutgoingChannelId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal?>("OutgoingHtlcId")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte[]>("PayeeNodeId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("Preimage")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("PaymentHash");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("Payments");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", b =>
+                {
+                    b.Property<byte[]>("PaymentHash")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte>("HopIndex")
+                        .HasColumnType("tinyint");
+
+                    b.Property<long>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("CltvExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("HoldTimeMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<byte[]>("NodeId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte[]>("SharedSecret")
+                        .IsRequired()
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<byte[]>("ShortChannelId")
+                        .IsRequired()
+                        .HasColumnType("varbinary(8)");
+
+                    b.HasKey("PaymentHash", "HopIndex");
+
+                    b.ToTable("PaymentHops");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
@@ -431,11 +1212,92 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelLocalAliasEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany("LocalAliases")
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.CommitmentEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.FeeUpdateEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.HtlcEntity", b =>
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
                         .WithMany("Htlcs")
                         .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RevokedCommitmentEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelPolicyEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Gossip.GraphChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ShortChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithOne()
+                        .HasForeignKey("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", "ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.OutputResolutionEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Channel.ChannelEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", null)
+                        .WithMany("Hops")
+                        .HasForeignKey("PaymentHash")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
@@ -453,12 +1315,19 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Navigation("KeySets");
 
+                    b.Navigation("LocalAliases");
+
                     b.Navigation("WatchedTransactions");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerEntity", b =>
                 {
                     b.Navigation("Channels");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentEntity", b =>
+                {
+                    b.Navigation("Hops");
                 });
 #pragma warning restore 612, 618
         }

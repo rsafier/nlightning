@@ -8,11 +8,18 @@ using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Exceptions;
 using Interfaces;
 
 public class UpdateAddHtlcMessageTypeSerializer : IMessageTypeSerializer<UpdateAddHtlcMessage>
 {
+    /// <summary>
+    /// The <c>update_add_htlc_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.BlindedPath };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -45,6 +52,10 @@ public class UpdateAddHtlcMessageTypeSerializer : IMessageTypeSerializer<UpdateA
     /// </summary>
     /// <param name="stream">The stream to deserialize from.</param>
     /// <returns>The deserialized UpdateAddHtlcMessage.</returns>
+    /// <remarks>
+    /// The extension is read strictly: TLV types must be strictly increasing and unknown even types are rejected
+    /// (BOLT 1). A malformed <c>blinded_path</c> point is also rejected.
+    /// </remarks>
     /// <exception cref="MessageSerializationException">Error deserializing UpdateAddHtlcMessage</exception>
     public async Task<UpdateAddHtlcMessage> DeserializeAsync(Stream stream)
     {
@@ -60,12 +71,12 @@ public class UpdateAddHtlcMessageTypeSerializer : IMessageTypeSerializer<UpdateA
             if (stream.Position >= stream.Length)
                 return new UpdateAddHtlcMessage(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new UpdateAddHtlcMessage(payload);
 
             BlindedPathTlv? blindedPathTlv = null;
-            if (extension.TryGetTlv(TlvConstants.UpfrontShutdownScript, out var baseBlindedPathTlv))
+            if (extension.TryGetTlv(TlvConstants.BlindedPath, out var baseBlindedPathTlv))
             {
                 var tlvConverter = _tlvConverterFactory.GetConverter<BlindedPathTlv>()
                                 ?? throw new SerializationException(
@@ -75,7 +86,7 @@ public class UpdateAddHtlcMessageTypeSerializer : IMessageTypeSerializer<UpdateA
 
             return new UpdateAddHtlcMessage(payload, blindedPathTlv);
         }
-        catch (SerializationException e)
+        catch (Exception e) when (e is SerializationException or InvalidCastException or ArgumentException)
         {
             throw new MessageSerializationException("Error deserializing UpdateAddHtlcMessage", e);
         }

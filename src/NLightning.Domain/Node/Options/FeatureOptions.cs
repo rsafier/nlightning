@@ -11,23 +11,75 @@ using Protocol.Tlv;
 
 public class FeatureOptions
 {
-    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Compulsory;
+    /// <summary>
+    /// Features this node does not implement yet. They are never advertised (and a configuration that enables them
+    /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    /// <remarks>
+    /// Advertising a feature makes peers act on it: anchors need BOLT 5 CPFP / fee bumping (BOLT 2 plan N11), quiesce
+    /// needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
+    /// attribution_data error attribution (onion M3b), onion_messages the onion_message handler and provide_storage
+    /// peer_storage.
+    /// Remove a feature from this set when it is implemented.
+    /// </remarks>
+    public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
+    {
+        Feature.OptionAnchors,
+        Feature.OptionQuiesce,
+        Feature.OptionDualFund,
+        Feature.OptionRouteBlinding,
+        Feature.OptionAttributionData,
+        Feature.OptionOnionMessages,
+        Feature.OptionProvideStorage
+    };
+
+    /// <summary>
+    /// Allow advertising the <see cref="ExperimentalFeatures"/> (not implemented yet). Off by default; only turn it on
+    /// for development and interop testing, never with real funds.
+    /// </summary>
+    public bool AllowExperimentalFeatures { get; set; }
+
+    /// <summary>
+    /// option_data_loss_protect.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 9 marks it ASSUMED, but LND/CLN still expect the bit, so it is still advertised, as Optional rather than
+    /// Compulsory because channel_reestablish itself is not implemented yet (NL-035). ASSUMED bits are sent in init
+    /// and node_announcement for interop even though BOLT 9 gives them no context; a peer that omits them is treated
+    /// as supporting them (see <see cref="FeatureSet.IsCompatible"/>).
+    /// </remarks>
+    public FeatureSupport OptionDataLossProtect { get; private set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable an upfront shutdown script.
     /// </summary>
-    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: we never generate a local upfront script and shutdown does not enforce the peer's one yet,
+    /// which BOLT 2 requires once option_upfront_shutdown_script is negotiated.
+    /// </remarks>
+    public FeatureSupport UpfrontShutdownScript { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable gossip queries.
     /// </summary>
+    /// <remarks>
+    /// Optional: peers then wait for our <c>gossip_timestamp_filter</c> instead of dumping their graph on us, our sync
+    /// queries them (<c>GossipSyncManager</c>, G3-T2) and their queries are answered from the graph
+    /// (<c>QueryResponder</c>, G3-T1; from an empty graph while <c>Gossip:Enabled</c> is off).
+    /// </remarks>
     public FeatureSupport GossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport VarOnionOptIn { get; private set; } = FeatureSupport.Compulsory;
 
     /// <summary>
-    /// Enable expanded gossip queries.
+    /// Enable expanded gossip queries (gossip_queries_ex, bits 10/11).
     /// </summary>
+    /// <remarks>
+    /// Optional since BOLT 7 plan G3-T4: the graph answers <c>query_option</c> with <c>timestamps_tlv</c> and
+    /// <c>checksums_tlv</c> (byte-identical to Core Lightning's reply for the same channel, the captured
+    /// <c>Bolt7QueryVectors</c>) and <c>query_flags</c> bits 0-4, and our range sync asks for timestamps and sends
+    /// <c>query_flags</c> when both sides offer it.
+    /// </remarks>
     public FeatureSupport ExpandedGossipQueries { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport OptionStaticRemoteKey { get; private set; } = FeatureSupport.Compulsory;
@@ -37,6 +89,12 @@ public class FeatureOptions
     /// <summary>
     /// Enable basic MPP.
     /// </summary>
+    /// <remarks>
+    /// Defaults to Optional: the final hop holds the parts of a multi-part payment until <c>total_msat</c> arrives
+    /// (BOLT 4 <c>basic_mpp</c>, ABCD W6-B), and our invoices advertise it. We never split our own payments. No turns
+    /// multi-part receiving off (a part with <c>total_msat</c> != <c>amt_to_forward</c> is failed, BOLT 4) and removes
+    /// the bit from init and from our invoices.
+    /// </remarks>
     public FeatureSupport BasicMpp { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
@@ -47,12 +105,19 @@ public class FeatureOptions
     /// <summary>
     /// Enable zero fee anchor tx.
     /// </summary>
+    /// <remarks>
+    /// Experimental (see <see cref="ExperimentalFeatures"/>): anchor channels are unsafe without BOLT 5 CPFP fee
+    /// bumping (BOLT 2 plan N11).
+    /// </remarks>
     public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable route blinding.
     /// </summary>
-    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No until blinded payloads are handled (onion M5).
+    /// </remarks>
+    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable beyond segwit shutdown.
@@ -62,25 +127,49 @@ public class FeatureOptions
     /// <summary>
     /// Enable dual fund.
     /// </summary>
-    public FeatureSupport DualFund { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: the interactive-tx / v2 open handlers are not implemented.
+    /// </remarks>
+    public FeatureSupport DualFund { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable quiescence (stfu).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No: stfu is not handled.
+    /// </remarks>
+    public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable attribution data.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No until error onions carry attribution data (onion M3b).
+    /// </remarks>
+    public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable onion messages.
     /// </summary>
     public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.No;
 
-    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.Optional;
+    /// <summary>
+    /// Enable peer storage.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No: peer_storage messages are not handled.
+    /// </remarks>
+    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.No;
 
     public FeatureSupport OptionChannelType { get; private set; } = FeatureSupport.Compulsory;
 
     /// <summary>
     /// Enable scid alias.
     /// </summary>
-    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.Optional;
+    /// <remarks>
+    /// Defaults to No: aliases are only partially handled (no alias-based forwarding or real-scid rejection).
+    /// </remarks>
+    public FeatureSupport ScidAlias { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable payment metadata.
@@ -92,6 +181,13 @@ public class FeatureOptions
     /// </summary>
     public FeatureSupport ZeroConf { get; set; } = FeatureSupport.No;
 
+    /// <summary>
+    /// option_simple_close (BOLT 2 closing_complete/closing_sig, BOLT2 plan N11; LND's "rbf-coop-close").
+    /// </summary>
+    /// <remarks>
+    /// Implemented (no longer experimental); defaults to No so the legacy closing_signed negotiation stays the default.
+    /// Needs <see cref="BeyondSegwitShutdown"/> (BOLT 9 dependency). Negotiated only when both sides signal it.
+    /// </remarks>
     public FeatureSupport OptionSimpleClose { get; set; } = FeatureSupport.No;
 
     /// <summary>
@@ -119,13 +215,98 @@ public class FeatureOptions
     /// <summary>
     /// Get Features set for the node.
     /// </summary>
-    /// <returns>The features set for the node.</returns>
+    /// <param name="context">The context the features will be presented in (defaults to <c>init</c>).</param>
+    /// <returns>The features set for the node, filtered to the features allowed in <paramref name="context"/>.</returns>
+    public FeatureSet GetNodeFeatures(FeatureContext context = FeatureContext.Init)
+    {
+        return BuildFeatureSet().FilterByContext(context);
+    }
+
+    /// <summary>
+    /// Validates the configured features.
+    /// </summary>
+    /// <returns>A list of human-readable errors; empty when the configuration is valid.</returns>
     /// <remarks>
-    /// All features set as Optional.
+    /// BOLT 9 requires every advertised feature to have its dependencies set. <see cref="FeatureSet.SetFeature(Feature, bool, bool)"/>
+    /// would silently turn on a dependency that was configured as <see cref="FeatureSupport.No"/>, so reject that
+    /// combination up front instead. Enabling one of the <see cref="ExperimentalFeatures"/> without
+    /// <see cref="AllowExperimentalFeatures"/> is also an error, so the node refuses to start instead of silently
+    /// dropping the setting.
     /// </remarks>
-    public FeatureSet GetNodeFeatures()
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        var configured = GetConfiguredFeatures();
+        foreach (var (feature, support) in configured)
+        {
+            if (support == FeatureSupport.No)
+                continue;
+
+            if (!AllowExperimentalFeatures && ExperimentalFeatures.Contains(feature))
+            {
+                errors.Add($"Feature {feature} is not implemented yet; set {nameof(AllowExperimentalFeatures)} to "
+                         + "advertise it anyway");
+            }
+
+            foreach (var dependency in FeatureSet.GetDependencies(feature))
+            {
+                if (configured.TryGetValue(dependency, out var dependencySupport)
+                 && dependencySupport == FeatureSupport.No)
+                {
+                    errors.Add($"Feature {feature} requires {dependency}, which is disabled");
+                }
+            }
+        }
+
+        return errors;
+    }
+
+    private Dictionary<Feature, FeatureSupport> GetConfiguredFeatures() => new()
+    {
+        { Feature.OptionDataLossProtect, OptionDataLossProtect },
+        { Feature.OptionUpfrontShutdownScript, UpfrontShutdownScript },
+        { Feature.GossipQueries, GossipQueries },
+        { Feature.VarOnionOptin, VarOnionOptIn },
+        { Feature.GossipQueriesEx, ExpandedGossipQueries },
+        { Feature.OptionStaticRemoteKey, OptionStaticRemoteKey },
+        { Feature.PaymentSecret, PaymentSecret },
+        { Feature.BasicMpp, BasicMpp },
+        { Feature.OptionSupportLargeChannel, LargeChannels },
+        { Feature.OptionAnchors, OptionAnchors },
+        { Feature.OptionRouteBlinding, OptionRouteBlinding },
+        { Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown },
+        { Feature.OptionDualFund, DualFund },
+        { Feature.OptionQuiesce, OptionQuiesce },
+        { Feature.OptionAttributionData, OptionAttributionData },
+        { Feature.OptionOnionMessages, OptionOnionMessages },
+        { Feature.OptionProvideStorage, OptionProvideStorage },
+        { Feature.OptionChannelType, OptionChannelType },
+        { Feature.OptionScidAlias, ScidAlias },
+        { Feature.OptionPaymentMetadata, PaymentMetadata },
+        { Feature.OptionZeroconf, ZeroConf },
+        { Feature.OptionSimpleClose, OptionSimpleClose },
+    };
+
+    /// <summary>
+    /// Whether a feature configured with <paramref name="support"/> goes into our feature bits: never when it is
+    /// disabled, and never for an <see cref="ExperimentalFeatures">experimental</see> one unless
+    /// <see cref="AllowExperimentalFeatures"/> is set.
+    /// </summary>
+    private bool IsAdvertised(Feature feature, FeatureSupport support)
+    {
+        return support != FeatureSupport.No
+            && (AllowExperimentalFeatures || !ExperimentalFeatures.Contains(feature));
+    }
+
+    private FeatureSet BuildFeatureSet()
     {
         var features = new FeatureSet();
+
+        // FeatureSet sets data_loss_protect as compulsory by default; honour the configured support level
+        if (OptionDataLossProtect == FeatureSupport.No)
+            features.SetFeature(Feature.OptionDataLossProtect, false, false);
+        else
+            features.SetFeature(Feature.OptionDataLossProtect, OptionDataLossProtect == FeatureSupport.Compulsory);
 
         if (UpfrontShutdownScript != FeatureSupport.No)
         {
@@ -143,7 +324,7 @@ public class FeatureOptions
             features.SetFeature(Feature.GossipQueriesEx, ExpandedGossipQueries == FeatureSupport.Compulsory);
         }
 
-        if (BasicMpp != FeatureSupport.No)
+        if (IsAdvertised(Feature.BasicMpp, BasicMpp))
         {
             features.SetFeature(Feature.BasicMpp, BasicMpp == FeatureSupport.Compulsory);
         }
@@ -153,12 +334,12 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionSupportLargeChannel, LargeChannels == FeatureSupport.Compulsory);
         }
 
-        if (OptionAnchors != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAnchors, OptionAnchors))
         {
             features.SetFeature(Feature.OptionAnchors, OptionAnchors == FeatureSupport.Compulsory);
         }
 
-        if (OptionRouteBlinding != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionRouteBlinding, OptionRouteBlinding))
         {
             features.SetFeature(Feature.OptionRouteBlinding, OptionRouteBlinding == FeatureSupport.Compulsory);
         }
@@ -168,27 +349,27 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionShutdownAnySegwit, BeyondSegwitShutdown == FeatureSupport.Compulsory);
         }
 
-        if (DualFund != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionDualFund, DualFund))
         {
             features.SetFeature(Feature.OptionDualFund, DualFund == FeatureSupport.Compulsory);
         }
 
-        if (OptionQuiesce != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionQuiesce, OptionQuiesce))
         {
             features.SetFeature(Feature.OptionQuiesce, OptionQuiesce == FeatureSupport.Compulsory);
         }
 
-        if (OptionAttributionData != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionAttributionData, OptionAttributionData))
         {
             features.SetFeature(Feature.OptionAttributionData, OptionAttributionData == FeatureSupport.Compulsory);
         }
 
-        if (OptionOnionMessages != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionOnionMessages, OptionOnionMessages))
         {
             features.SetFeature(Feature.OptionOnionMessages, OptionOnionMessages == FeatureSupport.Compulsory);
         }
 
-        if (OptionProvideStorage != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionProvideStorage, OptionProvideStorage))
         {
             features.SetFeature(Feature.OptionProvideStorage, OptionProvideStorage == FeatureSupport.Compulsory);
         }
@@ -213,7 +394,7 @@ public class FeatureOptions
             features.SetFeature(Feature.OptionZeroconf, ZeroConf == FeatureSupport.Compulsory);
         }
 
-        if (OptionSimpleClose != FeatureSupport.No)
+        if (IsAdvertised(Feature.OptionSimpleClose, OptionSimpleClose))
         {
             features.SetFeature(Feature.OptionSimpleClose, OptionSimpleClose == FeatureSupport.Compulsory);
         }
@@ -256,6 +437,8 @@ public class FeatureOptions
     {
         var options = new FeatureOptions
         {
+            // These options describe what was already negotiated, not what we advertise, so nothing is gated here
+            AllowExperimentalFeatures = true,
             OptionDataLossProtect = featureSet.IsFeatureSet(Feature.OptionDataLossProtect, true)
                                         ? FeatureSupport.Compulsory
                                         : featureSet.IsFeatureSet(Feature.OptionDataLossProtect, false)

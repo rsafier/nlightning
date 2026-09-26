@@ -1,8 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
@@ -53,6 +51,8 @@
 
   <ItemGroup>
     <Content Include="BOLT11/Vectors/ValidInvoices.txt" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="BOLT4/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="BOLT3/Vectors/*.txt;BOLT3/Vectors/*.json" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
 </Project>

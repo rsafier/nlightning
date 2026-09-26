@@ -6,8 +6,10 @@ namespace NLightning.Bolt11.Tests.Models;
 using Bolt11.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Constants;
+using Domain.Enums;
 using Domain.Models;
 using Domain.Money;
+using Domain.Node;
 using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 using Exceptions;
@@ -120,7 +122,8 @@ public class InvoiceTests
     {
         // Given
         var key = new Key();
-        var invoice = new Invoice(BitcoinNetwork.Mainnet);
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "cache", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet);
 
         // "Touch" the invoice string once, so it's cached
         var initialStr = invoice.ToString(key);
@@ -165,7 +168,8 @@ public class InvoiceTests
     {
         // Given
         var key = new Key();
-        var invoice = new Invoice(BitcoinNetwork.Mainnet)
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "cache", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet)
         {
             RoutingInfos = new RoutingInfoCollection { s_defaultRoutingInfo }
         };
@@ -207,6 +211,227 @@ public class InvoiceTests
         Assert.Equal(customExpiry.ToUnixTimeSeconds(), newComputedExpiry.ToUnixTimeSeconds());
     }
 
+    [Fact]
+    public void Given_InvoiceWithTwoRouteHints_When_EncodedAndDecoded_Then_BothRHintsAreKeptInOrder()
+    {
+        // Arrange
+        var key = new Key();
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "two routes", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet)
+        {
+            RoutingInfos = [s_defaultRoutingInfo]
+        };
+        var secondHop = new RoutingInfo(InitiatorValidKeysVector.RemoteStaticPublicKey,
+                                        new ShortChannelId(870128, 7, 0), 2, 3, 4);
+        invoice.AddRouteHint([secondHop, s_defaultRoutingInfo]);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(key), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(2, decoded.RouteHints.Count);
+        Assert.Single(decoded.RouteHints[0]);
+        Assert.Equal(s_defaultRoutingInfo.ShortChannelId, decoded.RouteHints[0][0].ShortChannelId);
+        Assert.Equal(2, decoded.RouteHints[1].Count);
+        Assert.Equal(secondHop.ShortChannelId, decoded.RouteHints[1][0].ShortChannelId);
+        Assert.Equal(secondHop.CltvExpiryDelta, decoded.RouteHints[1][0].CltvExpiryDelta);
+        Assert.NotNull(decoded.RoutingInfos);
+        Assert.Equal(s_defaultRoutingInfo.ShortChannelId, decoded.RoutingInfos[0].ShortChannelId);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutRouteHints_When_RouteHintsRead_Then_IsEmpty()
+    {
+        // Arrange
+        var invoice = new Invoice(BitcoinNetwork.Mainnet);
+
+        // Act
+        var hints = invoice.RouteHints;
+
+        // Assert
+        Assert.Empty(hints);
+    }
+
+    [Fact]
+    public void Given_PropertiesSetTwice_When_Read_Then_SecondValueReplacesFirst()
+    {
+        // Arrange
+        var invoice = new Invoice(BitcoinNetwork.Mainnet, LightningMoney.Zero, 1_496_314_658);
+        var firstKey = new Key().PubKey;
+        var secondKey = new Key().PubKey;
+        var secondFeatures = FeatureSet.DeserializeFromBytes([0x00]);
+        secondFeatures.SetFeature(Feature.BasicMpp, false);
+
+        // Act
+        invoice.PayeePubKey = firstKey;
+        invoice.PayeePubKey = secondKey;
+        invoice.MinFinalCltvExpiry = 40;
+        invoice.MinFinalCltvExpiry = 144;
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(1_496_314_658 + 60);
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(1_496_314_658 + 120);
+        invoice.Features = FeatureSet.DeserializeFromBytes([0x41, 0x00]);
+        invoice.Features = secondFeatures;
+        invoice.RoutingInfos = [s_defaultRoutingInfo];
+        invoice.RoutingInfos = [s_defaultRoutingInfo, s_defaultRoutingInfo];
+        invoice.Metadata = [1];
+        invoice.Metadata = [2, 3];
+
+        // Assert
+        Assert.Equal(secondKey, invoice.PayeePubKey);
+        Assert.Equal((ushort)144, invoice.MinFinalCltvExpiry);
+        Assert.Equal(1_496_314_658 + 120, invoice.ExpiryDate.ToUnixTimeSeconds());
+        Assert.Same(secondFeatures, invoice.Features);
+        Assert.Single(invoice.RouteHints);
+        Assert.Equal(2, invoice.RoutingInfos!.Count);
+        Assert.Equal(new byte[] { 2, 3 }, invoice.Metadata);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutKeyManager_When_EncodeOrToStringCalledWithoutKey_Then_InvalidOperationIsThrown()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1), "no key", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet);
+
+        // Act & Assert
+        Assert.Throws<InvalidOperationException>(() => invoice.Encode());
+        Assert.Throws<InvalidOperationException>(() => invoice.ToString());
+    }
+
+    [Fact]
+    public void Given_DecodedInvoice_When_FeaturesMutated_Then_CachedStringIsInvalidated()
+    {
+        // Arrange
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+        Assert.NotNull(invoice.Features);
+
+        // Act
+        invoice.Features.SetFeature(Feature.BasicMpp, false);
+        var reencoded = invoice.ToString(new Key());
+
+        // Assert
+        Assert.NotEqual(invoiceString, reencoded);
+        var decoded = Invoice.Decode(reencoded, BitcoinNetwork.Mainnet);
+        Assert.True(decoded.Features!.IsFeatureSet(Feature.BasicMpp, false));
+    }
+
+    [Fact]
+    public void Given_DecodedInvoiceWithoutNField_When_Reencoded_Then_RecoveredKeyIsNotAddedAsNField()
+    {
+        // Arrange
+        // BOLT 11 example signed with priv_key e126f68f...; payee key is recovered, there is no `n` field
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+        var specKey = new Key(Convert.FromHexString(
+                                  "e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734"));
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+
+        // Act
+        var reencoded = invoice.Encode(specKey);
+
+        // Assert
+        Assert.Equal(specKey.PubKey, invoice.PayeePubKey);
+        Assert.Equal(invoiceString, reencoded);
+    }
+
+    [Fact]
+    public void Given_DecodedInvoiceWithoutNField_When_ReencodedWithAnotherKey_Then_ItStillDecodes()
+    {
+        // Arrange
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+        var otherKey = new Key();
+
+        // Act
+        invoice.Features!.SetFeature(Feature.BasicMpp, false);
+        var reencoded = invoice.ToString(otherKey);
+
+        // Assert
+        Assert.NotEqual(invoiceString, reencoded);
+        var decoded = Invoice.Decode(reencoded, BitcoinNetwork.Mainnet);
+        Assert.Equal(otherKey.PubKey, decoded.PayeePubKey);
+    }
+
+    [Fact]
+    public void Given_DecodedInvoiceWithoutNField_When_EncodedWithAnotherKey_Then_PayeePubKeyIsTheNewKey()
+    {
+        // Arrange
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+        var recoveredKey = invoice.PayeePubKey;
+        var otherKey = new Key();
+
+        // Act
+        invoice.Encode(otherKey);
+
+        // Assert
+        Assert.NotEqual(recoveredKey, otherKey.PubKey);
+        Assert.Equal(otherKey.PubKey, invoice.PayeePubKey);
+    }
+
+    [Fact]
+    public void Given_ExpiryNeedingSevenGroups_When_EncodedAndDecoded_Then_ExpiryDateIsPreserved()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "long expiry", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        var expiry = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp + (1L << 30) + 5);
+        invoice.ExpiryDate = expiry;
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(expiry, decoded.ExpiryDate);
+    }
+
+    [Fact]
+    public void Given_ZeroExpiry_When_EncodedAndDecoded_Then_ExpiryDateIsTheTimestamp()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "expired", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        invoice.ExpiryDate = DateTimeOffset.FromUnixTimeSeconds(invoice.Timestamp);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal(invoice.Timestamp, decoded.ExpiryDate.ToUnixTimeSeconds());
+    }
+
+    [Fact]
+    public void Given_EmptyRouteHint_When_Added_Then_ArgumentExceptionIsThrown()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "empty route", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => invoice.AddRouteHint([]));
+        Assert.Throws<ArgumentException>(() => invoice.RoutingInfos = []);
+        Assert.Empty(invoice.RouteHints);
+    }
+
+    [Fact]
+    public void Given_RouteHintEmptiedAfterAdding_When_Encoded_Then_InvoiceSerializationExceptionIsThrown()
+    {
+        // Arrange
+        var routingInfos = new RoutingInfoCollection { s_defaultRoutingInfo };
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "emptied route", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+        invoice.AddRouteHint(routingInfos);
+        routingInfos.Clear();
+
+        // Act & Assert
+        var exception = Assert.Throws<InvoiceSerializationException>(() => invoice.Encode(new Key()));
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
+    }
+
     #endregion
 
     #region Encoding/Decoding
@@ -228,6 +453,45 @@ public class InvoiceTests
 
         // Then
         Assert.False(string.IsNullOrWhiteSpace(encoded));
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutFeatures_When_Encoded_Then_VarOnionOptinAndPaymentSecretAreRequired()
+    {
+        // Arrange
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "no features", s_testPaymentHash,
+                                  s_testPaymentSecret, BitcoinNetwork.Mainnet);
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.NotNull(decoded.Features);
+        Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret, true));
+    }
+
+    [Fact]
+    public void Given_InvoiceWithOnlyBasicMpp_When_Encoded_Then_RequiredFeaturesAreAdded()
+    {
+        // Arrange
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(Feature.BasicMpp, false);
+        var invoice = new Invoice(LightningMoney.Satoshis(1_000), "mpp", s_testPaymentHash, s_testPaymentSecret,
+                                  BitcoinNetwork.Mainnet)
+        {
+            Features = features
+        };
+
+        // Act
+        var decoded = Invoice.Decode(invoice.Encode(new Key()), BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.NotNull(decoded.Features);
+        Assert.True(decoded.Features.IsFeatureSet(Feature.BasicMpp, false));
+        Assert.True(decoded.Features.IsFeatureSet(Feature.VarOnionOptin, true));
+        // SetFeature(BasicMpp) already sets its BOLT 9 dependency payment_secret as optional, which Encode keeps
+        Assert.True(decoded.Features.IsFeatureSet(Feature.PaymentSecret));
     }
 
     [Fact]
@@ -263,6 +527,21 @@ public class InvoiceTests
 
         // Then
         Assert.Equal(2000000000U, invoice.Amount.MilliSatoshi);
+    }
+
+    [Fact]
+    public void Given_InvoiceWithoutCField_When_Decoded_Then_MinFinalCltvExpiryDefaultsTo18()
+    {
+        // Arrange
+        // BOLT 11 vector (P2SH fallback) with no `c` field
+        const string invoiceString =
+            "lnbc20m1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqfppj3a24vwu6r8ejrss3axul8rxldph2q7z99qrsgqz6qsgww34xlatfj6e3sngrwfy3ytkt29d2qttr8qz2mnedfqysuqypgqex4haa2h8fx3wnypranf3pdwyluftwe680jjcfp438u82xqphf75ym";
+
+        // Act
+        var invoice = Invoice.Decode(invoiceString, BitcoinNetwork.Mainnet);
+
+        // Assert
+        Assert.Equal((ushort)18, invoice.MinFinalCltvExpiry);
     }
 
     #endregion

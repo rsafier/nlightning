@@ -8,7 +8,8 @@ using Enums;
 public class FeaturesTaggedFieldTests
 {
     [Theory]
-    [InlineData(new byte[] { 9, 15 }, 3)]
+    [InlineData(new byte[] { 8, 14 }, 3)]
+    [InlineData(new byte[] { 9, 15 }, 4)]
     [InlineData(new byte[] { 8, 14, 48 }, 10)]
     [InlineData(new byte[] { 8, 14, 99 }, 20)]
     public void Constructor_FromValue_SetsPropertiesCorrectly(byte[] featureBits, short expectedLength)
@@ -30,7 +31,9 @@ public class FeaturesTaggedFieldTests
     }
 
     [Theory]
-    [InlineData(new byte[] { 9, 15 }, new byte[] { 0x82, 0x00 })]
+    // BOLT 11 example `9qrsgq`: b100000100000000 = bits 14 and 8
+    [InlineData(new byte[] { 8, 14 }, new byte[] { 0x82, 0x00 })]
+    [InlineData(new byte[] { 9, 15 }, new byte[] { 0x08, 0x20, 0x00 })]
     [InlineData(new byte[] { 8, 14, 48 }, new byte[] { 0x40, 0x00, 0x00, 0x00, 0x10, 0x40, 0x00 })]
     [InlineData(new byte[] { 8, 14, 99 },
                 new byte[] { 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x10, 0x00 })]
@@ -56,7 +59,8 @@ public class FeaturesTaggedFieldTests
     }
 
     [Theory]
-    [InlineData(new byte[] { 9, 15 }, 3, new byte[] { 0x82, 0x00 })]
+    [InlineData(new byte[] { 8, 14 }, 3, new byte[] { 0x82, 0x00 })]
+    [InlineData(new byte[] { 9, 15 }, 4, new byte[] { 0x08, 0x20, 0x00 })]
     [InlineData(new byte[] { 8, 14, 48 }, 10, new byte[] { 0x40, 0x00, 0x00, 0x00, 0x10, 0x40, 0x00 })]
     [InlineData(new byte[] { 8, 14, 99 }, 20,
                 new byte[] { 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x10, 0x00 })]
@@ -84,5 +88,74 @@ public class FeaturesTaggedFieldTests
 
         // Act & Assert
         Assert.Throws<ArgumentException>(() => FeaturesTaggedField.FromBitReader(bitReader, 0));
+    }
+
+    [Fact]
+    public void Given_FifteenBitField_When_FromBitReader_Then_BitsAreNotShifted()
+    {
+        // Arrange
+        // `sgq` from the BOLT 11 examples: bits 14 and 8, both compulsory
+        var bitReader = new BitReader([0x82, 0x00]);
+
+        // Act
+        var taggedField = FeaturesTaggedField.FromBitReader(bitReader, 3);
+
+        // Assert
+        Assert.True(taggedField.Value.IsFeatureSet(8, false));
+        Assert.True(taggedField.Value.IsFeatureSet(14, false));
+        Assert.False(taggedField.Value.IsFeatureSet(9, false));
+        Assert.False(taggedField.Value.IsFeatureSet(15, false));
+    }
+
+    [Fact]
+    public void Given_UnknownEvenBit_When_FromBitReader_Then_ThrowsArgumentExceptionNamingTheBit()
+    {
+        // Arrange
+        // 21 groups (105 bits): bit 100 set (unknown, even)
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(100, true);
+        var writer = new BitWriter(105);
+        features.WriteToBitWriter(writer, 105, false);
+
+        // Act
+        var ex = Assert.Throws<ArgumentException>(() => FeaturesTaggedField.FromBitReader(
+                                                      new BitReader(writer.ToArray()), 21));
+
+        // Assert
+        Assert.Contains("100", ex.Message);
+    }
+
+    [Fact]
+    public void Given_UnknownOddBit_When_FromBitReader_Then_BitIsIgnored()
+    {
+        // Arrange
+        // 20 groups (100 bits): bits 99 (unknown, odd), 14 and 8
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(99, true);
+        features.SetFeature(14, true);
+        features.SetFeature(8, true);
+        var writer = new BitWriter(100);
+        features.WriteToBitWriter(writer, 100, false);
+
+        // Act
+        var taggedField = FeaturesTaggedField.FromBitReader(new BitReader(writer.ToArray()), 20);
+
+        // Assert
+        Assert.True(taggedField.Value.IsFeatureSet(99, false));
+    }
+
+    [Fact]
+    public void Given_FeatureSetChangedAfterFieldCreated_When_LengthRead_Then_LengthCoversNewBits()
+    {
+        // Arrange
+        var features = FeatureSet.DeserializeFromBytes([0x00]);
+        features.SetFeature(8, true);
+        var taggedField = new FeaturesTaggedField(features);
+
+        // Act
+        features.SetFeature(48, true);
+
+        // Assert
+        Assert.Equal(10, taggedField.Length);
     }
 }

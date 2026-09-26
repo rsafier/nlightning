@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Tests.ValueObjects;
 
+using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
 
@@ -50,6 +51,7 @@ public class BitcoinNetworkTests
     [InlineData(NetworkConstants.Mainnet)]
     [InlineData(NetworkConstants.Testnet)]
     [InlineData(NetworkConstants.Regtest)]
+    [InlineData(NetworkConstants.Signet)]
     public void Given_NetworkInstance_When_ChainHashAccessed_Then_ReturnsCorrectHash(string networkName)
     {
         // Given
@@ -59,6 +61,7 @@ public class BitcoinNetworkTests
             NetworkConstants.Mainnet => ChainConstants.Main,
             NetworkConstants.Testnet => ChainConstants.Testnet,
             NetworkConstants.Regtest => ChainConstants.Regtest,
+            NetworkConstants.Signet => ChainConstants.Signet,
             _ => throw new InvalidOperationException("Chain not supported.")
         };
 
@@ -143,8 +146,7 @@ public class BitcoinNetworkTests
     {
         var customChainHash = DummyChainHash(0x42);
         // Register
-        var tmpNet = new BitcoinNetwork("mycustomnet");
-        tmpNet.Register("mycustomnet", customChainHash);
+        BitcoinNetwork.Register("mycustomnet", customChainHash);
 
         var net = new BitcoinNetwork("mycustomnet");
         Assert.Equal(customChainHash, net.ChainHash);
@@ -157,8 +159,7 @@ public class BitcoinNetworkTests
         var lower = "lowercase";
         var upper = "LOWERCASE";
 
-        var tmpNet = new BitcoinNetwork(lower);
-        tmpNet.Register(upper, customChainHash);
+        BitcoinNetwork.Register(upper, customChainHash);
 
         var net1 = new BitcoinNetwork(lower);
         var net2 = new BitcoinNetwork(upper);
@@ -171,8 +172,7 @@ public class BitcoinNetworkTests
     {
         var customChainHash = DummyChainHash(0xAB);
         var name = "toRemove";
-        var net = new BitcoinNetwork(name);
-        net.Register(name, customChainHash);
+        BitcoinNetwork.Register(name, customChainHash);
 
         var useNet = new BitcoinNetwork(name);
         Assert.Equal(customChainHash, useNet.ChainHash);
@@ -192,7 +192,7 @@ public class BitcoinNetworkTests
         var customChainHash = DummyChainHash(0x5A);
         var name = "foo_bar";
         var bnet = new BitcoinNetwork(name);
-        bnet.Register(name, customChainHash);
+        BitcoinNetwork.Register(name, customChainHash);
 
         Assert.Equal(name, bnet.ToString());
 
@@ -214,11 +214,10 @@ public class BitcoinNetworkTests
         // Ensure clean slate
         BitcoinNetwork.Unregister(name);
 
-        var net = new BitcoinNetwork(name);
-        net.Register(name, chainHash1);
+        BitcoinNetwork.Register(name, chainHash1);
 
         // Attempting to add again (any value) must throw
-        var ex = Assert.Throws<InvalidOperationException>(() => net.Register(name, chainHash2));
+        var ex = Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.Register(name, chainHash2));
         Assert.Contains("already registered", ex.Message, StringComparison.OrdinalIgnoreCase);
 
         // Clean up for other tests
@@ -228,12 +227,190 @@ public class BitcoinNetworkTests
     [Fact]
     public void Register_Throws_For_Null_Or_Whitespace_Name()
     {
-        var net = new BitcoinNetwork("foo");
         var ch = DummyChainHash(0x77);
 
-        Assert.Throws<ArgumentNullException>(() => net.Register(null!, ch));
-        Assert.Throws<ArgumentNullException>(() => net.Register("", ch));
-        Assert.Throws<ArgumentNullException>(() => net.Register("   ", ch));
+        Assert.Throws<ArgumentNullException>(() => BitcoinNetwork.Register(null!, ch));
+        Assert.Throws<ArgumentNullException>(() => BitcoinNetwork.Register("", ch));
+        Assert.Throws<ArgumentNullException>(() => BitcoinNetwork.Register("   ", ch));
+    }
+
+    [Fact]
+    public void Given_Signet_When_ChainHashAccessed_Then_ItIsTheSignetGenesisHashInWireOrder()
+    {
+        // Arrange: the signet genesis block hash as block explorers show it (big-endian)
+        const string genesisHashHex = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6";
+        var expected = Convert.FromHexString(genesisHashHex).Reverse().ToArray();
+
+        // Act
+        var chainHash = BitcoinNetwork.Signet.ChainHash;
+
+        // Assert: BOLT chain_hash is the genesis hash in the byte order of the block header (little-endian)
+        Assert.Equal(expected, chainHash.Value);
+        Assert.Equal(ChainConstants.Signet, chainHash);
+    }
+
+    [Theory]
+    [InlineData(NetworkConstants.Mainnet, "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f")]
+    [InlineData(NetworkConstants.Testnet, "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943")]
+    [InlineData(NetworkConstants.Regtest, "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206")]
+    [InlineData(NetworkConstants.Signet, "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6")]
+    public void Given_BuiltInNetwork_When_ChainHashAccessed_Then_ItIsTheReversedGenesisHash(string name,
+        string genesisHashHex)
+    {
+        // Arrange (the testnet constant had 4 bytes garbled before this check)
+        var expected = Convert.FromHexString(genesisHashHex).Reverse().ToArray();
+
+        // Act
+        var chainHash = new BitcoinNetwork(name).ChainHash;
+
+        // Assert
+        Assert.Equal(expected, chainHash.Value);
+    }
+
+    [Theory]
+    [InlineData("mutinynet")]
+    [InlineData("MutinyNet")]
+    [InlineData(" mutinynet ")]
+    public void Given_Mutinynet_When_Resolved_Then_ItIsSignet(string name)
+    {
+        // Act
+        var network = BitcoinNetwork.Resolve(name);
+
+        // Assert
+        Assert.Equal(BitcoinNetwork.Signet, network);
+        Assert.Equal(NetworkConstants.Signet, network.Name);
+        Assert.Equal(ChainConstants.Signet, network.ChainHash);
+        Assert.True(BitcoinNetwork.IsCustomSignet(name));
+        Assert.True(new BitcoinNetwork(name).IsSignet);
+        Assert.Equal(BitcoinNetwork.Signet, new BitcoinNetwork(name)); // e.g. the daemon's Node:Network binding
+        Assert.Equal(ChainConstants.Signet, new BitcoinNetwork(name).ChainHash);
+    }
+
+    [Fact]
+    public void Given_CustomSignetFromConfiguration_When_Registered_Then_ItResolvesToSignet()
+    {
+        // Arrange
+        const string name = "my-test-signet";
+        BitcoinNetwork.Unregister(name);
+        Assert.Throws<ArgumentException>(() => BitcoinNetwork.Resolve(name));
+        var options = new CustomSignetOptions { Name = name };
+
+        try
+        {
+            // Act
+            options.Register();
+            options.Register(); // idempotent
+
+            // Assert
+            Assert.Equal(BitcoinNetwork.Signet, BitcoinNetwork.Resolve(name));
+            Assert.Empty(options.GetValidationErrors(BitcoinNetwork.Signet));
+        }
+        finally
+        {
+            BitcoinNetwork.Unregister(name);
+        }
+    }
+
+    [Theory]
+    [InlineData(NetworkConstants.Mainnet)]
+    [InlineData(NetworkConstants.Testnet)]
+    [InlineData(NetworkConstants.Regtest)]
+    [InlineData(NetworkConstants.Signet)]
+    public void Given_BuiltInName_When_Resolved_Then_ItIsThatNetwork(string name)
+    {
+        // Act
+        var network = BitcoinNetwork.Resolve(name.ToUpperInvariant());
+
+        // Assert
+        Assert.Equal(new BitcoinNetwork(name), network);
+        Assert.Equal(name, network.Name);
+    }
+
+    [Theory]
+    [InlineData("bitcoin-unknown")]
+    [InlineData("testnet4")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void Given_UnknownName_When_Resolved_Then_ItFailsInsteadOfFallingBack(string? name)
+    {
+        // Act / Assert
+        var exception = Assert.Throws<ArgumentException>(() => BitcoinNetwork.Resolve(name));
+        Assert.DoesNotContain("Chain hash", exception.Message);
+    }
+
+    [Fact]
+    public void Given_CustomSignetName_When_RegisteredWithAnotherChainHash_Then_RegisterCustomSignetThrows()
+    {
+        // Arrange
+        const string name = "not-a-signet";
+        BitcoinNetwork.Unregister(name);
+        BitcoinNetwork.Register(name, DummyChainHash(0x31));
+
+        try
+        {
+            // Act / Assert
+            Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.RegisterCustomSignet(name));
+            Assert.False(BitcoinNetwork.IsCustomSignet(name));
+            Assert.Equal(name, BitcoinNetwork.Resolve(name).Name);
+        }
+        finally
+        {
+            BitcoinNetwork.Unregister(name);
+        }
+    }
+
+    [Theory]
+    [InlineData(NetworkConstants.Signet)]
+    [InlineData(NetworkConstants.Regtest)]
+    public void Given_BuiltInName_When_RegisteredAsCustom_Then_Throws(string name)
+    {
+        // Act / Assert
+        Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.RegisterCustomSignet(name));
+        Assert.Throws<InvalidOperationException>(() => BitcoinNetwork.Register(name, DummyChainHash(0x01)));
+    }
+
+    [Fact]
+    public void Given_UnknownNetwork_When_ComparedAsObject_Then_ItDoesNotThrow()
+    {
+        // Arrange
+        object unknown = new BitcoinNetwork("unknown-net");
+
+        // Act / Assert: Equals(object) compares names, it no longer reads ChainHash (which throws for unknown names)
+        Assert.False(BitcoinNetwork.Mainnet.Equals(unknown));
+        Assert.True(new BitcoinNetwork("UNKNOWN-NET").Equals(unknown));
+    }
+
+    [Fact]
+    public void Given_DefaultNetwork_When_Read_Then_NameIsEmptyAndResolveFails()
+    {
+        // Arrange
+        var network = default(BitcoinNetwork);
+
+        // Act / Assert
+        Assert.Equal(string.Empty, network.Name);
+        Assert.False(network.IsSignet);
+        Assert.Throws<InvalidOperationException>(() => network.ChainHash);
+        Assert.Throws<ArgumentException>(() => BitcoinNetwork.Resolve(network.Name));
+    }
+
+    [Fact]
+    public void Given_CustomSignetOptions_When_NetworkIsNotSignet_Then_ValidationFails()
+    {
+        // Arrange
+        var options = new CustomSignetOptions { Name = NetworkConstants.Mutinynet };
+        var builtIn = new CustomSignetOptions { Name = NetworkConstants.Regtest };
+
+        // Act
+        var onRegtest = options.GetValidationErrors(BitcoinNetwork.Regtest);
+        var onSignet = options.GetValidationErrors(BitcoinNetwork.Signet);
+        var builtInErrors = builtIn.GetValidationErrors(BitcoinNetwork.Signet);
+
+        // Assert
+        Assert.Single(onRegtest);
+        Assert.Empty(onSignet);
+        Assert.Single(builtInErrors);
+        Assert.Empty(new CustomSignetOptions().GetValidationErrors(BitcoinNetwork.Mainnet));
     }
 
     private static ChainHash DummyChainHash(byte fill)

@@ -29,6 +29,13 @@ try
         Log.Logger.Error("An unhandled exception occurred: {exception}", exception);
     };
 
+    // Check if help is requested (before reading the config, which creates the config dir)
+    if (CommandLineHelper.IsHelpRequested(args))
+    {
+        DaemonUtils.ShowUsage();
+        return 0;
+    }
+
     // Read the configuration file to check for daemon setting
     var (initialConfig, network, configPath) = NodeConfigurationExtensions.ReadInitialConfiguration(args);
 
@@ -49,22 +56,11 @@ try
         return 0;
     }
 
-    // Check if help is requested
-    if (CommandLineHelper.IsHelpRequested(args))
-    {
-        DaemonUtils.ShowUsage();
-        return 0;
-    }
+    // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
+    var password = PasswordUtils.ResolvePassword(args, Console.In, Log.Logger);
 
-    string? password = null;
-
-    // Try to get password from args or prompt
-    if (args.Contains("--password"))
-    {
-        var idx = Array.IndexOf(args, "--password");
-        if (idx >= 0 && idx + 1 < args.Length)
-            password = args[idx + 1];
-    }
+    // Don't leak the password to anything else that reads our environment
+    Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
 
     if (string.IsNullOrWhiteSpace(password))
     {
@@ -122,7 +118,7 @@ try
     }
 
     // Start as a daemon if requested
-    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger))
+    if (DaemonUtils.StartDaemonIfRequested(args, initialConfig, pidFilePath, Log.Logger, password))
     {
         // The parent process exits immediately after starting the daemon
         return 0;
@@ -134,7 +130,7 @@ try
     Log.Information("Starting NLTG...");
 
     // Create and run host
-    var host = Host.CreateDefaultBuilder(args)
+    var host = Host.CreateDefaultBuilder(DaemonUtils.NormalizeArgs(args))
                    .ConfigureNltg(initialConfig)
                    .ConfigureNltgServices(keyManager, configPath)
                    .Build();

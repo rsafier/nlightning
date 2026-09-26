@@ -55,7 +55,7 @@ internal class GetAddressIpcHandler : IIpcCommandHandler
             var response = new GetAddressIpcResponse
             {
                 AddressP2Tr = p2Tr,
-                AddressP2Wsh = p2Wpkh
+                AddressP2Wpkh = p2Wpkh
             };
 
             var payload = MessagePackSerializer.Serialize(response, cancellationToken: ct);

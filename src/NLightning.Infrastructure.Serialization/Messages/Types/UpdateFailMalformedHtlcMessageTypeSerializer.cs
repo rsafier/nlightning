@@ -33,6 +33,11 @@ public class UpdateFailMalformedHtlcMessageTypeSerializer : IMessageTypeSerializ
     /// </summary>
     /// <param name="stream">The stream to deserialize from.</param>
     /// <returns>The deserialized UpdateFailMalformedHtlcMessage.</returns>
+    /// <remarks>
+    /// A <c>failure_code</c> without the BADONION bit is well-formed on the wire: BOLT 2 makes the receiver fail the
+    /// channel, which needs the channel id, so <c>ChannelManager</c> checks it (not this layer, whose failures only
+    /// know the connection).
+    /// </remarks>
     /// <exception cref="MessageSerializationException">Error deserializing UpdateFailMalformedHtlcMessage</exception>
     public async Task<UpdateFailMalformedHtlcMessage> DeserializeAsync(Stream stream)
     {

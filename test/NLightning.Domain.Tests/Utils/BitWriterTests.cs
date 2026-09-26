@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace NLightning.Domain.Tests.Utils;
 
 using Domain.Utils;
@@ -217,5 +219,61 @@ public class BitWriterTests
         // Then
         // We expect 2 bytes => 0xAB, 0xCD
         Assert.Equal(new byte[] { 0xAB, 0xCD }, array);
+    }
+
+    [Fact]
+    public void Given_GrownBitWriter_When_Disposed_Then_DoesNotThrow()
+    {
+        // Arrange
+        // 8 bits -> grow to 108 bits (14 bytes): Array.Resize produced a non-pooled array that the shared
+        // pool rejects on Return
+        var writer = new BitWriter(8);
+        writer.WriteBits([0xAB], 8);
+        writer.GrowByBits(100);
+        writer.WriteBits(new byte[13], 100);
+
+        // Act
+        var exception = Record.Exception(() => writer.Dispose());
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_DirtyPooledBuffer_When_GrowingAndWritingUnaligned_Then_NoStaleBitsLeak()
+    {
+        // Arrange
+        // Return a dirty array to the shared pool so the next small rent on this thread reuses it
+        var dirty = ArrayPool<byte>.Shared.Rent(16);
+        Array.Fill(dirty, (byte)0xFF);
+        ArrayPool<byte>.Shared.Return(dirty);
+
+        using var writer = new BitWriter(8);
+        writer.WriteBits([0x00], 8);
+        writer.GrowByBits(20);
+
+        // Act
+        writer.WriteBit(false);
+        writer.WriteBits([0x00, 0x00], 16);
+        writer.WriteBits([0x00], 3);
+        var output = writer.ToArray();
+
+        // Assert
+        Assert.All(output, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void Given_Int16WiderThanBits_When_WriteInt16AsBits_Then_OnlyLowBitsAreWritten()
+    {
+        // Arrange
+        using var writer = new BitWriter(16);
+
+        // Act
+        writer.WriteInt16AsBits(0x7FFF, 10);
+        writer.WriteInt16AsBits(0, 6);
+        var output = writer.ToArray();
+
+        // Assert
+        Assert.Equal(new byte[] { 0xFF, 0xC0 }, output);
     }
 }

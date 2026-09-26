@@ -1,14 +1,22 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Platforms>AnyCPU</Platforms>
     <Deterministic>true</Deterministic>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <Configurations>Debug;Release;Debug.Native;Release.Native</Configurations>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug.Native' ">
+    <DebugSymbols Condition=" '$(DebugSymbols)' == '' ">true</DebugSymbols>
+    <Optimize Condition=" '$(Optimize)' == '' ">false</Optimize>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release.Native' ">
+    <Optimize Condition=" '$(Optimize)' == '' ">true</Optimize>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,6 +27,10 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0"/>
     <PackageReference Include="Moq" Version="4.20.72"/>
     <PackageReference Include="NBitcoin" Version="9.0.5"/>
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="xunit.v3" Version="3.2.2"/>
   </ItemGroup>
 
@@ -29,6 +41,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Repositories\NLightning.Infrastructure.Repositories.csproj"/>
+    <ProjectReference Include="..\..\src\NLightning.Infrastructure.Persistence.Sqlite\NLightning.Infrastructure.Persistence.Sqlite.csproj"/>
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 

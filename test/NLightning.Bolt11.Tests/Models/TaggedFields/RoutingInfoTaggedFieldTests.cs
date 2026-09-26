@@ -22,9 +22,9 @@ public class RoutingInfoTaggedFieldTests
 
         var scid = ShortChannelId.Parse("539268x845x1");
 
-        const int feeBaseMsat = 1000;
-        const int feeProportionalMillionths = 250;
-        const short cltvDelta = 40;
+        const uint feeBaseMsat = 1000;
+        const uint feeProportionalMillionths = 250;
+        const ushort cltvDelta = 40;
 
         return new RoutingInfo(pubkey, scid, feeBaseMsat, feeProportionalMillionths, cltvDelta);
     }
@@ -40,9 +40,9 @@ public class RoutingInfoTaggedFieldTests
                                                 (ushort)(baseRi.ShortChannelId.OutputIndex + i));
             col.Add(new RoutingInfo(baseRi.CompactPubKey,
                                     variedScid,
-                                    baseRi.FeeBaseMsat + i,
-                                    baseRi.FeeProportionalMillionths + i,
-                                    (short)(baseRi.CltvExpiryDelta + i)));
+                                    baseRi.FeeBaseMsat + (uint)i,
+                                    baseRi.FeeProportionalMillionths + (uint)i,
+                                    (ushort)(baseRi.CltvExpiryDelta + i)));
         }
 
         return col;
@@ -113,17 +113,65 @@ public class RoutingInfoTaggedFieldTests
         }
     }
 
-    [Fact]
-    public void FromBitReader_ReturnsNull_When_LengthTooSmall()
+    [Theory]
+    [InlineData(80)] // 400 bits: less than one entry
+    [InlineData(84)] // 420 bits: one entry plus 12 bits, more than byte padding
+    public void Given_LengthNotWholeEntries_When_FromBitReader_Then_ThrowsArgumentException(short length)
     {
-        // Arrange: smaller than one full entry (less than 408 bits)
-        var buffer = new byte[(400 + 7) / 8];
-        var reader = new BitReader(buffer);
+        // Arrange
+        var reader = new BitReader(new byte[(length * 5 + 7) / 8]);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => RoutingInfoTaggedField.FromBitReader(reader, length));
+    }
+
+    [Fact]
+    public void Given_MaxUnsignedValues_When_RoundTripping_Then_FieldIsValidAndValuesArePreserved()
+    {
+        // Arrange
+        // fee_base_msat and fee_proportional_millionths are u32, cltv_expiry_delta is u16 (BOLT 11)
+        var baseRi = BuildKnownRoutingInfo();
+        var collection = new RoutingInfoCollection
+        {
+            new RoutingInfo(baseRi.CompactPubKey, baseRi.ShortChannelId, uint.MaxValue, 0x8000_0000u,
+                            ushort.MaxValue)
+        };
+        var field = new RoutingInfoTaggedField(collection);
+        var writer = new BitWriter(field.Length * 5);
 
         // Act
-        var parsed = RoutingInfoTaggedField.FromBitReader(reader, 400 / 5);
+        field.WriteToBitWriter(writer);
+        var parsed = RoutingInfoTaggedField.FromBitReader(new BitReader(writer.ToArray()), field.Length);
 
         // Assert
-        Assert.Null(parsed);
+        Assert.True(field.IsValid());
+        Assert.NotNull(parsed);
+        Assert.True(parsed.IsValid());
+        Assert.Equal(uint.MaxValue, parsed.Value[0].FeeBaseMsat);
+        Assert.Equal(0x8000_0000u, parsed.Value[0].FeeProportionalMillionths);
+        Assert.Equal(ushort.MaxValue, parsed.Value[0].CltvExpiryDelta);
+    }
+
+    [Theory]
+    [InlineData(1, 82)]
+    [InlineData(2, 164)]
+    [InlineData(3, 245)]
+    [InlineData(12, 980)]
+    public void Given_Entries_When_Constructed_Then_LengthIsMinimal(int entries, short expectedLength)
+    {
+        // Arrange
+        var collection = BuildKnownCollection(entries);
+
+        // Act
+        var field = new RoutingInfoTaggedField(collection);
+        var writer = new BitWriter(field.Length * 5);
+        field.WriteToBitWriter(writer);
+        var parsed = RoutingInfoTaggedField.FromBitReader(new BitReader(writer.ToArray()), field.Length);
+
+        // Assert
+        Assert.Equal(expectedLength, field.Length);
+        Assert.False(writer.HasMoreBits(1));
+        Assert.NotNull(parsed);
+        Assert.Equal(entries, parsed.Value.Count);
     }
 }

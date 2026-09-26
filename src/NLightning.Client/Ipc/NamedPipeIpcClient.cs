@@ -7,6 +7,7 @@ namespace NLightning.Client.Ipc;
 
 using Domain.Bitcoin.Enums;
 using Domain.Client.Enums;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
 using Transport.Ipc;
@@ -95,22 +96,34 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
     }
 
+    public async Task<ListChannelsIpcResponse> ListChannelsAsync(string? peerId, CancellationToken ct = default)
+    {
+        var req = new ListChannelsIpcRequest
+        {
+            PeerId = string.IsNullOrWhiteSpace(peerId) ? null : new CompactPubKey(Convert.FromHexString(peerId))
+        };
+        var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
+        var env = new IpcEnvelope
+        {
+            Version = 1,
+            Command = ClientCommand.ListChannels,
+            CorrelationId = Guid.NewGuid(),
+            AuthToken = await GetAuthTokenAsync(ct),
+            Payload = payload,
+            Kind = IpcEnvelopeKind.Request
+        };
+
+        var respEnv = await SendAsync(env, ct);
+        if (respEnv.Kind != IpcEnvelopeKind.Error)
+            return MessagePackSerializer.Deserialize<ListChannelsIpcResponse>(respEnv.Payload, cancellationToken: ct);
+
+        var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
+        throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
+    }
+
     public async Task<GetAddressIpcResponse> GetAddressAsync(string? addressTypeString, CancellationToken ct = default)
     {
-        var addressType = AddressType.P2Tr;
-        if (!string.IsNullOrWhiteSpace(addressTypeString))
-        {
-            addressType = addressTypeString.ToLowerInvariant() switch
-            {
-                "p2tr" => AddressType.P2Tr,
-                "p2wpkh" => AddressType.P2Wpkh,
-                "all" => AddressType.P2Tr | AddressType.P2Wpkh,
-                _ => throw new ArgumentOutOfRangeException(nameof(addressTypeString), addressTypeString,
-                                                           "Address has to be `p2tr`, `p2wpkh`, or `all`.")
-            };
-        }
-
-        var req = new GetAddressIpcRequest { AddressType = addressType };
+        var req = new GetAddressIpcRequest { AddressType = ParseAddressType(addressTypeString) };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
         {
@@ -153,12 +166,16 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     public async Task<OpenChannelIpcResponse> OpenChannelAsync(string nodeInfo, string amountSats,
-                                                               CancellationToken ct = default)
+                                                               string? pushSats = null,
+                                                               CancellationToken ct = default,
+                                                               bool isPublic = false)
     {
         var req = new OpenChannelIpcRequest
         {
             NodeInfo = nodeInfo,
-            Amount = LightningMoney.Satoshis(Convert.ToInt64(amountSats))
+            Amount = LightningMoney.Satoshis(Convert.ToInt64(amountSats)),
+            PushAmount = pushSats is null ? null : LightningMoney.Satoshis(Convert.ToInt64(pushSats)),
+            IsPublic = isPublic
         };
         var payload = MessagePackSerializer.Serialize(req, cancellationToken: ct);
         var env = new IpcEnvelope
@@ -201,6 +218,208 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         if (respEnv.Kind != IpcEnvelopeKind.Error)
             return MessagePackSerializer.Deserialize<OpenChannelSubscriptionIpcResponse>(
                 respEnv.Payload, cancellationToken: ct);
+
+        var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
+        throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");
+    }
+
+    /// <summary>
+    /// Creates an invoice (ClientCommand 9).
+    /// </summary>
+    /// <param name="amount">The requested amount, or null for an any-amount invoice.</param>
+    /// <param name="description">BOLT 11 <c>d</c>; may be empty.</param>
+    /// <param name="expirySeconds">BOLT 11 <c>x</c>, or null for the node default.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<CreateInvoiceIpcResponse> CreateInvoiceAsync(LightningMoney? amount, string description,
+                                                             uint? expirySeconds, CancellationToken ct = default)
+    {
+        var req = new CreateInvoiceIpcRequest
+        {
+            Amount = amount,
+            Description = description,
+            ExpirySeconds = expirySeconds
+        };
+        return SendRequestAsync<CreateInvoiceIpcRequest, CreateInvoiceIpcResponse>(ClientCommand.CreateInvoice, req,
+                                                                                    ct);
+    }
+
+    /// <summary>
+    /// Pays a BOLT 11 invoice and waits for the outcome (ClientCommand 10).
+    /// </summary>
+    /// <param name="bolt11">The invoice.</param>
+    /// <param name="amount">The amount when the invoice has none.</param>
+    /// <param name="timeoutSeconds">How long the daemon waits for the outcome and retries, or null for its default.
+    /// </param>
+    /// <param name="maxFeeMsat">The per-call fee limit in msat, or null for the daemon's default (NL-270).</param>
+    /// <param name="maxParts">The most HTLCs in flight at once (1 never splits), or null for the daemon's default.
+    /// </param>
+    /// <param name="ct">Cancels the call (the payment itself keeps going in the daemon).</param>
+    public Task<PayInvoiceIpcResponse> PayInvoiceAsync(string bolt11, LightningMoney? amount, uint? timeoutSeconds,
+                                                       ulong? maxFeeMsat = null, uint? maxParts = null,
+                                                       CancellationToken ct = default)
+    {
+        var req = new PayInvoiceIpcRequest
+        {
+            Bolt11 = bolt11,
+            Amount = amount,
+            TimeoutSeconds = timeoutSeconds,
+            MaxFee = maxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
+            MaxParts = maxParts
+        };
+        return SendRequestAsync<PayInvoiceIpcRequest, PayInvoiceIpcResponse>(ClientCommand.PayInvoice, req, ct);
+    }
+
+    /// <summary>
+    /// Starts the cooperative close of a channel and waits for the closing transaction (ClientCommand 13).
+    /// </summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="feeRatePerKw">The feerate of our closing fee estimate, or null for the daemon's.</param>
+    /// <param name="noFeeRange">Negotiate without <c>fee_range</c>.</param>
+    /// <param name="waitSeconds">How long the daemon waits for the closing transaction, or null for its default.</param>
+    /// <param name="ct">Cancels the call (the close itself goes on in the daemon).</param>
+    public Task<CloseChannelIpcResponse> CloseChannelAsync(ChannelId channelId, uint? feeRatePerKw, bool noFeeRange,
+                                                           uint? waitSeconds, CancellationToken ct = default)
+    {
+        var req = new CloseChannelIpcRequest
+        {
+            ChannelId = channelId,
+            FeeRatePerKw = feeRatePerKw,
+            NoFeeRange = noFeeRange,
+            WaitSeconds = waitSeconds
+        };
+        return SendRequestAsync<CloseChannelIpcRequest, CloseChannelIpcResponse>(ClientCommand.CloseChannel, req,
+                                                                                 ct);
+    }
+
+    /// <summary>
+    /// Fails a channel and broadcasts our latest commitment (ClientCommand 14).
+    /// </summary>
+    public Task<ForceCloseChannelIpcResponse> ForceCloseChannelAsync(ChannelId channelId,
+                                                                     CancellationToken ct = default)
+    {
+        var req = new ForceCloseChannelIpcRequest { ChannelId = channelId };
+        return SendRequestAsync<ForceCloseChannelIpcRequest, ForceCloseChannelIpcResponse>(
+            ClientCommand.ForceCloseChannel, req, ct);
+    }
+
+    /// <summary>
+    /// Lists the on-chain resolution of closed channels (ClientCommand 15).
+    /// </summary>
+    /// <param name="channelId">Only this channel, when set.</param>
+    /// <param name="includeClosed">Also the channels already closed.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<PendingSweepsIpcResponse> PendingSweepsAsync(ChannelId? channelId, bool includeClosed,
+                                                             CancellationToken ct = default)
+    {
+        var req = new PendingSweepsIpcRequest { ChannelId = channelId, IncludeClosed = includeClosed };
+        return SendRequestAsync<PendingSweepsIpcRequest, PendingSweepsIpcResponse>(ClientCommand.PendingSweeps, req,
+                                                                                   ct);
+    }
+
+    /// <summary>
+    /// Whether the node's chain processing is halted and what it refuses meanwhile (ClientCommand 16, NL-216).
+    /// </summary>
+    public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>
+        SendRequestAsync<ChainStatusIpcRequest, ChainStatusIpcResponse>(ClientCommand.ChainStatus,
+                                                                         new ChainStatusIpcRequest(), ct);
+
+    /// <summary>
+    /// Lists the announced nodes of the gossip graph, or only <paramref name="nodeId"/> (ClientCommand 17).
+    /// </summary>
+    public Task<ListNodesIpcResponse> ListNodesAsync(CompactPubKey? nodeId, CancellationToken ct = default) =>
+        SendRequestAsync<ListNodesIpcRequest, ListNodesIpcResponse>(ClientCommand.ListNodes,
+                                                                     new ListNodesIpcRequest { NodeId = nodeId }, ct);
+
+    /// <summary>
+    /// Lists the channels of the gossip graph, optionally one short channel id and/or one node's (ClientCommand 18).
+    /// </summary>
+    public Task<ListGraphChannelsIpcResponse> ListGraphChannelsAsync(ulong? shortChannelId, CompactPubKey? nodeId,
+                                                                     CancellationToken ct = default) =>
+        SendRequestAsync<ListGraphChannelsIpcRequest, ListGraphChannelsIpcResponse>(
+            ClientCommand.ListGraphChannels,
+            new ListGraphChannelsIpcRequest { ShortChannelId = shortChannelId, NodeId = nodeId }, ct);
+
+    /// <summary>
+    /// The route a payment of <paramref name="amountMsat"/> to <paramref name="nodeId"/> would take now
+    /// (ClientCommand 19); nothing is sent.
+    /// </summary>
+    public Task<GetRouteIpcResponse> GetRouteAsync(CompactPubKey nodeId, ulong amountMsat, ulong? maxFeeMsat,
+                                                   ushort? finalCltvDelta, CancellationToken ct = default) =>
+        SendRequestAsync<GetRouteIpcRequest, GetRouteIpcResponse>(ClientCommand.GetRoute,
+                                                                  new GetRouteIpcRequest
+                                                                  {
+                                                                      NodeId = nodeId,
+                                                                      AmountMsat = amountMsat,
+                                                                      MaxFeeMsat = maxFeeMsat,
+                                                                      FinalCltvDelta = finalCltvDelta
+                                                                  }, ct);
+
+    /// <summary>
+    /// The gossip graph's state, with an optional page of channels and of nodes (ClientCommand 20).
+    /// </summary>
+    public Task<DescribeGraphIpcResponse> DescribeGraphAsync(bool includeChannels, bool includeNodes, int offset,
+                                                             int limit, CancellationToken ct = default) =>
+        SendRequestAsync<DescribeGraphIpcRequest, DescribeGraphIpcResponse>(ClientCommand.DescribeGraph,
+                                                                            new DescribeGraphIpcRequest
+                                                                            {
+                                                                                IncludeChannels = includeChannels,
+                                                                                IncludeNodes = includeNodes,
+                                                                                Offset = offset,
+                                                                                Limit = limit
+                                                                            }, ct);
+
+    /// <summary>
+    /// Lists a page of our invoices, newest first (ClientCommand 11).
+    /// </summary>
+    public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)
+    {
+        var req = new ListInvoicesIpcRequest { Skip = skip, Take = take };
+        return SendRequestAsync<ListInvoicesIpcRequest, ListInvoicesIpcResponse>(ClientCommand.ListInvoices, req, ct);
+    }
+
+    /// <summary>
+    /// Lists a page of our outgoing payments, newest first (ClientCommand 12).
+    /// </summary>
+    public Task<ListPaymentsIpcResponse> ListPaymentsAsync(int skip, int take, CancellationToken ct = default)
+    {
+        var req = new ListPaymentsIpcRequest { Skip = skip, Take = take };
+        return SendRequestAsync<ListPaymentsIpcRequest, ListPaymentsIpcResponse>(ClientCommand.ListPayments, req, ct);
+    }
+
+    /// <summary>
+    /// Parses the `getaddress` argument. With no argument, the <see cref="GetAddressIpcRequest"/> default is used.
+    /// </summary>
+    internal static AddressType ParseAddressType(string? addressTypeString)
+    {
+        if (string.IsNullOrWhiteSpace(addressTypeString))
+            return new GetAddressIpcRequest().AddressType;
+
+        return addressTypeString.ToLowerInvariant() switch
+        {
+            "p2tr" => AddressType.P2Tr,
+            "p2wpkh" => AddressType.P2Wpkh,
+            "all" => AddressType.P2Tr | AddressType.P2Wpkh,
+            _ => throw new ArgumentOutOfRangeException(nameof(addressTypeString), addressTypeString,
+                                                       "Address has to be `p2tr`, `p2wpkh`, or `all`.")
+        };
+    }
+
+    private async Task<TResponse> SendRequestAsync<TRequest, TResponse>(ClientCommand command, TRequest request,
+                                                                       CancellationToken ct)
+    {
+        var env = new IpcEnvelope
+        {
+            Version = 1,
+            Command = command,
+            CorrelationId = Guid.NewGuid(),
+            AuthToken = await GetAuthTokenAsync(ct),
+            Payload = MessagePackSerializer.Serialize(request, cancellationToken: ct),
+            Kind = IpcEnvelopeKind.Request
+        };
+
+        var respEnv = await SendAsync(env, ct);
+        if (respEnv.Kind != IpcEnvelopeKind.Error)
+            return MessagePackSerializer.Deserialize<TResponse>(respEnv.Payload, cancellationToken: ct);
 
         var err = MessagePackSerializer.Deserialize<IpcError>(respEnv.Payload, cancellationToken: ct);
         throw new InvalidOperationException($"IPC error {err.Code}: {err.Message}");

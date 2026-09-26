@@ -42,11 +42,18 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new AcceptChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(AcceptChannel2Payload),
                          new AcceptChannel2PayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(AnnouncementSignaturesPayload), new AnnouncementSignaturesPayloadSerializer());
+        _serializers.Add(typeof(ChannelAnnouncementPayload), new ChannelAnnouncementPayloadSerializer());
+        _serializers.Add(typeof(ChannelUpdatePayload), new ChannelUpdatePayloadSerializer());
+        _serializers.Add(typeof(NodeAnnouncementPayload), new NodeAnnouncementPayloadSerializer());
         _serializers.Add(typeof(ChannelReadyPayload), new ChannelReadyPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ChannelReestablishPayload),
                          new ChannelReestablishPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ClosingSignedPayload),
                          new ClosingSignedPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ClosingCompletePayload),
+                         new ClosingCompletePayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ClosingSigPayload), new ClosingSigPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(CommitmentSignedPayload),
                          new CommitmentSignedPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ErrorPayload), new ErrorPayloadSerializer(_valueObjectSerializerFactory));
@@ -54,11 +61,21 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new FundingCreatedPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(FundingSignedPayload),
                          new FundingSignedPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(GossipTimestampFilterPayload),
+                         new GossipTimestampFilterPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(InitPayload), new InitPayloadSerializer(_featureSetSerializer));
         _serializers.Add(typeof(OpenChannel1Payload), new OpenChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(OpenChannel2Payload), new OpenChannel2PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(PingPayload), new PingPayloadSerializer());
         _serializers.Add(typeof(PongPayload), new PongPayloadSerializer());
+        _serializers.Add(typeof(QueryChannelRangePayload),
+                         new QueryChannelRangePayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(QueryShortChannelIdsPayload),
+                         new QueryShortChannelIdsPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ReplyChannelRangePayload),
+                         new ReplyChannelRangePayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(ReplyShortChannelIdsEndPayload),
+                         new ReplyShortChannelIdsEndPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(RevokeAndAckPayload), new RevokeAndAckPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ShutdownPayload), new ShutdownPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(StfuPayload), new StfuPayloadSerializer(_valueObjectSerializerFactory));
@@ -91,6 +108,8 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.ChannelReady, typeof(ChannelReadyPayload));
         _messageTypeDictionary.Add(MessageTypes.ChannelReestablish, typeof(ChannelReestablishPayload));
         _messageTypeDictionary.Add(MessageTypes.ClosingSigned, typeof(ClosingSignedPayload));
+        _messageTypeDictionary.Add(MessageTypes.ClosingComplete, typeof(ClosingCompletePayload));
+        _messageTypeDictionary.Add(MessageTypes.ClosingSig, typeof(ClosingSigPayload));
         _messageTypeDictionary.Add(MessageTypes.CommitmentSigned, typeof(CommitmentSignedPayload));
         _messageTypeDictionary.Add(MessageTypes.Error, typeof(ErrorPayload));
         _messageTypeDictionary.Add(MessageTypes.FundingCreated, typeof(FundingCreatedPayload));
@@ -118,5 +137,16 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFee, typeof(UpdateFeePayload));
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcPayload));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(ErrorPayload));
+
+        // BOLT 7: gossip queries, announcements and channel_update are parsed
+        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsPayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndPayload));
+        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(QueryChannelRangePayload));
+        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(ReplyChannelRangePayload));
+        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipTimestampFilterPayload));
+        _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(ChannelUpdatePayload));
+        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementPayload));
+        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementPayload));
+        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(AnnouncementSignaturesPayload));
     }
 }

@@ -11,16 +11,19 @@ using Domain.Protocol.Messages;
 /// Service for managing the ping pong protocol.
 /// </summary>
 /// <remarks>
-/// This class is used to manage the ping pong protocol.
+/// At most one <c>ping</c> is outstanding at a time: the keep-alive loop (<see cref="StartPingAsync"/>) and an
+/// on-demand <see cref="PingAsync"/> (ping before <c>commitment_signed</c>, BOLT 2) share it, so a <c>pong</c> always
+/// answers the ping whose <c>num_pong_bytes</c> it is checked against.
 /// </remarks>
 internal class PingPongService : IPingPongService
 {
+    private readonly Lock _lock = new();
     private readonly IMessageFactory _messageFactory;
     private readonly NodeOptions _nodeOptions;
     private readonly Random _random = new();
 
-    private TaskCompletionSource<bool> _pongReceivedTaskSource = new();
-    private PingMessage _pingMessage;
+    private PingMessage _lastPing;
+    private TaskCompletionSource<bool>? _outstandingPong;
 
     /// <inheritdoc />
     public event EventHandler<IMessage>? OnPingMessageReady;
@@ -35,7 +38,7 @@ internal class PingPongService : IPingPongService
     {
         _messageFactory = messageFactory;
         _nodeOptions = nodeOptions.Value;
-        _pingMessage = messageFactory.CreatePingMessage();
+        _lastPing = messageFactory.CreatePingMessage();
     }
 
     /// <inheritdoc />
@@ -45,34 +48,61 @@ internal class PingPongService : IPingPongService
     /// </remarks>
     public async Task StartPingAsync(CancellationToken cancellationToken)
     {
-        // Send the first ping message
         while (!cancellationToken.IsCancellationRequested)
         {
-            OnPingMessageReady?.Invoke(this, _pingMessage);
+            var pongReceivedTask = SendOrJoinPing();
 
-            using var pongTimeoutTokenSource = CancellationTokenSource
-               .CreateLinkedTokenSource(cancellationToken,
-                                        new CancellationTokenSource(_nodeOptions.NetworkTimeout).Token);
-
-            var task = await Task.WhenAny(_pongReceivedTaskSource.Task, Task.Delay(-1, pongTimeoutTokenSource.Token));
-            if (task.IsFaulted)
+            // Wait for the pong or the network timeout. The timeout task is linked to the shutdown token, so check
+            // for shutdown first: only a timeout that is not a shutdown means the peer is unresponsive.
+            using (var timeoutTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                DisconnectEvent?
-                   .Invoke(this, new ConnectionException("Pong message not received within network timeout."));
+                var timeoutTask = Task.Delay(_nodeOptions.NetworkTimeout, timeoutTokenSource.Token);
+                var completedTask = await Task.WhenAny(pongReceivedTask, timeoutTask);
+                await timeoutTokenSource.CancelAsync();
+
+                if (cancellationToken.IsCancellationRequested)
+                    return;
+
+                if (completedTask != pongReceivedTask)
+                {
+                    DisconnectEvent?
+                       .Invoke(this, new ConnectionException("Pong message not received within network timeout."));
+                    return;
+                }
+            }
+
+            try
+            {
+                await Task.Delay(_random.Next(30_000, 300_000), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
                 return;
             }
-
-            if (task.IsCanceled)
-            {
-                continue;
-            }
-
-            // ReSharper disable once PossiblyMistakenUseOfCancellationToken
-            await Task.Delay(_random.Next(30_000, 300_000), cancellationToken);
-
-            _pongReceivedTaskSource = new TaskCompletionSource<bool>();
-            _pingMessage = _messageFactory.CreatePingMessage();
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Joins the ping already in flight, if any. BOLT 1 lets a node that gets no <c>pong</c> close the connection
+    /// (never fail the channels), so a timeout also raises <see cref="DisconnectEvent"/>, as the keep-alive loop does:
+    /// the channel_reestablish of the next connection then sends what was held back.
+    /// </remarks>
+    public async Task<bool> PingAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        var pongReceivedTask = SendOrJoinPing();
+
+        using var timeoutTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var completedTask = await Task.WhenAny(pongReceivedTask, Task.Delay(timeout, timeoutTokenSource.Token));
+        await timeoutTokenSource.CancelAsync();
+
+        if (completedTask == pongReceivedTask)
+            return true;
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        DisconnectEvent?.Invoke(this, new ConnectionException($"Pong message not received within {timeout}."));
+        return false;
     }
 
     /// <inheritdoc />
@@ -82,16 +112,53 @@ internal class PingPongService : IPingPongService
     /// </remarks>
     public void HandlePong(IMessage message)
     {
-        // if the pong message has a different length than the ping message, disconnect
-        if (message is not PongMessage pongMessage ||
-            pongMessage.Payload.BytesLength != _pingMessage.Payload.NumPongBytes)
+        TaskCompletionSource<bool>? answered;
+        lock (_lock)
+        {
+            // if the pong message has a different length than the ping message, disconnect
+            if (message is not PongMessage pongMessage ||
+                pongMessage.Payload.BytesLength != _lastPing.Payload.NumPongBytes)
+            {
+                answered = null;
+            }
+            else
+            {
+                answered = _outstandingPong ?? new TaskCompletionSource<bool>();
+                _outstandingPong = null;
+            }
+        }
+
+        if (answered is null)
         {
             DisconnectEvent?.Invoke(this, new Exception("Pong message has different length than ping message."));
             return;
         }
 
-        _pongReceivedTaskSource.TrySetResult(true);
+        answered.TrySetResult(true);
 
         OnPongReceived?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Sends a new ping unless one is outstanding, and returns the task of the pong that answers the outstanding one.
+    /// </summary>
+    private Task<bool> SendOrJoinPing()
+    {
+        PingMessage ping;
+        TaskCompletionSource<bool> pong;
+        lock (_lock)
+        {
+            if (_outstandingPong is not null)
+                return _outstandingPong.Task;
+
+            ping = _messageFactory.CreatePingMessage();
+            pong = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _lastPing = ping;
+            _outstandingPong = pong;
+        }
+
+        // Raised outside the lock: the handler sends it, and a pong may be handled before it returns
+        OnPingMessageReady?.Invoke(this, ping);
+        return pong.Task;
     }
 }

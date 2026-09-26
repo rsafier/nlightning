@@ -54,6 +54,14 @@ internal static partial class LibsodiumJsWrapper
 
     #endregion
 
+    #region Stream ChaCha20 IETF
+
+    // libsodium-wrappers-sumo: crypto_stream_chacha20_ietf_xor(message, nonce, key) -> Uint8Array (counter 0)
+    [JSImport("sodium.crypto_stream_chacha20_ietf_xor", ModuleName)]
+    internal static partial byte[] crypto_stream_chacha20_ietf_xor(byte[] message, byte[] nonce, byte[] key);
+
+    #endregion
+
     #region Random Bytes
 
     [JSImport("sodium.randombytes_buf", ModuleName)]

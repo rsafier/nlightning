@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Handlers;
 
+using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -14,12 +16,13 @@ using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
-using Domain.Node;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
+using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Protocol.Models;
 using Interfaces;
@@ -28,12 +31,15 @@ public sealed class OpenChannelClientHandler
     : IClientCommandHandler<OpenChannelClientRequest, OpenChannelClientResponse>
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IChannelManager _channelManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelFactory _channelFactory;
     private readonly ILogger<OpenChannelClientHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IPeerManager _peerManager;
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
+    private readonly GossipOptions _gossipOptions;
+    private readonly NodeOptions _nodeOptions;
 
     private ChannelId _channelId = ChannelId.Zero;
     private IPeerService? _peerService;
@@ -42,12 +48,17 @@ public sealed class OpenChannelClientHandler
     public ClientCommand Command => ClientCommand.OpenChannel;
 
     public OpenChannelClientHandler(IBlockchainMonitor blockchainMonitor, IChannelFactory channelFactory,
-                                    IChannelMemoryRepository channelMemoryRepository,
+                                    IChannelManager channelManager, IChannelMemoryRepository channelMemoryRepository,
                                     ILogger<OpenChannelClientHandler> logger, IMessageFactory messageFactory,
-                                    IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository)
+                                    IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository,
+                                    IOptions<GossipOptions>? gossipOptions = null,
+                                    IOptions<NodeOptions>? nodeOptions = null)
     {
+        _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
+        _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
         _blockchainMonitor = blockchainMonitor;
         _channelFactory = channelFactory;
+        _channelManager = channelManager;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
         _messageFactory = messageFactory;
@@ -60,6 +71,20 @@ public sealed class OpenChannelClientHandler
     {
         if (string.IsNullOrWhiteSpace(request.NodeInfo))
             throw new ClientException(ErrorCodes.InvalidAddress, "Address cannot be empty");
+
+        // NL-216: no new channel while the node does not follow the chain (it could not see the funding confirm)
+        if (_blockchainMonitor.IsChainProcessingHalted)
+            throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("openchannel"));
+
+        // BOLT 7 plan D12: public channels stay off on mainnet until the Docker proof of G1 passed
+        if (request.IsPublic && _nodeOptions.BitcoinNetwork == BitcoinNetwork.Mainnet
+                             && !_gossipOptions.AllowPublicChannelsOnMainnet)
+            throw new ClientException(ErrorCodes.InvalidOperation,
+                                      "Public channels are not enabled on mainnet yet "
+                                    + "(Gossip:AllowPublicChannelsOnMainnet)");
+
+        if (request.IsPublic && request.IsZeroConfChannel)
+            throw new ClientException(ErrorCodes.InvalidOperation, "A public channel can't be zero-conf");
 
         // Check if either a PeerAddressInfo or a CompactPubKey was provided
         var isPeerAddressInfo = request.NodeInfo.Contains('@') && request.NodeInfo.Contains(':');
@@ -98,41 +123,25 @@ public sealed class OpenChannelClientHandler
 
         try
         {
-            // Add the channel to dictionaries
-            _channelMemoryRepository.AddTemporaryChannel(peerId, channel);
-
-            // Create the channel type Tlv 
-            var channelTypeFeatureSet = FeatureSet.NewBasicChannelType();
-            if (peer.NegotiatedFeatures.OptionAnchors >= FeatureSupport.Optional)
-                channelTypeFeatureSet.SetFeature(Feature.OptionAnchors, true);
-
-            if (channel.ChannelConfig.UseScidAlias >= FeatureSupport.Optional)
-                channelTypeFeatureSet.SetFeature(Feature.OptionScidAlias, true);
-
-            if (channel.ChannelConfig.MinimumDepth == 0)
-                channelTypeFeatureSet.SetFeature(Feature.OptionZeroconf, true);
-
-            var featureSetBytes = channelTypeFeatureSet.GetBytes() ?? throw new ClientException(
-                                      ErrorCodes.InvalidOperation,
-                                      $"Error creating {nameof(ChannelTypeTlv)}. This should never happen.");
-            var channelTypeTlv = new ChannelTypeTlv(featureSetBytes);
+            // Create the channel type Tlv; accept_channel must echo exactly this type
+            var channelTypeTlv = new ChannelTypeTlv(channel.ChannelParams.ToChannelType());
 
             // Create UpfrontShutdownScriptTlv if needed
             var upfrontShutdownScriptTlv = channel.LocalUpfrontShutdownScript is not null
                                                ? new UpfrontShutdownScriptTlv(channel.LocalUpfrontShutdownScript.Value)
                                                : new UpfrontShutdownScriptTlv(Array.Empty<byte>());
 
-            // Create the ChannelFlags
-            var channelFlags = new ChannelFlags(ChannelFlag.None);
-            if (peer.NegotiatedFeatures.ScidAlias == FeatureSupport.Compulsory)
-                channelFlags = new ChannelFlags(ChannelFlag.AnnounceChannel);
+            // Create the ChannelFlags (NL-341): announce_channel for a public channel, whose channel type the factory
+            // built without option_scid_alias (BOLT 2 forbids the two together)
+            var channelFlags = new ChannelFlags(channel.AnnounceChannel ? ChannelFlag.AnnounceChannel
+                                                                        : ChannelFlag.None);
 
             // Create the openChannel message
+            // funding_satoshis is the whole channel; the pushed part is only the peer's opening balance
             var openChannel1Message = _messageFactory.CreateOpenChannel1Message(
-                channel.ChannelId, channel.LocalBalance, channel.LocalKeySet.FundingCompactPubKey,
-                channel.RemoteBalance, channel.ChannelConfig.ChannelReserveAmount,
-                channel.ChannelConfig.FeeRateAmountPerKw,
-                channel.ChannelConfig.MaxAcceptedHtlcs, channel.LocalKeySet.RevocationCompactBasepoint,
+                channel.ChannelId, request.FundingAmount, channel.LocalKeySet.FundingCompactPubKey,
+                channel.RemoteBalance, channel.ChannelParams.Local, channel.ChannelParams.FeeRateAmountPerKw,
+                channel.LocalKeySet.RevocationCompactBasepoint,
                 channel.LocalKeySet.PaymentCompactBasepoint, channel.LocalKeySet.DelayedPaymentCompactBasepoint,
                 channel.LocalKeySet.HtlcCompactBasepoint, channel.LocalKeySet.CurrentPerCommitmentCompactPoint,
                 channelFlags, channelTypeTlv, upfrontShutdownScriptTlv);
@@ -150,7 +159,8 @@ public sealed class OpenChannelClientHandler
                 _logger.LogInformation("Sending OpenChannel message to peer {peerId} for channel {channelId}",
                                        peerId,
                                        channel.ChannelId);
-            await _peerService.SendMessageAsync(openChannel1Message);
+            // Stores the temporary channel and queues open_channel on the peer's outbox, under the channel's lock
+            await _channelManager.StartOpeningChannelAsync(peerId, channel, openChannel1Message);
 
             return await tsc.Task;
         }

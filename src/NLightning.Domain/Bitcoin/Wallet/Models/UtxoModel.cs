@@ -15,6 +15,7 @@ public sealed class UtxoModel
     public bool IsAddressChange { get; private set; }
     public AddressType AddressType { get; private set; }
     public ChannelId? LockedToChannelId { get; set; }
+    public TxId? UsedInTransactionId { get; set; }
 
     public WalletAddressModel? WalletAddress { get; private set; }
 

@@ -6,9 +6,19 @@ namespace NLightning.Infrastructure.Protocol.Constants;
 internal static class ProtocolConstants
 {
     /// <summary>
-    /// Maximum size of the Noise protocol message in bytes.
+    /// Maximum size of a Lightning message (the plaintext of a BOLT 8 transport message) in bytes.
     /// </summary>
     public const int MaxMessageLength = 65535;
+
+    /// <summary>
+    /// Maximum size of an encrypted BOLT 8 message body (plaintext plus the 16-byte MAC) in bytes.
+    /// </summary>
+    public const int MaxEncryptedMessageLength = MaxMessageLength + 16;
+
+    /// <summary>
+    /// Maximum size of a full BOLT 8 packet (encrypted length header plus encrypted body): 2 + 16 + 65535 + 16.
+    /// </summary>
+    public const int MaxEncryptedPacketLength = MessageHeaderSize + MaxEncryptedMessageLength;
 
     /// <summary>
     /// The size of the Message Header.

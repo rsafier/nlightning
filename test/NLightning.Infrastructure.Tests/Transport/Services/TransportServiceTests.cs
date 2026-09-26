@@ -1,15 +1,20 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using NBitcoin;
-using NLightning.Domain.Serialization.Interfaces;
 using NLightning.Tests.Utils;
 using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Infrastructure.Tests.Transport.Services;
 
+using Domain.Crypto.ValueObjects;
+using Domain.Protocol.Interfaces;
+using Domain.Serialization.Interfaces;
 using Domain.Transport;
 using Exceptions;
+using Infrastructure.Protocol.Constants;
+using Infrastructure.Transport.Interfaces;
 using Infrastructure.Transport.Services;
 
 // ReSharper disable AccessToDisposedClosure
@@ -179,6 +184,437 @@ public class TransportServiceTests
         {
             tcpListener.Dispose();
             PortPoolUtil.ReleasePort(availablePort);
+        }
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsFrameInSmallTcpChunks_When_Reading_Then_MessageIsReceived()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, 2000).Select(i => (byte)i).ToArray();
+        var frame = FramingTransport.BuildFrame(payload, 0);
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        connection.Service.ExceptionRaised += (_, e) => received.TrySetException(e);
+        var peerStream = connection.Peer.GetStream();
+
+        // Act - header and body both arrive split across several TCP segments
+        foreach (var (start, end) in new[] { (0, 5), (5, 18), (18, 700), (700, frame.Length) })
+        {
+            await peerStream.WriteAsync(frame.AsMemory(start, end - start), TestContext.Current.CancellationToken);
+            await peerStream.FlushAsync(TestContext.Current.CancellationToken);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+        }
+
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
+    [Fact]
+    public async Task Given_ConcurrentSenders_When_WritingMessages_Then_FramesAreWrittenInEncryptionOrder()
+    {
+        // Arrange
+        var transport = new FramingTransport { HoldFirstWrite = true };
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(new byte[] { 1, 2, 3, 4 }).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(transport, serializerMock.Object);
+        var message = new Mock<IMessage>().Object;
+
+        // Act
+        var first = Task.Run(() => connection.Service.WriteMessageAsync(message),
+                             TestContext.Current.CancellationToken);
+        await transport.FirstWriteEntered.Task.WaitAsync(TimeSpan.FromSeconds(10),
+                                                         TestContext.Current.CancellationToken);
+        var second = Task.Run(() => connection.Service.WriteMessageAsync(message),
+                              TestContext.Current.CancellationToken);
+        await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        var peerStream = connection.Peer.GetStream();
+        var sequences = new List<int>();
+        for (var i = 0; i < 2; i++)
+        {
+            var header = new byte[ProtocolConstants.MessageHeaderSize];
+            await peerStream.ReadExactlyAsync(header, TestContext.Current.CancellationToken);
+            sequences.Add(BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(2, 4)));
+            var body = new byte[BinaryPrimitives.ReadUInt16BigEndian(header) + 16];
+            await peerStream.ReadExactlyAsync(body, TestContext.Current.CancellationToken);
+        }
+
+        // Assert
+        Assert.Equal([0, 1], sequences);
+    }
+
+    [Fact]
+    public async Task Given_MaximumSizeMessage_When_Writing_Then_FullFrameIsSent()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)i).ToArray();
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection =
+            await ConnectedTransportService.CreateAsync(new FramingTransport(), serializerMock.Object);
+
+        // Act
+        await connection.Service.WriteMessageAsync(new Mock<IMessage>().Object, TestContext.Current.CancellationToken);
+        var frame = new byte[ProtocolConstants.MessageHeaderSize + ProtocolConstants.MaxMessageLength + 16];
+        await connection.Peer.GetStream().ReadExactlyAsync(frame, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FramingTransport.BuildFrame(payload, 0), frame);
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsRightAfterHandshake_When_SubscribingLater_Then_MessageIsNotLost()
+    {
+        // Arrange - NL-239: the peer's init arrived before anyone listened, and the read loop dropped it
+        var payload = new byte[] { 0, 16, 0, 0, 0, 0 };
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        await connection.Peer.GetStream().WriteAsync(FramingTransport.BuildFrame(payload, 0),
+                                                     TestContext.Current.CancellationToken);
+        await Task.Delay(300, TestContext.Current.CancellationToken);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Act
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
+    [Fact]
+    public async Task Given_NoSubscriber_When_Disposing_Then_DoesNotWaitForAReadLoop()
+    {
+        // Arrange
+        var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                     new Mock<IMessageSerializer>().Object);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        // Act
+        connection.Dispose();
+
+        // Assert
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Dispose took {stopwatch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsWhileWeWrite_When_ReadLoopDrainsTheSocket_Then_NoWriteFails()
+    {
+        // Arrange - NL-240: a write checked "connected" with Poll + Available, which the read loop could drain in
+        // between, so a write on a live connection (e.g. our init) failed as "not connected"
+        const int count = 3000;
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(new byte[] { 0, 18 }).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object);
+        var receivedCount = 0;
+        var allReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, _) =>
+        {
+            if (Interlocked.Increment(ref receivedCount) == count)
+                allReceived.TrySetResult();
+        };
+        Exception? raised = null;
+        connection.Service.ExceptionRaised += (_, e) => raised = e;
+        var peerStream = connection.Peer.GetStream();
+        var frame = FramingTransport.BuildFrame(new byte[] { 0, 18 }, 0);
+
+        var peerWrites = Task.Run(async () =>
+        {
+            for (var i = 0; i < count; i++)
+            {
+                await peerStream.WriteAsync(frame, TestContext.Current.CancellationToken);
+                if (i % 16 == 0)
+                    await Task.Yield();
+            }
+        }, TestContext.Current.CancellationToken);
+        var peerReads = Task.Run(async () =>
+        {
+            var buffer = new byte[4096];
+            var expected = count * frame.Length;
+            var total = 0;
+            while (total < expected)
+            {
+                var read = await peerStream.ReadAsync(buffer, TestContext.Current.CancellationToken);
+                if (read == 0)
+                    break;
+                total += read;
+            }
+
+            return total;
+        }, TestContext.Current.CancellationToken);
+
+        // Act
+        var message = new Mock<IMessage>().Object;
+        for (var i = 0; i < count; i++)
+            await connection.Service.WriteMessageAsync(message, TestContext.Current.CancellationToken);
+
+        await peerWrites.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        await allReceived.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        var bytesRead = await peerReads.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Null(raised);
+        Assert.Equal(count * frame.Length, bytesRead);
+    }
+
+    [Fact]
+    public async Task Given_SocketReadableWithNothingAvailable_When_Writing_Then_TheWriteStillGoesOut()
+    {
+        // Arrange - NL-240, deterministic: the old write check (Poll readable + Available == 0 => "closed") failed a
+        // write on a live connection whenever the read loop drained the socket between the two calls. A peer that
+        // shut down its sending side leaves our socket in that same state for good (readable, nothing available),
+        // while it still reads what we send.
+        var payload = new byte[] { 0, 18, 0, 2, 0, 0 };
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object);
+        var peerStream = connection.Peer.GetStream();
+        connection.Peer.Client.Shutdown(SocketShutdown.Send);
+        var ourSocket = connection.Client.Client;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!(ourSocket.Poll(1, SelectMode.SelectRead) && ourSocket.Available == 0) && DateTime.UtcNow < deadline)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        Assert.True(ourSocket.Poll(1, SelectMode.SelectRead) && ourSocket.Available == 0,
+                    "the socket never looked closed to the probe");
+
+        // Act
+        await connection.Service.WriteMessageAsync(new Mock<IMessage>().Object, TestContext.Current.CancellationToken);
+        var frame = new byte[ProtocolConstants.MessageHeaderSize + payload.Length + 16];
+        await peerStream.ReadExactlyAsync(frame, TestContext.Current.CancellationToken).AsTask()
+                        .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FramingTransport.BuildFrame(payload, 0), frame);
+    }
+
+    [Fact]
+    public async Task Given_PeerSendsMaximumSizeMessage_When_Reading_Then_MessageIsReceived()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)(i * 7)).ToArray();
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           new Mock<IMessageSerializer>().Object);
+        var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        connection.Service.MessageReceived += (_, stream) => received.TrySetResult(stream.ToArray());
+        connection.Service.ExceptionRaised += (_, e) => received.TrySetException(e);
+
+        // Act
+        await connection.Peer.GetStream().WriteAsync(FramingTransport.BuildFrame(payload, 0),
+                                                     TestContext.Current.CancellationToken);
+        var result = await received.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(payload, result);
+    }
+
+    [Fact]
+    public async Task Given_WriteStalledOnFullSocket_When_CallerCancels_Then_FrameIsStillSentWhole()
+    {
+        // Arrange
+        var payload = Enumerable.Range(0, ProtocolConstants.MaxMessageLength).Select(i => (byte)(i * 3)).ToArray();
+        var serializerMock = new Mock<IMessageSerializer>();
+        serializerMock.Setup(x => x.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
+                      .Returns((IMessage _, Stream stream) => stream.WriteAsync(payload).AsTask());
+        using var connection = await ConnectedTransportService.CreateAsync(new FramingTransport(),
+                                                                           serializerMock.Object, 4096);
+        var message = new Mock<IMessage>().Object;
+
+        // Fill the socket buffers (the peer is not reading) until a write stalls
+        using var callerCts = new CancellationTokenSource();
+        Task? stalledWrite = null;
+        var framesWritten = 0;
+        for (var i = 0; i < 200 && stalledWrite is null; i++)
+        {
+            var write = connection.Service.WriteMessageAsync(message, callerCts.Token);
+            framesWritten++;
+            if (await Task.WhenAny(write, Task.Delay(1000, TestContext.Current.CancellationToken)) != write)
+                stalledWrite = write;
+            else
+                await write;
+        }
+
+        Assert.NotNull(stalledWrite);
+
+        // Act - the caller gives up after the frame's nonces have been spent
+        await callerCts.CancelAsync();
+        await Task.Delay(500, TestContext.Current.CancellationToken);
+        var completedEarly = stalledWrite.IsCompleted;
+
+        var peerStream = connection.Peer.GetStream();
+        var drain = Task.Run(async () =>
+        {
+            var sequences = new List<int>();
+            for (var i = 0; i < framesWritten + 1; i++)
+            {
+                var header = new byte[ProtocolConstants.MessageHeaderSize];
+                await peerStream.ReadExactlyAsync(header, TestContext.Current.CancellationToken);
+                sequences.Add(BinaryPrimitives.ReadInt32BigEndian(header.AsSpan(2, 4)));
+                var body = new byte[BinaryPrimitives.ReadUInt16BigEndian(header) + 16];
+                await peerStream.ReadExactlyAsync(body, TestContext.Current.CancellationToken);
+                Assert.Equal(payload, body[..^16]);
+            }
+
+            return sequences;
+        }, TestContext.Current.CancellationToken);
+
+        await stalledWrite.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await connection.Service.WriteMessageAsync(message, TestContext.Current.CancellationToken);
+        var received = await drain.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        // Assert - the cancelled frame was not cut short and the next frame follows it in nonce order
+        Assert.False(completedEarly);
+        Assert.Equal(Enumerable.Range(0, framesWritten + 1), received);
+    }
+
+    /// <summary>
+    /// Plaintext BOLT 8-shaped framing: header = 2-byte length, 4-byte sequence number, 12 zero bytes;
+    /// body = payload followed by a 16-byte zero "MAC". The sequence number stands in for the nonce.
+    /// </summary>
+    private sealed class FramingTransport : ITransport
+    {
+        private readonly ManualResetEventSlim _secondWriteEntered = new();
+        private int _nextSequence;
+
+        public bool HoldFirstWrite { get; init; }
+
+        public TaskCompletionSource FirstWriteEntered { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public static byte[] BuildFrame(ReadOnlySpan<byte> payload, int sequence)
+        {
+            var frame = new byte[ProtocolConstants.MessageHeaderSize + payload.Length + 16];
+            BinaryPrimitives.WriteUInt16BigEndian(frame, (ushort)payload.Length);
+            BinaryPrimitives.WriteInt32BigEndian(frame.AsSpan(2), sequence);
+            payload.CopyTo(frame.AsSpan(ProtocolConstants.MessageHeaderSize));
+            return frame;
+        }
+
+        public int WriteMessage(ReadOnlySpan<byte> payload, Span<byte> messageBuffer)
+        {
+            var sequence = Interlocked.Increment(ref _nextSequence) - 1;
+            if (HoldFirstWrite)
+            {
+                if (sequence == 0)
+                {
+                    // Give a concurrent sender the chance to encrypt (and write) before this one finishes
+                    FirstWriteEntered.TrySetResult();
+                    if (_secondWriteEntered.Wait(TimeSpan.FromMilliseconds(500)))
+                        Thread.Sleep(200);
+                }
+                else
+                {
+                    _secondWriteEntered.Set();
+                }
+            }
+
+            var frame = BuildFrame(payload, sequence);
+            if (frame.Length > messageBuffer.Length)
+                throw new ArgumentException("Message buffer does not have enough space to hold the ciphertext.");
+
+            frame.CopyTo(messageBuffer);
+            return frame.Length;
+        }
+
+        public int ReadMessageLength(ReadOnlySpan<byte> lc) => BinaryPrimitives.ReadUInt16BigEndian(lc) + 16;
+
+        public int ReadMessagePayload(ReadOnlySpan<byte> message, Span<byte> payloadBuffer)
+        {
+            message[..^16].CopyTo(payloadBuffer);
+            return message.Length - 16;
+        }
+
+        public void Dispose()
+        {
+            _secondWriteEntered.Dispose();
+        }
+    }
+
+    private sealed class ScriptedHandshakeService(ITransport transport) : IHandshakeService
+    {
+        private int _step;
+
+        public bool IsInitiator => true;
+        public CompactPubKey? RemoteStaticPublicKey { get; } = new Key().PubKey.ToBytes();
+
+        public int PerformStep(ReadOnlySpan<byte> inMessage, Span<byte> outMessage, out ITransport? outTransport)
+        {
+            _step++;
+            outTransport = _step == 2 ? transport : null;
+            return _step == 1 ? 50 : 66;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ConnectedTransportService : IDisposable
+    {
+        private readonly TcpListener _listener;
+
+        public TransportService Service { get; }
+        public TcpClient Peer { get; }
+
+        /// <summary>Our end of the connection (owned by <see cref="Service"/>).</summary>
+        public TcpClient Client { get; }
+
+        private ConnectedTransportService(TcpListener listener, TransportService service, TcpClient peer,
+                                          TcpClient client)
+        {
+            _listener = listener;
+            Service = service;
+            Peer = peer;
+            Client = client;
+        }
+
+        public static async Task<ConnectedTransportService> CreateAsync(ITransport transport,
+                                                                        IMessageSerializer serializer,
+                                                                        int? socketBufferSize = null)
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            if (socketBufferSize is not null)
+                listener.Server.ReceiveBufferSize = socketBufferSize.Value;
+            listener.Start();
+
+            var acceptTask = Task.Run(async () =>
+            {
+                var peer = await listener.AcceptTcpClientAsync();
+                peer.NoDelay = true;
+                var stream = peer.GetStream();
+                var buffer = new byte[66];
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, 50));
+                await stream.WriteAsync(buffer.AsMemory(0, 50));
+                await stream.ReadExactlyAsync(buffer.AsMemory(0, 66));
+                return peer;
+            });
+
+            var client = new TcpClient();
+            if (socketBufferSize is not null)
+                client.SendBufferSize = socketBufferSize.Value;
+            await client.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
+            var service = new TransportService(new Mock<ILogger>().Object, serializer, TimeSpan.FromSeconds(30),
+                                               new ScriptedHandshakeService(transport), client);
+            await service.InitializeAsync();
+
+            return new ConnectedTransportService(listener, service, await acceptTask, client);
+        }
+
+        public void Dispose()
+        {
+            Service.Dispose();
+            Peer.Dispose();
+            _listener.Dispose();
         }
     }
 }

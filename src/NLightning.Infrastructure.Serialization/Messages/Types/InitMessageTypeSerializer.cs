@@ -7,12 +7,19 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
+using Domain.Protocol.ValueObjects;
 using Domain.Serialization.Interfaces;
 using Exceptions;
 using Interfaces;
 
 public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
 {
+    /// <summary>
+    /// The <c>init_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// </summary>
+    private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
+        new HashSet<BigSize> { TlvConstants.Networks, TlvConstants.RemoteAddress };
+
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
     private readonly ITlvStreamSerializer _tlvStreamSerializer;
@@ -59,8 +66,8 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
             if (stream.Position >= stream.Length)
                 return new InitMessage(payload);
 
-            var extension = await _tlvStreamSerializer.DeserializeAsync(stream);
-            if (extension is null)
+            var extension = await _tlvStreamSerializer.DeserializeStrictAsync(stream, s_knownExtensionTypes);
+            if (!extension.Any())
                 return new InitMessage(payload);
 
             NetworksTlv? networksTlv = null;
@@ -73,15 +80,28 @@ public class InitMessageTypeSerializer : IMessageTypeSerializer<InitMessage>
             }
 
             RemoteAddressTlv? remoteAddressTlv = null;
+            byte[]? undecodableRemoteAddress = null;
             if (extension.TryGetTlv(TlvConstants.RemoteAddress, out var baseRemoteAddressTlv))
             {
                 var tlvConverter = _tlvConverterFactory.GetConverter<RemoteAddressTlv>()
                                 ?? throw new SerializationException(
                                        $"No serializer found for tlv type {nameof(RemoteAddressTlv)}");
-                remoteAddressTlv = tlvConverter.ConvertFromBase(baseRemoteAddressTlv!);
+                try
+                {
+                    remoteAddressTlv = tlvConverter.ConvertFromBase(baseRemoteAddressTlv!);
+                }
+                catch (Exception e) when (e is InvalidCastException or ArgumentException)
+                {
+                    // remote_addr is odd and advisory (BOLT 1): an address we cannot decode must not fail the init
+                    // (NL-344). The receiver logs and drops it.
+                    undecodableRemoteAddress = baseRemoteAddressTlv!.Value;
+                }
             }
 
-            return new InitMessage(payload, networksTlv, remoteAddressTlv);
+            return new InitMessage(payload, networksTlv, remoteAddressTlv)
+            {
+                UndecodableRemoteAddress = undecodableRemoteAddress
+            };
         }
         catch (SerializationException e)
         {

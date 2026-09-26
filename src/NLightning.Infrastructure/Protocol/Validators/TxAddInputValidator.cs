@@ -5,9 +5,11 @@ using Domain.Protocol.Payloads;
 
 public static class TxAddInputValidator
 {
-    public static async void Validate(bool isInitiator, TxAddInputPayload input, int currentInputCount, Func<byte[], Task<bool>> isValidPrevTx, Func<byte[], uint, bool> isUniqueInput, Func<ulong, bool> isSerialIdUnique)
+    /// <param name="isSenderInitiator">Whether the node that sent the message is the negotiation initiator.</param>
+    public static async Task ValidateAsync(bool isSenderInitiator, TxAddInputPayload input, int currentInputCount, Func<byte[], Task<bool>> isValidPrevTx, Func<byte[], uint, bool> isUniqueInput, Func<ulong, bool> isSerialIdUnique)
     {
-        if (isInitiator && (input.SerialId & 1) != 0) // Ensure even serial_id for initiator
+        // BOLT 2: the initiator sends even serial_ids, the non-initiator sends odd ones
+        if ((input.SerialId & 1) != (isSenderInitiator ? 0UL : 1UL))
         {
             throw new InvalidOperationException("SerialId has the wrong parity.");
         }

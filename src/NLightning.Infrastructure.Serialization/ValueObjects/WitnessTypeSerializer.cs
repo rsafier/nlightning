@@ -32,8 +32,9 @@ public class WitnessTypeSerializer : IValueObjectTypeSerializer<Witness>
     /// </summary>
     /// <param name="stream">The stream from which the Witness value will be deserialized.</param>
     /// <returns>A task that represents the asynchronous deserialization operation, containing the deserialized Witness value.</returns>
-    /// <exception cref="ArgumentException">Thrown when the stream is empty or contains insufficient data for deserialization.</exception>
-    /// <exception cref="IOException">Thrown when an I/O error occurs during the read operation.</exception>
+    /// <exception cref="SerializationException">
+    /// Thrown when the stream is empty, or the witness length exceeds the bytes remaining in a seekable stream.
+    /// </exception>
     public async Task<Witness> DeserializeAsync(Stream stream)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(sizeof(ushort));
@@ -43,9 +44,11 @@ public class WitnessTypeSerializer : IValueObjectTypeSerializer<Witness>
             await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(ushort)]);
             var len = EndianBitConverter.ToUInt16BigEndian(buffer[..sizeof(ushort)]);
 
-            // if (length > CryptoConstants.MAX_SIGNATURE_SIZE)
-            //     throw new SerializationException(
-            //         $"Witness length {length} exceeds maximum size of {CryptoConstants.MAX_SIGNATURE_SIZE} bytes.");
+            // witness_data is a full serialized witness stack, so it is bounded only by its u16 length and by the
+            // bytes left in the message. Reject an oversized length before allocating.
+            if (stream.CanSeek && len > stream.Length - stream.Position)
+                throw new SerializationException(
+                    $"Witness length {len} exceeds the {stream.Length - stream.Position} bytes remaining in the stream.");
 
             var witnessBytes = new byte[len];
             await stream.ReadExactlyAsync(witnessBytes);

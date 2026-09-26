@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace NLightning.Domain.Crypto.ValueObjects;
 
 using Constants;
@@ -10,9 +12,10 @@ public readonly struct Secret : IEquatable<Secret>
 
     public Secret(byte[] value)
     {
-        if (value.Length < CryptoConstants.SecretLen)
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Length != CryptoConstants.SecretLen)
             throw new ArgumentOutOfRangeException(nameof(value), value.Length,
-                                                  $"Hash must have {CryptoConstants.SecretLen} bytes.");
+                                                  $"Secret must have {CryptoConstants.SecretLen} bytes.");
 
         _value = value;
     }
@@ -23,9 +26,17 @@ public readonly struct Secret : IEquatable<Secret>
     public static implicit operator ReadOnlyMemory<byte>(Secret hash) => hash._value;
     public static implicit operator ReadOnlySpan<byte>(Secret hash) => hash._value;
 
+    /// <summary>
+    /// Compares the secrets in constant time.
+    /// </summary>
     public bool Equals(Secret other)
     {
-        return _value.SequenceEqual(other._value);
+        // ReSharper disable ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+        if (_value is null || other._value is null)
+            return _value is null && other._value is null;
+        // ReSharper restore ConditionIsAlwaysTrueOrFalseAccordingToNullableAPIContract
+
+        return CryptographicOperations.FixedTimeEquals(_value, other._value);
     }
 
     public override bool Equals(object? obj)
@@ -36,5 +47,15 @@ public readonly struct Secret : IEquatable<Secret>
     public override int GetHashCode()
     {
         return _value.GetByteArrayHashCode();
+    }
+
+    public static bool operator ==(Secret left, Secret right)
+    {
+        return left.Equals(right);
+    }
+
+    public static bool operator !=(Secret left, Secret right)
+    {
+        return !left.Equals(right);
     }
 }

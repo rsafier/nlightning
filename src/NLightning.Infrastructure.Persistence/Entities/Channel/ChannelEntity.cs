@@ -70,6 +70,20 @@ public class ChannelEntity
     public required ulong RemoteRevocationNumber { get; set; }
 
     /// <summary>
+    /// The number of our current commitment (the one the peer signed for us).
+    /// </summary>
+    /// <remarks>
+    /// Persisted on its own: it runs one ahead of <see cref="LocalRevocationNumber"/> between receiving a
+    /// commitment_signed and sending the revoke_and_ack for the previous commitment.
+    /// </remarks>
+    public required ulong LocalCommitmentNumber { get; set; }
+
+    /// <summary>
+    /// The number of the peer's current commitment (the one we signed for them).
+    /// </summary>
+    public required ulong RemoteCommitmentNumber { get; set; }
+
+    /// <summary>
     /// The last signature sent to the remote node, stored as a byte array.
     /// </summary>
     public byte[]? LastSentSignature { get; set; }
@@ -91,14 +105,97 @@ public class ChannelEntity
     public required byte Version { get; set; }
 
     /// <summary>
-    /// The current balance of the local node in satoshis.
+    /// The current (gross) balance of the local node in millisatoshis (NL-191: whole satoshis lost the msat part).
     /// </summary>
-    public required decimal LocalBalanceSatoshis { get; set; }
+    public required long LocalBalanceMsat { get; set; }
 
     /// <summary>
-    /// The current balance of the remote node in satoshis.
+    /// The current (gross) balance of the remote node in millisatoshis.
     /// </summary>
-    public required decimal RemoteBalanceSatoshis { get; set; }
+    public required long RemoteBalanceMsat { get; set; }
+
+    /// <summary>
+    /// The real short channel id (block height, tx index, output index of the funding output), once the funding
+    /// transaction is confirmed (NL-225).
+    /// </summary>
+    public ShortChannelId? ShortChannelId { get; set; }
+
+    /// <summary>
+    /// The scid alias the peer asked us to use for this channel (BOLT 2 channel_ready short_channel_id TLV), if any.
+    /// </summary>
+    public ShortChannelId? RemoteAlias { get; set; }
+
+    /// <summary>
+    /// The peer's per-commitment point for its next commitment (<c>RemoteCommitmentNumber + 1</c>), from
+    /// <c>channel_ready</c> or the last <c>revoke_and_ack</c> (NL-232). The point of its current commitment is on the
+    /// remote current <see cref="CommitmentEntity"/>.
+    /// </summary>
+    public CompactPubKey? RemoteNextPerCommitmentPoint { get; set; }
+
+    /// <summary>
+    /// The wire bytes of the updates and <c>commitment_signed</c> we sent last, kept until the peer revokes and
+    /// retransmitted verbatim on reestablish (plan decision D4).
+    /// </summary>
+    public byte[]? SentCommitDiff { get; set; }
+
+    /// <summary>
+    /// <c>LastSentCommitmentMessage</c>: which of <c>commitment_signed</c>/<c>revoke_and_ack</c> we sent last.
+    /// </summary>
+    public byte LastSentOrder { get; set; }
+
+    /// <summary>
+    /// The <c>error</c> message we sent when we failed the channel (re-sent on reconnection).
+    /// </summary>
+    public byte[]? ErrorSent { get; set; }
+
+    /// <summary>
+    /// True once <c>channel_reestablish</c> proved that we lost data: never sign or broadcast our commitment again.
+    /// </summary>
+    public bool DataLossDetected { get; set; }
+
+    /// <summary>
+    /// The <c>max_dust_htlc_exposure_msat</c> policy the commitment snapshot runs under (<c>CommitmentParams</c>), or
+    /// null when the check is off. Written with the snapshot by <c>ChannelStateDbRepository</c> and passed back on
+    /// reload (NL-242).
+    /// </summary>
+    public ulong? MaxDustHtlcExposureMsat { get; set; }
+
+    /// <summary>
+    /// The first revoked peer commitment number the revocation log (<see cref="RevokedCommitmentEntity"/>) covers, or
+    /// null when it covers every one (channels created after migration <c>AddOnchainResolution</c>). The migration sets
+    /// it to <c>RemoteCommitmentNumber</c> for channels that already had revoked commitments, whose HTLC sets were not
+    /// kept (BOLT 5 plan §8 risk 5). Never written by <c>ChannelDbRepository.UpdateAsync</c>.
+    /// </summary>
+    public ulong? RevocationLogFromNumber { get; set; }
+
+    /// <summary>
+    /// The script of the <c>shutdown</c> we sent (persisted before it is sent, re-sent on reconnection), or null
+    /// (migration <c>AddShutdownState</c>, BOLT2 plan N10).
+    /// </summary>
+    public byte[]? LocalShutdownScript { get; set; }
+
+    /// <summary>The script of the peer's <c>shutdown</c>, or null.</summary>
+    public byte[]? RemoteShutdownScript { get; set; }
+
+    /// <summary>The txid of the agreed mutual close transaction, or null.</summary>
+    public TxId? ClosingTxId { get; set; }
+
+    /// <summary>The fully signed mutual close transaction (persisted before it is broadcast), or null.</summary>
+    public byte[]? ClosingTransaction { get; set; }
+
+    /// <summary>
+    /// The peer's <c>announcement_signatures</c> node signature for the channel's current short channel id, or null
+    /// (migration <c>AddGossipGraph</c>, BOLT 7 plan G1).
+    /// </summary>
+    public byte[]? RemoteAnnouncementNodeSig { get; set; }
+
+    /// <summary>The peer's <c>announcement_signatures</c> bitcoin signature, or null (with the node signature).</summary>
+    public byte[]? RemoteAnnouncementBitcoinSig { get; set; }
+
+    /// <summary>
+    /// When we sent our <c>announcement_signatures</c>, UTC ticks (<c>UtcTicksConverter</c>), or null while we have not.
+    /// </summary>
+    public DateTimeOffset? LocalAnnouncementSigsSentAt { get; set; }
 
     public AddressType? ChangeAddressType { get; set; }
     public uint? ChangeAddressIndex { get; set; }
@@ -125,6 +222,11 @@ public class ChannelEntity
     /// Each HTLC represents a conditional payment in the channel.
     /// </summary>
     public virtual ICollection<HtlcEntity>? Htlcs { get; set; }
+
+    /// <summary>
+    /// The scid aliases we generated for this channel and sent to the peer in channel_ready.
+    /// </summary>
+    public virtual ICollection<ChannelLocalAliasEntity>? LocalAliases { get; set; }
 
     /// <summary>
     /// A collection of transactions that are monitored for a specific channel,

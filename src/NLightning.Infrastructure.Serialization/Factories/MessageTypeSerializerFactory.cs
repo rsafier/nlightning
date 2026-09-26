@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Serialization.Factories;
 
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
 using Interfaces;
 using Messages.Types;
 
@@ -59,8 +60,13 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(ClosingSignedMessage),
                          new ClosingSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
                                                                 _tlvStreamSerializer));
+        _serializers.Add(typeof(ClosingCompleteMessage),
+                         new ClosingCompleteMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(ClosingSigMessage),
+                         new ClosingSigMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(CommitmentSignedMessage),
-                         new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory));
+                         new CommitmentSignedMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                   _tlvStreamSerializer));
         _serializers.Add(typeof(ErrorMessage), new ErrorMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(FundingCreatedMessage),
                          new FundingCreatedMessageTypeSerializer(_payloadSerializerFactory));
@@ -102,13 +108,44 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                          new UpdateAddHtlcMessageTypeSerializer(_payloadSerializerFactory,
                                                                 _tlvConverterFactory, _tlvStreamSerializer));
         _serializers.Add(typeof(UpdateFailHtlcMessage),
-                         new UpdateFailHtlcMessageTypeSerializer(_payloadSerializerFactory));
+                         new UpdateFailHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                 _tlvStreamSerializer));
         _serializers.Add(typeof(UpdateFailMalformedHtlcMessage),
                          new UpdateFailMalformedHtlcMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(UpdateFeeMessage), new UpdateFeeMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(UpdateFulfillHtlcMessage),
-                         new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory));
+                         new UpdateFulfillHtlcMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                                    _tlvStreamSerializer));
         _serializers.Add(typeof(WarningMessage), new WarningMessageTypeSerializer(_payloadSerializerFactory));
+
+        // BOLT 7 gossip queries are parsed so the node can answer them
+        _serializers.Add(typeof(QueryShortChannelIdsMessage),
+                         new QueryShortChannelIdsMessageTypeSerializer(_payloadSerializerFactory,
+                                                                       _tlvStreamSerializer));
+        _serializers.Add(typeof(ReplyShortChannelIdsEndMessage),
+                         new ReplyShortChannelIdsEndMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(QueryChannelRangeMessage),
+                         new QueryChannelRangeMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(ReplyChannelRangeMessage),
+                         new ReplyChannelRangeMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(GossipTimestampFilterMessage),
+                         new GossipTimestampFilterMessageTypeSerializer(_payloadSerializerFactory));
+
+        // channel_update is parsed: it is exchanged directly with channel peers and embedded in BOLT 4 UPDATE failures
+        _serializers.Add(typeof(ChannelUpdateMessage),
+                         new ChannelUpdateMessageTypeSerializer(_payloadSerializerFactory));
+
+        // BOLT 7 announcements: the Domain payload is the codec (plan D1); announcement_signatures is a channel message
+        _serializers.Add(typeof(ChannelAnnouncementMessage),
+                         new GossipAnnouncementMessageTypeSerializer<ChannelAnnouncementMessage,
+                             ChannelAnnouncementPayload>(_payloadSerializerFactory,
+                                                         p => new ChannelAnnouncementMessage(p)));
+        _serializers.Add(typeof(NodeAnnouncementMessage),
+                         new GossipAnnouncementMessageTypeSerializer<NodeAnnouncementMessage, NodeAnnouncementPayload>(
+                             _payloadSerializerFactory, p => new NodeAnnouncementMessage(p)));
+        _serializers.Add(typeof(AnnouncementSignaturesMessage),
+                         new AnnouncementSignaturesMessageTypeSerializer(_payloadSerializerFactory,
+                                                                         _tlvStreamSerializer));
     }
 
     private void RegisterTypeDictionary()
@@ -118,6 +155,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.ChannelReady, typeof(ChannelReadyMessage));
         _messageTypeDictionary.Add(MessageTypes.ChannelReestablish, typeof(ChannelReestablishMessage));
         _messageTypeDictionary.Add(MessageTypes.ClosingSigned, typeof(ClosingSignedMessage));
+        _messageTypeDictionary.Add(MessageTypes.ClosingComplete, typeof(ClosingCompleteMessage));
+        _messageTypeDictionary.Add(MessageTypes.ClosingSig, typeof(ClosingSigMessage));
         _messageTypeDictionary.Add(MessageTypes.CommitmentSigned, typeof(CommitmentSignedMessage));
         _messageTypeDictionary.Add(MessageTypes.Error, typeof(ErrorMessage));
         _messageTypeDictionary.Add(MessageTypes.FundingCreated, typeof(FundingCreatedMessage));
@@ -145,5 +184,15 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFee, typeof(UpdateFeeMessage));
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcMessage));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(WarningMessage));
+
+        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementMessage));
+        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementMessage));
+        _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(ChannelUpdateMessage));
+        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(AnnouncementSignaturesMessage));
+        _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsMessage));
+        _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndMessage));
+        _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(QueryChannelRangeMessage));
+        _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(ReplyChannelRangeMessage));
+        _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipTimestampFilterMessage));
     }
 }

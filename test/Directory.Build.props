@@ -1,0 +1,29 @@
+<Project>
+
+  <!--
+    Test projects target what src/Directory.Build.props targets (keep the two in sync): net10.0 always, plus net11.0
+    when the SDK building is 11 or newer (-p:NltgTargetNet11=false or -f net10.0 builds net10.0 only). The SDK version
+    comes from the directory MSBuild runs from (<dotnet>/sdk/<version>), because NETCoreSdkVersion is not set yet here.
+    The Blazor projects (Release.Wasm, CI only) set their own TargetFramework and stay single-target.
+  -->
+  <PropertyGroup>
+    <LangVersion>14</LangVersion>
+    <NltgSdkVersion>$([System.IO.Path]::GetFileName($([System.IO.Path]::GetDirectoryName($([MSBuild]::EnsureTrailingSlash('$(MSBuildBinPath)'))))))</NltgSdkVersion>
+    <NltgTargetNet11 Condition="'$(NltgTargetNet11)' == '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(NltgSdkVersion)', '^\d+\.\d+\.\d+'))">$([MSBuild]::VersionGreaterThanOrEquals('$(NltgSdkVersion)', '11.0'))</NltgTargetNet11>
+    <NltgMultiTarget Condition="'$(NltgTargetNet11)' == 'true' and !$(MSBuildProjectDirectory.Contains('BlazorTests'))">true</NltgMultiTarget>
+    <!-- Only one of the two may be set: the SDK multi-targets only when TargetFramework is empty. -->
+    <TargetFrameworks Condition="'$(NltgMultiTarget)' == 'true'">net10.0;net11.0</TargetFrameworks>
+    <TargetFramework Condition="'$(NltgMultiTarget)' != 'true'">net10.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      NL-170: SharpCompress 0.41.0 (GHSA-6c8g-7p36-r338) comes in only through LNUnit (test tooling, Tests.Utils).
+      LNUnit 3.0.5 still pins 0.41.0 and calls ReaderFactory.Open/WriterFactory.Open, which SharpCompress removed
+      in the first patched release (0.48.0), so pinning a patched version breaks the Docker fixtures at runtime.
+      Drop this suppression once LNUnit ships with a patched SharpCompress.
+    -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-6c8g-7p36-r338"/>
+  </ItemGroup>
+
+</Project>

@@ -5,36 +5,56 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Services;
 
+using Application.Channels.Fees;
+using Application.Channels.Safety.Interfaces;
+using Application.Onchain.Mempool;
+using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 public class NltgDaemonService : BackgroundService
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IChannelFailureService _channelFailureService;
     private readonly IConfiguration _configuration;
     private readonly IFeeService _feeService;
+    private readonly IFeeUpdateScheduler _feeUpdateScheduler;
+    private readonly IHtlcExpiryMonitor _htlcExpiryMonitor;
     private readonly ILogger<NltgDaemonService> _logger;
+    private readonly IMempoolReactor _mempoolReactor;
     private readonly INamedPipeIpcService _namedPipeIpcService;
+    private readonly OnionReplayBlockPruner _onionReplayBlockPruner;
     private readonly IPeerManager _peerManager;
     private readonly NodeOptions _nodeOptions;
+    private readonly IPaymentOutcomeHandler _paymentOutcomeHandler;
     private readonly ISecureKeyManager _secureKeyManager;
 
-    public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IConfiguration configuration, IFeeService feeService,
+    public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
+                             IConfiguration configuration, IFeeService feeService,
+                             IFeeUpdateScheduler feeUpdateScheduler, IHtlcExpiryMonitor htlcExpiryMonitor,
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
-                             IOptions<NodeOptions> nodeOptions, IPeerManager peerManager,
-                             ISecureKeyManager secureKeyManager)
+                             OnionReplayBlockPruner onionReplayBlockPruner, IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
+                             IPeerManager peerManager, ISecureKeyManager secureKeyManager,
+                             IMempoolReactor mempoolReactor)
     {
+        _mempoolReactor = mempoolReactor;
         _blockchainMonitor = blockchainMonitor;
+        _channelFailureService = channelFailureService;
         _configuration = configuration;
         _feeService = feeService;
+        _feeUpdateScheduler = feeUpdateScheduler;
+        _htlcExpiryMonitor = htlcExpiryMonitor;
         _logger = logger;
         _namedPipeIpcService = namedPipeIpcService;
+        _onionReplayBlockPruner = onionReplayBlockPruner;
         _peerManager = peerManager;
         _nodeOptions = nodeOptions.Value;
+        _paymentOutcomeHandler = paymentOutcomeHandler;
         _secureKeyManager = secureKeyManager;
     }
 
@@ -64,8 +84,23 @@ public class NltgDaemonService : BackgroundService
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
 
+            // Every stored channel is in memory now: settle the payments a crash left without an HTLC id (W2-C)
+            await _paymentOutcomeHandler.ReconcileInFlightPaymentsAsync(stoppingToken);
+
+            // Channel safety (N9): fail-the-channel broadcasts (and their resumption), the HTLC deadline monitor and
+            // the update_fee rounds of the channels we fund
+            _channelFailureService.Start();
+            _htlcExpiryMonitor.Start();
+            await _feeUpdateScheduler.StartAsync(stoppingToken);
+
+            // BOLT 5 O8: react to unconfirmed spends of our outputs (subscribed before the monitor's mempool loop runs)
+            _mempoolReactor.Start();
+
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
+
+            // Prune the onion replay set on every block (NL-327)
+            _onionReplayBlockPruner.Start();
 
             // Start the IPC server
             await _namedPipeIpcService.StartAsync(stoppingToken);
@@ -82,6 +117,13 @@ public class NltgDaemonService : BackgroundService
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("NLTG shutdown requested");
+
+        // The safety services and the fee rounds stop before the chain monitor and the peers they use
+        await Task.WhenAll(_htlcExpiryMonitor.StopAsync(), _feeUpdateScheduler.StopAsync());
+        _channelFailureService.Stop();
+
+        // The replay pruner and the mempool reactor stop before the chain monitor that drives them
+        await Task.WhenAll(_onionReplayBlockPruner.StopAsync(), _mempoolReactor.StopAsync());
 
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));

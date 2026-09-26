@@ -425,7 +425,9 @@ public class LightningMoneyTests
         var result = LightningMoney.Bits(bits);
 
         // Then
-        Assert.Equal(1_500_000_000UL, result.MilliSatoshi);
+        // 1 bit = 100 sat = 100_000 msat
+        Assert.Equal(150_000UL, result.MilliSatoshi);
+        Assert.Equal(150L, result.Satoshi);
     }
 
     [Fact]

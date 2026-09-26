@@ -48,8 +48,9 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         _unitOfWork = unitOfWork;
     }
 
-    public async Task<IChannelMessage?> HandleAsync(FundingCreatedMessage message, ChannelState currentState,
-                                                    FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey)
+    public async Task<IReadOnlyList<IChannelMessage>> HandleAsync(
+        FundingCreatedMessage message, ChannelState currentState, FeatureOptions negotiatedFeatures,
+        CompactPubKey peerPubKey)
     {
         _logger.LogTrace("Processing FundingCreatedMessage with ChannelId: {ChannelId} from Peer: {PeerPubKey}",
                          message.Payload.ChannelId, peerPubKey);
@@ -83,9 +84,11 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
 
         // Generate the base commitment transactions
         var localCommitmentTransaction =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local);
+            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                                channel.LocalCommitmentNumber);
         var remoteCommitmentTransaction =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote);
+            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
+                                                                                channel.RemoteCommitmentNumber);
 
         // Build the output and the transactions
         var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
@@ -103,6 +106,10 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         channel.UpdateLastSentSignature(ourSignature);
         channel.UpdateState(ChannelState.V1FundingSigned);
 
+        // Remember when we started waiting for the funding transaction, so we can forget the channel if it never
+        // confirms (BOLT 2: the fundee SHOULD forget the channel after 2016 blocks)
+        channel.FundingCreatedAtBlockHeight = _blockchainMonitor.LastProcessedBlockHeight;
+
         // Save to the database
         await PersistChannelAsync(channel);
 
@@ -117,9 +124,9 @@ public class FundingCreatedMessageHandler : IChannelMessageHandler<FundingCreate
         _channelMemoryRepository.TryRemoveTemporaryChannel(peerPubKey, oldChannelId);
 
         await _blockchainMonitor.WatchTransactionAsync(channel.ChannelId, payload.FundingTxId,
-                                                       channel.ChannelConfig.MinimumDepth);
+                                                       channel.ChannelParams.MinimumDepth);
 
-        return fundingSignedMessage;
+        return [fundingSignedMessage];
     }
 
     /// <summary>

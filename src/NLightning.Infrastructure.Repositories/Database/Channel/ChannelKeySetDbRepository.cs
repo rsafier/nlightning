@@ -57,8 +57,7 @@ public class ChannelKeySetDbRepository : BaseDbRepository<ChannelKeySetEntity>, 
 
             // Current commitment state
             CurrentPerCommitmentPoint = keySet.CurrentPerCommitmentCompactPoint,
-            CurrentPerCommitmentIndex = keySet.CurrentPerCommitmentIndex,
-            LastRevealedPerCommitmentSecret = keySet.LastRevealedPerCommitmentSecret
+            CurrentPerCommitmentIndex = keySet.CurrentPerCommitmentIndex
         };
     }
 
@@ -66,7 +65,6 @@ public class ChannelKeySetDbRepository : BaseDbRepository<ChannelKeySetEntity>, 
     {
         return new ChannelKeySetModel(entity.KeyIndex, entity.FundingPubKey, entity.RevocationBasepoint,
                                       entity.PaymentBasepoint, entity.DelayedPaymentBasepoint, entity.HtlcBasepoint,
-                                      entity.CurrentPerCommitmentPoint, entity.CurrentPerCommitmentIndex,
-                                      entity.LastRevealedPerCommitmentSecret);
+                                      entity.CurrentPerCommitmentPoint, entity.CurrentPerCommitmentIndex);
     }
 }

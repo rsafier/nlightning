@@ -1,6 +1,6 @@
 namespace NLightning.Domain.Channels.Validators;
 
-using Bitcoin.Transactions.Constants;
+using Bitcoin.Transactions.Factories;
 using Constants;
 using Domain.Enums;
 using Exceptions;
@@ -11,6 +11,24 @@ using Parameters;
 
 public class ChannelOpenValidator : IChannelOpenValidator
 {
+    /// <summary>
+    /// The (even) channel type bits we can operate a channel with.
+    /// </summary>
+    private static readonly HashSet<int> s_supportedChannelTypeBits =
+    [
+        (int)Feature.OptionStaticRemoteKey - 1,
+        (int)Feature.OptionAnchors - 1,
+        (int)Feature.OptionScidAlias - 1,
+        (int)Feature.OptionZeroconf - 1
+    ];
+
+    /// <summary>
+    /// The lowest <c>feerate_per_kw</c> we accept in <c>open_channel</c>: BOLT 3's 253 sat/kw relay floor
+    /// (<see cref="FeeUpdateOptions.FeeratePerKwFloor"/>, the floor we also apply to <c>update_fee</c>).
+    /// </summary>
+    public static readonly LightningMoney MinAcceptableFeeRatePerKw =
+        LightningMoney.Satoshis(FeeUpdateOptions.FeeratePerKwFloor);
+
     private readonly NodeOptions _nodeOptions;
 
     public ChannelOpenValidator(NodeOptions nodeOptions)
@@ -77,15 +95,16 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.FeeRatePerKw is not null)
         {
-            // Check if we consider fee_rate_per_kw too large
+            // BOLT 2: fail the channel if feerate_per_kw is unreasonably large
             if (parameters.FeeRatePerKw > ChannelConstants.MaxFeePerKw)
                 throw new ChannelErrorException($"Fee rate per kw is too large: {parameters.FeeRatePerKw}");
 
-            // Check if we consider fee_rate_per_kw too small. IE. 20% smaller than our fee rate
-            if (parameters.FeeRatePerKw < ChannelConstants.MinFeePerKw ||
-                parameters.FeeRatePerKw < parameters.CurrentFeeRatePerKw * 0.8M)
+            // BOLT 2: fail the channel if feerate_per_kw is too small for timely processing. The opener chooses and
+            // pays the feerate, and peers open at their own estimate (CLN opens at 253 sat/kw on an idle chain), so
+            // anything from the relay floor up is accepted, whatever our estimate says (NL-289), as LND and CLN do
+            if (parameters.FeeRatePerKw < MinAcceptableFeeRatePerKw)
                 throw new ChannelErrorException(
-                    $"Fee rate per kw is too small: {parameters.FeeRatePerKw}, currentFee{parameters.CurrentFeeRatePerKw}");
+                    $"Fee rate per kw is too small: {parameters.FeeRatePerKw} < {MinAcceptableFeeRatePerKw}");
         }
 
         // Check if the dust limit is greater than the channel reserve amount
@@ -99,19 +118,38 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.FundingAmount is not null)
         {
-            // Check if the push amount is too large
+            // Check if the push amount is too large (push_msat <= 1000 * funding_satoshis; both are msat here)
             if (parameters.PushAmount is not null
-             && parameters.PushAmount > 1_000 * parameters.FundingAmount)
+             && parameters.PushAmount > parameters.FundingAmount)
                 throw new ChannelErrorException($"Push amount is too large: {parameters.PushAmount}");
 
-            // Check if there are enough funds to pay for fees
-            var expectedWeight = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No
-                                     ? TransactionConstants.InitialCommitmentTransactionWeightNoAnchor
-                                     : TransactionConstants.InitialCommitmentTransactionWeightWithAnchor;
-            var expectedFee = LightningMoney.Satoshis(expectedWeight * parameters.CurrentFeeRatePerKw.Satoshi / 1000);
+            // Check if there are enough funds to pay for fees (and both anchors when option_anchors applies).
+            // The initial commitment is built with the peer's feerate_per_kw, so use it when present.
+            var feeRatePerKw = parameters.FeeRatePerKw ?? parameters.CurrentFeeRatePerKw;
+            var hasAnchors = parameters.NegotiatedFeatures.OptionAnchors > FeatureSupport.No;
+            var expectedFee = CommitmentFeeCalculator.FunderCost((ulong)feeRatePerKw.Satoshi, hasAnchors, 0);
             if (parameters.FundingAmount < expectedFee + parameters.ChannelReserveAmount)
                 throw new ChannelErrorException(
                     $"Funding amount is too small to cover fees: {parameters.FundingAmount}");
+
+            // BOLT 2: the funder's amount for the initial commitment (funding - push) must pay the full fee
+            var funderAmount = parameters.FundingAmount - (parameters.PushAmount ?? LightningMoney.Zero);
+            if (funderAmount < expectedFee)
+                throw new ChannelErrorException(
+                    $"Funder amount is too small to cover fees: {funderAmount} < {expectedFee}");
+
+            // BOLT 2: fail if both to_local and to_remote of the initial commitment are <= channel_reserve_satoshis
+            // (NL-220). Outputs are whole satoshis (rounded down); the funder's output is net of fee and anchors.
+            if (parameters.PushAmount is not null)
+            {
+                var funderOutputSats = funderAmount.Satoshi - expectedFee.Satoshi;
+                var fundeeOutputSats = parameters.PushAmount.Satoshi;
+                var reserveSats = parameters.ChannelReserveAmount.Satoshi;
+                if (funderOutputSats <= reserveSats && fundeeOutputSats <= reserveSats)
+                    throw new ChannelErrorException(
+                        $"Both initial outputs are at or below the channel reserve: to_local {funderOutputSats} sat, "
+                      + $"to_remote {fundeeOutputSats} sat, channel_reserve {reserveSats} sat");
+            }
 
             // Check if this is a large channel and if we support it
             if (parameters.FundingAmount >= ChannelConstants.LargeChannelAmount &&
@@ -123,6 +161,13 @@ public class ChannelOpenValidator : IChannelOpenValidator
         minimumDepth = _nodeOptions.MinimumDepth;
         if (parameters.ChannelTypeTlv is null)
             throw new ChannelErrorException("ChannelTypeTlv is not present");
+
+        // BOLT 2: fail the channel if the channel_type is not suitable. We know option_static_remotekey, optionally
+        // with option_anchors, and the option_scid_alias/option_zeroconf variations; channel types only use even bits
+        foreach (var bit in parameters.ChannelTypeTlv.Features.GetSetBits())
+            if (!s_supportedChannelTypeBits.Contains(bit))
+                throw new ChannelErrorException($"Unsupported channel type bit {bit}",
+                                                "ChannelTypeTlv: This channel type is not supported");
 
         // Check if OptionStaticRemoteKey is Compulsory
         if (!parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionStaticRemoteKey, true))
@@ -136,6 +181,10 @@ public class ChannelOpenValidator : IChannelOpenValidator
 
         if (parameters.ChannelTypeTlv.Features.IsFeatureSet(Feature.OptionScidAlias, true))
         {
+            if (parameters.NegotiatedFeatures.ScidAlias == FeatureSupport.No)
+                throw new ChannelErrorException("Scid alias feature is not negotiated but requested by peer",
+                                                "ChannelTypeTlv: We don't support option_scid_alias");
+
             if (parameters.ChannelFlags is not null && parameters.ChannelFlags.Value.AnnounceChannel)
                 throw new ChannelErrorException("Invalid channel flags for OPTION_SCID_ALIAS",
                                                 "ChannelTypeTlv: We want to announce this channel");
