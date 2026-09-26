@@ -248,8 +248,20 @@ public static class NodeServiceExtensions
         services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));
 
         // BOLT 7 public channels (optional Gossip section: AcceptPublicChannels, AllowPublicChannelsOnMainnet,
-        // AnnouncementDepth; G1-T1, NL-341)
-        services.Configure<GossipOptions>(configuration.GetSection(GossipOptions.SectionName));
+        // AnnouncementDepth, AnnounceAddresses, OwnGossipFlushInterval, NodeAnnouncementRefreshInterval; G1-T1..T7,
+        // NL-341); a bad announced address fails the start
+        services.AddOptions<GossipOptions>()
+                .Bind(configuration.GetSection(GossipOptions.SectionName))
+                .Validate(options =>
+                 {
+                     var errors = options.GetValidationErrors();
+                     if (errors.Count > 0)
+                         throw new OptionsValidationException(GossipOptions.SectionName, typeof(GossipOptions),
+                                                              errors);
+
+                     return true;
+                 })
+                .ValidateOnStart();
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>
