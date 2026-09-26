@@ -270,11 +270,13 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var data = JsonSerializer.Deserialize<KeyFileData>(jsonString)
                 ?? throw new SerializationException("Invalid key file");
 
-        if (expectedNetwork != data.Network.ToLowerInvariant())
-            throw new Exception($"Invalid network. Expected {expectedNetwork}, but got {data.Network}");
-
         var network = Network.GetNetwork(expectedNetwork)
                    ?? throw new ArgumentException("Invalid network specified.", nameof(expectedNetwork));
+
+        // The file stores NBitcoin's name of the network (SaveToFile writes Network.ToString()): "RegTest",
+        // "TestNet", "signet", but "Main" for mainnet, which is not "mainnet" in lower case (NL-382)
+        if (expectedNetwork != data.Network.ToLowerInvariant() && Network.GetNetwork(data.Network) != network)
+            throw new Exception($"Invalid network. Expected {expectedNetwork}, but got {data.Network}");
 
         var extKeyBytes = DecryptExtKey(data, password, out var usedLegacyPasswordEncoding);
         ExtKey extKey;
