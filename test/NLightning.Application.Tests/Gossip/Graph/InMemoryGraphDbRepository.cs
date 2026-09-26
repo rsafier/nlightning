@@ -10,7 +10,8 @@ using Domain.Gossip.Persistence;
 /// <summary>
 /// An <see cref="IGraphDbRepository"/> over dictionaries: writes are staged and applied by <see cref="Commit"/> (the
 /// unit of work's save), list reads read what is committed, like the EF repository. <see cref="FailNextSave"/> makes
-/// the next commit throw and drop what was staged.
+/// the next commit throw and drop what was staged, <see cref="FailAtAttempt"/> a given one. The bulk members are the
+/// interface's defaults (one single-row call each).
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
@@ -26,11 +27,18 @@ internal sealed class InMemoryGraphDbRepository : IGraphDbRepository
     public int Saves { get; private set; }
     public bool FailNextSave { get; set; }
 
+    /// <summary>How many commits were attempted, failed ones included.</summary>
+    public int CommitAttempts { get; private set; }
+
+    /// <summary>The 1-based commit attempt that fails (0: none).</summary>
+    public int FailAtAttempt { get; set; }
+
     public void Commit()
     {
         lock (_lock)
         {
-            if (FailNextSave)
+            CommitAttempts++;
+            if (FailNextSave || CommitAttempts == FailAtAttempt)
             {
                 FailNextSave = false;
                 _staged.Clear();

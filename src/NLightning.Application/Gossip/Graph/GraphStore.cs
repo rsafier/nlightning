@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -28,6 +29,13 @@ using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 /// later (<see cref="TrySetFundingTxId"/>, the <see cref="GraphPruner"/>'s lookup of a row stored without one) marks
 /// the channel dirty, so after a restart only those rows are looked up again.
 /// </para>
+/// <para>
+/// Persistence performance (plan G5-T3): a flush writes in batches of <see cref="WriteBatchSize"/> rows, each in a
+/// unit of work of its own with one read per <c>IGraphDbRepository</c> bulk call, so a sync of a whole graph never
+/// builds one huge transaction or reads row by row; the startup load streams the three tables and applies them in
+/// batches of <see cref="LoadBatchSize"/> under the writer lock. <see cref="GetMemoryEstimate"/> is kept up to date on
+/// every change.
+/// </para>
 /// </remarks>
 public sealed class GraphStore : IGraphStore
 {
@@ -53,6 +61,8 @@ public sealed class GraphStore : IGraphStore
     private readonly HashSet<CompactPubKey> _deletedNodes = [];
     private readonly HashSet<CompactPubKey> _dirtyBans = [];
 
+    private int _policyCount;
+    private long _variableBytes;
     private long _version;
     private long _snapshotVersion = -1;
     private GraphSnapshot _snapshot = GraphSnapshot.Empty;
@@ -92,6 +102,31 @@ public sealed class GraphStore : IGraphStore
     }
 
     /// <inheritdoc />
+    public int PolicyCount
+    {
+        get
+        {
+            lock (_lock)
+                return _policyCount;
+        }
+    }
+
+    /// <summary>
+    /// The most rows one flush batch writes in its unit of work (deletions, channels, policies, nodes and bans are
+    /// batched in that order, so a policy's channel is always written before it).
+    /// </summary>
+    public int WriteBatchSize { get; init; } = DefaultWriteBatchSize;
+
+    /// <summary>The rows the startup load maps before it applies them under the writer lock.</summary>
+    public int LoadBatchSize { get; init; } = DefaultLoadBatchSize;
+
+    /// <summary>The default <see cref="WriteBatchSize"/>.</summary>
+    public const int DefaultWriteBatchSize = 5_000;
+
+    /// <summary>The default <see cref="LoadBatchSize"/>.</summary>
+    public const int DefaultLoadBatchSize = 10_000;
+
+    /// <inheritdoc />
     public int PendingChanges
     {
         get
@@ -114,72 +149,78 @@ public sealed class GraphStore : IGraphStore
             if (_isLoaded)
                 return;
 
-            IReadOnlyList<GraphChannelRecord> channels;
-            IReadOnlyList<GraphPolicyRecord> policies;
-            IReadOnlyList<GraphNodeRecord> nodes;
-            IReadOnlyList<GraphBannedNodeRecord> bans;
+            var stopwatch = Stopwatch.StartNew();
+            var counts = new LoadCounts();
             using (var scope = _scopeFactory.CreateScope())
             {
                 var repository = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().GraphDbRepository;
-                channels = await repository.GetChannelsAsync(cancellationToken);
-                policies = await repository.GetAllPoliciesAsync(cancellationToken);
-                nodes = await repository.GetNodesAsync(cancellationToken);
-                bans = await repository.GetActiveBansAsync(_timeProvider.GetUtcNow());
-            }
 
-            var skipped = 0;
-            lock (_lock)
-            {
-                foreach (var record in channels)
+                // Channels first: a policy is applied onto its channel; the rows are mapped outside the lock and
+                // applied a batch at a time, so the lock is never held for the whole load
+                var channels = new List<(GraphChannelRecord Record, GraphChannel Channel)>(LoadBatchSize);
+                await foreach (var record in repository.StreamChannelsAsync(cancellationToken))
                 {
-                    // Changes made before the load are newer than the database
-                    if (_channels.ContainsKey(record.ShortChannelId) || _deletedChannels.Contains(record.ShortChannelId))
-                        continue;
-
-                    var channel = MapChannel(record);
-                    if (channel is null)
+                    counts.ChannelRows++;
+                    if (MapChannel(record) is not { } channel)
                     {
-                        skipped++;
+                        counts.SkippedChannels++;
                         continue;
                     }
 
-                    _channels[record.ShortChannelId] = channel;
-                    _channelReceivedAt[record.ShortChannelId] = record.ReceivedAt;
-                    if (record.FundingTxId is { } fundingTxId && !_fundingTxIds.ContainsKey(record.ShortChannelId))
-                        SetFundingTxIdLocked(record.ShortChannelId, fundingTxId);
-                    CountChannelEnds(channel, +1);
-                }
-
-                foreach (var record in policies)
-                {
-                    if (!_channels.TryGetValue(record.ShortChannelId, out var channel))
+                    channels.Add((record, channel));
+                    if (channels.Count < LoadBatchSize)
                         continue;
 
-                    var policy = MapPolicy(record);
-                    var current = channel.GetPolicy(policy.Direction);
-                    if (current is null || current.Timestamp < policy.Timestamp)
-                        _channels[record.ShortChannelId] = channel.WithPolicy(policy);
+                    ApplyLoadedChannels(channels);
+                    channels.Clear();
                 }
 
-                foreach (var record in nodes)
+                ApplyLoadedChannels(channels);
+
+                var policies = new List<(ShortChannelId ShortChannelId, GraphPolicy Policy)>(LoadBatchSize);
+                await foreach (var record in repository.StreamPoliciesAsync(cancellationToken))
                 {
-                    if (_nodes.ContainsKey(record.NodeId) || _deletedNodes.Contains(record.NodeId))
+                    counts.PolicyRows++;
+                    policies.Add((record.ShortChannelId, MapPolicy(record)));
+                    if (policies.Count < LoadBatchSize)
                         continue;
 
-                    _nodes[record.NodeId] = MapNode(record);
-                    _nodeReceivedAt[record.NodeId] = record.ReceivedAt;
+                    ApplyLoadedPolicies(policies);
+                    policies.Clear();
                 }
 
-                foreach (var ban in bans)
-                    _bans.TryAdd(ban.NodeId, ban);
+                ApplyLoadedPolicies(policies);
 
-                _version++;
-                _isLoaded = true;
+                var nodes = new List<(GraphNodeRecord Record, GraphNode Node)>(LoadBatchSize);
+                await foreach (var record in repository.StreamNodesAsync(cancellationToken))
+                {
+                    counts.NodeRows++;
+                    nodes.Add((record, MapNode(record)));
+                    if (nodes.Count < LoadBatchSize)
+                        continue;
+
+                    ApplyLoadedNodes(nodes);
+                    nodes.Clear();
+                }
+
+                ApplyLoadedNodes(nodes);
+
+                var bans = await repository.GetActiveBansAsync(_timeProvider.GetUtcNow());
+                lock (_lock)
+                {
+                    foreach (var ban in bans)
+                        _bans.TryAdd(ban.NodeId, ban);
+
+                    _version++;
+                    _isLoaded = true;
+                }
             }
 
-            _logger.LogInformation("Loaded the graph: {Channels} channels, {Policies} policies, {Nodes} nodes{Skipped}",
-                                   channels.Count - skipped, policies.Count, nodes.Count,
-                                   skipped > 0 ? $" ({skipped} unreadable channels skipped)" : "");
+            _logger.LogInformation(
+                "Loaded the graph in {Elapsed} ms: {Channels} channels, {Policies} policies, {Nodes} nodes{Skipped}",
+                stopwatch.ElapsedMilliseconds, counts.ChannelRows - counts.SkippedChannels, counts.PolicyRows,
+                counts.NodeRows,
+                counts.SkippedChannels > 0 ? $" ({counts.SkippedChannels} unreadable channels skipped)" : "");
         }
         finally
         {
@@ -202,40 +243,32 @@ public sealed class GraphStore : IGraphStore
             if (work.IsEmpty)
                 return;
 
+            var batches = work.ToBatches(WriteBatchSize);
+            var written = 0;
             try
             {
-                using var scope = _scopeFactory.CreateScope();
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                var repository = unitOfWork.GraphDbRepository;
-                foreach (var shortChannelId in work.DeletedChannels)
-                    await repository.DeleteChannelAsync(shortChannelId);
-                foreach (var nodeId in work.DeletedNodes)
-                    await repository.DeleteNodeAsync(nodeId);
-                foreach (var channel in work.Channels)
-                    await repository.UpsertChannelAsync(channel);
-                foreach (var policy in work.Policies)
-                    await repository.UpsertPolicyAsync(policy);
-                foreach (var node in work.Nodes)
-                    await repository.UpsertNodeAsync(node);
-                foreach (var ban in work.Bans)
-                    await repository.UpsertBanAsync(ban);
+                for (; written < batches.Count; written++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await WriteBatchAsync(batches[written], cancellationToken);
+                }
 
-                await unitOfWork.SaveChangesAsync();
                 _logger.LogDebug(
-                    "Graph flushed: {Channels} channels, {Policies} policies, {Nodes} nodes, {Deleted} deletions",
-                    work.Channels.Count, work.Policies.Count, work.Nodes.Count,
+                    "Graph flushed in {Batches} batches: {Channels} channels, {Policies} policies, {Nodes} nodes, " +
+                    "{Deleted} deletions", batches.Count, work.Channels.Count, work.Policies.Count, work.Nodes.Count,
                     work.DeletedChannels.Count + work.DeletedNodes.Count);
             }
             catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
-                _logger.LogWarning(e, "Failed to write the graph; the changes stay pending");
+                _logger.LogWarning(e, "Failed to write the graph; {Pending} of {Batches} batches stay pending",
+                                   batches.Count - written, batches.Count);
                 lock (_lock)
-                    RestoreWorkLocked(work);
+                    RestoreWorkLocked(batches.Skip(written));
             }
             catch
             {
                 lock (_lock)
-                    RestoreWorkLocked(work);
+                    RestoreWorkLocked(batches.Skip(written));
                 throw;
             }
         }
@@ -258,6 +291,13 @@ public sealed class GraphStore : IGraphStore
 
             return _snapshot;
         }
+    }
+
+    /// <inheritdoc />
+    public GraphMemoryEstimate GetMemoryEstimate()
+    {
+        lock (_lock)
+            return EstimateLocked();
     }
 
     /// <inheritdoc />
@@ -343,6 +383,7 @@ public sealed class GraphStore : IGraphStore
             if (!_channels.TryAdd(channel.ShortChannelId, channel))
                 return false;
 
+            Account(null, channel);
             _channelReceivedAt[channel.ShortChannelId] = _timeProvider.GetUtcNow();
             if (fundingTxId is { } txId)
                 SetFundingTxIdLocked(channel.ShortChannelId, txId);
@@ -373,7 +414,7 @@ public sealed class GraphStore : IGraphStore
             if (current is not null && current.Timestamp >= policy.Timestamp)
                 return false;
 
-            _channels[shortChannelId] = channel.WithPolicy(policy);
+            SetChannelLocked(channel, channel.WithPolicy(policy));
             _dirtyPolicies.Add((shortChannelId, policy.Direction));
             _version++;
             return true;
@@ -389,6 +430,7 @@ public sealed class GraphStore : IGraphStore
             if (_nodes.TryGetValue(node.NodeId, out var current) && current.Timestamp >= node.Timestamp)
                 return false;
 
+            Account(current, node);
             _nodes[node.NodeId] = node;
             _nodeReceivedAt[node.NodeId] = _timeProvider.GetUtcNow();
             _deletedNodes.Remove(node.NodeId);
@@ -407,6 +449,7 @@ public sealed class GraphStore : IGraphStore
             if (_nodes.TryGetValue(node.NodeId, out var current) && current.Timestamp >= node.Timestamp)
                 return false;
 
+            Account(current, node);
             _nodes[node.NodeId] = node;
             _nodeReceivedAt[node.NodeId] = _timeProvider.GetUtcNow();
             _deletedNodes.Remove(node.NodeId);
@@ -440,7 +483,7 @@ public sealed class GraphStore : IGraphStore
             if (channel.SpentAtHeight == height)
                 return true;
 
-            _channels[shortChannelId] = channel.WithSpentAtHeight(height);
+            SetChannelLocked(channel, channel.WithSpentAtHeight(height));
             _dirtyChannels.Add(shortChannelId);
             _version++;
             return true;
@@ -455,7 +498,7 @@ public sealed class GraphStore : IGraphStore
             var reorged = _channels.Values.Where(c => c.SpentAtHeight > height).ToList();
             foreach (var channel in reorged)
             {
-                _channels[channel.ShortChannelId] = channel.WithSpentAtHeight(null);
+                SetChannelLocked(channel, channel.WithSpentAtHeight(null));
                 _dirtyChannels.Add(channel.ShortChannelId);
             }
 
@@ -474,6 +517,7 @@ public sealed class GraphStore : IGraphStore
             if (!_channels.Remove(shortChannelId, out var channel))
                 return false;
 
+            Account(channel, null);
             _channelReceivedAt.Remove(shortChannelId);
             if (_fundingTxIds.Remove(shortChannelId, out var fundingTxId))
                 _channelsByFundingOutpoint.Remove((fundingTxId, shortChannelId.OutputIndex));
@@ -492,9 +536,10 @@ public sealed class GraphStore : IGraphStore
     {
         lock (_lock)
         {
-            if (!_nodes.Remove(nodeId))
+            if (!_nodes.Remove(nodeId, out var node))
                 return false;
 
+            Account(node, null);
             _nodeReceivedAt.Remove(nodeId);
             _dirtyNodes.Remove(nodeId);
             _deletedNodes.Add(nodeId);
@@ -502,6 +547,122 @@ public sealed class GraphStore : IGraphStore
             return true;
         }
     }
+
+    private async Task WriteBatchAsync(FlushWork work, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var repository = unitOfWork.GraphDbRepository;
+        if (work.DeletedChannels.Count > 0)
+            await repository.DeleteChannelsAsync(work.DeletedChannels, cancellationToken);
+        if (work.DeletedNodes.Count > 0)
+            await repository.DeleteNodesAsync(work.DeletedNodes, cancellationToken);
+        if (work.Channels.Count > 0)
+            await repository.UpsertChannelsAsync(work.Channels, cancellationToken);
+        if (work.Policies.Count > 0)
+            await repository.UpsertPoliciesAsync(work.Policies, cancellationToken);
+        if (work.Nodes.Count > 0)
+            await repository.UpsertNodesAsync(work.Nodes, cancellationToken);
+        foreach (var ban in work.Bans)
+            await repository.UpsertBanAsync(ban);
+
+        await unitOfWork.SaveChangesAsync();
+    }
+
+    private void ApplyLoadedChannels(List<(GraphChannelRecord Record, GraphChannel Channel)> batch)
+    {
+        if (batch.Count == 0)
+            return;
+
+        lock (_lock)
+        {
+            foreach (var (record, channel) in batch)
+            {
+                // Changes made before the load are newer than the database
+                if (_channels.ContainsKey(record.ShortChannelId) || _deletedChannels.Contains(record.ShortChannelId))
+                    continue;
+
+                Account(null, channel);
+                _channels[record.ShortChannelId] = channel;
+                _channelReceivedAt[record.ShortChannelId] = record.ReceivedAt;
+                if (record.FundingTxId is { } fundingTxId && !_fundingTxIds.ContainsKey(record.ShortChannelId))
+                    SetFundingTxIdLocked(record.ShortChannelId, fundingTxId);
+                CountChannelEnds(channel, +1);
+            }
+        }
+    }
+
+    private void ApplyLoadedPolicies(List<(ShortChannelId ShortChannelId, GraphPolicy Policy)> batch)
+    {
+        if (batch.Count == 0)
+            return;
+
+        lock (_lock)
+        {
+            foreach (var (shortChannelId, policy) in batch)
+            {
+                if (!_channels.TryGetValue(shortChannelId, out var channel))
+                    continue;
+
+                var current = channel.GetPolicy(policy.Direction);
+                if (current is null || current.Timestamp < policy.Timestamp)
+                    SetChannelLocked(channel, channel.WithPolicy(policy));
+            }
+        }
+    }
+
+    private void ApplyLoadedNodes(List<(GraphNodeRecord Record, GraphNode Node)> batch)
+    {
+        if (batch.Count == 0)
+            return;
+
+        lock (_lock)
+        {
+            foreach (var (record, node) in batch)
+            {
+                if (_nodes.ContainsKey(record.NodeId) || _deletedNodes.Contains(record.NodeId))
+                    continue;
+
+                Account(null, node);
+                _nodes[record.NodeId] = node;
+                _nodeReceivedAt[record.NodeId] = record.ReceivedAt;
+            }
+        }
+    }
+
+    /// <summary>Replaces a stored channel by a new value of it (same short channel id), keeping the accounting.</summary>
+    private void SetChannelLocked(GraphChannel current, GraphChannel replacement)
+    {
+        Account(current, replacement);
+        _channels[replacement.ShortChannelId] = replacement;
+    }
+
+    private void Account(GraphChannel? removed, GraphChannel? added)
+    {
+        if (removed is not null)
+        {
+            _policyCount -= GraphMemoryAccounting.PolicyCountOf(removed);
+            _variableBytes -= GraphMemoryAccounting.VariableBytesOf(removed);
+        }
+
+        if (added is not null)
+        {
+            _policyCount += GraphMemoryAccounting.PolicyCountOf(added);
+            _variableBytes += GraphMemoryAccounting.VariableBytesOf(added);
+        }
+    }
+
+    private void Account(GraphNode? removed, GraphNode? added)
+    {
+        if (removed is not null)
+            _variableBytes -= GraphMemoryAccounting.VariableBytesOf(removed);
+        if (added is not null)
+            _variableBytes += GraphMemoryAccounting.VariableBytesOf(added);
+    }
+
+    private GraphMemoryEstimate EstimateLocked() =>
+        GraphMemoryAccounting.Estimate(_channels.Count, _policyCount, _nodes.Count,
+                                       Math.Max(_nodes.Count, _channelCountByNode.Count), _variableBytes);
 
     private void SetFundingTxIdLocked(ShortChannelId shortChannelId, TxId fundingTxId)
     {
@@ -560,21 +721,24 @@ public sealed class GraphStore : IGraphStore
         return work;
     }
 
-    private void RestoreWorkLocked(FlushWork work)
+    private void RestoreWorkLocked(IEnumerable<FlushWork> batches)
     {
         // Keys only: the next flush writes whatever the values are by then
-        foreach (var shortChannelId in work.DeletedChannels.Where(s => !_channels.ContainsKey(s)))
-            _deletedChannels.Add(shortChannelId);
-        foreach (var nodeId in work.DeletedNodes.Where(n => !_nodes.ContainsKey(n)))
-            _deletedNodes.Add(nodeId);
-        foreach (var channel in work.Channels.Where(c => _channels.ContainsKey(c.ShortChannelId)))
-            _dirtyChannels.Add(channel.ShortChannelId);
-        foreach (var policy in work.Policies.Where(p => _channels.ContainsKey(p.ShortChannelId)))
-            _dirtyPolicies.Add((policy.ShortChannelId, policy.Direction));
-        foreach (var node in work.Nodes.Where(n => _nodes.ContainsKey(n.NodeId)))
-            _dirtyNodes.Add(node.NodeId);
-        foreach (var ban in work.Bans)
-            _dirtyBans.Add(ban.NodeId);
+        foreach (var work in batches)
+        {
+            foreach (var shortChannelId in work.DeletedChannels.Where(s => !_channels.ContainsKey(s)))
+                _deletedChannels.Add(shortChannelId);
+            foreach (var nodeId in work.DeletedNodes.Where(n => !_nodes.ContainsKey(n)))
+                _deletedNodes.Add(nodeId);
+            foreach (var channel in work.Channels.Where(c => _channels.ContainsKey(c.ShortChannelId)))
+                _dirtyChannels.Add(channel.ShortChannelId);
+            foreach (var policy in work.Policies.Where(p => _channels.ContainsKey(p.ShortChannelId)))
+                _dirtyPolicies.Add((policy.ShortChannelId, policy.Direction));
+            foreach (var node in work.Nodes.Where(n => _nodes.ContainsKey(n.NodeId)))
+                _dirtyNodes.Add(node.NodeId);
+            foreach (var ban in work.Bans)
+                _dirtyBans.Add(ban.NodeId);
+        }
     }
 
     private static GraphChannelRecord ToRecord(GraphChannel channel, DateTimeOffset receivedAt, TxId? fundingTxId) =>
@@ -647,5 +811,55 @@ public sealed class GraphStore : IGraphStore
     {
         public bool IsEmpty => Channels.Count == 0 && Policies.Count == 0 && Nodes.Count == 0 && Bans.Count == 0
                             && DeletedChannels.Count == 0 && DeletedNodes.Count == 0;
+
+        /// <summary>
+        /// The work in write order (deletions, channels, policies, nodes, bans) cut into batches of at most
+        /// <paramref name="size"/> rows: a small flush stays one save, and a policy's channel is always written in an
+        /// earlier save or earlier in the same one.
+        /// </summary>
+        public List<FlushWork> ToBatches(int size)
+        {
+            size = Math.Max(1, size);
+            var batches = new List<FlushWork>();
+            var current = Empty;
+            var rows = 0;
+            Pack(DeletedChannels, b => b.DeletedChannels);
+            Pack(DeletedNodes, b => b.DeletedNodes);
+            Pack(Channels, b => b.Channels);
+            Pack(Policies, b => b.Policies);
+            Pack(Nodes, b => b.Nodes);
+            Pack(Bans, b => b.Bans);
+            if (rows > 0)
+                batches.Add(current);
+
+            return batches;
+
+            void Pack<T>(List<T> items, Func<FlushWork, List<T>> target)
+            {
+                foreach (var item in items)
+                {
+                    if (rows == size)
+                    {
+                        batches.Add(current);
+                        current = Empty;
+                        rows = 0;
+                    }
+
+                    target(current).Add(item);
+                    rows++;
+                }
+            }
+        }
+
+        private static FlushWork Empty => new([], [], [], [], [], []);
+    }
+
+    /// <summary>What the startup load read.</summary>
+    private sealed class LoadCounts
+    {
+        public int ChannelRows { get; set; }
+        public int SkippedChannels { get; set; }
+        public int PolicyRows { get; set; }
+        public int NodeRows { get; set; }
     }
 }

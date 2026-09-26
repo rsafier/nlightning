@@ -282,6 +282,117 @@ internal static class GossipGraphSchemaRoundTrip
             Assert.Null(await repository.GetBanAsync(expiredBan.NodeId));
             Assert.Empty(await repository.GetActiveBansAsync(now.AddDays(1)));
         }
+
+        await AssertBulkRoundTripAsync(contextFactory, cancellationToken);
+    }
+
+    /// <summary>
+    /// The bulk members (BOLT 7 plan G5-T3) on this provider: batches larger than one 500-key read upserted, replaced,
+    /// streamed back and deleted with their policies; the rows written by the single-row steps above stay untouched.
+    /// </summary>
+    private static async Task AssertBulkRoundTripAsync(Func<NLightningDbContext> contextFactory,
+                                                       CancellationToken cancellationToken)
+    {
+        var graph = SyntheticGossipGraph.Create(1_100, 250, seed: 3);
+        var receivedAt = new DateTimeOffset(2026, 9, 26, 1, 2, 3, TimeSpan.Zero);
+        var channels = graph.Channels
+                            .Select(c => new GraphChannelRecord(c.Channel.ShortChannelId, c.Channel.NodeId1,
+                                                                c.Channel.NodeId2, c.Channel.BitcoinKey1,
+                                                                c.Channel.BitcoinKey2, c.Channel.CapacitySat!.Value,
+                                                                [], c.Channel.RawAnnouncement.ToArray(),
+                                                                GraphChannelVerification.Verified, null, receivedAt,
+                                                                c.FundingTxId))
+                            .ToList();
+        var policies = graph.Channels
+                            .SelectMany(c => new[] { c.Channel.Policy1!, c.Channel.Policy2! }.Select(p =>
+                                            new GraphPolicyRecord(c.Channel.ShortChannelId, p.Direction, p.Timestamp,
+                                                                  p.MessageFlags, p.ChannelFlags, p.CltvExpiryDelta,
+                                                                  p.HtlcMinimumMsat, p.HtlcMaximumMsat, p.FeeBaseMsat,
+                                                                  p.FeeProportionalMillionths, p.RawUpdate.ToArray())))
+                            .ToList();
+        var nodes = graph.Nodes
+                         .Select(n => new GraphNodeRecord(n.NodeId, n.Timestamp, n.Features.ToArray(),
+                                                          n.Alias.ToArray(), n.RgbColor.ToArray(), [],
+                                                          n.RawAnnouncement.ToArray(), receivedAt))
+                         .ToList();
+        int channelsBefore, policiesBefore, nodesBefore;
+        await using (var context = contextFactory())
+        {
+            var repository = new GraphDbRepository(context);
+            channelsBefore = (await repository.GetChannelsAsync(cancellationToken)).Count;
+            policiesBefore = (await repository.GetAllPoliciesAsync(cancellationToken)).Count;
+            nodesBefore = (await repository.GetNodesAsync(cancellationToken)).Count;
+        }
+
+        // Insert, then replace half of every kind in one unit of work
+        await SaveAsync(contextFactory, async c =>
+        {
+            var repository = new GraphDbRepository(c);
+            await repository.UpsertChannelsAsync(channels, cancellationToken);
+            await repository.UpsertPoliciesAsync(policies, cancellationToken);
+            await repository.UpsertNodesAsync(nodes, cancellationToken);
+        }, cancellationToken);
+        var replacedChannels = channels.Where((_, i) => i % 2 == 0).Select(c => c with { SpentAtHeight = 900_000 })
+                                       .ToList();
+        var replacedPolicies = policies.Where((_, i) => i % 2 == 0).Select(p => p with { FeeBaseMsat = 12_345 })
+                                       .ToList();
+        var replacedNodes = nodes.Where((_, i) => i % 2 == 0)
+                                 .Select(n => new GraphNodeRecord(n.NodeId, n.Timestamp + 1, n.Features, n.Alias,
+                                                                  n.Color, n.Addresses, n.RawAnnouncement,
+                                                                  n.ReceivedAt))
+                                 .ToList();
+        await SaveAsync(contextFactory, async c =>
+        {
+            var repository = new GraphDbRepository(c);
+            await repository.UpsertChannelsAsync(replacedChannels, cancellationToken);
+            await repository.UpsertPoliciesAsync(replacedPolicies, cancellationToken);
+            await repository.UpsertNodesAsync(replacedNodes, cancellationToken);
+        }, cancellationToken);
+
+        await using (var context = contextFactory())
+        {
+            var repository = new GraphDbRepository(context);
+            var streamedChannels = await repository.StreamChannelsAsync(cancellationToken)
+                                                   .ToListAsync(cancellationToken);
+            var streamedPolicies = await repository.StreamPoliciesAsync(cancellationToken)
+                                                   .ToListAsync(cancellationToken);
+            var streamedNodes = await repository.StreamNodesAsync(cancellationToken).ToListAsync(cancellationToken);
+            Assert.Equal(channelsBefore + channels.Count, streamedChannels.Count);
+            Assert.Equal(policiesBefore + policies.Count, streamedPolicies.Count);
+            Assert.Equal(nodesBefore + nodes.Count, streamedNodes.Count);
+            Assert.Equal(replacedChannels.Count, streamedChannels.Count(c => c.SpentAtHeight == 900_000));
+            Assert.Equal(replacedPolicies.Count, streamedPolicies.Count(p => p.FeeBaseMsat == 12_345));
+            var byScid = streamedChannels.ToDictionary(c => c.ShortChannelId);
+            foreach (var channel in channels)
+            {
+                var stored = byScid[channel.ShortChannelId];
+                Assert.Equal(channel.RawAnnouncement, stored.RawAnnouncement);
+                Assert.Equal(channel.FundingTxId, stored.FundingTxId);
+                Assert.Equal(channel.NodeId1, stored.NodeId1);
+            }
+
+            var byNode = streamedNodes.ToDictionary(n => n.NodeId);
+            foreach (var node in replacedNodes)
+                Assert.Equal(node.Timestamp, byNode[node.NodeId].Timestamp);
+        }
+
+        // Delete every synthetic channel (with its policies) and node in bulk; the earlier rows remain
+        await SaveAsync(contextFactory, async c =>
+        {
+            var repository = new GraphDbRepository(c);
+            Assert.Equal(channels.Count,
+                         await repository.DeleteChannelsAsync(channels.Select(x => x.ShortChannelId).ToList(),
+                                                              cancellationToken));
+            Assert.Equal(nodes.Count,
+                         await repository.DeleteNodesAsync(nodes.Select(x => x.NodeId).ToList(), cancellationToken));
+        }, cancellationToken);
+        await using (var context = contextFactory())
+        {
+            var repository = new GraphDbRepository(context);
+            Assert.Equal(channelsBefore, (await repository.GetChannelsAsync(cancellationToken)).Count);
+            Assert.Equal(policiesBefore, (await repository.GetAllPoliciesAsync(cancellationToken)).Count);
+            Assert.Equal(nodesBefore, (await repository.GetNodesAsync(cancellationToken)).Count);
+        }
     }
 
     private static async Task SeedConfigAndKeySetsAsync(NLightningDbContext context, DatabaseType databaseType,
