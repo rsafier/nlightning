@@ -9,6 +9,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Constants;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Closing;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -610,7 +611,13 @@ public sealed class AnchorCpfpService : IAnchorCpfpService, IDisposable
 
             var walletSigned = new SignedTransaction(unsigned.Transaction.TxId,
                                                      (byte[])unsigned.Transaction.RawTxBytes.Clone());
-            _lightningSigner.SignWalletTransaction(walletSigned);
+            // The anchor's prevout, which a P2TR wallet input's BIP 341 signature commits to
+            _lightningSigner.SignWalletTransaction(
+                walletSigned,
+                [
+                    new SpentOutput(anchor.TxId, anchor.OutputIndex, TransactionConstants.AnchorOutputAmount,
+                                    _builder.GetAnchorScriptPubKey(anchor.FundingPubKey))
+                ]);
             var signed = _builder.AddAnchorWitness(walletSigned.RawTxBytes, unsigned.AnchorInputIndex,
                                                    anchorSignature, anchor.FundingPubKey);
 

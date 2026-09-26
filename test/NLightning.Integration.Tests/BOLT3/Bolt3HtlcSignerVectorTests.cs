@@ -200,6 +200,53 @@ public class Bolt3HtlcSignerVectorTests
         Assert.Equal(vector.HtlcTxs.Select(h => h.RemoteSigHex), signatures.Select(ToDerHex));
     }
 
+    [Theory]
+    [MemberData(nameof(AppendixFNames))]
+    public void Given_AppendixFHtlcTxWithFeeInput_When_SigningLocally_Then_SignsInput0OnlyForAnchors(string name)
+    {
+        // Arrange: each HTLC transaction combined with one more (wallet) input, as BOLT 5 B5-HTX-02 allows with anchors
+        var vector = Bolt3SpecVectors.GetAppendixF(name);
+        var harness = new Bolt3VectorHarness(vector, true);
+        var contexts = BuildContexts(harness);
+
+        foreach (var single in contexts)
+        {
+            var context = AddFeeInput(single);
+
+            // Act
+            var signature = harness.Signer.SignLocalHtlcTransaction(ChannelId.Zero, context);
+
+            // Assert: our SIGHASH_ALL signature commits to the combined transaction (script validity with a wallet
+            // input is proven by LocalAnchorHtlcResolutionTests); without anchors the one-input rule stays
+            Assert.NotEqual(harness.Signer.SignLocalHtlcTransaction(ChannelId.Zero, single), signature);
+            Assert.Throws<ArgumentException>(() => harness.Signer.SignLocalHtlcTransaction(
+                                                 ChannelId.Zero, context with { HasAnchors = false }));
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(AppendixFNames))]
+    public void Given_AppendixFHtlcTxWithFeeInput_When_SigningForThePeer_Then_Throws(string name)
+    {
+        // Arrange
+        var vector = Bolt3SpecVectors.GetAppendixF(name);
+        var harness = new Bolt3VectorHarness(vector, true, true);
+        var combined = BuildContexts(harness).Select(AddFeeInput).ToList();
+
+        // Act & Assert
+        if (combined.Count > 0)
+            Assert.Throws<ArgumentException>(() => harness.Signer.SignRemoteHtlcTransactions(ChannelId.Zero, combined));
+    }
+
+    private static HtlcSigningContext AddFeeInput(HtlcSigningContext context)
+    {
+        var tx = Transaction.Load(context.HtlcTransaction.Transaction.RawTxBytes, Network.Main);
+        tx.Inputs.Add(new OutPoint(uint256.One, 0), sequence: 0xFFFFFFFD);
+        var combined = new Domain.Bitcoin.ValueObjects.SignedTransaction(
+            new Domain.Bitcoin.ValueObjects.TxId(tx.GetHash().ToBytes()), tx.ToBytes());
+        return context with { HtlcTransaction = context.HtlcTransaction with { Transaction = combined } };
+    }
+
     private static List<HtlcSigningContext> BuildContexts(Bolt3VectorHarness harness)
     {
         var (_, htlcModels) = harness.BuildHtlcModels();

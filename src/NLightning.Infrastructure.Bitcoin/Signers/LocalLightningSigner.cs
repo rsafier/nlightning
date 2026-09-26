@@ -641,9 +641,11 @@ public class LocalLightningSigner : ILightningSigner
         var signingInfo = GetRegisteredSigningInfo(channelId);
         ThrowIfDataLoss(channelId, "sign our HTLC transaction");
 
-        // The holder's own signature on its HTLC transaction is always SIGHASH_ALL
+        // The holder's own signature on its HTLC transaction is always SIGHASH_ALL. With anchors the zero-fee HTLC
+        // transaction is combined with wallet fee inputs and a change output before we sign (BOLT 5 B5-HTX-02, plan
+        // O7-T3): input 0 is the HTLC output, the others are the wallet's and are signed by SignWalletTransaction
         using var htlcBasepointSecret = GetHtlcBasepointSecret(signingInfo.ChannelKeyIndex);
-        return SignHtlcTransaction(htlcBasepointSecret, htlcTransaction, SigHash.All);
+        return SignHtlcTransaction(htlcBasepointSecret, htlcTransaction, SigHash.All, htlcTransaction.HasAnchors);
     }
 
     /// <inheritdoc />
@@ -1430,7 +1432,8 @@ public class LocalLightningSigner : ILightningSigner
     private static SigHash GetCounterpartyHtlcSigHash(bool hasAnchors) =>
         hasAnchors ? SigHash.Single | SigHash.AnyoneCanPay : SigHash.All;
 
-    private CompactSignature SignHtlcTransaction(Key htlcBasepointSecret, HtlcSigningContext context, SigHash sigHash)
+    private CompactSignature SignHtlcTransaction(Key htlcBasepointSecret, HtlcSigningContext context, SigHash sigHash,
+                                                 bool allowFeeInputs = false)
     {
         // BOLT 3: htlcprivkey = htlc_basepoint_secret + SHA256(per_commitment_point || htlc_basepoint)
         var htlcPrivKey = _keyDerivationService.DerivePrivateKey(htlcBasepointSecret.ToBytes(),
@@ -1438,15 +1441,18 @@ public class LocalLightningSigner : ILightningSigner
         using var htlcKey = new Key(htlcPrivKey);
 
         // RFC 6979 without low-R grinding, like SignChannelTransaction; the sighash flag is added by the tx builder
-        var signature = htlcKey.Sign(ComputeHtlcSigHash(context, sigHash), new SigningOptions(sigHash, false));
+        var signature = htlcKey.Sign(ComputeHtlcSigHash(context, sigHash, allowFeeInputs),
+                                     new SigningOptions(sigHash, false));
         return signature.Signature.MakeCanonical().ToCompact();
     }
 
-    private uint256 ComputeHtlcSigHash(HtlcSigningContext context, SigHash sigHash)
+    private uint256 ComputeHtlcSigHash(HtlcSigningContext context, SigHash sigHash, bool allowFeeInputs = false)
     {
         var built = context.HtlcTransaction;
         var tx = Transaction.Load(built.Transaction.RawTxBytes, _network);
-        if (tx.Inputs.Count != 1)
+        // Only our own SIGHASH_ALL signature on an anchors HTLC transaction may cover fee inputs after the HTLC input
+        if (tx.Inputs.Count != 1 && !(allowFeeInputs && context.HasAnchors && sigHash == SigHash.All
+                                      && tx.Inputs.Count > 1))
             throw new ArgumentException("An HTLC transaction has exactly one input", nameof(context));
 
         var witnessScript = new Script((byte[])built.SpentWitnessScript);

@@ -8,8 +8,10 @@ namespace NLightning.Application.Tests.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Local;
 using Channels.Services;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments.Events;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Fees;
 using Domain.Onchain.Models;
@@ -160,10 +162,10 @@ public sealed class LocalAnchorHtlcResolutionTests
     }
 
     [Fact]
-    public async Task Given_SignerRefusesTheCombinedTransaction_When_Resolved_Then_InputsReleasedAndNothingBroadcast()
+    public async Task Given_ProductionSigner_When_Resolved_Then_CombinedTransactionSignedAndValid()
     {
-        // Arrange: the production LocalLightningSigner as it stands (the O7-T3 signer seam: it signs an HTLC transaction
-        // with exactly one input), so our SIGHASH_ALL signature over the combined transaction fails
+        // Arrange: the production LocalLightningSigner, which signs input 0 of a combined anchors HTLC transaction with
+        // SIGHASH_ALL (the O7-T3 signer seam, integrated in wave O7)
         var wallet = new AnchorTestWallet(60_000);
         using var harness = new LocalCommitResolutionHarness(pair =>
         {
@@ -178,13 +180,14 @@ public sealed class LocalAnchorHtlcResolutionTests
         // Act
         await harness.ResolveAsync();
 
-        // Assert: the reservation is given back and the next block tries again
-        Assert.Empty(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
-        Assert.Single(wallet.Released);
-        Assert.Empty(wallet.Reserved);
-        Assert.Equal(0, wallet.SignCount);
+        // Assert: the HTLC-success with the wallet input is broadcast and every input verifies
+        var success = Assert.Single(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        Assert.Equal(2, success.Inputs.Count);
+        harness.AssertAllInputsVerify(success);
+        Assert.Equal(1, wallet.SignCount);
+        Assert.Empty(wallet.Released);
         var vout = harness.VoutOf(OutputDescriptorKind.LocalReceivedHtlc);
-        Assert.Null(harness.CommitmentRow(vout).ResolvingTransactionId);
+        Assert.Equal(new TxId(success.GetHash().ToBytes()), harness.CommitmentRow(vout).ResolvingTransactionId);
     }
 
     [Fact]
@@ -224,6 +227,7 @@ public sealed class LocalAnchorHtlcResolutionTests
         Assert.Null(selection);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => provider.SignAsync(new SignedTransaction(new byte[32], [1]), [],
+                                     new SpentOutput(new byte[32], 0, LightningMoney.Zero, new byte[] { 0 }),
                                      TestContext.Current.CancellationToken));
     }
 

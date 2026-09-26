@@ -1,6 +1,7 @@
 namespace NLightning.Application.Onchain.Resolvers.Local;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Onchain.Models;
 
@@ -42,10 +43,12 @@ public interface IAnchorFeeInputProvider
     /// <summary>
     /// Adds the witnesses of the fee inputs (every input from index 1, each <c>SIGHASH_ALL</c>) to a combined
     /// transaction whose input 0 already carries the HTLC witness; returns the fully signed transaction.
+    /// <paramref name="htlcInput"/> is the commitment output input 0 spends: a P2TR fee input's BIP 341 signature
+    /// commits to every spent output.
     /// </summary>
     /// <exception cref="InvalidOperationException">An input is not a wallet output the wallet can sign.</exception>
     Task<SignedTransaction> SignAsync(SignedTransaction transaction, IReadOnlyList<AnchorFeeInput> feeInputs,
-                                      CancellationToken cancellationToken);
+                                      SpentOutput htlcInput, CancellationToken cancellationToken);
 
     /// <summary>Ends the reservation of <paramref name="owner"/> (idempotent: nothing reserved is not an error).</summary>
     Task ReleaseAsync(AnchorFeeInputOwner owner, CancellationToken cancellationToken);

@@ -9,6 +9,7 @@ using Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Models;
@@ -84,7 +85,7 @@ internal sealed class AnchorTestWallet : IAnchorFeeInputProvider
     }
 
     public Task<SignedTransaction> SignAsync(SignedTransaction transaction, IReadOnlyList<AnchorFeeInput> feeInputs,
-                                             CancellationToken cancellationToken)
+                                             SpentOutput htlcInput, CancellationToken cancellationToken)
     {
         SignCount++;
         var tx = Transaction.Load(transaction.RawTxBytes, Network.Main);

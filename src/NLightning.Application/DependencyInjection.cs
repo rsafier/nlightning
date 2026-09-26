@@ -29,9 +29,11 @@ using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
 using Onchain;
+using Onchain.Anchors;
 using Onchain.Resolvers.Local;
 using Onchain.Resolvers.Remote;
 using Onchain.Resolvers.Revoked;
+using Onchain.Wallet;
 using Payments;
 using Payments.Send;
 using Payments.Switch;
@@ -100,10 +102,13 @@ public static class DependencyInjection
         services.AddPaymentSendServices();
         services.AddChannelSafetyServices();
         services.AddOnchainServices();
+        // O7: the wallet's fee inputs (O7-T1) for anchors HTLC transactions (O7-T3) and CPFP children (O7-T2)
+        services.AddAnchorWalletServices();
         // BOLT 5 resolvers the on-chain executor dispatches to by close kind (ABCD W5-B/C/D)
         services.AddLocalCommitResolutionServices();
         services.AddRemoteCommitResolutionServices();
         services.AddRevokedCommitResolver();
+        services.AddAnchorCpfpServices();
         services.AddSingleton<IPeerManager, PeerManager>();
         // NL-351: own and relayed gossip goes through the peer's outbox (PeerGossipSender resolves it lazily)
         services.AddSingleton<IPeerGossipOutbox>(sp => (IPeerGossipOutbox)sp.GetRequiredService<IPeerManager>());

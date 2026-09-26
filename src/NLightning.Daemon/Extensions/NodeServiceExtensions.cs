@@ -15,6 +15,7 @@ using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Relay;
 using Application.Gossip.Sync;
 using Application.Onchain;
+using Application.Onchain.Anchors;
 using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
@@ -237,6 +238,8 @@ public static class NodeServiceExtensions
         services.Configure<LocalCommitResolverOptions>(configuration.GetSection(OnchainOptions.SectionName));
         services.Configure<RemoteResolutionOptions>(configuration.GetSection(OnchainOptions.SectionName));
         services.Configure<RevokedCommitResolverOptions>(configuration.GetSection(OnchainOptions.SectionName));
+        // O7-T2: the anchor CPFP knobs (Node:Onchain:Anchors)
+        services.Configure<AnchorCpfpOptions>(configuration.GetSection(AnchorCpfpOptions.SectionName));
         services.AddOptions<NodeOptions>()
                 .BindConfiguration("Node")
                 .PostConfigure(options =>

@@ -10,6 +10,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
@@ -850,7 +851,11 @@ public sealed class LocalCommitResolver : IOutputResolver
                     channelId, new HtlcSigningContext(combined.BuildResult, context.Map.PerCommitmentPoint, true));
                 var withHtlcWitness = _htlcTransactionBuilder.AddWitness(model, combined.BuildResult, remoteSignature,
                                                                          localSignature, preimage);
-                var signed = await _feeInputProvider.SignAsync(withHtlcWitness, combined.FeeInputs, cancellationToken);
+                var htlcInput = new SpentOutput(
+                    context.CommitmentTxId, descriptor.Vout, built.SpentAmount,
+                    new Script((byte[])built.SpentWitnessScript).WitHash.ScriptPubKey.ToBytes());
+                var signed = await _feeInputProvider.SignAsync(withHtlcWitness, combined.FeeInputs, htlcInput,
+                                                               cancellationToken);
                 if (signed.TxId != combined.BuildResult.Transaction.TxId)
                     throw new InvalidOperationException("The wallet changed the transaction while signing its inputs");
 
