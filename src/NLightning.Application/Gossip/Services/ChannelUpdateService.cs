@@ -64,8 +64,11 @@ using Interfaces;
 /// provider) and a positive <see cref="GossipOptions.DisableAfter"/>, a timer checks every
 /// <see cref="GetOfflineCheckInterval"/> whether the link of each open announced channel is up. A channel whose link
 /// stayed down for <c>DisableAfter</c> (20 min) gets one <c>disable</c>d update, handed to the relay only (the peer is
-/// away). It is enabled again with a newer update, to the peer and the relay, when the peer's next connection is set up
-/// (<see cref="SendChannelUpdatesToPeerAsync"/>) or a check finds the link up again (after <c>channel_reestablish</c>).
+/// away). It is enabled again with a newer update, to the peer and the relay, only when a check finds the link up again
+/// (after <c>channel_reestablish</c>): the peer's next connection (<see cref="SendChannelUpdatesToPeerAsync"/>) gets
+/// the disabled update as is and restarts the offline time, so a reestablish that fails keeps the channel disabled.
+/// The disable itself is decided again under the channel's lock (same offline start, link still down), so a
+/// reconnection racing a check never relays a disabled update for a link that is back.
 /// The offline time is counted from the first check that finds the link down, in memory: a restart starts it again.
 /// </para>
 /// <para>
@@ -231,10 +234,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             return;
         }
 
+        // A channel disabled while its peer was away stays disabled until a check finds its link up (NL-349)
+        var disabled = _disabledOffline.ContainsKey(channelId);
         var message = reuseUnchanged && _localUpdates.TryGetValue(channelId, out var last)
-                                     && IsCurrent(channel, policy, last.Payload)
+                                     && IsCurrent(channel, policy, last.Payload, disabled)
                           ? last
-                          : CreateChannelUpdate(channel);
+                          : CreateChannelUpdate(channel, disabled);
         _logger.LogInformation("Sending channel_update for channel {ChannelId} ({ShortChannelId}) to peer {Peer}",
                                channelId, channel.ShortChannelId, channel.RemoteNodeId);
 
@@ -256,12 +261,10 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             // Opening it now would send it again
             _sentOnOpen.TryAdd(channelId, 0);
 
-            // The peer is back: a channel disabled while it was away gets a newer enabled update (the last one is
-            // disabled, so it is not reused), to the peer and the relay
+            // The peer is back: the offline time starts again. A channel disabled while it was away stays disabled
+            // (the peer gets that update as is) until a check finds its link up after the reestablish, so a
+            // reestablish that fails never advertises it enabled (NL-349)
             _offlineSince.TryRemove(channelId, out _);
-            if (_disabledOffline.TryRemove(channelId, out _))
-                _logger.LogInformation("Peer {Peer} is back: enabling announced channel {ChannelId} again", peerPubKey,
-                                       channelId);
             await SendChannelUpdateAsync(channelId, reuseUnchanged: true, cancellationToken);
         }
     }
@@ -304,7 +307,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             var now = _timeProvider.GetUtcNow();
             var since = _offlineSince.GetOrAdd(channelId, now);
             if (now - since >= _disableAfter && !_disabledOffline.ContainsKey(channelId))
-                await DisableOfflineChannelAsync(channelId, now - since, cancellationToken);
+                await DisableOfflineChannelAsync(channelId, probe, since, now - since, cancellationToken);
         }
     }
 
@@ -406,14 +409,28 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
     /// <summary>
     /// The disabled update of an announced channel whose peer has been away for <paramref name="offlineFor"/>: to the
-    /// relay only (the peer is away, and learns the enabled one when it is back). Under the channel's lock.
+    /// relay only (the peer is away, and learns the enabled one when it is back). Under the channel's lock, where the
+    /// offline condition is checked again: the peer may have reconnected (and got its update) since the check read the
+    /// probe, which restarts the offline time (<paramref name="offlineSince"/> no longer stored), or the link may be up.
     /// </summary>
-    private async Task DisableOfflineChannelAsync(ChannelId channelId, TimeSpan offlineFor,
+    private async Task DisableOfflineChannelAsync(ChannelId channelId, IPeerLivenessProbe probe,
+                                                  DateTimeOffset offlineSince, TimeSpan offlineFor,
                                                   CancellationToken cancellationToken)
     {
         using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
         if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel) || channel.State != ChannelState.Open
-         || !IsPublic(channel) || !TryGetPolicy(channel, out _, out _) || !_disabledOffline.TryAdd(channelId, 0))
+         || !IsPublic(channel) || !TryGetPolicy(channel, out _, out _))
+            return;
+
+        if (!_offlineSince.TryGetValue(channelId, out var storedSince) || storedSince != offlineSince
+         || await probe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
+        {
+            _logger.LogDebug("Not disabling announced channel {ChannelId}: its peer reconnected or its link is up",
+                             channelId);
+            return;
+        }
+
+        if (!_disabledOffline.TryAdd(channelId, 0))
             return;
 
         try
@@ -578,11 +595,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     }
 
     /// <summary>
-    /// Whether <paramref name="last"/> still says what a new, enabled update would (all but timestamp and signature).
+    /// Whether <paramref name="last"/> still says what a new update would (all but timestamp and signature), enabled
+    /// or <paramref name="disabled"/>.
     /// </summary>
-    private bool IsCurrent(ChannelModel channel, UpdatePolicy policy, ChannelUpdatePayload last)
+    private bool IsCurrent(ChannelModel channel, UpdatePolicy policy, ChannelUpdatePayload last, bool disabled)
     {
-        var current = BuildUnsignedUpdate(channel, policy, disabled: false, last.Timestamp);
+        var current = BuildUnsignedUpdate(channel, policy, disabled, last.Timestamp);
         return current.ChainHash == last.ChainHash && current.ShortChannelId == last.ShortChannelId
             && current.MessageFlags == last.MessageFlags && current.ChannelFlags == last.ChannelFlags
             && current.CltvExpiryDelta == last.CltvExpiryDelta && current.HtlcMinimumMsat == last.HtlcMinimumMsat
