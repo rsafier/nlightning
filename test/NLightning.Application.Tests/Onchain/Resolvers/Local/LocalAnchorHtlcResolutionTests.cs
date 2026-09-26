@@ -121,8 +121,8 @@ public sealed class LocalAnchorHtlcResolutionTests
         Assert.Equal(OutputResolutionState.Broadcast, harness.CommitmentRow(vout).State);
 
         // The selection was asked for the HTLC-success's own weight with a change output, at the floored estimate
-        var (channelId, baseWeight, feerate) = Assert.Single(wallet.Selections);
-        Assert.Equal(harness.Channel.ChannelId, channelId);
+        var (owner, baseWeight, feerate) = Assert.Single(wallet.Selections);
+        Assert.Equal(new AnchorFeeInputOwner(harness.Channel.ChannelId, harness.CommitmentTxId, vout), owner);
         Assert.Equal(253U, feerate);
         Assert.InRange(baseWeight, 700, 900);
 
@@ -213,12 +213,12 @@ public sealed class LocalAnchorHtlcResolutionTests
     public async Task Given_UnavailableProvider_When_Used_Then_NothingSelectedAndReleaseIsHarmless()
     {
         // Arrange
-        var provider = new UnavailableAnchorFeeInputProvider(NullLogger<UnavailableAnchorFeeInputProvider>.Instance);
+        var provider = new UnavailableAnchorFeeInputProvider();
+        var owner = new AnchorFeeInputOwner(RealSigningCommitmentPair.ChannelId, new TxId(new byte[32]), 1);
 
         // Act
-        var selection = await provider.SelectAsync(RealSigningCommitmentPair.ChannelId, 700, 253,
-                                                   TestContext.Current.CancellationToken);
-        await provider.ReleaseAsync([], TestContext.Current.CancellationToken);
+        var selection = await provider.SelectAsync(owner, 700, 253, TestContext.Current.CancellationToken);
+        await provider.ReleaseAsync(owner, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Null(selection);

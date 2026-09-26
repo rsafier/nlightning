@@ -10,7 +10,10 @@ using Domain.Onchain.Models;
 /// <param name="Input">How it is spent.</param>
 /// <param name="DeadlineHeight">The first height at which the cheater can take it (BOLT 5 "expiry" of the revoked
 /// output): <c>confirmation height + to_self_delay</c> for its <c>to_local</c> and its second-level outputs, the HTLC's
-/// <c>cltv_expiry</c> for HTLC outputs; null for our <c>to_remote</c> (no competitor).</param>
+/// <c>cltv_expiry</c> for HTLC outputs; null for our <c>to_remote</c> (no competitor). It is BOLT 5's "expiry" (what
+/// the fee target and the <c>security_delay</c> split count from), not the start of the danger window: an HTLC we
+/// offered can be taken by the cheater's HTLC-success at any time before it, which on an option_anchors channel
+/// <see cref="Isolate"/> covers.</param>
 /// <param name="Isolate">True when the cheater can already spend the output (its danger window is open) and the channel
 /// has option_anchors: its <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> HTLC transactions can then be pinned in the
 /// mempool, so the output is penalized in its own transaction from the start instead of sharing a batch that such a

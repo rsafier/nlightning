@@ -654,7 +654,10 @@ public sealed class RevokedCommitResolver : IOutputResolver
     /// The height from which the cheater can take a revoked output (BOLT 5 "expiry", the split trigger of B5-REV-08):
     /// its <c>to_local</c> once its CSV expires, an HTLC output at its <c>cltv_expiry</c>. The cheater can also race our
     /// offered HTLC with its HTLC-success at any time, but that race only moves the funds to a second-level output that
-    /// is penalized in turn before <c>to_self_delay</c> (plan §3.7), so the batch is split on the expiry only.
+    /// is penalized in turn before <c>to_self_delay</c> (plan §3.7), so the batch is split on the expiry only. So for our
+    /// offered HTLC this is not the start of the danger window; on an option_anchors channel
+    /// <see cref="IsInDangerWindow"/> isolates that output from the first round instead, stricter than BOLT 5 (which
+    /// allows a batch until <c>security_delay</c> before the expiry): it costs a larger fee and never loses funds.
     /// </summary>
     private static uint? GetDeadline(ChannelCloseModel close, CommitmentOutputDescriptor descriptor) =>
         descriptor.Kind switch
