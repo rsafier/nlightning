@@ -46,6 +46,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IWatchedTransactionDbRepository WatchedTransactionDbRepository => inner.WatchedTransactionDbRepository;
     public IWalletAddressesDbRepository WalletAddressesDbRepository => inner.WalletAddressesDbRepository;
     public IUtxoDbRepository UtxoDbRepository => inner.UtxoDbRepository;
+    public IFeeInputReservationDbRepository FeeInputReservationDbRepository => inner.FeeInputReservationDbRepository;
     public IWatchedOutpointDbRepository WatchedOutpointDbRepository => inner.WatchedOutpointDbRepository;
     public IBroadcastTransactionDbRepository BroadcastTransactionDbRepository =>
         inner.BroadcastTransactionDbRepository;

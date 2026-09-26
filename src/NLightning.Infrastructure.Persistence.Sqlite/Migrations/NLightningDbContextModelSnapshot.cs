@@ -106,6 +106,66 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("BroadcastTransactions");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("ChangeAmountSats")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ChangeScript")
+                        .HasMaxLength(64)
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("FeeSats")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("FeeInputReservations");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>
+                {
+                    b.Property<byte[]>("TransactionId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<uint>("Index")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("AddressType")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("AmountSats")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("ReservationId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<byte[]>("ScriptPubKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("TransactionId", "Index");
+
+                    b.HasIndex("ReservationId");
+
+                    b.ToTable("FeeInputReservationInputs");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.Property<byte[]>("TransactionId")
@@ -1152,6 +1212,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("PaymentHops");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationInputEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", null)
+                        .WithMany("Inputs")
+                        .HasForeignKey("ReservationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.UtxoEntity", b =>
                 {
                     b.HasOne("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", "WalletAddress")
@@ -1291,6 +1360,11 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                         .HasForeignKey("PaymentHash")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.FeeInputReservationEntity", b =>
+                {
+                    b.Navigation("Inputs");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Bitcoin.WalletAddressEntity", b =>

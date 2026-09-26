@@ -13,6 +13,14 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 {
     private readonly ConcurrentDictionary<(TxId, uint), UtxoModel> _utxoSet = [];
 
+    // Fee input reservations by outpoint (BOLT 5 plan O7-T1). Kept apart from the UtxoModel so a reorg that removes and
+    // re-adds an output (NL-293) does not drop its reservation.
+    private readonly Dictionary<(TxId, uint), Guid> _feeReservations = [];
+
+    // Serializes every reservation and channel-lock read-check-act, so a fee reservation and a funding never take the
+    // same output
+    private readonly Lock _reservationLock = new();
+
     public void Add(UtxoModel utxoModel)
     {
         if (!_utxoSet.TryAdd((utxoModel.TxId, utxoModel.Index), utxoModel))
@@ -45,9 +53,13 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 
     public LightningMoney GetLockedBalance()
     {
-        return LightningMoney.Satoshis(_utxoSet.Values
-                                               .Where(x => x.LockedToChannelId is not null)
-                                               .Sum(x => x.Amount.Satoshi));
+        lock (_reservationLock)
+        {
+            return LightningMoney.Satoshis(_utxoSet.Values
+                                                   .Where(x => x.LockedToChannelId is not null
+                                                            || _feeReservations.ContainsKey((x.TxId, x.Index)))
+                                                   .Sum(x => x.Amount.Satoshi));
+        }
     }
 
     public void Load(List<UtxoModel> utxoSet)
@@ -58,11 +70,14 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
 
     public List<UtxoModel> LockUtxosToSpendOnChannel(LightningMoney requestFundingAmount, ChannelId channelId)
     {
-        // Get available UTXOs (not already locked for other channels)
-        var availableUtxos = _utxoSet.Values
-                                     .Where(utxo => utxo.LockedToChannelId is null)
-                                     .OrderByDescending(utxo => utxo.Amount.Satoshi)
-                                     .ToList();
+        lock (_reservationLock)
+            return LockUtxosToSpendOnChannelLocked(requestFundingAmount, channelId);
+    }
+
+    private List<UtxoModel> LockUtxosToSpendOnChannelLocked(LightningMoney requestFundingAmount, ChannelId channelId)
+    {
+        // Get available UTXOs (not already locked for other channels nor reserved for a fee)
+        var availableUtxos = GetUnreservedUtxosLocked().OrderByDescending(utxo => utxo.Amount.Satoshi).ToList();
 
         if (availableUtxos.Count == 0)
             throw new InvalidOperationException("No available UTXOs");
@@ -126,6 +141,65 @@ public class UtxoMemoryRepository : IUtxoMemoryRepository
             _utxoSet[(utxo.TxId, utxo.Index)] = utxo;
         }
     }
+
+    public List<UtxoModel> GetUnreservedUtxos()
+    {
+        lock (_reservationLock)
+            return GetUnreservedUtxosLocked();
+    }
+
+    public bool TryReserveForFee(IReadOnlyCollection<(TxId TxId, uint Index)> outpoints, Guid reservationId)
+    {
+        ArgumentNullException.ThrowIfNull(outpoints);
+        if (outpoints.Count == 0)
+            return false;
+
+        lock (_reservationLock)
+        {
+            foreach (var outpoint in outpoints)
+            {
+                if (!_utxoSet.TryGetValue(outpoint, out var utxo) || utxo.LockedToChannelId is not null
+                                                                  || _feeReservations.ContainsKey(outpoint))
+                    return false;
+            }
+
+            foreach (var outpoint in outpoints)
+                _feeReservations[outpoint] = reservationId;
+
+            return true;
+        }
+    }
+
+    public void ReleaseFeeReservation(Guid reservationId)
+    {
+        lock (_reservationLock)
+        {
+            foreach (var outpoint in _feeReservations.Where(x => x.Value == reservationId).Select(x => x.Key).ToList())
+                _feeReservations.Remove(outpoint);
+        }
+    }
+
+    public bool TryGetFeeReservation(TxId txId, uint index, out Guid reservationId)
+    {
+        lock (_reservationLock)
+            return _feeReservations.TryGetValue((txId, index), out reservationId);
+    }
+
+    public void LoadFeeReservations(IEnumerable<(TxId TxId, uint Index, Guid ReservationId)> reservations)
+    {
+        ArgumentNullException.ThrowIfNull(reservations);
+
+        lock (_reservationLock)
+        {
+            foreach (var (txId, index, reservationId) in reservations)
+                _feeReservations[(txId, index)] = reservationId;
+        }
+    }
+
+    private List<UtxoModel> GetUnreservedUtxosLocked() =>
+        _utxoSet.Values
+                .Where(utxo => utxo.LockedToChannelId is null && !_feeReservations.ContainsKey((utxo.TxId, utxo.Index)))
+                .ToList();
 
     private static List<UtxoModel>? BranchAndBound(List<UtxoModel> utxos, LightningMoney targetAmount)
     {

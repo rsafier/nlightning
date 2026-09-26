@@ -19,6 +19,9 @@ public interface IUnitOfWork : IDisposable
     IWalletAddressesDbRepository WalletAddressesDbRepository { get; }
     IUtxoDbRepository UtxoDbRepository { get; }
 
+    // Fee input reservations (BOLT 5 plan O7-T1)
+    IFeeInputReservationDbRepository FeeInputReservationDbRepository { get; }
+
     // On-chain repositories (BOLT 5 plan O0)
     IWatchedOutpointDbRepository WatchedOutpointDbRepository { get; }
     IBroadcastTransactionDbRepository BroadcastTransactionDbRepository { get; }
