@@ -13,6 +13,7 @@ using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Interfaces;
 using Application.Channels.Managers;
 using Application.Channels.Services;
+using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Interfaces;
 using Application.Payments;
 using Application.Payments.Routing;
@@ -33,6 +34,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Gossip.Graph;
 using Domain.Models;
 using Domain.Money;
 using Domain.Node;
@@ -55,7 +57,8 @@ using Infrastructure.Protocol.Onion;
 using Infrastructure.Serialization;
 
 /// <summary>
-/// Three in-process nodes for the W2-C send proof: Bob, Carol and David, with channels Bob–Carol and Carol–David. Each
+/// Three in-process nodes for the W2-C send proof: Bob, Carol and David, with channels Bob–Carol and Carol–David (and a
+/// fourth, Erin, with David–Erin for the BOLT 7 graph proofs, <see cref="PaymentHarnessTopology.Erin"/>). Each
 /// node is a real <see cref="ChannelManager"/> with the production normal-operation handlers, engine ports,
 /// <c>LocalLightningSigner</c>, <see cref="ChannelOperationsService"/> + <see cref="CommitScheduler"/>, the real
 /// Sphinx, hop-payload and failure-onion services, the production payment core (<c>AddPaymentsServices</c>) and
@@ -79,15 +82,23 @@ internal sealed class PaymentHarness : IDisposable
     public static readonly ShortChannelId ScidCarolDavid = new(401, 2, 1);
     public static readonly ShortChannelId ScidBobCarol2 = new(402, 3, 0);
     public static readonly ShortChannelId ScidCarolDavid2 = new(403, 4, 1);
+    public static readonly ShortChannelId ScidDavidErin = new(404, 5, 0);
 
     private static readonly ChannelId s_bobCarolId = new(Enumerable.Repeat((byte)0xBC, 32).ToArray());
     private static readonly ChannelId s_carolDavidId = new(Enumerable.Repeat((byte)0xCD, 32).ToArray());
     private static readonly ChannelId s_bobCarol2Id = new(Enumerable.Repeat((byte)0xBD, 32).ToArray());
     private static readonly ChannelId s_carolDavid2Id = new(Enumerable.Repeat((byte)0xCE, 32).ToArray());
+    private static readonly ChannelId s_davidErinId = new(Enumerable.Repeat((byte)0xDE, 32).ToArray());
 
     public PaymentHarnessNode Bob { get; }
     public PaymentHarnessNode Carol { get; }
     public PaymentHarnessNode David { get; }
+
+    /// <summary>The fourth node, with a David–Erin channel (<see cref="PaymentHarnessTopology.Erin"/>); else null.</summary>
+    public PaymentHarnessNode? Erin { get; }
+
+    /// <summary>Every node of the harness, Bob first.</summary>
+    public IReadOnlyList<PaymentHarnessNode> Nodes { get; }
 
     public PaymentHarness() : this(new PaymentHarnessTopology())
     {
@@ -102,7 +113,7 @@ internal sealed class PaymentHarness : IDisposable
             FeeBaseMsat = 1_000,
             FeeProportionalMillionths = 100,
             CltvExpiryDelta = 40
-        });
+        }, topology.BobUsesGraph);
         Carol = new PaymentHarnessNode("carol", 0xC0, new RoutingOptions
         {
             FeeBaseMsat = 2_000,
@@ -110,7 +121,10 @@ internal sealed class PaymentHarness : IDisposable
             CltvExpiryDelta = 40
         });
         David = new PaymentHarnessNode("david", 0xD0, new RoutingOptions());
-        foreach (var node in (PaymentHarnessNode[])[Bob, Carol, David])
+        if (topology.Erin)
+            Erin = new PaymentHarnessNode("erin", 0xE0, new RoutingOptions());
+        Nodes = Erin is null ? [Bob, Carol, David] : [Bob, Carol, David, Erin];
+        foreach (var node in Nodes)
             node.Network = this;
 
         OpenChannel(Bob, 1, Carol, 1, s_bobCarolId, ScidBobCarol, 0x71, topology.BobCarolFundingSatoshis,
@@ -121,6 +135,8 @@ internal sealed class PaymentHarness : IDisposable
                         topology.BobCarolPushSatoshis);
         if (topology.SecondCarolDavid)
             OpenChannel(Carol, 4, David, 2, s_carolDavid2Id, ScidCarolDavid2, 0x74, FundingSatoshis, PushSatoshis);
+        if (Erin is not null)
+            OpenChannel(David, 3, Erin, 1, s_davidErinId, ScidDavidErin, 0x75, FundingSatoshis, PushSatoshis);
     }
 
     public PaymentHarnessTopology Topology { get; }
@@ -129,6 +145,7 @@ internal sealed class PaymentHarness : IDisposable
     public ChannelId CarolDavid => s_carolDavidId;
     public ChannelId BobCarol2 => s_bobCarol2Id;
     public ChannelId CarolDavid2 => s_carolDavid2Id;
+    public ChannelId DavidErin => s_davidErinId;
 
     /// <summary>
     /// Every (node, channel) end of the harness's channels.
@@ -152,6 +169,12 @@ internal sealed class PaymentHarness : IDisposable
                 yield return (Carol, CarolDavid2);
                 yield return (David, CarolDavid2);
             }
+
+            if (Erin is not null)
+            {
+                yield return (David, DavidErin);
+                yield return (Erin, DavidErin);
+            }
         }
     }
 
@@ -161,7 +184,7 @@ internal sealed class PaymentHarness : IDisposable
     /// </summary>
     public async Task PumpAsync()
     {
-        var nodes = new[] { Bob, Carol, David };
+        var nodes = Nodes;
         for (var steps = 0; steps < 20_000; steps++)
         {
             foreach (var node in nodes)
@@ -201,14 +224,50 @@ internal sealed class PaymentHarness : IDisposable
         return await operation;
     }
 
-    public PaymentHarnessNode NodeFor(CompactPubKey nodeId) =>
-        new[] { Bob, Carol, David }.Single(n => n.NodeId == nodeId);
+    public PaymentHarnessNode NodeFor(CompactPubKey nodeId) => Nodes.Single(n => n.NodeId == nodeId);
+
+    /// <summary>
+    /// The public graph of the harness as its nodes would announce it: every channel with both ends' policies (their
+    /// <see cref="RoutingOptions"/>), for <see cref="PaymentHarnessTopology.BobUsesGraph"/>.
+    /// </summary>
+    public GraphSnapshot BuildGraph(uint timestamp)
+    {
+        var channels = new List<GraphChannel>();
+        void Add(ShortChannelId scid, PaymentHarnessNode a, PaymentHarnessNode b, ulong capacitySat)
+        {
+            var aIsNode1 = GraphChannel.CompareNodeIds(a.NodeId, b.NodeId) < 0;
+            var (node1, node2) = aIsNode1 ? (a, b) : (b, a);
+            channels.Add(new GraphChannel(scid, node1.NodeId, node2.NodeId, node1.NodeId, node2.NodeId, capacitySat)
+            {
+                Policy1 = Policy(node1, 0, capacitySat, timestamp),
+                Policy2 = Policy(node2, 1, capacitySat, timestamp)
+            });
+        }
+
+        Add(ScidBobCarol, Bob, Carol, Topology.BobCarolFundingSatoshis);
+        Add(ScidCarolDavid, Carol, David, FundingSatoshis);
+        if (Topology.SecondBobCarol)
+            Add(ScidBobCarol2, Bob, Carol, Topology.BobCarolFundingSatoshis);
+        if (Topology.SecondCarolDavid)
+            Add(ScidCarolDavid2, Carol, David, FundingSatoshis);
+        if (Erin is not null)
+            Add(ScidDavidErin, David, Erin, FundingSatoshis);
+
+        return new GraphSnapshot(channels, []);
+    }
+
+    private static GraphPolicy Policy(PaymentHarnessNode node, byte direction, ulong capacitySat, uint timestamp)
+    {
+        var routing = node.Options.Routing;
+        return new GraphPolicy(timestamp, ChannelUpdatePayload.MessageFlagMustBeOne, direction,
+                               routing.CltvExpiryDelta, routing.HtlcMinimumMsat, capacitySat * 1_000,
+                               routing.FeeBaseMsat, routing.FeeProportionalMillionths);
+    }
 
     public void Dispose()
     {
-        Bob.Dispose();
-        Carol.Dispose();
-        David.Dispose();
+        foreach (var node in Nodes)
+            node.Dispose();
     }
 
     private static void OpenChannel(PaymentHarnessNode funder, uint funderKeyIndex, PaymentHarnessNode fundee,
@@ -293,6 +352,7 @@ internal sealed class PaymentHarnessNode : IDisposable
     public HarnessForwardingSwitch Switch { get; }
     public IPaymentService PaymentService => _provider.GetRequiredService<IPaymentService>();
     public IInvoiceService InvoiceService => _provider.GetRequiredService<IInvoiceService>();
+    public MissionControl MissionControl => _provider.GetRequiredService<MissionControl>();
 
     /// <summary>The peers' <c>channel_update</c>s the invoice service reads (route hints).</summary>
     public Mock<IChannelUpdateService> ChannelUpdates { get; } = new();
@@ -300,7 +360,15 @@ internal sealed class PaymentHarnessNode : IDisposable
     public PaymentHarness Network { get; set; } = null!;
     public bool OutboxIsEmpty => _outbox.IsEmpty;
 
-    public PaymentHarnessNode(string name, byte seed, RoutingOptions routing)
+    /// <summary>
+    /// The gossip graph this node's payments route over (with <c>usesGraph</c>); the planner reads it on every round.
+    /// </summary>
+    public IGraphView GraphView { get; set; } = GraphSnapshot.Empty;
+
+    /// <summary>Every graph snapshot the node's payments read (to prove a failure never changed it).</summary>
+    public ConcurrentQueue<IGraphView> GraphReads { get; } = new();
+
+    public PaymentHarnessNode(string name, byte seed, RoutingOptions routing, bool usesGraph = false)
     {
         Name = name;
         KeyManager = new HarnessKeyManager(seed);
@@ -332,6 +400,19 @@ internal sealed class PaymentHarnessNode : IDisposable
         services.AddSingleton(ChannelUpdates.Object);
         services.AddPaymentsServices();
         services.AddPaymentSendServices();
+        if (usesGraph)
+        {
+            // A read-only graph with no gossip behind it; no shadow CLTV so the proofs can check exact expiries
+            var graphStore = new Mock<IGraphStore>();
+            graphStore.Setup(g => g.GetSnapshot()).Returns(() =>
+            {
+                GraphReads.Enqueue(GraphView);
+                return GraphView;
+            });
+            services.AddSingleton(graphStore.Object);
+            services.Configure<PaymentSendOptions>(o => o.ShadowCltvMaxOffset = 0);
+        }
+
         services.AddSingleton<HarnessForwardingSwitch>();
         services.AddSingleton<IHtlcSwitch>(sp => sp.GetRequiredService<HarnessForwardingSwitch>());
         services.AddScoped(_ => CreateUnitOfWork());
@@ -715,9 +796,14 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
 /// <param name="SecondCarolDavid">A second Carol–David channel (Carol funds it), <c>ScidCarolDavid2</c>.</param>
 /// <param name="BobCarolFundingSatoshis">The capacity of each Bob–Carol channel.</param>
 /// <param name="BobCarolPushSatoshis">What Bob pushes to Carol on each Bob–Carol channel.</param>
+/// <param name="Erin">A fourth node, Erin, with a David–Erin channel (David funds it), <c>ScidDavidErin</c>.</param>
+/// <param name="BobUsesGraph">Bob's payments route over a gossip graph (<see cref="PaymentHarnessNode.GraphView"/>,
+/// BOLT 7 plan G4-T3).</param>
 [ExcludeFromCodeCoverage]
 internal sealed record PaymentHarnessTopology(
     bool SecondBobCarol = false,
     bool SecondCarolDavid = false,
     ulong BobCarolFundingSatoshis = PaymentHarness.FundingSatoshis,
-    ulong BobCarolPushSatoshis = PaymentHarness.PushSatoshis);
+    ulong BobCarolPushSatoshis = PaymentHarness.PushSatoshis,
+    bool Erin = false,
+    bool BobUsesGraph = false);
