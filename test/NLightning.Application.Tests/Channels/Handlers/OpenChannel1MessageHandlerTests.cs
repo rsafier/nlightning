@@ -36,6 +36,9 @@ public class OpenChannel1MessageHandlerTests
     private readonly FeatureOptions _negotiatedFeatures;
     private readonly ChannelModel _channel;
 
+    private static readonly IOptions<NodeOptions> s_regtestOptions =
+        Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest });
+
     public OpenChannel1MessageHandlerTests()
     {
         _mockChannelFactory = new Mock<IChannelFactory>();
@@ -44,7 +47,7 @@ public class OpenChannel1MessageHandlerTests
 
         _handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
                                                   new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
-                                                  _mockMessageFactory.Object);
+                                                  _mockMessageFactory.Object, nodeOptions: s_regtestOptions);
 
         // Setup test data
         CompactPubKey emptyPubKey = new byte[]
@@ -409,7 +412,53 @@ public class OpenChannel1MessageHandlerTests
         var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
                                                      new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
                                                      _mockMessageFactory.Object,
-                                                     gossipOptions: Options.Create(new GossipOptions()));
+                                                     gossipOptions: Options.Create(new GossipOptions()),
+                                                     nodeOptions: s_regtestOptions);
+
+        // Act
+        var result = await handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
+
+        // Assert
+        Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
+    }
+
+    [Fact]
+    public async Task Given_MainnetWithDefaultGossipOptions_When_APublicOpenChannelArrives_Then_ErrorWithoutAChannel()
+    {
+        // Arrange - BOLT 7: the fundee MUST send announcement_signatures for a public channel, which the D12 gate
+        // forbids on mainnet by default, so the channel is refused instead of silently left unannounced
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object,
+                                                     gossipOptions: Options.Create(new GossipOptions()),
+                                                     nodeOptions: Options.Create(
+                                                         new NodeOptions { BitcoinNetwork = BitcoinNetwork.Mainnet }));
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert
+        Assert.True(_validMessage.Payload.ChannelFlags.AnnounceChannel);
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
+        Assert.Equal("We don't accept public channels", exception.PeerMessage);
+        _mockChannelFactory.Verify(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
+                                                                             It.IsAny<FeatureOptions>(),
+                                                                             It.IsAny<CompactPubKey>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_MainnetWithPublicChannelsAllowed_When_APublicOpenChannelArrives_Then_ItIsAccepted()
+    {
+        // Arrange
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object,
+                                                     gossipOptions: Options.Create(
+                                                         new GossipOptions { AllowPublicChannelsOnMainnet = true }),
+                                                     nodeOptions: Options.Create(
+                                                         new NodeOptions { BitcoinNetwork = BitcoinNetwork.Mainnet }));
 
         // Act
         var result = await handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures, _peerPubKey);
