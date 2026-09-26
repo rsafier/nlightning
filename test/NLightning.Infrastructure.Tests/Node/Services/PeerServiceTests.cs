@@ -5,6 +5,7 @@ namespace NLightning.Infrastructure.Tests.Node.Services;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
+using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
@@ -45,8 +46,25 @@ public class PeerServiceTests
                                chainHashes.Length == 0 ? null : new NetworksTlv(chainHashes));
     }
 
-    [Fact]
-    public void Given_InitializedPeer_When_GossipMessageReceived_Then_MessageIsDroppedAndPeerStaysConnected()
+    public static TheoryData<IMessage> GraphGossipMessages => new()
+    {
+        new ChannelAnnouncementMessage(
+            new ChannelAnnouncementPayload(ChannelAnnouncementPayload.EmptySignature,
+                                           ChannelAnnouncementPayload.EmptySignature,
+                                           ChannelAnnouncementPayload.EmptySignature,
+                                           ChannelAnnouncementPayload.EmptySignature, ReadOnlyMemory<byte>.Empty,
+                                           ChainConstants.Regtest, new ShortChannelId(103, 1, 0), CreateKey(2),
+                                           CreateKey(3), CreateKey(4), CreateKey(5))),
+        new NodeAnnouncementMessage(
+            new NodeAnnouncementPayload(NodeAnnouncementPayload.EmptySignature, ReadOnlyMemory<byte>.Empty,
+                                        1_700_000_000, CreateKey(2), new byte[3],
+                                        NodeAnnouncementPayload.EncodeAlias("alias"), ReadOnlyMemory<byte>.Empty))
+    };
+
+    [Theory]
+    [MemberData(nameof(GraphGossipMessages))]
+    public void Given_InitializedPeer_When_AnnouncementReceived_Then_MessageIsDroppedAndPeerStaysConnected(
+        IMessage announcement)
     {
         // Arrange
         var peerService = CreatePeerService();
@@ -57,12 +75,41 @@ public class PeerServiceTests
         peerService.OnAttentionMessageReceived += (_, _) => attentionMessageRaised = true;
 
         // Act
-        RaiseMessage(new ChannelAnnouncementMessage(new GossipPayload(new byte[] { 1, 2, 3 })));
+        RaiseMessage(announcement);
 
         // Assert
         Assert.False(channelMessageRaised);
         Assert.False(attentionMessageRaised);
         _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public void Given_259_Then_RaisedAsChannelMessage()
+    {
+        // Arrange: BOLT 7 announcement_signatures carries a channel_id and is handled on the channel path (G0-T2)
+        var peerService = CreatePeerService();
+        RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        ChannelMessageEventArgs? raised = null;
+        peerService.OnChannelMessageReceived += (_, args) => raised = args;
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x42, 32).ToArray());
+        var message = new AnnouncementSignaturesMessage(
+            new AnnouncementSignaturesPayload(channelId, new ShortChannelId(103, 1, 0), new byte[64], new byte[64]));
+
+        // Act
+        RaiseMessage(message);
+
+        // Assert
+        Assert.NotNull(raised);
+        Assert.Same(message, raised.Message);
+        Assert.Equal(channelId, raised.Message.Payload.ChannelId);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    private static CompactPubKey CreateKey(byte fill)
+    {
+        var key = Enumerable.Repeat(fill, 33).ToArray();
+        key[0] = 0x02;
+        return new CompactPubKey(key);
     }
 
     [Fact]

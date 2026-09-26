@@ -42,7 +42,10 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new AcceptChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(AcceptChannel2Payload),
                          new AcceptChannel2PayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(AnnouncementSignaturesPayload), new AnnouncementSignaturesPayloadSerializer());
+        _serializers.Add(typeof(ChannelAnnouncementPayload), new ChannelAnnouncementPayloadSerializer());
         _serializers.Add(typeof(ChannelUpdatePayload), new ChannelUpdatePayloadSerializer());
+        _serializers.Add(typeof(NodeAnnouncementPayload), new NodeAnnouncementPayloadSerializer());
         _serializers.Add(typeof(ChannelReadyPayload), new ChannelReadyPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ChannelReestablishPayload),
                          new ChannelReestablishPayloadSerializer(_valueObjectSerializerFactory));
@@ -58,7 +61,6 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new FundingCreatedPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(FundingSignedPayload),
                          new FundingSignedPayloadSerializer(_valueObjectSerializerFactory));
-        _serializers.Add(typeof(GossipPayload), new GossipPayloadSerializer());
         _serializers.Add(typeof(GossipTimestampFilterPayload),
                          new GossipTimestampFilterPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(InitPayload), new InitPayloadSerializer(_featureSetSerializer));
@@ -136,17 +138,15 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.UpdateFulfillHtlc, typeof(UpdateFulfillHtlcPayload));
         _messageTypeDictionary.Add(MessageTypes.Warning, typeof(ErrorPayload));
 
-        // BOLT 7 gossip queries and channel_update are parsed
+        // BOLT 7: gossip queries, announcements and channel_update are parsed
         _messageTypeDictionary.Add(MessageTypes.QueryShortChannelIds, typeof(QueryShortChannelIdsPayload));
         _messageTypeDictionary.Add(MessageTypes.ReplyShortChannelIdsEnd, typeof(ReplyShortChannelIdsEndPayload));
         _messageTypeDictionary.Add(MessageTypes.QueryChannelRange, typeof(QueryChannelRangePayload));
         _messageTypeDictionary.Add(MessageTypes.ReplyChannelRange, typeof(ReplyChannelRangePayload));
         _messageTypeDictionary.Add(MessageTypes.GossipTimestampFilter, typeof(GossipTimestampFilterPayload));
         _messageTypeDictionary.Add(MessageTypes.ChannelUpdate, typeof(ChannelUpdatePayload));
-
-        // The other BOLT 7 gossip messages are kept as raw bytes until gossip is implemented
-        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(GossipPayload));
-        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(GossipPayload));
+        _messageTypeDictionary.Add(MessageTypes.ChannelAnnouncement, typeof(ChannelAnnouncementPayload));
+        _messageTypeDictionary.Add(MessageTypes.NodeAnnouncement, typeof(NodeAnnouncementPayload));
+        _messageTypeDictionary.Add(MessageTypes.AnnouncementSignatures, typeof(AnnouncementSignaturesPayload));
     }
 }

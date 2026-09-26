@@ -135,17 +135,17 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(ChannelUpdateMessage),
                          new ChannelUpdateMessageTypeSerializer(_payloadSerializerFactory));
 
-        // The other BOLT 7 gossip messages are kept as raw bytes until gossip is implemented
-        RegisterGossipSerializer(p => new ChannelAnnouncementMessage(p));
-        RegisterGossipSerializer(p => new NodeAnnouncementMessage(p));
-        RegisterGossipSerializer(p => new AnnouncementSignaturesMessage(p));
-    }
-
-    private void RegisterGossipSerializer<TMessage>(Func<GossipPayload, TMessage> messageFactory)
-        where TMessage : GossipMessage
-    {
-        _serializers.Add(typeof(TMessage),
-                         new GossipMessageTypeSerializer<TMessage>(_payloadSerializerFactory, messageFactory));
+        // BOLT 7 announcements: the Domain payload is the codec (plan D1); announcement_signatures is a channel message
+        _serializers.Add(typeof(ChannelAnnouncementMessage),
+                         new GossipAnnouncementMessageTypeSerializer<ChannelAnnouncementMessage,
+                             ChannelAnnouncementPayload>(_payloadSerializerFactory,
+                                                         p => new ChannelAnnouncementMessage(p)));
+        _serializers.Add(typeof(NodeAnnouncementMessage),
+                         new GossipAnnouncementMessageTypeSerializer<NodeAnnouncementMessage, NodeAnnouncementPayload>(
+                             _payloadSerializerFactory, p => new NodeAnnouncementMessage(p)));
+        _serializers.Add(typeof(AnnouncementSignaturesMessage),
+                         new AnnouncementSignaturesMessageTypeSerializer(_payloadSerializerFactory,
+                                                                         _tlvStreamSerializer));
     }
 
     private void RegisterTypeDictionary()

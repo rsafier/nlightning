@@ -820,5 +820,25 @@ public class MessageFactory : IMessageFactory
         return new ChannelReestablishMessage(payload);
     }
 
+    /// <summary>
+    /// Create an AnnouncementSignatures message (BOLT 7, type 259).
+    /// </summary>
+    /// <param name="channelId">The channel id.</param>
+    /// <param name="shortChannelId">The channel's real short channel id.</param>
+    /// <param name="nodeSignature">Our node-key signature of the channel_announcement hash.</param>
+    /// <param name="bitcoinSignature">Our funding-key signature of the channel_announcement hash.</param>
+    /// <returns>The AnnouncementSignatures message.</returns>
+    /// <seealso cref="AnnouncementSignaturesMessage"/>
+    /// <seealso cref="AnnouncementSignaturesPayload"/>
+    public AnnouncementSignaturesMessage CreateAnnouncementSignaturesMessage(ChannelId channelId,
+                                                                             ShortChannelId shortChannelId,
+                                                                             CompactSignature nodeSignature,
+                                                                             CompactSignature bitcoinSignature)
+    {
+        var payload = new AnnouncementSignaturesPayload(channelId, shortChannelId, nodeSignature, bitcoinSignature);
+
+        return new AnnouncementSignaturesMessage(payload);
+    }
+
     #endregion
 }

@@ -136,4 +136,14 @@ public interface IMessageFactory
                                                               ulong nextRevocationNumber,
                                                               ReadOnlyMemory<byte> yourLastPerCommitmentSecret,
                                                               CompactPubKey myCurrentPerCommitmentPoint);
+
+    /// <summary>
+    /// An <c>announcement_signatures</c> (BOLT 7, type 259) for <paramref name="channelId"/>: our node-key and
+    /// funding-key signatures of the channel's <c>channel_announcement</c> hash.
+    /// </summary>
+    /// <exception cref="ArgumentException">A signature is not 64 bytes.</exception>
+    AnnouncementSignaturesMessage CreateAnnouncementSignaturesMessage(ChannelId channelId,
+                                                                      ShortChannelId shortChannelId,
+                                                                      CompactSignature nodeSignature,
+                                                                      CompactSignature bitcoinSignature);
 }
