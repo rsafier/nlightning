@@ -156,9 +156,25 @@ public sealed class ClnGossipTests : IAsyncLifetime
                                   GossipGraphProbe.PollInterval);
         var traffic = topology.N1Traffic;
 
-        // Act: wait for CLN's seeker to query N1 and for our answers
-        await Poll.UntilAsync(() => Task.FromResult(QueriesAnswered(traffic) > 0), s_gossipTimeout,
-                              "CLN queried N1 and N1 answered", ct, TimeSpan.FromSeconds(2));
+        // Act: wait for CLN's seeker to query N1 and for our answers. CLN probes the first peer it gets with a range
+        // query, but in a full CLN run another test's node was first; so N1 also tells CLN about a channel it does
+        // not know (a channel_update for an unknown SCID, which CLN cannot check without the announcement): CLN's
+        // seeker asks the peer that reported it (80 % per check, every 60 s) with query_short_channel_ids
+        var nudges = 0;
+        var nextNudge = DateTime.UtcNow;
+        await Poll.UntilAsync(async () =>
+        {
+            if (QueriesAnswered(traffic) > 0)
+                return true;
+            if (DateTime.UtcNow >= nextNudge)
+            {
+                await SendUnknownChannelUpdateAsync(topology, ++nudges, ct);
+                nextNudge = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+            }
+
+            return false;
+        }, s_gossipTimeout, "CLN queried N1 and N1 answered", ct, TimeSpan.FromSeconds(2));
+        Console.WriteLine($"CLN queried N1 after {nudges} unknown-channel nudges");
 
         // Assert: every query CLN sent got its complete answer
         Console.WriteLine($"N1's gossip traffic with CLN: {traffic.Describe()}");
@@ -270,6 +286,25 @@ public sealed class ClnGossipTests : IAsyncLifetime
         Assert.Equal(amountMsat, received.AmountReceived?.MilliSatoshi);
         var after = await PublicTopology.WaitSettledAsync(n2, topology.N2ChannelId, ct);
         Assert.Equal(before.LocalBalance.MilliSatoshi + amountMsat, after.LocalBalance.MilliSatoshi);
+    }
+
+    /// <summary>
+    /// N1 sends CLN a <c>channel_update</c> for a short channel id no one announced (a fresh one per
+    /// <paramref name="nudge"/>, below the tip): gossip CLN cannot place, so its seeker asks the reporting peer.
+    /// </summary>
+    private async Task SendUnknownChannelUpdateAsync(ClnGossipTopology topology, int nudge, CancellationToken ct)
+    {
+        var tip = (uint)await _fixture.Bitcoin.Rpc.GetBlockCountAsync(ct);
+        var scid = new ShortChannelId(tip - 10, (uint)(3_000 + nudge), 0);
+        var peer = topology.N1.PeerManager.GetPeer(topology.ClnId);
+        if (peer is null || !peer.TryGetPeerService(out var peerService))
+            return;
+
+        var update = new ChannelUpdateMessage(new ChannelUpdatePayload(
+                         new byte[64], ChainConstants.Regtest, scid,
+                         (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds(), 1, 0, 40, 1_000, 1_000, 1, 100_000_000));
+        Console.WriteLine($"N1 tells CLN about unknown channel {scid}");
+        await peerService.SendGossipMessageAsync(update);
     }
 
     /// <summary>
