@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Extensions;
 
 using Application;
+using Application.Payments.Send;
 using Contracts.Utilities;
 using Daemon.Ipc.Handlers;
 using Daemon.Ipc.Interfaces;
@@ -185,6 +186,9 @@ public static class NodeServiceExtensions
                      return true;
                  })
                 .ValidateOnStart();
+
+        // Fee limit of our outgoing payments (optional section; PaymentSendOptions has defaults)
+        services.Configure<PaymentSendOptions>(configuration.GetSection("Node:Payments"));
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>

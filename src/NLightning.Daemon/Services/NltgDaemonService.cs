@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Services;
 
+using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
@@ -21,12 +22,13 @@ public class NltgDaemonService : BackgroundService
     private readonly INamedPipeIpcService _namedPipeIpcService;
     private readonly IPeerManager _peerManager;
     private readonly NodeOptions _nodeOptions;
+    private readonly IPaymentOutcomeHandler _paymentOutcomeHandler;
     private readonly ISecureKeyManager _secureKeyManager;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IConfiguration configuration, IFeeService feeService,
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
-                             IOptions<NodeOptions> nodeOptions, IPeerManager peerManager,
-                             ISecureKeyManager secureKeyManager)
+                             IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
+                             IPeerManager peerManager, ISecureKeyManager secureKeyManager)
     {
         _blockchainMonitor = blockchainMonitor;
         _configuration = configuration;
@@ -35,6 +37,7 @@ public class NltgDaemonService : BackgroundService
         _namedPipeIpcService = namedPipeIpcService;
         _peerManager = peerManager;
         _nodeOptions = nodeOptions.Value;
+        _paymentOutcomeHandler = paymentOutcomeHandler;
         _secureKeyManager = secureKeyManager;
     }
 
@@ -63,6 +66,9 @@ public class NltgDaemonService : BackgroundService
 
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
+
+            // Every stored channel is in memory now: settle the payments a crash left without an HTLC id (W2-C)
+            await _paymentOutcomeHandler.ReconcileInFlightPaymentsAsync(stoppingToken);
 
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);

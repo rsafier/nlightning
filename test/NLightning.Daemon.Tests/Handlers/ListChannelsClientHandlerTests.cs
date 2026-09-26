@@ -10,6 +10,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Reestablish;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
@@ -31,6 +32,7 @@ public class ListChannelsClientHandlerTests
     private readonly Mock<IChannelMemoryRepository> _channelMemoryRepositoryMock = new();
     private readonly Mock<IChannelDbRepository> _channelDbRepositoryMock = new();
     private readonly Mock<IPeerManager> _peerManagerMock = new();
+    private readonly Mock<IReestablishTracker> _reestablishTrackerMock = new();
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
     private readonly NodeOptions _nodeOptions = new();
 
@@ -227,6 +229,25 @@ public class ListChannelsClientHandlerTests
     }
 
     [Fact]
+    public async Task Given_TrackerReportsOneChannelReestablished_When_HandleAsync_Then_OnlyThatChannelIsReestablished()
+    {
+        // Arrange: the flag comes from the N7 reestablish tracker (true only on the peer's current connection)
+        var reestablished = CreateChannelId(1);
+        var notReestablished = CreateChannelId(2);
+        SetupMemory(CreateChannel(reestablished, s_alice, ChannelState.Open),
+                    CreateChannel(notReestablished, s_bob, ChannelState.Open));
+        _reestablishTrackerMock.Setup(x => x.IsReestablished(reestablished)).Returns(true);
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(Assert.Single(response.Channels, c => c.ChannelId == reestablished).IsReestablished);
+        Assert.False(Assert.Single(response.Channels, c => c.ChannelId == notReestablished).IsReestablished);
+    }
+
+    [Fact]
     public async Task Given_ChannelMarkedDataLoss_When_HandleAsync_Then_DataLossIsReported()
     {
         // Arrange
@@ -243,8 +264,8 @@ public class ListChannelsClientHandlerTests
     }
 
     private ListChannelsClientHandler CreateHandler() =>
-        new(_channelMemoryRepositoryMock.Object, _peerManagerMock.Object, _unitOfWorkMock.Object,
-            Options.Create(_nodeOptions));
+        new(_channelMemoryRepositoryMock.Object, _peerManagerMock.Object, _reestablishTrackerMock.Object,
+            _unitOfWorkMock.Object, Options.Create(_nodeOptions));
 
     private static HtlcRecord Record(HtlcDirection direction, ulong id, HtlcState state, HtlcRemoval? removal = null) =>
         new(direction, id, 10_000, new Hash(Enumerable.Repeat((byte)(id + 1), 32).ToArray()), 500, state, removal);

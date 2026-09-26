@@ -271,9 +271,10 @@ public class PaymentHarnessTests : IDisposable
     [Fact]
     public async Task Given_TheHtlcIdSaveFailsAndNoOriginIsStored_When_CarolFulfills_Then_ThePaymentSucceeds()
     {
-        // Arrange: like production before NL-250, OfferHtlcAsync stores no origin; the save of the HTLC id fails
+        // Arrange: no origin is stored (an HTLC offered before NL-250); the save of the HTLC id fails
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "id lost", null, ct);
+        _harness.Bob.Store.DropOrigins = true;
         _harness.Bob.Payments.FailNextUpdates = 1;
 
         // Act
@@ -295,6 +296,7 @@ public class PaymentHarnessTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.David.InvoiceService.CreateInvoiceAsync(s_amount, "id lost", null, ct);
         Assert.True(await _harness.David.InvoiceService.CancelInvoiceAsync(invoice.PaymentHash, ct));
+        _harness.Bob.Store.DropOrigins = true;
         _harness.Bob.Payments.FailNextUpdates = 1;
 
         // Act
@@ -302,6 +304,7 @@ public class PaymentHarnessTests : IDisposable
                           _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
 
         // Assert
+        Assert.Empty(_harness.Bob.Store.Origins);
         Assert.Equal(PaymentStatus.Failed, payment.Status);
         Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, payment.FailureCode);
         Assert.Equal(1, payment.FailureSourceIndex);

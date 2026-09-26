@@ -5,15 +5,21 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Extensions;
 
+using Application.Channels.Interfaces;
+using Application.Channels.Reestablish;
 using Application.Gossip.Interfaces;
 using Application.Gossip.Services;
 using Application.Payments.Invoices;
+using Application.Payments.Send;
+using Application.Payments.Send.Interfaces;
+using Application.Payments.Switch;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -109,9 +115,46 @@ public class NodeServiceExtensionsTests
     }
 
     [Fact]
+    public void Given_NodeServices_When_Composed_Then_HtlcSwitchSendPathAndReestablishAreWired()
+    {
+        // Arrange: AddApplicationServices registers the W2-A reestablish, W2-B switch and W2-C send services
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Node:Payments:MaxFeeFloorMsat", "7000")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions
+        {
+            ValidateScopes = true,
+            ValidateOnBuild = true
+        });
+
+        // Act
+        var htlcSwitch = provider.GetRequiredService<IHtlcSwitch>();
+        var paymentService = provider.GetRequiredService<IPaymentService>();
+        var outcomeHandler = provider.GetRequiredService<IPaymentOutcomeHandler>();
+        var localHandlers = provider.GetServices<ILocalPaymentHtlcHandler>().ToList();
+        var probe = provider.GetRequiredService<IPeerLivenessProbe>();
+        var tracker = provider.GetRequiredService<IReestablishTracker>();
+        var sendOptions = provider.GetRequiredService<IOptions<PaymentSendOptions>>().Value;
+
+        // Assert
+        Assert.IsType<HtlcSwitch>(htlcSwitch);
+        Assert.IsType<PaymentService>(paymentService);
+        Assert.Same(paymentService, outcomeHandler);
+        Assert.IsType<PaymentOutcomeSwitchHandler>(Assert.Single(localHandlers));
+        Assert.IsType<LinkUpReplayingPeerLivenessProbe>(probe);
+        Assert.IsType<ReestablishTracker>(tracker);
+        Assert.Equal(7_000UL, sendOptions.MaxFeeFloorMsat);
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+        Assert.Contains(ClientCommand.PayInvoice, commands);
+        Assert.Contains(ClientCommand.ListPayments, commands);
+    }
+
+    [Fact]
     public void Given_NodeServicesWithPaymentServices_When_Composed_Then_InvoiceAndPaymentCommandsResolve()
     {
-        // Arrange: IPaymentService comes from the Application payment services (W2-C, not wired yet)
+        // Arrange: mocks stand in for the Application invoice and payment services
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
@@ -147,7 +190,7 @@ public class NodeServiceExtensionsTests
     [Fact]
     public void Given_NodeServicesWithoutPaymentServices_When_BuiltWithValidateOnBuild_Then_TheGraphStillBuilds()
     {
-        // Arrange: a Development host validates every registration at build; IPaymentService is not wired yet
+        // Arrange: a Development host validates every registration at build
         var services = new ServiceCollection();
         services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);

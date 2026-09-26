@@ -54,9 +54,9 @@ public class StartupStateTests
     {
         // Arrange - FundingSignedMessageHandler persisted the channel and the watch (so the tx may be out), then died
         var channel = CreateChannel(ChannelState.V1FundingCreated);
-        _watchedDb.Setup(r => r.GetByTransactionIdAsync(channel.FundingOutput!.TransactionId!.Value))
-                  .ReturnsAsync(new WatchedTransactionModel(channel.ChannelId,
-                                                            channel.FundingOutput.TransactionId.Value, 3));
+        var fundingTxId = channel.FundingOutput!.TransactionId!.Value;
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(fundingTxId))
+                  .ReturnsAsync(new WatchedTransactionModel(channel.ChannelId, fundingTxId, 3));
         var manager = CreateManager();
 
         // Act

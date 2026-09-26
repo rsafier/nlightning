@@ -6,6 +6,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Reestablish;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
@@ -30,6 +31,7 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
 {
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IPeerManager _peerManager;
+    private readonly IReestablishTracker _reestablishTracker;
     private readonly IUnitOfWork _unitOfWork;
     private readonly RoutingOptions _routingOptions;
 
@@ -37,11 +39,13 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
     public ClientCommand Command => ClientCommand.ListChannels;
 
     public ListChannelsClientHandler(IChannelMemoryRepository channelMemoryRepository, IPeerManager peerManager,
-                                     IUnitOfWork unitOfWork, IOptions<NodeOptions> nodeOptions)
+                                     IReestablishTracker reestablishTracker, IUnitOfWork unitOfWork,
+                                     IOptions<NodeOptions> nodeOptions)
     {
         _routingOptions = nodeOptions.Value.Routing;
         _channelMemoryRepository = channelMemoryRepository;
         _peerManager = peerManager;
+        _reestablishTracker = reestablishTracker;
         _unitOfWork = unitOfWork;
     }
 
@@ -94,8 +98,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             OfferedHtlcCount = CountPendingHtlcs(channel, HtlcDirection.Outgoing),
             ReceivedHtlcCount = CountPendingHtlcs(channel, HtlcDirection.Incoming),
             DataLossDetected = channel.DataLossDetected,
-            // channel_reestablish is not implemented yet (BOLT2 plan N7)
-            IsReestablished = false,
+            // True once channel_reestablish was exchanged on the peer's current connection (BOLT2 plan N7)
+            IsReestablished = _reestablishTracker.IsReestablished(channel.ChannelId),
             FeeBaseMsat = _routingOptions.FeeBaseMsat,
             FeePpm = _routingOptions.FeeProportionalMillionths
         };

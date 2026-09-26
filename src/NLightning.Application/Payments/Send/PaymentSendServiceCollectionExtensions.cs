@@ -5,6 +5,7 @@ namespace NLightning.Application.Payments.Send;
 
 using Domain.Payments.Interfaces;
 using Interfaces;
+using Switch;
 
 /// <summary>
 /// Registers the send side of payments (ABCD wave 2, lane W2-C).
@@ -13,8 +14,9 @@ public static class PaymentSendServiceCollectionExtensions
 {
     /// <summary>
     /// Adds <see cref="PaymentService"/> as a singleton, exposed as <see cref="IPaymentService"/> (which turns on the
-    /// <c>payinvoice</c>/<c>listpayments</c> IPC commands) and <see cref="IPaymentOutcomeHandler"/> (the hook the HTLC
-    /// switch calls), plus <see cref="PaymentSendOptions"/> with its defaults. Idempotent.
+    /// <c>payinvoice</c>/<c>listpayments</c> IPC commands) and <see cref="IPaymentOutcomeHandler"/>, which the HTLC
+    /// switch calls through <see cref="PaymentOutcomeSwitchHandler"/> (an <c>ILocalPaymentHtlcHandler</c>), plus
+    /// <see cref="PaymentSendOptions"/> with its defaults. Idempotent.
     /// </summary>
     /// <remarks>
     /// Needs <c>AddPaymentsServices()</c> (route and onion builders, <c>TimeProvider</c>), the channel services
@@ -29,6 +31,7 @@ public static class PaymentSendServiceCollectionExtensions
         services.TryAddSingleton<PaymentService>();
         services.TryAddSingleton<IPaymentService>(sp => sp.GetRequiredService<PaymentService>());
         services.TryAddSingleton<IPaymentOutcomeHandler>(sp => sp.GetRequiredService<PaymentService>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<ILocalPaymentHtlcHandler, PaymentOutcomeSwitchHandler>());
 
         return services;
     }

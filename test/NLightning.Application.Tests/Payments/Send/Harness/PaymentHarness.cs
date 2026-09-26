@@ -439,6 +439,11 @@ internal sealed class HarnessStateStore
     /// <summary>When set, the next <c>ApplyAsync</c> throws (a transition whose save fails); then it clears.</summary>
     public bool FailNextApply { get; set; }
 
+    /// <summary>
+    /// When set, <c>SetHtlcOriginAsync</c> stores nothing: an HTLC offered before NL-250 persisted origins with the add.
+    /// </summary>
+    public bool DropOrigins { get; set; }
+
     public void Seed(ChannelCommitments commitments)
     {
         lock (Sync)
@@ -525,6 +530,12 @@ internal sealed class StagedStateStore(HarnessStateStore store) : IChannelStateD
 
     public Task SetHtlcOriginAsync(ChannelId channelId, HtlcKey htlc, HtlcOrigin origin)
     {
+        lock (store.Sync)
+        {
+            if (store.DropOrigins)
+                return Task.CompletedTask;
+        }
+
         _origins[(channelId, htlc)] = origin;
         return Task.CompletedTask;
     }

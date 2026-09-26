@@ -13,6 +13,7 @@ using ServiceStack;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
+using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Bitcoin.Enums;
@@ -250,6 +251,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             feeServiceStarted = true;
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
+            // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
+            await Services.GetRequiredService<IPaymentOutcomeHandler>().ReconcileInFlightPaymentsAsync(cancellationToken);
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
             _started = true;
         }

@@ -25,6 +25,8 @@ using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
 using Payments;
+using Payments.Send;
+using Payments.Switch;
 using Protocol.Factories;
 
 /// <summary>
@@ -85,6 +87,8 @@ public static class DependencyInjection
         services.AddChannelOperationsServices();
         services.AddGossipServices();
         services.AddPaymentsServices();
+        services.AddHtlcSwitchServices();
+        services.AddPaymentSendServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers
