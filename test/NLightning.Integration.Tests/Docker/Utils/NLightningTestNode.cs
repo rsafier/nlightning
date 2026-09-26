@@ -137,6 +137,12 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public Action<IServiceCollection>? ConfigureServices { get; set; }
 
     /// <summary>
+    /// Runs on every <see cref="StartAsync"/> after the gossip graph is loaded and before <c>PeerManager</c> starts
+    /// (and connects to the stored peers), e.g. to read the graph with no connection up (BOLT 7 Proof G2 (b)).
+    /// </summary>
+    public Func<NLightningTestNode, Task>? BeforePeersStart { get; set; }
+
+    /// <summary>
     /// Extra configuration keys (e.g. <c>Gossip:SyncEnabled</c>, <c>Node:Alias</c>), layered over the test node's own
     /// settings on every <see cref="StartAsync"/>, so a key here overrides a default. Empty by default: the node then
     /// behaves as before. Set them before starting.
@@ -296,6 +302,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // subscribe its pruner before the peers connect and the chain monitor processes a block (G2-T4/G2-T5)
             _gossipGraph = ActivatorUtilities.CreateInstance<GossipGraphHostedService>(Services);
             await _gossipGraph.StartAsync(cancellationToken);
+            if (BeforePeersStart is not null)
+                await BeforePeersStart(this);
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded

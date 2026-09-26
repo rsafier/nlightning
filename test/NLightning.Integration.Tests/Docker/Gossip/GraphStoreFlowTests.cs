@@ -79,15 +79,28 @@ public class GraphStoreFlowTests
                               "our graph has the LND channels with both policies and the LND nodes", ct,
                               GossipGraphProbe.PollInterval);
 
-        // Act: restart; the node has no channels, so it connects to nobody at startup
+        // Act: restart and read the graph before PeerManager starts (it reconnects to every stored peer, alice too)
+        bool? connectedAtRead = null;
+        bool? graphAtRead = null;
+        node.BeforePeersStart = async n =>
+        {
+            connectedAtRead = n.IsConnectedTo(alice.LocalNodePubKeyBytes);
+            graphAtRead = await GossipGraphProbe.OurGraphHasAsync(n, scids, lndNodes);
+        };
         await node.StopAsync();
-        await node.StartAsync(ct);
+        try
+        {
+            await node.StartAsync(ct);
+        }
+        finally
+        {
+            node.BeforePeersStart = null;
+        }
 
-        // Assert: read before any connection
-        // through listgraphchannels/listnodes (IPC 18/17), which read the in-memory GraphStore: this is its reload
-        Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
-        Assert.True(await GossipGraphProbe.OurGraphHasAsync(node, scids, lndNodes));
-        Assert.False(node.IsConnectedTo(alice.LocalNodePubKeyBytes));
+        // Assert: read with no connection through listgraphchannels/listnodes (IPC 18/17), which read the in-memory
+        // GraphStore: this is its reload from the database
+        Assert.False(connectedAtRead);
+        Assert.True(graphAtRead);
     }
 
     /// <summary>Proof G2 (c).</summary>
