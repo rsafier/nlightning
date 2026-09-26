@@ -210,6 +210,65 @@ public class ChannelManagerNormalOperationTests
     }
 
     [Fact]
+    public async Task Given_HandlerFailsTheChannelWithBroadcast_When_Handled_Then_PreparedUnderTheLockAndPublishedAfter()
+    {
+        // Arrange (NL-271 remainder): the failure service persists Failed and the commitment's broadcast row under the
+        // manager's lock (one save), and publishes only after it is released
+        var message = CreateMessage(MessageTypes.RevokeAndAck);
+        var failure = new ChannelFailedException(TestChannelId, "[B2-RE-14] peer lost its state", "state lost")
+        {
+            MustBroadcast = true
+        };
+        var handler = new Mock<IChannelMessageHandler<RevokeAndAckMessage>>();
+        handler.Setup(h => h.HandleAsync(It.IsAny<RevokeAndAckMessage>(), It.IsAny<ChannelState>(),
+                                         It.IsAny<FeatureOptions>(), It.IsAny<CompactPubKey>()))
+               .ThrowsAsync(failure);
+        _services.AddSingleton(handler.Object);
+        var lockHeldWhilePreparing = false;
+        var lockFreeWhileCompleting = false;
+        var failureService = new Mock<IChannelFailureService>();
+        failureService.Setup(f => f.PrepareFailureUnderLockAsync(TestChannelId, It.IsAny<ChannelFailureRequest>(),
+                                                                 It.IsAny<CancellationToken>()))
+                      .Returns(async (ChannelId id, ChannelFailureRequest request, CancellationToken _) =>
+                       {
+                           using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+                           try
+                           {
+                               using var probe = await _lockProvider.AcquireAsync(id, cts.Token);
+                           }
+                           catch (OperationCanceledException)
+                           {
+                               lockHeldWhilePreparing = true;
+                           }
+
+                           Assert.True(request.Broadcast);
+                           return new PreparedChannelFailure(id, request);
+                       });
+        failureService.Setup(f => f.CompleteFailureAsync(It.IsAny<PreparedChannelFailure>(), false,
+                                                         It.IsAny<CancellationToken>()))
+                      .Returns(async () =>
+                       {
+                           using var probe = await _lockProvider.AcquireAsync(TestChannelId).WaitAsync(s_timeout);
+                           lockFreeWhileCompleting = true;
+                           return new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, null);
+                       });
+        _services.AddSingleton(failureService.Object);
+        var channelManager = CreateChannelManager();
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelFailedException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           PeerNodeId));
+
+        // Assert: prepared under the lock, completed after it; the lock-taking path is not used
+        Assert.Same(failure, exception);
+        Assert.True(lockHeldWhilePreparing);
+        Assert.True(lockFreeWhileCompleting);
+        failureService.Verify(f => f.FailChannelAsync(It.IsAny<ChannelFailedException>(),
+                                                      It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
     public async Task Given_FailedChannel_When_UpdateArrives_Then_TheChannelErrorIsRaisedAgain()
     {
         // Arrange - a failed channel ignores every message and re-sends its error (B2-RE-05), without the handler

@@ -28,7 +28,11 @@ public sealed class ChannelSafetyOptions
     /// </summary>
     public uint? FailBackBlocks { get; set; }
 
-    /// <summary>Confirmations after which our broadcast commitment closes the channel (<c>Closed</c>).</summary>
+    /// <summary>
+    /// Not used any more (BOLT 5 plan O2-T5): a confirmed commitment moves the channel to <c>OnchainResolving</c>
+    /// through the on-chain watcher, and the channel is <c>Closed</c> once its outputs are irrevocably resolved. Kept so
+    /// existing configuration files still bind.
+    /// </summary>
     public uint CommitmentConfirmationDepth { get; set; } = 1;
 
     /// <summary>The deadline policy for these options and the node's routing options.</summary>
