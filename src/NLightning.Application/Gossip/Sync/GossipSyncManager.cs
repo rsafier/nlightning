@@ -38,7 +38,9 @@ using Metrics;
 /// peers are connected, becomes a sync peer: <c>query_channel_range(0, tip + 1)</c> (with <c>query_option</c>
 /// timestamps when both sides offer <c>gossip_queries_ex</c>); the replies are checked (<see cref="RangeReplyCollector"/>,
 /// a violation gets a <c>warning</c> and ends the sync); the channels we lack (or, with timestamps, whose updates are
-/// newer) are asked for with <c>query_short_channel_ids</c> in batches that fit one message; then
+/// newer) are asked for with <c>query_short_channel_ids</c> in batches that fit one message, each batch checked against
+/// the graph again right before it goes out (what another sync peer delivered meanwhile is not asked for twice,
+/// NL-381); then
 /// <c>gossip_timestamp_filter(start - backlog, 0xFFFFFFFF)</c> (see below);</item>
 /// <item>another <c>gossip_queries</c> peer gets <c>gossip_timestamp_filter(now, 0xFFFFFFFF)</c> (new gossip only);</item>
 /// <item>a peer without <c>gossip_queries</c> gets <c>gossip_timestamp_filter(0xFFFFFFFF, 0)</c> (B7-Q-06).</item>
@@ -621,13 +623,39 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 session.ExpectReplies(null);
             }
 
-            var wanted = Diff(collector.Entries, withTimestamps);
+            var entries = collector.Entries;
+            var remoteTimestamps = entries.ToDictionary(e => e.Key, e => e.Value);
+            var wanted = Diff(entries, withTimestamps);
             _logger.LogInformation("Peer {Peer} has {Count} channels; asking for {Wanted}", session.Peer.PeerPubKey,
-                                   collector.Entries.Count, wanted.Count);
+                                   entries.Count, wanted.Count);
 
-            foreach (var batch in wanted.Chunk(GetMaxScidsPerQuery(withTimestamps)))
+            // Each batch is diffed again right before it goes out: what another sync peer delivered meanwhile (all of
+            // them start together after a restart or with an empty graph) is not asked for twice (NL-381)
+            var maxPerQuery = GetMaxScidsPerQuery(withTimestamps);
+            var next = 0;
+            var asked = 0;
+            while (next < wanted.Count)
+            {
+                var batch = new List<(ShortChannelId, ulong?)>(Math.Min(maxPerQuery, wanted.Count - next));
+                for (; next < wanted.Count && batch.Count < maxPerQuery; next++)
+                {
+                    var (shortChannelId, _) = wanted[next];
+                    if (Want(shortChannelId, remoteTimestamps.GetValueOrDefault(shortChannelId), withTimestamps) is
+                        { } entry)
+                        batch.Add(entry);
+                }
+
+                if (batch.Count == 0)
+                    break;
+
+                asked += batch.Count;
                 if (!await RunScidQueryAsync(session, batch, cancellationToken))
                     return;
+            }
+
+            if (asked < wanted.Count)
+                _logger.LogInformation("Asked peer {Peer} for {Asked} of the {Wanted} channels (the rest arrived from "
+                                     + "other peers meanwhile)", session.Peer.PeerPubKey, asked, wanted.Count);
 
             session.LastRangeSyncAt = _timeProvider.GetUtcNow();
             completed = true;
@@ -693,27 +721,33 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         var wanted = new List<(ShortChannelId, ulong?)>();
         foreach (var (shortChannelId, timestamps) in entries)
         {
-            if (!_graphStore.TryGetChannel(shortChannelId, out var channel))
-            {
-                wanted.Add((shortChannelId, withFlags ? GossipQueryCodec.QueryFlagAll : null));
-                continue;
-            }
-
-            // B7-Q-01: never ask for a spent channel; without timestamps a known channel's updates cannot be compared
-            // (the timestamp filter's backlog brings the newer ones)
-            if (channel.SpentAtHeight is not null || !withFlags || timestamps is not { } remote)
-                continue;
-
-            ulong flag = 0;
-            if (remote.Node1 > (channel.Policy1?.Timestamp ?? 0))
-                flag |= GossipQueryCodec.QueryFlagChannelUpdate1;
-            if (remote.Node2 > (channel.Policy2?.Timestamp ?? 0))
-                flag |= GossipQueryCodec.QueryFlagChannelUpdate2;
-            if (flag != 0)
-                wanted.Add((shortChannelId, flag));
+            if (Want(shortChannelId, timestamps, withFlags) is { } entry)
+                wanted.Add(entry);
         }
 
         return wanted;
+    }
+
+    /// <summary>
+    /// Whether to ask for <paramref name="shortChannelId"/> now, and with which query flag: an unknown channel with
+    /// everything; a known one only with timestamps and only its directions whose update is newer; never a spent one.
+    /// </summary>
+    private (ShortChannelId, ulong?)? Want(ShortChannelId shortChannelId, ChannelUpdatePair? timestamps, bool withFlags)
+    {
+        if (!_graphStore.TryGetChannel(shortChannelId, out var channel))
+            return (shortChannelId, withFlags ? GossipQueryCodec.QueryFlagAll : null);
+
+        // B7-Q-01: never ask for a spent channel; without timestamps a known channel's updates cannot be compared
+        // (the timestamp filter's backlog brings the newer ones)
+        if (channel.SpentAtHeight is not null || !withFlags || timestamps is not { } remote)
+            return null;
+
+        ulong flag = 0;
+        if (remote.Node1 > (channel.Policy1?.Timestamp ?? 0))
+            flag |= GossipQueryCodec.QueryFlagChannelUpdate1;
+        if (remote.Node2 > (channel.Policy2?.Timestamp ?? 0))
+            flag |= GossipQueryCodec.QueryFlagChannelUpdate2;
+        return flag != 0 ? (shortChannelId, flag) : null;
     }
 
     private async Task<bool> RunScidQueryAsync(PeerSession session, IReadOnlyList<(ShortChannelId Id, ulong? Flag)> entries,

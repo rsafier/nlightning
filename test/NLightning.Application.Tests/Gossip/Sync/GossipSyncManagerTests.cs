@@ -164,6 +164,54 @@ public class GossipSyncManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ChannelsLearnedDuringTheSync_When_TheNextBatchGoesOut_Then_TheyAreNotAskedForAgain()
+    {
+        // Arrange: NL-381, batches of 2; while the first batch is out, another sync peer delivers ids[2] and ids[3]
+        var manager = CreateManager(o => o.MaxScidsPerQuery = 2);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        var ids = Enumerable.Range(0, 5).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        Assert.Equal(ids[..2], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+
+        // Act
+        _graph.AddSignedChannel(ids[2], SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddSignedChannel(ids[3], SyncTestGraph.NodeA, SyncTestGraph.NodeC);
+        manager.HandleMessage(peer, End());
+
+        // Assert: only ids[4] is left to ask for, then the sync ends as usual
+        Assert.Equal(ids[4..], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+        Assert.True(manager.HasCompletedInitialSync);
+    }
+
+    [Fact]
+    public async Task Given_EveryRemainingChannelLearnedDuringTheSync_When_TheBatchEnds_Then_TheSyncCompletesWithoutAnotherQuery()
+    {
+        // Arrange
+        var manager = CreateManager(o => o.MaxScidsPerQuery = 2);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        var ids = Enumerable.Range(0, 4).Select(i => new ShortChannelId(100 + (uint)i, 0, 0)).ToArray();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        await peer.NextAsync<QueryShortChannelIdsMessage>();
+
+        // Act
+        _graph.AddSignedChannel(ids[2], SyncTestGraph.NodeA, SyncTestGraph.NodeB);
+        _graph.AddSignedChannel(ids[3], SyncTestGraph.NodeA, SyncTestGraph.NodeC);
+        manager.HandleMessage(peer, End());
+
+        // Assert: straight to the filter
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+        Assert.True(manager.HasCompletedInitialSync);
+    }
+
+    [Fact]
     public async Task Given_GossipQueriesExOnBothSides_When_Synced_Then_TimestampsDecideTheQueryFlags()
     {
         // Arrange: G3-T4, a known channel with a newer direction-2 update at the peer, one up to date, one unknown
