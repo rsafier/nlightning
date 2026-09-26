@@ -32,6 +32,7 @@ using Domain.Protocol.ValueObjects;
 using Handlers;
 using Infrastructure;
 using Infrastructure.Bitcoin;
+using Infrastructure.Bitcoin.Gossip;
 using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Onion;
@@ -242,6 +243,9 @@ public static class NodeServiceExtensions
 
         // How long the final hop holds an incomplete basic_mpp HTLC set before mpp_timeout (optional; default 60 s)
         services.Configure<HtlcSwitchOptions>(configuration.GetSection("Node:Switch"));
+
+        // BOLT 7 funding output lookups of channel announcements (optional Gossip section; defaults apply, G2-T2)
+        services.Configure<FundingOutputLookupOptions>(configuration.GetSection("Gossip"));
 
         // Node:Routing is bound as part of NodeOptions (and validated with it); expose the same instance on its own
         services.AddSingleton<IOptions<RoutingOptions>>(sp =>

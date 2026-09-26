@@ -2,7 +2,7 @@ using System.Numerics;
 
 namespace NLightning.Domain.Gossip;
 
-using Enums;
+using Domain.Enums;
 
 /// <summary>
 /// Feature-bit checks for gossip (BOLT 7 B7-CA-03, B7-NA-04): an unknown <b>even</b> bit in a

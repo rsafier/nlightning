@@ -13,6 +13,7 @@ using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
+using Gossip;
 using Infrastructure.Crypto.Interfaces;
 using Onion;
 using Services;
@@ -56,6 +57,9 @@ public static class DependencyInjection
 
         // BOLT 4 attributable failures and hold times (onion M3b); the switch uses it when OptionAttributionData is advertised
         services.AddOnionAttributionServices();
+
+        // BOLT 7 gossip signature verification and the funding output lookup of channel announcements (G0-T3, G2-T2)
+        services.AddGossipBitcoinServices();
 
         // The signer holds the node's secrets; ISecureKeyManager is registered by the host
         services.AddSingleton<ILightningSigner>(sp =>
