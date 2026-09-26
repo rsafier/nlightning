@@ -151,6 +151,113 @@ public class FeeServiceSourceTests
         Assert.Equal(3_000, service.GetCachedFeeRatePerKw().Satoshi);
     }
 
+    [Theory]
+    [InlineData(1u, 10_000)] // fastestFee 40 sat/vB
+    [InlineData(2u, 5_000)] // halfHourFee 20
+    [InlineData(3u, 5_000)]
+    [InlineData(6u, 2_500)] // hourFee 10
+    [InlineData(36u, 2_500)]
+    [InlineData(144u, 1_250)] // economyFee 5
+    [InlineData(1_000u, 1_250)]
+    public async Task Given_MempoolSpaceBuckets_When_EstimatingForATarget_Then_TheBucketOfTheTargetIsUsed(
+        uint target, long expectedPerKw)
+    {
+        // Arrange (NL-296): one response, every bucket in it
+        var (handler, requests) = CreateHandler(
+            """{ "fastestFee": 40, "halfHourFee": 20, "hourFee": 10, "economyFee": 5, "minimumFee": 1 }""");
+        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" }, handler);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(target, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(expectedPerKw, feeRate.Satoshi);
+        Assert.Single(requests);
+    }
+
+    [Fact]
+    public async Task Given_ApiWithoutTheTargetsBucket_When_EstimatingForATarget_Then_TheNodeWideRateIsUsed()
+    {
+        // Arrange: a custom API with only the preferred property
+        var (handler, _) = CreateHandler("""{ "fastestFee": 8 }""");
+        var service = CreateService(new FeeEstimationOptions { CacheFile = "fee-source-test.bin" }, handler);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(36, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(2_000, feeRate.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_BitcoindSource_When_EstimatingForTargets_Then_EstimateSmartFeeIsAskedPerTargetAndCached()
+    {
+        // Arrange (NL-296): a faster target gets a higher rate
+        var calls = new List<int>();
+        var service = new FeeService(new FeeEstimationOptions
+        {
+            Source = FeeEstimationOptions.SourceBitcoind,
+            ConfirmationTarget = 6,
+            CacheFile = "fee-source-test.bin"
+        }, new HttpClient(new Mock<HttpMessageHandler>(MockBehavior.Strict).Object),
+                                     NullLogger<FeeService>.Instance,
+                                     (target, _, _) =>
+                                     {
+                                         calls.Add(target);
+                                         return Task.FromResult<decimal?>(target == 1 ? 50m : 5m);
+                                     });
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var fast = await service.GetFeeRatePerKwAsync(1, ct);
+        var slow = await service.GetFeeRatePerKwAsync(36, ct);
+        var fastAgain = await service.GetFeeRatePerKwAsync(1, ct);
+
+        // Assert
+        Assert.Equal(12_500, fast.Satoshi);
+        Assert.Equal(1_250, slow.Satoshi);
+        Assert.Equal(12_500, fastAgain.Satoshi);
+        Assert.Equal([1, 36], calls);
+    }
+
+    [Fact]
+    public async Task Given_BitcoindWithoutATargetEstimate_When_EstimatingForATarget_Then_TheNodeWideRateIsUsed()
+    {
+        // Arrange: no estimate for 2 blocks, 4 sat/vB for the node-wide target
+        var service = new FeeService(new FeeEstimationOptions
+        {
+            Source = FeeEstimationOptions.SourceBitcoind,
+            ConfirmationTarget = 6,
+            CacheFile = "fee-source-test.bin"
+        }, new HttpClient(new Mock<HttpMessageHandler>(MockBehavior.Strict).Object),
+                                     NullLogger<FeeService>.Instance,
+                                     (target, _, _) => Task.FromResult<decimal?>(target == 6 ? 4m : null));
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(2, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1_000, feeRate.Satoshi);
+    }
+
+    [Fact]
+    public async Task Given_FixedSource_When_EstimatingForATarget_Then_TheFixedRateIsUsed()
+    {
+        // Arrange
+        var service = CreateService(new FeeEstimationOptions
+        {
+            Source = "fixed",
+            FixedFeeRatePerKw = 777,
+            CacheFile = "fee-source-test.bin"
+        }, new Mock<HttpMessageHandler>(MockBehavior.Strict).Object);
+
+        // Act
+        var feeRate = await service.GetFeeRatePerKwAsync(1, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(777, feeRate.Satoshi);
+    }
+
     [Fact]
     public void Given_ANeverStartedService_When_ReadingTheCachedRate_Then_ItIsTheDefaultFallback()
     {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
@@ -19,12 +20,18 @@ using Options;
 /// the rate is <see cref="FeeEstimationOptions.FallbackFeeRatePerKw"/>, never 0.
 /// </summary>
 /// <remarks>
+/// <para>Per confirmation target (<see cref="GetFeeRatePerKwAsync(uint, CancellationToken)"/>, BOLT 5 plan O6-T1,
+/// NL-296): <see cref="FeeEstimationOptions.SourceBitcoind"/> asks <c>estimatesmartfee</c> for that target (cached per
+/// target like the node-wide rate); <see cref="FeeEstimationOptions.SourceHttp"/> picks the mempool.space bucket of the
+/// last response that fits the target (<see cref="GetHttpBucket"/>); <see cref="FeeEstimationOptions.SourceFixed"/> is
+/// the fixed rate. Without a per-target estimate the node-wide rate is answered.</para>
 /// Register it as one singleton (<see cref="FeeServiceCollectionExtensions.AddFeeServices"/>): the host starts that
 /// instance, and every consumer must read its cache.
 /// </remarks>
 public class FeeService : IFeeService
 {
     private const string FeeCacheFileName = "fee_cache.bin";
+    private static readonly string[] s_httpBuckets = ["fastestFee", "halfHourFee", "hourFee", "economyFee"];
     private static readonly TimeSpan s_defaultCacheExpiration = TimeSpan.FromMinutes(5);
 
     private DateTime _lastFetchTime = DateTime.MinValue;
@@ -38,6 +45,8 @@ public class FeeService : IFeeService
     private readonly string _cacheFilePath;
     private readonly FeeEstimationOptions _feeEstimationOptions;
     private readonly Func<int, EstimateSmartFeeMode, CancellationToken, Task<decimal?>>? _bitcoindEstimator;
+    private readonly ConcurrentDictionary<uint, (long FeeRatePerKw, DateTime FetchedAt)> _targetCache = new();
+    private volatile IReadOnlyDictionary<string, long> _httpBuckets = new Dictionary<string, long>();
 
     /// <remarks>
     /// <paramref name="bitcoinOptions"/> and <paramref name="nodeOptions"/> are only used by
@@ -130,6 +139,67 @@ public class FeeService : IFeeService
         return GetCachedFeeRatePerKw();
     }
 
+    /// <inheritdoc />
+    public async Task<LightningMoney> GetFeeRatePerKwAsync(uint confirmationTarget,
+                                                           CancellationToken cancellationToken = default)
+    {
+        var target = Math.Clamp(confirmationTarget, 1u, MaxConfirmationTarget);
+        if (_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceBitcoind) && _bitcoindEstimator is not null)
+        {
+            if (_targetCache.TryGetValue(target, out var cached)
+             && DateTime.UtcNow - cached.FetchedAt <= _cacheTimeExpiration)
+                return LightningMoney.Satoshis(cached.FeeRatePerKw);
+
+            try
+            {
+                var satPerVByte = await _bitcoindEstimator((int)target, GetEstimateMode(), cancellationToken);
+                if (satPerVByte is { } rate)
+                {
+                    var perKw = FeeRateConverter.SatPerVByteToSatPerKw(rate);
+                    _targetCache[target] = (perKw, DateTime.UtcNow);
+                    return LightningMoney.Satoshis(perKw);
+                }
+
+                if (_logger.IsEnabled(LogLevel.Debug))
+                    _logger.LogDebug("bitcoind has no fee estimate for {Target} blocks; using the node-wide rate",
+                                     target);
+            }
+            catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning(e, "Fetching the fee rate for {Target} blocks from bitcoind failed; using the "
+                                    + "node-wide rate", target);
+            }
+
+            return await GetFeeRatePerKwAsync(cancellationToken);
+        }
+
+        var nodeWide = await GetFeeRatePerKwAsync(cancellationToken);
+        if (!_feeEstimationOptions.IsSource(FeeEstimationOptions.SourceHttp))
+            return nodeWide;
+
+        var buckets = _httpBuckets;
+        return GetHttpBucket(target) is { } bucket && buckets.TryGetValue(bucket, out var bucketRate)
+                   ? LightningMoney.Satoshis(bucketRate)
+                   : nodeWide;
+    }
+
+    /// <summary>
+    /// The mempool.space bucket for a confirmation target: <c>fastestFee</c> (next block) for 1, <c>halfHourFee</c> up to
+    /// 3, <c>hourFee</c> up to 6 and below <see cref="MaxConfirmationTarget"/> (a slow sweep still wants to confirm
+    /// within hours, not days), <c>economyFee</c> from <see cref="MaxConfirmationTarget"/> on.
+    /// </summary>
+    internal static string? GetHttpBucket(uint confirmationTarget) => confirmationTarget switch
+    {
+        0 => null,
+        1 => "fastestFee",
+        <= 3 => "halfHourFee",
+        < MaxConfirmationTarget => "hourFee",
+        _ => "economyFee"
+    };
+
+    /// <summary>The largest confirmation target asked for (a day of blocks).</summary>
+    internal const uint MaxConfirmationTarget = 144;
+
     /// <summary>
     /// The cached rate (sat/kw in <see cref="LightningMoney.Satoshi"/>), as a new value, so a caller can't change the
     /// cache.
@@ -193,16 +263,18 @@ public class FeeService : IFeeService
             throw new InvalidOperationException(
                 "FeeEstimation:Source is Bitcoind, but the Bitcoin RPC settings or the node's network are missing.");
 
-        var mode = _feeEstimationOptions.EstimateMode.Equals("ECONOMICAL", StringComparison.OrdinalIgnoreCase)
-                       ? EstimateSmartFeeMode.Economical
-                       : EstimateSmartFeeMode.Conservative;
         var satPerVByte =
-            await _bitcoindEstimator(_feeEstimationOptions.ConfirmationTarget, mode, cancellationToken)
+            await _bitcoindEstimator(_feeEstimationOptions.ConfirmationTarget, GetEstimateMode(), cancellationToken)
          ?? throw new InvalidOperationException(
                 $"bitcoind has no fee estimate for {_feeEstimationOptions.ConfirmationTarget} blocks yet.");
 
         return FeeRateConverter.SatPerVByteToSatPerKw(satPerVByte);
     }
+
+    private EstimateSmartFeeMode GetEstimateMode() =>
+        _feeEstimationOptions.EstimateMode.Equals("ECONOMICAL", StringComparison.OrdinalIgnoreCase)
+            ? EstimateSmartFeeMode.Economical
+            : EstimateSmartFeeMode.Conservative;
 
     private async Task<long> FetchFeeRateFromApiAsync(CancellationToken cancellationToken)
     {
@@ -244,6 +316,16 @@ public class FeeService : IFeeService
             throw new InvalidOperationException(
                 $"Could not extract {_feeEstimationOptions.PreferredFeeRate} from API response.");
         }
+
+        // The other buckets of the same response, for the per-target estimates (NL-296)
+        var buckets = new Dictionary<string, long>();
+        foreach (var bucket in s_httpBuckets)
+        {
+            if (root.TryGetProperty(bucket, out var element) && element.TryGetDecimal(out var bucketRate))
+                buckets[bucket] = FeeRateConverter.ToSatPerKw(bucketRate, _feeEstimationOptions.RateUnit);
+        }
+
+        _httpBuckets = buckets;
 
         // From the API's unit (sat/vB for mempool.space) to sat/kw (NL-288)
         return FeeRateConverter.ToSatPerKw(feeRate, _feeEstimationOptions.RateUnit);

@@ -150,6 +150,40 @@ public class SweepFeePolicyTests
         Assert.True(decision.Capped);
     }
 
+    [Theory]
+    // input, old fee, estimate, penalty, deadline → expected fee (null: cannot be replaced), capped
+    [InlineData(100_000ul, 1_000ul, 253u, false, null, 1_250ul, false)] // BIP 125: x1.25 beats +150 sat relay
+    [InlineData(100_000ul, 100ul, 253u, false, null, 250ul, false)] // BIP 125: +150 sat relay beats x1.25
+    [InlineData(100_000ul, 1_000ul, 10_000u, false, null, 6_000ul, false)] // the estimate beats the minimum
+    [InlineData(10_000ul, 1_000ul, 20_000u, false, null, 5_000ul, true)] // capped at half the value
+    [InlineData(3_000ul, 1_400ul, 253u, false, null, null, false)] // the minimum is above the 50 % cap
+    [InlineData(3_000ul, 1_400ul, 253u, true, 1_010u, 1_750ul, false)] // a penalty near its deadline may pay more
+    [InlineData(3_000ul, 1_400ul, 253u, true, 1_100u, null, false)] // not near: the 50 % cap holds
+    [InlineData(3_000ul, 2_600ul, 253u, true, 1_010u, null, false)] // even 100 % must leave a dust output
+    [InlineData(294ul, 10ul, 253u, true, 1_010u, null, false)] // nothing above dust
+    public void Given_UnconfirmedTransaction_When_DecidingReplacement_Then_Bip125AndEstimateWithinCaps(
+        ulong input, ulong oldFee, uint estimate, bool isPenalty, uint? deadline, ulong? expectedFee, bool capped)
+    {
+        // Arrange: weight 600 (150 vB), tip 1000, P2WPKH dust 294
+        const long weight = 600;
+
+        // Act
+        var decision = _policy.DecideReplacement(input, oldFee, weight, estimate, isPenalty, 1_000, deadline, 294);
+
+        // Assert
+        if (expectedFee is null)
+        {
+            Assert.Null(decision);
+            return;
+        }
+
+        Assert.NotNull(decision);
+        Assert.Equal(expectedFee.Value, decision.FeeSat);
+        Assert.Equal(SweepFeePolicy.FeeratePerKw(expectedFee.Value, weight), decision.FeeratePerKw);
+        Assert.Equal(capped, decision.Capped);
+        Assert.False(decision.Abandon);
+    }
+
     [Fact]
     public void Given_FeeAndWeight_When_ComputingRate_Then_RoundedDown()
     {
