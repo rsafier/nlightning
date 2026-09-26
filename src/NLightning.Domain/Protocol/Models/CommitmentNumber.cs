@@ -73,6 +73,45 @@ public class CommitmentNumber
     }
 
     /// <summary>
+    /// Decodes the commitment number of a commitment transaction of this channel from its <c>nLockTime</c> and the
+    /// <c>nSequence</c> of its funding input (BOLT 3; the inverse of <see cref="LockTime"/> and <see cref="Sequence"/>).
+    /// </summary>
+    /// <param name="lockTime">The transaction's raw <c>nLockTime</c>.</param>
+    /// <param name="sequence">The raw <c>nSequence</c> of the input spending the funding output.</param>
+    /// <returns>
+    /// The 48-bit commitment number, or null when the fields do not have the commitment form (upper byte of the
+    /// locktime 0x20, upper byte of the sequence 0x80): the transaction is not a commitment transaction.
+    /// </returns>
+    /// <remarks>
+    /// Local and remote commitments share the obscuring factor, so the number alone does not say whose commitment the
+    /// transaction is; compare txids for that (BOLT 5 plan O2-T3).
+    /// </remarks>
+    public ulong? Decode(uint lockTime, uint sequence)
+    {
+        if (!TryGetObscured(lockTime, sequence, out var obscured))
+            return null;
+
+        return obscured ^ ObscuringFactor;
+    }
+
+    /// <summary>
+    /// Extracts the obscured commitment number from a commitment transaction's <c>nLockTime</c> and funding input
+    /// <c>nSequence</c> (lower 24 bits of each; the sequence holds the upper half).
+    /// </summary>
+    /// <returns>False when the upper bytes are not 0x20 (locktime) and 0x80 (sequence).</returns>
+    public static bool TryGetObscured(uint lockTime, uint sequence, out ulong obscured)
+    {
+        if (lockTime >> 24 != 0x20 || sequence >> 24 != 0x80)
+        {
+            obscured = 0;
+            return false;
+        }
+
+        obscured = ((ulong)(sequence & 0xFFFFFF) << 24) | (lockTime & 0xFFFFFF);
+        return true;
+    }
+
+    /// <summary>
     /// Calculates the 48-bit obscuring factor by hashing the concatenation of payment basepoints.
     /// </summary>
     /// <param name="openerBasepoint">The opener's payment basepoint.</param>
