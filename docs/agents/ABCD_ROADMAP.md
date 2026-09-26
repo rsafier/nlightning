@@ -1,6 +1,48 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 4 @ `6b5d50e`).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave 5 @ `1a5ab49`).
 
 ## Status
+
+### Wave 5: integrated into `wip/fafo` @ `1a5ab49` (2026-09-26), gates GREEN
+
+Wave 5 wired BOLT 5 end to end: every force-closed channel is now detected and resolved on chain, penalties included, and proven against LND. Five lanes: W5-A funding-spend watcher + resolution executor (migration owner; three steps incl. a review), W5-B local commitment resolution, W5-C remote commitment resolution, W5-D revoked commitment penalties, W5-E Mutinynet live smoke. 25 lane commits were cherry-picked with `-x` in the order w5a, w5b, w5c, w5d, w5e. Not picked (identical to W5-A's port commit dabbd72 or its format fix): W5-B 7c16f07 and 86805dd (empty), W5-C d59308c and 44f7c0c, W5-D 92ee2c8. Conflicts, all resolved by keeping both sides: `src/NLightning.Application/CLAUDE.md`, `test/CLAUDE.md` (twice), `src/NLightning.Client/CLAUDE.md`, `ClientAppTests` InlineData rows. Three `integrate:` commits:
+- dd2d64f: `AddApplicationServices` calls `AddLocalCommitResolutionServices()`, `AddRemoteCommitResolutionServices()` and `AddRevokedCommitResolver()` right after `AddOnchainServices()`; the daemon binds `LocalCommitResolverOptions`, `RemoteResolutionOptions` and `RevokedCommitResolverOptions` from `Node:Onchain`; the `(HtlcRemovalKind)4` casts in `OnchainHtlcRemovals`/`RemoteHtlcSwitchEvents` became `HtlcRemovalKind.OnchainTimeout`; W5-C's test `InMemoryOnchainStore` got W5-A's new repository members; `OnchainClientHandlerTests` checks the composed graph (exactly one resolver per commitment kind, none for Mutual/Unknown) and the option binding.
+- a5b24e3: the end-to-end O5 (a) and (b) proofs are regular tests; O4 (b) retries LND's payment while LND's router lacks the fresh private edge (`PayUntilSentAsync`, NL-319).
+- 1a5ab49: root, `test/` and `src/NLightning.Application` CLAUDE.md for wave 5.
+
+Gates at `1a5ab49`:
+- Build: Release and Release.Native under SDK 10 and SDK 11, 0 errors, the same **5** CS86xx warning sites (NL-171).
+- `dotnet format --verify-no-changes` clean under SDK 10 and 11; `scripts/check-sln-configs.py` OK.
+- Tests: **5718** non-Docker tests per framework and config, 0 failures, 0 skips (Domain 2110, Application 932, Integration 544, Serialization 466, Infrastructure 372, Infrastructure.Bitcoin 722, Bolt11 278, Daemon 294), green for Release and Release.Native on net10.0 and net11.0. The Long simulator passes.
+- `HasPendingModelChanges()` false for all three providers after `AddBroadcastCommitmentNumber` (W5-A).
+- Docker (in-container runner, `--network host`; sdk:10.0 for net10.0, sdk:11.0 for net11.0), identical on both frameworks: LND suite incl. Postgres/SqlServer **48/48**, `Docker.Utils` 2/2, CLN interop **17/17**, ABCD **10/10** (three runs in a row on net10.0), `Docker.Onchain` **14/14** (O0 smoke 1, O2 2, O3 4, O4 5, O5 2 end to end; 3 `Explicit` not run in the suite: the two O5 by-hand variants, which passed when run, and the stale-SCID reorg reproducer, which fails as expected, NL-292). The Docker suite now runs on net11.0 too (NL-300 partial).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| W5-A watcher + executor (migration owner) | done: `IOutputResolver` port + action model; migration `AddBroadcastCommitmentNumber` (3 providers); the commitment broadcast row in the Failed save and the handler path under the manager's lock; S1 at registration; `OnchainChannelWatcher` (O2-T5); `OnchainResolutionExecutor` with the 100-block rule and Closed (O6-T2); `forceclosechannel` (14) / `pendingsweeps` (15) IPC (O3-T6); Docker O2; review fixes (catch-up of spends mined before a watch, reorged funding spend height, unmapped-vout alerts, Closed staged on the DB copy, Closing never force-failed) | 152144c, d040654, 41f5fc2, c2ae40a, 567a3c1, 7f6ebd9, cbd99c6 | NL-271, NL-272, NL-297 fixed; NL-094, NL-294 partial; new NL-307, NL-308, NL-309, NL-310, NL-311, NL-312, NL-313, NL-320 |
+| W5-B local resolution | done: `LocalCommitResolver` (to_local after CSV, HTLC-timeout/success, second-level sweeps; O3-T3), `HtlcRemovalKind.OnchainTimeout` + switch and `PaymentService` mapping (O3-T4); Docker O3 (a)-(d); review fixes (preimage read back from the spender, dust-floor sweeps, switch replay of a refused on-chain fail) | 5af263f, 7d3a6b3, cc207a8, 037c04b | NL-094 partial; new NL-314, NL-315; NL-280 note |
+| W5-C remote resolution | done: `RemoteCommitResolver` on the shared port (to_remote, timeout and preimage claims incl. a forward's downstream preimage, remote-next and future commitments, events re-raised until the upstream has its removal; O4-T1..T3); Docker O4 (a)-(e) | 3794c0d, 6bd3645, 202341b | NL-094 partial; new NL-316, NL-317; NL-292 note |
+| W5-D revoked resolution | done: `RevokedCommitResolver` + `PenaltyTransactionComposer` (batched/single/split penalties, second-level penalties, upstream resolution; O5-T2/T3); Docker O5 (a) LND channel.db rollback and (b) deterministic NLightning cheater; review fixes | e5a556d, bbc51b4, f4b83ff, aee5aed, 7189b71, d1f1721 | NL-094 partial; new NL-318; NL-294 note |
+| W5-E Mutinynet smoke | done: `openchannel` push over IPC, UTXO wallet addresses loaded at startup, signer names an unsignable input, 21M BTC cap, `scripts/mutinynet/`, live smoke recorded in `MUTINYNET.md` (open with push, pay, receive, restart + reestablish, cooperative close) | d363373, 9a8a0f0, fefdce3, 5f4e0df, ce091a1 | NL-301, NL-302, NL-304 fixed; NL-306 partial; new NL-303; NL-305 duplicate of NL-280 |
+| Integration | resolver registration and options, O5 proofs regular, O4 (b) LND retry, guides | dd2d64f, a5b24e3, 1a5ab49 | NL-300 partial (Docker on net11.0); new NL-319 |
+
+Ledger note: NL-272 is marked **fixed** (detection and resolution are both wired and proven by Docker O2-O5); W5-A's own step 2 said "fixed/partial" only because the resolvers were in other lanes. NL-094 stays **open (partial)** for O6-O8. NL-301..NL-306 were cited by W5-E's commits and `MUTINYNET.md` before they had ledger entries; they keep those IDs, and the lanes' proposed new items were numbered NL-307..NL-320. The W5-C, W5-D and W5-E lane results reached the ledger agent truncated; their items were taken from their commits and the per-project CLAUDE.md files.
+
+Deviations accepted in wave 5 (details in `BOLT5_ONCHAIN_PLAN.md` "ABCD wave 5 record"):
+- An Unknown funding spend goes to `OnchainResolving` with no outputs instead of Failed (NL-308).
+- HTLCs without an output are re-derived from the snapshot every round instead of being persisted; upstream switch events repeat every round (the switch is idempotent).
+- One tx per resolved output and no fee bumping yet (NL-317); a revoked commitment without a log entry is mapped by script only (NL-309).
+- Out-of-lane touches: `PaymentService.InterpretFailure` + a `PaymentServiceTests` case (W5-B), `ChannelSafetyFlowTests` now expects `OnchainResolving` after our commitment confirms and `ChainWatchSchemaRoundTrip` asserts `CommitmentNumber` (W5-A).
+
+### Carried into wave 6
+
+- **BOLT 5 O6 (NL-094):** `SweepScheduler` with fee bumping and a per-target estimate (NL-317, NL-296), reorg re-resolution and wallet rollback (O6-T3: NL-292, NL-293; drop the stale-SCID reproducer's `Explicit`), Proof O6 (a)-(c), the mainnet gate O6-T4; broadcast abandonment for refused rows (NL-294, NL-259).
+- **Wave 5 follow-ups:** startup catch-up of untracked resolution watches (NL-311), upstream HTLCs of future/unknown closes (NL-320), our invoice's HTLC claimed on chain after the peer's force close (NL-316), pre-log revoked HTLC outputs (NL-309), the revoked resolver's preimage persistence (NL-318), the watcher's model-before-save (NL-307, with NL-282), a Failed channel whose mutual close confirms (NL-312), NL-308, NL-313, NL-315.
+- **Later BOLT 5:** O7 anchors (NL-314, then `OptionAnchors`), O8 mempool (NL-098).
+- **Close follow-ups:** `option_simple_close` (N11, NL-020), NL-279, NL-285, NL-286, NL-045, NL-277, wallet address reuse (NL-280, also for sweep destinations).
+- **Switch/monitor:** NL-078, NL-265, NL-266, NL-267, NL-268, NL-273, NL-274, NL-290, NL-216, NL-298.
+- **Mutinynet / ops:** display byte order (NL-303), daemon-anchored relative paths (NL-306), a longer live run with a force close on Mutinynet.
+- **Test infra and platform:** NL-276 (host route), NativeAOT and Wasm on SDK 11 (NL-300), the LND fresh-edge retry for other tests (NL-319), the reorg test flake watch (NL-310), NL-295, NL-262, NL-261.
+- **Carried from earlier waves:** NL-152 (disconnect IPC), NL-269, NL-260, NL-270, NL-138, the Wasm risk.
 
 ### Wave 4: integrated into `wip/fafo` @ `6b5d50e` (2026-09-26), gates GREEN
 
