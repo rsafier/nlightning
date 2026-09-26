@@ -1,6 +1,43 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-A @ `164289a`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: gossip wave G-B @ `5bbfbb5`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Gossip wave G-B: integrated into `wip/fafo` @ `5bbfbb5` (2026-09-26), gates GREEN (net11.0 not built)
+
+Second wave of the BOLT 7 plan (G1 public channels, G2 graph, Docker Proofs G0-G2) plus the BOLT 5 O6-T4 blocker lane toward the mainnet gate. Four lanes (B1, B2, M2 with review/fix steps; B3 Docker), no migration owner; the 28 lane commits were cherry-picked with `-x` in the order B1 → B2 → M2 → B3. Integrator commits:
+- 00f6bcf: drops the never-set `PreferredHost`/`PreferredPort` from `IPeerService`/`PeerService` and their dead branches in `PeerManager` (NL-344).
+- 66e773c: `NLightningTestNode` starts the graph like the daemon's `GossipGraphHostedService` (ingress and `GraphPruner` before `PeerManager`, stopped after the chain monitor); the daemon composition test expects `GossipIngress` as `IOwnGossipSink`; B3's `TODO(G-B integrator)` markers resolved (`request.IsPublic`, real option names `Gossip:Enabled`/`Gossip:AcceptPublicChannels`/`Node:Alias`/`Node:Color`, `GossipGraphProbe` reads IPC 17/18).
+- 717bd97: `NLightningTestNode.BeforePeersStart` hook, so Proof G2 (b) reads the graph before `PeerManager` reconnects to stored peers.
+- 5bbfbb5: root and `test/CLAUDE.md` (G-B features, IPC 17/18, next free 19, `--public` as key 4, baselines).
+- Conflicts resolved: `IOwnGossipSink.cs` (both lanes; B2's last commit made it identical to B1's), `NodeServiceExtensions` (both `GossipOptions` and `GossipGraphOptions` bound), the Application/Daemon `CLAUDE.md` files, usings in `NodeServiceExtensionsTests`.
+
+Gates at `5bbfbb5`:
+- Build: Release and Release.Native under SDK 10.0.103 (net10.0), 0 errors, the same **5** CS86xx warnings (NL-171). **net11.0 not built** (SDK 11 not installed on the integration machine; CI covers it). `dotnet format --verify-no-changes` clean; `check-sln-configs.py` OK. No schema change.
+- Tests (net10.0, Release and Release.Native): **6780** non-Docker, 0 failures, 0 skips (Domain 2349, Application 1362, Integration 646, Serialization 520, Infrastructure 406, Infrastructure.Bitcoin 871, Bolt11 278, Daemon 348). Long simulator 1/1.
+- Docker (net10.0; in-container runner with `--network host` except CLN, which runs from the host; SQL Server skipped): LND suite **57/57** (incl. `Docker.Utils` and Postgres 8/8; without `SqlServerTests` and the whole `MultiNodeHarnessTests` server-database theory, NL-347), CLN **15/15**, ABCD **3 × 10/10**, on-chain **22/22** + 2 `Explicit` not run (incl. M2's `OnchainWatchCatchUpTests`), gossip (`scripts/run-gossip.sh`) **16/16** on the final run (G2 (b) failed on the first run and was fixed by 717bd97; the G2 class then passed 3/3 alone). **139** Docker tests listed.
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| B1 public channels | done except G1-T5's offline-disable policy: `openchannel --public` (IPC key 4), fundee flag, `Gossip:AcceptPublicChannels`, public opens refused on mainnet unless allowed (G1-T1); `AnnouncementSignaturesMessageHandler` + 259 case (G1-T3); our half at depth and after reestablish (G1-T4, extra mainnet gate); public `channel_update` (G1-T5 partial); `NodeAnnouncementService` (G1-T6); `GossipRelayScheduler` own 256 → 258 → 257 (G1-T7); NL-343. Review: stale peer half forgotten and persisted, 257 held until a 256 went out, mainnet refusal. Proof: `AnnouncementHarnessTests` (identical 256 at both ends) | 4115b34, f6e76c2, 2555443, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda | NL-341, NL-342, NL-343, NL-236 fixed; NL-099, NL-255 progress; new NL-348, NL-349, NL-350, NL-351, NL-355 |
+| B2 graph | done: `GossipIngress` + write-behind `GraphStore` + orphan/duplicate caches (G2-T4), `PeerService` 256/257/258 arms and the post-init `gossip_timestamp_filter`, `GraphPruner` via `OnBlockInputs` (G2-T5), IPC `listnodes` 17 / `listgraphchannels` 18 (G2-T6), `GossipGraphHostedService`, D12 mainnet default. Review: B1's sink contract, startup height 0, reorged funding blocks, spend race, one writer for our node row, banned nodes' channels forgotten, receive depth clamped, missed SCIDs recorded | 7501ad6, 2635956, 675f54c, f252d68, d3dda72, 0e0f85c, 9d288bf | NL-344 fixed; NL-099 progress, NL-009 progress; new NL-352, NL-353, NL-354 |
+| M2 O6-T4 blockers | done: NL-337 final-hop preimage-known test, NL-320 upstream fails on future/unknown closes (payment kept in flight to +100, forwards over a Closed channel failed back), NL-311 startup catch-up of saved watches (one shared scan after the time-critical rounds) with Docker `OnchainWatchCatchUpTests`; evidence section in the BOLT 5 plan. The gate itself is unchanged | c4fab04, 6ea8b1c, eff0196, 1902bb5, e0b3421, 8db8d02, 7e96e28, e3023b8, 9b4e4c7, 58a0e46 | NL-311, NL-320, NL-337 fixed; NL-094 progress |
+| B3 Docker | done: `Docker/Gossip/` fixture and collection, `scripts/run-gossip.sh`, Proofs G0, G1 (a)-(c), G2 (a)-(c); G1 (d) and G2 (d) not written | 8ecbb2e, 27f8822, fd71c07 | NL-099 progress; new NL-356 |
+| Integration | peer-service cleanup, test node graph start and pre-peer hook, B3 seams, guides | 00f6bcf, 66e773c, 717bd97, 5bbfbb5 | NL-344 fixed |
+
+Deviations accepted in wave G-B:
+- ClientCommand numbers are 17/18 (the plan said 16/17; 16 is `chainstatus`).
+- Extra mainnet gate on announcing (`CanSendAnnouncementSignatures`) besides the open-time refusal (D12).
+- Stale deletion uses the newest update of either direction and `DeleteStaleAfter` (28 d); routing exclusion at 14 d stays in `GraphChannel.IsStale`.
+- Own gossip goes through `IPeerService.SendGossipMessageAsync`, not the `PeerOutbox` (NL-351), because `PeerManager` was not in B1's lane.
+
+### Carried into the next wave (G-C, plus the mainnet gate)
+
+- **First: NL-348** (high): `HtlcSwitch.ResolveOutgoingChannel` must accept the real SCID unless `UseScidAlias == Compulsory`; it blocks routing through our public channels when the peer negotiated option_scid_alias (LND does by default) and so G4 Proof (a) through us.
+- **BOLT 7 G-C:** C1 sync/relay (G3-T1 `QueryResponder`, G3-T2 `GossipSyncManager`, G3-T3 relay of others' gossip with filters, moving own gossip onto the outbox NL-351, G3-T4 `gossip_queries_ex`; re-query dropped SCIDs from `GossipIngress.TakeMissedShortChannelIds`, NL-353); C2 routing (G4-T2 `MissionControl`, G4-T3 graph paths in `PaymentRoutePlanner`, G4-T4 `getroute` = `ClientCommand` 19, G3-T5 failure-triggered refresh); C3 Proofs G3/G4, `ClnGossipTests`, plus G1 (d) (NL-255) and G2 (d) (NL-356).
+- **G-B follow-ups:** NL-349 (disabled update after the peer is offline > `Gossip:DisableAfter`), NL-350 (reorg moving an announced SCID; needs `FundingReconfirmationHandler`), NL-352 (persist graph funding txids; migration owner), NL-354 (`GraphPolicy` equality), NL-355 (harness restart with announcement fields); still NL-345, NL-346, NL-347.
+- **Mainnet gate (NL-094 O6-T4):** the blockers are fixed; the G-D integrator decides after re-running N9 `ChannelSafetyFlowTests`, ABCD and the LND/CLN normal-operation suites (evidence and risks in `BOLT5_ONCHAIN_PLAN.md`). Then O7 anchors with `SignWalletTransaction` (NL-314, NL-067 second half).
+- **Platform:** build net11.0 on a machine with SDK 11 (not done at this integration).
+- Still open from wave 7: NL-335, NL-336, NL-333, NL-334, NL-340, NL-332, NL-339, NL-321/NL-137.
 
 ### Gossip wave G-A: integrated into `wip/fafo` @ `164289a` (2026-09-26), gates GREEN
 
@@ -31,7 +68,7 @@ Deviations accepted in wave G-A:
 - The pathfinder's `HintRouteBuilder.BuildAlong` cross-check moves to G4-T3.
 - Out-of-lane touch: A3 edited `LocalLightningSigner.VerifyNodeMessage` (3-line delegation).
 
-### Carried into the next wave (G-B, plus the mainnet gate)
+### Carried into wave G-B (from G-A; superseded by the list above)
 
 - **BOLT 7 G-B:** B1 public channels (G1-T1 handlers, IPC `--public`, `Gossip:AcceptPublicChannels`, NL-341; G1-T3 `AnnouncementSignaturesMessageHandler` + `ChannelManager` case, NL-342; G1-T4..T7 announcement, public `channel_update`, `node_announcement`, own-gossip relay); B2 graph (G2-T4 ingress + `GraphStore` using `IFundingOutputLookup` with 6-confirmation depth and transient requeue, G2-T5 pruner, G2-T6 IPC from `ClientCommand` 17); B3 Docker proofs G0/G1/G2 and `scripts/run-gossip.sh`.
 - **G-A follow-ups:** NL-343 (drop `ChannelManager`'s hand signer registration; whoever owns `ChannelManager` in B1), NL-344 (remote_addr stored as the peer's address, undecodable one fails init), NL-345 (captured vectors in the signed-range tests), NL-346 (per-RPC rate limit, pruned path), NL-347 (split the multi-node server-database theory).

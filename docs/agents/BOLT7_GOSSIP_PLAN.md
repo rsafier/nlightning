@@ -13,8 +13,9 @@ Every repo claim cites a repo-relative path, with line numbers where they are us
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-26: `07-routing-gossip.md` (whole document); `04-onion-routing.md` (§Failure Messages: the `channel_update` field and the origin rules); `09-features.md` (bits 6/7 `gossip_queries`, 10/11 `gossip_queries_ex`, 46/47 `option_scid_alias`); `02-peer-protocol.md` (`channel_flags.announce_channel`, the rule forbidding `option_scid_alias` together with `announce_channel`, the `channel_ready` alias). Re-read the requirement block before you implement a handler.
 - **Relation to the other plans:** ABCD roadmap §1.1 picked option B (route hints) and deferred option A (public channels plus BOLT 7) as "2-3 more waves on NL-099". This plan is option A. It builds on the W1-E `channel_update` exchange (`Application/Gossip/ChannelUpdateService`) and on BOLT 5 O0 (the chain monitor's per-block input scan and reorg ring). It feeds `PaymentRoutePlanner` (ABCD W6-C) with graph paths.
 - **Issue ledger:** the epic is NL-099. Related entries: NL-008 (address descriptors), NL-054 (routing-table TODOs), NL-236 (no public-channel option), NL-255 (LND never hints through us without a `node_announcement`); NL-100, NL-101, NL-102, NL-103, NL-205 and NL-209 are already fixed. New gaps found while writing this plan are listed in §2.2 as `GG#` rows marked "new" in the NL column; the ledger agent files them (the next free ID at `368a057` is **NL-332**). Tasks say "Resolves NL-…". Update the ledger entry in the same commit as the fix.
-- **Status (2026-09-26, `wip/fafo` @ `164289a`, after gossip wave G-A):** wave G-A is done (see "Gossip wave G-A record" in §5). G0 complete (G0-T1..T5), G1-T1 storage half and G1-T2, G2-T1..T3 and G4-T1 landed as library code with tests; **nothing is wired into the node yet**: 256/257 are typed and dropped, 259 reaches `ChannelManager` and gets a channel-scoped "not supported yet" warning until G1-T3. Next: wave G-B (B1 public channels, B2 graph ingress/store/pruner/IPC, B3 Docker proofs).
-- Status before wave G-A (superseded by the line above; `wip/fafo` @ `368a057`, ABCD wave 7 in progress, with uncommitted W7 changes in the main checkout):
+- **Status (2026-09-26, `wip/fafo` @ `5bbfbb5`, after gossip wave G-B):** waves G-A and G-B are done (see the wave records in §5). G0 and G2 are complete and G1 is complete except G1-T5's disable-when-offline policy (NL-349), all wired: public channels (`openchannel --public`), `announcement_signatures`, our `channel_announcement`/public `channel_update`/`node_announcement` relayed to connected peers, the graph (`GossipIngress`, `GraphStore`, `GraphPruner`) with `listnodes`/`listgraphchannels`, and Docker Proofs G0, G1 (a)-(c) and G2 (a)-(c) green against LND 0.20. G4-T1 exists as a library. Next: wave G-C (C1 sync/relay G3-T1..T4, C2 routing G4-T2..T4 + G3-T5, C3 proofs), plus NL-348 (switch refuses the real SCID of a public channel with option_scid_alias Optional), which blocks routing through us.
+- Status after wave G-A (superseded by the line above; `wip/fafo` @ `164289a`): wave G-A is done (see "Gossip wave G-A record" in §5). G0 complete (G0-T1..T5), G1-T1 storage half and G1-T2, G2-T1..T3 and G4-T1 landed as library code with tests; **nothing is wired into the node yet**: 256/257 are typed and dropped, 259 reaches `ChannelManager` and gets a channel-scoped "not supported yet" warning until G1-T3. Next: wave G-B (B1 public channels, B2 graph ingress/store/pruner/IPC, B3 Docker proofs).
+- Status before wave G-A (superseded by the lines above; `wip/fafo` @ `368a057`, ABCD wave 7 in progress, with uncommitted W7 changes in the main checkout):
   - Nothing of G0-G5 exists beyond the W1-E subset.
   - `channel_announcement` (256), `node_announcement` (257) and `announcement_signatures` (259) are parsed as raw bytes and dropped.
   - Queries get empty replies (`full_information=0`).
@@ -442,6 +443,33 @@ New ledger items: NL-343 (redundant hand registration with the signer), NL-344 (
 
 Next (wave G-B): B1 G1-T1 handlers/IPC (NL-341), G1-T3 handler + `ChannelManager` case (NL-342), G1-T4..T7; B2 G2-T4..T6 (`GossipIngress`, `GraphStore`, `GraphPruner`, `listnodes`/`listgraphchannels`; `ClientCommand` numbers from 17, since 16 is `chainstatus`); B3 Docker Proofs G0/G1/G2 and `scripts/run-gossip.sh`. Carry: NL-343, NL-344, NL-345.
 
+### Gossip wave G-B record (status 2026-09-26, `wip/fafo` @ `5bbfbb5`)
+
+Four lanes (B1 public channels, B2 graph, B3 Docker, M2 BOLT 5 O6-T4 blockers; no migration owner), each with a review step; lane SHAs mapped to `wip/fafo` through the `-x` footers (lane → `wip/fafo`). Integrate commits: 00f6bcf (drops the never-set `PreferredHost`/`PreferredPort` from `IPeerService`/`PeerService` and their dead branches in `PeerManager`, NL-344), 66e773c (`NLightningTestNode` starts the graph like `GossipGraphHostedService`; B3's `TODO(G-B integrator)` markers resolved: `request.IsPublic`, real option names, `GossipGraphProbe` reads IPC 17/18), 717bd97 (`NLightningTestNode.BeforePeersStart` hook so Proof G2 (b) reads the graph before `PeerManager` reconnects to stored peers), 5bbfbb5 (guides). Conflicts at integration: `IOwnGossipSink.cs` (both lanes added it; B2's final commit made it byte-identical to B1's), `NodeServiceExtensions` (both `GossipOptions` and `GossipGraphOptions` bound), the Application/Daemon `CLAUDE.md` files.
+
+| Task | Status | `wip/fafo` SHAs (lane) | Notes |
+|---|---|---|---|
+| G1-T1 announce flag (handlers/IPC) | done | 4115b34, d77de7f (6c1563c, 5f8de4f) | `OpenChannelClientRequest.IsPublic`, `OpenChannelIpcRequest` `[Key(4)]` (absent = private), CLI `openchannel <node> <sats> [push_sats] [--public]`. `ChannelFactory` (Domain): public channels leave option_scid_alias out of the type (`UseScidAlias` Optional when negotiated), public + zero-conf refused; the fundee stores the flag. `GossipOptions` (`AcceptPublicChannels` true, `AllowPublicChannelsOnMainnet` false, `AnnouncementDepth` 6, only regtest may lower it). A public `open_channel` is refused with `error` when `AcceptPublicChannels` is false and on mainnet unless allowed (d77de7f). NL-341, NL-236 fixed. |
+| G1-T3 `AnnouncementSignaturesMessageHandler` + 259 case | done | f6e76c2, 367fdda (598630e, 60cb924) | Unknown → ignored; other peer → error; shutdown/closing → ignored; private → warning; SCID mismatch (before our confirmation only the output index) → warning; bad signature → warning + close (D10); valid → stored, ours replied once per connection (saved before replying); before our channel_ready stored only. A stored half that does not sign the current announcement is forgotten and persisted (`CompleteAnnouncementAsync(channel, uow)`, 367fdda). NL-342 fixed. |
+| NL-343 hand signer registration | done | 2555443 (d65c765) | Only when no `IChannelSigningInfoSource` is registered; a source-less signer is re-registered at the funding confirmation (real SCID). |
+| G1-T4 block-driven send + reconnect | done | 2cc2ee0 (7c71d43) | `IChannelAnnouncementService.PrepareOwnAnnouncementSignaturesAsync` (saves `LocalAnnouncementSignaturesSentAt` first), `CompleteAnnouncementAsync`, `IsAnnouncementComplete`, static `IsAnnounced`. `ChannelManager` appends our half after a processed `channel_reestablish` and when a message turns the channel Open; `HandleNewBlockDetected` → `AnnouncementRound` under each channel's lock, skipped while not reestablished. **Extra gate:** `CanSendAnnouncementSignatures` is false on mainnet unless `Gossip:AllowPublicChannelsOnMainnet`. Proof: `Gossip/Announcements/AnnouncementHarnessTests` on `TwoNodeHarness(announceChannel: true)` with two real signers (identical 256 bytes, 4 signatures verify; retransmission after a link drop; nothing at 5 confirmations or after shutdown). |
+| G1-T5 public `channel_update` | partial | 2cc2ee0 (7c71d43) | `ChannelUpdateService.IsPublic` (flag, SCID, both halves exchanged): dont_forward clear, real SCID even with option_scid_alias negotiated, handed to `OwnGossipPublisher`; `OnChannelAnnounced` re-signs; an announced channel turning ShuttingDown/Negotiating/Closing/Failed gets one disabled update. **Not done:** disable after the peer is offline > `Gossip:DisableAfter` (NL-349). |
+| G1-T6 `NodeAnnouncementService` | done | 2cc2ee0 (7c71d43) | Only with ≥ 1 announced channel; `Node:Alias` (≤ 32 UTF-8 bytes), `Node:Color` (default 3399ff), `Gossip:AnnounceAddresses` (none by default, sorted); timestamp = max(now, stored + 1, last + 1), our `GraphNodes` row upserted and saved **before** publishing; unchanged fields only re-published until `NodeAnnouncementRefreshInterval` (13 d). |
+| G1-T7 own-gossip relay | done | 7fdc993, dd5c4a1 (7dc02f9, bb2b6bb) | `Application/Gossip/Relay/GossipRelayScheduler`: latest own 256/258/257, flush every `Gossip:OwnGossipFlushInterval` (60 s) to every connected peer whose `init.networks` include our chain (or name none), once per connection, order 256 → 258 → 257, a 256 only once an update for it is queued, our 257 only after one of our 256s went out on that connection (dd5c4a1). Sent with `IPeerService.SendGossipMessageAsync`, not the `PeerOutbox` (NL-351). |
+| G2-T4 `GossipIngress` + `GraphStore` | done | 7501ad6, 2635956, 675f54c, 9d288bf (6d5c407, 83b850b, 83408f3, de71ebc) | Bounded queues (2,000 per peer, 20,000 total), duplicate filter → `GossipValidator` → `IGossipSignatureVerifier` → funding lookup at 6 confirmations (deferred/retried when transient; `Gossip:FundingValidation=SkipUnavailable` keeps `BlockUnavailable` as Unverified); bad signature → warning + close; orphan 258/257 replayed; B7-CA-04 ban only when the same funding keys sign other node ids, and the banned nodes' channels are forgotten (never ours). `GraphStore`: in memory, one writer lock, write-behind (5 s or 1,000 changes, one save), load where earlier changes win. `IOwnGossipSink` (B1's contract) is implemented by the ingress (non-blocking queue, replaces `NullOwnGossipSink`); our node row has one writer (`NodeAnnouncementService`). `PeerService`: 256/257 → ingress, 258 → `ChannelUpdateService` and ingress; `gossip_timestamp_filter(0, 0xFFFFFFFF)` after our init to `gossip_queries` peers (never before init, 675f54c). Receive depth `GetAnnouncementDepth(network)`. Dropped messages: SCIDs recorded for G3 (NL-353). NL-344 fixed. |
+| G2-T5 `GraphPruner` | done | f252d68, 0e0f85c (8a28fd9, 97a25bb) | `BlockchainMonitorService.OnBlockInputs` (after the block's save, built only with a subscriber). Spent → `SpentAtHeight`, removed at +72 (also ours); stale → removed after `DeleteStaleAfter` (28 d) unless ours; lonely nodes removed (never ours); reorgs `ClearSpentAbove(fork)`; funding blocks reorged out re-checked (another txid or gone → spent, forgotten at +72); spends of the last 6 blocks re-matched (ingress/pruner race). Funding txids are not persisted: looked up once per channel after a restart, after the first block (NL-352). Started by `Daemon/Services/GossipGraphHostedService` before `NltgDaemonService` (ingress, then pruner) and stopped after it. |
+| G2-T6 IPC | done | d3dda72 (a671846) | `ClientCommand` `ListNodes = 17`, `ListGraphChannels = 18` (not 16/17: 16 is `chainstatus`; next free 19); CLI `listnodes [node_id]`, `listgraphchannels [BLOCKxTXxOUTPUT] [node_id]`; `invalid_operation` while the graph is disabled. |
+| B3 Docker fixture + Proofs G0/G1/G2 | done (G1 (d), G2 (d) not written) | 8ecbb2e, 27f8822, fd71c07 (8cd7e0b, 1968dfc, 2b01a84) | `Docker/Gossip/`, `scripts/run-gossip.sh`: G0 smoke (alice's dump after our filter, all parsed), G1 (a) our public open (bob's `DescribeGraph` has it, `GetNodeInfo` alias/color), (b) alice's public open, (c) our restart at 3 confirmations; G2 (a) LND graph in ours, (b) after a restart without connection, (c) spent at the close height, gone by +72. 16/16 green at integration. G1 (d) (NL-255) and G2 (d) (NL-356) are not written. |
+
+Deviations (accepted):
+- Stale deletion (`GraphPruner`) uses the newest update of either direction (B7-PR-02: the latest updates in both directions older than two weeks) and deletes after `DeleteStaleAfter` (28 d); routing exclusion at 14 d is `GraphChannel.IsStale`, which uses the older direction (stricter than the spec's MAY; `GraphPathfinder` already skips spent and stale channels).
+- An extra mainnet gate on announcing (`CanSendAnnouncementSignatures`) besides the open-time D12 refusal.
+- Own gossip bypasses the `PeerOutbox` until G3-T3 (NL-351).
+
+New ledger items: NL-348 (switch refuses the real SCID of a public channel with option_scid_alias Optional, high), NL-349 (no disable after the peer is offline), NL-350 (reorg moving an announced SCID does not reset the announcement), NL-351 (own gossip bypasses the outbox), NL-352 (graph funding txids not persisted), NL-353 (dropped gossip never re-queried), NL-354 (`GraphPolicy` equality by reference), NL-355 (harness restart drops announcement fields), NL-356 (Proof G2 (d) missing). Fixed: NL-236, NL-341, NL-342, NL-343, NL-344.
+
+Next (wave G-C): NL-348 first (switch owner; it blocks G4 Proof (a) through us); C1 G3-T1..T4 (`QueryResponder`, `GossipSyncManager`, relay of others' gossip with filters, moving own gossip onto the outbox NL-351, re-query of missed SCIDs NL-353); C2 G4-T2..T4 + G3-T5 (`MissionControl`, graph paths in `PaymentRoutePlanner`, `getroute` = `ClientCommand` 19); C3 Proofs G3/G4 and `ClnGossipTests`, plus G1 (d) (NL-255) and G2 (d) (NL-356). Carry: NL-345, NL-346, NL-349, NL-350, NL-352, NL-354, NL-355.
+
 ### G0: Wire completeness (no behaviour change except typing)
 | Task | Files | Acceptance |
 |---|---|---|
@@ -478,7 +506,7 @@ Next (wave G-B): B1 G1-T1 handlers/IPC (NL-341), G1-T3 handler + `ChannelManager
 | **G2-T3** Migration `AddGossipGraph` (migration owner, §3.6) + `GraphDbRepository` | Persistence entities/configs/DbContext, 3 providers, `IGraphDbRepository` on `IUnitOfWork`, mocks + `CrashingUnitOfWork` | `HasPendingModelChanges() == false` ×3; SQLite round trip; Postgres/SqlServer container round trips |
 | **G2-T4** `GossipIngress` + `GraphStore` | `Application/Gossip/Graph/{GossipIngress,GraphStore,OrphanUpdateCache,RecentMessageCache}.cs`; `PeerService` raises 256/257/258 to ingress; `ChannelUpdateService` hands public updates on | Pipeline tests with the captured vectors: accept, ignore, warn outcomes; orphan update replayed; our own channel with no chain lookup; restart reload equals the pre-restart snapshot (SQLite) |
 | **G2-T5** `GraphPruner` | `OnBlockInputs` in `BlockchainMonitorService` (after the block's save, `:945-960`); spent → `SpentAtHeight`, removed at +72; stale (2 weeks, `Gossip:StaleAfter`, `TimeProvider`) → excluded from routing, deleted after `Gossip:DeleteStaleAfter` (4 weeks); nodes without channels removed; never prune our own channels | Fake-clock and fake-block tests incl. reorg of the spend; a node with only stale channels is pruned |
-| **G2-T6** IPC `listnodes`, `listgraphchannels` | `ClientCommand` 16/17, DTOs, Daemon handlers, CLI printers | IPC round trips (`Daemon.Tests`) |
+| **G2-T6** IPC `listnodes`, `listgraphchannels` | `ClientCommand` 17/18 (done: 16 is `chainstatus`), DTOs, Daemon handlers, CLI printers | IPC round trips (`Daemon.Tests`) |
 
 **Proof G2 (Docker):**
 - (a) Connect to alice: within 2 min (after G3; before G3 through alice's full dump **(LND dumps only after a filter: verify)**) `listgraphchannels` has alice–bob, alice–carol and bob–carol with both policies, and `listnodes` has alice, bob and carol.
@@ -521,7 +549,7 @@ Next (wave G-B): B1 G1-T1 handlers/IPC (NL-341), G1-T3 handler + `ChannelManager
 | **G5-T1** Memory limits and accounting (§3.8) | `GossipOptions` limits; interned node ids; `GraphStore` memory estimate | 200k-channel synthetic load under `Gossip:MaxMemoryMb` (default 512) **(measure; set the budget from the measurement)** |
 | **G5-T2** Spam protection | rate limiters, misbehaviour score, `GraphBannedNodes`, per-peer queues | Fuzz-style test: a peer flooding invalid signatures is disconnected and banned; valid traffic from others unaffected |
 | **G5-T3** Persistence performance | write-behind batching, bulk load at startup, optional `AddGossipIndexes` | Startup load of 200k channels < 10 s on SQLite **(measure)** |
-| **G5-T4** `describegraph` + metrics | `ClientCommand` 18; `Meter("NLightning.Gossip")` counters (received/accepted/rejected by reason, relayed, queue depth, chain lookups, sync durations) | IPC test; counters asserted in ingress tests |
+| **G5-T4** `describegraph` + metrics | next free `ClientCommand` (18 is `listgraphchannels`, 19 goes to `getroute`); `Meter("NLightning.Gossip")` counters (received/accepted/rejected by reason, relayed, queue depth, chain lookups, sync durations) | IPC test; counters asserted in ingress tests |
 | **G5-T5** Mainnet gate (D12) | defaults per network in `NodeConfigurationExtensions` template | Options test; opened only after a Mutinynet/signet soak (`docs/agents/MUTINYNET.md`) of 24 h with graph sync on and bitcoind load logged |
 
 **Proof G5:** the synthetic load tests above; a 24 h signet or Mutinynet soak (graph size, RSS, RPC rate logged); the Docker suite (G1-G4) green three runs in a row (`scripts/run-gossip.sh 3`).
@@ -530,9 +558,9 @@ Next (wave G-B): B1 G1-T1 handlers/IPC (NL-341), G1-T3 handler + `ChannelManager
 | Wave | Lanes (file ownership) | Migration owner |
 |---|---|---|
 | **G-A** | **A1 wire** (G0-T1, T2, T5: `Domain/Protocol/{Payloads,Messages}`, `Infrastructure.Serialization`, `Tests.Utils/Vectors/Bolt7Vectors.cs`); **A2 schema** (G2-T3: `Infrastructure.Persistence*`, `Infrastructure.Repositories`, plus the channel columns for G1-T1); **A3 crypto + chain** (G0-T3, G1-T2, G2-T2: `Infrastructure.Bitcoin/{Gossip,Signers}`, `IBitcoinChainService`); **A4 addresses + pure** (G0-T4, G2-T1, G4-T1: `Domain/Gossip`, `Domain/Routing`, `RemoteAddressTlvConverter`) | A2 (`AddGossipGraph`) |
-| **G-B** | **B1 public channels** (G1-T1, T3..T7: `Application/Gossip/Announcements`, `Application/Channels/Handlers`, `ChannelManager` case, Daemon/Client/IPC open); **B2 graph** (G2-T4..T6: `Application/Gossip/Graph`, `PeerService` gossip dispatch, `BlockchainMonitorService.OnBlockInputs`, IPC 16/17); **B3 Docker** (fixture, `scripts/run-gossip.sh`, Proofs G0/G1/G2) | none (schema landed in G-A) |
+| **G-B** | **B1 public channels** (G1-T1, T3..T7: `Application/Gossip/Announcements`, `Application/Channels/Handlers`, `ChannelManager` case, Daemon/Client/IPC open); **B2 graph** (G2-T4..T6: `Application/Gossip/Graph`, `PeerService` gossip dispatch, `BlockchainMonitorService.OnBlockInputs`, IPC 17/18); **B3 Docker** (fixture, `scripts/run-gossip.sh`, Proofs G0/G1/G2) | none (schema landed in G-A) |
 | **G-C** | **C1 sync/relay** (G3-T1..T4: `Application/Gossip/{Sync,Relay}`, `PeerService` query dispatch, `FeatureOptions`); **C2 routing** (G4-T2..T4 + G3-T5: `Payments/Routing`, `Payments/Send/PaymentRetryPolicy`, `Application/Gossip/Routing`, IPC 19); **C3 proofs** (G3 and G4 Docker, `ClnGossipTests`) | none |
-| **G-D** | **D1 limits/spam** (G5-T1, T2); **D2 perf + metrics + IPC 18** (G5-T3, T4; migration owner if indexes are needed); **D3 gate + soak** (G5-T5) | D2 (only `AddGossipIndexes`) |
+| **G-D** | **D1 limits/spam** (G5-T1, T2); **D2 perf + metrics + `describegraph` IPC** (G5-T3, T4; migration owner if indexes are needed); **D3 gate + soak** (G5-T5) | D2 (only `AddGossipIndexes`) |
 
 Seams to reconcile at integration:
 - `PeerService` is touched by A1 (259 routing), B2 (256-258) and C1 (261-265): each lane edits only its `else if` arm.
@@ -543,30 +571,30 @@ Seams to reconcile at integration:
 
 ## 6. Requirements traceability matrix
 
-Status is **MISSING** at `368a057` unless noted; updated at `164289a` after wave G-A (PARTIAL = library code with tests, not wired). Test prefixes: `DT/` Domain.Tests, `AT/` Application.Tests, `BT/` Infrastructure.Bitcoin.Tests, `ST/` Serialization.Tests, `IT/` Integration.Tests, `DK/` `IT/Docker/Gossip`, `CLN/` `IT/Docker/Interop/Cln/ClnGossipTests`.
+Status is **MISSING** at `368a057` unless noted; updated at `164289a` after wave G-A (PARTIAL = library code with tests, not wired) and at `5bbfbb5` after wave G-B. Test prefixes: `DT/` Domain.Tests, `AT/` Application.Tests, `BT/` Infrastructure.Bitcoin.Tests, `ST/` Serialization.Tests, `IT/` Integration.Tests, `DK/` `IT/Docker/Gossip`, `CLN/` `IT/Docker/Interop/Cln/ClnGossipTests`.
 
 ### 6.1 Announcements
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
-| B7-AS-01 | send 259 at 6 confirmations after channel_ready; not if private or after shutdown | MISSING | G1-T4 | `AT/Gossip/ChannelAnnouncementServiceTests`, DK G1 (a)(b) |
-| B7-AS-02 | retransmit on reconnect; reply with ours | MISSING | G1-T4 | harness link-drop test, DK G1 (c) |
-| B7-AS-03 | SCID mismatch warning; bad signatures; defer | PARTIAL (typed and routed to the channel, G-A; handler G1-T3) | G1-T3 | `AT/Channels/Handlers/AnnouncementSignaturesMessageHandlerTests` |
-| B7-AS-04 | queue 256 once both signature pairs are in | MISSING | G1-T4 | identical-bytes harness test |
-| B7-CA-01 | layout, ordering, hash from offset 256 | PARTIAL (codec + vectors G-A; sending G1-T4) | G0-T1, G1-T4 | `ST/…ChannelAnnouncementPayloadTests`, vectors |
-| B7-CA-02 | not before 6 confirmations; P2WSH | MISSING | G1-T4, G2-T2 | depth test |
-| B7-CA-03 | receiver checks (sigs, chain, features, unspent P2WSH, depth) | PARTIAL (validator, verifier, lookup in G-A; ingress G2-T4) | G2-T1, G2-T2, G2-T4 | `DT/Gossip/GossipValidatorTests`, `BT/Gossip/FundingOutputLookupTests` |
-| B7-CA-04 | blacklist conflicting announcements | MISSING | G2-T4, G5-T2 | ingress test |
-| B7-CA-05 | rebroadcast; stop when spent; forget at +72 | MISSING | G2-T5, G3-T3 | pruner tests, DK G2 (c) |
-| B7-NA-01/02 | node_announcement fields and sender rules | PARTIAL (codec, address sender rules G-A) | G0-T1, G0-T4, G1-T6 | codec tests, DK G1 (a) |
-| B7-NA-03 | receiver rules | PARTIAL (validator G-A) | G2-T1, G2-T4 | validator table |
+| B7-AS-01 | send 259 at 6 confirmations after channel_ready; not if private or after shutdown | DONE (G-B; not on mainnet unless allowed) | G1-T4 | `AT/Gossip/ChannelAnnouncementServiceTests`, DK G1 (a)(b) |
+| B7-AS-02 | retransmit on reconnect; reply with ours | DONE (G-B) | G1-T4 | harness link-drop test, DK G1 (c) |
+| B7-AS-03 | SCID mismatch warning; bad signatures; defer | DONE (G-B) | G1-T3 | `AT/Channels/Handlers/AnnouncementSignaturesMessageHandlerTests` |
+| B7-AS-04 | queue 256 once both signature pairs are in | DONE (G-B) | G1-T4 | identical-bytes harness test |
+| B7-CA-01 | layout, ordering, hash from offset 256 | DONE (G-B; DK G1 (a)) | G0-T1, G1-T4 | `ST/…ChannelAnnouncementPayloadTests`, vectors |
+| B7-CA-02 | not before 6 confirmations; P2WSH | DONE (G-B) | G1-T4, G2-T2 | depth test |
+| B7-CA-03 | receiver checks (sigs, chain, features, unspent P2WSH, depth) | DONE (G-B ingress) | G2-T1, G2-T2, G2-T4 | `DT/Gossip/GossipValidatorTests`, `BT/Gossip/FundingOutputLookupTests` |
+| B7-CA-04 | blacklist conflicting announcements | DONE (G-B ingress; spam scoring G5-T2) | G2-T4, G5-T2 | ingress test |
+| B7-CA-05 | rebroadcast; stop when spent; forget at +72 | PARTIAL (own 256 relayed, spent/+72 pruning G-B; relay of others G3-T3) | G2-T5, G3-T3 | pruner tests, DK G2 (c) |
+| B7-NA-01/02 | node_announcement fields and sender rules | DONE (G-B, DK G1 (a)) | G0-T1, G0-T4, G1-T6 | codec tests, DK G1 (a) |
+| B7-NA-03 | receiver rules | DONE (G-B ingress) | G2-T1, G2-T4 | validator table |
 | B7-NA-04 | unknown even features: no connect/route/pay | PARTIAL (pathfinder G-A) | G4-T1 | pathfinder table |
 
 ### 6.2 channel_update
 | ID | Requirement | Status | Task | Test |
 |---|---|---|---|---|
-| B7-CU-01 | sender rules | PARTIAL (W1-E, private only) | G1-T5 | `ChannelUpdateServiceTests` + public cases |
+| B7-CU-01 | sender rules | PARTIAL (public mode G-B; disable when the peer is offline missing, NL-349) | G1-T5 | `ChannelUpdateServiceTests` + public cases |
 | B7-CU-01b | accept old fee for 10 min | MISSING **(check `HtlcForwardingPolicy`)** | G1-T5 | forwarding-policy test |
-| B7-CU-02 | receiver rules incl. spent/disable, same-timestamp blacklist | PARTIAL (own channels, memory only) | G2-T4 | ingress tests |
+| B7-CU-02 | receiver rules incl. spent/disable, same-timestamp blacklist | DONE (G-B ingress) | G2-T4 | ingress tests |
 | B7-CU-03 | min/max/capacity in routing | PARTIAL (pathfinder G-A; planner G4-T3) | G4-T1 | pathfinder table |
 
 ### 6.3 Queries, relay, pruning, routing
@@ -575,11 +603,11 @@ Status is **MISSING** at `368a057` unless noted; updated at `164289a` after wave
 | B7-Q-01 | querier rules (one outstanding, encoding 0, not for spent) | MISSING (we never query) | G3-T2 | sync state-machine tests |
 | B7-Q-02 | `query_short_channel_ids` replies, flags, `full_information` | PARTIAL (empty, NL-205) | G3-T1 | `AT/Gossip/Sync/QueryResponderTests` |
 | B7-Q-03/04 | range query and reply rules; timestamps/checksums | PARTIAL (one empty reply) | G3-T1, G3-T4 | chunking tests, CRC32C vector |
-| B7-Q-05 | timestamp filter semantics, own gossip, ordering | MISSING (ignored) | G3-T3, G1-T7 | relay tests, DK G3 (b) |
+| B7-Q-05 | timestamp filter semantics, own gossip, ordering | PARTIAL (we send `(0, 0xFFFFFFFF)` after init; own gossip regardless of filters, ordered, G-B; peers' filters ignored until G3-T3) | G3-T3, G1-T7 | relay tests, DK G3 (b) |
 | B7-Q-06 | filter to a peer without `gossip_queries` | MISSING | G3-T2 | unit |
 | B7-RL-01 | no relay before filter; 60 s staggered flush; origin suppression; networks | MISSING | G3-T3 | relay tests, DK G3 (c) |
-| B7-PR-01 | spent + 72 removal; node pruning | MISSING | G2-T5 | DK G2 (c) |
-| B7-PR-02 | 2-week stale MAY prune | MISSING | G2-T5 | mocked-clock test, DK G2 (d) |
+| B7-PR-01 | spent + 72 removal; node pruning | DONE (G-B, DK G2 (c)) | G2-T5 | DK G2 (c) |
+| B7-PR-02 | 2-week stale MAY prune | DONE (G-B unit tests; DK G2 (d) missing, NL-356) | G2-T5 | mocked-clock test, DK G2 (d) |
 | B7-RT-01 | fees + CLTV + random offset | PARTIAL (pathfinder, `ShadowCltv` G-A) | G4-T1, G4-T3 | pathfinder tests, DK G4 |
 | B7-FEE-01 | fee formula | DONE (`HtlcForwardingPolicy`) | — | existing |
 | B4-CU-01 | failure update not applied to the graph | DONE (per payment, `RouteConstraints`) | G3-T5 keeps it | DK G4 (c) |
