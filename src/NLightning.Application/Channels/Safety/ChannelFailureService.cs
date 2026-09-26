@@ -1,22 +1,20 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using NBitcoin;
-using NBitcoin.RPC;
 
 namespace NLightning.Application.Channels.Safety;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
-using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
-using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -25,38 +23,31 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <summary>
-/// The fail-the-channel service (BOLT2 plan N9-T4, D10; partial NL-094): persist <see cref="ChannelState.Failed"/> and
-/// the <c>error</c>, build and fully sign our latest local commitment, publish it, send the <c>error</c>; and, once the
-/// commitment confirms, persist <see cref="ChannelState.Closed"/>.
+/// The fail-the-channel service (BOLT2 plan N9-T4, D10; BOLT 5 plan O2-T2): persist <see cref="ChannelState.Failed"/>,
+/// the <c>error</c> and the broadcast of our fully signed latest local commitment in one save, publish it, send the
+/// <c>error</c>.
 /// </summary>
 /// <remarks>
 /// <para>Singleton; see <see cref="IChannelFailureService"/> for the contract. Invariants: only the latest local
 /// commitment is ever signed for broadcast (it is read from the snapshot under the channel's lock, and the signer
 /// refuses an older number; I4); nothing is broadcast after proven data loss (checked here and by the signer after
 /// <c>MarkDataLoss</c>; I12, B2-RE-23).</para>
-/// <para>Persist before broadcast: under the lock the commitment is built and signed, then Failed, the error and the
-/// watch of the commitment txid are saved in <b>one</b> save (NL-271, BOLT 5 plan invariant S1), so no later update
-/// can change it (every update is refused on a Failed channel) and no crash can lose the intent to broadcast it; after
-/// the lock the monitor follows the watch (<see cref="IBlockchainMonitor.TrackWatchedTransaction"/>) and the
-/// transaction is published (<see cref="IBlockchainMonitor.PublishTransactionAsync"/>). A broadcast
-/// repeated in the same process (a new block while the HTLC is still past its deadline) is skipped; after a restart
-/// the stored watch makes it a rebroadcast (<see cref="IBitcoinChainService.SendTransactionAsync"/>).</para>
-/// <para>A publish counts as done only when the node accepted it or already knows the transaction (in its mempool or
-/// chain, <see cref="IsKnownToNodeAsync"/>); any other refusal (node down, below the mempool minimum fee, a conflict)
-/// is <see cref="ChannelFailureStatus.PublishFailed"/> and, once <see cref="Start"/> ran, retried on every new block
-/// until it succeeds. <see cref="Start"/> also resumes, in the background, the broadcast of every loaded Failed
-/// channel (no data loss) that has an unconfirmed commitment watch: a publish interrupted by a crash or a node outage
-/// before the restart.</para>
+/// <para>Persist before broadcast (NL-271, BOLT 5 plan invariant S1): under the lock the commitment is built and signed,
+/// then Failed, the error and the commitment's <see cref="BroadcastTransactionModel"/> (purpose
+/// <see cref="BroadcastPurpose.LocalCommitment"/>, with its commitment number) are saved in <b>one</b> save, so no
+/// later update can change it (every update is refused on a Failed channel) and no crash can lose the intent to
+/// broadcast it. After the lock it is published through the chain monitor's <see cref="Domain.Onchain.Interfaces.IChainBroadcaster"/>,
+/// which also sends it again after every block and at startup until a block holds it. The stored commitment number
+/// restores the signer's S1 mark at the next registration (NL-297, <c>ChannelManager</c>).</para>
+/// <para>A publish counts as done only when the node accepted it or already has it; a refusal (node down, below the
+/// mempool minimum fee, a conflict) is <see cref="ChannelFailureStatus.PublishFailed"/>, and the row stays pending.
+/// What happens once the commitment (or the peer's) is on chain is the on-chain watcher's
+/// (<c>Application/Onchain/OnchainChannelWatcher</c>): the channel moves to <c>OnchainResolving</c> and then
+/// <c>Closed</c> once its outputs are resolved. A Failed channel of an older build (commitment watch, no broadcast
+/// row) is resumed at <see cref="Start"/>, which writes the row.</para>
 /// </remarks>
 public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 {
-    // bitcoind rejections that mean it already has the transaction (mempool or chain)
-    private static readonly string[] s_alreadyKnownRejections =
-    [
-        "txn-already-in-mempool", "txn-already-known", "txn-same-nonwitness-data-in-mempool",
-        "already in block chain"
-    ];
-
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelErrorSender _channelErrorSender;
     private readonly IChannelLockProvider _channelLockProvider;
@@ -65,9 +56,6 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<ChannelFailureService> _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
-    private readonly IServiceProvider _serviceProvider;
-    private readonly ChannelSafetyOptions _options;
-    private readonly Network _network;
 
     // Commitments published by this process, per channel (a repeated failure does not republish every block)
     private readonly ConcurrentDictionary<ChannelId, TxId> _published = new();
@@ -84,9 +72,7 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
                                  IChannelLockProvider channelLockProvider,
                                  IChannelMemoryRepository channelMemoryRepository,
                                  LocalCommitmentBroadcastBuilder commitmentBuilder, ILightningSigner lightningSigner,
-                                 ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory,
-                                 IServiceProvider serviceProvider, IOptions<NodeOptions> nodeOptions,
-                                 IOptions<ChannelSafetyOptions>? safetyOptions = null)
+                                 ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelErrorSender = channelErrorSender;
@@ -96,9 +82,6 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         _lightningSigner = lightningSigner;
         _logger = logger;
         _serviceScopeFactory = serviceScopeFactory;
-        _serviceProvider = serviceProvider;
-        _options = safetyOptions?.Value ?? new ChannelSafetyOptions();
-        _network = Network.GetNetwork(nodeOptions.Value.BitcoinNetwork) ?? Network.RegTest;
     }
 
     /// <inheritdoc />
@@ -108,7 +91,6 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             return;
 
         _stopping = new CancellationTokenSource();
-        _blockchainMonitor.OnTransactionConfirmed += HandleTransactionConfirmed;
         _blockchainMonitor.OnNewBlockDetected += HandleNewBlockDetected;
 
         var token = _stopping.Token;
@@ -121,7 +103,6 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         if (Interlocked.Exchange(ref _started, 0) != 1)
             return;
 
-        _blockchainMonitor.OnTransactionConfirmed -= HandleTransactionConfirmed;
         _blockchainMonitor.OnNewBlockDetected -= HandleNewBlockDetected;
         _stopping.Cancel();
     }
@@ -133,8 +114,9 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     public bool IsPublishPending(ChannelId channelId) => _pendingPublishes.ContainsKey(channelId);
 
     /// <summary>
-    /// Resumes the broadcast of every loaded <c>Failed</c> channel without data loss whose commitment watch is stored
-    /// but not confirmed (a publish interrupted by a crash, or refused before a restart). <see cref="Start"/> runs it.
+    /// Resumes the broadcast of every loaded <c>Failed</c> channel without data loss that an older build failed: its
+    /// commitment watch is stored and not confirmed, and there is no commitment broadcast row (the chain monitor
+    /// rebroadcasts the rows on its own). <see cref="Start"/> runs it.
     /// </summary>
     public async Task ResumeInterruptedBroadcastsAsync(CancellationToken cancellationToken = default)
     {
@@ -145,15 +127,22 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             if (failed.Count == 0)
                 return;
 
-            List<ChannelId> toResume;
+            var toResume = new List<ChannelId>();
             using (var scope = _serviceScopeFactory.CreateScope())
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 var pending = await unitOfWork.WatchedTransactionDbRepository.GetAllPendingAsync();
-                toResume = failed.Where(c => pending.Any(w => w.ChannelId == c.ChannelId
-                                                           && !IsFundingTransaction(c, w.TransactionId)))
-                                 .Select(c => c.ChannelId)
-                                 .ToList();
+                foreach (var channel in failed)
+                {
+                    if (!pending.Any(w => w.ChannelId == channel.ChannelId
+                                       && !IsFundingTransaction(channel, w.TransactionId)))
+                        continue;
+
+                    var broadcasts =
+                        await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channel.ChannelId);
+                    if (broadcasts.All(b => b.Purpose != BroadcastPurpose.LocalCommitment))
+                        toResume.Add(channel.ChannelId);
+                }
             }
 
             foreach (var channelId in toResume)
@@ -206,12 +195,7 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
                                                         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(failure);
-        return FailChannelAsync(failure.FailedChannelId,
-                                new ChannelFailureRequest(failure.Message,
-                                                          failure.PeerMessage
-                                                       ?? ChannelFailedException.DefaultPeerMessage,
-                                                          failure.MustBroadcast, failure.RequirementId),
-                                cancellationToken);
+        return FailChannelAsync(failure.FailedChannelId, ToRequest(failure), cancellationToken);
     }
 
     /// <inheritdoc />
@@ -222,121 +206,162 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         return FailCoreAsync(channelId, request, sendError: true, cancellationToken);
     }
 
+    /// <inheritdoc />
+    public Task<PreparedChannelFailure> PrepareFailureUnderLockAsync(ChannelId channelId,
+                                                                     ChannelFailureRequest request,
+                                                                     CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return PrepareLockedAsync(channelId, request);
+    }
+
+    /// <inheritdoc />
+    public async Task<ChannelFailureOutcome> CompleteFailureAsync(PreparedChannelFailure prepared, bool sendError,
+                                                                  CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(prepared);
+        if (prepared.EarlyOutcome is { } early)
+            return early;
+
+        ChannelFailureOutcome outcome;
+        var channelId = prepared.ChannelId;
+        if (prepared is { Commitment: { } commitment, Broadcast: { } broadcast })
+        {
+            outcome = await PublishAsync(channelId, commitment, broadcast, prepared.BroadcastStaged);
+            if (outcome.Status == ChannelFailureStatus.PublishFailed)
+                _pendingPublishes[channelId] = prepared.Request with { StillApplies = null };
+            else
+                _pendingPublishes.TryRemove(channelId, out _);
+        }
+        else
+        {
+            outcome = prepared.DecidedOutcome
+                   ?? new ChannelFailureOutcome(ChannelFailureStatus.NoBroadcastableCommitment, null);
+            if (outcome.Status is ChannelFailureStatus.RefusedDataLoss
+                               or ChannelFailureStatus.NoBroadcastableCommitment)
+            {
+                // Nothing is ever to be broadcast for this channel; a later request without broadcast (an already
+                // Failed channel failed again) leaves an earlier failure's publish retry alone
+                _pendingPublishes.TryRemove(channelId, out _);
+            }
+        }
+
+        if (sendError && prepared is { Channel: { } channel, Error: { } error })
+            await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
+
+        return outcome;
+    }
+
+    /// <summary>The request a <see cref="ChannelFailedException"/> stands for.</summary>
+    public static ChannelFailureRequest ToRequest(ChannelFailedException failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        return new ChannelFailureRequest(failure.Message,
+                                         failure.PeerMessage ?? ChannelFailedException.DefaultPeerMessage,
+                                         failure.MustBroadcast, failure.RequirementId);
+    }
+
     private async Task<ChannelFailureOutcome> FailCoreAsync(ChannelId channelId, ChannelFailureRequest request,
                                                             bool sendError, CancellationToken cancellationToken)
     {
-        ErrorMessage error;
-        ChannelModel channel;
-        SignedLocalCommitment? commitment = null;
-        WatchedTransactionModel? stagedWatch = null;
-        ChannelFailureOutcome? outcome = null;
-
+        PreparedChannelFailure prepared;
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
-        {
-            if (!_channelMemoryRepository.TryGetChannel(channelId, out var loaded))
-                throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+            prepared = await PrepareLockedAsync(channelId, request);
 
-            channel = loaded;
-            if (channel.State is ChannelState.Closed or ChannelState.Stale
-             || channel.State < ChannelState.V1FundingSigned)
-            {
-                // Nothing of this channel can be broadcast any more
-                _pendingPublishes.TryRemove(channelId, out _);
-                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
-            }
-
-            // A request whose precondition no longer holds changes nothing, not even the retry of an earlier
-            // failure's commitment publish (W4-E review F2)
-            if (request.StillApplies is { } stillApplies && !stillApplies(channel))
-                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
-
-            _logger.LogCritical("Failing channel {ChannelId} ({RequirementId}): {Reason}; broadcast: {Broadcast}",
-                                channelId, request.RequirementId, request.Reason, request.Broadcast);
-
-            if (channel.DataLossDetected)
-            {
-                // I12 / B2-RE-23: the peer holds a newer state; our commitment is revoked from its point of view
-                _lightningSigner.MarkDataLoss(channelId);
-                if (request.Broadcast)
-                    _logger.LogCritical("Not broadcasting the commitment of channel {ChannelId}: data loss was "
-                                      + "detected, the peer must close it", channelId);
-                outcome = new ChannelFailureOutcome(ChannelFailureStatus.RefusedDataLoss, null);
-            }
-            else if (!request.Broadcast)
-            {
-                outcome = new ChannelFailureOutcome(ChannelFailureStatus.FailedWithoutBroadcast, null);
-            }
-            else
-            {
-                try
-                {
-                    // Built under the lock, from the snapshot the Failed save below freezes (Failed refuses every
-                    // update), so the commitment and the recorded intent to broadcast it can't diverge
-                    commitment = _commitmentBuilder.Build(channel);
-                }
-                catch (Exception e) when (e is InvalidOperationException or SignerException)
-                {
-                    _logger.LogCritical(e, "Cannot build a broadcastable commitment for failed channel {ChannelId}",
-                                        channelId);
-                    outcome = new ChannelFailureOutcome(ChannelFailureStatus.NoBroadcastableCommitment, null);
-                }
-            }
-
-            // NL-271: Failed, the error and the watch of the commitment to broadcast go in one save, so a crash
-            // before the publish leaves the intent recorded and the start-up resume sends it
-            using var scope = _serviceScopeFactory.CreateScope();
-            (error, stagedWatch) = await PersistFailedAsync(scope, channel, request, commitment);
-        }
-
-        if (commitment is not null)
-        {
-            outcome = await PublishAsync(channelId, commitment, stagedWatch);
-            if (outcome.Status == ChannelFailureStatus.PublishFailed)
-                _pendingPublishes[channelId] = request with { StillApplies = null };
-            else
-                _pendingPublishes.TryRemove(channelId, out _);
-        }
-        else if (outcome!.Status is ChannelFailureStatus.RefusedDataLoss
-                 or ChannelFailureStatus.NoBroadcastableCommitment)
-        {
-            // Nothing is ever to be broadcast for this channel; a later request without broadcast (an already Failed
-            // channel failed again) leaves an earlier failure's publish retry alone
-            _pendingPublishes.TryRemove(channelId, out _);
-        }
-
-        if (sendError)
-            await _channelErrorSender.TrySendAsync(channel.RemoteNodeId, error);
-
-        return outcome!;
+        return await CompleteFailureAsync(prepared, sendError, cancellationToken);
     }
 
-    /// <summary>The txid this process published for <paramref name="channelId"/>, if any (tests, diagnostics).</summary>
-    public bool TryGetPublishedCommitment(ChannelId channelId, out TxId txId) =>
-        _published.TryGetValue(channelId, out txId);
-
-    public void Dispose()
+    /// <summary>Everything done under the channel's lock: checks, build and sign, the one save. Call it locked.</summary>
+    private async Task<PreparedChannelFailure> PrepareLockedAsync(ChannelId channelId, ChannelFailureRequest request)
     {
-        Stop();
-        _stopping.Dispose();
+        var prepared = new PreparedChannelFailure(channelId, request);
+        if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
+            throw new KeyNotFoundException($"Channel {channelId} is not loaded");
+
+        prepared.Channel = channel;
+        if (channel.State is ChannelState.Closed or ChannelState.Stale or ChannelState.OnchainResolving
+         || channel.State < ChannelState.V1FundingSigned)
+        {
+            // Nothing of this channel can be broadcast any more (closed, or already resolving on chain)
+            _pendingPublishes.TryRemove(channelId, out _);
+            prepared.EarlyOutcome = new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+            return prepared;
+        }
+
+        // A request whose precondition no longer holds changes nothing, not even the retry of an earlier failure's
+        // commitment publish (W4-E review F2)
+        if (request.StillApplies is { } stillApplies && !stillApplies(channel))
+        {
+            prepared.EarlyOutcome = new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+            return prepared;
+        }
+
+        _logger.LogCritical("Failing channel {ChannelId} ({RequirementId}): {Reason}; broadcast: {Broadcast}",
+                            channelId, request.RequirementId, request.Reason, request.Broadcast);
+
+        SignedLocalCommitment? commitment = null;
+        if (channel.DataLossDetected)
+        {
+            // I12 / B2-RE-23: the peer holds a newer state; our commitment is revoked from its point of view
+            _lightningSigner.MarkDataLoss(channelId);
+            if (request.Broadcast)
+                _logger.LogCritical("Not broadcasting the commitment of channel {ChannelId}: data loss was detected, "
+                                  + "the peer must close it", channelId);
+            prepared.DecidedOutcome = new ChannelFailureOutcome(ChannelFailureStatus.RefusedDataLoss, null);
+        }
+        else if (!request.Broadcast)
+        {
+            prepared.DecidedOutcome = new ChannelFailureOutcome(ChannelFailureStatus.FailedWithoutBroadcast, null);
+        }
+        else
+        {
+            try
+            {
+                // Built under the lock, from the snapshot the Failed save below freezes (Failed refuses every
+                // update), so the commitment and the recorded intent to broadcast it can't diverge
+                commitment = _commitmentBuilder.Build(channel);
+            }
+            catch (Exception e) when (e is InvalidOperationException or SignerException)
+            {
+                _logger.LogCritical(e, "Cannot build a broadcastable commitment for failed channel {ChannelId}",
+                                    channelId);
+                prepared.DecidedOutcome =
+                    new ChannelFailureOutcome(ChannelFailureStatus.NoBroadcastableCommitment, null);
+            }
+        }
+
+        // NL-271: Failed, the error and the commitment's broadcast row go in one save, so a crash before the publish
+        // leaves the intent recorded and the chain monitor sends it at startup
+        using var scope = _serviceScopeFactory.CreateScope();
+        await PersistFailedAsync(scope, prepared, commitment);
+        return prepared;
     }
 
     /// <summary>
     /// Persists <see cref="ChannelState.Failed"/> with the error (unless already stored) and, when a commitment is to
-    /// be broadcast and its watch is not stored yet, the watch of its txid, all in one save (NL-271).
+    /// be broadcast and has no broadcast row yet, its row, all in one save (NL-271).
     /// </summary>
-    /// <returns>The error to send and the watch staged by this save (null when none was needed).</returns>
-    private async Task<(ErrorMessage Error, WatchedTransactionModel? StagedWatch)> PersistFailedAsync(
-        IServiceScope scope, ChannelModel channel, ChannelFailureRequest request, SignedLocalCommitment? commitment)
+    private async Task PersistFailedAsync(IServiceScope scope, PreparedChannelFailure prepared,
+                                          SignedLocalCommitment? commitment)
     {
+        var channel = prepared.Channel!;
+        var request = prepared.Request;
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        WatchedTransactionModel? watch = null;
-        if (commitment is not null
-         && await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(commitment.Transaction.TxId)
-                is null)
+        if (commitment is not null)
         {
-            watch = new WatchedTransactionModel(channel.ChannelId, commitment.Transaction.TxId,
-                                                Math.Max(1, _options.CommitmentConfirmationDepth));
-            unitOfWork.WatchedTransactionDbRepository.Add(watch);
+            prepared.Commitment = commitment;
+            prepared.Broadcast =
+                await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(commitment.Transaction.TxId);
+            if (prepared.Broadcast is null)
+            {
+                prepared.Broadcast = new BroadcastTransactionModel(commitment.Transaction,
+                                                                   BroadcastPurpose.LocalCommitment,
+                                                                   channel.ChannelId,
+                                                                   _blockchainMonitor.LastProcessedBlockHeight,
+                                                                   commitmentNumber: commitment.CommitmentNumber);
+                unitOfWork.BroadcastTransactionDbRepository.Add(prepared.Broadcast);
+                prepared.BroadcastStaged = true;
+            }
         }
 
         var error = await GetStoredErrorAsync(scope, channel);
@@ -362,15 +387,25 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             }
         }
 
-        if (!persistChannel && watch is null)
-            return (error, null);
+        prepared.Error = error;
+        if (!persistChannel && !prepared.BroadcastStaged)
+            return;
 
         if (persistChannel)
             await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         await unitOfWork.SaveChangesAsync();
         if (persistChannel)
             _channelMemoryRepository.UpdateChannel(channel);
-        return (error, watch);
+    }
+
+    /// <summary>The txid this process published for <paramref name="channelId"/>, if any (tests, diagnostics).</summary>
+    public bool TryGetPublishedCommitment(ChannelId channelId, out TxId txId) =>
+        _published.TryGetValue(channelId, out txId);
+
+    public void Dispose()
+    {
+        Stop();
+        _stopping.Dispose();
     }
 
     /// <summary>The stored error of a channel failed before (a handler's ChannelFailedException, or an earlier call).
@@ -396,125 +431,50 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     }
 
     private async Task<ChannelFailureOutcome> PublishAsync(ChannelId channelId, SignedLocalCommitment commitment,
-                                                           WatchedTransactionModel? stagedWatch)
+                                                           BroadcastTransactionModel broadcast, bool staged)
     {
         var txId = commitment.Transaction.TxId;
-        if (stagedWatch is not null)
-            return await PublishFirstAsync(channelId, commitment, stagedWatch);
-
-        if (_published.TryGetValue(channelId, out var published) && published == txId)
+        if (!staged && _published.TryGetValue(channelId, out var published) && published == txId)
             return new ChannelFailureOutcome(ChannelFailureStatus.Rebroadcast, txId);
 
-        try
+        switch (broadcast.State)
         {
-            bool watched;
-            using (var scope = _serviceScopeFactory.CreateScope())
-            {
-                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                watched = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId) is not null;
-            }
-
-            if (watched)
-            {
-                // Published or attempted before (an earlier run, or a publish that failed after its watch was
-                // saved): send it again, the watch is already stored
-                var chainService = _serviceProvider.GetRequiredService<IBitcoinChainService>();
-                try
-                {
-                    await chainService.SendTransactionAsync(Transaction.Load(commitment.Transaction.RawTxBytes,
-                                                                             _network));
-                }
-                catch (Exception e) when (e is not OperationCanceledException)
-                {
-                    if (!await IsKnownToNodeAsync(chainService, txId, e))
-                    {
-                        _logger.LogCritical(e, "Rebroadcast of commitment {TxId} of failed channel {ChannelId} was "
-                                             + "refused; retrying on the next block", Display(txId), channelId);
-                        return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
-                    }
-
-                    _logger.LogInformation("Commitment {TxId} of channel {ChannelId} is already known to the node",
-                                           Display(txId), channelId);
-                }
-
+            case BroadcastState.Confirmed:
                 _published[channelId] = txId;
                 return new ChannelFailureOutcome(ChannelFailureStatus.Rebroadcast, txId);
-            }
-
-            // Not watched and nothing staged: a watch that disappeared (e.g. pruned); record it again, then publish
-            await _blockchainMonitor.PublishAndWatchTransactionAsync(channelId, commitment.Transaction,
-                                                                     Math.Max(1, _options.CommitmentConfirmationDepth));
-            return Published(channelId, commitment);
+            case BroadcastState.Abandoned or BroadcastState.Replaced:
+                _logger.LogWarning("Commitment {TxId} of failed channel {ChannelId} is not published: another "
+                                 + "transaction spent the funding output", Display(txId), channelId);
+                return new ChannelFailureOutcome(ChannelFailureStatus.Superseded, txId);
         }
-        catch (Exception e)
-        {
-            _logger.LogCritical(e, "Publishing commitment {TxId} of failed channel {ChannelId} failed", Display(txId),
-                                channelId);
-            return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
-        }
-    }
 
-    /// <summary>
-    /// The first publish of a commitment whose watch was saved with Failed (NL-271): the monitor follows that watch,
-    /// then the transaction is sent. A refusal counts as done only when the node already has it.
-    /// </summary>
-    private async Task<ChannelFailureOutcome> PublishFirstAsync(ChannelId channelId, SignedLocalCommitment commitment,
-                                                                WatchedTransactionModel watch)
-    {
-        var txId = commitment.Transaction.TxId;
+        bool accepted;
         try
         {
-            _blockchainMonitor.TrackWatchedTransaction(watch);
-            await _blockchainMonitor.PublishTransactionAsync(commitment.Transaction);
+            accepted = await _blockchainMonitor.PublishAsync(broadcast);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            var chainService = _serviceProvider.GetService<IBitcoinChainService>();
-            if (chainService is null || !await IsKnownToNodeAsync(chainService, txId, e))
-            {
-                _logger.LogCritical(e, "Publishing commitment {TxId} of failed channel {ChannelId} failed; retrying "
-                                     + "on the next block (its watch is stored)", Display(txId), channelId);
-                return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
-            }
+            _logger.LogCritical(e, "Publishing commitment {TxId} of failed channel {ChannelId} failed; it is sent "
+                                 + "again after the next block", Display(txId), channelId);
+            return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
         }
 
-        return Published(channelId, commitment);
-    }
+        if (!accepted)
+        {
+            _logger.LogCritical("Commitment {TxId} of failed channel {ChannelId} was refused; it is sent again after "
+                              + "the next block", Display(txId), channelId);
+            return new ChannelFailureOutcome(ChannelFailureStatus.PublishFailed, txId);
+        }
 
-    private ChannelFailureOutcome Published(ChannelId channelId, SignedLocalCommitment commitment)
-    {
-        var txId = commitment.Transaction.TxId;
         _published[channelId] = txId;
-        _logger.LogCritical("Broadcast local commitment {CommitmentNumber} ({TxId}, {HtlcOutputs} HTLC outputs) "
-                          + "of failed channel {ChannelId}; its outputs are not swept yet (BOLT 5, NL-094)",
-                            commitment.CommitmentNumber, Display(txId), commitment.HtlcOutputCount,
-                            channelId);
+        if (!staged)
+            return new ChannelFailureOutcome(ChannelFailureStatus.Rebroadcast, txId);
+
+        _logger.LogCritical("Broadcast local commitment {CommitmentNumber} ({TxId}, {HtlcOutputs} HTLC outputs) of "
+                          + "failed channel {ChannelId}", commitment.CommitmentNumber, Display(txId),
+                            commitment.HtlcOutputCount, channelId);
         return new ChannelFailureOutcome(ChannelFailureStatus.Broadcast, txId);
-    }
-
-    /// <summary>
-    /// True when a refused send still means the node has the transaction: bitcoind's "already in the chain"
-    /// (RPC -27) or "already in the mempool" rejections, or the transaction found through <c>getrawtransaction</c>.
-    /// Every other refusal (node unreachable, fee too low, missing or conflicting inputs) is a failed publish.
-    /// </summary>
-    private async Task<bool> IsKnownToNodeAsync(IBitcoinChainService chainService, TxId txId, Exception sendError)
-    {
-        if (sendError is RPCException { RPCCode: RPCErrorCode.RPC_VERIFY_ALREADY_IN_CHAIN })
-            return true;
-
-        var message = sendError.Message;
-        if (s_alreadyKnownRejections.Any(r => message.Contains(r, StringComparison.OrdinalIgnoreCase)))
-            return true;
-
-        try
-        {
-            return await chainService.GetTransactionAsync(new uint256(txId)) is not null;
-        }
-        catch (Exception e)
-        {
-            _logger.LogWarning(e, "Cannot check whether commitment {TxId} is known to the node", Display(txId));
-            return false;
-        }
     }
 
     private void HandleNewBlockDetected(object? sender, NewBlockEventArgs args)
@@ -540,48 +500,9 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
         }, CancellationToken.None);
     }
 
-    private void HandleTransactionConfirmed(object? sender, TransactionConfirmedEventArgs args)
-    {
-        var watched = args.WatchedTransaction;
-        if (!_channelMemoryRepository.TryGetChannel(watched.ChannelId, out var channel)
-         || channel.State != ChannelState.Failed || IsFundingTransaction(channel, watched.TransactionId))
-            return;
-
-        _ = CloseAsync(watched.ChannelId, watched.TransactionId, args.Height);
-    }
-
     /// <summary>A txid in the display (RPC, block explorer) byte order, for logs (NL-275).</summary>
     private static string? Display(TxId? txId) => txId is { } id ? new uint256(id).ToString() : null;
 
     private static bool IsFundingTransaction(ChannelModel channel, TxId txId) =>
         channel.FundingOutput?.TransactionId is { } fundingTxId && fundingTxId == txId;
-
-    /// <summary>
-    /// Our commitment (a watched transaction of a Failed channel other than its funding) confirmed: the channel is
-    /// closed. Its outputs still need BOLT 5 (NL-094).
-    /// </summary>
-    private async Task CloseAsync(ChannelId channelId, TxId txId, uint height)
-    {
-        try
-        {
-            using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
-            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
-             || channel.State != ChannelState.Failed)
-                return;
-
-            channel.UpdateState(ChannelState.Closed);
-            using var scope = _serviceScopeFactory.CreateScope();
-            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
-            await unitOfWork.SaveChangesAsync();
-            _channelMemoryRepository.UpdateChannel(channel);
-
-            _logger.LogWarning("Channel {ChannelId} closed: our commitment {TxId} confirmed at height {Height}; "
-                             + "to_local and HTLC outputs are not swept (BOLT 5, NL-094)", channelId, Display(txId), height);
-        }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Failed to persist the close of channel {ChannelId}", channelId);
-        }
-    }
 }

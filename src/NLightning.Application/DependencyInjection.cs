@@ -27,6 +27,7 @@ using Domain.Protocol.Interfaces;
 using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
+using Onchain;
 using Payments;
 using Payments.Send;
 using Payments.Switch;
@@ -94,6 +95,7 @@ public static class DependencyInjection
         services.AddHtlcSwitchServices();
         services.AddPaymentSendServices();
         services.AddChannelSafetyServices();
+        services.AddOnchainServices();
         services.AddSingleton<IPeerManager, PeerManager>();
 
         // Automatically register all channel message handlers

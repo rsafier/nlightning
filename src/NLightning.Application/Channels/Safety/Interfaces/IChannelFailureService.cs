@@ -10,11 +10,11 @@ using Domain.Exceptions;
 /// are enforced in one place (and again by the signer).
 /// </summary>
 /// <remarks>
-/// <para>Order: under the channel's lock, persist <c>ChannelState.Failed</c> with the <c>error</c> we send (re-sent
-/// on every reconnection), then build and fully sign the latest local commitment with the peer's stored signature;
-/// after the lock, publish it (the watch with its txid is saved before the publish) and send the <c>error</c> to the
-/// peer if it is connected. Once the commitment reaches its confirmation depth the channel is persisted
-/// <c>Closed</c>. Sweeping its outputs (to_local after the delay, HTLC outputs) is BOLT 5 (NL-094) and not done.</para>
+/// <para>Order: under the channel's lock, build and fully sign the latest local commitment with the peer's stored
+/// signature, then persist <c>ChannelState.Failed</c> with the <c>error</c> we send (re-sent on every reconnection)
+/// and the commitment's broadcast row (purpose <c>LocalCommitment</c>, with its number) in one save (NL-271); after
+/// the lock, publish it and send the <c>error</c> to the peer if it is connected. Once a commitment spends the funding
+/// output the on-chain watcher moves the channel to <c>OnchainResolving</c> (BOLT 5 plan O2-T5).</para>
 /// <para>Callers must not hold any channel lock. Idempotent: failing a failed channel again re-sends its stored
 /// error and, when a broadcast is asked for, rebroadcasts the same commitment.</para>
 /// </remarks>
@@ -35,7 +35,25 @@ public interface IChannelFailureService
     Task<ChannelFailureOutcome> FailChannelAsync(ChannelFailedException failure,
                                                  CancellationToken cancellationToken = default);
 
-    /// <summary>Subscribes to the chain monitor's confirmations (our commitment confirmed → <c>Closed</c>).</summary>
+    /// <summary>
+    /// The first half of <see cref="FailChannelAsync(ChannelId, ChannelFailureRequest, CancellationToken)"/> for a
+    /// caller that already holds the channel's lock (the channel manager, when a handler throws a
+    /// <see cref="ChannelFailedException"/> with <see cref="ChannelFailedException.MustBroadcast"/>; NL-271): builds and
+    /// signs our latest commitment and persists Failed, the error and the commitment's broadcast row in one save. Pass
+    /// the result to <see cref="CompleteFailureAsync"/> after releasing the lock.
+    /// </summary>
+    /// <exception cref="KeyNotFoundException">The channel is not loaded.</exception>
+    Task<PreparedChannelFailure> PrepareFailureUnderLockAsync(ChannelId channelId, ChannelFailureRequest request,
+                                                              CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The second half: publishes the prepared commitment (outside every channel lock) and, when
+    /// <paramref name="sendError"/>, sends the error to the peer.
+    /// </summary>
+    Task<ChannelFailureOutcome> CompleteFailureAsync(PreparedChannelFailure prepared, bool sendError,
+                                                     CancellationToken cancellationToken = default);
+
+    /// <summary>Subscribes to new blocks (the retry of a refused publish) and resumes interrupted broadcasts.</summary>
     void Start();
 
     /// <summary>Unsubscribes.</summary>
@@ -85,7 +103,43 @@ public enum ChannelFailureStatus : byte
     PublishFailed = 6,
 
     /// <summary>The channel is already closed or was never open: nothing done.</summary>
-    NotApplicable = 7
+    NotApplicable = 7,
+
+    /// <summary>
+    /// Our commitment can never confirm: the funding output was spent by another transaction (its broadcast row is
+    /// abandoned). Nothing sent.
+    /// </summary>
+    Superseded = 8
+}
+
+/// <summary>
+/// A failure persisted under the channel's lock by
+/// <see cref="IChannelFailureService.PrepareFailureUnderLockAsync"/>, to be completed after the lock with
+/// <see cref="IChannelFailureService.CompleteFailureAsync"/>.
+/// </summary>
+public sealed class PreparedChannelFailure
+{
+    internal PreparedChannelFailure(ChannelId channelId, ChannelFailureRequest request)
+    {
+        ChannelId = channelId;
+        Request = request;
+    }
+
+    public ChannelId ChannelId { get; }
+
+    public ChannelFailureRequest Request { get; }
+
+    /// <summary>Set when nothing is left to do after the lock (not applicable, precondition gone).</summary>
+    public ChannelFailureOutcome? EarlyOutcome { get; internal set; }
+
+    /// <summary>The outcome decided under the lock when there is no commitment to publish.</summary>
+    internal ChannelFailureOutcome? DecidedOutcome { get; set; }
+
+    internal Domain.Channels.Models.ChannelModel? Channel { get; set; }
+    internal Domain.Protocol.Messages.ErrorMessage? Error { get; set; }
+    internal SignedLocalCommitment? Commitment { get; set; }
+    internal Domain.Onchain.Models.BroadcastTransactionModel? Broadcast { get; set; }
+    internal bool BroadcastStaged { get; set; }
 }
 
 /// <summary>The outcome of failing a channel.</summary>

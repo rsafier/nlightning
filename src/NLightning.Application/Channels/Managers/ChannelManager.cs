@@ -21,6 +21,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
@@ -31,7 +32,9 @@ using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain.Interfaces;
 using Reestablish;
+using Safety;
 using Safety.Interfaces;
 using Services;
 
@@ -118,8 +121,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // Add the channel to the memory repository
         _channelMemoryRepository.AddChannel(channel);
 
-        // Register the channel with the signer (its local commitment number comes from the snapshot, if any)
-        _lightningSigner.RegisterChannel(channel.ChannelId, channel.GetSigningInfo());
+        // Register the channel with the signer (its local commitment number comes from the snapshot, if any), with the
+        // S1 mark of a persisted commitment broadcast (NL-297), before the first connection
+        var signingInfo = channel.GetSigningInfo();
+        if (await GetBroadcastSignedCommitmentNumberAsync(scope, channel) is { } broadcastNumber)
+        {
+            signingInfo = signingInfo with { BroadcastSignedCommitmentNumber = broadcastNumber };
+            _logger.LogInformation("Channel {ChannelId} has local commitment {Number} signed for broadcast; the signer "
+                                 + "never revokes it", channel.ChannelId, broadcastNumber);
+        }
+
+        _lightningSigner.RegisterChannel(channel.ChannelId, signingInfo);
 
         _logger.LogInformation("Loaded channel {channelId} from database", channel.ChannelId);
 
@@ -169,6 +181,39 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 _logger.LogWarning("Channel {ChannelId} was failed; every update on it is refused",
                                    channel.ChannelId);
                 break;
+            case ChannelState.OnchainResolving:
+                // A commitment spent its funding output: the on-chain executor resolves its outputs on every block
+                // (BOLT 5); its error is re-sent on every connection like a failed channel's
+                _logger.LogWarning("Channel {ChannelId} is resolving on chain; every update on it is refused",
+                                   channel.ChannelId);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The lowest local commitment number the channel has a persisted <see cref="BroadcastPurpose.LocalCommitment"/>
+    /// broadcast for (the fail-the-channel save, NL-271), or null. The signer's invariant S1 is restored from it
+    /// (NL-297). A read failure is logged: the mark is defense in depth (a Failed channel refuses every update anyway).
+    /// </summary>
+    private async Task<ulong?> GetBroadcastSignedCommitmentNumberAsync(IServiceScope scope, ChannelModel channel)
+    {
+        if (channel.State < ChannelState.V1FundingSigned)
+            return null;
+
+        try
+        {
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channel.ChannelId);
+            var numbers = broadcasts.Where(b => b.Purpose == BroadcastPurpose.LocalCommitment)
+                                    .Select(b => b.CommitmentNumber)
+                                    .OfType<ulong>()
+                                    .ToList();
+            return numbers.Count == 0 ? null : numbers.Min();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not read the commitment broadcasts of channel {ChannelId}", channel.ChannelId);
+            return null;
         }
     }
 
@@ -326,6 +371,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // switch after the lock is released
         using var scope = _serviceProvider.CreateScope();
         var reestablished = false;
+        PreparedChannelFailure? preparedFailure = null;
         try
         {
             using (await AcquireMessageLocksAsync(message, channelId))
@@ -340,8 +386,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 }
                 catch (ChannelFailedException cfe)
                 {
-                    // Persist Failed and the error before it is sent (N6-T3 contract), still under the lock
-                    await PersistFailedChannelAsync(scope, cfe);
+                    // Persist Failed and the error before it is sent (N6-T3 contract), still under the lock; with
+                    // MustBroadcast the commitment's broadcast row goes in the same save (NL-271)
+                    preparedFailure = await PersistFailedChannelAsync(scope, cfe);
                     throw;
                 }
 
@@ -360,9 +407,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
         catch (ChannelFailedException cfe) when (cfe.MustBroadcast)
         {
-            // Failed and the error are persisted; the lock is released now, so the failure service can take it to
-            // build, sign and broadcast our latest commitment (BOLT 2 B2-RE-14; N9-T4)
-            await BroadcastFailedChannelAsync(cfe);
+            // Failed, the error and (NL-271) the commitment's broadcast row are persisted; the lock is released now,
+            // so the commitment is published (BOLT 2 B2-RE-14; N9-T4). Without a prepared failure (no failure
+            // service under the lock) the failure service takes the lock itself
+            await BroadcastFailedChannelAsync(cfe, preparedFailure);
             throw;
         }
         catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
@@ -411,7 +459,7 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 _serviceProvider.GetService<ClosingNegotiationRegistry>()?.ResetConnection(channel.ChannelId);
                 switch (channel.State)
                 {
-                    case ChannelState.Failed:
+                    case ChannelState.Failed or ChannelState.OnchainResolving:
                         errors.Add(await GetStoredErrorAsync(scope, channel));
                         _logger.LogInformation("Re-sending the error of failed channel {ChannelId}",
                                                channel.ChannelId);
@@ -609,13 +657,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// The funding output of a closing channel was spent. When the spending transaction is a mutual close of this
+    /// A watched outpoint of a channel was spent (BOLT 5 plan O2-T5). A spend of one of the outputs being resolved goes
+    /// to <see cref="IOnchainResolutionExecutor"/>. A funding spend of a closing channel that is a mutual close of this
     /// channel (one input, the funding outpoint; final sequence and no lock time; every output pays one of the two
     /// shutdown scripts) that we did not record (the peer broadcast a proposal we signed and our connection or node
-    /// went down before its <c>closing_signed</c> reached us, or it broadcast the other dust variant), it becomes the
+    /// went down before its <c>closing_signed</c> reached us, or it broadcast the other dust variant) becomes the
     /// channel's closing transaction: Closing and its watch (already seen in this block) in one save, so the watch's
-    /// depth makes the channel Closed as usual. Any other spend is a commitment transaction, which needs BOLT 5
-    /// on-chain handling (not implemented): logged. Idempotent (a replayed block raises it again).
+    /// depth makes the channel Closed as usual. Any other funding spend goes to <see cref="IOnchainChannelWatcher"/>
+    /// (classification, <c>OnchainResolving</c>), after this lock is released. Idempotent (a replayed block raises it
+    /// again).
     /// </summary>
     private async Task HandleFundingSpentAsync(OutpointSpentEventArgs args)
     {
@@ -623,19 +673,61 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var spend = args.SpendingTransaction;
         try
         {
+            var handOver = await RecordMutualCloseSpendAsync(args);
+            switch (handOver)
+            {
+                case SpendHandOver.ResolutionOutput
+                    when _serviceProvider.GetService<IOnchainResolutionExecutor>() is { } executor:
+                    await executor.HandleOutputSpentAsync(args);
+                    break;
+                case SpendHandOver.FundingSpend
+                    when _serviceProvider.GetService<IOnchainChannelWatcher>() is { } watcher:
+                    await watcher.HandleFundingSpentAsync(args);
+                    break;
+                case SpendHandOver.FundingSpend or SpendHandOver.ResolutionOutput:
+                    _logger.LogCritical(
+                        "An output of channel {ChannelId} was spent by {TxId}, and no on-chain watcher is registered",
+                        channelId, spend.TxId);
+                    break;
+            }
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not handle the spend of an output of channel {ChannelId} by {TxId}",
+                             channelId, spend.TxId);
+        }
+    }
+
+    /// <summary>What <see cref="RecordMutualCloseSpendAsync"/> leaves to others.</summary>
+    private enum SpendHandOver : byte
+    {
+        None = 0,
+        FundingSpend = 1,
+        ResolutionOutput = 2
+    }
+
+    /// <summary>
+    /// Under the channel's lock: records an unrecorded mutual close of a closing channel (see
+    /// <see cref="HandleFundingSpentAsync"/>) and tells what else the spend needs.
+    /// </summary>
+    private async Task<SpendHandOver> RecordMutualCloseSpendAsync(OutpointSpentEventArgs args)
+    {
+        var channelId = args.ChannelId;
+        var spend = args.SpendingTransaction;
+        {
             using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
             if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
              || channel.ClosingTransaction?.TxId == spend.TxId)
-                return;
+                return SpendHandOver.None;
+
+            if (args.SpentTransactionId is { } spentTxId
+             && (channel.FundingOutput?.TransactionId is not { } fundingTxId || spentTxId != fundingTxId
+              || args.SpentOutputIndex != channel.FundingOutput.Index))
+                return SpendHandOver.ResolutionOutput;
 
             if (channel.State is not (ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing)
              || !IsMutualCloseOf(channel, spend))
-            {
-                _logger.LogCritical(
-                    "The funding output of channel {ChannelId} ({State}) was spent by {TxId}, which is not a mutual close we know: on-chain handling (BOLT 5) is not implemented",
-                    channelId, Enum.GetName(channel.State), spend.TxId);
-                return;
-            }
+                return SpendHandOver.FundingSpend;
 
             using var scope = _serviceProvider.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
@@ -664,11 +756,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
              && registry.TryGet(channelId, out var entry))
                 entry!.CompleteWaiters(spend.TxId);
         }
-        catch (Exception e)
-        {
-            _logger.LogError(e, "Could not record the spend of the funding output of channel {ChannelId} by {TxId}",
-                             channelId, spend.TxId);
-        }
+
+        return SpendHandOver.None;
     }
 
     /// <summary>
@@ -832,15 +921,12 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Fails a channel (BOLT2 plan N6-T3, D10): persists <see cref="ChannelState.Failed"/> and the <c>error</c> it will
-    /// be sent (re-sent on reconnection, B2-RE-05) before the exception reaches the send path. A failure to persist is
-    /// logged; the error is still sent.
+    /// Publishes the commitment of a failure that must broadcast it: completes the failure prepared under the lock, or,
+    /// without one, hands the failure to <see cref="IChannelFailureService"/> (which takes the lock itself). Call it
+    /// without holding any channel lock. A missing service (tests) or a failed broadcast is logged; the error still goes
+    /// out through the exception.
     /// </summary>
-    /// <summary>
-    /// Hands a failure that must broadcast our commitment to <see cref="IChannelFailureService"/>. Call it without
-    /// holding any channel lock. A missing service (tests) or a failed broadcast is logged; the error still goes out.
-    /// </summary>
-    private async Task BroadcastFailedChannelAsync(ChannelFailedException failure)
+    private async Task BroadcastFailedChannelAsync(ChannelFailedException failure, PreparedChannelFailure? prepared)
     {
         var failureService = _serviceProvider.GetService<IChannelFailureService>();
         if (failureService is null)
@@ -852,7 +938,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         try
         {
-            var outcome = await failureService.FailChannelAsync(failure);
+            var outcome = prepared is not null
+                              ? await failureService.CompleteFailureAsync(prepared, sendError: false)
+                              : await failureService.FailChannelAsync(failure);
             _logger.LogWarning("Failed channel {ChannelId}: {Status} {TxId}", failure.FailedChannelId, outcome.Status,
                                outcome.CommitmentTxId);
         }
@@ -863,7 +951,15 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
     }
 
-    private async Task PersistFailedChannelAsync(IServiceScope scope, ChannelFailedException failure)
+    /// <summary>
+    /// Fails a channel (BOLT2 plan N6-T3, D10): persists <see cref="ChannelState.Failed"/> and the <c>error</c> it will
+    /// be sent (re-sent on reconnection, B2-RE-05) before the exception reaches the send path. With
+    /// <see cref="ChannelFailedException.MustBroadcast"/> the failure service does it under this lock, together with the
+    /// broadcast row of our signed commitment (NL-271), and the returned failure is published after the lock. A failure
+    /// to persist is logged; the error is still sent. Call it under the channel's lock.
+    /// </summary>
+    private async Task<PreparedChannelFailure?> PersistFailedChannelAsync(IServiceScope scope,
+                                                                          ChannelFailedException failure)
     {
         var channelId = failure.FailedChannelId;
         _logger.LogCritical(failure, "Failing channel {ChannelId} ({RequirementId}); broadcast needed: {MustBroadcast}",
@@ -872,18 +968,31 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         try
         {
             if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel))
-                return;
+                return null;
 
             // Already failed and stored (a message on a failed channel gets the stored error again)
-            if (channel.State == ChannelState.Failed && channel.ErrorSent is not null)
-                return;
+            if (channel.State == ChannelState.Failed && channel.ErrorSent is not null && !failure.MustBroadcast)
+                return null;
 
-            // The closing transaction is agreed and out: the channel ends Closed when it confirms, never Failed
-            if (channel.State == ChannelState.Closing)
+            // The closing transaction is agreed and out: the channel ends Closed when it confirms, never Failed; a
+            // channel resolving on chain is past failing
+            if (channel.State is ChannelState.Closing or ChannelState.OnchainResolving)
             {
-                _logger.LogWarning("Channel {ChannelId} is closing; it is not marked failed", channelId);
-                return;
+                _logger.LogWarning("Channel {ChannelId} is {State}; it is not marked failed", channelId,
+                                   Enum.GetName(channel.State));
+                return null;
             }
+
+            if (failure.MustBroadcast && _serviceProvider.GetService<IChannelFailureService>() is { } failureService)
+            {
+                var prepared = await failureService.PrepareFailureUnderLockAsync(
+                                   channelId, ChannelFailureService.ToRequest(failure));
+                if (prepared is not null)
+                    return prepared;
+            }
+
+            if (channel.State == ChannelState.Failed && channel.ErrorSent is not null)
+                return null;
 
             var messageFactory = scope.ServiceProvider.GetRequiredService<IMessageFactory>();
             var messageSerializer = scope.ServiceProvider.GetRequiredService<IMessageSerializer>();
@@ -904,6 +1013,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         {
             _logger.LogError(e, "Failed to persist the failed state of channel {ChannelId}", channelId);
         }
+
+        return null;
     }
 
     private bool IsOpen(ChannelId channelId) =>
@@ -949,8 +1060,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         // Check if the channel exists on the state dictionary
         _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
 
-        // BOLT 2: a failed channel re-sends its error and ignores everything else (B2-RE-05)
-        if (currentState == ChannelState.Failed && _channelMemoryRepository.TryGetChannel(channelId, out var failed))
+        // BOLT 2: a failed channel re-sends its error and ignores everything else (B2-RE-05); so does a channel
+        // resolving on chain (BOLT 5 B5-GEN-04)
+        if (currentState is ChannelState.Failed or ChannelState.OnchainResolving
+         && _channelMemoryRepository.TryGetChannel(channelId, out var failed))
             throw new ChannelFailedException(channelId,
                                              $"Ignoring {Enum.GetName(message.Type)} on failed channel {channelId}",
                                              await GetStoredErrorTextAsync(scope, failed));
@@ -1200,6 +1313,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
         // Closing channels whose closing transaction reached its depth but were not recorded as Closed
         CompleteConfirmedCloses();
+
+        // BOLT 5: the resolution round of every channel whose funding output was spent (O2-T5)
+        _serviceProvider.GetService<IOnchainResolutionExecutor>()?.ScheduleRound(args.Height);
     }
 
     /// <summary>
