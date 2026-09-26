@@ -45,4 +45,13 @@
     <ProjectReference Include="..\NLightning.Tests.Utils\NLightning.Tests.Utils.csproj"/>
   </ItemGroup>
 
+  <!-- BOLT 5 on-chain tests (Onchain/, Builders/) run against the BOLT 3 Appendix C/F vectors: share the verbatim spec
+       copies and the vector harness of NLightning.Integration.Tests instead of duplicating them -->
+  <ItemGroup>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Vectors\Bolt3SpecVectors.cs" Link="Bolt3\Vectors\Bolt3SpecVectors.cs"/>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Bolt3VectorHarness.cs" Link="Bolt3\Bolt3VectorHarness.cs"/>
+    <Compile Include="..\NLightning.Integration.Tests\BOLT3\Mocks\*.cs" Link="Bolt3\Mocks\%(Filename)%(Extension)"/>
+    <Content Include="..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-c.txt;..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-f.json" Link="BOLT3\Vectors\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
 </Project>
