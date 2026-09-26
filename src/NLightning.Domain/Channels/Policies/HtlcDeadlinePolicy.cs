@@ -44,7 +44,15 @@ public enum IncomingHtlcResolution : byte
     /// An outgoing HTLC continues it and is still unresolved: failing it upstream would lose the amount if the
     /// downstream peer fulfills. The outgoing HTLC's own timeout deadline protects it.
     /// </summary>
-    AwaitingDownstream = 2
+    AwaitingDownstream = 2,
+
+    /// <summary>
+    /// We know no preimage for it yet and it was never forwarded (no circuit, no outgoing HTLC): a final-hop candidate
+    /// the switch may still settle (for example a fulfill deferred while the link is down). Failing it back is safe,
+    /// but the forwarding distance does not apply (the payer's final <c>cltv_expiry</c> is only about
+    /// <c>min_final_cltv_expiry</c> away): it is failed back at the fulfillment deadline instead (B2-CLTV-05).
+    /// </summary>
+    UnresolvedFinalHop = 3
 }
 
 /// <summary>
@@ -80,6 +88,9 @@ public readonly record struct HtlcDeadlineDecision(HtlcDeadlineAction Action, st
 ///   would otherwise have to go on chain at <c>cltv_expiry + G</c>). This is also BOLT 2's "MUST fail (and not
 ///   forward) an HTLC whose fulfillment deadline is already past" (B2-CLTV-05), because
 ///   <see cref="FailBackBlocks"/> &gt;= <see cref="FulfillSafetyBlocks"/>.</item>
+///   <item><b>Received HTLCs never forwarded and not settled</b> (<see cref="IncomingHtlcResolution.UnresolvedFinalHop"/>):
+///   failed back at the fulfillment deadline (B2-CLTV-05). The forwarding distance would fail a final-hop HTLC
+///   almost at once, since a payer's <c>cltv_expiry</c> is only about <c>min_final_cltv_expiry</c> ahead.</item>
 /// </list>
 /// <para>"Past a deadline" means <c>height &gt;= deadline</c>: the action is due at the deadline height itself.</para>
 /// </remarks>
@@ -176,6 +187,14 @@ public sealed record HtlcDeadlinePolicy
                     var deadline = FulfillDeadline(htlc.CltvExpiry);
                     return height >= deadline
                                ? new HtlcDeadlineDecision(HtlcDeadlineAction.FailChannel, "B2-CLTV-06", deadline)
+                               : HtlcDeadlineDecision.None;
+                }
+            case IncomingHtlcResolution.UnresolvedFinalHop:
+                {
+                    // B2-CLTV-05: never keep an HTLC whose fulfillment deadline is past
+                    var deadline = FulfillDeadline(htlc.CltvExpiry);
+                    return height >= deadline
+                               ? new HtlcDeadlineDecision(HtlcDeadlineAction.FailBackUpstream, "B2-CLTV-05", deadline)
                                : HtlcDeadlineDecision.None;
                 }
             case IncomingHtlcResolution.Unresolved:
