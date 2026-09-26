@@ -371,6 +371,62 @@ public sealed class LocalCommitResolutionTests
     }
 
     [Fact]
+    public async Task Given_PeersPreimageClaimNotStagedAndBlockFetchThrows_When_ReasonablyDeep_Then_FulfilledFromGetRawTransaction()
+    {
+        // Arrange: NL-315: the spend-time round is lost and the block fetch throws (as BitcoinChainService does on a
+        // pruned block or any RPC error), but getrawtransaction (txindex) finds the spender
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+        harness.ChainServiceThrowsOnBlocks = true;
+
+        // Act
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        await harness.MineToAsync(harness.Height + 20);
+
+        // Assert: the preimage is read through getrawtransaction: fulfilled upstream, never failed, no alert
+        var fulfilled = Assert.IsType<OutgoingHtlcFulfilled>(harness.Events.First(e => e.Event is OutgoingHtlcFulfilled)
+                                                                    .Event);
+        Assert.Equal(s_offeredPreimage, fulfilled.PaymentPreimage);
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed);
+        Assert.Empty(harness.Alerts);
+    }
+
+    [Fact]
+    public async Task Given_UnreadableSpenderAndTheAlertingRoundsSaveFails_When_NextRoundSaves_Then_AlertedOnce()
+    {
+        // Arrange: NL-315: the spender cannot be read, and every round's save fails until well past the reasonable
+        // depth of the spend
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+        harness.ChainServiceFindsTransactions = false;
+        harness.ChainServiceThrowsOnBlocks = true;
+        harness.SavesFail = true;
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        await harness.MineToAsync(harness.Height + 15);
+        Assert.Empty(harness.Alerts);
+
+        // Act: saves succeed again, several rounds
+        harness.SavesFail = false;
+        await harness.MineToAsync(harness.Height + 5);
+
+        // Assert: the alert lost with the failed saves is raised once the save succeeds, and only once
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed or OutgoingHtlcFulfilled);
+        Assert.Equal("B5-LCL-LO-03", Assert.Single(harness.Alerts).RequirementId);
+    }
+
+    [Fact]
     public async Task Given_UnreadableSpenderAndNodeOfflineAtTheReasonableDepth_When_NextRound_Then_AlertedOnce()
     {
         // Arrange: NL-315: the spender cannot be read, and the node misses every round until well past the reasonable

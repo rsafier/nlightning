@@ -436,15 +436,18 @@ public sealed class LocalCommitResolver : IOutputResolver
                                    + "by {TxId}, whose witness could not be read", offered.Id,
                                      context.Channel.ChannelId, Display(spend!.SpendingTxId));
                     // NL-315: alerted once per process, from the first round at or past the reasonable depth, so a
-                    // node that was offline over that block is alerted too
+                    // node that was offline over that block is alerted too; marked alerted only once the executor
+                    // logged it (after the round's save), so a round whose save failed alerts again
+                    var alertKey = (context.Channel.ChannelId, offered.Id);
                     if (Depth(context.Height, spend.Height) >= _options.ReasonableDepth
-                     && _unreadableSpendAlerts.TryAdd((context.Channel.ChannelId, offered.Id), 0))
+                     && !_unreadableSpendAlerts.ContainsKey(alertKey))
                         actions.Add(new AlertAction("B5-LCL-LO-03",
                                                     $"Our offered HTLC {offered.Id} ({offered.AmountMsat} msat) of "
                                                   + $"channel {context.Channel.ChannelId} was taken by "
                                                   + $"{Display(spend.SpendingTxId)} and its witness cannot be read: "
                                                   + "the upstream HTLC is neither fulfilled nor failed; check the "
-                                                  + "transaction for the preimage"));
+                                                  + "transaction for the preimage",
+                                                    () => _unreadableSpendAlerts.TryAdd(alertKey, 0)));
                     break;
 
                 case ResolutionActionKind.RaiseFailed when raiseUpstream && descriptor.Htlc is { } offered:
@@ -471,7 +474,7 @@ public sealed class LocalCommitResolver : IOutputResolver
         try
         {
             var hash = new uint256((byte[])spenderTxId);
-            var block = await _chainService.GetBlockAsync(spentAt);
+            var block = await TryGetBlockAsync(spentAt, spenderTxId);
             var transaction = block?.Transactions.FirstOrDefault(t => t.GetHash() == hash)
                            ?? await _chainService.GetTransactionAsync(hash);
             if (transaction is null)
@@ -498,6 +501,25 @@ public sealed class LocalCommitResolver : IOutputResolver
                                Display(spenderTxId), Display(row.TransactionId), row.OutputIndex,
                                context.Channel.ChannelId, e.Message);
             return (HtlcSpendPath.Unknown, null);
+        }
+    }
+
+    /// <summary>
+    /// The block at <paramref name="height"/>, or null when it cannot be fetched: <c>BitcoinChainService</c> throws
+    /// on every RPC error (a pruned block, a height past the tip after a reorg, RPC down), and the caller must still
+    /// fall back to <c>getrawtransaction</c> then (NL-315).
+    /// </summary>
+    private async Task<Block?> TryGetBlockAsync(uint height, TxId spenderTxId)
+    {
+        try
+        {
+            return await _chainService!.GetBlockAsync(height);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug("Cannot fetch block {Height} for the spender {TxId}: {Reason}", height,
+                             Display(spenderTxId), e.Message);
+            return null;
         }
     }
 

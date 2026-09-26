@@ -925,8 +925,11 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         }
 
         foreach (var alert in applied.Alerts)
+        {
             _logger.LogCritical("[{RequirementId}] Channel {ChannelId}: {Alert}", alert.RequirementId, channelId,
                                 alert.Message);
+            alert.Emitted?.Invoke();
+        }
     }
 
     /// <summary>Applies a resolver's upserts to the working set (so later steps see them) and keeps every action.</summary>
