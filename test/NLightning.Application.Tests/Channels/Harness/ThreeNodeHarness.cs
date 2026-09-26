@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
@@ -787,61 +788,86 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
 /// <summary>
 /// A <see cref="ChannelLockProvider"/> that records any flow taking a second channel lock while it holds one
 /// ("never two channel locks"). A flow is one message delivery, one replay step, or one commit-scheduler round
-/// (<see cref="BeginFlow"/> starts a flow for the caller's async context).
+/// (<see cref="BeginFlow"/> starts a flow for the caller's async context). The locks a flow holds are an immutable
+/// snapshot in its async context, so tasks forked from a common context never see each other's locks (a shared
+/// mutable holder reported two concurrent sibling flows as one nested flow; W6 integration).
 /// </summary>
 [ExcludeFromCodeCoverage]
 internal sealed class LockAudit : IChannelLockProvider
 {
-    private static readonly AsyncLocal<Holder?> s_holder = new();
+    private static readonly AsyncLocal<ImmutableList<Tracked>?> s_held = new();
     private readonly ChannelLockProvider _inner = new();
+    private int _maxHeldInOneFlow;
 
     public List<string> Violations { get; } = [];
-    public int MaxHeldInOneFlow { get; private set; }
+    public int MaxHeldInOneFlow => Volatile.Read(ref _maxHeldInOneFlow);
 
     /// <summary>Starts a new flow in the caller's async context.</summary>
-    public static void BeginFlow() => s_holder.Value = new Holder();
+    public static void BeginFlow() => s_held.Value = ImmutableList<Tracked>.Empty;
 
     public Task<IDisposable> AcquireAsync(ChannelId channelId, CancellationToken cancellationToken = default)
     {
-        var holder = s_holder.Value ??= new Holder();
-        return TrackAsync(holder, channelId, _inner.AcquireAsync(channelId, cancellationToken));
+        // Recorded synchronously, so the caller's async context holds the lock until it disposes it; checked once the
+        // lock is taken (a task forked under a lock may wait for that same lock, which is not a nested lock)
+        var (tracked, before) = Begin(channelId);
+        return TrackAsync(tracked, before, _inner.AcquireAsync(channelId, cancellationToken));
     }
 
     public IDisposable Acquire(ChannelId channelId)
     {
-        var holder = s_holder.Value ??= new Holder();
-        return Track(holder, channelId, _inner.Acquire(channelId));
+        var (tracked, before) = Begin(channelId);
+        tracked.Inner = _inner.Acquire(channelId);
+        Check(tracked, before);
+        return tracked;
     }
 
-    private async Task<IDisposable> TrackAsync(Holder holder, ChannelId channelId, Task<IDisposable> acquiring) =>
-        Track(holder, channelId, await acquiring);
-
-    private IDisposable Track(Holder holder, ChannelId channelId, IDisposable channelLock)
+    private async Task<IDisposable> TrackAsync(Tracked tracked, ImmutableList<Tracked> before,
+                                               Task<IDisposable> acquiring)
     {
-        lock (holder)
+        tracked.Inner = await acquiring;
+        Check(tracked, before);
+        return tracked;
+    }
+
+    private static (Tracked Tracked, ImmutableList<Tracked> Before) Begin(ChannelId channelId)
+    {
+        var before = (s_held.Value ?? ImmutableList<Tracked>.Empty).RemoveAll(t => t.IsReleased);
+        var tracked = new Tracked(channelId);
+        s_held.Value = before.Add(tracked);
+        return (tracked, before);
+    }
+
+    private void Check(Tracked tracked, ImmutableList<Tracked> before)
+    {
+        var held = before.RemoveAll(t => t.IsReleased);
+        if (held.Count > 0)
+            lock (Violations)
+                Violations.Add($"{tracked.ChannelId} taken while holding "
+                             + string.Join(", ", held.Select(t => t.ChannelId)));
+
+        var count = held.Count + 1;
+        int max;
+        do
         {
-            if (holder.Held.Count > 0)
-                lock (Violations)
-                    Violations.Add($"{channelId} taken while holding {string.Join(", ", holder.Held)}");
-            holder.Held.Add(channelId);
-            MaxHeldInOneFlow = Math.Max(MaxHeldInOneFlow, holder.Held.Count);
-        }
-
-        return new Tracked(holder, channelId, channelLock);
+            max = Volatile.Read(ref _maxHeldInOneFlow);
+        } while (count > max && Interlocked.CompareExchange(ref _maxHeldInOneFlow, count, max) != max);
     }
 
-    private sealed class Holder
+    private sealed class Tracked(ChannelId channelId) : IDisposable
     {
-        public List<ChannelId> Held { get; } = [];
-    }
+        private int _released;
 
-    private sealed class Tracked(Holder holder, ChannelId channelId, IDisposable inner) : IDisposable
-    {
+        public ChannelId ChannelId { get; } = channelId;
+        public IDisposable? Inner { get; set; }
+        public bool IsReleased => Volatile.Read(ref _released) == 1;
+
         public void Dispose()
         {
-            lock (holder)
-                holder.Held.Remove(channelId);
-            inner.Dispose();
+            if (Interlocked.Exchange(ref _released, 1) == 1)
+                return;
+
+            s_held.Value = s_held.Value?.Remove(this);
+            Inner?.Dispose();
         }
     }
 }

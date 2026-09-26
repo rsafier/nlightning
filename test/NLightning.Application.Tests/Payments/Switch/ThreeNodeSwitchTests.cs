@@ -602,6 +602,42 @@ public class ThreeNodeSwitchTests
         Assert.Equal(2, audit.MaxHeldInOneFlow);
     }
 
+    [Fact]
+    public async Task Given_TwoSiblingFlowsForkedFromOneContext_When_EachTakesOneLock_Then_NoViolationIsRecorded()
+    {
+        // Arrange - W6 integration: the replay of one channel and a channel_update of another run as tasks forked
+        // from the same context; each holds one lock at a time, which is not a nested lock
+        var audit = new LockAudit();
+        LockAudit.BeginFlow();
+        using (await audit.AcquireAsync(ThreeNodeHarness.AliceBobChannelId, TestContext.Current.CancellationToken))
+        {
+        }
+
+        var firstHeld = new TaskCompletionSource();
+        var secondHeld = new TaskCompletionSource();
+
+        // Act - both hold their lock at the same time
+        var first = Task.Run(async () =>
+        {
+            using (await audit.AcquireAsync(ThreeNodeHarness.AliceBobChannelId))
+            {
+                firstHeld.SetResult();
+                await secondHeld.Task;
+            }
+        }, TestContext.Current.CancellationToken);
+        var second = Task.Run(async () =>
+        {
+            await firstHeld.Task;
+            using (await audit.AcquireAsync(ThreeNodeHarness.BobCarolChannelId))
+                secondHeld.SetResult();
+        }, TestContext.Current.CancellationToken);
+        await Task.WhenAll(first, second);
+
+        // Assert
+        Assert.Empty(audit.Violations);
+        Assert.Equal(1, audit.MaxHeldInOneFlow);
+    }
+
     private static DecryptedFailure Decrypt(ThreeNodeHarness harness, PaymentOnion onion, OutgoingHtlcFailed failed)
     {
         Assert.Equal(HtlcRemovalKind.Fail, failed.Removal.Kind);
@@ -663,7 +699,7 @@ public class ThreeNodeSwitchTests
     {
         foreach (var node in harness.Nodes)
         {
-            Assert.Empty(node.LockAudit.Violations);
+            Assert.True(node.LockAudit.Violations.Count == 0, node.Name + ": " + string.Join(" | ", node.LockAudit.Violations));
             Assert.Equal(1, node.LockAudit.MaxHeldInOneFlow);
         }
     }
