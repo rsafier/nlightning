@@ -69,7 +69,11 @@ using Onion;
 ///   is marked <c>Fulfilled</c>.</item>
 ///   <item><see cref="OutgoingHtlcFailed"/> (raised only once the removal is irrevocable, B2-FWD-02): the downstream
 ///   error onion is wrapped with the incoming shared secret, or an <c>update_fail_malformed_htlc</c> is converted into
-///   our own error onion (BOLT 2), and the upstream HTLC is failed; then the circuit is marked <c>Failed</c>.</item>
+///   our own error onion (BOLT 2), and the upstream HTLC is failed; then the circuit is marked <c>Failed</c>. An HTLC
+///   settled on chain without a preimage (<see cref="HtlcRemovalKind.OnchainTimeout"/>, raised by the BOLT 5 resolvers
+///   once that settlement is reasonably deep) has no downstream error: we fail upstream with our own
+///   <c>permanent_channel_failure</c>. The resolvers raise their events again every block until the output is
+///   irrevocable, so a refused upstream removal is retried; one that went out is never sent twice.</item>
 ///   <item><see cref="OutgoingHtlcSettled"/>: the archived HTLC row is pruned (NL-243) only once nothing needs its
 ///   replay any more: for a forward, the upstream HTLC has its removal and the circuit is resolved (an upstream
 ///   channel that is not loaded yet keeps the row); for our own payment, every
@@ -755,10 +759,17 @@ public sealed class HtlcSwitch : IHtlcSwitch
     /// <summary>
     /// The return packet for the upstream <c>update_fail_htlc</c>: the downstream error onion wrapped with our
     /// <c>ammag</c> key, or (for <c>update_fail_malformed_htlc</c>) our own error onion with the code and
-    /// <c>sha256_of_onion</c> (BOLT 2; we act as the erring node).
+    /// <c>sha256_of_onion</c> (BOLT 2; we act as the erring node), or (for an HTLC settled on chain without a preimage,
+    /// <see cref="HtlcRemovalKind.OnchainTimeout"/>) our own <c>permanent_channel_failure</c>.
     /// </summary>
     private byte[] ReturnPacket(Secret incomingSharedSecret, HtlcRemoval removal)
     {
+        // Settled on chain without a preimage (BOLT 5 plan O3-T4): no downstream error exists, we are the erring node
+        // and the outgoing channel is closed for good
+        if (removal.Kind == HtlcRemovalKind.OnchainTimeout)
+            return _failureOnionService.CreateErrorPacket(incomingSharedSecret,
+                                                          FailureMessage.PermanentChannelFailure());
+
         if (removal.Kind != HtlcRemovalKind.FailMalformed)
             return _failureOnionService.WrapErrorPacket(incomingSharedSecret, removal.Reason.Span);
 

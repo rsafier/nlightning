@@ -88,6 +88,21 @@ public class PaymentServiceTests : IDisposable
     public void Dispose() => _provider.Dispose();
 
     [Fact]
+    public void Given_OurHtlcTimedOutOnChain_When_Interpreted_Then_PermanentChannelFailureFromUs()
+    {
+        // Arrange (BOLT 5 plan O3-T4: no hop sent an error, the channel to our peer closed on chain)
+        var payment = StoredPayment(HashOf(Preimage()), PaymentStatus.InFlight, 3);
+
+        // Act
+        var (code, sourceIndex, reason) = Service.InterpretFailure(payment, HtlcRemoval.OnchainTimeout());
+
+        // Assert
+        Assert.Equal(FailureCode.PermanentChannelFailure, code);
+        Assert.Null(sourceIndex);
+        Assert.Contains("closed on chain", reason);
+    }
+
+    [Fact]
     public void Given_SendServices_When_Resolved_Then_OneServiceBehindBothInterfaces()
     {
         // Arrange
