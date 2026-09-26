@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using NBitcoin;
 using OutPoint = NBitcoin.OutPoint;
 using Transaction = NBitcoin.Transaction;
@@ -6,6 +7,7 @@ using Transaction = NBitcoin.Transaction;
 namespace NLightning.Integration.Tests.Docker.Onchain.Anchors;
 
 using Abcd;
+using Application.Channels.Safety;
 using Domain.Channels.Enums;
 using Domain.Money;
 using Domain.Onchain.Enums;
@@ -28,8 +30,12 @@ using Utils;
 /// david's commitment in its mempool, but no connection comes back, so the fulfill never reaches david).</para>
 /// <para>So that nothing but our child can pay for the commitment, every output of david's wallet is leased first
 /// (<c>walletrpc.LeaseOutput</c>): LND cannot build its own anchor CPFP. The miners leave the commitment out (empty
-/// blocks through <c>generateblock</c>) until our child is there, at most <see cref="MaxEmptyBlocks"/> and never past
-/// the HTLC's deadline; the node may bump as soon as it sees the commitment or only as the deadline approaches. Before
+/// blocks through <c>generateblock</c>) until our child is there, for as long as the HTLC's fulfillment deadline
+/// allows: the node may bump as soon as it sees the commitment or only as the deadline approaches. The loop stops
+/// two blocks before <c>FulfillDeadline(cltv_expiry)</c> (<c>cltv_expiry - 18</c> by default,
+/// <see cref="ChannelSafetyOptions"/>): from that height our own <c>HtlcExpiryMonitor</c> fails the channel and
+/// broadcasts our commitment, which conflicts with david's, so the empty block and the package's block both stay
+/// below it. Before
 /// the block that takes the package the commitment's own fee is removed from bitcoind's block template
 /// (<c>prioritisetransaction</c>, as <see cref="AnchorsCpfpTests"/> does), as is that of any other spender of david's
 /// anchor, so the commitment can confirm only through our child. Run with
@@ -39,10 +45,11 @@ using Utils;
 [Trait("Category", AnchorsChannelTests.AnchorsCategory)]
 public class AnchorsPeerCommitmentBumpTests : IAsyncLifetime
 {
-    private const int MaxEmptyBlocks = 6;
-
-    /// <summary>Blocks the test keeps free before the HTLC's expiry: the package's block and our claim's.</summary>
-    private const uint DeadlineMargin = 4;
+    /// <summary>
+    /// Blocks the empty-block loop keeps free before the HTLC's fulfillment deadline: the next empty block and the
+    /// package's block.
+    /// </summary>
+    private const uint FulfillDeadlineMargin = 2;
 
     /// <summary>The package must pay at least this share of the estimate (10 sat/vB), for rounding.</summary>
     private const decimal MinimumPackageRateSatPerVByte = 9m;
@@ -108,12 +115,17 @@ public class AnchorsPeerCommitmentBumpTests : IAsyncLifetime
             var (ourAnchor, davidsAnchor) = AnchorsHarness.FindAnchors(model, commitment);
             var ourAnchorOutPoint = new OutPoint(commitmentTxId, ourAnchor);
 
-            // The miners leave it out until our child is there (never past the deadline)
+            // The miners leave it out until our child is there, bounded by the HTLC's fulfillment deadline (our
+            // monitor fails the channel there) rather than a fixed block count, so a node that bumps only as the
+            // deadline approaches passes too
+            var fulfillDeadline = Node.Services.GetRequiredService<IOptions<ChannelSafetyOptions>>().Value
+                                      .CreatePolicy(null).FulfillDeadline(htlc.CltvExpiry);
+            Console.WriteLine($"Fulfillment deadline {fulfillDeadline} (cltv_expiry {htlc.CltvExpiry})");
             var child = await FindChildAsync(ourAnchorOutPoint);
-            for (var i = 0; i < MaxEmptyBlocks && child is null; i++)
+            while (child is null)
             {
                 var tip = (uint)await _harness.Fixture.Bitcoin.GetBlockCountAsync(ct);
-                if (tip + DeadlineMargin >= htlc.CltvExpiry)
+                if (tip + FulfillDeadlineMargin >= fulfillDeadline)
                     break;
 
                 await _harness.MineEmptyBlocksAsync(1, Node, [david], ct);
