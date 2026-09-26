@@ -132,7 +132,7 @@ public class BitcoinChainService : IBitcoinChainService
     {
         try
         {
-            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, false);
+            var response = await _rpcClient.GetTxOutAsync(outPoint.Hash, (int)outPoint.N, true);
             if (response is null || response.Confirmations <= 0)
                 return null;
 

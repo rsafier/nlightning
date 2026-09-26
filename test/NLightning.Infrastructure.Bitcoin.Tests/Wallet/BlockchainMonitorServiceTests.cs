@@ -736,6 +736,46 @@ public class BlockchainMonitorServiceTests
         Assert.Equal(112u, service.LastProcessedBlockHeight);
     }
 
+    [Fact]
+    public async Task Given_WalletOutputWhoseSpendIsBackInTheMempool_When_Reorged_Then_NotRestored()
+    {
+        // Arrange (NL-293): a wallet output confirmed at 105 and spent at 111 by our own transaction (a funding)
+        var key = new Key();
+        var address = key.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.RegTest);
+        var walletAddress = new WalletAddressModel(AddressType.P2Wpkh, 0, false, address.ToString());
+        _mockWalletAddressesDbRepository.Setup(x => x.GetAllAddresses()).Returns([walletAddress]);
+        var older = Network.RegTest.CreateTransaction();
+        older.Inputs.Add(new OutPoint(new uint256(Enumerable.Repeat((byte)0x42, 32).ToArray()), 0));
+        older.Outputs.Add(Money.Satoshis(70_000), address.ScriptPubKey);
+        var chain = new FakeBitcoinChain(104);
+        chain.Mine(older);
+        for (var i = 0; i < 5; i++)
+            chain.Mine();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), new Mock<IUtxoMemoryRepository>().Object);
+        _mockWatchedTransactionRepository.Setup(x => x.GetCompletedFirstSeenAboveAsync(It.IsAny<uint>()))
+                                         .ReturnsAsync([]);
+        var service = CreateService(chain);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+
+        var spend = Network.RegTest.CreateTransaction();
+        spend.Inputs.Add(new OutPoint(older.GetHash(), 0));
+        spend.Inputs[0].WitScript = new WitScript([new byte[71], key.PubKey.ToBytes()]);
+        spend.Outputs.Add(Money.Satoshis(60_000), new Key().PubKey.WitHash.ScriptPubKey);
+        await service.ProcessNewBlockAsync(chain.Mine(spend), 111);
+        _mockUtxoDbRepository.Setup(x => x.GetUnspentAsync(It.IsAny<bool>())).ReturnsAsync([]);
+        var added = new List<UtxoModel>();
+        _mockUnitOfWork.Setup(x => x.AddUtxo(It.IsAny<UtxoModel>())).Callback<UtxoModel>(added.Add);
+
+        // Act: block 111 is replaced by two empty blocks and bitcoind puts the spend back into its mempool
+        var newBranch = chain.Reorg(110, 2);
+        chain.Mempool.Add(spend);
+        await service.ProcessNewBlockAsync(newBranch[^1], 112);
+
+        // Assert: the output is not spendable again (coin selection would double-spend the pending transaction)
+        Assert.Empty(added);
+        Assert.Equal(112u, service.LastProcessedBlockHeight);
+    }
+
     private BlockchainMonitorService CreateService(FakeBitcoinChain chain, string network = "regtest",
                                                    ILogger<BlockchainMonitorService>? logger = null)
     {

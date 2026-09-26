@@ -20,9 +20,9 @@ public interface IBitcoinChainService
     Task<Block?> GetBlockAsync(uint256 blockHash) => Task.FromResult<Block?>(null);
 
     /// <summary>
-    /// The output at <paramref name="outPoint"/> if it is unspent in the active chain (mempool spends ignored), with the
-    /// height of the block that holds it (<c>gettxout</c> without the mempool; NL-293); null otherwise. The default
-    /// knows no output.
+    /// The output at <paramref name="outPoint"/> if it is confirmed and unspent in the active chain and no mempool
+    /// transaction spends it, with the height of the block that holds it (<c>gettxout</c> with the mempool; NL-293);
+    /// null otherwise. The default knows no output.
     /// </summary>
     Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint) =>
         Task.FromResult<(TxOut Output, uint Height)?>(null);

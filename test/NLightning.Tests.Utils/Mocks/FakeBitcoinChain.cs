@@ -112,7 +112,8 @@ public sealed class FakeBitcoinChain : IBitcoinChainService
             if (tx is null || outPoint.N >= tx.Outputs.Count)
                 continue;
 
-            var spent = _blocks.SelectMany(b => b.Transactions).SelectMany(t => t.Inputs)
+            // gettxout with the mempool: a mempool spend counts
+            var spent = _blocks.SelectMany(b => b.Transactions).Concat(Mempool).SelectMany(t => t.Inputs)
                                .Any(i => i.PrevOut == outPoint);
             return Task.FromResult<(TxOut Output, uint Height)?>(spent ? null : (tx.Outputs[outPoint.N], (uint)height));
         }
