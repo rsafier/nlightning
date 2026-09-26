@@ -1,15 +1,19 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using NBitcoin;
 
 namespace NLightning.Application.Onchain.Resolvers;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
+using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Factories;
@@ -18,71 +22,87 @@ using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Onchain.Parsers;
 using Domain.Onchain.Planners;
+using Domain.Payments.Enums;
+using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
 using Remote;
 
 /// <summary>
-/// BOLT 5 plan O4-T1..T3: resolves a peer commitment on chain (current, next or future) with the W4 pieces:
-/// <see cref="ICommitmentOutputMapper"/> (descriptors, keyed by the peer's per-commitment point of that commitment),
-/// <see cref="OutputResolutionPlanner"/> (the B5-RMT-* rows), <see cref="SweepInputFactory"/>,
-/// <see cref="ISweepTransactionBuilder"/> and <see cref="ILightningSigner.SignSweepInput"/>. See
-/// <see cref="IRemoteCommitResolver"/> for the contract with the watcher.
+/// Resolves a <b>peer</b> commitment on chain (BOLT 5 §Unilateral Close Handling: Remote Commitment Transaction; plan
+/// O4-T1..T3, rows B5-RMT-*): the peer's current commitment (<see cref="ChannelCloseKind.RemoteCommitment"/>), the one
+/// we signed whose <c>revoke_and_ack</c> is outstanding (<see cref="ChannelCloseKind.RemoteNextCommitment"/>,
+/// B5-RMT-01) and one newer than any we know (<see cref="ChannelCloseKind.FutureCommitment"/>, data loss, B5-RMT-03).
 /// </summary>
 /// <remarks>
-/// <list type="bullet">
-/// <item><c>to_remote</c> (ours, D5, B5-RMT-02): swept at once to a wallet address, also after data loss (B5-RMT-03,
-/// static_remotekey: <c>payment_basepoint</c>, no point needed).</item>
-/// <item>HTLCs we offered (received outputs there, B5-RMT-LO-*): claimed with <c>&lt;sig&gt; &lt;&gt;</c> and
-/// <c>nLockTime = cltv_expiry</c> once the tip reaches it; the peer's HTLC-success reveals the preimage (fulfilled
-/// upstream at once, saved first); our confirmed timeout claim fails the HTLC upstream once reasonably deep.</item>
-/// <item>HTLCs the peer offered (offered outputs there, B5-RMT-RO-*): claimed with <c>&lt;sig&gt; &lt;preimage&gt;</c>
-/// before <c>cltv_expiry</c>, only with our own fulfill's preimage for that HTLC (the switch accepted it as final hop or
-/// the downstream fulfilled it; never an invoice preimage alone, B5-LCL-RO-02) and only when the peer is irrevocably
-/// committed to it (B5-RMT-RO-02).</item>
-/// <item>HTLCs we offered without an output in the commitment on chain (trimmed, not in it yet, or removed; B5-RMT-LO-03):
-/// fulfilled upstream at once with a known preimage, else failed once the commitment is reasonably deep, or at once
-/// when no valid commitment has an output for it.</item>
-/// </list>
-/// Each output gets its own transaction (timeout claims can never share one with other spends, and one transaction per
-/// output keeps the persisted row, its resolving txid and the chain monitor's rebroadcast one to one). Fee bumps are
-/// the sweep scheduler's (O6).
+/// <para>
+/// Stateless (the <see cref="IOutputResolver"/> contract): every call reads the channel (with its commitment snapshot)
+/// in a scope of its own, rebuilds the commitment on chain with <see cref="ICommitmentOutputMapper"/> at the peer's
+/// per-commitment point of that commitment, reads the recorded spends from the watched outpoints and asks the pure
+/// <see cref="OutputResolutionPlanner"/>. It returns actions only: sweeps and claims are built and signed here but
+/// staged as <see cref="BroadcastAction"/>s next to the row that records them (persist before broadcast, D4), and an
+/// output whose row names its resolving transaction is never built again (the chain monitor rebroadcasts, O6 bumps).
+/// The executor marks spent outputs <see cref="OutputResolutionState.Resolved"/> and, 100 blocks on,
+/// <see cref="OutputResolutionState.Irrevocable"/>; this resolver only moves rows between Pending, Waiting, Broadcast
+/// and Ignored.
+/// </para>
+/// <para>
+/// Outputs: <c>to_remote</c> (D5, B5-RMT-02) swept at once, also after data loss (static_remotekey: our
+/// <c>payment_basepoint</c>, no point needed); HTLCs we offered (received outputs there, B5-RMT-LO-*) claimed with
+/// <c>&lt;sig&gt; &lt;&gt;</c> and <c>nLockTime = cltv_expiry</c> once the tip reaches it; HTLCs the peer offered
+/// (offered outputs there, B5-RMT-RO-*) claimed with <c>&lt;sig&gt; &lt;preimage&gt;</c> before <c>cltv_expiry</c>, only
+/// when the peer is irrevocably committed to them and only with an allowed preimage: our own fulfill of that HTLC, or
+/// the preimage its forward learnt downstream (off chain or on chain), never an invoice preimage alone
+/// (B5-LCL-RO-02). One transaction per output.
+/// </para>
+/// <para>
+/// Upstream: a preimage of our offered HTLC (from the peer's spend on chain, or known off chain) is staged into the
+/// HTLC's record (<see cref="HtlcRecord.KnownPreimage"/>, BOLT2 I10) in the round that raises
+/// <see cref="OutgoingHtlcFulfilled"/>, so the switch's own replays (link-up, startup) derive the fulfill too; our
+/// timeout claim (or an HTLC without output, B5-RMT-LO-03) raises <see cref="OutgoingHtlcFailed"/> with
+/// <see cref="RemoteHtlcSwitchEvents.OnchainTimeoutKind"/> once reasonably deep. Either event is raised again every
+/// round until the upstream HTLC actually has its removal (or the payment is final), because the switch only logs a
+/// removal it cannot send yet.
+/// </para>
+/// <para>
+/// Data loss (no rebuild possible): every output of the commitment gets a row and a watch; <c>to_remote</c> is swept,
+/// the others stay <see cref="OutputDescriptorKind.Unknown"/> and any spend of them is searched for the preimage of our
+/// still-open offered HTLCs. They are ignored only once none of those HTLCs can matter any more.
+/// </para>
 /// </remarks>
-public sealed class RemoteCommitResolver : IRemoteCommitResolver
+public sealed class RemoteCommitResolver : IOutputResolver
 {
-    private readonly IChainBroadcaster _broadcaster;
+    private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IRemoteCommitmentSource _commitmentSource;
     private readonly IRemoteSweepDestination _destination;
-    private readonly IFeeService _feeService;
     private readonly SweepFeePolicy _feePolicy;
-    private readonly IHtlcSwitch _htlcSwitch;
+    private readonly IFeeService _feeService;
     private readonly ILogger<RemoteCommitResolver> _logger;
     private readonly ICommitmentOutputMapper _mapper;
-    private readonly RemoteResolutionMemory _memory;
     private readonly RemoteResolutionOptions _options;
-    private readonly IOutpointWatcher _outpointWatcher;
+    private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ILightningSigner _signer;
     private readonly ISweepTransactionBuilder _sweepBuilder;
 
     public RemoteCommitResolver(ICommitmentOutputMapper mapper, ISweepTransactionBuilder sweepBuilder,
                                 ILightningSigner signer, IFeeService feeService, IRemoteSweepDestination destination,
-                                IChainBroadcaster broadcaster, IOutpointWatcher outpointWatcher,
-                                IHtlcSwitch htlcSwitch, RemoteResolutionMemory memory,
+                                IRemoteCommitmentSource commitmentSource, IServiceScopeFactory serviceScopeFactory,
                                 IOptions<RemoteResolutionOptions>? options = null,
-                                ILogger<RemoteCommitResolver>? logger = null, SweepFeePolicy? feePolicy = null)
+                                ILogger<RemoteCommitResolver>? logger = null, SweepFeePolicy? feePolicy = null,
+                                IChannelMemoryRepository? channelMemoryRepository = null)
     {
         _mapper = mapper;
         _sweepBuilder = sweepBuilder;
         _signer = signer;
         _feeService = feeService;
         _destination = destination;
-        _broadcaster = broadcaster;
-        _outpointWatcher = outpointWatcher;
-        _htlcSwitch = htlcSwitch;
-        _memory = memory;
+        _commitmentSource = commitmentSource;
+        _serviceScopeFactory = serviceScopeFactory;
         _options = options?.Value ?? new RemoteResolutionOptions();
         _logger = logger ?? NullLogger<RemoteCommitResolver>.Instance;
         _feePolicy = feePolicy ?? new SweepFeePolicy();
+        _channelMemoryRepository = channelMemoryRepository;
     }
 
     /// <inheritdoc />
@@ -91,563 +111,176 @@ public sealed class RemoteCommitResolver : IRemoteCommitResolver
             or ChannelCloseKind.FutureCommitment;
 
     /// <inheritdoc />
-    public async Task<RemoteResolutionRound> BeginAsync(ChannelModel channel, ChannelCloseModel close,
-                                                        ChainTx commitmentTransaction, uint tipHeight,
-                                                        IUnitOfWork unitOfWork, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<OutputResolverAction>> ResolveAsync(ChannelCloseModel close,
+                                                                        IReadOnlyList<OutputResolutionModel> outputs,
+                                                                        uint height,
+                                                                        CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(channel);
-        ArgumentNullException.ThrowIfNull(commitmentTransaction);
-        ArgumentNullException.ThrowIfNull(unitOfWork);
-        RequireRemoteClose(channel, close);
-        if (commitmentTransaction.TxId != close.CommitmentTransactionId)
-            throw new ArgumentException("The commitment transaction is not the recorded funding spend",
-                                        nameof(commitmentTransaction));
+        ArgumentNullException.ThrowIfNull(close);
+        ArgumentNullException.ThrowIfNull(outputs);
+        if (!CanResolve(close.Kind))
+            return [];
 
-        var round = new RemoteResolutionRound();
-        var (descriptors, point) = MapOurOutputs(channel, close, commitmentTransaction, round);
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var context = await LoadAsync(unitOfWork, close, outputs, height, cancellationToken);
+        if (context is null)
+            return [];
 
-        var rows = new Dictionary<uint, OutputResolutionModel>();
-        foreach (var row in await LoadRowsAsync(channel, close, unitOfWork))
-            rows[row.OutputIndex] = row;
+        var actions = new List<OutputResolverAction>();
+        if (context.IsDataLoss)
+            await AddDataLossRowsAsync(context, actions, cancellationToken);
+        else
+            AddMissingRows(context, actions);
 
-        var repository = unitOfWork.OnchainResolutionDbRepository;
-        foreach (var descriptor in descriptors)
-        {
-            if (!rows.ContainsKey(descriptor.Vout))
-            {
-                var row = new OutputResolutionModel
-                {
-                    TransactionId = close.CommitmentTransactionId,
-                    OutputIndex = descriptor.Vout,
-                    ChannelId = channel.ChannelId,
-                    Descriptor = descriptor.Kind,
-                    DescriptorData = RemoteOutputData.FromDescriptor(descriptor, point).Encode(),
-                    HtlcDirection = descriptor.Htlc?.Direction,
-                    HtlcId = descriptor.Htlc?.Id,
-                    State = OutputResolutionState.Pending
-                };
-                await repository.UpsertOutputAsync(row);
-                rows[descriptor.Vout] = row;
-            }
-
-            var watches = unitOfWork.WatchedOutpointDbRepository;
-            if (await watches.GetAsync(close.CommitmentTransactionId, descriptor.Vout) is null)
-            {
-                var watch = new WatchedOutpointModel(close.CommitmentTransactionId, descriptor.Vout, channel.ChannelId,
-                                                     WatchedOutpointPurpose.ResolutionOutput);
-                watches.Add(watch);
-                round.Watches.Add(watch);
-            }
-        }
-
-        _logger.LogInformation("Channel {ChannelId}: the peer's commitment {Kind} (number {Number}) confirmed at {Height}; "
-                             + "{Count} outputs to resolve", channel.ChannelId, close.Kind, close.CommitmentNumber,
-                               close.SpentAtHeight, descriptors.Count);
-
-        await ResolveRowsAsync(channel, close, rows.Values.OrderBy(r => r.OutputIndex).ToList(), tipHeight,
-                               unitOfWork, round, cancellationToken);
-        return round;
-    }
-
-    /// <inheritdoc />
-    public async Task<RemoteResolutionRound> OnOutputSpentAsync(ChannelModel channel, ChannelCloseModel close,
-                                                                TxId spentTxId, uint spentOutputIndex,
-                                                                ChainTx spender, uint spendHeight, uint tipHeight,
-                                                                IUnitOfWork unitOfWork,
-                                                                CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(channel);
-        ArgumentNullException.ThrowIfNull(spender);
-        ArgumentNullException.ThrowIfNull(unitOfWork);
-        RequireRemoteClose(channel, close);
-
-        var round = new RemoteResolutionRound();
-        if (spentTxId != close.CommitmentTransactionId)
-            return round;
-
-        var row = await unitOfWork.OnchainResolutionDbRepository.GetOutputAsync(spentTxId, spentOutputIndex);
-        if (row is null || row.ChannelId != channel.ChannelId || spender.IndexOfInputSpending(spentTxId,
-                spentOutputIndex) < 0)
-            return round;
-
-        if (!TryDecode(row, out var data))
-            return round;
-
-        var byUs = row.ResolvingTransactionId is { } resolving && resolving == spender.TxId;
-        if (!byUs)
-        {
-            var ours = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(spender.TxId);
-            byUs = ours is not null && ours.ChannelId == channel.ChannelId;
-        }
-
-        var path = HtlcSpendPath.Unknown;
-        byte[]? preimage = null;
-        if (data.Htlc is { } htlc)
-        {
-            var input = spender.Inputs[spender.IndexOfInputSpending(spentTxId, spentOutputIndex)];
-            path = HtlcWitnessParser.Parse(input.Witness).Path;
-            if (HtlcWitnessParser.TryExtractPreimage(input.Witness, htlc.PaymentHash, out var revealed))
-                preimage = revealed;
-        }
-
-        var spend = new RemoteRecordedSpend(spender.TxId, spendHeight, byUs, path, preimage);
-        if (!SameSpend(data.Spend, spend))
-        {
-            row = row with { DescriptorData = (data with { Spend = spend }).Encode() };
-            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(row);
-            round.Outputs.Add(row);
-            if (preimage is not null)
-                _logger.LogInformation("Channel {ChannelId}: the peer's spend of output {Vout} revealed the preimage of "
-                                     + "HTLC {HtlcId}", channel.ChannelId, spentOutputIndex, data.Htlc?.Id);
-        }
-
-        var rows = await LoadRowsAsync(channel, close, unitOfWork);
-        var merged = rows.Select(r => r.OutputIndex == row.OutputIndex ? row : r).ToList();
-        await ResolveRowsAsync(channel, close, merged, tipHeight, unitOfWork, round, cancellationToken);
-        return round;
-    }
-
-    /// <inheritdoc />
-    public async Task<RemoteResolutionRound> ResolveAsync(ChannelModel channel, ChannelCloseModel close,
-                                                          uint tipHeight, IUnitOfWork unitOfWork,
-                                                          CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(channel);
-        ArgumentNullException.ThrowIfNull(unitOfWork);
-        RequireRemoteClose(channel, close);
-
-        var round = new RemoteResolutionRound();
-        if (!CanRebuild(channel, close))
-            FlagDataLoss(channel, close, round);
-
-        var rows = await LoadRowsAsync(channel, close, unitOfWork);
-        await ResolveRowsAsync(channel, close, rows, tipHeight, unitOfWork, round, cancellationToken);
-        return round;
-    }
-
-    /// <inheritdoc />
-    public async Task CompleteAsync(RemoteResolutionRound round, CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(round);
-
-        foreach (var watch in round.Watches)
-            _outpointWatcher.TrackWatchedOutpoint(watch);
-
-        foreach (var broadcast in round.Broadcasts)
+        foreach (var row in context.Rows.Where(r => r.TransactionId == context.CommitmentTxId)
+                                   .OrderBy(r => r.OutputIndex)
+                                   .ToList())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                if (!await _broadcaster.PublishAsync(broadcast))
-                    _logger.LogWarning("Sweep {TxId} of channel {ChannelId} was refused; it is rebroadcast after the next "
-                                     + "block", broadcast.TransactionId, broadcast.ChannelId);
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _logger.LogError(e, "Could not publish sweep {TxId} of channel {ChannelId}; it stays pending",
-                                 broadcast.TransactionId, broadcast.ChannelId);
-            }
+            await ResolveRowAsync(context, row, actions, cancellationToken);
         }
 
-        foreach (var channelEvent in round.SwitchEvents)
-        {
-            try
-            {
-                await _htlcSwitch.HandleAsync(channelEvent, cancellationToken);
-                _memory.MarkRaised(channelEvent.ChannelId, channelEvent.HtlcId);
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _logger.LogError(e, "The switch failed on {Event} of HTLC {HtlcId} (channel {ChannelId}); it is raised "
-                                  + "again on the next block", channelEvent.GetType().Name, channelEvent.HtlcId,
-                                 channelEvent.ChannelId);
-            }
-        }
+        if (!context.IsDataLoss)
+            await ResolveHtlcsWithoutOutputAsync(context, actions);
+
+        return actions;
     }
 
-    /// <summary>
-    /// The outputs of the commitment on chain that are ours to resolve (to_remote, both kinds of HTLC outputs), and the
-    /// peer's per-commitment point of that commitment (null when it cannot be rebuilt).
-    /// </summary>
-    private (IReadOnlyList<CommitmentOutputDescriptor> Descriptors, CompactPubKey? Point) MapOurOutputs(
-        ChannelModel channel, ChannelCloseModel close, ChainTx commitmentTransaction, RemoteResolutionRound round)
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<OutputResolverAction>> OnOutputSpentAsync(ChannelCloseModel close,
+                                                                              OutputResolutionModel output,
+                                                                              ChainTx spendingTransaction,
+                                                                              uint height,
+                                                                              CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(close);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(spendingTransaction);
+        if (!CanResolve(close.Kind) || output.TransactionId != close.CommitmentTransactionId
+                                    || output.ChannelId != close.ChannelId)
+            return [];
+
+        var inputIndex = spendingTransaction.IndexOfInputSpending(output.TransactionId, output.OutputIndex);
+        if (inputIndex < 0)
+            return [];
+
+        using var scope = _serviceScopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(close.ChannelId);
+        var merged = rows.Where(r => r.TransactionId != output.TransactionId || r.OutputIndex != output.OutputIndex)
+                         .Append(output)
+                         .ToList();
+        var context = await LoadAsync(unitOfWork, close, merged, height, cancellationToken);
+        if (context is null)
+            return [];
+
+        var actions = new List<OutputResolverAction>();
+        var byUs = await IsOurTransactionAsync(context, output, spendingTransaction.TxId);
+        var witness = spendingTransaction.Inputs[inputIndex].Witness;
+        var htlc = OutputDescriptorData.TryDecode(output)?.Htlc;
+        switch (output.Descriptor)
+        {
+            case OutputDescriptorKind.RemoteReceivedHtlc when htlc is { } offered:
+                if (HtlcWitnessParser.TryExtractPreimage(witness, offered.PaymentHash, out var preimage))
+                {
+                    // B5-RMT-LO-01: the peer's HTLC-success revealed the preimage: persist it, fulfill upstream at once
+                    _logger.LogInformation("Channel {ChannelId}: the peer claimed our HTLC {HtlcId} on chain with its "
+                                         + "preimage in {TxId}", close.ChannelId, offered.Id,
+                                           Display(spendingTransaction.TxId));
+                    AddFulfill(context, offered, preimage, actions);
+                }
+                else if (!byUs)
+                {
+                    actions.Add(new AlertAction("B5-RMT-LO-02",
+                                                $"Our offered HTLC {offered.Id} ({offered.AmountMsat} msat) on the peer's "
+                                              + $"commitment of channel {close.ChannelId} was taken by "
+                                              + $"{Display(spendingTransaction.TxId)} without its preimage"));
+                }
+
+                break;
+
+            case OutputDescriptorKind.RemoteOfferedHtlc when htlc is { } received:
+                // The peer's HTLC-timeout transaction takes back its own HTLC; any other spend is a loss
+                if (!byUs && HtlcWitnessParser.Parse(witness).Path != HtlcSpendPath.HtlcTimeoutTransaction)
+                    actions.Add(new AlertAction("B5-RMT-RO-02",
+                                                $"The peer's HTLC {received.Id} ({received.AmountMsat} msat) on its "
+                                              + $"commitment of channel {close.ChannelId} was taken by "
+                                              + $"{Display(spendingTransaction.TxId)} by another path than its timeout"));
+                break;
+
+            case OutputDescriptorKind.PaymentToRemote when !byUs:
+                actions.Add(new AlertAction("B5-RMT-02",
+                                            $"Our to_remote {Display(output.TransactionId)}:{output.OutputIndex} of "
+                                          + $"channel {close.ChannelId} was taken by {Display(spendingTransaction.TxId)}, "
+                                          + "not by our sweep"));
+                break;
+
+            case OutputDescriptorKind.Unknown:
+                // Data loss (B5-RMT-LO-01): the spend of an output we could not map may still reveal the preimage of
+                // one of our offered HTLCs
+                foreach (var record in OpenOutgoingHtlcs(context))
+                {
+                    if (!HtlcWitnessParser.TryExtractPreimage(witness, record.PaymentHash, out var found))
+                        continue;
+
+                    _logger.LogInformation("Channel {ChannelId}: {TxId} revealed the preimage of our HTLC {HtlcId} on a "
+                                         + "commitment we cannot rebuild", close.ChannelId,
+                                           Display(spendingTransaction.TxId), record.Id);
+                    AddFulfill(context, ToSpec(record), found, actions);
+                }
+
+                break;
+        }
+
+        return actions;
+    }
+
+    #region Loading
+
+    private async Task<RemoteCommitContext?> LoadAsync(IUnitOfWork unitOfWork, ChannelCloseModel close,
+                                                       IReadOnlyList<OutputResolutionModel> outputs, uint height,
+                                                       CancellationToken cancellationToken)
+    {
+        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(close.ChannelId);
+        if (channel is null)
+        {
+            _logger.LogError("Cannot resolve the peer's commitment of channel {ChannelId}: the channel is not stored",
+                             close.ChannelId);
+            return null;
+        }
+
+        var rows = outputs.Where(r => r.ChannelId == close.ChannelId).ToList();
         if (!TryGetRemoteCommit(channel, close, out var commit))
-        {
-            FlagDataLoss(channel, close, round);
-            var toRemote = _mapper.FindPaymentToRemote(commitmentTransaction,
-                                                       channel.LocalKeySet.PaymentCompactBasepoint,
-                                                       channel.ChannelParams.OptionAnchorOutputs);
-            return (toRemote, null);
-        }
+            return new RemoteCommitContext(unitOfWork, channel, close, null, null, rows, height);
 
-        var map = _mapper.Map(channel, CommitmentTxSpec.FromCommitmentSpec(commit.Spec), CommitmentCase.Remote,
-                              commit.Number, commit.PerCommitmentPoint, commitmentTransaction);
-        if (map.UnmappedVouts.Count > 0)
-        {
-            var alert = $"B5-RMT-03: outputs {string.Join(", ", map.UnmappedVouts)} of the peer's commitment "
-                      + $"{close.CommitmentNumber} match no expected output";
-            round.Alerts.Add(alert);
-            _logger.LogCritical("Channel {ChannelId}: {Alert}", channel.ChannelId, alert);
-        }
-
-        var ours = map.Outputs.Where(o => o.Kind is OutputDescriptorKind.PaymentToRemote
-                                              or OutputDescriptorKind.RemoteReceivedHtlc
-                                              or OutputDescriptorKind.RemoteOfferedHtlc)
-                      .ToList();
-        return (ours, commit.PerCommitmentPoint);
-    }
-
-    private async Task ResolveRowsAsync(ChannelModel channel, ChannelCloseModel close,
-                                        IReadOnlyList<OutputResolutionModel> rows, uint tipHeight,
-                                        IUnitOfWork unitOfWork, RemoteResolutionRound round,
-                                        CancellationToken cancellationToken)
-    {
-        var allDone = true;
-        foreach (var row in rows)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (row.State is OutputResolutionState.Irrevocable or OutputResolutionState.Ignored)
-                continue;
-
-            if (!TryDecode(row, out var data))
-            {
-                allDone = false;
-                continue;
-            }
-
-            var descriptor = data.ToDescriptor(row.OutputIndex, row.Descriptor);
-            OutputResolutionPlan plan;
-            try
-            {
-                plan = OutputResolutionPlanner.Plan(descriptor, BuildFacts(channel, close, data, tipHeight));
-            }
-            catch (ArgumentException e)
-            {
-                _logger.LogError(e, "Channel {ChannelId}: cannot plan output {Vout}", channel.ChannelId,
-                                 row.OutputIndex);
-                allDone = false;
-                continue;
-            }
-
-            var updated = await ApplyAsync(channel, close, row, data, descriptor, plan, tipHeight, unitOfWork, round,
-                                           cancellationToken);
-            if (updated.State is not (OutputResolutionState.Irrevocable or OutputResolutionState.Ignored))
-                allDone = false;
-        }
-
-        if (!ResolveHtlcsWithoutOutput(channel, close, rows, tipHeight, round))
-            allDone = false;
-
-        round.AllIrrevocablyResolved = allDone;
-    }
-
-    /// <summary>Acts on the planner's answer for one output and writes the row when it changed.</summary>
-    private async Task<OutputResolutionModel> ApplyAsync(ChannelModel channel, ChannelCloseModel close,
-                                                         OutputResolutionModel row, RemoteOutputData data,
-                                                         CommitmentOutputDescriptor descriptor,
-                                                         OutputResolutionPlan plan, uint tipHeight,
-                                                         IUnitOfWork unitOfWork, RemoteResolutionRound round,
-                                                         CancellationToken cancellationToken)
-    {
-        var updated = row;
-        var updatedData = data;
-        foreach (var action in plan.Actions)
-        {
-            switch (action.Kind)
-            {
-                case ResolutionActionKind.Wait:
-                    if (updated.State is OutputResolutionState.Pending or OutputResolutionState.Waiting)
-                        updated = updated with
-                        {
-                            State = OutputResolutionState.Waiting,
-                            WaitUntilHeight = action.WaitUntilHeight
-                        };
-                    break;
-
-                case ResolutionActionKind.Sweep:
-                    // Already saved for broadcast and not spent yet: the chain monitor rebroadcasts it every block
-                    if (updated is { State: OutputResolutionState.Broadcast, ResolvingTransactionId: not null }
-                     && data.Spend is null)
-                        break;
-
-                    updated = await SweepAsync(channel, close, updated, descriptor, updatedData, action, tipHeight,
-                                               unitOfWork, round, cancellationToken);
-                    break;
-
-                case ResolutionActionKind.RaiseFulfilled when descriptor.Htlc is { } htlc && action.Preimage is { } p:
-                    round.SwitchEvents.Add(RemoteHtlcSwitchEvents.Fulfilled(channel.ChannelId, htlc.Id,
-                                                                            htlc.PaymentHash, new Secret(p)));
-                    updatedData = updatedData with { UpstreamRaised = true };
-                    _logger.LogInformation("Channel {ChannelId}: fulfilling upstream of HTLC {HtlcId} ({Requirement})",
-                                           channel.ChannelId, htlc.Id, action.RequirementId);
-                    break;
-
-                case ResolutionActionKind.RaiseFailed when descriptor.Htlc is { } htlc:
-                    round.SwitchEvents.Add(RemoteHtlcSwitchEvents.OnchainTimeout(channel.ChannelId, htlc.Id,
-                                                                                 htlc.PaymentHash));
-                    updatedData = updatedData with { UpstreamRaised = true };
-                    _logger.LogInformation("Channel {ChannelId}: failing upstream of HTLC {HtlcId} ({Requirement})",
-                                           channel.ChannelId, htlc.Id, action.RequirementId);
-                    break;
-
-                case ResolutionActionKind.AlertLostFunds:
-                    var alert = $"{action.RequirementId}: output {row.OutputIndex} ({row.Descriptor}, "
-                              + $"{descriptor.AmountSat} sat) was taken by the peer";
-                    round.Alerts.Add(alert);
-                    _logger.LogCritical("Channel {ChannelId}: {Alert}", channel.ChannelId, alert);
-                    break;
-            }
-        }
-
-        if (updated.State != OutputResolutionState.Ignored)
-        {
-            var resolvedHeight = updatedData.Spend?.Height ?? updated.ResolvedHeight;
-            updated = plan.State switch
-            {
-                PlannedResolutionState.Resolved => updated with
-                {
-                    State = OutputResolutionState.Resolved,
-                    ResolvedHeight = resolvedHeight,
-                    WaitUntilHeight = null
-                },
-                PlannedResolutionState.IrrevocablyResolved => updated with
-                {
-                    State = OutputResolutionState.Irrevocable,
-                    ResolvedHeight = resolvedHeight,
-                    WaitUntilHeight = null
-                },
-                _ => updated
-            };
-        }
-
-        updated = updated with { DescriptorData = updatedData.Encode() };
-        if (!SameRow(row, updated))
-        {
-            await unitOfWork.OnchainResolutionDbRepository.UpsertOutputAsync(updated);
-            round.Outputs.Add(updated);
-        }
-
-        return updated;
-    }
-
-    /// <summary>Builds, signs and stages one sweep or claim of the output (D4: saved with the row, published after).
-    /// </summary>
-    private async Task<OutputResolutionModel> SweepAsync(ChannelModel channel, ChannelCloseModel close,
-                                                         OutputResolutionModel row,
-                                                         CommitmentOutputDescriptor descriptor, RemoteOutputData data,
-                                                         ResolutionAction action, uint tipHeight,
-                                                         IUnitOfWork unitOfWork, RemoteResolutionRound round,
-                                                         CancellationToken cancellationToken)
-    {
         try
         {
-            var commitmentTxId = close.CommitmentTransactionId;
-            var input = action.SpendKind switch
+            var spec = CommitmentTxSpec.FromCommitmentSpec(commit.Spec);
+            var map = _mapper.Map(channel, spec, CommitmentCase.Remote, commit.Number, commit.PerCommitmentPoint);
+            if (map.ExpectedTxId != close.CommitmentTransactionId)
             {
-                SweepSpendKind.PaymentToRemote => SweepInputFactory.ToRemote(
-                    descriptor, commitmentTxId, channel.LocalKeySet.PaymentCompactBasepoint),
-                SweepSpendKind.HtlcTimeoutClaim => SweepInputFactory.HtlcTimeoutClaim(
-                    descriptor, commitmentTxId, RequirePoint(data)),
-                SweepSpendKind.HtlcPreimageClaim => SweepInputFactory.HtlcPreimageClaim(
-                    descriptor, commitmentTxId, RequirePoint(data),
-                    action.Preimage ?? throw new InvalidOperationException("A preimage claim without its preimage")),
-                _ => throw new InvalidOperationException($"A {action.SpendKind} spend is not a remote-commitment spend")
-            };
+                // Our rebuild differs from the transaction on chain: map its outputs by script instead
+                var onChain = await _commitmentSource.GetCommitmentAsync(close, cancellationToken);
+                if (onChain is null)
+                {
+                    _logger.LogError("Channel {ChannelId}: the rebuilt commitment {Expected} is not {TxId} and the "
+                                   + "transaction cannot be read; retrying on the next block", close.ChannelId,
+                                     Display(map.ExpectedTxId), Display(close.CommitmentTransactionId));
+                    return null;
+                }
 
-            var destination = await _destination.GetScriptAsync(channel.ChannelId, cancellationToken);
-            var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
-            var estimate = await _feeService.GetFeeRatePerKwAsync(cancellationToken);
-            var decision = _feePolicy.Decide(input.AmountSat, weight, (uint)Math.Clamp(estimate.Satoshi, 0, uint.MaxValue),
-                                             false, tipHeight, action.DeadlineHeight);
-            if (decision.Abandon)
-            {
-                _logger.LogWarning("Channel {ChannelId}: output {Vout} ({Amount} sat) does not pay its own sweep fee; "
-                                 + "abandoned", channel.ChannelId, row.OutputIndex, input.AmountSat);
-                return row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null };
+                map = _mapper.Map(channel, spec, CommitmentCase.Remote, commit.Number, commit.PerCommitmentPoint,
+                                  onChain);
             }
 
-            var unsigned = _sweepBuilder.BuildWithFee([input], destination, decision.FeeSat);
-            var signed = _sweepBuilder.Sign(unsigned, _signer, channel.ChannelId);
-            var purpose = input.SpendKind == SweepSpendKind.PaymentToRemote
-                              ? BroadcastPurpose.Sweep
-                              : BroadcastPurpose.HtlcClaim;
-            var broadcast = new BroadcastTransactionModel(signed, purpose, channel.ChannelId, tipHeight,
-                                                          decision.FeeratePerKw);
-            if (await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(signed.TxId) is null)
-                unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
-            round.Broadcasts.Add(broadcast);
-
-            _logger.LogInformation("Channel {ChannelId}: {Kind} of output {Vout} ({Requirement}) in {TxId}, fee {Fee} sat",
-                                   channel.ChannelId, input.SpendKind, row.OutputIndex, action.RequirementId,
-                                   signed.TxId, decision.FeeSat);
-            return row with
-            {
-                State = OutputResolutionState.Broadcast,
-                ResolvingTransactionId = signed.TxId,
-                DeadlineHeight = action.DeadlineHeight,
-                WaitUntilHeight = null
-            };
+            return new RemoteCommitContext(unitOfWork, channel, close, commit, map, rows, height);
         }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException
-                                      or Domain.Exceptions.SignerException)
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException)
         {
-            // Nothing staged: the planner asks again on the next block
-            _logger.LogError(e, "Channel {ChannelId}: cannot build the {Kind} of output {Vout}", channel.ChannelId,
-                             action.SpendKind, row.OutputIndex);
-            return row;
-        }
-    }
-
-    /// <summary>
-    /// B5-RMT-LO-03: our offered HTLCs the engine still tracks that have no output in the commitment on chain. Returns
-    /// true when all of them are irrevocably resolved.
-    /// </summary>
-    private bool ResolveHtlcsWithoutOutput(ChannelModel channel, ChannelCloseModel close,
-                                           IReadOnlyList<OutputResolutionModel> rows, uint tipHeight,
-                                           RemoteResolutionRound round)
-    {
-        if (channel.Commitments is not { } commitments || !CanRebuild(channel, close))
-            return true;
-
-        var withOutput = rows.Where(r => r.HtlcDirection == HtlcDirection.Outgoing && r.HtlcId.HasValue)
-                             .Select(r => r.HtlcId!.Value)
-                             .ToHashSet();
-        var allDone = true;
-        foreach (var record in commitments.Htlcs.Values)
-        {
-            if (record.Direction != HtlcDirection.Outgoing || withOutput.Contains(record.Id)
-             || HtlcStateTable.IsFinal(record.State))
-                continue;
-
-            var htlc = new SpecHtlc(record.Direction, record.Id, record.AmountMsat, record.PaymentHash,
-                                    record.CltvExpiry);
-            var preimage = OutgoingPreimage(record);
-            var upstreamResolved = _memory.WasRaised(channel.ChannelId, record.Id);
-            var depth = tipHeight >= close.SpentAtHeight ? tipHeight - close.SpentAtHeight + 1 : 0;
-            var elsewhere = preimage is null && !upstreamResolved && depth < _options.ReasonableDepth
-                         && HasOutputInAnotherCommitment(channel, close, record.Id);
-            var plan = OutputResolutionPlanner.PlanHtlcWithoutOutput(
-                htlc, new HtlcWithoutOutputFacts(tipHeight, close.SpentAtHeight, preimage, elsewhere, upstreamResolved,
-                                                 _options.ReasonableDepth, _options.IrrevocableDepth));
-            if (plan.State != PlannedResolutionState.IrrevocablyResolved)
-                allDone = false;
-
-            foreach (var action in plan.Actions)
-            {
-                if (action.Kind == ResolutionActionKind.RaiseFulfilled && action.Preimage is { } p)
-                    round.SwitchEvents.Add(RemoteHtlcSwitchEvents.Fulfilled(channel.ChannelId, record.Id,
-                                                                            record.PaymentHash, new Secret(p)));
-                else if (action.Kind == ResolutionActionKind.RaiseFailed)
-                    round.SwitchEvents.Add(RemoteHtlcSwitchEvents.OnchainTimeout(channel.ChannelId, record.Id,
-                                                                                 record.PaymentHash));
-            }
-        }
-
-        return allDone;
-    }
-
-    /// <summary>
-    /// Whether our current commitment or the peer's current or next one (other than the one on chain) has an output for
-    /// our HTLC <paramref name="htlcId"/>. A rebuild that fails counts as "yes" (wait for reasonable depth).
-    /// </summary>
-    private bool HasOutputInAnotherCommitment(ChannelModel channel, ChannelCloseModel close, ulong htlcId)
-    {
-        var commitments = channel.Commitments!;
-        var candidates = new List<(CommitmentSpec Spec, CommitmentCase Case, ulong Number, CompactPubKey? Point)>
-        {
-            (commitments.LocalCommit.Spec, CommitmentCase.Local, commitments.LocalCommit.Number, null)
-        };
-        if (close.Kind != ChannelCloseKind.RemoteCommitment)
-            candidates.Add((commitments.RemoteCommit.Spec, CommitmentCase.Remote, commitments.RemoteCommit.Number,
-                            commitments.RemoteCommit.PerCommitmentPoint));
-        if (close.Kind != ChannelCloseKind.RemoteNextCommitment && commitments.RemoteNextCommit is { } next)
-            candidates.Add((next.Commit.Spec, CommitmentCase.Remote, next.Commit.Number,
-                            next.Commit.PerCommitmentPoint));
-
-        foreach (var (spec, commitmentCase, number, point) in candidates)
-        {
-            if (spec.Htlcs.All(h => h.Direction != HtlcDirection.Outgoing || h.Id != htlcId))
-                continue;
-
-            try
-            {
-                var map = _mapper.Map(channel, CommitmentTxSpec.FromCommitmentSpec(spec), commitmentCase, number,
-                                      point);
-                if (map.Outputs.Any(o => o.Htlc is { Direction: HtlcDirection.Outgoing } h && h.Id == htlcId))
-                    return true;
-            }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _logger.LogWarning(e, "Channel {ChannelId}: cannot rebuild the {Case} commitment {Number}",
-                                   channel.ChannelId, commitmentCase, number);
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private OutputResolutionFacts BuildFacts(ChannelModel channel, ChannelCloseModel close, RemoteOutputData data,
-                                             uint tipHeight)
-    {
-        byte[]? allowedPreimage = null;
-        var remoteIrrevocablyCommitted = true;
-        var upstreamResolved = false;
-        if (data.Htlc is { } htlc)
-        {
-            var record = channel.Commitments?.GetHtlc(htlc.Direction, htlc.Id);
-            if (htlc.Direction == HtlcDirection.Outgoing)
-            {
-                allowedPreimage = record is null ? null : OutgoingPreimage(record);
-                upstreamResolved = data.UpstreamRaised && _memory.WasRaised(channel.ChannelId, htlc.Id);
-            }
-            else
-            {
-                // B5-LCL-RO-02: only the preimage of our own fulfill of this very HTLC (the switch accepted it)
-                allowedPreimage = record?.Removal is { IsFulfill: true, PaymentPreimage: { } fulfilled }
-                                      ? (byte[])fulfilled
-                                      : null;
-                remoteIrrevocablyCommitted = record is not null
-                                          && HtlcStateTable.IsAddIrrevocablyCommitted(record.State);
-            }
-        }
-
-        return new OutputResolutionFacts(tipHeight, close.SpentAtHeight, data.Spend?.ToOutputSpend(), null,
-                                         allowedPreimage, remoteIrrevocablyCommitted, upstreamResolved, 0,
-                                         _options.ReasonableDepth, _options.IrrevocableDepth);
-    }
-
-    private static byte[]? OutgoingPreimage(HtlcRecord record) =>
-        record.KnownPreimage is { } known
-            ? (byte[])known
-            : record.Removal is { IsFulfill: true, PaymentPreimage: { } fulfilled }
-                ? (byte[])fulfilled
-                : null;
-
-    private async Task<IReadOnlyList<OutputResolutionModel>> LoadRowsAsync(ChannelModel channel,
-                                                                          ChannelCloseModel close,
-                                                                          IUnitOfWork unitOfWork)
-    {
-        var rows = await unitOfWork.OnchainResolutionDbRepository.GetOutputsByChannelIdAsync(channel.ChannelId);
-        return rows.Where(r => r.TransactionId == close.CommitmentTransactionId)
-                   .OrderBy(r => r.OutputIndex)
-                   .ToList();
-    }
-
-    private bool TryDecode(OutputResolutionModel row, out RemoteOutputData data)
-    {
-        try
-        {
-            data = RemoteOutputData.Decode(row.DescriptorData);
-            return true;
-        }
-        catch (FormatException e)
-        {
-            _logger.LogError(e, "Channel {ChannelId}: output {Vout} has unreadable resolution data", row.ChannelId,
-                             row.OutputIndex);
-            data = null!;
-            return false;
+            _logger.LogError(e, "Channel {ChannelId}: cannot rebuild the peer's commitment {Number}", close.ChannelId,
+                             commit.Number);
+            return null;
         }
     }
 
@@ -671,40 +304,734 @@ public sealed class RemoteCommitResolver : IRemoteCommitResolver
         }
     }
 
-    private static bool CanRebuild(ChannelModel channel, ChannelCloseModel close) =>
-        TryGetRemoteCommit(channel, close, out _);
+    private static bool IsOurs(OutputDescriptorKind kind) =>
+        kind is OutputDescriptorKind.PaymentToRemote or OutputDescriptorKind.RemoteReceivedHtlc
+            or OutputDescriptorKind.RemoteOfferedHtlc;
 
-    private void FlagDataLoss(ChannelModel channel, ChannelCloseModel close, RemoteResolutionRound round)
+    /// <summary>Rows (and watches) for our outputs of a rebuilt commitment that are not recorded yet.</summary>
+    private static void AddMissingRows(RemoteCommitContext context, List<OutputResolverAction> actions)
     {
-        round.CriticalDataLoss = true;
-        var message = $"B5-RMT-03: the peer's commitment {close.CommitmentNumber} ({close.Kind}) cannot be rebuilt; only "
-                    + "our to_remote is swept, any HTLC in it may be lost";
-        if (!_memory.CriticalAlerts.TryGetValue(channel.ChannelId, out var known) || known != message)
-            _logger.LogCritical("Channel {ChannelId}: {Alert}", channel.ChannelId, message);
-        _memory.RaiseCriticalAlert(channel.ChannelId, message);
-        round.Alerts.Add(message);
+        var map = context.Map!;
+        var created = false;
+        foreach (var descriptor in map.Outputs.Where(o => IsOurs(o.Kind)))
+        {
+            if (context.GetRow(context.CommitmentTxId, descriptor.Vout) is not null)
+                continue;
+
+            AddRow(context, descriptor.Vout, descriptor.Kind,
+                   OutputDescriptorData.FromDescriptor(descriptor, map.PerCommitmentPoint), descriptor.Htlc, actions);
+            created = true;
+        }
+
+        if (created && map.UnmappedVouts.Count > 0)
+            actions.Add(new AlertAction("B5-RMT-03",
+                                        $"Outputs {string.Join(", ", map.UnmappedVouts)} of the peer's commitment "
+                                      + $"{Display(context.CommitmentTxId)} of channel {context.Channel.ChannelId} "
+                                      + "match no expected output"));
     }
 
-    private static CompactPubKey RequirePoint(RemoteOutputData data) =>
-        data.RemotePerCommitmentPoint
+    /// <summary>
+    /// B5-RMT-03: a commitment we cannot rebuild. Once: a row and a watch for every output (our <c>to_remote</c> found
+    /// by its script, every other one <see cref="OutputDescriptorKind.Unknown"/>) and a critical alert.
+    /// </summary>
+    private async Task AddDataLossRowsAsync(RemoteCommitContext context, List<OutputResolverAction> actions,
+                                            CancellationToken cancellationToken)
+    {
+        if (context.Rows.Any(r => r.TransactionId == context.CommitmentTxId))
+            return;
+
+        var onChain = await _commitmentSource.GetCommitmentAsync(context.Close, cancellationToken);
+        if (onChain is null)
+        {
+            _logger.LogCritical("Channel {ChannelId}: the peer's commitment {TxId} cannot be rebuilt (data loss) nor "
+                              + "read; retrying on the next block", context.Channel.ChannelId,
+                                Display(context.CommitmentTxId));
+            return;
+        }
+
+        var toRemote = _mapper.FindPaymentToRemote(onChain, context.Channel.LocalKeySet.PaymentCompactBasepoint,
+                                                   context.Channel.ChannelParams.OptionAnchorOutputs);
+        for (var vout = 0U; vout < onChain.Outputs.Count; vout++)
+        {
+            var output = onChain.Outputs[(int)vout];
+            var found = toRemote.FirstOrDefault(d => d.Vout == vout);
+            var data = found is not null
+                           ? OutputDescriptorData.FromDescriptor(found, null)
+                           : new OutputDescriptorData(output.AmountSat, output.ScriptPubKey, null, 0,
+                                                      context.Channel.ChannelParams.OptionAnchorOutputs, null, null);
+            AddRow(context, vout, found?.Kind ?? OutputDescriptorKind.Unknown, data, null, actions);
+        }
+
+        actions.Add(new AlertAction("B5-RMT-03",
+                                    $"The peer's commitment {context.Close.CommitmentNumber} ({context.Close.Kind}, "
+                                  + $"{Display(context.CommitmentTxId)}) of channel {context.Channel.ChannelId} cannot "
+                                  + $"be rebuilt: only our to_remote ({toRemote.Count} output(s)) is swept; every other "
+                                  + "output is watched for the preimages of our offered HTLCs, and any HTLC in it may be "
+                                  + "lost"));
+    }
+
+    private static void AddRow(RemoteCommitContext context, uint vout, OutputDescriptorKind kind,
+                               OutputDescriptorData data, SpecHtlc? htlc, List<OutputResolverAction> actions)
+    {
+        var row = new OutputResolutionModel
+        {
+            TransactionId = context.CommitmentTxId,
+            OutputIndex = vout,
+            ChannelId = context.Channel.ChannelId,
+            Descriptor = kind,
+            DescriptorData = data.Encode(),
+            HtlcDirection = htlc?.Direction,
+            HtlcId = htlc?.Id
+        };
+        context.Rows.Add(row);
+        actions.Add(new UpsertOutputAction(row));
+        actions.Add(new WatchOutpointAction(new WatchedOutpointModel(context.CommitmentTxId, vout,
+                                                                     context.Channel.ChannelId,
+                                                                     WatchedOutpointPurpose.ResolutionOutput)));
+    }
+
+    /// <summary>
+    /// The confirmed spend of a row's outpoint: the watched outpoint's recorded spend, else (no watch row) the
+    /// executor's resolution of the row, attributed to us when it names our resolving transaction.
+    /// </summary>
+    private static async Task<OutputSpend?> GetSpendAsync(RemoteCommitContext context, OutputResolutionModel row)
+    {
+        var watch = await context.UnitOfWork.WatchedOutpointDbRepository.GetAsync(row.TransactionId,
+                                                                                  row.OutputIndex);
+        if (watch is { SpentByTransactionId: { } spender, SpentAtHeight: { } spentAt })
+            return new OutputSpend(spender, spentAt, await IsOurTransactionAsync(context, row, spender));
+
+        if (row is
+            {
+                State: OutputResolutionState.Resolved or OutputResolutionState.Irrevocable,
+                ResolvedHeight: { } resolvedAt
+            })
+            return new OutputSpend(row.ResolvingTransactionId ?? default, resolvedAt,
+                                   row.ResolvingTransactionId is not null);
+
+        return null;
+    }
+
+    /// <summary>
+    /// True when <paramref name="txId"/> is the row's resolving transaction or a transaction we broadcast for the
+    /// channel (a fee-bumped replacement).
+    /// </summary>
+    private static async Task<bool> IsOurTransactionAsync(RemoteCommitContext context, OutputResolutionModel row,
+                                                          TxId txId)
+    {
+        if (row.ResolvingTransactionId is { } resolving && resolving == txId)
+            return true;
+
+        var broadcast = await context.UnitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(txId);
+        return broadcast?.ChannelId is { } channelId && channelId == context.Channel.ChannelId;
+    }
+
+    #endregion
+
+    #region Commitment outputs
+
+    private async Task ResolveRowAsync(RemoteCommitContext context, OutputResolutionModel row,
+                                       List<OutputResolverAction> actions, CancellationToken cancellationToken)
+    {
+        switch (row.Descriptor)
+        {
+            case OutputDescriptorKind.PeerOutput or OutputDescriptorKind.PeerAnchor or OutputDescriptorKind.OurAnchor:
+                // Not ours (B5-RMT-02; our anchor waits for O7): nothing to resolve
+                if (row.State is OutputResolutionState.Pending or OutputResolutionState.Waiting)
+                    ReplaceRow(context, row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null },
+                               actions);
+                return;
+
+            case OutputDescriptorKind.Unknown:
+                await ResolveUnknownRowAsync(context, row, actions);
+                return;
+
+            case OutputDescriptorKind.PaymentToRemote or OutputDescriptorKind.RemoteReceivedHtlc
+                or OutputDescriptorKind.RemoteOfferedHtlc:
+                break;
+
+            default:
+                return;
+        }
+
+        if (row.State == OutputResolutionState.Irrevocable)
+            return;
+
+        if (OutputDescriptorData.TryDecode(row) is not { } data)
+        {
+            _logger.LogError("Channel {ChannelId}: output {Vout} has unreadable resolution data", row.ChannelId,
+                             row.OutputIndex);
+            return;
+        }
+
+        var descriptor = new CommitmentOutputDescriptor(row.OutputIndex, data.AmountSat, row.Descriptor,
+                                                        data.ScriptPubKey, data.WitnessScript, data.Htlc,
+                                                        data.CsvDelay, data.HasAnchors);
+        var htlc = data.Htlc;
+        var record = htlc is { } h ? context.Commitments?.GetHtlc(h.Direction, h.Id) : null;
+        var ours = htlc is { Direction: HtlcDirection.Outgoing };
+        var spend = await GetSpendAsync(context, row);
+        if (spend is { ByUs: false })
+        {
+            spend = row.Descriptor switch
+            {
+                // A preimage the peer revealed on chain was staged into the record when the spend was seen
+                OutputDescriptorKind.RemoteReceivedHtlc => spend with { Preimage = OutgoingPreimage(record) },
+
+                // Alerts come from the spending witness, when the spend is seen (OnOutputSpentAsync), not every block
+                OutputDescriptorKind.RemoteOfferedHtlc => spend with { Path = HtlcSpendPath.HtlcTimeoutTransaction },
+                _ => spend
+            };
+        }
+
+        var allowedPreimage = ours ? OutgoingPreimage(record) : await GetIncomingPreimageAsync(context, record);
+        var upstreamResolved = ours && await IsUpstreamResolvedAsync(context, htlc!.Value.Id);
+
+        // A timeout claim abandoned as uneconomic (an Ignored row that is not spent): our HTLC is then as good as
+        // trimmed, so its upstream is resolved as for an HTLC without output (B5-RMT-LO-03)
+        if (row.State == OutputResolutionState.Ignored)
+        {
+            if (!ours)
+                return;
+
+            if (spend is null)
+            {
+                RaiseUpstream(context, htlc!.Value, record,
+                              OutputResolutionPlanner.PlanHtlcWithoutOutput(
+                                  htlc.Value, new HtlcWithoutOutputFacts(context.Height, context.Close.SpentAtHeight,
+                                                                         allowedPreimage, true, upstreamResolved,
+                                                                         _options.ReasonableDepth,
+                                                                         _options.IrrevocableDepth)),
+                              actions);
+                return;
+            }
+        }
+
+        OutputResolutionPlan plan;
+        try
+        {
+            var facts = new OutputResolutionFacts(context.Height, context.Close.SpentAtHeight, spend, null,
+                                                  allowedPreimage,
+                                                  ours || (record is not null
+                                                        && HtlcStateTable.IsAddIrrevocablyCommitted(record.State)),
+                                                  upstreamResolved, 0, _options.ReasonableDepth,
+                                                  _options.IrrevocableDepth);
+            plan = OutputResolutionPlanner.Plan(descriptor, facts);
+        }
+        catch (ArgumentException e)
+        {
+            _logger.LogError(e, "Channel {ChannelId}: cannot plan output {Vout}", context.Channel.ChannelId,
+                             row.OutputIndex);
+            return;
+        }
+
+        if (row.State == OutputResolutionState.Ignored)
+        {
+            // Spent after all (e.g. the peer's preimage claim of an abandoned HTLC): only the upstream part is left
+            RaiseUpstream(context, htlc!.Value, record, plan, actions);
+            return;
+        }
+
+        uint? waitUntil = null;
+        var updated = row;
+        foreach (var action in plan.Actions)
+        {
+            switch (action.Kind)
+            {
+                case ResolutionActionKind.Wait:
+                    waitUntil = waitUntil is { } earlier
+                                    ? Math.Min(earlier, action.WaitUntilHeight!.Value)
+                                    : action.WaitUntilHeight;
+                    break;
+
+                case ResolutionActionKind.Sweep when spend is null && updated.ResolvingTransactionId is null:
+                    updated = await SweepAsync(context, updated, descriptor, data, action, actions, cancellationToken);
+                    break;
+            }
+        }
+
+        if (htlc is { } upstreamHtlc)
+            RaiseUpstream(context, upstreamHtlc, record, plan, actions);
+
+        UpdateRowState(context, row, updated, plan, spend, waitUntil, actions);
+    }
+
+    /// <summary>The upstream part of a plan: fulfill (preimage staged first) or fail our offered HTLC.</summary>
+    private void RaiseUpstream(RemoteCommitContext context, SpecHtlc htlc, HtlcRecord? record,
+                               OutputResolutionPlan plan, List<OutputResolverAction> actions)
+    {
+        if (htlc.Direction != HtlcDirection.Outgoing)
+            return;
+
+        foreach (var action in plan.Actions)
+        {
+            if (action is { Kind: ResolutionActionKind.RaiseFulfilled, Preimage: { } preimage })
+                AddFulfill(context, htlc, new Secret(preimage), actions);
+            else if (action.Kind == ResolutionActionKind.RaiseFailed)
+                AddFail(context, htlc, record, actions);
+        }
+    }
+
+    /// <summary>
+    /// Builds, signs and stages one sweep or claim of the output (D4: saved with the row, published after), and
+    /// records it on the row; an output that does not pay its own fee is <see cref="OutputResolutionState.Ignored"/>.
+    /// </summary>
+    private async Task<OutputResolutionModel> SweepAsync(RemoteCommitContext context, OutputResolutionModel row,
+                                                         CommitmentOutputDescriptor descriptor,
+                                                         OutputDescriptorData data, ResolutionAction action,
+                                                         List<OutputResolverAction> actions,
+                                                         CancellationToken cancellationToken)
+    {
+        try
+        {
+            var commitmentTxId = context.CommitmentTxId;
+            var input = action.SpendKind switch
+            {
+                SweepSpendKind.PaymentToRemote => SweepInputFactory.ToRemote(
+                    descriptor, commitmentTxId, context.Channel.LocalKeySet.PaymentCompactBasepoint),
+                SweepSpendKind.HtlcTimeoutClaim => SweepInputFactory.HtlcTimeoutClaim(
+                    descriptor, commitmentTxId, RequirePoint(data)),
+                SweepSpendKind.HtlcPreimageClaim => SweepInputFactory.HtlcPreimageClaim(
+                    descriptor, commitmentTxId, RequirePoint(data),
+                    action.Preimage ?? throw new InvalidOperationException("A preimage claim without its preimage")),
+                _ => throw new InvalidOperationException($"A {action.SpendKind} spend is not a remote-commitment spend")
+            };
+
+            context.Destination ??= await _destination.GetScriptAsync(context.Channel.ChannelId, cancellationToken);
+            var destination = context.Destination;
+            var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
+            var decision = _feePolicy.Decide(input.AmountSat, weight, await GetFeeEstimateAsync(cancellationToken),
+                                             false, context.Height, action.DeadlineHeight);
+            if (decision.Abandon)
+            {
+                _logger.LogWarning("Channel {ChannelId}: output {Vout} ({Amount} sat) does not pay its own sweep fee; "
+                                 + "abandoned", context.Channel.ChannelId, row.OutputIndex, input.AmountSat);
+                return row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null };
+            }
+
+            var unsigned = _sweepBuilder.BuildWithFee([input], destination, decision.FeeSat);
+            var signed = _sweepBuilder.Sign(unsigned, _signer, context.Channel.ChannelId);
+            var purpose = input.SpendKind == SweepSpendKind.PaymentToRemote
+                              ? BroadcastPurpose.Sweep
+                              : BroadcastPurpose.HtlcClaim;
+            actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, purpose, context.Channel.ChannelId,
+                                                                          context.Height, decision.FeeratePerKw)));
+            _logger.LogInformation("Channel {ChannelId}: {Kind} of output {Vout} ({Requirement}) in {TxId}, fee {Fee} sat",
+                                   context.Channel.ChannelId, input.SpendKind, row.OutputIndex, action.RequirementId,
+                                   Display(signed.TxId), decision.FeeSat);
+            return row with
+            {
+                State = OutputResolutionState.Broadcast,
+                ResolvingTransactionId = signed.TxId,
+                DeadlineHeight = action.DeadlineHeight,
+                WaitUntilHeight = null
+            };
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException
+                                      or Domain.Exceptions.SignerException)
+        {
+            // Nothing staged: the planner asks again on the next block
+            _logger.LogError(e, "Channel {ChannelId}: cannot build the {Kind} of output {Vout}",
+                             context.Channel.ChannelId, action.SpendKind, row.OutputIndex);
+            return row;
+        }
+    }
+
+    private async Task<uint> GetFeeEstimateAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var estimate = await _feeService.GetFeeRatePerKwAsync(cancellationToken);
+            return (uint)Math.Clamp(estimate.Satoshi, 0, uint.MaxValue);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning("No fee estimate for a sweep ({Reason}); using the floor", e.Message);
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Records what the plan says about an output that is not spent yet (<see cref="OutputResolutionState.Waiting"/>,
+    /// <see cref="OutputResolutionState.Broadcast"/>, or <see cref="OutputResolutionState.Ignored"/> for an expired
+    /// HTLC of the peer that we may not claim). A spent output's state belongs to the executor.
+    /// </summary>
+    private static void UpdateRowState(RemoteCommitContext context, OutputResolutionModel original,
+                                       OutputResolutionModel updated, OutputResolutionPlan plan, OutputSpend? spend,
+                                       uint? waitUntil, List<OutputResolverAction> actions)
+    {
+        var next = updated;
+        if (spend is null && next.State is OutputResolutionState.Pending or OutputResolutionState.Waiting
+                                               or OutputResolutionState.Broadcast)
+        {
+            if (plan.State == PlannedResolutionState.IrrevocablyResolved)
+                next = next with { State = OutputResolutionState.Ignored, WaitUntilHeight = null };
+            else if (next.ResolvingTransactionId is not null)
+                next = next with { State = OutputResolutionState.Broadcast, WaitUntilHeight = null };
+            else if (waitUntil is not null)
+                next = next with { State = OutputResolutionState.Waiting, WaitUntilHeight = waitUntil };
+        }
+
+        if (!SameRow(original, next))
+            ReplaceRow(context, next, actions);
+    }
+
+    /// <summary>
+    /// An output of a commitment we could not rebuild (data loss): it is only watched (a spend may reveal a preimage).
+    /// It is ignored once the commitment is irrevocable and every open HTLC we offered is resolved upstream or long
+    /// expired (<c>cltv_expiry</c> + the irrevocable depth), so no preimage can still matter.
+    /// </summary>
+    private async Task ResolveUnknownRowAsync(RemoteCommitContext context, OutputResolutionModel row,
+                                              List<OutputResolverAction> actions)
+    {
+        if (row.State is not (OutputResolutionState.Pending or OutputResolutionState.Waiting)
+         || Depth(context.Height, context.Close.SpentAtHeight) < _options.IrrevocableDepth)
+            return;
+
+        foreach (var record in OpenOutgoingHtlcs(context))
+        {
+            if (context.Height < record.CltvExpiry + _options.IrrevocableDepth
+             && !await IsUpstreamResolvedAsync(context, record.Id))
+                return;
+        }
+
+        ReplaceRow(context, row with { State = OutputResolutionState.Ignored, WaitUntilHeight = null }, actions);
+    }
+
+    #endregion
+
+    #region HTLCs without an output
+
+    /// <summary>
+    /// B5-RMT-LO-03: our offered HTLCs the engine still tracks that have no output in the commitment on chain
+    /// (trimmed, not in it yet, or removed from it): fulfilled upstream at once with a known preimage, else failed once
+    /// the commitment is reasonably deep, or at once when no other valid commitment has an output for it. Repeated
+    /// every round until the upstream HTLC has its removal, and never once the commitment is irrevocable.
+    /// </summary>
+    private async Task ResolveHtlcsWithoutOutputAsync(RemoteCommitContext context, List<OutputResolverAction> actions)
+    {
+        var depth = Depth(context.Height, context.Close.SpentAtHeight);
+        if (context.Commitments is null || depth >= _options.IrrevocableDepth)
+            return;
+
+        var mapped = context.Map!.Outputs.Where(o => o.Htlc is { Direction: HtlcDirection.Outgoing })
+                            .Select(o => o.Htlc!.Value.Id)
+                            .ToHashSet();
+        foreach (var record in OpenOutgoingHtlcs(context).Where(r => !mapped.Contains(r.Id)))
+        {
+            if (await IsUpstreamResolvedAsync(context, record.Id))
+                continue;
+
+            var htlc = ToSpec(record);
+            var preimage = OutgoingPreimage(record);
+            var elsewhere = preimage is null && depth < _options.ReasonableDepth
+                                             && HasOutputInAnotherCommitment(context, record.Id);
+            var plan = OutputResolutionPlanner.PlanHtlcWithoutOutput(
+                htlc, new HtlcWithoutOutputFacts(context.Height, context.Close.SpentAtHeight, preimage, elsewhere,
+                                                 false, _options.ReasonableDepth, _options.IrrevocableDepth));
+            RaiseUpstream(context, htlc, record, plan, actions);
+        }
+    }
+
+    /// <summary>
+    /// Whether our current commitment or the peer's current or next one (other than the one on chain) has an output for
+    /// our HTLC <paramref name="htlcId"/>. A rebuild that fails counts as "yes" (wait for reasonable depth).
+    /// </summary>
+    private bool HasOutputInAnotherCommitment(RemoteCommitContext context, ulong htlcId)
+    {
+        var commitments = context.Commitments!;
+        var candidates = new List<(CommitmentSpec Spec, CommitmentCase Case, ulong Number, CompactPubKey? Point)>
+        {
+            (commitments.LocalCommit.Spec, CommitmentCase.Local, commitments.LocalCommit.Number, null)
+        };
+        if (context.Close.Kind != ChannelCloseKind.RemoteCommitment)
+            candidates.Add((commitments.RemoteCommit.Spec, CommitmentCase.Remote, commitments.RemoteCommit.Number,
+                            commitments.RemoteCommit.PerCommitmentPoint));
+        if (context.Close.Kind != ChannelCloseKind.RemoteNextCommitment && commitments.RemoteNextCommit is { } next)
+            candidates.Add((next.Commit.Spec, CommitmentCase.Remote, next.Commit.Number,
+                            next.Commit.PerCommitmentPoint));
+
+        foreach (var (spec, commitmentCase, number, point) in candidates)
+        {
+            if (spec.Htlcs.All(h => h.Direction != HtlcDirection.Outgoing || h.Id != htlcId))
+                continue;
+
+            try
+            {
+                var map = _mapper.Map(context.Channel, CommitmentTxSpec.FromCommitmentSpec(spec), commitmentCase,
+                                      number, point);
+                if (map.Outputs.Any(o => o.Htlc is { Direction: HtlcDirection.Outgoing } h && h.Id == htlcId))
+                    return true;
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+            {
+                _logger.LogWarning(e, "Channel {ChannelId}: cannot rebuild the {Case} commitment {Number}",
+                                   context.Channel.ChannelId, commitmentCase, number);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    #endregion
+
+    #region Preimages and upstream
+
+    /// <summary>
+    /// The preimage we may use to claim the peer's HTLC (B5-RMT-RO-01, B5-LCL-RO-02): our own persisted fulfill of it,
+    /// or the preimage the forward of it learnt downstream (the outgoing HTLC's <see cref="HtlcRecord.KnownPreimage"/>
+    /// or fulfill, live or archived; a preimage seen on the downstream chain is staged there too). The switch cannot
+    /// write the upstream fulfill once this channel is closed, so the downstream record is the only place it is left.
+    /// Never an invoice preimage alone.
+    /// </summary>
+    private async Task<byte[]?> GetIncomingPreimageAsync(RemoteCommitContext context, HtlcRecord? record)
+    {
+        if (record is null)
+            return null;
+
+        if (record.Removal is { IsFulfill: true, PaymentPreimage: { } fulfilled })
+            return fulfilled;
+
+        var unitOfWork = context.UnitOfWork;
+        var channelId = context.Channel.ChannelId;
+        var outgoing = (await unitOfWork.ChannelStateDbRepository.FindHtlcsByOriginAsync(
+                            HtlcOrigin.Forwarded(channelId, record.Id))).ToList();
+        var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, record.Id);
+        if (circuit is { OutgoingChannelId: { } circuitChannel, OutgoingHtlcId: { } circuitHtlc })
+            outgoing.Add((circuitChannel, new HtlcKey(HtlcDirection.Outgoing, circuitHtlc)));
+
+        foreach (var (outgoingChannelId, key) in outgoing.Distinct())
+        {
+            var outgoingRecord = await FindHtlcRecordAsync(unitOfWork, outgoingChannelId, key);
+            if (OutgoingPreimage(outgoingRecord) is { } preimage && Hashes(preimage, record.PaymentHash))
+                return preimage;
+        }
+
+        if (circuit is { Status: ForwardCircuitStatus.Fulfilled })
+            _logger.LogError("Channel {ChannelId}: the forward of HTLC {HtlcId} was fulfilled downstream but its "
+                           + "preimage is not stored; the HTLC cannot be claimed on chain", channelId, record.Id);
+        return null;
+    }
+
+    /// <summary>
+    /// Whether the upstream of our offered HTLC <paramref name="htlcId"/> no longer needs its event: for a forward,
+    /// the incoming HTLC has its removal (or is gone), or its channel is not open any more and the circuit is resolved
+    /// (that channel's own resolver takes the preimage from here); for our payment, the payment is final. Until then
+    /// (and for an HTLC without a stored origin) the event is raised every round.
+    /// </summary>
+    private async Task<bool> IsUpstreamResolvedAsync(RemoteCommitContext context, ulong htlcId)
+    {
+        if (context.UpstreamResolved.TryGetValue(htlcId, out var known))
+            return known;
+
+        var resolved = await ComputeUpstreamResolvedAsync(context, htlcId);
+        context.UpstreamResolved[htlcId] = resolved;
+        return resolved;
+    }
+
+    private async Task<bool> ComputeUpstreamResolvedAsync(RemoteCommitContext context, ulong htlcId)
+    {
+        var unitOfWork = context.UnitOfWork;
+        var origin = await unitOfWork.ChannelStateDbRepository.GetHtlcOriginAsync(
+                         context.Channel.ChannelId, new HtlcKey(HtlcDirection.Outgoing, htlcId));
+        switch (origin)
+        {
+            case
+            {
+                Kind: HtlcOriginKind.Forwarded, IncomingChannelId: { } incomingChannelId,
+                IncomingHtlcId: { } incomingHtlcId
+            }:
+                {
+                    var incomingChannel = await unitOfWork.ChannelDbRepository.GetByIdAsync(incomingChannelId);
+                    var incoming = incomingChannel?.Commitments?.GetHtlc(HtlcDirection.Incoming, incomingHtlcId);
+                    if (incoming is null || incoming.Removal is not null || HtlcStateTable.IsFinal(incoming.State))
+                        return true;
+
+                    if (incomingChannel!.State == ChannelState.Open)
+                        return false;
+
+                    var circuit = await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(incomingChannelId,
+                                      incomingHtlcId);
+                    return circuit is { Status: ForwardCircuitStatus.Fulfilled or ForwardCircuitStatus.Failed };
+                }
+
+            case { Kind: HtlcOriginKind.Local, PaymentHash: { } paymentHash }:
+                {
+                    var payment = await unitOfWork.PaymentDbRepository.GetByPaymentHashAsync(paymentHash);
+                    return payment is null || payment.Status != PaymentStatus.InFlight;
+                }
+
+            default:
+                // No origin stored (an HTLC offered before NL-250): the switch decides, so keep raising
+                return false;
+        }
+    }
+
+    /// <summary>An HTLC record of a channel: the live one, else its archived (settled, unpruned) row.</summary>
+    private static async Task<HtlcRecord?> FindHtlcRecordAsync(IUnitOfWork unitOfWork, ChannelId channelId,
+                                                               HtlcKey key)
+    {
+        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel?.Commitments is not { } commitments)
+            return null;
+
+        if (commitments.GetHtlc(key.Direction, key.Id) is { } live)
+            return live;
+
+        var persisted = await unitOfWork.ChannelStateDbRepository.LoadAsync(channelId, commitments.Params);
+        return persisted?.SettledHtlcs.FirstOrDefault(h => h.Key == key);
+    }
+
+    /// <summary>
+    /// Fulfills our offered HTLC upstream (B5-RMT-LO-01/03): the preimage is staged into the HTLC's record first when
+    /// it is not stored there yet (BOLT2 I10), in the same save that precedes the event.
+    /// </summary>
+    private void AddFulfill(RemoteCommitContext context, SpecHtlc htlc, Secret preimage,
+                            List<OutputResolverAction> actions)
+    {
+        var channelId = context.Channel.ChannelId;
+        var record = context.Commitments?.GetHtlc(HtlcDirection.Outgoing, htlc.Id);
+        if (record is not null && record.KnownPreimage != preimage && context.StagedPreimages.Add(htlc.Id))
+        {
+            var memory = _channelMemoryRepository;
+            actions.Add(new StageWriteAction($"preimage of HTLC {htlc.Id} of channel {channelId}",
+                                             (unitOfWork, _) => StageKnownPreimageAsync(unitOfWork, memory, channelId,
+                                                                                        htlc.Id, preimage)));
+        }
+
+        actions.Add(new RaiseChannelEventAction(RemoteHtlcSwitchEvents.Fulfilled(channelId, htlc.Id, htlc.PaymentHash,
+                                                                                 preimage)));
+    }
+
+    /// <summary>
+    /// Fails our offered HTLC upstream (B5-RMT-LO-02/03): a failure the peer had sent (not irrevocable yet when the
+    /// channel closed) keeps its reason; otherwise it timed out on chain.
+    /// </summary>
+    private static void AddFail(RemoteCommitContext context, SpecHtlc htlc, HtlcRecord? record,
+                                List<OutputResolverAction> actions)
+    {
+        var channelId = context.Channel.ChannelId;
+        IChannelDomainEvent failed = record?.Removal is
+        {
+            Kind: HtlcRemovalKind.Fail or HtlcRemovalKind.FailMalformed
+        } failure
+                                         ? new OutgoingHtlcFailed(channelId, htlc.Id, htlc.PaymentHash, failure)
+                                         : RemoteHtlcSwitchEvents.OnchainTimeout(channelId, htlc.Id,
+                                                                                 htlc.PaymentHash);
+        actions.Add(new RaiseChannelEventAction(failed));
+    }
+
+    /// <summary>
+    /// Stages <see cref="HtlcRecord.KnownPreimage"/> of our offered HTLC in the round's unit of work, and puts it into
+    /// the loaded channel's snapshot so the switch's replays see it.
+    /// </summary>
+    private static async Task StageKnownPreimageAsync(IUnitOfWork unitOfWork, IChannelMemoryRepository? memory,
+                                                      ChannelId channelId, ulong htlcId, Secret preimage)
+    {
+        var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+        if (channel?.Commitments is not { } commitments
+         || commitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is not { } record
+         || record.KnownPreimage == preimage)
+            return;
+
+        var updated = record with { KnownPreimage = preimage };
+        await unitOfWork.ChannelStateDbRepository.ApplyAsync(WithRecord(commitments, updated),
+                                                             new ChannelTransition([updated], [], [], false, false,
+                                                                                   false, false));
+
+        if (memory is not null && memory.TryGetChannel(channelId, out var loaded)
+                               && loaded.Commitments is { } loadedCommitments
+                               && loadedCommitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is { } loadedRecord)
+            loaded.UpdateCommitments(WithRecord(loadedCommitments, loadedRecord with { KnownPreimage = preimage }));
+    }
+
+    private static ChannelCommitments WithRecord(ChannelCommitments commitments, HtlcRecord record) =>
+        ChannelCommitments.Restore(commitments.ChannelId, commitments.Params, commitments.LocalBalanceMsat,
+                                   commitments.RemoteBalanceMsat, commitments.Htlcs.SetItem(record.Key, record).Values,
+                                   commitments.FeeUpdates, commitments.LocalNextHtlcId,
+                                   commitments.RemoteNextHtlcId, commitments.LocalCommit, commitments.RemoteCommit,
+                                   commitments.RemoteNextCommit, commitments.RemoteNextPerCommitmentPoint);
+
+    #endregion
+
+    #region Helpers
+
+    /// <summary>Our offered HTLCs that are not final (their resolution may still be pending upstream).</summary>
+    private static IEnumerable<HtlcRecord> OpenOutgoingHtlcs(RemoteCommitContext context) =>
+        context.Commitments?.Htlcs.Values.Where(h => h.Direction == HtlcDirection.Outgoing
+                                                  && !HtlcStateTable.IsFinal(h.State))
+     ?? [];
+
+    private static SpecHtlc ToSpec(HtlcRecord record) =>
+        new(record.Direction, record.Id, record.AmountMsat, record.PaymentHash, record.CltvExpiry);
+
+    /// <summary>The preimage the peer revealed for our offered HTLC (off chain, or on chain once staged).</summary>
+    private static byte[]? OutgoingPreimage(HtlcRecord? record) =>
+        record?.KnownPreimage is { } known
+            ? (byte[])known
+            : record?.Removal is { IsFulfill: true, PaymentPreimage: { } fulfilled }
+                ? (byte[])fulfilled
+                : null;
+
+    private static CompactPubKey RequirePoint(OutputDescriptorData data) =>
+        data.PerCommitmentPoint
      ?? throw new InvalidOperationException("An HTLC claim needs the peer's per-commitment point");
 
-    private static void RequireRemoteClose(ChannelModel channel, ChannelCloseModel close)
+    private static void ReplaceRow(RemoteCommitContext context, OutputResolutionModel row,
+                                   List<OutputResolverAction> actions)
     {
-        ArgumentNullException.ThrowIfNull(close);
-        if (close.ChannelId != channel.ChannelId)
-            throw new ArgumentException("The close record belongs to another channel", nameof(close));
-        if (close.Kind is not (ChannelCloseKind.RemoteCommitment or ChannelCloseKind.RemoteNextCommitment
-                            or ChannelCloseKind.FutureCommitment))
-            throw new ArgumentException($"A {close.Kind} close is not a peer commitment", nameof(close));
-    }
+        var index = context.Rows.FindIndex(r => r.TransactionId == row.TransactionId
+                                             && r.OutputIndex == row.OutputIndex);
+        if (index >= 0)
+            context.Rows[index] = row;
+        else
+            context.Rows.Add(row);
 
-    private static bool SameSpend(RemoteRecordedSpend? a, RemoteRecordedSpend b) =>
-        a is not null && a.SpendingTxId == b.SpendingTxId && a.Height == b.Height && a.ByUs == b.ByUs
-     && a.Path == b.Path && (a.Preimage ?? []).AsSpan().SequenceEqual(b.Preimage ?? []);
+        actions.RemoveAll(a => a is UpsertOutputAction u && u.Output.TransactionId == row.TransactionId
+                                                     && u.Output.OutputIndex == row.OutputIndex);
+        actions.Add(new UpsertOutputAction(row));
+    }
 
     private static bool SameRow(OutputResolutionModel a, OutputResolutionModel b) =>
         a.State == b.State && a.ResolvingTransactionId == b.ResolvingTransactionId
-     && a.WaitUntilHeight == b.WaitUntilHeight && a.DeadlineHeight == b.DeadlineHeight
-     && a.ResolvedHeight == b.ResolvedHeight && a.DescriptorData.AsSpan().SequenceEqual(b.DescriptorData);
+                           && a.WaitUntilHeight == b.WaitUntilHeight && a.DeadlineHeight == b.DeadlineHeight
+                           && a.ResolvedHeight == b.ResolvedHeight;
+
+    private static bool Hashes(byte[] preimage, Hash paymentHash) =>
+        System.Security.Cryptography.SHA256.HashData(preimage).AsSpan().SequenceEqual((byte[])paymentHash);
+
+    private static uint Depth(uint tip, uint height) => tip >= height ? tip - height + 1 : 0;
+
+    /// <summary>A txid in the display (RPC) byte order, for logs (NL-275).</summary>
+    private static string Display(TxId txId) => new uint256((byte[])txId).ToString();
+
+    private sealed class RemoteCommitContext(
+        IUnitOfWork unitOfWork,
+        ChannelModel channel,
+        ChannelCloseModel close,
+        RemoteCommit? commit,
+        CommitmentOutputMap? map,
+        List<OutputResolutionModel> rows,
+        uint height)
+    {
+        public IUnitOfWork UnitOfWork { get; } = unitOfWork;
+        public ChannelModel Channel { get; } = channel;
+        public ChannelCommitments? Commitments => Channel.Commitments;
+        public ChannelCloseModel Close { get; } = close;
+        public RemoteCommit? Commit { get; } = commit;
+        public CommitmentOutputMap? Map { get; } = map;
+        public List<OutputResolutionModel> Rows { get; } = rows;
+        public uint Height { get; } = height;
+        public TxId CommitmentTxId => Close.CommitmentTransactionId;
+        public bool IsDataLoss => Commit is null;
+        public byte[]? Destination { get; set; }
+        public Dictionary<ulong, bool> UpstreamResolved { get; } = [];
+        public HashSet<ulong> StagedPreimages { get; } = [];
+
+        public OutputResolutionModel? GetRow(TxId txId, uint vout) =>
+            Rows.FirstOrDefault(r => r.TransactionId == txId && r.OutputIndex == vout);
+    }
+
+    #endregion
 }
