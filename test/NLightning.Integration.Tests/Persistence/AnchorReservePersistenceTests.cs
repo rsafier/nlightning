@@ -313,6 +313,27 @@ public class AnchorReservePersistenceTests
     }
 
     [Fact]
+    public async Task Given_AnAdmittedOpenThatIsFunded_When_Counted_Then_ItCountsOnceAsAChannel()
+    {
+        // Arrange: the fundee admitted an anchors open and stored its temporary channel
+        using var database = new SqliteTestDatabase();
+        var node = await ReserveNode.CreateAsync(database, [], 100_000);
+        var channel = NewChannel(true);
+        await node.Reserve.EnsureCanAcceptAnchorsChannelAsync(channel, TestContext.Current.CancellationToken);
+        node.StoredTemporaryChannels.Add(channel.ChannelId);
+        Assert.Equal(1, node.Reserve.CountAnchorsChannels());
+
+        // Act: funding_created gives the same model its real id and stores it as a channel, within the store grace
+        node.StoredTemporaryChannels.Remove(channel.ChannelId);
+        channel.UpdateChannelId(NewChannelId());
+        node.Channels.Add(channel);
+
+        // Assert: not counted twice
+        Assert.Equal(1, node.Reserve.CountAnchorsChannels());
+        Assert.Equal(10_000, node.Reserve.GetRequiredReserve().Satoshi);
+    }
+
+    [Fact]
     public async Task Given_UnconfirmedOutputs_When_StatusRead_Then_OnlyConfirmedOnesBackTheReserve()
     {
         // Arrange: a 50,000 sat output mined two blocks ago (not confirmed by the wallet's three-block rule)
@@ -399,6 +420,8 @@ public class AnchorReservePersistenceTests
                                 pubKey, 0, state, ChannelVersion.V1);
     }
 
+    private delegate bool TryGetChannel(ChannelId channelId, out ChannelModel? channel);
+
     private delegate bool TryGetTemporaryChannelState(CompactPubKey peer, ChannelId channelId, out ChannelState state);
 
     private sealed class ManualTimeProvider(DateTimeOffset now) : TimeProvider
@@ -416,6 +439,7 @@ public class AnchorReservePersistenceTests
         public required FeeInputSelector Selector { get; init; }
         public required ManualTimeProvider Clock { get; init; }
         public required HashSet<ChannelId> StoredTemporaryChannels { get; init; }
+        public required List<ChannelModel> Channels { get; init; }
 
         private int _nextIndex = 100;
 
@@ -471,6 +495,12 @@ public class AnchorReservePersistenceTests
             var channelMemory = new Mock<IChannelMemoryRepository>();
             channelMemory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>()))
                          .Returns((Func<ChannelModel, bool> predicate) => models.Where(predicate).ToList());
+            channelMemory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+                         .Returns(new TryGetChannel((ChannelId id, out ChannelModel? channel) =>
+                                                    {
+                                                        channel = models.FirstOrDefault(c => c.ChannelId.Equals(id));
+                                                        return channel is not null;
+                                                    }));
             channelMemory.Setup(m => m.TryGetTemporaryChannelState(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
                                                                    out It.Ref<ChannelState>.IsAny))
                          .Returns(new TryGetTemporaryChannelState((CompactPubKey _, ChannelId id,
@@ -493,7 +523,8 @@ public class AnchorReservePersistenceTests
                 Selector = new FeeInputSelector(utxos, scopeFactory, nodeOptions,
                                                 NullLogger<FeeInputSelector>.Instance),
                 Clock = clock,
-                StoredTemporaryChannels = stored
+                StoredTemporaryChannels = stored,
+                Channels = models
             };
         }
 

@@ -229,14 +229,14 @@ public sealed class AnchorReserveService : IAnchorReserveService
     private void AddPendingOpen(ChannelModel channel)
     {
         lock (_pendingLock)
-            _pendingOpens[channel.ChannelId] = new PendingOpen(channel.RemoteNodeId, _timeProvider.GetUtcNow());
+            _pendingOpens[channel.ChannelId] = new PendingOpen(channel, channel.RemoteNodeId, _timeProvider.GetUtcNow());
     }
 
     /// <summary>
     /// Admitted anchors opens not yet funded: counted while their temporary channel is stored (up to
     /// <see cref="AnchorReserveOptions.PendingOpenTimeout"/>) or, before it is stored, for <see cref="StoreGrace"/>.
-    /// A temporary channel that was funded (upgraded) or dropped is no longer stored, so its open stops counting; a
-    /// funded one counts as a channel instead.
+    /// A funded open (its model upgraded to the real channel id and stored as a channel) counts as a channel instead;
+    /// a dropped one stops counting once it is no longer stored.
     /// </summary>
     private int CountPendingOpens(ChannelId? except)
     {
@@ -246,6 +246,14 @@ public sealed class AnchorReserveService : IAnchorReserveService
         {
             foreach (var (channelId, pending) in _pendingOpens.ToList())
             {
+                // Funded: the model took its real channel id and is a channel now (counted as one)
+                if (!pending.Channel.ChannelId.Equals(channelId)
+                 && _channelMemoryRepository.TryGetChannel(pending.Channel.ChannelId, out _))
+                {
+                    _pendingOpens.Remove(channelId);
+                    continue;
+                }
+
                 var age = now - pending.AdmittedAt;
                 var stored = _channelMemoryRepository.TryGetTemporaryChannelState(pending.PeerPubKey, channelId, out _);
                 if (age >= _options.PendingOpenTimeout || (!stored && age >= StoreGrace))
@@ -278,5 +286,5 @@ public sealed class AnchorReserveService : IAnchorReserveService
         return await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
     }
 
-    private sealed record PendingOpen(CompactPubKey PeerPubKey, DateTimeOffset AdmittedAt);
+    private sealed record PendingOpen(ChannelModel Channel, CompactPubKey PeerPubKey, DateTimeOffset AdmittedAt);
 }
