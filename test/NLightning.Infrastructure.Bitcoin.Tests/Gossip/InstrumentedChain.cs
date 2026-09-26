@@ -17,6 +17,7 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
     private int _unspentOutputCalls;
     private int _confirmedUnspentOutputCalls;
     private int _tipCalls;
+    private int _blockHashCalls;
 
     public FakeBitcoinChain Inner => inner;
 
@@ -24,6 +25,7 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
     public int UnspentOutputCalls => Volatile.Read(ref _unspentOutputCalls);
     public int ConfirmedUnspentOutputCalls => Volatile.Read(ref _confirmedUnspentOutputCalls);
     public int TipCalls => Volatile.Read(ref _tipCalls);
+    public int BlockHashCalls => Volatile.Read(ref _blockHashCalls);
 
     /// <summary>When set, the txid lists of these heights are unavailable (a pruned node).</summary>
     public HashSet<uint> PrunedHeights { get; } = [];
@@ -57,7 +59,11 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
 
     public Task<Block?> GetBlockAsync(uint height) => inner.GetBlockAsync(height);
 
-    public Task<uint256> GetBlockHashAsync(uint height) => inner.GetBlockHashAsync(height);
+    public Task<uint256> GetBlockHashAsync(uint height)
+    {
+        Interlocked.Increment(ref _blockHashCalls);
+        return inner.GetBlockHashAsync(height);
+    }
 
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) => inner.GetTransactionConfirmationsAsync(txId);
 

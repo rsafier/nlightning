@@ -297,6 +297,27 @@ public class FundingOutputLookupTests
     }
 
     [Fact]
+    public async Task Given_AHeightNotCached_When_Lookup_Then_NoGetBlockHashBeforeTheTxIdList()
+    {
+        // Arrange: NL-411, a cache miss reads the hash with the txid list; only a cached list is checked against
+        // getblockhash first, and every lookup checks the block once more after gettxout
+        using var lookup = CreateLookup();
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var first = await lookup.LookupAsync(FundingScid, ct);
+        var hashCallsAfterMiss = _chain.BlockHashCalls;
+        var second = await lookup.LookupAsync(FundingScid, ct);
+
+        // Assert
+        Assert.Equal(FundingOutputStatus.Found, first.Status);
+        Assert.Equal(FundingOutputStatus.Found, second.Status);
+        Assert.Equal(1, hashCallsAfterMiss);
+        Assert.Equal(3, _chain.BlockHashCalls);
+        Assert.Equal(1, _chain.BlockTxIdCalls);
+    }
+
+    [Fact]
     public async Task Given_HeightAboveTip_When_Lookup_Then_BlockNotFound()
     {
         // Arrange
