@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Gossip.Relay;
 
 using Domain.Gossip.Interfaces;
+using Domain.Node.Options;
 using Graph;
 using Interfaces;
 using Metrics;
@@ -49,7 +50,13 @@ public static class RelayServiceCollectionExtensions
         return services;
     }
 
-    private static IGossipIngress CreateTrackingIngress(IServiceProvider sp) =>
-        new OriginTrackingGossipIngress(sp.GetRequiredService<GossipIngress>(),
-                                        sp.GetRequiredService<GossipOriginTracker>());
+    private static IGossipIngress CreateTrackingIngress(IServiceProvider sp)
+    {
+        // The origins only serve the relay of others' gossip (off on mainnet by default, D12, NL-405)
+        var network = sp.GetService<IOptions<NodeOptions>>()?.Value.BitcoinNetwork;
+        var relayOptions = sp.GetService<IOptions<GossipRelayOptions>>()?.Value ?? new GossipRelayOptions();
+        return new OriginTrackingGossipIngress(sp.GetRequiredService<GossipIngress>(),
+                                               sp.GetRequiredService<GossipOriginTracker>(),
+                                               network is not { } chain || relayOptions.IsRelayEnabledFor(chain));
+    }
 }
