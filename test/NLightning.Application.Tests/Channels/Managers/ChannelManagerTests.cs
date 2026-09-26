@@ -389,6 +389,59 @@ public class ChannelManagerTests
         Assert.Equal(temporaryChannelId, exception.ChannelId);
     }
 
+    [Fact]
+    public async Task Given_KnownOpenChannel_When_AnnouncementSignaturesReceived_Then_ChannelScopedWarningKeepsConnection()
+    {
+        // Arrange (interim until the announcement_signatures handler, G1-T3: LND and CLN send and retransmit 259 on
+        // every reconnect of a public channel; BOLT 1 only logs a warning, so the channel and connection stay up)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x4A);
+        _mockChannelMemoryRepository.Setup(r => r.TryGetChannelState(channelId, out It.Ref<ChannelState>.IsAny))
+                                    .Returns(new TryGetStateDelegate((ChannelId _, out ChannelState state) =>
+                                     {
+                                         state = ChannelState.Open;
+                                         return true;
+                                     }));
+        var message = CreateAnnouncementSignatures(channelId);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.False(exception.CloseConnection);
+        Assert.Contains("not supported yet", exception.PeerMessage);
+        _mockChannelDbRepository.Verify(r => r.UpdateAsync(It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_UnknownChannel_When_AnnouncementSignaturesReceived_Then_ErrorIsScopedToTheUnknownChannel()
+    {
+        // Arrange (BOLT 1: an unknown channel_id gets an `error` for that channel)
+        var channelManager = CreateChannelManager();
+        var channelId = CreateChannelId(0x4B);
+        var message = CreateAnnouncementSignatures(channelId);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => channelManager.HandleChannelMessageAsync(message, new FeatureOptions(),
+                                                                           s_emptyPubKey));
+
+        // Assert
+        Assert.Equal(channelId, exception.ChannelId);
+        Assert.Equal("unknown channel", exception.PeerMessage);
+    }
+
+    private delegate bool TryGetStateDelegate(ChannelId channelId, out ChannelState state);
+
+    private static AnnouncementSignaturesMessage CreateAnnouncementSignatures(ChannelId channelId)
+    {
+        return new AnnouncementSignaturesMessage(
+            new AnnouncementSignaturesPayload(channelId, new ShortChannelId(103, 1, 0), new byte[64], new byte[64]));
+    }
+
     private static Mock<IChannelMessage> CreateChannelMessageMock(MessageTypes messageType, ChannelId channelId)
     {
         var payloadMock = new Mock<IChannelMessagePayload>();
