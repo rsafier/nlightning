@@ -109,6 +109,39 @@ public sealed class SweepFeePolicy
     }
 
     /// <summary>
+    /// The fee of an RBF replacement of an unconfirmed sweep, claim or penalty (O6-T1, <c>SweepScheduler</c>): the
+    /// larger of the BIP 125 minimum (<see cref="GetReplacementFee"/>) and the fee at the current estimate for the
+    /// deadline's target, never above <see cref="GetMaxFee"/> nor leaving less than <paramref name="dustSat"/> in the
+    /// output. Null when even the BIP 125 minimum does not fit under that cap: the transaction is kept as it is.
+    /// </summary>
+    /// <param name="inputValueSat">The value of the inputs (the replacement spends the same ones).</param>
+    /// <param name="oldFeeSat">The fee of the transaction being replaced.</param>
+    /// <param name="weight">The replacement's weight (at most the old one's plus a byte per signature).</param>
+    /// <param name="estimatePerKw">The estimate for <see cref="GetConfirmationTarget"/> of the deadline.</param>
+    /// <param name="isPenalty">True for a penalty (its cap rises to <see cref="SweepFeePolicyOptions.PenaltyMaxFeePerMille"/>
+    /// near its deadline).</param>
+    /// <param name="tipHeight">The current tip.</param>
+    /// <param name="deadlineHeight">The height at which a competitor can take an output, if any.</param>
+    /// <param name="dustSat">The dust threshold of the output's script.</param>
+    public SweepFeeDecision? DecideReplacement(ulong inputValueSat, ulong oldFeeSat, long weight, uint estimatePerKw,
+                                               bool isPenalty, uint tipHeight, uint? deadlineHeight, ulong dustSat)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(weight);
+        if (inputValueSat <= dustSat)
+            return null;
+
+        var minimum = GetReplacementFee(oldFeeSat, SweepWeights.VirtualSize(weight));
+        var atEstimate = SweepWeights.FeeSat(ApplyFloor(estimatePerKw), weight);
+        var cap = Math.Min(GetMaxFee(inputValueSat, isPenalty, tipHeight, deadlineHeight), inputValueSat - dustSat);
+        var wanted = Math.Max(minimum, atEstimate);
+        var fee = Math.Min(wanted, cap);
+        if (fee < minimum)
+            return null;
+
+        return new SweepFeeDecision(FeeratePerKw(fee, weight), fee, fee < wanted, false);
+    }
+
+    /// <summary>
     /// B5-REV-08: split a batched penalty into per-output transactions once a revoked output's deadline is within
     /// <see cref="SweepFeePolicyOptions.SecurityDelay"/> blocks.
     /// </summary>
