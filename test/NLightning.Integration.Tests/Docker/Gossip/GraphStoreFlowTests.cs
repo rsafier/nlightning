@@ -139,7 +139,7 @@ public class GraphStoreFlowTests
         var spendHeight = await ChainSync.MineAndWaitAsync(_fixture, 1, _fixture.LndNodes, [node], ct);
 
         // Assert 1: marked spent at the close's height (still stored)
-        // TODO(G4-T4): also assert the channel is excluded from getroute
+        // (not asserted through getroute: this node has no channel, so it has no route at all; see the remarks)
         await Poll.UntilAsync(async () =>
                               {
                                   var channel = await GossipGraphProbe.TryGetOurGraphChannelAsync(node, scid);
@@ -178,7 +178,8 @@ public class GraphStoreFlowTests
     /// direction decides, B7-PR-02) leave our routes once that long has passed, while alice-bob stays routable. Seen
     /// through <c>getroute</c> (IPC 19): our node has a public channel to alice, so a route to carol exists before and
     /// none after. The real two-week value is covered by the mocked-clock unit tests (G2-T5, pathfinder).
-    /// TODO(G-C integrator): this needs lane C2's pathfinder to take <c>StaleAfter</c> from <c>Gossip:StaleAfter</c>.
+    /// Needs lane C2: <c>getroute</c> (<see cref="GetRouteProbe"/>) and its <c>GraphPathSource</c>, which passes
+    /// <c>GossipGraphOptions.StaleAfter</c> (<c>Gossip:StaleAfter</c>) to the pathfinder.
     /// </remarks>
     [Fact]
     public async Task Given_StaleAfterTwoMinutes_When_CarolStopsUpdating_Then_HerChannelsLeaveOurRoutes()

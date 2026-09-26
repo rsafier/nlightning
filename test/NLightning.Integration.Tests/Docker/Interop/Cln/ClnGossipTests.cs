@@ -169,6 +169,7 @@ public sealed class ClnGossipTests : IAsyncLifetime
         { Policy1: not null, Policy2: not null },
                               s_gossipTimeout, "N1's graph has CLN-N2 with both policies", ct,
                               GossipGraphProbe.PollInterval);
+        Assert.False(n1.IsConnectedTo(n2.NodeId), "N1 and N2 must know each other only through CLN's gossip");
         var amountMsat = PublicTopology.UniqueAmountMsat(20_000_000);
         var invoice = await n2.CreateInvoiceAsync(LightningMoney.MilliSatoshis(amountMsat), "goal (e) N1 -> N2", ct);
         await AssertNoRoutesAsync(invoice.Bolt11, ct);
@@ -209,6 +210,11 @@ public sealed class ClnGossipTests : IAsyncLifetime
     }
 
     /// <summary>Goal proof (e): CLN pays our hint-free invoice over our public channel.</summary>
+    /// <remarks>
+    /// CLN pays over its own channel to N2 (the topology has no node CLN reaches only through the graph), so this
+    /// proves that CLN accepts and pays our hint-free invoice and that we receive it; the routed proof is N1 → CLN →
+    /// N2 above.
+    /// </remarks>
     [Fact]
     public async Task Given_PublicChannelFromCln_When_ClnPaysOurInvoiceWithoutHints_Then_WeReceiveTheExactAmount()
     {
@@ -250,8 +256,8 @@ public sealed class ClnGossipTests : IAsyncLifetime
     /// CLN's <c>decode</c> of <paramref name="bolt11"/> has no <c>routes</c> (BOLT 11 <c>r</c>).
     /// </summary>
     /// <remarks>
-    /// TODO(G-C integrator): our InvoiceService hints every Open channel with the peer's update, public ones too
-    /// (NL-245); this fails until it skips announced channels.
+    /// Needs lane C2's <c>Node:Invoices:RouteHints</c> = <c>Auto</c> (the default): no hint once an announced channel
+    /// can receive the payment (wip/fafo still hints every usable channel, NL-245).
     /// </remarks>
     private async Task AssertNoRoutesAsync(string bolt11, CancellationToken ct)
     {

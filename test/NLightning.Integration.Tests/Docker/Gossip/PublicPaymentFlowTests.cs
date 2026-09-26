@@ -25,8 +25,11 @@ using Utils;
 /// announced at payment time (a fresh fixture charges LND's defaults, but another test of the collection may have
 /// changed a policy and restored it), never from constants. Amounts are unique per test so the forwards can be traced
 /// by amount through <c>ForwardingHistory</c>.</para>
-/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture). Needs G4 (graph paths in
-/// <c>PaymentService</c>, <c>getroute</c>) and NL-348; written against the contracts in parallel with lanes C1/C2.</para>
+/// <para>Run with <c>scripts/run-gossip.sh</c> (own process, own fixture). Needs lane C2 (G4: graph paths in
+/// <c>PaymentService</c>, <c>getroute</c> = IPC 19 through <see cref="GetRouteProbe"/>, no route hints in our invoices
+/// once an announced channel can receive); not lane C1 (our graph is filled through alice's dump after a hand-sent
+/// <c>gossip_timestamp_filter</c>, <see cref="PublicTopology.SyncOurGraphAsync"/>) and not NL-348 (we never forward).
+/// Both payees are checked to have no channel with our node.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public class PublicPaymentFlowTests
@@ -55,6 +58,7 @@ public class PublicPaymentFlowTests
         await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-pay-b", "nltg-pay-b", ct);
         var channel = await PublicTopology.OpenPublicChannelToAliceAsync(_fixture, node, null, [alice], ct);
         var amountMsat = PublicTopology.UniqueAmountMsat(AmountBaseMsat);
+        await LndRoutingProbe.AssertNoChannelWithAsync(carol, node.NodeIdHex, ct);
         var invoice = await LndTestHelpers.AddInvoiceAsync(carol, (long)amountMsat, [], ct, "goal (b)");
         await LndRoutingProbe.AssertNoRouteHintsAsync(carol, invoice.PaymentRequest, ct);
         var before = await PublicTopology.WaitSettledAsync(node, channel.ChannelId, ct);
@@ -76,8 +80,8 @@ public class PublicPaymentFlowTests
 
         // Assert: every LND forward, traced back from carol to our channel, charged its announced fee, and our fee
         // is their sum
-        var forwards = await LndRoutingProbe.GetForwardsAsync(PublicTopology.LndNodes(_fixture), since, ct);
-        var chain = LndRoutingProbe.TraceForwards(forwards, amountMsat, channel.ShortChannelId);
+        var chain = await LndRoutingProbe.WaitForForwardChainAsync(PublicTopology.LndNodes(_fixture), since,
+                                                                    amountMsat, channel.ShortChannelId, ct);
         Assert.Equal(alice.LocalNodePubKey.ToLowerInvariant(), chain[^1].NodeIdHex);
         var fees = await LndRoutingProbe.AssertForwardFeesMatchPoliciesAsync(alice, chain, ct);
         Assert.Equal(fees, payment.Fee.MilliSatoshi);
@@ -103,9 +107,10 @@ public class PublicPaymentFlowTests
         var amountMsat = PublicTopology.UniqueAmountMsat(AmountBaseMsat);
         var invoice = await node.CreateInvoiceAsync(LightningMoney.MilliSatoshis(amountMsat), "goal (c)", ct);
         Console.WriteLine($"Our invoice {invoice.Bolt11}");
-        // TODO(G-C integrator): our InvoiceService hints every Open channel with the peer's update, public ones too
-        // (NL-245); a public channel needs no r field, so this fails until it skips announced channels
+        // Needs lane C2's Node:Invoices:RouteHints = Auto (the default): no hint once an announced channel can receive
+        // the payment (wip/fafo still hints every usable channel, NL-245)
         await LndRoutingProbe.AssertNoRouteHintsAsync(carol, invoice.Bolt11, ct);
+        await LndRoutingProbe.AssertNoChannelWithAsync(carol, node.NodeIdHex, ct);
         var before = await PublicTopology.WaitSettledAsync(node, channel.ChannelId, ct);
 
         // Act: one part, any route LND finds (retried while LND's router lacks the fresh edge, NL-319)
@@ -160,14 +165,17 @@ public class PublicPaymentFlowTests
         var lnd = await LndRoutingProbe.QueryRouteAsync(alice, node.NodeIdHex, carol.LocalNodePubKey,
                                                         (long)amountMsat, ct);
 
-        // Assert: same channels, first ours, every LND fee as announced, same total fee
+        // Assert: same channels, first ours, every node and hop as LND has it, every LND fee as announced
         Assert.Equal(channel.ShortChannelId, ours.Hops[0].ShortChannelId);
-        Assert.Equal(lnd.Hops.Select(h => (ulong?)h.ChanId), ours.ShortChannelIds);
+        Assert.Equal(lnd.Hops.Select(h => h.ChanId), ours.ShortChannelIds);
+        Assert.Equal(lnd.Hops.Select(h => h.PubKey.ToLowerInvariant()), ours.Hops.Select(h => h.NodeIdHex));
         Assert.Equal(carol.LocalNodePubKey.ToLowerInvariant(), ours.Hops[^1].NodeIdHex);
         var lndFees = await LndRoutingProbe.AssertRouteFeesMatchPoliciesAsync(alice, lnd, ct);
-        var ourTotalFee = ours.TotalFeeMsat ?? (ulong)ours.Hops.Sum(h => (decimal)(h.FeeMsat ?? 0));
-        Assert.Equal(lndFees, ourTotalFee);
-        AssertSameHopAmounts(ours, lnd);
+        Assert.Equal(lndFees, ours.TotalFeeMsat);
+        // getroute's hop amount is what the HTLC arriving at the hop's node carries, its fee what that node keeps
+        Assert.Equal(LndRoutingProbe.ChannelAmounts(lnd), ours.Hops.Select(h => h.AmountMsat));
+        Assert.Equal(lnd.Hops.Select(h => (ulong)h.FeeMsat), ours.Hops.Select(h => h.FeeMsat));
+        Assert.Equal(amountMsat, ours.Hops[^1].AmountMsat);
 
         // Act 2: pay carol's hint-free invoice for that amount
         var invoice = await LndTestHelpers.AddInvoiceAsync(carol, (long)amountMsat, [], ct, "goal (d)");
@@ -181,28 +189,5 @@ public class PublicPaymentFlowTests
         Assert.Equal(lndFees, payment.Fee.MilliSatoshi);
         var after = await PublicTopology.WaitSettledAsync(node, channel.ChannelId, ct);
         Assert.Equal(before.LocalBalance.MilliSatoshi - amountMsat - lndFees, after.LocalBalance.MilliSatoshi);
-    }
-
-    /// <summary>
-    /// Our hops' amounts equal LND's, read either as what each channel carries or as what each hop's node forwards.
-    /// </summary>
-    /// <remarks>
-    /// TODO(G-C integrator): pin the reading once lane C2's <c>getroute</c> hop amount is known and drop the other.
-    /// </remarks>
-    private static void AssertSameHopAmounts(RouteView ours, Route lnd)
-    {
-        if (ours.Hops.Any(h => h.AmountMsat is null))
-        {
-            Console.WriteLine("getroute reports no per-hop amount: only the total fee is compared");
-            return;
-        }
-
-        var ourAmounts = ours.Hops.Select(h => h.AmountMsat!.Value).ToList();
-        var channelAmounts = LndRoutingProbe.ChannelAmounts(lnd);
-        var forwardAmounts = lnd.Hops.Select(h => (ulong)h.AmtToForwardMsat).ToList();
-        Console.WriteLine($"Hop amounts: ours [{string.Join(", ", ourAmounts)}], LND per channel "
-                        + $"[{string.Join(", ", channelAmounts)}], LND to forward [{string.Join(", ", forwardAmounts)}]");
-        Assert.True(ourAmounts.SequenceEqual(channelAmounts) || ourAmounts.SequenceEqual(forwardAmounts),
-                    "getroute's hop amounts match neither LND's channel amounts nor its amounts to forward");
     }
 }
