@@ -144,6 +144,7 @@ public sealed class ProbeRun
         _summary["peers"] = _peers.Values.ToDictionary(p => ProbeOptions.AliasOf(p.NodeId), p => p);
         _summary["time_to_share_of_final_channels_minutes"] = TimeToShare();
         _summary["graph_shape"] = DescribeShape(store);
+        _summary["channels_without_policy_diagnosis"] = DiagnoseWithoutPolicy(store, traffic);
         var json = JsonSerializer.Serialize(_summary, new JsonSerializerOptions { WriteIndented = true });
         await File.WriteAllTextAsync(Path.Combine(_runDirectory, "summary.json"), json, CancellationToken.None);
         Console.WriteLine($"Summary written to {Path.Combine(_runDirectory, "summary.json")}");
@@ -351,6 +352,51 @@ public sealed class ProbeRun
             ["channels_disabled_both_ways"] = disabledBoth,
             ["channels_with_capacity_estimate"] = withEstimate,
             ["capacity_estimate_sum_btc"] = estimateSumSat / 100_000_000.0
+        };
+    }
+
+    /// <summary>
+    /// For the channels left without a policy: whether any channel_update for them arrived at all, how old the newest
+    /// one was, and which peer announced them first.
+    /// </summary>
+    private static Dictionary<string, object> DiagnoseWithoutPolicy(IGraphStore store, PeerTraffic traffic)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var noUpdate = 0;
+        var byAge = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        var byAnnouncer = new SortedDictionary<string, int>(StringComparer.Ordinal);
+        foreach (var channel in store.GetSnapshot().Channels.Where(c => c.Policy1 is null && c.Policy2 is null))
+        {
+            if (!traffic.Channels.TryGetValue(channel.ShortChannelId, out var seen))
+            {
+                byAnnouncer["(before this run)"] = byAnnouncer.GetValueOrDefault("(before this run)") + 1;
+                continue;
+            }
+
+            byAnnouncer[seen.FirstAnnouncer ?? "(none)"] = byAnnouncer.GetValueOrDefault(seen.FirstAnnouncer ?? "(none)") + 1;
+            if (seen.Updates == 0)
+            {
+                noUpdate++;
+                continue;
+            }
+
+            var ageDays = (now - seen.NewestUpdateTimestamp) / 86_400.0;
+            var bucket = ageDays switch
+            {
+                < 0 => "future",
+                < 14 => "under 14 days",
+                < 30 => "14-30 days",
+                < 365 => "30-365 days",
+                _ => "over a year"
+            };
+            byAge[bucket] = byAge.GetValueOrDefault(bucket) + 1;
+        }
+
+        return new Dictionary<string, object>
+        {
+            ["no_update_received"] = noUpdate,
+            ["newest_update_age"] = byAge,
+            ["first_announced_by"] = byAnnouncer
         };
     }
 
