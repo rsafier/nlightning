@@ -20,6 +20,8 @@ using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Models;
 
@@ -260,6 +262,61 @@ public class LocalLightningSigner : ILightningSigner
     /// <inheritdoc />
     public bool TryGetBroadcastSignedCommitment(ChannelId channelId, out ulong commitmentNumber) =>
         _broadcastSignedNumbers.TryGetValue(channelId, out commitmentNumber);
+
+    /// <inheritdoc />
+    public CompactSignature SignSweepInput(ChannelId channelId, SweepSigningContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var signingInfo = GetRegisteredSigningInfo(channelId);
+
+        Transaction tx;
+        try
+        {
+            tx = Transaction.Load(context.UnsignedTransaction, _network);
+        }
+        catch (Exception e)
+        {
+            throw new SignerException("Failed to load the sweep transaction", channelId, e, "Internal error");
+        }
+
+        if (context.InputIndex < 0 || context.InputIndex >= tx.Inputs.Count)
+            throw new SignerException($"The sweep transaction has no input {context.InputIndex}", channelId,
+                                      "Internal error");
+
+        using var key = DeriveSweepKey(channelId, signingInfo.ChannelKeyIndex, context);
+        var pubKey = key.PubKey;
+
+        Script scriptCode;
+        if (context.WitnessScript is null)
+        {
+            // Only a P2WPKH to_remote has no witness script: BIP 143 signs its P2PKH script code
+            if (context.KeyKind != SweepKeyKind.Payment)
+                throw new SignerException($"A {context.KeyKind} spend needs its witness script", channelId,
+                                          "Internal error");
+
+            scriptCode = pubKey.Hash.ScriptPubKey;
+        }
+        else
+        {
+            scriptCode = new Script(context.WitnessScript);
+
+            // The script must commit to the derived key (as is, or its HASH160 as in the HTLC revocation branch), so a
+            // wrong key kind, point or secret never yields a signature
+            if (!ScriptCommitsToKey(scriptCode, pubKey))
+                throw new SignerException(
+                    $"The witness script does not contain the {context.KeyKind} key of input {context.InputIndex}",
+                    channelId, "Internal error");
+        }
+
+        var spentOutput = new TxOut(Money.Satoshis(context.AmountSat),
+                                    context.WitnessScript is null
+                                        ? pubKey.WitHash.ScriptPubKey
+                                        : scriptCode.WitHash.ScriptPubKey);
+        var sigHash = tx.GetSignatureHash(scriptCode, context.InputIndex, SigHash.All, spentOutput,
+                                          HashVersion.WitnessV0);
+        var signature = key.Sign(sigHash, new SigningOptions(SigHash.All, false));
+        return signature.Signature.MakeCanonical().ToCompact();
+    }
 
     /// <inheritdoc />
     public SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, ulong commitmentNumber,
@@ -764,6 +821,131 @@ public class LocalLightningSigner : ILightningSigner
         var channelKey = ExtKey.CreateFromBytes(channelExtKey);
 
         return channelKey.Derive(HtlcDerivationIndex, true).PrivateKey;
+    }
+
+    /// <summary>
+    /// The channel's <c>revocation_basepoint_secret</c> (m/1' of the channel key).
+    /// </summary>
+    protected virtual Key GetRevocationBasepointSecret(uint channelKeyIndex) =>
+        DeriveChannelBasepointSecret(channelKeyIndex, RevocationDerivationIndex);
+
+    /// <summary>
+    /// The channel's <c>payment_basepoint_secret</c> (m/2' of the channel key); with static_remotekey it is also the
+    /// key of our <c>to_remote</c> outputs.
+    /// </summary>
+    protected virtual Key GetPaymentBasepointSecret(uint channelKeyIndex) =>
+        DeriveChannelBasepointSecret(channelKeyIndex, PaymentDerivationIndex);
+
+    /// <summary>
+    /// The channel's <c>delayed_payment_basepoint_secret</c> (m/3' of the channel key).
+    /// </summary>
+    protected virtual Key GetDelayedPaymentBasepointSecret(uint channelKeyIndex) =>
+        DeriveChannelBasepointSecret(channelKeyIndex, DelayedPaymentDerivationIndex);
+
+    private Key DeriveChannelBasepointSecret(uint channelKeyIndex, int derivationIndex)
+    {
+        var channelExtKey = _secureKeyManager.GetChannelKeyAtIndex(channelKeyIndex);
+        var channelKey = ExtKey.CreateFromBytes(channelExtKey);
+
+        return channelKey.Derive(derivationIndex, true).PrivateKey;
+    }
+
+    /// <summary>
+    /// The private key of one sweep input (BOLT 3 §Key Derivation), from the channel's basepoint secrets.
+    /// </summary>
+    private Key DeriveSweepKey(ChannelId channelId, uint channelKeyIndex, SweepSigningContext context)
+    {
+        switch (context.KeyKind)
+        {
+            case SweepKeyKind.Payment:
+                return GetPaymentBasepointSecret(channelKeyIndex);
+
+            case SweepKeyKind.DelayedPayment:
+                {
+                    var point = RequirePoint(channelId, context);
+                    using var basepointSecret = GetDelayedPaymentBasepointSecret(channelKeyIndex);
+                    return CreateAndWipe(_keyDerivationService.DerivePrivateKey(basepointSecret.ToBytes(), point));
+                }
+
+            case SweepKeyKind.HtlcRemotePoint:
+                {
+                    var point = RequirePoint(channelId, context);
+                    using var basepointSecret = GetHtlcBasepointSecret(channelKeyIndex);
+                    return CreateAndWipe(_keyDerivationService.DerivePrivateKey(basepointSecret.ToBytes(), point));
+                }
+
+            case SweepKeyKind.Revocation:
+                {
+                    if (context.PerCommitmentSecret is not { } secret)
+                        throw new SignerException("A revocation spend needs the peer's per-commitment secret", channelId,
+                                                  "Internal error");
+
+                    byte[] secretBytes = secret;
+                    using var secretKey = TryCreateKey(secretBytes)
+                                       ?? throw new SignerException("The per-commitment secret is not a valid key",
+                                                                    channelId, "Internal error");
+                    if (context.PerCommitmentPoint is { } claimedPoint
+                     && !secretKey.PubKey.ToBytes().AsSpan().SequenceEqual((byte[])claimedPoint))
+                        throw new SignerException("The per-commitment secret does not match the given point", channelId,
+                                                  "Internal error");
+
+                    using var basepointSecret = GetRevocationBasepointSecret(channelKeyIndex);
+                    return CreateAndWipe(_keyDerivationService.DeriveRevocationPrivKey(basepointSecret.ToBytes(),
+                                                                                       secretBytes));
+                }
+
+            default:
+                throw new SignerException($"Unknown sweep key kind {context.KeyKind}", channelId, "Internal error");
+        }
+    }
+
+    private static CompactPubKey RequirePoint(ChannelId channelId, SweepSigningContext context) =>
+        context.PerCommitmentPoint
+     ?? throw new SignerException($"A {context.KeyKind} spend needs the per-commitment point", channelId,
+                                  "Internal error");
+
+    private static Key CreateAndWipe(PrivKey privKey)
+    {
+        byte[] bytes = privKey;
+        try
+        {
+            return new Key(bytes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
+    private static Key? TryCreateKey(byte[] bytes)
+    {
+        try
+        {
+            return new Key(bytes);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="script"/> pushes <paramref name="pubKey"/> or its HASH160.
+    /// </summary>
+    private static bool ScriptCommitsToKey(Script script, PubKey pubKey)
+    {
+        var keyBytes = pubKey.ToBytes();
+        var keyHash = pubKey.Hash.ToBytes();
+        foreach (var op in script.ToOps())
+        {
+            if (op.PushData is not { } data)
+                continue;
+
+            if (data.AsSpan().SequenceEqual(keyBytes) || data.AsSpan().SequenceEqual(keyHash))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>
