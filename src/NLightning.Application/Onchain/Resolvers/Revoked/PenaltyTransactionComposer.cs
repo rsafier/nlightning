@@ -39,6 +39,9 @@ public sealed class PenaltyTransactionComposer
     private readonly ILogger _logger;
     private readonly IPenaltyTransactionBuilder _penaltyTransactionBuilder;
     private readonly SweepFeePolicy _policy;
+
+    /// <summary>The fee rules it applies.</summary>
+    public SweepFeePolicy Policy => _policy;
     private readonly ILightningSigner _signer;
     private readonly ISweepTransactionBuilder _sweepTransactionBuilder;
 

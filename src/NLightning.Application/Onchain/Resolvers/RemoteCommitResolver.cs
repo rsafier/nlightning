@@ -600,8 +600,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
             context.Destination ??= await _destination.GetScriptAsync(context.Channel.ChannelId, cancellationToken);
             var destination = context.Destination;
             var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
-            var decision = _feePolicy.Decide(input.AmountSat, weight, await GetFeeEstimateAsync(cancellationToken),
-                                             false, context.Height, action.DeadlineHeight);
+            var target = _feePolicy.GetConfirmationTarget(context.Height, action.DeadlineHeight);
+            var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService, target, _logger, cancellationToken);
+            var decision = _feePolicy.Decide(input.AmountSat, weight, estimate, false, context.Height,
+                                             action.DeadlineHeight);
             if (decision.Abandon)
             {
                 _logger.LogWarning("Channel {ChannelId}: output {Vout} ({Amount} sat) does not pay its own sweep fee; "
@@ -634,20 +636,6 @@ public sealed class RemoteCommitResolver : IOutputResolver
             _logger.LogError(e, "Channel {ChannelId}: cannot build the {Kind} of output {Vout}",
                              context.Channel.ChannelId, action.SpendKind, row.OutputIndex);
             return row;
-        }
-    }
-
-    private async Task<uint> GetFeeEstimateAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            var estimate = await _feeService.GetFeeRatePerKwAsync(cancellationToken);
-            return (uint)Math.Clamp(estimate.Satoshi, 0, uint.MaxValue);
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            _logger.LogWarning("No fee estimate for a sweep ({Reason}); using the floor", e.Message);
-            return 0;
         }
     }
 

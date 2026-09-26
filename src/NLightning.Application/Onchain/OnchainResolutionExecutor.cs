@@ -15,6 +15,7 @@ using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
+using Fees;
 using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
@@ -332,6 +333,22 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             if (resolver is not null)
                 Apply(outputs, actions,
                       await resolver.ResolveAsync(close, outputs.Values.ToList(), height, cancellationToken));
+
+            // O6-T1: our unconfirmed sweeps, claims and penalties are replaced with a higher fee on schedule
+            if (spent is null && scope.ServiceProvider.GetService<ISweepScheduler>() is { } sweepScheduler)
+            {
+                try
+                {
+                    Apply(outputs, actions,
+                          await sweepScheduler.PlanAsync(close, outputs.Values.ToList(), height, unitOfWork,
+                                                         cancellationToken));
+                }
+                catch (Exception e) when (e is not OperationCanceledException)
+                {
+                    _logger.LogError(e, "Fee bumping of channel {ChannelId} at height {Height} failed", channelId,
+                                     height);
+                }
+            }
 
             // Plan §3.2 step 5: Closed (and the revocation log dropped) once everything is irrevocably resolved
             var closed = Depth(height, close.SpentAtHeight) >= _options.IrrevocableDepth

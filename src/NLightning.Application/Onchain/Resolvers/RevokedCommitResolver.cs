@@ -142,7 +142,10 @@ public sealed class RevokedCommitResolver : IOutputResolver
         if (needs.Count > 0)
         {
             var destination = await _dataSource.GetDestinationScriptAsync(close.ChannelId, cancellationToken);
-            var estimate = await _dataSource.GetFeeratePerKwAsync(cancellationToken);
+            // The most urgent output sets the target (NL-296): a batch pays what its earliest deadline needs
+            var earliest = needs.Where(n => n.DeadlineHeight is not null).Select(n => n.DeadlineHeight).Min();
+            var estimate = await _dataSource.GetFeeratePerKwAsync(_composer.Policy.GetConfirmationTarget(height,
+                                                                      earliest), cancellationToken);
             var amounts = CollectAmounts(round, map);
             round.Actions.AddRange(await _composer.ComposeAsync(close.ChannelId, needs, round.AllRows, spentBy, height,
                                                                 estimate, destination,

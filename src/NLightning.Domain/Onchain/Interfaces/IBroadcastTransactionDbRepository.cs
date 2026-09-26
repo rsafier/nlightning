@@ -25,6 +25,20 @@ public interface IBroadcastTransactionDbRepository
     /// </summary>
     Task<bool> MarkAbandonedAsync(TxId transactionId);
 
+    /// <summary>
+    /// Stages recording that a pending broadcast was replaced (RBF, BOLT 5 plan O6-T1) by a transaction whose row names
+    /// it in <see cref="BroadcastTransactionModel.ReplacesTransactionId"/>; it is no longer rebroadcast. Does nothing for
+    /// a missing or non-pending one. Returns true when it changed the row.
+    /// </summary>
+    Task<bool> MarkReplacedAsync(TxId transactionId);
+
+    /// <summary>
+    /// Stages making an abandoned or replaced broadcast pending again (BOLT 5 plan O6-T3: the transaction that
+    /// superseded it was reorged out, so it is sent again after every block). Does nothing for a missing, pending or
+    /// confirmed one. Returns true when it changed the row.
+    /// </summary>
+    Task<bool> MarkPendingAsync(TxId transactionId);
+
     /// <summary>Every broadcast that is still pending (the rebroadcast set).</summary>
     Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync();
 

@@ -41,6 +41,13 @@ public interface IRevokedCommitDataSource
 
     /// <summary>The current feerate estimate in sat per 1000 weight units (0 when there is none).</summary>
     Task<uint> GetFeeratePerKwAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The feerate estimate for confirming within <paramref name="confirmationTarget"/> blocks (NL-296); the node-wide
+    /// estimate by default.
+    /// </summary>
+    Task<uint> GetFeeratePerKwAsync(uint confirmationTarget, CancellationToken cancellationToken) =>
+        GetFeeratePerKwAsync(cancellationToken);
 }
 
 /// <summary>

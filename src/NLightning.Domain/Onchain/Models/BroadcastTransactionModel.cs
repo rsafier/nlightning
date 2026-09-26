@@ -125,6 +125,23 @@ public sealed class BroadcastTransactionModel
             State = BroadcastState.Abandoned;
     }
 
+    /// <summary>Replaced by an RBF replacement (O6-T1); not rebroadcast any more. Only a pending one changes.</summary>
+    public void MarkReplaced()
+    {
+        if (State == BroadcastState.Pending)
+            State = BroadcastState.Replaced;
+    }
+
+    /// <summary>
+    /// Pending again (O6-T3): what superseded an abandoned or replaced transaction was reorged out. A pending or
+    /// confirmed one is kept as it is.
+    /// </summary>
+    public void MarkPending()
+    {
+        if (State is BroadcastState.Abandoned or BroadcastState.Replaced)
+            State = BroadcastState.Pending;
+    }
+
     /// <summary>The block that held it was disconnected: it is pending (and rebroadcast) again.</summary>
     public void MarkUnconfirmed()
     {
