@@ -1089,8 +1089,11 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
 
     /// <summary>
     /// Records on <paramref name="payment"/> the hold times of a fulfill's verified <c>attribution_data</c>
-    /// (<see cref="IAttributionDataService.VerifyFulfillment"/> over the hops' shared secrets); nothing without
-    /// attribution, a route or the service.
+    /// (<see cref="IAttributionDataService.VerifyFulfillment"/> over the hops' shared secrets of
+    /// <paramref name="route"/>, the fulfilled part's); nothing without attribution, a route or the service. The hold
+    /// times are written by index onto the payment's stored route, so they are recorded only when that route is the
+    /// fulfilled part's (<see cref="IsSameRoute"/>): another part's or round's route would pair them with the wrong
+    /// nodes.
     /// </summary>
     private void RecordFulfillHoldTimes(PaymentModel payment, OutgoingHtlcFulfilled fulfilled,
                                         IReadOnlyList<PaymentHop> route)
@@ -1101,7 +1104,13 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         var verified = _attributionDataService.VerifyFulfillment(route.Select(h => h.SharedSecret).ToList(),
                                                                  fulfilled.AttributionData.Span,
                                                                  fulfilled.FulfillmentPayload.Span);
-        payment.RecordHoldTimes(ToDurations(verified.Attribution));
+        if (IsSameRoute(payment.Route, route))
+            payment.RecordHoldTimes(ToDurations(verified.Attribution));
+        else
+            _logger.LogInformation("Payment {PaymentHash}: the fulfilled HTLC {HtlcId} on channel {ChannelId} is not "
+                                 + "the stored route's part; its hold times{HoldTimes} are not recorded",
+                                   payment.PaymentHash, fulfilled.HtlcId, fulfilled.ChannelId,
+                                   DescribeHoldTimes(verified.Attribution));
         if (verified.Attribution.InvalidHopIndex is { } invalid)
             _logger.LogWarning("Payment {PaymentHash}: the fulfill's attribution_data of hop {HopIndex} ({Node}) did not "
                              + "verify", payment.PaymentHash, invalid, DescribeHop(route, invalid));
@@ -1119,6 +1128,28 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler
         if (session.LastFailureHoldTimes is { } holdTimes && row.OutgoingChannelId == holdTimes.ChannelId
                                                          && row.OutgoingHtlcId == holdTimes.HtlcId)
             row.RecordHoldTimes(holdTimes.HoldTimes);
+    }
+
+    /// <summary>
+    /// Whether two routes are the same part's: the same hops (node and channel) with the same Sphinx shared secrets
+    /// (unique per onion, so another part or round never matches). Hold times are ignored.
+    /// </summary>
+    internal static bool IsSameRoute(IReadOnlyList<PaymentHop> stored, IReadOnlyList<PaymentHop> part)
+    {
+        ArgumentNullException.ThrowIfNull(stored);
+        ArgumentNullException.ThrowIfNull(part);
+
+        if (stored.Count != part.Count)
+            return false;
+
+        for (var i = 0; i < stored.Count; i++)
+        {
+            if (stored[i].NodeId != part[i].NodeId || stored[i].ShortChannelId != part[i].ShortChannelId
+                                                   || stored[i].SharedSecret != part[i].SharedSecret)
+                return false;
+        }
+
+        return true;
     }
 
     private static List<TimeSpan> ToDurations(AttributionVerification attribution) =>
