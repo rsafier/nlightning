@@ -235,9 +235,16 @@ public static class LegacyClosingNegotiator
             proposal = state.Acceptable.Clamp(Midpoint(last, feeSat));
             if (!IsStrictlyBetween(proposal, last, feeSat))
             {
-                // Our last fee is already our bound. BOLT 2 only says SHOULD move strictly between; a peer that moves
-                // by small steps (LND lowers its fee by 10 % per round) reaches our fee if we hold it, so we re-send it
-                // instead of failing the channel, for at most MaxRounds messages
+                // Our last fee is already our bound, so no fee strictly between is left for us (BOLT 2 MUST). We hold
+                // it (a deviation) only against a peer that is converging: one that sent a fee before this one and, by
+                // the R07 check above, moved strictly towards ours. LND lowers its fee by 10 % per round and accepts a
+                // repeated fee, so it reaches ours. A peer that has not moved yet gets the spec's warning and close
+                // (the negotiation restarts on the next connection; the funder can raise Node:Close:MaxFeeMultiplier)
+                if (state.LastReceivedFeeSat is null)
+                    return (new ClosingDecision(ClosingDecisionKind.Warn, 0, null, false, "B2-CLS-R09",
+                                                $"fee_satoshis {feeSat} is outside what we accept and our fee of {last} sat is our limit",
+                                                CloseConnection: true), received);
+
                 if (received.Rounds > MaxRounds)
                     return (new ClosingDecision(ClosingDecisionKind.Warn, 0, null, false, "B2-CLS-R09",
                                                 $"no agreement after {received.Rounds} closing_signed; our limit is {last} sat",
