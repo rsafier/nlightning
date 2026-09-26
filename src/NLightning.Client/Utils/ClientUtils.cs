@@ -32,6 +32,12 @@ public static class ClientUtils
         Console.WriteLine("                               Cooperatively close a channel (alias: close-channel) and");
         Console.WriteLine("                               wait for the closing transaction [wait 0-300 s, default 30];");
         Console.WriteLine("                               nofeerange negotiates without fee_range");
+        Console.WriteLine("  forceclosechannel <channel_id>");
+        Console.WriteLine("                               Fail a channel and broadcast our latest commitment (alias:");
+        Console.WriteLine("                               force-close-channel)");
+        Console.WriteLine("  pendingsweeps [channel_id] [all]");
+        Console.WriteLine("                               Show the on-chain resolution of closed channels (alias:");
+        Console.WriteLine("                               pending-sweeps); all includes the closed ones");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

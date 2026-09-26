@@ -281,6 +281,31 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Fails a channel and broadcasts our latest commitment (ClientCommand 14).
+    /// </summary>
+    public Task<ForceCloseChannelIpcResponse> ForceCloseChannelAsync(ChannelId channelId,
+                                                                     CancellationToken ct = default)
+    {
+        var req = new ForceCloseChannelIpcRequest { ChannelId = channelId };
+        return SendRequestAsync<ForceCloseChannelIpcRequest, ForceCloseChannelIpcResponse>(
+            ClientCommand.ForceCloseChannel, req, ct);
+    }
+
+    /// <summary>
+    /// Lists the on-chain resolution of closed channels (ClientCommand 15).
+    /// </summary>
+    /// <param name="channelId">Only this channel, when set.</param>
+    /// <param name="includeClosed">Also the channels already closed.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<PendingSweepsIpcResponse> PendingSweepsAsync(ChannelId? channelId, bool includeClosed,
+                                                             CancellationToken ct = default)
+    {
+        var req = new PendingSweepsIpcRequest { ChannelId = channelId, IncludeClosed = includeClosed };
+        return SendRequestAsync<PendingSweepsIpcRequest, PendingSweepsIpcResponse>(ClientCommand.PendingSweeps, req,
+                                                                                   ct);
+    }
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)
