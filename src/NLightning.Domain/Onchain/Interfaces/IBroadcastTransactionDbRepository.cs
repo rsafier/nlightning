@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Onchain.Interfaces;
 
 using Bitcoin.ValueObjects;
+using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Models;
 
@@ -14,6 +15,15 @@ public interface IBroadcastTransactionDbRepository
     void Add(BroadcastTransactionModel transaction);
 
     Task<BroadcastTransactionModel?> GetByTransactionIdAsync(TxId transactionId);
+
+    /// <summary>Every broadcast of the channel, oldest first.</summary>
+    Task<IReadOnlyList<BroadcastTransactionModel>> GetByChannelIdAsync(ChannelId channelId);
+
+    /// <summary>
+    /// Stages giving up a pending broadcast (it conflicts with a transaction on chain); does nothing for a missing,
+    /// confirmed, replaced or abandoned one. Returns true when it changed the row.
+    /// </summary>
+    Task<bool> MarkAbandonedAsync(TxId transactionId);
 
     /// <summary>Every broadcast that is still pending (the rebroadcast set).</summary>
     Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync();

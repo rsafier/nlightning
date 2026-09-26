@@ -27,6 +27,12 @@ public class BroadcastTransactionEntity
     public Hash? ConfirmedBlockHash { get; set; }
     public required DateTimeOffset CreatedAt { get; set; }
 
+    /// <summary>
+    /// Our local commitment number, for a <c>LocalCommitment</c> broadcast (migration
+    /// <c>AddBroadcastCommitmentNumber</c>; NL-271, NL-297). Stored as <c>long</c>: commitment numbers are 48-bit.
+    /// </summary>
+    public long? CommitmentNumber { get; set; }
+
     // Default constructor for EF Core
     internal BroadcastTransactionEntity() { }
 }

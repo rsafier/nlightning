@@ -69,6 +69,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("ChannelId")
                         .HasColumnType("varbinary(32)");
 
+                    b.Property<long?>("CommitmentNumber")
+                        .HasColumnType("bigint");
+
                     b.Property<byte[]>("ConfirmedBlockHash")
                         .HasColumnType("varbinary(32)");
 
