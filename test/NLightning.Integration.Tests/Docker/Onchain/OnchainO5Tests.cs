@@ -1,3 +1,4 @@
+using Grpc.Core;
 using Lnrpc;
 using LNUnit.LND;
 using Microsoft.Extensions.DependencyInjection;
@@ -296,15 +297,26 @@ public class OnchainO5Tests : IAsyncLifetime
         var parts = channelPoint.Split(':');
         using var closeTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         closeTimeout.CancelAfter(s_timeout);
-        using var closeCall = david.LightningClient.CloseChannel(new CloseChannelRequest
-        {
-            ChannelPoint = new ChannelPoint { FundingTxidStr = parts[0], OutputIndex = uint.Parse(parts[1]) },
-            Force = true
-        }, cancellationToken: closeTimeout.Token);
+        // LND answers GetInfo (synced) before its server is started, and refuses CloseChannel until then
         PendingUpdate? pending = null;
-        while (pending is null && await closeCall.ResponseStream.MoveNext(closeTimeout.Token))
-            pending = closeCall.ResponseStream.Current.ClosePending;
-        Assert.NotNull(pending);
+        while (pending is null)
+        {
+            try
+            {
+                using var closeCall = david.LightningClient.CloseChannel(new CloseChannelRequest
+                {
+                    ChannelPoint = new ChannelPoint { FundingTxidStr = parts[0], OutputIndex = uint.Parse(parts[1]) },
+                    Force = true
+                }, cancellationToken: closeTimeout.Token);
+                while (pending is null && await closeCall.ResponseStream.MoveNext(closeTimeout.Token))
+                    pending = closeCall.ResponseStream.Current.ClosePending;
+                Assert.NotNull(pending);
+            }
+            catch (RpcException e) when (e.Status.Detail.Contains("still in the process of starting"))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), closeTimeout.Token);
+            }
+        }
         var revoked = await _fixture.Bitcoin.GetRawTransactionAsync(new uint256(pending.Txid.ToByteArray()), true, ct);
         Console.WriteLine($"[o5a] david force-closed with {revoked.GetHash()}");
         await ChainSync.MineAndWaitAsync(_fixture, 1, [david], [], ct);
