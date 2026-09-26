@@ -86,12 +86,17 @@ public class OnchainO5Tests : IAsyncLifetime
     /// mines the penalty, and the victim's wallet gains the channel. Explicit: once the executor is wired it runs the
     /// resolver itself, and the end-to-end proof above covers the whole path.
     /// </summary>
+    /// <remarks>
+    /// The victim runs without the O8 mempool reaction (<see cref="NLightningTestNode.WatchMempool"/> false, as
+    /// <c>OnchainO6Tests</c> (b) does): with it, the victim publishes its penalty while the revoked commitment is still
+    /// unconfirmed, both confirm in the same block and the resolver driven here finds nothing left to penalize.
+    /// </remarks>
     [Fact(Explicit = true)]
     public async Task Given_NLightningCheaterBreach_When_ResolverDrivenByTheTest_Then_BitcoindMinesThePenalty()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var (victim, channelId, captured, walletBefore) = await PrepareCheaterBreachAsync(ct);
+        var (victim, channelId, captured, walletBefore) = await PrepareCheaterBreachAsync(ct, watchMempool: false);
         await _fixture.Bitcoin.SendRawTransactionAsync(captured.Transaction, ct);
         await ChainSync.MineAndWaitAsync(_fixture, 1, [], [victim], ct);
 
@@ -190,10 +195,11 @@ public class OnchainO5Tests : IAsyncLifetime
     /// cheater revokes k with its own signer), the cheater stopped.
     /// </summary>
     private async Task<(NLightningTestNode Victim, ChannelId ChannelId, CapturedCommitment Captured,
-                        LightningMoney WalletBefore)> PrepareCheaterBreachAsync(CancellationToken ct)
+                        LightningMoney WalletBefore)> PrepareCheaterBreachAsync(CancellationToken ct,
+                                                                                bool watchMempool = true)
     {
         var cheater = await CreateNodeAsync("cheater", ct);
-        var victim = await CreateNodeAsync("victim", ct);
+        var victim = await CreateNodeAsync("victim", ct, watchMempool);
         await cheater.FundWalletAsync(LightningMoney.Satoshis(1_500_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [cheater, victim], ct);
         await cheater.ConnectToAsync(victim, ct);
@@ -331,9 +337,11 @@ public class OnchainO5Tests : IAsyncLifetime
             await node.DisposeAsync();
     }
 
-    private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct)
+    private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct,
+                                                           bool watchMempool = true)
     {
         var node = await NLightningTestNode.CreateAsync(_fixture, name);
+        node.WatchMempool = watchMempool;
         _nodes.Add(node);
         await node.StartAsync(ct);
         return node;
