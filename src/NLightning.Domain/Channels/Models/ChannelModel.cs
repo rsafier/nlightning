@@ -323,6 +323,19 @@ public class ChannelModel
         RemoteShutdownScript = script;
     }
 
+    /// <summary>
+    /// Replaces the peer's script with the <c>closer_scriptpubkey</c> of a <c>closing_complete</c> we signed (BOLT 2
+    /// <c>option_simple_close</c>: the closee MUST use it for its own later <c>closing_complete</c>). Only for that
+    /// flow: the legacy close keeps the <c>shutdown</c> script (<see cref="SetRemoteShutdownScript"/>).
+    /// </summary>
+    public void ReplaceRemoteShutdownScript(BitcoinScript script)
+    {
+        if (RemoteShutdownScript is null)
+            throw new InvalidOperationException("The peer's shutdown script is not set yet");
+
+        RemoteShutdownScript = script;
+    }
+
     /// <summary>Records the agreed, fully signed mutual close transaction.</summary>
     public void SetClosingTransaction(SignedTransaction closingTransaction)
     {

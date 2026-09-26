@@ -26,6 +26,7 @@ using Domain.Protocol.Tlv;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Services;
+using Simple;
 
 /// <summary>
 /// The mutual close of one channel (BOLT 2 "Channel Close", legacy <c>closing_signed</c>; BOLT2 plan N10-T3):
@@ -53,6 +54,7 @@ public sealed class ChannelCloseCoordinator
     private readonly ChannelCloseOptions _options;
     private readonly ClosingNegotiationRegistry _registry;
     private readonly ShutdownScriptProvider _shutdownScriptProvider;
+    private readonly SimpleCloseCoordinator _simpleClose;
     private readonly ClosingTimeoutMonitor? _timeouts;
     private readonly ChannelStateTransitionService _transitions;
     private readonly IUnitOfWork _unitOfWork;
@@ -65,7 +67,8 @@ public sealed class ChannelCloseCoordinator
                                    ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
                                    IBlockchainMonitor? blockchainMonitor = null,
                                    ClosingTimeoutMonitor? timeouts = null,
-                                   ClosingFeeEstimator? feeEstimator = null)
+                                   ClosingFeeEstimator? feeEstimator = null,
+                                   SimpleCloseCoordinator? simpleClose = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _timeouts = timeouts;
@@ -82,6 +85,10 @@ public sealed class ChannelCloseCoordinator
         _shutdownScriptProvider = shutdownScriptProvider;
         _transitions = transitions;
         _unitOfWork = unitOfWork;
+        _simpleClose = simpleClose
+                    ?? new SimpleCloseCoordinator(closingTransactionBuilder, channelMemoryRepository, feeService,
+                                                  lightningSigner, NullLogger<SimpleCloseCoordinator>.Instance,
+                                                  options, registry, unitOfWork, blockchainMonitor, _feeEstimator);
     }
 
     /// <summary>True for the states in which the close still needs the peer (shutdown sent or received).</summary>
@@ -174,11 +181,17 @@ public sealed class ChannelCloseCoordinator
         ArgumentNullException.ThrowIfNull(negotiatedFeatures);
         var channelId = channel.ChannelId;
         var script = message.Payload.ScriptPubkey;
+        var simpleClose = SimpleCloseCoordinator.IsNegotiated(negotiatedFeatures);
+        _registry.Get(channelId).SimpleClose = simpleClose;
 
         if (channel.State is < ChannelState.Open or ChannelState.Closing or ChannelState.Closed)
         {
             if (channel.State is ChannelState.Closing or ChannelState.Closed)
             {
+                // option_simple_close: a closing channel still signs the peer's new closing_complete (RBF) and may
+                // send its own, once both shutdowns went over this connection
+                if (simpleClose && channel.State == ChannelState.Closing)
+                    _registry.Get(channelId).ShutdownReceivedOnConnection = true;
                 _logger.LogInformation("Ignoring shutdown for channel {ChannelId}: its closing transaction is out",
                                        channelId);
                 return [];
@@ -192,7 +205,6 @@ public sealed class ChannelCloseCoordinator
 
         // B2-SHUT-R02
         var anySegwit = negotiatedFeatures.BeyondSegwitShutdown > FeatureSupport.No;
-        var simpleClose = negotiatedFeatures.OptionSimpleClose > FeatureSupport.No;
         if (!ShutdownScriptValidator.IsValid((byte[])script, anySegwit, simpleClose))
             throw new ChannelWarningException($"[B2-SHUT-R02] shutdown script {script} is not allowed", channelId,
                                               "shutdown scriptpubkey is not a valid form");
@@ -207,7 +219,10 @@ public sealed class ChannelCloseCoordinator
                 CloseConnection = true
             };
 
-        if (channel.RemoteShutdownScript is { } previous && previous != script)
+        // option_simple_close lets the peer change its script (closing_complete, then its shutdown after a
+        // reconnection); the legacy close does not
+        var changedScript = channel.RemoteShutdownScript is { } previous && previous != script;
+        if (changedScript && !simpleClose)
             throw new ChannelWarningException(
                 $"shutdown script {script} differs from the one received before ({previous})", channelId,
                 "shutdown scriptpubkey changed")
@@ -219,7 +234,14 @@ public sealed class ChannelCloseCoordinator
         entry.ShutdownReceivedOnConnection = true;
         // The negotiation that follows needs a fee estimate: fetch it now, without waiting under the lock
         _ = _feeEstimator.StartFetchIfDue();
-        if (channel.RemoteShutdownScript is null)
+        if (changedScript)
+        {
+            channel.ReplaceRemoteShutdownScript(script);
+            await PersistAsync(channel);
+            _logger.LogInformation("Peer {Peer} changed the shutdown script of channel {ChannelId} to {Script}",
+                                   channel.RemoteNodeId, channelId, script);
+        }
+        else if (channel.RemoteShutdownScript is null)
         {
             channel.SetRemoteShutdownScript(script);
             if (channel.State < ChannelState.ShuttingDown)
@@ -273,6 +295,14 @@ public sealed class ChannelCloseCoordinator
 
         await MoveToNegotiatingIfClearedAsync(channel);
 
+        // option_simple_close (N11): each side sends its own closing_complete; no closing_signed
+        if (_registry.Get(channel.ChannelId).SimpleClose)
+        {
+            if (await _simpleClose.ProposeIfDueAsync(channel) is { } closingComplete)
+                messages.Add(closingComplete);
+            return messages;
+        }
+
         if (channel is { State: ChannelState.Negotiating, IsInitiator: true })
         {
             var entry = _registry.Get(channel.ChannelId);
@@ -306,6 +336,12 @@ public sealed class ChannelCloseCoordinator
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(message);
         var channelId = channel.ChannelId;
+
+        // option_simple_close replaces closing_signed (BOLT 2: the legacy negotiation applies only without it)
+        if (_registry.Get(channelId).SimpleClose)
+            throw new ChannelWarningException(
+                $"closing_signed on channel {channelId}, which closes with option_simple_close", channelId,
+                "closing_signed while option_simple_close is negotiated, message ignored");
 
         if (channel.State is ChannelState.Closing or ChannelState.Closed)
         {
@@ -506,6 +542,46 @@ public sealed class ChannelCloseCoordinator
         channel.UpdateState(ChannelState.Negotiating);
         await PersistAsync(channel);
         _logger.LogInformation("Channel {ChannelId} has no HTLC left; negotiating the closing fee", channel.ChannelId);
+    }
+
+    #endregion
+
+    #region option_simple_close
+
+    /// <summary>
+    /// The peer's <c>closing_complete</c> (BOLT 2 <c>option_simple_close</c>, N11): moves a cleared ShuttingDown
+    /// channel on to Negotiating, then <see cref="SimpleCloseCoordinator.ReceiveClosingCompleteAsync"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> ReceiveClosingCompleteAsync(ChannelModel channel,
+        ClosingCompleteMessage message, FeatureOptions negotiatedFeatures)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(negotiatedFeatures);
+        _registry.Get(channel.ChannelId).SimpleClose = SimpleCloseCoordinator.IsNegotiated(negotiatedFeatures);
+        await MoveToNegotiatingIfClearedAsync(channel);
+        return await _simpleClose.ReceiveClosingCompleteAsync(channel, message, negotiatedFeatures);
+    }
+
+    /// <summary>The peer's <c>closing_sig</c>: <see cref="SimpleCloseCoordinator.ReceiveClosingSigAsync"/>.</summary>
+    public async Task<IReadOnlyList<IChannelMessage>> ReceiveClosingSigAsync(ChannelModel channel,
+                                                                            ClosingSigMessage message,
+                                                                            FeatureOptions negotiatedFeatures)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(negotiatedFeatures);
+        _registry.Get(channel.ChannelId).SimpleClose = SimpleCloseCoordinator.IsNegotiated(negotiatedFeatures);
+        return await _simpleClose.ReceiveClosingSigAsync(channel, message, negotiatedFeatures);
+    }
+
+    /// <summary>
+    /// A new <c>closing_complete</c> of ours at <paramref name="feeratePerKw"/> (RBF, IPC): see
+    /// <see cref="SimpleCloseCoordinator.BumpAsync"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<IChannelMessage>> BumpSimpleCloseAsync(ChannelModel channel, uint feeratePerKw)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        await MoveToNegotiatingIfClearedAsync(channel);
+        return [await _simpleClose.BumpAsync(channel, feeratePerKw)];
     }
 
     #endregion

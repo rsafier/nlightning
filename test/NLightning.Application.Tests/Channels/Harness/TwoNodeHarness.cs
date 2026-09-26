@@ -365,6 +365,12 @@ internal sealed class HarnessNode : IDisposable
     /// <summary>Messages raised while <see cref="PeerAlive"/> was false (lost, like in production).</summary>
     public List<IChannelMessage> Dropped { get; } = [];
 
+    /// <summary>
+    /// The features negotiated with the peer that <see cref="DeliverNextAsync"/> hands to the channel manager with the
+    /// messages this node sends (e.g. <c>option_simple_close</c>); none by default.
+    /// </summary>
+    public FeatureOptions NegotiatedFeatures { get; set; } = new();
+
     public bool OutboxIsEmpty => _outbox.IsEmpty;
     public HarnessNode Peer { get; set; } = null!;
 
@@ -559,7 +565,7 @@ internal sealed class HarnessNode : IDisposable
             return false;
 
         Peer.Received.Add(message);
-        await Peer.ChannelManager.HandleChannelMessageAsync(message, new FeatureOptions(), NodeId);
+        await Peer.ChannelManager.HandleChannelMessageAsync(message, NegotiatedFeatures, NodeId);
         return true;
     }
 

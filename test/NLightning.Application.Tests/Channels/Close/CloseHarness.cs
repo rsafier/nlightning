@@ -6,6 +6,7 @@ using NBitcoin;
 namespace NLightning.Application.Tests.Channels.Close;
 
 using Application.Channels.Close;
+using Application.Channels.Close.Handlers;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Domain.Bitcoin.Interfaces;
@@ -13,6 +14,7 @@ using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Messages;
@@ -48,8 +50,11 @@ internal sealed class CloseHarness : IDisposable
     /// <param name="bobSendsFeeRange">Bob's <c>Node:Close:SendFeeRange</c>.</param>
     /// <param name="configure">More registrations per node (by name), applied last so they replace the defaults.
     /// </param>
+    /// <param name="simpleClose">Both nodes negotiated <c>option_simple_close</c> (BOLT2 plan N11): the close uses
+    /// <c>closing_complete</c>/<c>closing_sig</c>.</param>
     public CloseHarness(uint aliceFeeratePerKw = 2_500, uint bobFeeratePerKw = 2_500, bool aliceSendsFeeRange = true,
-                        bool bobSendsFeeRange = true, Action<string, IServiceCollection>? configure = null)
+                        bool bobSendsFeeRange = true, Action<string, IServiceCollection>? configure = null,
+                        bool simpleClose = false)
     {
         Harness = new TwoNodeHarness(configureServices: (node, services) =>
         {
@@ -79,9 +84,24 @@ internal sealed class CloseHarness : IDisposable
             services.AddChannelCloseServices();
             services.AddScoped<IChannelMessageHandler<ShutdownMessage>, ShutdownMessageHandler>();
             services.AddScoped<IChannelMessageHandler<ClosingSignedMessage>, ClosingSignedMessageHandler>();
+            services.AddScoped<IChannelMessageHandler<ClosingCompleteMessage>, ClosingCompleteMessageHandler>();
+            services.AddScoped<IChannelMessageHandler<ClosingSigMessage>, ClosingSigMessageHandler>();
             configure?.Invoke(node.Name, services);
         });
+
+        if (simpleClose)
+        {
+            Alice.NegotiatedFeatures = SimpleCloseFeatures();
+            Bob.NegotiatedFeatures = SimpleCloseFeatures();
+        }
     }
+
+    /// <summary>Negotiated features with <c>option_simple_close</c> (and its dependency, anysegwit).</summary>
+    public static FeatureOptions SimpleCloseFeatures() => new()
+    {
+        OptionSimpleClose = FeatureSupport.Optional,
+        BeyondSegwitShutdown = FeatureSupport.Optional
+    };
 
     public IChannelCloseService CloseService(HarnessNode node) =>
         node.Services.GetRequiredService<IChannelCloseService>();

@@ -14,7 +14,8 @@ using Interfaces;
 /// <see cref="IChannelCloseService"/> (IPC <c>closechannel</c>, BOLT2 plan N10-T3): takes the channel's lock, checks
 /// the channel's link, runs <see cref="ChannelCloseCoordinator.InitiateAsync"/> and
 /// <see cref="ChannelCloseCoordinator.AdvanceAsync"/>, publishes their messages under the lock, then optionally waits
-/// for the closing transaction.
+/// for the closing transaction. With <c>option_simple_close</c>, a request with a feerate on a Negotiating or Closing
+/// channel sends a new <c>closing_complete</c> of ours at that feerate (RBF, N11).
 /// </summary>
 public sealed class ChannelCloseService : IChannelCloseService
 {
@@ -66,6 +67,19 @@ public sealed class ChannelCloseService : IChannelCloseService
             {
                 case ChannelState.Failed:
                     throw new InvalidOperationException($"Channel {channelId} was failed; it can't be closed mutually");
+                case ChannelState.Negotiating or ChannelState.Closing
+                    when request.FeeRatePerKw is { } bumpFeerate && _registry.Get(channelId).SimpleClose:
+                    // option_simple_close: a new closing_complete of ours at the requested feerate (RBF, N11)
+                    if (!await _peerLivenessProbe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
+                        throw new InvalidOperationException(
+                            $"The peer of channel {channelId} is not connected on the channel's link");
+
+                    var bumpCoordinator = scope.ServiceProvider.GetRequiredService<ChannelCloseCoordinator>();
+                    _channelMessagePublisher.Publish(channel.RemoteNodeId,
+                                                     await bumpCoordinator.BumpSimpleCloseAsync(channel, bumpFeerate));
+                    _logger.LogInformation("Bumping the closing fee of channel {ChannelId} to {Feerate} sat/kw",
+                                           channelId, bumpFeerate);
+                    break;
                 case ChannelState.Closing or ChannelState.Closed:
                     return ToResult(channel);
                 case ChannelState.ShuttingDown or ChannelState.Negotiating:
