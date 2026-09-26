@@ -189,7 +189,7 @@ public static class PublicTopology
 
     /// <summary>
     /// A payment amount in msat that no other payment of the run uses, so the LND forwards of this payment can be
-    /// told apart by amount (<see cref="LndRoutingProbe.TraceForwards"/>).
+    /// told apart by amount (<see cref="LndRoutingProbe.TryTraceForwards"/>).
     /// </summary>
     public static ulong UniqueAmountMsat(ulong baseMsat) => baseMsat + (ulong)Random.Shared.Next(1, 999_999);
 }

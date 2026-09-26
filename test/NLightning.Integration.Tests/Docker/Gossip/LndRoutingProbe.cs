@@ -4,6 +4,7 @@ using LNUnit.LND;
 namespace NLightning.Integration.Tests.Docker.Gossip;
 
 using Domain.Channels.ValueObjects;
+using Utils;
 
 /// <summary>
 /// The LND side of the payment proofs over public channels (BOLT 7 goal proofs and Proof G4): the policies LND
@@ -13,6 +14,8 @@ using Domain.Channels.ValueObjects;
 /// </summary>
 public static class LndRoutingProbe
 {
+    private static readonly TimeSpan s_forwardLogTimeout = TimeSpan.FromMinutes(1);
+
     /// <summary>
     /// One forward an LND node recorded.
     /// </summary>
@@ -86,16 +89,19 @@ public static class LndRoutingProbe
     /// The forwards that carried a payment which reached the payee with <paramref name="amountAtPayeeMsat"/>, payee
     /// side first: the forward whose outgoing amount is that amount, then the one whose outgoing amount is that
     /// forward's incoming amount, and so on until the incoming channel is <paramref name="firstChannel"/> (the payer's
-    /// channel). Fails the test when the chain breaks.
+    /// channel). Null while the chain is incomplete; fails the test when an amount matches more than one forward.
     /// </summary>
-    public static IReadOnlyList<Forward> TraceForwards(IReadOnlyList<Forward> forwards, ulong amountAtPayeeMsat,
-                                                       ulong firstChannel)
+    public static IReadOnlyList<Forward>? TryTraceForwards(IReadOnlyList<Forward> forwards, ulong amountAtPayeeMsat,
+                                                           ulong firstChannel)
     {
         var chain = new List<Forward>();
         var amount = amountAtPayeeMsat;
         while (chain.Count < 20)
         {
             var hop = forwards.Where(f => f.AmountOutMsat == amount && !chain.Contains(f)).ToList();
+            if (hop.Count == 0)
+                return null;
+
             Assert.True(hop.Count == 1,
                         $"Expected exactly one forward with {amount} msat out, found {hop.Count} "
                       + $"(after {chain.Count} traced)");
@@ -107,6 +113,36 @@ public static class LndRoutingProbe
         }
 
         throw new InvalidOperationException("The forward chain did not reach the payer's channel within 20 hops");
+    }
+
+    /// <summary>
+    /// Polls <paramref name="lndNodes"/>' forwarding logs (LND writes forwarding events in batches, every 15 s) until
+    /// <see cref="TryTraceForwards"/> finds the whole chain of the payment; returns it, payee side first.
+    /// </summary>
+    public static Task<IReadOnlyList<Forward>> WaitForForwardChainAsync(IReadOnlyList<LNDNodeConnection> lndNodes,
+                                                                         DateTimeOffset since,
+                                                                         ulong amountAtPayeeMsat, ulong firstChannel,
+                                                                         CancellationToken cancellationToken) =>
+        Poll.ForAsync(async () => TryTraceForwards(await GetForwardsAsync(lndNodes, since, cancellationToken),
+                                                   amountAtPayeeMsat, firstChannel),
+                      s_forwardLogTimeout, $"LND's forwards of {amountAtPayeeMsat} msat logged", cancellationToken,
+                      TimeSpan.FromSeconds(3));
+
+    /// <summary>
+    /// <paramref name="lnd"/> has no channel with <paramref name="nodeIdHex"/> (so a payment between them has to
+    /// travel through other nodes).
+    /// </summary>
+    public static async Task AssertNoChannelWithAsync(LNDNodeConnection lnd, string nodeIdHex,
+                                                      CancellationToken cancellationToken)
+    {
+        var channels = await lnd.LightningClient.ListChannelsAsync(new ListChannelsRequest(),
+                                                                   cancellationToken: cancellationToken);
+        var pending = await lnd.LightningClient.PendingChannelsAsync(new PendingChannelsRequest(),
+                                                                     cancellationToken: cancellationToken);
+        Assert.DoesNotContain(channels.Channels, c => string.Equals(c.RemotePubkey, nodeIdHex,
+                                                                    StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(pending.PendingOpenChannels, c => string.Equals(c.Channel.RemoteNodePub, nodeIdHex,
+                                                                             StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
