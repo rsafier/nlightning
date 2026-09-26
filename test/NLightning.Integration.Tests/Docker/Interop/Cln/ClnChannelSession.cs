@@ -27,7 +27,17 @@ public sealed class ClnChannelSession : IAsyncDisposable
     public static readonly LightningMoney Capacity = LightningMoney.Satoshis(1_000_000);
     public static readonly LightningMoney Push = LightningMoney.Satoshis(300_000);
 
+    /// <summary>
+    /// The feerate of the channel we fund: 10 sat/vB (the test node's fixed fee answer) as sat/kw.
+    /// </summary>
+    public static readonly LightningMoney OpenFeeRatePerKw = LightningMoney.Satoshis(2_500);
+
     public static readonly TimeSpan UsableTimeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// The limit of the shared build (fund, open, confirm), which runs on its own token (see <see cref="GetAsync"/>).
+    /// </summary>
+    public static readonly TimeSpan BuildTimeout = TimeSpan.FromMinutes(5);
 
     private const string CacheKey = "cln-channel-session";
 
@@ -57,12 +67,33 @@ public sealed class ClnChannelSession : IAsyncDisposable
 
     public CompactPubKey ClnPubKey => Convert.FromHexString(_fixture.ClnNodeId);
 
-    public static async Task<ClnChannelSession> GetAsync(ClnFixture fixture, CancellationToken cancellationToken)
+    /// <summary>
+    /// The shared channel, built by the first caller. The build runs on its own token (<see cref="BuildTimeout"/>), not
+    /// the caller's: its outcome is cached for every test, so the first test's timeout or cancellation must not become
+    /// the cached failure. The caller's token only stops the caller's wait.
+    /// </summary>
+    public static Task<ClnChannelSession> GetAsync(ClnFixture fixture, CancellationToken cancellationToken) =>
+        GetOrBuildDetachedAsync(factory => fixture.GetOrCreateAsync(CacheKey, factory),
+                                ct => BuildAsync(fixture, ct), BuildTimeout, "CLN interop channel",
+                                cancellationToken);
+
+    /// <summary>
+    /// Returns the cached build (<paramref name="getOrCreate"/>), running <paramref name="build"/> once on a token of
+    /// its own that is cancelled only after <paramref name="timeout"/>. <paramref name="cancellationToken"/> stops only
+    /// this caller's wait, never the shared build.
+    /// </summary>
+    internal static async Task<T> GetOrBuildDetachedAsync<T>(
+        Func<Func<Task<OnceOnlyBuild<T>>>, Task<OnceOnlyBuild<T>>> getOrCreate,
+        Func<CancellationToken, Task<T>> build, TimeSpan timeout, string what, CancellationToken cancellationToken)
+        where T : class, IAsyncDisposable
     {
-        var build = await fixture.GetOrCreateAsync(
-                        CacheKey, () => OnceOnlyBuild<ClnChannelSession>.RunAsync(
-                                      () => BuildAsync(fixture, cancellationToken)));
-        return build.GetOrThrow("CLN interop channel");
+        var result = await getOrCreate(() => OnceOnlyBuild<T>.RunAsync(async () =>
+                                           {
+                                               using var cts = new CancellationTokenSource(timeout);
+                                               return await build(cts.Token);
+                                           }))
+                        .WaitAsync(cancellationToken);
+        return result.GetOrThrow(what);
     }
 
     /// <summary>
@@ -220,10 +251,14 @@ public sealed class ClnChannelSession : IAsyncDisposable
             await fixture.WaitAllAtTipAsync([node], cancellationToken);
             await session.ConnectAsync(cancellationToken);
 
-            // Our default feerate (the fixed fee answer of the test node): what a real open would use
+            // The test node's fixed fee answer (fastestFee 10 sat/vB) is 2,500 sat/kw, inside CLN's acceptable range.
+            // Our default open would use 10,000 sat/kw instead (FeeEstimation:RateMultiplier 1000 turns sat/vB into
+            // sat/kvB, not sat/kw), which CLN refuses with its fee limits on: the gap is reproduced by
+            // ClnInteropTests.Given_OurDefaultFeerate_When_OpeningToCln_Then_ClnAccepts
             var channel = await node.OpenChannelAsync(new OpenChannelClientRequest(fixture.ClnAddress, Capacity)
             {
-                PushAmount = Push
+                PushAmount = Push,
+                FeeRatePerKw = OpenFeeRatePerKw
             }, cancellationToken);
             session.ChannelId = channel.ChannelId;
             Console.WriteLine($"[cln] opened {channel.ChannelId} ({channel.ChannelPoint()}), state {channel.ChannelState}");

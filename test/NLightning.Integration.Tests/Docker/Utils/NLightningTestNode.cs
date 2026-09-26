@@ -83,7 +83,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     private static readonly TimeSpan s_openStepTimeout = TimeSpan.FromMinutes(2);
     private static readonly TimeSpan s_bothEndsConnectedTimeout = TimeSpan.FromSeconds(10);
 
-    private readonly Func<RegtestBitcoinEndpoint> _bitcoinEndpoint;
+    private readonly Lazy<RegtestBitcoinEndpoint> _bitcoinEndpoint;
     private readonly Action<NodeOptions>? _configureNodeOptions;
     private readonly bool _ownsResources;
 
@@ -151,7 +151,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
     public IChannelMemoryRepository ChannelMemoryRepository =>
         Services.GetRequiredService<IChannelMemoryRepository>();
 
-    public RPCClient Bitcoin => _bitcoinEndpoint().Rpc;
+    public RPCClient Bitcoin => _bitcoinEndpoint.Value.Rpc;
 
     /// <summary>
     /// A SQLite node (the original constructor).
@@ -188,7 +188,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                                Action<NodeOptions>? configureNodeOptions, bool ownsResources)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        _bitcoinEndpoint = bitcoinEndpoint;
+        // Resolved once (a failed resolution is not cached, so a node built before its fixture was ready retries)
+        _bitcoinEndpoint = new Lazy<RegtestBitcoinEndpoint>(bitcoinEndpoint, LazyThreadSafetyMode.PublicationOnly);
         _configureNodeOptions = configureNodeOptions;
         _ownsResources = ownsResources;
         Name = name;
@@ -584,7 +585,7 @@ public sealed class NLightningTestNode : IAsyncDisposable
 
     private ServiceProvider BuildServiceProvider()
     {
-        var endpoint = _bitcoinEndpoint();
+        var endpoint = _bitcoinEndpoint.Value;
         var bitcoin = endpoint.Rpc;
 
         List<KeyValuePair<string, string?>> inMemoryConfiguration =

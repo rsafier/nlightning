@@ -4,6 +4,8 @@ using System.Text.Json.Nodes;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
+using Domain.Bitcoin.Enums;
+using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.ValueObjects;
@@ -120,10 +122,31 @@ public sealed class ClnInteropTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// The fixture runs CLN with its feerate limits enforced (<c>--ignore-fee-limits=false</c>; CLN's regtest default
+    /// ignores them), so the channel tests prove our feerates fall inside CLN's acceptable range as on mainnet.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_ClnFixture_When_Started_Then_FeeLimitsEnforced()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var config = await _fixture.Cln.CallAsync("listconfigs", ct, ("config", "ignore-fee-limits"));
+        var (min, max) = await GetClnAcceptableFeerateRangeAsync(ct);
+
+        // Assert
+        Console.WriteLine($"[cln] ignore-fee-limits: {config.ToJsonString()}; acceptable {min}..{max}");
+        Assert.False(config["configs"]!["ignore-fee-limits"]!["value_bool"]!.GetValue<bool>());
+        Assert.Equal(string.Empty, await _fixture.Cln.GetLogLinesAsync("Ignoring fee limits", ct));
+    }
+
+    /// <summary>
     /// CLN funds a private channel to us (we are the fundee, static_remotekey), both ends reach
     /// <c>CHANNELD_NORMAL</c>/usable, and payments work both ways (CLN pays first: all the funds are on its side). CLN
     /// funds at 10,000 sat/kw: at its own regtest estimate (253 sat/kw) we refuse the open, because we require at
-    /// least 80 % of our own estimate (see the lane's ledger items). CLN sends <c>update_fee</c> only when its
+    /// least 80 % of our own estimate (the fundee feerate floor gap in the ledger). CLN, as the opener, chooses this
+    /// feerate itself, so its fee limits (enforced by the fixture) do not apply to it. CLN sends <c>update_fee</c> only when its
     /// estimate changes after the channel is normal, so this test does not wait for one.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
@@ -161,6 +184,38 @@ public sealed class ClnInteropTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Interop gap found with CLN's fee limits on (see the ledger): our default open feerate is our estimate times
+    /// <c>FeeEstimation:RateMultiplier</c> (1000), which turns the estimator's sat/vB into sat/kvB rather than sat/kw
+    /// (x250), so the test node's 10 sat/vB becomes 10,000 sat/kw and CLN refuses the <c>open_channel</c> with
+    /// "feerate_per_kw 10000 above maximum". Explicit until the conversion is fixed; then drop <c>Explicit</c> and the
+    /// explicit <see cref="ClnChannelSession.OpenFeeRatePerKw"/> of the shared channel.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs, Explicit = true)]
+    public async Task Given_OurDefaultFeerate_When_OpeningToCln_Then_ClnAccepts()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var node = await NLightningTestNode.CreateAsync(_fixture.Bitcoin, "nltg-default-feerate");
+        await node.StartAsync(ct);
+        await node.FundWalletAsync(LightningMoney.Satoshis(700_000), AddressType.P2Wpkh, ct);
+        await _fixture.WaitAllAtTipAsync([node], ct);
+        await node.PeerManager.ConnectToPeerAsync(new PeerAddressInfo(_fixture.ClnAddress)).WaitAsync(ct);
+        await Poll.UntilAsync(async () => await _fixture.Cln.IsConnectedAsync(node.NodeIdHex, ct),
+                              TimeSpan.FromSeconds(30), "CLN lists us", ct);
+
+        // Act: no FeeRatePerKw, so the open uses our fee estimate
+        var channel = await node.OpenChannelAsync(
+                          new OpenChannelClientRequest(_fixture.ClnAddress, LightningMoney.Satoshis(500_000)), ct);
+
+        // Assert
+        var theirs = await Poll.ForAsync(async () => await _fixture.Cln.GetPeerChannelAsync(
+                                                         node.NodeIdHex, channel.ChannelId.ToString(), ct),
+                                         TimeSpan.FromSeconds(30), "CLN lists the channel", ct);
+        var (min, max) = await GetClnAcceptableFeerateRangeAsync(ct);
+        Assert.InRange(theirs["feerate"]!["perkw"]!.GetValue<long>(), min, max);
+    }
+
+    /// <summary>
     /// The channel we funded (1M sat, 300k pushed) is <c>CHANNELD_NORMAL</c> at CLN and usable at our end, and both ends
     /// agree on the SCID, the capacity and the balances.
     /// </summary>
@@ -185,7 +240,13 @@ public sealed class ClnInteropTests : IAsyncLifetime
         Assert.Equal(ClnScid(ours.ShortChannelId.Value.ToUInt64()), theirs["short_channel_id"]!.GetValue<string>());
         Assert.Equal((long)ours.RemoteBalance.MilliSatoshi, theirs["to_us_msat"]!.GetValue<long>());
         Assert.Equal("remote", theirs["opener"]!.GetValue<string>());
-        Console.WriteLine($"[cln] channel: {ClnChannelSession.DescribeCln(theirs)}");
+        Assert.Equal((long)ClnChannelSession.OpenFeeRatePerKw.Satoshi, theirs["feerate"]!["perkw"]!.GetValue<long>());
+        // CLN checks the opener's feerate against this range (fee limits are on, see ClnFixture)
+        var feerate = theirs["feerate"]!["perkw"]!.GetValue<long>();
+        var (min, max) = await GetClnAcceptableFeerateRangeAsync(ct);
+        Assert.InRange(feerate, min, max);
+        Console.WriteLine($"[cln] channel: {ClnChannelSession.DescribeCln(theirs)}; "
+                        + $"cln acceptable feerate {min}..{max}");
     }
 
     /// <summary>
@@ -267,6 +328,16 @@ public sealed class ClnInteropTests : IAsyncLifetime
         Assert.False(after.DataLossDetected);
         await AssertClnPaysUsAsync(session, LightningMoney.Satoshis(13_000), ct);
         await AssertWePayClnAsync(session, LightningMoney.Satoshis(14_000), ct);
+    }
+
+    /// <summary>
+    /// CLN's <c>feerates perkw</c> <c>min_acceptable</c>/<c>max_acceptable</c>: what it accepts from a peer's
+    /// <c>open_channel</c> and <c>update_fee</c> when fee limits are enforced.
+    /// </summary>
+    private async Task<(long Min, long Max)> GetClnAcceptableFeerateRangeAsync(CancellationToken ct)
+    {
+        var perKw = (await _fixture.Cln.CallAsync("feerates", ct, ("style", "perkw")))["perkw"]!;
+        return (perKw["min_acceptable"]!.GetValue<long>(), perKw["max_acceptable"]!.GetValue<long>());
     }
 
     private async Task<ClnChannelSession> GetSessionAsync(CancellationToken ct)

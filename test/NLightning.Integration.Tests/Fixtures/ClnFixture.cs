@@ -17,7 +17,9 @@ using Docker.Utils;
 /// for the in-process NLightning nodes; CLN (<see cref="ClnContainerName"/>, the official
 /// <c>elementsproject/lightningd</c> image) reaches bitcoind by name on <see cref="NetworkName"/> and publishes its
 /// p2p port on <c>127.0.0.1</c>. CLN runs with <c>--developer --dev-bitcoind-poll=1</c> so it sees a new block within
-/// a second (the default poll is 30 s). The containers and the network are force-removed before start and on dispose.
+/// a second (the default poll is 30 s), and with <c>--ignore-fee-limits=false</c>: on testnet/regtest CLN ignores its
+/// feerate limits by default (only its mainnet config checks them), which would make any feerate we send look fine.
+/// The containers and the network are force-removed before start and on dispose.
 /// </remarks>
 // ReSharper disable once ClassNeverInstantiated.Global
 public sealed class ClnFixture : IAsyncLifetime
@@ -222,7 +224,11 @@ public sealed class ClnFixture : IAsyncLifetime
                                                      "--alias=nltg-cln",
                                                      "--log-level=debug",
                                                      "--developer",
-                                                     "--dev-bitcoind-poll=1"
+                                                     "--dev-bitcoind-poll=1",
+                                                     // CLN's testnet/regtest default is ignore-fee-limits=true (only
+                                                     // mainnet checks them): turn the checks on, so open_channel and
+                                                     // update_fee meet CLN's real feerate range as on mainnet
+                                                     "--ignore-fee-limits=false"
                                                  ], [P2PPort]);
         ClnHostPort = clnPorts[P2PPort];
         var cln = new ClnClient(_client, ClnContainerName);
