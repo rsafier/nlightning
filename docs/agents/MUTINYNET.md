@@ -94,12 +94,6 @@ blocks (~1.5 min), create an invoice and have the faucet pay it, pay a faucet in
 
 ## Known gaps
 
-- `BlockchainMonitorService` (lane W4-A) still falls back to `Network.Main` for an unknown network; the builders,
-  `LocalLightningSigner`, `SecureKeyManager`, `ShutdownScriptProvider` and `FallbackAddressTaggedField` resolve with
-  `Network.GetNetwork(name)` (which knows `signet`) and throw otherwise; `ChannelFailureService` falls back to
-  `Network.RegTest`; `ChannelManager` and `ChannelCloseCoordinator` load transactions with `Network.Main` (harmless for
-  parsing, but should use `NBitcoinNetworkResolver`).
-- The daemon's `Node:Network` binding (`NodeServiceExtensions`) uses `new BitcoinNetwork(name)`, which also maps a
-  registered custom signet name to `signet` but keeps an unknown name (its `ChainHash` then throws at startup, in the
-  same `PostConfigure`). Integrator follow-up: bind through `BitcoinNetwork.Resolve` for a clearer error.
+- Network resolution is not unified (NL-298): the `Wallet/` services (including `BlockchainMonitorService`, since the wave 4 integration 53accb1) use `NBitcoinNetworkResolver`; the builders, `LocalLightningSigner`, `SecureKeyManager`, `ShutdownScriptProvider` and `FallbackAddressTaggedField` resolve with `Network.GetNetwork(name)` (which knows `signet`) and throw otherwise; `ChannelFailureService` falls back to `Network.RegTest`; `ChannelManager` and `ChannelCloseCoordinator` load transactions with `Network.Main` (harmless for parsing).
+- The daemon's `Node:Network` binding resolves through `BitcoinNetwork.Resolve` in `PostConfigure` since 960cf05, so an unknown name fails fast with an `ArgumentException`.
 - DNS seeds are not used for signets (the template writes an empty `DnsSeedServers`); connect peers by hand.
