@@ -201,6 +201,28 @@ public sealed class AnchorCpfpServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_CommitmentPayingTheEstimateButNotTheMempoolMinimum_When_Round_Then_ChildMadeAndPackaged()
+    {
+        // Arrange: the commitment pays 2,500 sat/kw, above the 2,000 sat/kw estimate but below bitcoind's 5,000 sat/kw
+        // mempool minimum: refused alone, so its child is an orphan and only a package gets both in
+        var commitment = BroadcastCommitment();
+        _estimate = 2_000;
+        _chain.MempoolMinFeePerKw = 5_000;
+        RefuseChildrenAlone();
+        _chain.PackageAnswer = _chain.AcceptPackage;
+
+        // Act
+        await Service.RunOnceAsync(500, TestContext.Current.CancellationToken);
+
+        // Assert: the child targets the mempool minimum, and the pair went out as a package
+        var child = Assert.Single(_store.Children);
+        Assert.True(PackageFeerate(Load(commitment), Load(child)) >= 5_000);
+        var (parent, packaged) = Assert.Single(_chain.Packages);
+        Assert.Equal(Load(commitment).GetHash(), parent.GetHash());
+        Assert.Equal(Load(child).GetHash(), packaged.GetHash());
+    }
+
+    [Fact]
     public async Task Given_PendingChild_When_EstimateRisesAndBumpIsDue_Then_ReplacementRaisesFeeAndReplacesOldRow()
     {
         // Arrange

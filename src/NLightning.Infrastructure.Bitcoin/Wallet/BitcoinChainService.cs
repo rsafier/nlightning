@@ -320,6 +320,35 @@ public class BitcoinChainService : IBitcoinChainService
     private static bool IsAlreadyKnown(string error) =>
         s_alreadyKnownErrors.Any(e => error.Contains(e, StringComparison.OrdinalIgnoreCase));
 
+    /// <inheritdoc />
+    public async Task<uint?> GetMempoolMinFeeRatePerKwAsync()
+    {
+        try
+        {
+            var response = await _rpcClient.SendCommandAsync("getmempoolinfo");
+            return ParseMempoolMinFeeRatePerKw(response.Result);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Cannot read bitcoind's mempool minimum fee: {Message}", ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The <c>mempoolminfee</c> (BTC/kvB) of a <c>getmempoolinfo</c> answer in sat/kw, rounded up (1 kvB is 4000
+    /// weight units); null when missing or not positive.
+    /// </summary>
+    internal static uint? ParseMempoolMinFeeRatePerKw(JToken? result)
+    {
+        if (result?["mempoolminfee"]?.Value<decimal?>() is not { } btcPerKvb || btcPerKvb <= 0)
+            return null;
+
+        var satPerKw = decimal.Ceiling(btcPerKvb * 100_000_000m / 4m);
+        return satPerKw > uint.MaxValue ? uint.MaxValue : (uint)satPerKw;
+    }
+
     public async Task<uint> GetTransactionConfirmationsAsync(uint256 txId)
     {
         try

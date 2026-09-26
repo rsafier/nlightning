@@ -27,6 +27,13 @@ public interface IBitcoinChainService
         Task.FromResult(PackageSubmitResult.Unsupported("this chain service has no package relay"));
 
     /// <summary>
+    /// bitcoind's current mempool minimum feerate (<c>getmempoolinfo</c> <c>mempoolminfee</c>, BTC/kvB) in sat per
+    /// 1000 weight units, rounded up: a transaction (or package) paying less is refused. Null when unknown; the default
+    /// knows none.
+    /// </summary>
+    Task<uint?> GetMempoolMinFeeRatePerKwAsync() => Task.FromResult<uint?>(null);
+
+    /// <summary>
     /// The block with <paramref name="blockHash"/>, also when it is no longer in the active chain (a disconnected
     /// block, whose wallet effects a reorg rolls back, NL-293); null when unknown. The default knows no block.
     /// </summary>

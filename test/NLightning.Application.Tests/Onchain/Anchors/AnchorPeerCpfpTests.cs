@@ -191,6 +191,64 @@ public sealed class AnchorPeerCpfpTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_OpenChannelWithAPendingPeerChildAfterARestart_When_BumpIsDue_Then_ChildReplaced()
+    {
+        // Arrange: the mempool reactor handed Bob's commitment over while the channel is Open and our child went out;
+        // then the node restarted: the hand-over is gone (memory only), the channel is still Open, and bitcoind does not
+        // report the mempool transaction again
+        var peer = PeerCommitmentInMempool();
+        Service.OnPeerCommitmentInMempool(_channel.ChannelId, ToSigned(peer), false);
+        await Service.WhenIdleAsync();
+        var first = Assert.Single(_store.Children);
+        var restarted = BuildProvider().GetRequiredService<AnchorCpfpService>();
+        _estimate = 20_000;
+
+        // Act: the bump is due two blocks after the child
+        await restarted.RunOnceAsync(502, TestContext.Current.CancellationToken);
+
+        // Assert: the persisted peer child keeps the Open channel in the rounds; it is replaced over Bob's commitment
+        Assert.Equal(ChannelState.Open, _channel.State);
+        Assert.Equal(BroadcastState.Replaced, first.State);
+        var replacement = _store.Children.Single(c => c.TransactionId != first.TransactionId);
+        Assert.Equal(first.TransactionId, replacement.ReplacesTransactionId);
+        AnchorTx.AssertScriptsValid(Load(replacement), peer, _wallet);
+    }
+
+    [Fact]
+    public async Task Given_ReservationWithoutItsChildRowAndPeerCommitmentConfirmed_When_Rounds_Then_ReleasedOnce()
+    {
+        // Arrange: a crash between the reservation's save and the first child's: inputs reserved, no child row, no
+        // LocalCommitment row; then Bob's commitment confirms and the watcher records the close
+        var peer = PeerCommitmentInMempool();
+        await _wallet.ReserveAsync(_channel.ChannelId, 10_000, 2_500, TestContext.Current.CancellationToken);
+        Assert.NotEmpty(_wallet.Reserved(_channel.ChannelId));
+        Confirm(peer, 505);
+
+        // Act
+        await Service.RunOnceAsync(506, TestContext.Current.CancellationToken);
+        await Service.RunOnceAsync(507, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Empty(_store.Children);
+        Assert.Empty(_wallet.Reserved(_channel.ChannelId));
+        Assert.Equal(1, _wallet.ReleaseCount);
+    }
+
+    [Fact]
+    public async Task Given_PeerCommitmentConfirmedWithoutAnyReservation_When_Rounds_Then_NothingReleased()
+    {
+        // Arrange
+        var peer = PeerCommitmentInMempool();
+        Confirm(peer, 505);
+
+        // Act
+        await Service.RunOnceAsync(506, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, _wallet.ReleaseCount);
+    }
+
+    [Fact]
     public async Task Given_PeerCommitmentWithoutAnUntrimmedHtlc_When_Round_Then_NoChild()
     {
         // Arrange: the HTLC is below Bob's dust limit on his commitment: no deadline, the peer's to pay for

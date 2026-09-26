@@ -258,6 +258,34 @@ public class BitcoinChainServicePackageTests
         Assert.True(result.IsFeeRefusal);
     }
 
+    [Theory]
+    [InlineData("0.00001000", 250u)] // 1 sat/vB, the default minrelaytxfee
+    [InlineData("0.00012345", 3087u)] // 12.345 sat/vB -> 3086.25 sat/kw, rounded up
+    public void Given_GetMempoolInfoAnswer_When_MinFeeParsed_Then_SatPerKwRoundedUp(string btcPerKvb, uint expected)
+    {
+        // Arrange
+        var answer = JObject.Parse($$"""{ "loaded": true, "size": 3, "mempoolminfee": {{btcPerKvb}} }""");
+
+        // Act
+        var rate = BitcoinChainService.ParseMempoolMinFeeRatePerKw(answer);
+
+        // Assert
+        Assert.Equal(expected, rate);
+    }
+
+    [Fact]
+    public void Given_GetMempoolInfoWithoutMinFee_When_Parsed_Then_Null()
+    {
+        // Arrange
+        var answer = JObject.Parse("""{ "loaded": false }""");
+
+        // Act
+        var rate = BitcoinChainService.ParseMempoolMinFeeRatePerKw(answer);
+
+        // Assert
+        Assert.Null(rate);
+    }
+
     private static Transaction CreateTransaction(byte tag)
     {
         var tx = Network.RegTest.CreateTransaction();

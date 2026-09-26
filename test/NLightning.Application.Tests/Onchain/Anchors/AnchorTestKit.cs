@@ -235,6 +235,11 @@ internal sealed class FakeAnchorChain : IBitcoinChainService
                 new PackageTransactionResult(child.GetHash(), false, "unevaluated", null)
             ]);
 
+    /// <summary>bitcoind's mempool minimum feerate in sat/kw (<c>getmempoolinfo</c>; null: unknown).</summary>
+    public uint? MempoolMinFeePerKw { get; set; }
+
+    public Task<uint?> GetMempoolMinFeeRatePerKwAsync() => Task.FromResult(MempoolMinFeePerKw);
+
     public Task<PackageSubmitResult> SubmitPackageAsync(Transaction parent, Transaction child)
     {
         Packages.Add((parent, child));
