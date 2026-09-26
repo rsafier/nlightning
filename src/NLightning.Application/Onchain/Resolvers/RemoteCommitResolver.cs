@@ -52,9 +52,11 @@ using Remote;
 /// <c>payment_basepoint</c>, no point needed); HTLCs we offered (received outputs there, B5-RMT-LO-*) claimed with
 /// <c>&lt;sig&gt; &lt;&gt;</c> and <c>nLockTime = cltv_expiry</c> once the tip reaches it; HTLCs the peer offered
 /// (offered outputs there, B5-RMT-RO-*) claimed with <c>&lt;sig&gt; &lt;preimage&gt;</c> before <c>cltv_expiry</c>, only
-/// when the peer is irrevocably committed to them and only with an allowed preimage: our own fulfill of that HTLC, or
-/// the preimage its forward learnt downstream (off chain or on chain), never an invoice preimage alone
-/// (B5-LCL-RO-02). One transaction per output.
+/// when the peer is irrevocably committed to them and only with an allowed preimage: our own fulfill of that HTLC, the
+/// preimage the HTLC switch persisted on it after accepting it as our final hop (NL-316; the switch is asked to decide
+/// every round while the HTLC pays an <c>Open</c> invoice of ours, <see cref="FinalHopClaims"/>), or the preimage its
+/// forward learnt downstream (off chain or on chain), never an invoice preimage alone (B5-LCL-RO-02). One transaction
+/// per output.
 /// </para>
 /// <para>
 /// Upstream: a preimage of our offered HTLC (from the peer's spend on chain, or known off chain) is staged into the
@@ -507,6 +509,13 @@ public sealed class RemoteCommitResolver : IOutputResolver
             }
         }
 
+        // NL-316/NL-322: an HTLC of the peer that pays one of our invoices and has no preimage we may use yet: the switch
+        // decides as final hop (it persists the preimage on the record, which the next round claims with)
+        if (!ours && spend is null && await FinalHopClaims.GetFinalHopDecisionAsync(
+                                          context.UnitOfWork, context.Channel.ChannelId, record, context.Height) is
+            { } finalHopDecision)
+            actions.Add(new RaiseChannelEventAction(finalHopDecision));
+
         OutputResolutionPlan plan;
         try
         {
@@ -768,6 +777,7 @@ public sealed class RemoteCommitResolver : IOutputResolver
 
     /// <summary>
     /// The preimage we may use to claim the peer's HTLC (B5-RMT-RO-01, B5-LCL-RO-02): our own persisted fulfill of it,
+    /// the preimage the switch persisted on it when it accepted it as our final hop (<see cref="FinalHopClaims"/>),
     /// or the preimage the forward of it learnt downstream (the outgoing HTLC's <see cref="HtlcRecord.KnownPreimage"/>
     /// or fulfill, live or archived; a preimage seen on the downstream chain is staged there too). The switch cannot
     /// write the upstream fulfill once this channel is closed, so the downstream record is the only place it is left.
@@ -780,6 +790,10 @@ public sealed class RemoteCommitResolver : IOutputResolver
 
         if (record.Removal is { IsFulfill: true, PaymentPreimage: { } fulfilled })
             return fulfilled;
+
+        // Accepted as our final hop by the switch (NL-316/NL-322): the preimage it persisted on this HTLC's record
+        if (FinalHopClaims.AcceptedPreimage(record) is { } accepted)
+            return accepted;
 
         var unitOfWork = context.UnitOfWork;
         var channelId = context.Channel.ChannelId;

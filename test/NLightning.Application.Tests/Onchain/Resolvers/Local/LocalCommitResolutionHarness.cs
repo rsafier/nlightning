@@ -25,6 +25,8 @@ using Domain.Node.Options;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
+using Domain.Payments.Interfaces;
+using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -91,6 +93,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
     /// <summary>Forwards of an incoming HTLC, as <c>FindHtlcsByOriginAsync</c> answers them.</summary>
     public Dictionary<HtlcOrigin, List<(ChannelId, HtlcKey)>> Forwards { get; } = [];
+
+    /// <summary>Our invoices by payment hash (the final-hop decision asks the switch only for an <c>Open</c> one).</summary>
+    public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
 
     public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null)
     {
@@ -345,7 +350,16 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         resolutions.Setup(r => r.GetOutputsByChannelIdAsync(It.IsAny<ChannelId>()))
                    .ReturnsAsync(() => Rows.Values.ToList());
 
+        var circuits = new Mock<IForwardCircuitDbRepository>();
+        circuits.Setup(r => r.GetByIncomingAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>()))
+                .ReturnsAsync((ForwardCircuitModel?)null);
+        var invoices = new Mock<IInvoiceDbRepository>();
+        invoices.Setup(r => r.GetByPaymentHashAsync(It.IsAny<Hash>()))
+                .ReturnsAsync((Hash hash) => Invoices.GetValueOrDefault(hash));
+
         var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ForwardCircuitDbRepository).Returns(circuits.Object);
+        unitOfWork.SetupGet(u => u.InvoiceDbRepository).Returns(invoices.Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channels.Object);
         unitOfWork.SetupGet(u => u.ChannelStateDbRepository).Returns(channelState.Object);
         unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(watches.Object);
