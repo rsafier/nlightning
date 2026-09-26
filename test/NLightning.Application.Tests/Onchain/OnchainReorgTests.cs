@@ -9,6 +9,7 @@ namespace NLightning.Application.Tests.Onchain;
 
 using Application.Channels.Safety;
 using Application.Channels.Services;
+using Application.Gossip.Interfaces;
 using Application.Onchain;
 using Application.Onchain.Reorg;
 using Channels.Services;
@@ -281,8 +282,14 @@ public sealed class OnchainReorgTests : IDisposable
                 .Callback<ChannelModel>(c => stored.Add(c.ShortChannelId))
                 .Returns(Task.CompletedTask);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channels.Object);
+        var channelUpdates = new Mock<IChannelUpdateService>();
+        var scidWhenUpdateSent = new List<ShortChannelId>();
+        channelUpdates.Setup(c => c.SendChannelUpdateAsync(open.ChannelId, It.IsAny<CancellationToken>()))
+                      .Callback(() => scidWhenUpdateSent.Add(open.ShortChannelId))
+                      .Returns(Task.CompletedTask);
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
+        services.AddSingleton(channelUpdates.Object);
         using var provider = services.BuildServiceProvider();
         var handler = new FundingReconfirmationHandler(new ChannelLockProvider(), memory.Object,
                                                        NullLogger.Instance,
@@ -294,7 +301,8 @@ public sealed class OnchainReorgTests : IDisposable
         var moved = await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
         var again = await handler.HandleAsync(watch, TestContext.Current.CancellationToken);
 
-        // Assert: the new position is saved, then applied; the same confirmation again changes nothing
+        // Assert: the new position is saved, then applied, then a channel_update with it goes to the peer once; the
+        // same confirmation again changes nothing
         Assert.True(moved);
         Assert.False(again);
         var expected = new ShortChannelId(501, 7, open.FundingOutput.Index.Value);
@@ -302,6 +310,7 @@ public sealed class OnchainReorgTests : IDisposable
         Assert.Equal(expected, open.ShortChannelId);
         Assert.Equal(501u, open.FundingCreatedAtBlockHeight);
         unitOfWork.Verify(u => u.SaveChangesAsync(), Times.Once);
+        Assert.Equal([expected], scidWhenUpdateSent);
     }
 
     [Fact]
