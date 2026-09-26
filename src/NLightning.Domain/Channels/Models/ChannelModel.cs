@@ -71,6 +71,25 @@ public class ChannelModel
 
     #endregion
 
+    #region Close state (BOLT2 plan N10)
+
+    /// <summary>
+    /// The script of the <c>shutdown</c> we sent (or are about to send: it is persisted before it goes out), or null
+    /// while we have not sent one. Re-sent on every reconnection (B2-RE-28).
+    /// </summary>
+    public BitcoinScript? LocalShutdownScript { get; private set; }
+
+    /// <summary>The script of the peer's <c>shutdown</c>, or null while it has not sent one.</summary>
+    public BitcoinScript? RemoteShutdownScript { get; private set; }
+
+    /// <summary>
+    /// The fully signed mutual close transaction both sides agreed on, persisted before it is broadcast
+    /// (<see cref="ChannelState.Closing"/>), or null.
+    /// </summary>
+    public SignedTransaction? ClosingTransaction { get; private set; }
+
+    #endregion
+
     #region Signatures
 
     public CompactSignature? LastSentSignature { get; private set; }
@@ -282,6 +301,33 @@ public class ChannelModel
     public void MarkErrorSent(ReadOnlyMemory<byte> errorMessage)
     {
         ErrorSent = errorMessage.ToArray();
+    }
+
+    /// <summary>Records the script of the <c>shutdown</c> we send (BOLT 2: only once, so it never changes).</summary>
+    /// <exception cref="InvalidOperationException">Another script was already recorded.</exception>
+    public void SetLocalShutdownScript(BitcoinScript script)
+    {
+        if (LocalShutdownScript is { } current && current != script)
+            throw new InvalidOperationException("Our shutdown script is already set");
+
+        LocalShutdownScript = script;
+    }
+
+    /// <summary>Records the script of the peer's <c>shutdown</c>.</summary>
+    /// <exception cref="InvalidOperationException">Another script was already recorded.</exception>
+    public void SetRemoteShutdownScript(BitcoinScript script)
+    {
+        if (RemoteShutdownScript is { } current && current != script)
+            throw new InvalidOperationException("The peer's shutdown script is already set");
+
+        RemoteShutdownScript = script;
+    }
+
+    /// <summary>Records the agreed, fully signed mutual close transaction.</summary>
+    public void SetClosingTransaction(SignedTransaction closingTransaction)
+    {
+        ArgumentNullException.ThrowIfNull(closingTransaction);
+        ClosingTransaction = closingTransaction;
     }
 
     /// <summary>Records that <c>channel_reestablish</c> proved we lost data (never cleared).</summary>

@@ -10,6 +10,23 @@ public enum ChannelState : byte
     ReadyForThem = 20,
     ReadyForUs = 21,
     Open = 22,
+
+    /// <summary>
+    /// A <c>shutdown</c> was sent or received (BOLT 2 "Closing Initiation"): no new HTLC is added in either direction,
+    /// the ones in flight are still fulfilled or failed, and the channel waits until none is left.
+    /// </summary>
+    ShuttingDown = 23,
+
+    /// <summary>
+    /// Both <c>shutdown</c>s were exchanged and no HTLC or update is left: the legacy <c>closing_signed</c> fee
+    /// negotiation runs (restarted on every reconnection, BOLT 2). No update is sent or accepted any more.
+    /// </summary>
+    Negotiating = 25,
+
+    /// <summary>
+    /// The mutual close transaction was agreed, fully signed, persisted and broadcast; it waits for its confirmation,
+    /// then the channel is <see cref="Closed"/>.
+    /// </summary>
     Closing = 30,
 
     /// <summary>

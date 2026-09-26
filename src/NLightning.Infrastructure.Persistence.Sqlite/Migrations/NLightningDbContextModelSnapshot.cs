@@ -215,6 +215,12 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<byte?>("ChangeAddressType")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte[]>("ClosingTransaction")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("ClosingTxId")
+                        .HasColumnType("BLOB");
+
                     b.Property<bool>("DataLossDetected")
                         .HasColumnType("INTEGER");
 
@@ -258,6 +264,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.Property<ulong>("LocalRevocationNumber")
                         .HasColumnType("INTEGER");
 
+                    b.Property<byte[]>("LocalShutdownScript")
+                        .HasColumnType("BLOB");
+
                     b.Property<ulong?>("MaxDustHtlcExposureMsat")
                         .HasColumnType("INTEGER");
 
@@ -285,6 +294,9 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
 
                     b.Property<ulong>("RemoteRevocationNumber")
                         .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("RemoteShutdownScript")
+                        .HasColumnType("BLOB");
 
                     b.Property<byte[]>("SentCommitDiff")
                         .HasColumnType("BLOB");

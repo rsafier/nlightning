@@ -66,6 +66,14 @@ public static class ChannelEntityConfiguration
             // Dust exposure policy of the snapshot (migration AddInvoicesPaymentsAndCircuits, NL-242)
             entity.Property(e => e.MaxDustHtlcExposureMsat).IsRequired(false);
 
+            // Mutual close (migration AddShutdownState, BOLT2 plan N10)
+            entity.Property(e => e.LocalShutdownScript).IsRequired(false);
+            entity.Property(e => e.RemoteShutdownScript).IsRequired(false);
+            entity.Property(e => e.ClosingTxId)
+                  .HasConversion<TxIdConverter>()
+                  .IsRequired(false);
+            entity.Property(e => e.ClosingTransaction).IsRequired(false);
+
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
                   .WithOne()
@@ -114,5 +122,9 @@ public static class ChannelEntityConfiguration
               .HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.SentCommitDiff).HasColumnType("varbinary(max)");
         entity.Property(e => e.ErrorSent).HasColumnType("varbinary(max)");
+        entity.Property(e => e.LocalShutdownScript).HasColumnType("varbinary(max)");
+        entity.Property(e => e.RemoteShutdownScript).HasColumnType("varbinary(max)");
+        entity.Property(e => e.ClosingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
+        entity.Property(e => e.ClosingTransaction).HasColumnType("varbinary(max)");
     }
 }
