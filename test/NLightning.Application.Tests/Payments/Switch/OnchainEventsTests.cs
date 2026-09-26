@@ -143,6 +143,64 @@ public class OnchainEventsTests
                                                 It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Given_OnchainTimeoutRefusedAndNoLongerRaised_When_UpstreamLockInIsReplayed_Then_FailedWithPermanentChannelFailure()
+    {
+        // Arrange: the resolver's fail was refused (upstream peer away) and the circuit marked Failed; the settling
+        // transaction is irrevocable now, so the resolver raises nothing any more, and the outgoing channel is closed
+        // (not loaded), so its record derives no resolution
+        var status = ForwardCircuitStatus.Offered;
+        _circuits.Setup(r => r.GetByIncomingAsync(TestChannelId, _incoming.Id)).ReturnsAsync(() => Circuit(status));
+        _circuits.Setup(r => r.UpdateAsync(It.IsAny<ForwardCircuitModel>()))
+                 .Callback((ForwardCircuitModel c) => status = c.Status)
+                 .Returns(Task.CompletedTask);
+        var attempts = 0;
+        _operations.Setup(o => o.FailHtlcAsync(TestChannelId, _incoming.Id, It.IsAny<ReadOnlyMemory<byte>>(),
+                                               It.IsAny<CancellationToken>()))
+                   .Callback(() =>
+                    {
+                        if (++attempts == 1)
+                            throw new Domain.Exceptions.CommitmentRefusedException("N6", "peer away");
+
+                        _context.SetState(_context.State.SendFail(_incoming.Id, new byte[292]).Next);
+                    })
+                   .Returns(Task.CompletedTask);
+        var htlcSwitch = CreateSwitch();
+        await htlcSwitch.HandleAsync(new OutgoingHtlcFailed(s_downstreamChannelId, DownstreamHtlcId,
+                                                            HashOf(s_preimage), HtlcRemoval.OnchainTimeout()),
+                                     TestContext.Current.CancellationToken);
+        Assert.Equal(ForwardCircuitStatus.Failed, status);
+
+        // Act: the upstream link comes up and the switch gets the upstream HTLC's lock-in again
+        await htlcSwitch.HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                     TestContext.Current.CancellationToken);
+        await htlcSwitch.HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                     TestContext.Current.CancellationToken);
+
+        // Assert: failed upstream on the first replay (never twice), with our own permanent_channel_failure
+        Assert.Equal(2, attempts);
+        Assert.Equal(2, _createdFailures.Count);
+        Assert.All(_createdFailures, f => Assert.Equal(FailureCode.PermanentChannelFailure, f.Code));
+    }
+
+    [Fact]
+    public async Task Given_OfferedCircuitWithoutAResolution_When_UpstreamLockInIsReplayed_Then_NotFailed()
+    {
+        // Arrange: the downstream HTLC is still unresolved (circuit Offered, outgoing channel not loaded)
+        var htlcSwitch = CreateSwitch();
+
+        // Act
+        await htlcSwitch.HandleAsync(new IncomingHtlcLockedIn(TestChannelId, _incoming),
+                                     TestContext.Current.CancellationToken);
+
+        // Assert: it waits: failing upstream before the downstream is resolved could lose the HTLC amount
+        _operations.Verify(o => o.FailHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(),
+                                                It.IsAny<ReadOnlyMemory<byte>>(), It.IsAny<CancellationToken>()),
+                           Times.Never);
+        _operations.Verify(o => o.FulfillHtlcAsync(It.IsAny<ChannelId>(), It.IsAny<ulong>(), It.IsAny<Secret>(),
+                                                   It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private HtlcSwitch CreateSwitch()
     {
         var services = new ServiceCollection();
@@ -165,6 +223,7 @@ public class OnchainEventsTests
         return ForwardCircuitModel.Restore(TestChannelId, _incoming.Id, LightningMoney.MilliSatoshis(30_000_000), 640,
                                            HashOf(s_preimage), s_incomingSecret, new ShortChannelId(1, 2, 3),
                                            LightningMoney.MilliSatoshis(29_000_000), 600, now, status,
-                                           s_downstreamChannelId, DownstreamHtlcId, null);
+                                           s_downstreamChannelId, DownstreamHtlcId,
+                                           status is ForwardCircuitStatus.Offered ? null : now);
     }
 }

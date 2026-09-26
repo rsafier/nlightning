@@ -31,6 +31,7 @@ using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 using Infrastructure.Bitcoin.Onchain;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 
 /// <summary>
 /// A fake chain around <see cref="LocalCommitResolver"/>: Alice's (our) real commitment of a
@@ -69,6 +70,16 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     public List<(uint Height, IChannelDomainEvent Event)> Events { get; } = [];
     public List<AlertAction> Alerts { get; } = [];
 
+    /// <summary>The sweep fee estimate the fee service answers (sat/kw).</summary>
+    public uint FeeEstimatePerKw { get; set; } = FeeratePerKw;
+
+    /// <summary>False: a mined spend of a watched output is recorded, but <c>OnOutputSpentAsync</c> is not called (its
+    /// staged writes lost, as when the round's save failed).</summary>
+    public bool NotifySpends { get; set; } = true;
+
+    /// <summary>False: <c>IBitcoinChainService.GetTransactionAsync</c> finds nothing (pruned node, RPC down).</summary>
+    public bool ChainServiceFindsTransactions { get; set; } = true;
+
     /// <summary>What the executor did, in order ("stage ...", "raise ...", "broadcast ...").</summary>
     public List<string> Log { get; } = [];
 
@@ -86,7 +97,12 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
 
         var feeService = new Mock<IFeeService>();
         feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
-                  .ReturnsAsync(LightningMoney.Satoshis(FeeratePerKw));
+                  .ReturnsAsync(() => LightningMoney.Satoshis(FeeEstimatePerKw));
+        var chainService = new Mock<IBitcoinChainService>();
+        chainService.Setup(c => c.GetTransactionAsync(It.IsAny<uint256>()))
+                    .ReturnsAsync((uint256 txId) => ChainServiceFindsTransactions
+                                                        ? _knownTransactions.GetValueOrDefault(txId)
+                                                        : null);
         var destinations = new Mock<ISweepDestinationProvider>();
         destinations.Setup(d => d.GetDestinationScriptAsync(It.IsAny<CancellationToken>())).ReturnsAsync(Destination);
 
@@ -96,6 +112,7 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         services.AddSingleton(new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddBitcoinInfrastructure();
+        services.AddSingleton(chainService.Object);
         services.AddSingleton(Pair.Alice.Signer);
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
         services.AddOnchainBitcoinServices();
@@ -157,8 +174,10 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
                 watch.MarkSpent(txId, Height, s_blockHash);
                 var row = Rows[key] with { State = OutputResolutionState.Resolved, ResolvedHeight = Height };
                 Rows[key] = row;
-                await ApplyAsync(await Resolver.OnOutputSpentAsync(Close, row, ChainTxMapper.FromTransaction(tx),
-                                                                   Height, TestContext.Current.CancellationToken));
+                if (NotifySpends)
+                    await ApplyAsync(await Resolver.OnOutputSpentAsync(Close, row,
+                                                                       ChainTxMapper.FromTransaction(tx), Height,
+                                                                       TestContext.Current.CancellationToken));
             }
         }
 

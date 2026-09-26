@@ -9,6 +9,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Closing;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -26,8 +27,10 @@ using Domain.Onchain.Planners;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Builders.Interfaces;
+using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Onchain.Interfaces;
 using Infrastructure.Bitcoin.Outputs;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Local;
 
 /// <summary>
@@ -70,6 +73,7 @@ using Local;
 public sealed class LocalCommitResolver : IOutputResolver
 {
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IBitcoinChainService? _chainService;
     private readonly ISweepDestinationProvider _destinationProvider;
     private readonly SweepFeePolicy _feePolicy;
     private readonly IFeeService _feeService;
@@ -86,8 +90,10 @@ public sealed class LocalCommitResolver : IOutputResolver
                                IFeeService feeService, ISweepDestinationProvider destinationProvider,
                                IServiceScopeFactory serviceScopeFactory, ILogger<LocalCommitResolver> logger,
                                IOptions<LocalCommitResolverOptions>? options = null, SweepFeePolicy? feePolicy = null,
-                               IChannelMemoryRepository? channelMemoryRepository = null)
+                               IChannelMemoryRepository? channelMemoryRepository = null,
+                               IBitcoinChainService? chainService = null)
     {
+        _chainService = chainService;
         _outputMapper = outputMapper;
         _htlcTransactionBuilder = htlcTransactionBuilder;
         _sweepTransactionBuilder = sweepTransactionBuilder;
@@ -340,8 +346,29 @@ public sealed class LocalCommitResolver : IOutputResolver
                 secondLevelSpend = await GetSpendAsync(context, child);
         }
 
-        if (spend is { ByUs: false } && descriptor.Kind == OutputDescriptorKind.LocalOfferedHtlc)
-            spend = spend with { Preimage = ToBytes(record?.KnownPreimage) };
+        var lossUnproven = false;
+        if (spend is { ByUs: false } && descriptor is
+            {
+                Kind: OutputDescriptorKind.LocalOfferedHtlc, Htlc: { } spentOffered
+            })
+        {
+            if (record?.KnownPreimage is { } known)
+            {
+                spend = spend with { Preimage = (byte[])known };
+            }
+            else
+            {
+                // The preimage staged at spend time is missing (the stage found no record, its save failed, or the
+                // spend was never reported): read the witness again. Only a witness that proves a path without the
+                // preimage (our HTLC-timeout, a revocation) may lead to the upstream fail (BOLT 5: fail upstream only
+                // when the output was resolved by a timeout); an unreadable one is alerted, never failed
+                var (path, preimage) = await ReadSpendingWitnessAsync(context, row, spend.SpendingTxId,
+                                                                      spentOffered.PaymentHash);
+                spend = spend with { Path = path, Preimage = preimage };
+                lossUnproven = preimage is null
+                            && path is not (HtlcSpendPath.HtlcTimeoutTransaction or HtlcSpendPath.Revocation);
+            }
+        }
         else if (spend is { ByUs: false } && descriptor.Kind == OutputDescriptorKind.LocalReceivedHtlc)
             spend = spend with { Path = HtlcSpendPath.TimeoutClaim }; // alerts come from the witness, at spend time
 
@@ -393,6 +420,21 @@ public sealed class LocalCommitResolver : IOutputResolver
                     AddFulfill(context, offered, new Secret(action.Preimage!), actions);
                     break;
 
+                case ResolutionActionKind.RaiseFailed when raiseUpstream && lossUnproven
+                                                        && descriptor.Htlc is { } offered:
+                    // The peer may have been paid on chain with the preimage: failing upstream could lose the amount
+                    _logger.LogError("Not failing HTLC {HtlcId} of channel {ChannelId} upstream: its output was taken "
+                                   + "by {TxId}, whose witness could not be read", offered.Id,
+                                     context.Channel.ChannelId, Display(spend!.SpendingTxId));
+                    if (Depth(context.Height, spend.Height) == _options.ReasonableDepth)
+                        actions.Add(new AlertAction("B5-LCL-LO-03",
+                                                    $"Our offered HTLC {offered.Id} ({offered.AmountMsat} msat) of "
+                                                  + $"channel {context.Channel.ChannelId} was taken by "
+                                                  + $"{Display(spend.SpendingTxId)} and its witness cannot be read: "
+                                                  + "the upstream HTLC is neither fulfilled nor failed; check the "
+                                                  + "transaction for the preimage"));
+                    break;
+
                 case ResolutionActionKind.RaiseFailed when raiseUpstream && descriptor.Htlc is { } offered:
                     AddFail(context, offered, record, actions);
                     break;
@@ -400,6 +442,47 @@ public sealed class LocalCommitResolver : IOutputResolver
         }
 
         UpdateRowState(context, updated, plan, spend, waitUntil, actions);
+    }
+
+    /// <summary>
+    /// The spend path and the preimage (checked against <paramref name="paymentHash"/>) of the input of
+    /// <paramref name="spenderTxId"/> that spends <paramref name="row"/>'s outpoint, read from the chain;
+    /// <see cref="HtlcSpendPath.Unknown"/> when the transaction cannot be fetched.
+    /// </summary>
+    private async Task<(HtlcSpendPath Path, byte[]? Preimage)> ReadSpendingWitnessAsync(
+        LocalCommitContext context, OutputResolutionModel row, TxId spenderTxId, Hash paymentHash)
+    {
+        if (_chainService is null)
+            return (HtlcSpendPath.Unknown, null);
+
+        try
+        {
+            var transaction = await _chainService.GetTransactionAsync(new uint256((byte[])spenderTxId));
+            if (transaction is null)
+            {
+                _logger.LogWarning("The spender {TxId} of {Output}:{Vout} of channel {ChannelId} is not found",
+                                   Display(spenderTxId), Display(row.TransactionId), row.OutputIndex,
+                                   context.Channel.ChannelId);
+                return (HtlcSpendPath.Unknown, null);
+            }
+
+            var spender = ChainTxMapper.FromTransaction(transaction);
+            var index = spender.IndexOfInputSpending(row.TransactionId, row.OutputIndex);
+            if (index < 0)
+                return (HtlcSpendPath.Unknown, null);
+
+            var witness = spender.Inputs[index].Witness;
+            return HtlcWitnessParser.TryExtractPreimage(witness, paymentHash, out var preimage)
+                       ? (HtlcSpendPath.PreimageClaim, (byte[])preimage)
+                       : (HtlcWitnessParser.Parse(witness).Path, null);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogWarning("Cannot fetch the spender {TxId} of {Output}:{Vout} of channel {ChannelId}: {Reason}",
+                               Display(spenderTxId), Display(row.TransactionId), row.OutputIndex,
+                               context.Channel.ChannelId, e.Message);
+            return (HtlcSpendPath.Unknown, null);
+        }
     }
 
     /// <summary>
@@ -497,30 +580,45 @@ public sealed class LocalCommitResolver : IOutputResolver
         var weight = SweepWeights.EstimateTransactionWeight([input], [destination.Length]);
         var decision = _feePolicy.Decide(input.AmountSat, weight, await GetFeeEstimateAsync(cancellationToken), false,
                                          context.Height, null);
-        SignedTransaction signed;
-        try
+        var dust = ShutdownScriptValidator.GetDustThresholdSat(destination);
+        var floorFee = SweepWeights.FeeSat(_feePolicy.Options.MinFeeratePerKw, weight);
+        if (decision.Abandon || input.AmountSat < floorFee + dust)
         {
-            if (decision.Abandon)
-                throw new ArgumentException("the output does not pay its own sweep fee");
-
-            var unsigned = _sweepTransactionBuilder.BuildWithFee([input], destination, decision.FeeSat);
-            signed = _sweepTransactionBuilder.Sign(unsigned, _lightningSigner, context.Channel.ChannelId);
-        }
-        catch (ArgumentException e)
-        {
-            _logger.LogWarning("Not sweeping {TxId}:{Vout} ({AmountSat} sat) of channel {ChannelId}: {Reason}",
-                               Display(input.TxId), input.Vout, input.AmountSat, context.Channel.ChannelId, e.Message);
+            // Worth no more than its own fee plus a dust output even at the floor rate: it can never be swept
+            _logger.LogWarning("Not sweeping {TxId}:{Vout} ({AmountSat} sat) of channel {ChannelId}: it does not pay "
+                             + "its own sweep fee ({FloorFeeSat} sat at the floor rate) and a {DustSat} sat output",
+                               Display(input.TxId), input.Vout, input.AmountSat, context.Channel.ChannelId, floorFee,
+                               dust);
             var ignored = row with { State = OutputResolutionState.Ignored };
             ReplaceRow(context, ignored, actions);
             return ignored;
         }
 
+        // The capped fee (half the value) of a small output can leave less than dust: pay what leaves exactly dust,
+        // which is still at least the floor fee
+        var feeSat = Math.Min(decision.FeeSat, input.AmountSat - dust);
+        SignedTransaction signed;
+        try
+        {
+            var unsigned = _sweepTransactionBuilder.BuildWithFee([input], destination, feeSat);
+            signed = _sweepTransactionBuilder.Sign(unsigned, _lightningSigner, context.Channel.ChannelId);
+        }
+        catch (ArgumentException e)
+        {
+            // Not a property of the output (checked above): leave the row as it is, so the next block tries again
+            _logger.LogError(e, "Cannot build the sweep of {TxId}:{Vout} ({AmountSat} sat, fee {FeeSat} sat) of "
+                              + "channel {ChannelId}; retrying next block", Display(input.TxId), input.Vout,
+                             input.AmountSat, feeSat, context.Channel.ChannelId);
+            return row;
+        }
+
+        var feeratePerKw = feeSat == decision.FeeSat ? decision.FeeratePerKw : SweepFeePolicy.FeeratePerKw(feeSat, weight);
         _logger.LogInformation("Sweeping {TxId}:{Vout} ({AmountSat} sat, fee {FeeSat} sat) of channel {ChannelId} "
-                             + "with {SweepTxId}", Display(input.TxId), input.Vout, input.AmountSat, decision.FeeSat,
+                             + "with {SweepTxId}", Display(input.TxId), input.Vout, input.AmountSat, feeSat,
                                context.Channel.ChannelId, Display(signed.TxId));
         actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, BroadcastPurpose.Sweep,
                                                                       context.Channel.ChannelId, context.Height,
-                                                                      decision.FeeratePerKw)));
+                                                                      feeratePerKw)));
         var swept = row with
         {
             ResolvingTransactionId = signed.TxId,
@@ -746,8 +844,15 @@ public sealed class LocalCommitResolver : IOutputResolver
     {
         var channel = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
         if (channel?.Commitments is not { } commitments
-         || commitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is not { } record
-         || record.KnownPreimage == preimage)
+         || commitments.GetHtlc(HtlcDirection.Outgoing, htlcId) is not { } record)
+        {
+            // The fulfill is still raised; the per-block round reads the preimage from the chain again
+            _logger.LogError("Cannot persist the preimage of our HTLC {HtlcId} of channel {ChannelId} seen on chain: "
+                           + "the channel or its HTLC record is not stored", htlcId, channelId);
+            return;
+        }
+
+        if (record.KnownPreimage == preimage)
             return;
 
         var updated = record with { KnownPreimage = preimage };

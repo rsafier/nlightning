@@ -291,6 +291,89 @@ public sealed class LocalCommitResolutionTests
     }
 
     [Fact]
+    public async Task Given_PeersPreimageClaimNotStagedAtSpendTime_When_ReasonablyDeep_Then_FulfilledFromTheChainAndNeverFailed()
+    {
+        // Arrange: Bob claims our offered HTLC with the preimage, but the spend-time round is lost (its save failed),
+        // so the preimage never reached the HTLC's record
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+
+        // Act: the claim confirms, and the chain goes well past the reasonable depth
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        await harness.MineToAsync(CloseHeight + 20);
+
+        // Assert: the per-block round read the preimage from the spender: staged, fulfilled, never failed
+        var fulfilled = Assert.IsType<OutgoingHtlcFulfilled>(harness.Events.First(e => e.Event is OutgoingHtlcFulfilled)
+                                                                    .Event);
+        Assert.Equal(s_offeredPreimage, fulfilled.PaymentPreimage);
+        Assert.Equal(s_offeredPreimage, Assert.Single(harness.Applied).UpsertedHtlcs.Single().KnownPreimage);
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed);
+    }
+
+    [Fact]
+    public async Task Given_OfferedHtlcTakenByAnUnreadableSpender_When_ReasonablyDeep_Then_AlertedAndNeverFailedUpstream()
+    {
+        // Arrange: as above, and the chain service cannot return the spender (so its witness cannot be read)
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, OfferedMsat, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        await harness.ResolveAsync();
+        var vout = harness.VoutOf(OutputDescriptorKind.LocalOfferedHtlc);
+        harness.NotifySpends = false;
+        harness.ChainServiceFindsTransactions = false;
+
+        // Act
+        await harness.MineAsync(PeerPreimageClaim(harness, vout, s_offeredPreimage));
+        var spentAt = harness.Height;
+        await harness.MineToAsync(spentAt + 20);
+
+        // Assert: the peer may have been paid, so the upstream HTLC is never failed; the operator is alerted once, at
+        // the depth where the fail would have been raised
+        Assert.DoesNotContain(harness.Events, e => e.Event is OutgoingHtlcFailed or OutgoingHtlcFulfilled);
+        Assert.Equal("B5-LCL-LO-03", Assert.Single(harness.Alerts).RequirementId);
+    }
+
+    [Fact]
+    public async Task Given_SmallSecondLevelOutputAndAFeeSpike_When_Swept_Then_SweptLeavingDustInsteadOfIgnored()
+    {
+        // Arrange: an HTLC just above our trim threshold (546 sat + the 1,657 sat HTLC-timeout fee at 2,500 sat/kw),
+        // so its HTLC-timeout pays about 570 sat; at a spiked estimate the fee is capped at half of that, which would
+        // leave less than the 294 sat P2WPKH dust
+        using var harness = new LocalCommitResolutionHarness(pair =>
+        {
+            pair.Add(pair.Alice, 2_230_000, s_offeredPreimage, OfferedCltv);
+            pair.Settle(pair.Alice);
+        });
+        harness.FeeEstimatePerKw = 100_000;
+        await harness.ResolveAsync();
+        await harness.MineToAsync(OfferedCltv);
+        var timeout = Assert.Single(harness.Broadcast(BroadcastPurpose.HtlcTransaction));
+        var value = (ulong)timeout.Outputs[0].Value.Satoshi;
+        Assert.True(value - value / 2 < 294, $"{value} sat");
+        await harness.MineAsync();
+        var confirmedAt = harness.Height;
+
+        // Act: the second-level CSV allows the sweep
+        await harness.MineToAsync(confirmedAt + Csv - 1);
+
+        // Assert: swept (not abandoned), paying everything above the dust output, valid against the output
+        var sweep = Assert.Single(SweepsOf(harness, timeout));
+        Assert.Equal(294, Assert.Single(sweep.Outputs).Value.Satoshi);
+        harness.AssertAllInputsVerify(sweep);
+        var row = harness.Rows[(new TxId(timeout.GetHash().ToBytes()), 0)];
+        Assert.Equal(OutputResolutionState.Broadcast, row.State);
+        Assert.Equal(new TxId(sweep.GetHash().ToBytes()), row.ResolvingTransactionId);
+    }
+
+    [Fact]
     public async Task Given_TrimmedOfferedHtlc_When_OurCommitmentConfirms_Then_UpstreamFailedAtOnce()
     {
         // Arrange: 1,000 sat is below the dust limit plus the HTLC-timeout fee on both commitments
