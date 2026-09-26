@@ -103,7 +103,8 @@ public class AnchorsO3Tests : IAsyncLifetime
         var input = Assert.Single(sweep.Inputs, i => i.PrevOut.Hash == commitment.Transaction.GetHash());
         Assert.Equal(new OutPoint(commitment.Transaction, toLocalRow.OutputIndex), input.PrevOut);
         Assert.Equal((uint)csv, input.Sequence.Value);
-        Assert.DoesNotContain(sweep.Inputs, i => i.PrevOut.N == ourAnchor || i.PrevOut.N == peerAnchor);
+        Assert.DoesNotContain(sweep.Inputs, i => i.PrevOut == new OutPoint(commitment.Transaction, ourAnchor)
+                                              || i.PrevOut == new OutPoint(commitment.Transaction, peerAnchor));
         var fee = await _harness.FeeAsync(sweep, ct);
         Console.WriteLine($"to_local {toLocal.Value}, sweep {sweep.GetHash()} fee {fee}, csv {csv}");
         Assert.True(fee > Money.Zero && fee < toLocal.Value / 2, $"sweep fee {fee}");
