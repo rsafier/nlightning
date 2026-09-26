@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+using System.Net;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Google.Protobuf;
@@ -75,25 +77,37 @@ public class ReestablishFlowTests : IAsyncLifetime
 
     /// <summary>Proof N7 (b): LND restarts (the alice container) and we reconnect with backoff.</summary>
     /// <remarks>
-    /// Explicit: restarting the shared alice can change its container address (another test's container may take the
-    /// released IP), which breaks every later test of the collection that talks to alice. Run it on its own:
-    /// <c>dotnet test test/NLightning.Integration.Tests --filter "FullyQualifiedName~Docker.ReestablishFlowTests" --
-    /// xUnit.Explicit=on</c>.
+    /// <c>RestartByAlias</c> with its defaults (<c>isLND: false</c>) is a plain container restart: same container,
+    /// network, data and, in practice, address. With <c>isLND: true</c> it reopens alice's fixture channels and can
+    /// hang in <c>WaitUntilAliasIsServerReady</c> (it waits on the stale connection when the address changed), so that
+    /// mode is not used. Docker hands a restarted container the lowest free address of its network, so a container
+    /// removed earlier (another test's database, say) would move alice, and every later test of the collection would
+    /// lose her: <see cref="HoldAddressesBelowAsync"/> fills those gaps with idle containers for the restart, and the
+    /// address is asserted unchanged.
     /// </remarks>
-    [Fact(Explicit = true)]
+    [Fact]
     public async Task Given_LndRestarts_When_Reconnected_Then_ReestablishedAndHtlcsFlowAgain()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var (channel, _) = await OpenChannelAndWaitUntilActiveAsync(GetAlice(), ct);
+        using var docker = new DockerClientConfiguration().CreateClient();
+        var addressBefore = await GetAddressAsync(docker, "alice", ct);
 
-        // Act - a plain container restart (same container, network and data; LNUnit's RestartByAlias can leave the
-        // shared alice unreachable for the tests that follow when it runs into its timeouts)
-        using (var docker = new DockerClientConfiguration().CreateClient())
-            await docker.Containers.RestartContainerAsync("alice", new ContainerRestartParameters
-            {
-                WaitBeforeKillSeconds = 1
-            }, ct);
+        // Act
+        var builder = _fixture.Builder ?? throw new InvalidOperationException("The regtest network is not running");
+        var placeholders = await HoldAddressesBelowAsync(docker, "alice", ct);
+        try
+        {
+            await builder.RestartByAlias("alice").WaitAsync(s_activeTimeout, ct);
+        }
+        finally
+        {
+            foreach (var placeholder in placeholders)
+                await DockerContainerUtils.RemoveContainerAsync(docker, placeholder);
+        }
+
+        Assert.Equal(addressBefore, await GetAddressAsync(docker, "alice", ct));
         var alice = await WaitUntilLndSyncedAsync(ct);
         await WaitUntilReestablishedAsync(alice, channel, ct);
 
@@ -152,6 +166,57 @@ public class ReestablishFlowTests : IAsyncLifetime
     }
 
     private string OurNodeIdHex => Node.NodeIdHex;
+
+    private static async Task<IPAddress> GetAddressAsync(DockerClient docker, string container, CancellationToken ct)
+    {
+        var inspection = await docker.Containers.InspectContainerAsync(container, ct);
+        return IPAddress.Parse(inspection.NetworkSettings.Networks.Single().Value.IPAddress);
+    }
+
+    /// <summary>
+    /// Starts idle containers until no address below <paramref name="container"/>'s is free in its network (Docker
+    /// gives a (re)started container the lowest free one), so a restart gives it its own address back.
+    /// </summary>
+    /// <returns>The names of the idle containers, to remove after the restart.</returns>
+    private static async Task<List<string>> HoldAddressesBelowAsync(DockerClient docker, string container,
+                                                                     CancellationToken ct)
+    {
+        const int maxPlaceholders = 64;
+        var inspection = await docker.Containers.InspectContainerAsync(container, ct);
+        var (networkName, endpoint) = inspection.NetworkSettings.Networks.Single();
+        var own = ToUInt32(IPAddress.Parse(endpoint.IPAddress));
+        var placeholders = new List<string>();
+        while (placeholders.Count < maxPlaceholders)
+        {
+            var network = await docker.Networks.InspectNetworkAsync(networkName, ct);
+            var ipam = network.IPAM.Config.First(c => c.Subnet.Contains('.'));
+            var first = ToUInt32(IPAddress.Parse(ipam.Subnet.Split('/')[0])) + 1;
+            var used = network.Containers.Values
+                              .Select(c => ToUInt32(IPAddress.Parse(c.IPv4Address.Split('/')[0])))
+                              .ToHashSet();
+            if (!string.IsNullOrEmpty(ipam.Gateway))
+                used.Add(ToUInt32(IPAddress.Parse(ipam.Gateway)));
+            if (Enumerable.Range(0, (int)(own - first)).All(i => used.Contains(first + (uint)i)))
+                return placeholders;
+
+            var name = $"nltg-address-hold-{placeholders.Count}";
+            await DockerContainerUtils.RemoveContainerAsync(docker, name);
+            await docker.Containers.CreateContainerAsync(new CreateContainerParameters
+            {
+                Name = name,
+                Image = inspection.Config.Image,
+                Entrypoint = ["sleep"],
+                Cmd = ["600"],
+                HostConfig = new HostConfig { NetworkMode = networkName }
+            }, ct);
+            placeholders.Add(name);
+            await docker.Containers.StartContainerAsync(name, new ContainerStartParameters(), ct);
+        }
+
+        return placeholders;
+
+        static uint ToUInt32(IPAddress address) => BinaryPrimitives.ReadUInt32BigEndian(address.GetAddressBytes());
+    }
 
     private LNDNodeConnection GetAlice()
     {
