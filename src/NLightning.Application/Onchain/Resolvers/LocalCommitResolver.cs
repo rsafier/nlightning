@@ -67,13 +67,22 @@ using Local;
 /// not accept for that HTLC. Alerts come from the spending witness (<see cref="OnOutputSpentAsync"/>) only.
 /// </para>
 /// <para>
-/// Anchor channels (O7) are not resolved beyond <c>to_local</c>: their HTLC transactions need fee inputs. Such HTLC
-/// outputs are only logged.
+/// Anchor channels (O7-T3, NL-314): the HTLC-timeout/success transactions carry no fee (the peer signed them with
+/// <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c>), so each is combined with wallet inputs from
+/// <see cref="IAnchorFeeInputProvider"/> and a change output (B5-HTX-02) before our <c>SIGHASH_ALL</c> signature, at
+/// the estimate for the HTLC's deadline. When the wallet cannot pay, nothing is broadcast and the next block tries
+/// again. The HTLC output stays at index 0 of the combined transaction, so the second-level row and sweep are the same
+/// as without anchors.
 /// </para>
 /// </remarks>
 public sealed class LocalCommitResolver : IOutputResolver
 {
+    /// <summary>The change script length the fee of an anchors HTLC transaction is first estimated with (P2WSH/P2TR,
+    /// the longest wallet script).</summary>
+    private const int EstimatedChangeScriptLength = 34;
+
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IAnchorFeeInputProvider? _feeInputProvider;
     private readonly IBitcoinChainService? _chainService;
     private readonly ConcurrentDictionary<(ChannelId, ulong), byte> _unreadableSpendAlerts = new();
     private readonly ISweepDestinationProvider _destinationProvider;
@@ -93,9 +102,11 @@ public sealed class LocalCommitResolver : IOutputResolver
                                IServiceScopeFactory serviceScopeFactory, ILogger<LocalCommitResolver> logger,
                                IOptions<LocalCommitResolverOptions>? options = null, SweepFeePolicy? feePolicy = null,
                                IChannelMemoryRepository? channelMemoryRepository = null,
-                               IBitcoinChainService? chainService = null)
+                               IBitcoinChainService? chainService = null,
+                               IAnchorFeeInputProvider? feeInputProvider = null)
     {
         _chainService = chainService;
+        _feeInputProvider = feeInputProvider;
         _outputMapper = outputMapper;
         _htlcTransactionBuilder = htlcTransactionBuilder;
         _sweepTransactionBuilder = sweepTransactionBuilder;
@@ -330,14 +341,6 @@ public sealed class LocalCommitResolver : IOutputResolver
     {
         var row = context.GetRow(context.CommitmentTxId, descriptor.Vout)!;
         var record = descriptor.Htlc is { } htlc ? context.Commitments?.GetHtlc(htlc.Direction, htlc.Id) : null;
-        if (descriptor.Htlc is not null && descriptor.HasAnchors)
-        {
-            // O7: an anchor channel's HTLC transactions carry no fee and need wallet inputs
-            _logger.LogWarning("HTLC output {Vout} of our commitment of anchor channel {ChannelId} cannot be resolved "
-                             + "yet (O7)", descriptor.Vout, context.Channel.ChannelId);
-            return;
-        }
-
         var spend = await GetSpendAsync(context, row);
         OutputResolutionModel? child = null;
         OutputSpend? secondLevelSpend = null;
@@ -404,7 +407,8 @@ public sealed class LocalCommitResolver : IOutputResolver
 
                 case ResolutionActionKind.BroadcastHtlcTimeoutTx or ResolutionActionKind.BroadcastHtlcSuccessTx
                     when updated.ResolvingTransactionId is null:
-                    updated = AddHtlcTransaction(context, descriptor, updated, action, actions);
+                    updated = await AddHtlcTransactionAsync(context, descriptor, updated, action, actions,
+                                                            cancellationToken);
                     break;
 
                 case ResolutionActionKind.Sweep when action is { SpendKind: SweepSpendKind.DelayedOutput }:
@@ -573,11 +577,15 @@ public sealed class LocalCommitResolver : IOutputResolver
 
     /// <summary>
     /// Builds and signs our HTLC-timeout (B5-LCL-LO-02) or HTLC-success (B5-LCL-RO-01) transaction from the peer's
-    /// stored HTLC signature, and records it on the row in the same round as its broadcast.
+    /// stored HTLC signature, and records it on the row in the same round as its broadcast. With anchors the
+    /// transaction is first combined with wallet fee inputs (B5-HTX-02); without them nothing is broadcast this round.
     /// </summary>
-    private OutputResolutionModel AddHtlcTransaction(LocalCommitContext context,
-                                                     CommitmentOutputDescriptor descriptor, OutputResolutionModel row,
-                                                     ResolutionAction action, List<OutputResolverAction> actions)
+    private async Task<OutputResolutionModel> AddHtlcTransactionAsync(LocalCommitContext context,
+                                                                      CommitmentOutputDescriptor descriptor,
+                                                                      OutputResolutionModel row,
+                                                                      ResolutionAction action,
+                                                                      List<OutputResolverAction> actions,
+                                                                      CancellationToken cancellationToken)
     {
         var model = descriptor.SecondLevel;
         var signatures = context.Commitments?.LocalCommit.RemoteSignatures;
@@ -591,23 +599,122 @@ public sealed class LocalCommitResolver : IOutputResolver
         }
 
         var built = _htlcTransactionBuilder.Build(model);
-        var localSignature = _lightningSigner.SignLocalHtlcTransaction(
-            context.Channel.ChannelId, new HtlcSigningContext(built, context.Map.PerCommitmentPoint, model.HasAnchors));
         var preimage = model.Type == HtlcTransactionType.Success ? action.Preimage : null;
-        var signed = _htlcTransactionBuilder.AddWitness(model, built, signatures.HtlcSignatures[index], localSignature,
+        SignedTransaction signed;
+        uint feeratePerKw;
+        if (model.HasAnchors)
+        {
+            var anchored = await BuildAnchorHtlcTransactionAsync(context, descriptor, model, built, action,
+                                                                 signatures.HtlcSignatures[index], preimage,
+                                                                 cancellationToken);
+            if (anchored is null)
+                return row;
+
+            (signed, feeratePerKw) = anchored.Value;
+        }
+        else
+        {
+            var localSignature = _lightningSigner.SignLocalHtlcTransaction(
+                context.Channel.ChannelId, new HtlcSigningContext(built, context.Map.PerCommitmentPoint, false));
+            signed = _htlcTransactionBuilder.AddWitness(model, built, signatures.HtlcSignatures[index], localSignature,
                                                         preimage);
+            feeratePerKw = (uint)context.Commitments!.LocalCommit.Spec.FeeratePerKw;
+        }
 
         _logger.LogInformation("Broadcasting our HTLC-{Type} {TxId} for HTLC {HtlcId} of channel {ChannelId}",
                                model.Type, Display(signed.TxId), descriptor.Htlc?.Id, context.Channel.ChannelId);
         actions.Add(new BroadcastAction(new BroadcastTransactionModel(signed, BroadcastPurpose.HtlcTransaction,
                                                                       context.Channel.ChannelId, context.Height,
-                                                                      context.Commitments!.LocalCommit.Spec
-                                                                                         .FeeratePerKw)));
+                                                                      feeratePerKw)));
         return row with
         {
             ResolvingTransactionId = signed.TxId,
             DeadlineHeight = action.DeadlineHeight ?? row.DeadlineHeight
         };
+    }
+
+    /// <summary>
+    /// The anchors HTLC transaction combined with wallet fee inputs and signed (B5-HTX-02, O7-T3): the fee is the
+    /// estimate for the HTLC's deadline (floored at the policy's minimum; the floor when that fee would exceed the
+    /// HTLC's own value), paid by inputs the wallet reserves; our HTLC signature is <c>SIGHASH_ALL</c> over the combined
+    /// transaction and the peer's <c>SIGHASH_SINGLE|SIGHASH_ANYONECANPAY</c> one still covers input and output 0. Null
+    /// (logged, inputs released) when the wallet cannot pay or any step fails; the next block tries again.
+    /// </summary>
+    private async Task<(SignedTransaction Signed, uint FeeratePerKw)?> BuildAnchorHtlcTransactionAsync(
+        LocalCommitContext context, CommitmentOutputDescriptor descriptor, HtlcTransactionModel model,
+        HtlcTransactionBuildResult built, ResolutionAction action, CompactSignature remoteSignature, byte[]? preimage,
+        CancellationToken cancellationToken)
+    {
+        var channelId = context.Channel.ChannelId;
+        if (_feeInputProvider is null)
+        {
+            _logger.LogWarning("HTLC output {Vout} of our commitment of anchor channel {ChannelId} needs wallet fee "
+                             + "inputs, but no fee-input provider is registered", descriptor.Vout, channelId);
+            return null;
+        }
+
+        var baseWeight = _htlcTransactionBuilder.EstimateAnchorBaseWeight(model, built, EstimatedChangeScriptLength);
+        var feeratePerKw = await GetAnchorHtlcFeerateAsync(context, model, action, baseWeight, cancellationToken);
+        var selection = await _feeInputProvider.SelectAsync(channelId, baseWeight, feeratePerKw, cancellationToken);
+        if (selection is not { Inputs.Count: > 0 })
+        {
+            _logger.LogWarning("The wallet cannot pay the fee of the HTLC-{Type} for output {Vout} of our commitment of "
+                             + "anchor channel {ChannelId} ({FeeratePerKw} sat/kw); retrying next block", model.Type,
+                               descriptor.Vout, channelId, feeratePerKw);
+            return null;
+        }
+
+        try
+        {
+            var combined = _htlcTransactionBuilder.AddFeeInputs(model, built, selection.Inputs, selection.ChangeScript,
+                                                                feeratePerKw);
+            var localSignature = _lightningSigner.SignLocalHtlcTransaction(
+                channelId, new HtlcSigningContext(combined.BuildResult, context.Map.PerCommitmentPoint, true));
+            var withHtlcWitness = _htlcTransactionBuilder.AddWitness(model, combined.BuildResult, remoteSignature,
+                                                                     localSignature, preimage);
+            var signed = await _feeInputProvider.SignAsync(withHtlcWitness, combined.FeeInputs, cancellationToken);
+            if (signed.TxId != combined.BuildResult.Transaction.TxId)
+                throw new InvalidOperationException("The wallet changed the transaction while signing its inputs");
+
+            _logger.LogInformation("HTLC-{Type} of anchor channel {ChannelId} pays {FeeSat} sat from {Count} wallet "
+                                 + "input(s), change {ChangeSat} sat", model.Type, channelId, combined.FeeSat,
+                                   combined.FeeInputs.Count, combined.ChangeSat ?? 0);
+            return (signed, SweepFeePolicy.FeeratePerKw(combined.FeeSat, combined.EstimatedWeight));
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Cannot build the HTLC-{Type} for output {Vout} of our commitment of anchor channel "
+                              + "{ChannelId} with wallet fee inputs; retrying next block", model.Type,
+                             descriptor.Vout, channelId);
+            await _feeInputProvider.ReleaseAsync(selection.Inputs, cancellationToken);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The feerate of an anchors HTLC transaction: the estimate for its deadline (the HTLC's <c>cltv_expiry</c> for an
+    /// HTLC-success, the planner's deadline otherwise), floored by <see cref="SweepFeePolicy"/>; the floor when the fee
+    /// with one wallet input would exceed the HTLC's value (it is never worth more than the HTLC).
+    /// </summary>
+    private async Task<uint> GetAnchorHtlcFeerateAsync(LocalCommitContext context, HtlcTransactionModel model,
+                                                       ResolutionAction action, long baseWeight,
+                                                       CancellationToken cancellationToken)
+    {
+        var deadline = action.DeadlineHeight
+                    ?? (model.Type == HtlcTransactionType.Success ? model.SpentOutput.CltvExpiry : (uint?)null);
+        var estimate = await Fees.FeeEstimates.GetForTargetAsync(_feeService,
+                                                                 _feePolicy.GetConfirmationTarget(context.Height,
+                                                                     deadline), _logger, cancellationToken);
+        var feeratePerKw = _feePolicy.ApplyFloor(estimate);
+        var htlcSat = (ulong)model.OutputAmount.Satoshi;
+        var weightWithOneInput = baseWeight + AnchorFeeInput.P2WpkhInputWeight;
+        if (SweepWeights.FeeSat(feeratePerKw, weightWithOneInput) <= htlcSat)
+            return feeratePerKw;
+
+        _logger.LogWarning("HTLC {HtlcId} of channel {ChannelId} ({HtlcSat} sat) is worth less than its HTLC-{Type} fee "
+                         + "at {FeeratePerKw} sat/kw; paying the floor rate", model.SpentOutput.Htlc.Id,
+                           context.Channel.ChannelId, htlcSat, model.Type, feeratePerKw);
+        return _feePolicy.Options.MinFeeratePerKw;
     }
 
     /// <summary>

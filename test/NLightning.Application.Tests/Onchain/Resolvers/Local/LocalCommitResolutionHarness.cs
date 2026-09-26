@@ -111,9 +111,16 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     /// <summary>Our invoices by payment hash (the final-hop decision asks the switch only for an <c>Open</c> one).</summary>
     public Dictionary<Hash, InvoiceModel> Invoices { get; } = [];
 
-    public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null)
+    /// <param name="setup">Moves the pair to the state whose commitment goes on chain.</param>
+    /// <param name="hasAnchors">An option_anchors channel (O7-T3).</param>
+    /// <param name="feeInputProvider">The wallet's fee inputs for anchors HTLC transactions (the default registration
+    /// when null).</param>
+    /// <param name="wrapSigner">Replaces Alice's signer in the resolver's container (e.g. with a decorator).</param>
+    public LocalCommitResolutionHarness(Action<RealSigningCommitmentPair>? setup = null, bool hasAnchors = false,
+                                        IAnchorFeeInputProvider? feeInputProvider = null,
+                                        Func<ILightningSigner, ILightningSigner>? wrapSigner = null)
     {
-        Pair = new RealSigningCommitmentPair(hasAnchors: false);
+        Pair = new RealSigningCommitmentPair(hasAnchors);
         setup?.Invoke(Pair);
         Channel.UpdateCommitments(Pair.Alice.State);
 
@@ -143,7 +150,9 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
         services.AddSingleton(new Mock<IUtxoMemoryRepository>().Object);
         services.AddBitcoinInfrastructure();
         services.AddSingleton(chainService.Object);
-        services.AddSingleton(Pair.Alice.Signer);
+        services.AddSingleton(wrapSigner is null ? Pair.Alice.Signer : wrapSigner(Pair.Alice.Signer));
+        if (feeInputProvider is not null)
+            services.AddSingleton(feeInputProvider);
         services.AddSingleton<ICommitmentTransactionModelFactory, CommitmentTransactionModelFactory>();
         services.AddOnchainBitcoinServices();
         services.AddSingleton(feeService.Object);
@@ -168,6 +177,10 @@ internal sealed class LocalCommitResolutionHarness : IDisposable
     }
 
     public TxId CommitmentTxId => Close.CommitmentTransactionId;
+
+    /// <summary>Makes <paramref name="transaction"/> known to the chain (e.g. the wallet transaction a fee input
+    /// spends), so <see cref="AssertAllInputsVerify"/> finds the outputs it holds.</summary>
+    public void AddKnownTransaction(Transaction transaction) => _knownTransactions[transaction.GetHash()] = transaction;
 
     /// <summary>The executor's round right after classification (or after a restart).</summary>
     public async Task<IReadOnlyList<OutputResolverAction>> ResolveAsync()
