@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Gossip;
 
+using Domain.Bitcoin.Transactions.Constants;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Entities.Gossip;
@@ -37,6 +38,9 @@ public static class GraphChannelEntityConfiguration
             entity.Property(e => e.RawAnnouncement).IsRequired();
             entity.Property(e => e.Verification).IsRequired();
             entity.Property(e => e.SpentAtHeight).IsRequired(false);
+            entity.Property(e => e.FundingTxId)
+                  .HasConversion<TxIdConverter>()
+                  .IsRequired(false);
             entity.Property(e => e.ReceivedAt)
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired();
@@ -60,5 +64,6 @@ public static class GraphChannelEntityConfiguration
         entity.Property(e => e.BitcoinKey2).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.Features).HasColumnType("varbinary(max)");
         entity.Property(e => e.RawAnnouncement).HasColumnType("varbinary(max)");
+        entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({TransactionConstants.TxIdLength})");
     }
 }

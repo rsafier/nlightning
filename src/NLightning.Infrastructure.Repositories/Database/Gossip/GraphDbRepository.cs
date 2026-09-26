@@ -123,6 +123,7 @@ public class GraphDbRepository : IGraphDbRepository
                 RawAnnouncement = channel.RawAnnouncement.ToArray(),
                 Verification = (byte)channel.Verification,
                 SpentAtHeight = channel.SpentAtHeight,
+                FundingTxId = channel.FundingTxId,
                 ReceivedAt = channel.ReceivedAt
             });
             return;
@@ -137,6 +138,7 @@ public class GraphDbRepository : IGraphDbRepository
         entity.RawAnnouncement = channel.RawAnnouncement.ToArray();
         entity.Verification = (byte)channel.Verification;
         entity.SpentAtHeight = channel.SpentAtHeight;
+        entity.FundingTxId = channel.FundingTxId;
         entity.ReceivedAt = channel.ReceivedAt;
     }
 
@@ -329,7 +331,8 @@ public class GraphDbRepository : IGraphDbRepository
     private static GraphChannelRecord MapChannel(GraphChannelEntity entity) =>
         new(entity.ShortChannelId, entity.NodeId1, entity.NodeId2, entity.BitcoinKey1, entity.BitcoinKey2,
             checked((ulong)entity.CapacitySat), entity.Features, entity.RawAnnouncement,
-            (GraphChannelVerification)entity.Verification, entity.SpentAtHeight, entity.ReceivedAt);
+            (GraphChannelVerification)entity.Verification, entity.SpentAtHeight, entity.ReceivedAt,
+            entity.FundingTxId);
 
     private static GraphPolicyRecord MapPolicy(GraphChannelPolicyEntity entity) =>
         new(entity.ShortChannelId, entity.Direction, entity.Timestamp, entity.MessageFlags, entity.ChannelFlags,

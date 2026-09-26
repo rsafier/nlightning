@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Gossip.Persistence;
 
+using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 
@@ -22,6 +23,9 @@ using Crypto.ValueObjects;
 /// <param name="Verification">How the funding output was checked.</param>
 /// <param name="SpentAtHeight">The height of the block that spent the funding output, or null while unspent.</param>
 /// <param name="ReceivedAt">When we received (or created) the announcement.</param>
+/// <param name="FundingTxId">
+/// The funding transaction id, when known (from the chain check, our own channel or the pruner's lookup; NL-352).
+/// </param>
 public sealed record GraphChannelRecord(
     ShortChannelId ShortChannelId,
     CompactPubKey NodeId1,
@@ -33,4 +37,5 @@ public sealed record GraphChannelRecord(
     byte[] RawAnnouncement,
     GraphChannelVerification Verification,
     uint? SpentAtHeight,
-    DateTimeOffset ReceivedAt);
+    DateTimeOffset ReceivedAt,
+    TxId? FundingTxId = null);

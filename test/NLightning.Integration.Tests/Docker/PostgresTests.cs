@@ -109,6 +109,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresGraphChannelsFromBeforeAddGraphFundingTxId_When_Migrated_Then_TheyHaveNoTxIdAndItRoundTrips()
+    {
+        // Arrange (NL-352: a graph channel stored before the migration keeps its fields and policy with no funding
+        // txid; the txid round-trips, is replaced and cleared on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_graph_funding_txid");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await GraphFundingTxIdSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                          DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresRowsFromBeforeAddOnionReplaySet_When_Migrated_Then_TheyMoveForwardAndTheReplaySetWorks()
     {
         // Arrange (NL-078: rows written before the migration move forward; replay entries round-trip, are pruned by

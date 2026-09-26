@@ -134,7 +134,7 @@ public sealed class GossipGraphReloadTests : IDisposable
             await pruner.StopAsync();
         }
 
-        // Act: after a restart (no funding txid in memory) the pruner looks them up, then block 572 passes
+        // Act: after a restart (funding txids reloaded with the channels, NL-352) block 572 passes
         uint? spentAfterRestart;
         await using (var node = await StartNodeAsync(now))
         {
@@ -164,6 +164,55 @@ public sealed class GossipGraphReloadTests : IDisposable
         Assert.False(after.TryGetChannel(spentScid, out _));
         Assert.All(after.Nodes, n => Assert.Contains(after.Channels, c => c.NodeId1 == n.NodeId
                                                                        || c.NodeId2 == n.NodeId));
+    }
+
+    [Fact]
+    public async Task Given_GraphWithKnownFundingTxIds_When_TheNodeRestarts_Then_ThePrunerLooksUpOnlyTheChannelsWithoutOne()
+    {
+        // Arrange (NL-352): the captured graph, every funding txid known from the chain check; one row then loses its
+        // txid (as a row from before migration AddGraphFundingTxId)
+        var messages = Parse(Bolt7Vectors.Lnd.Concat(Bolt7Vectors.Cln));
+        var now = DateTimeOffset.FromUnixTimeSeconds(messages.OfType<ChannelUpdateMessage>()
+                                                             .Max(m => m.Payload.Timestamp) + 60);
+        var ct = TestContext.Current.CancellationToken;
+        var withoutTxId = messages.OfType<ChannelAnnouncementMessage>().First().Payload.ShortChannelId;
+        await using (var node = await StartNodeAsync(now))
+        {
+            var ingress = node.GetRequiredService<GossipIngress>();
+            var peer = new Mock<IPeerService>();
+            peer.SetupGet(p => p.PeerPubKey).Returns(_keyManager.GetNodePubKey());
+            foreach (var message in messages)
+                await ingress.ProcessAsync(peer.Object, message, 0, ct);
+            await node.GetRequiredService<IGraphStore>().FlushAsync(ct);
+
+            using var scope = node.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<NLightningDbContext>();
+            Assert.All(await context.GraphChannels.ToListAsync(ct), c => Assert.NotNull(c.FundingTxId));
+            (await context.GraphChannels.SingleAsync(c => c.ShortChannelId == withoutTxId, ct)).FundingTxId = null;
+            await context.SaveChangesAsync(ct);
+        }
+
+        // Act: two restarts, the pruner started in each
+        var lookups = new List<int>();
+        IGraphStore? store = null;
+        for (var restart = 0; restart < 2; restart++)
+        {
+            await using var node = await StartNodeAsync(now);
+            store = node.GetRequiredService<IGraphStore>();
+            var pruner = node.GetRequiredService<GraphPruner>();
+            pruner.Start();
+            await pruner.WhenIdleAsync(ct);
+            await store.FlushAsync(ct);
+            await pruner.StopAsync();
+            lookups.Add(node.GetRequiredService<Mock<IFundingOutputLookup>>().Invocations
+                            .Count(i => i.Method.Name == nameof(IFundingOutputLookup.LookupAsync)));
+        }
+
+        // Assert: the first restart looks up only the row without a txid and saves it; the second looks up nothing
+        Assert.Equal([1, 0], lookups);
+        Assert.Empty(store!.GetChannelsWithoutFundingTxId());
+        Assert.True(store.TryGetFundingTxId(withoutTxId, out var fundingTxId));
+        Assert.Equal(TxIdFor(withoutTxId), fundingTxId);
     }
 
     private static void AssertSamePolicy(GraphPolicy? expected, GraphPolicy? actual)
@@ -207,6 +256,7 @@ public sealed class GossipGraphReloadTests : IDisposable
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<ISecureKeyManager>(_keyManager);
+        services.AddSingleton(lookup);
         services.AddSingleton(lookup.Object);
         services.AddSingleton<TimeProvider>(new FixedTimeProvider(now));
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(

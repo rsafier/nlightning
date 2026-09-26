@@ -24,9 +24,9 @@ using StoredVerification = Domain.Gossip.Persistence.GraphChannelVerification;
 /// write. A crash loses at most the changes since the last flush, which peers send again (the plan accepts this).
 /// </para>
 /// <para>
-/// Not persisted: the funding transaction ids (<see cref="TryGetFundingTxId"/>; the graph tables have no column for
-/// them), which the chain check, our own channel or the <see cref="GraphPruner"/>'s startup lookup
-/// (<see cref="TrySetFundingTxId"/>) fills in again after a restart.
+/// The funding transaction ids (<see cref="TryGetFundingTxId"/>) are saved with their channel (NL-352): one learnt
+/// later (<see cref="TrySetFundingTxId"/>, the <see cref="GraphPruner"/>'s lookup of a row stored without one) marks
+/// the channel dirty, so after a restart only those rows are looked up again.
 /// </para>
 /// </remarks>
 public sealed class GraphStore : IGraphStore
@@ -145,6 +145,8 @@ public sealed class GraphStore : IGraphStore
 
                     _channels[record.ShortChannelId] = channel;
                     _channelReceivedAt[record.ShortChannelId] = record.ReceivedAt;
+                    if (record.FundingTxId is { } fundingTxId && !_fundingTxIds.ContainsKey(record.ShortChannelId))
+                        SetFundingTxIdLocked(record.ShortChannelId, fundingTxId);
                     CountChannelEnds(channel, +1);
                 }
 
@@ -294,7 +296,11 @@ public sealed class GraphStore : IGraphStore
             if (!_channels.ContainsKey(shortChannelId))
                 return false;
 
+            if (_fundingTxIds.TryGetValue(shortChannelId, out var current) && current == fundingTxId)
+                return true;
+
             SetFundingTxIdLocked(shortChannelId, fundingTxId);
+            _dirtyChannels.Add(shortChannelId);
             return true;
         }
     }
@@ -524,7 +530,8 @@ public sealed class GraphStore : IGraphStore
         foreach (var shortChannelId in _dirtyChannels)
         {
             if (_channels.TryGetValue(shortChannelId, out var channel))
-                channels.Add(ToRecord(channel, _channelReceivedAt.GetValueOrDefault(shortChannelId)));
+                channels.Add(ToRecord(channel, _channelReceivedAt.GetValueOrDefault(shortChannelId),
+                                      _fundingTxIds.TryGetValue(shortChannelId, out var txId) ? (TxId?)txId : null));
         }
 
         var policies = new List<GraphPolicyRecord>(_dirtyPolicies.Count);
@@ -570,10 +577,10 @@ public sealed class GraphStore : IGraphStore
             _dirtyBans.Add(ban.NodeId);
     }
 
-    private static GraphChannelRecord ToRecord(GraphChannel channel, DateTimeOffset receivedAt) =>
+    private static GraphChannelRecord ToRecord(GraphChannel channel, DateTimeOffset receivedAt, TxId? fundingTxId) =>
         new(channel.ShortChannelId, channel.NodeId1, channel.NodeId2, channel.BitcoinKey1, channel.BitcoinKey2,
             channel.CapacitySat ?? 0, channel.Features.ToArray(), channel.RawAnnouncement.ToArray(),
-            (StoredVerification)(byte)channel.Verification, channel.SpentAtHeight, receivedAt);
+            (StoredVerification)(byte)channel.Verification, channel.SpentAtHeight, receivedAt, fundingTxId);
 
     private static GraphPolicyRecord ToRecord(ShortChannelId shortChannelId, GraphPolicy policy) =>
         new(shortChannelId, policy.Direction, policy.Timestamp, policy.MessageFlags, policy.ChannelFlags,

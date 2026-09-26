@@ -29,4 +29,20 @@ public class GossipGraphPersistenceTests
             () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
             TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Given_GraphChannelsFromBeforeAddGraphFundingTxId_When_Migrated_Then_TheyHaveNoTxIdAndItRoundTrips()
+    {
+        // Arrange
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        var options = new DbContextOptionsBuilder<NLightningDbContext>()
+                     .UseSqlite(connection, x => x.MigrationsAssembly("NLightning.Infrastructure.Persistence.Sqlite"))
+                     .Options;
+
+        // Act & Assert
+        await GraphFundingTxIdSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, new DatabaseTypeProvider(DatabaseType.Sqlite)), DatabaseType.Sqlite,
+            TestContext.Current.CancellationToken);
+    }
 }
