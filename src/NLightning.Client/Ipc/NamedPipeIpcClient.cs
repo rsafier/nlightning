@@ -315,6 +315,13 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Whether the node's chain processing is halted and what it refuses meanwhile (ClientCommand 16, NL-216).
+    /// </summary>
+    public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>
+        SendRequestAsync<ChainStatusIpcRequest, ChainStatusIpcResponse>(ClientCommand.ChainStatus,
+                                                                         new ChainStatusIpcRequest(), ct);
+
+    /// <summary>
     /// Lists a page of our invoices, newest first (ClientCommand 11).
     /// </summary>
     public Task<ListInvoicesIpcResponse> ListInvoicesAsync(int skip, int take, CancellationToken ct = default)

@@ -18,6 +18,7 @@ using NLightning.Domain.Protocol.Models;
 using NLightning.Domain.Protocol.Payloads;
 using NLightning.Domain.Protocol.Tlv;
 using NLightning.Domain.Protocol.ValueObjects;
+using NLightning.Infrastructure.Bitcoin.Wallet.Interfaces;
 using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
 
@@ -349,5 +350,30 @@ public class OpenChannel1MessageHandlerTests
         // Assert
         Assert.NotNull(result);
         Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
+    }
+
+    [Fact]
+    public async Task Given_ChainProcessingHalted_When_OpenChannelReceived_Then_RefusedWithoutAChannel()
+    {
+        // Arrange - NL-216: a node blind to the chain could not see the funding confirm nor be cheated on it
+        var monitor = new Mock<IBlockchainMonitor>();
+        monitor.SetupGet(m => m.IsChainProcessingHalted).Returns(true);
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, monitor.Object);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelErrorException>(
+                            () => handler.HandleAsync(_validMessage, ChannelState.None, _negotiatedFeatures,
+                                                      _peerPubKey));
+
+        // Assert
+        Assert.Contains("chain processing is halted", exception.Message);
+        Assert.Equal(_validMessage.Payload.ChannelId, exception.ChannelId);
+        _mockChannelFactory.Verify(x => x.CreateChannelV1AsNonInitiatorAsync(It.IsAny<OpenChannel1Message>(),
+                                                                             It.IsAny<FeatureOptions>(),
+                                                                             It.IsAny<CompactPubKey>()), Times.Never);
+        _mockChannelMemoryRepository.Verify(x => x.AddTemporaryChannel(It.IsAny<CompactPubKey>(),
+                                                                        It.IsAny<ChannelModel>()), Times.Never);
     }
 }

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Handlers;
 
+using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
@@ -61,6 +62,10 @@ public sealed class OpenChannelClientHandler
     {
         if (string.IsNullOrWhiteSpace(request.NodeInfo))
             throw new ClientException(ErrorCodes.InvalidAddress, "Address cannot be empty");
+
+        // NL-216: no new channel while the node does not follow the chain (it could not see the funding confirm)
+        if (_blockchainMonitor.IsChainProcessingHalted)
+            throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("openchannel"));
 
         // Check if either a PeerAddressInfo or a CompactPubKey was provided
         var isPeerAddressInfo = request.NodeInfo.Contains('@') && request.NodeInfo.Contains(':');

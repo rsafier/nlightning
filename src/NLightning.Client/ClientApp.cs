@@ -156,6 +156,13 @@ internal static class ClientApp
                                                                          cancellationToken);
                     new ForceCloseChannelPrinter().Print(forceClose);
                     break;
+                case "chainstatus":
+                case "chain-status":
+                    var chainStatus = await client.ChainStatusAsync(cancellationToken);
+                    new ChainStatusPrinter().Print(chainStatus);
+                    if (chainStatus.IsChainProcessingHalted)
+                        return Failure;
+                    break;
                 case "pendingsweeps":
                 case "pending-sweeps":
                     var (sweepChannel, includeClosed) = ParsePendingSweepsOptions(commandArgs);
@@ -203,6 +210,8 @@ internal static class ClientApp
             case "get-address":
             case "walletbalance":
             case "wallet-balance":
+            case "chainstatus":
+            case "chain-status":
                 return null;
             case "connect":
             case "connect-peer":

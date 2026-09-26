@@ -1,6 +1,7 @@
 namespace NLightning.Daemon.Handlers;
 
 using Application.Payments.Send;
+using Domain.Bitcoin.Constants;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Exceptions;
@@ -8,6 +9,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <summary>
@@ -27,6 +29,9 @@ using Interfaces;
 /// <see cref="ObjectDisposedException"/> at shutdown) and every other exception are not guaranteed to happen before
 /// the HTLC was offered, so they become <see cref="ErrorCodes.ServerError"/> with a hint to check <c>ListPayments</c>.
 /// </para>
+/// <para>While the chain monitor's processing is halted (NL-216) the call is refused with
+/// <see cref="ErrorCodes.InvalidOperation"/> before anything is sent (the channel operations refuse every HTLC offer
+/// then too; see <see cref="ChainProcessingHalt"/>).</para>
 /// </remarks>
 public sealed class PayInvoiceClientHandler
     : IClientCommandHandler<PayInvoiceClientRequest, PayInvoiceClientResponse>
@@ -41,13 +46,15 @@ public sealed class PayInvoiceClientHandler
     /// </summary>
     public const uint MaxTimeoutSeconds = 300;
 
+    private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IPaymentService _paymentService;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.PayInvoice;
 
-    public PayInvoiceClientHandler(IPaymentService paymentService)
+    public PayInvoiceClientHandler(IPaymentService paymentService, IBlockchainMonitor? blockchainMonitor = null)
     {
+        _blockchainMonitor = blockchainMonitor;
         _paymentService = paymentService;
     }
 
@@ -72,6 +79,8 @@ public sealed class PayInvoiceClientHandler
         if (request.MaxParts is 0 or > PaymentSendOptions.MaxPartsLimit)
             throw new ClientException(ErrorCodes.InvalidOperation,
                                       $"The part limit must be between 1 and {PaymentSendOptions.MaxPartsLimit}.");
+        if (_blockchainMonitor is { IsChainProcessingHalted: true })
+            throw new ClientException(ErrorCodes.InvalidOperation, ChainProcessingHalt.Refusal("payinvoice"));
 
         var options = new PayInvoiceOptions
         {

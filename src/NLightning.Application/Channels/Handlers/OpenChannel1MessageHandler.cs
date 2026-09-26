@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Domain.Bitcoin.Constants;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Crypto.ValueObjects;
@@ -10,18 +11,22 @@ using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Tlv;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Message>
 {
+    private readonly IBlockchainMonitor? _blockchainMonitor;
     private readonly IChannelFactory _channelFactory;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<OpenChannel1MessageHandler> _logger;
     private readonly IMessageFactory _messageFactory;
 
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
-                                      ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory)
+                                      ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
+                                      IBlockchainMonitor? blockchainMonitor = null)
     {
+        _blockchainMonitor = blockchainMonitor;
         _channelFactory = channelFactory;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
@@ -39,6 +44,11 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
 
         if (currentState != ChannelState.None)
             throw new ChannelErrorException("A channel with this id already exists", payload.ChannelId);
+
+        // NL-216: a node that does not follow the chain could not see the funding confirm or be cheated on it
+        if (_blockchainMonitor is { IsChainProcessingHalted: true })
+            throw new ChannelErrorException(ChainProcessingHalt.Refusal("open_channel"), payload.ChannelId,
+                                            "Not accepting channels right now, try again later");
 
         // Check if there's a temporary channel for this peer
         if (_channelMemoryRepository.TryGetTemporaryChannelState(peerPubKey, payload.ChannelId, out currentState))

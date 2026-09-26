@@ -42,6 +42,8 @@ public static class ClientUtils
         Console.WriteLine("  pendingsweeps [channel_id] [all]");
         Console.WriteLine("                               Show the on-chain resolution of closed channels (alias:");
         Console.WriteLine("                               pending-sweeps); all includes the closed ones");
+        Console.WriteLine("  chainstatus                  Show whether chain processing is halted and what is refused");
+        Console.WriteLine("                               meanwhile (alias: chain-status); exit code 1 if halted");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

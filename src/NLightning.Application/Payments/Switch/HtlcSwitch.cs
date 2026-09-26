@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Payments.Switch;
 
 using Channels.Interfaces;
+using Domain.Bitcoin.Constants;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Enums;
@@ -407,9 +408,14 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             return;
         }
 
-        // The payer reads the height to tell an expiry problem from an unknown hash: never report a height of 0
-        if (height == 0)
+        // The payer reads the height to tell an expiry problem from an unknown hash: never report a height of 0.
+        // NL-216: while chain processing is halted the node cannot claim the HTLC on chain, so it does not reveal a
+        // preimage for a new payment (a set already committed to is fulfilled above: that money is owed to us)
+        if (height == 0 || _blockchainMonitor is { IsChainProcessingHalted: true })
         {
+            if (height != 0 && _logger.IsEnabled(LogLevel.Warning))
+                _logger.LogWarning("Failing back incoming HTLC {HtlcId} of channel {ChannelId}: {Reason}", htlc.Id,
+                                   channelId, ChainProcessingHalt.Refusal("final-hop acceptance"));
             if (!onchain)
                 await FailBackAsync(channelId, htlc, final.SharedSecret, FailureMessage.TemporaryNodeFailure(),
                                     cancellationToken);

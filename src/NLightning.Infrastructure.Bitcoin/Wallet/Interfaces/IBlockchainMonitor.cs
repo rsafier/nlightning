@@ -28,7 +28,18 @@ public interface IBlockchainMonitor : IChainBroadcaster, IOutpointWatcher
     /// </summary>
     bool IsChainProcessingHalted { get; }
 
+    /// <summary>Why block processing halted, while <see cref="IsChainProcessingHalted"/> is set; null otherwise.</summary>
+    string? ChainProcessingHaltReason { get; }
+
     event EventHandler<NewBlockEventArgs> OnNewBlockDetected;
+
+    /// <summary>
+    /// A transaction bitcoind accepted into its mempool (ZMQ <c>rawtx</c>) spends a watched outpoint, or an output of a
+    /// transaction reported this way (one level: a commitment and its HTLC transaction both unconfirmed). BOLT 5 plan
+    /// O8 (NL-098): never a confirmation, nothing is saved and no watch is marked spent. Raised once per transaction
+    /// (the monitor remembers a bounded number of txids) on the mempool loop, so handlers must only enqueue.
+    /// </summary>
+    event EventHandler<MempoolSpendEventArgs>? OnWatchedOutpointSpentInMempool;
     event EventHandler<TransactionConfirmedEventArgs> OnTransactionConfirmed;
     event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
 

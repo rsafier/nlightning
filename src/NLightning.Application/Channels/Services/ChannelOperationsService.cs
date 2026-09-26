@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Services;
 
+using Domain.Bitcoin.Constants;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -40,7 +41,9 @@ using Interfaces;
 /// <see cref="ChannelState.ShuttingDown"/> for removals, and for fee updates while HTLCs are left; never for an add)
 /// with a commitment snapshot, not failed, no data loss, plus the engine's BOLT 2 sender rules, and the channel's link
 /// is up (<see cref="IPeerLivenessProbe"/>: the peer is connected on the connection the channel was opened or
-/// reestablished on). Every operation needs the link, removals and fee updates too: a message raised for a peer that
+/// reestablished on). An add is also refused while the chain monitor's processing is halted (NL-216,
+/// <see cref="ChainProcessingHalt"/>); removals and fee updates are not, they only lower the risk. Every operation
+/// needs the link, removals and fee updates too: a message raised for a peer that
 /// is not connected is dropped, and there is no retransmission until channel_reestablish (N7), so an update persisted
 /// for an away peer would later be covered by a <c>commitment_signed</c> the peer can't verify. A refused removal is
 /// not lost: the HTLC stays locked in and its event is replayed (startup; N7 after the reestablish). A failed
@@ -104,6 +107,11 @@ public sealed class ChannelOperationsService : IChannelOperations
             throw new ArgumentException("The HTLC origin routes nowhere", nameof(origin));
         if (onion.Length == 0)
             throw new ArgumentException("The onion is empty", nameof(onion));
+
+        // NL-216: while the node does not follow the chain it cannot time the HTLC out on chain; take no new risk
+        if (_blockchainMonitor is { IsChainProcessingHalted: true })
+            throw new CommitmentRefusedException(ChainProcessingHalt.RequirementId,
+                                                 ChainProcessingHalt.Refusal(AddOperation));
 
         var height = _blockchainMonitor?.LastProcessedBlockHeight;
         var result = await RunAsync(channelId, AddOperation,

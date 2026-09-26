@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -47,6 +48,10 @@ using Options;
 /// (NL-293).</para>
 /// <para>Broadcasts (NL-258): every stored <see cref="BroadcastState.Pending"/> transaction is sent again after each
 /// processing round (also a halted one) and at startup (also when halted), until a processed block holds it.</para>
+/// <para>Mempool (BOLT 5 plan O8, NL-098): with <see cref="BitcoinOptions.WatchMempool"/> a second loop reads ZMQ
+/// <c>rawtx</c> and raises <see cref="OnWatchedOutpointSpentInMempool"/> for a transaction that spends a watched
+/// outpoint, or an output of a transaction it reported before. Nothing is saved or marked spent for it: only a
+/// processed block confirms a spend.</para>
 /// </remarks>
 public class BlockchainMonitorService : IBlockchainMonitor
 {
@@ -71,24 +76,42 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private readonly ConcurrentDictionary<uint256, int> _refusals = new();
     private readonly SortedDictionary<uint, BlockHeaderModel> _headers = new();
     private readonly OrderedDictionary<uint, Block> _blocksToProcess = new();
+    private readonly Lock _mempoolLock = new();
+    private readonly HashSet<uint256> _seenMempoolTransactions = [];
+    private readonly Queue<uint256> _seenMempoolOrder = new();
+    private readonly Dictionary<uint256, ChannelId> _reportedMempoolParents = [];
+    private readonly Queue<uint256> _reportedMempoolOrder = new();
 
     private BlockchainState _blockchainState = new(0, Hash.Empty, DateTime.UtcNow);
     private CancellationTokenSource? _cts;
     private Task? _monitoringTask;
+    private Task? _mempoolTask;
     private uint _lastProcessedBlockHeight;
     private uint _catchUpHeight;
     private SubscriberSocket? _blockSocket;
+    private SubscriberSocket? _txSocket;
 
     public event EventHandler<NewBlockEventArgs>? OnNewBlockDetected;
     public event EventHandler<TransactionConfirmedEventArgs>? OnTransactionConfirmed;
     public event EventHandler<WalletMovementEventArgs>? OnWalletMovementDetected;
     public event EventHandler<OutpointSpentEventArgs>? OnWatchedOutpointSpent;
     public event EventHandler<BlockDisconnectedEventArgs>? OnBlockDisconnected;
+    public event EventHandler<MempoolSpendEventArgs>? OnWatchedOutpointSpentInMempool;
 
     public uint LastProcessedBlockHeight => _lastProcessedBlockHeight;
 
     /// <inheritdoc />
     public bool IsChainProcessingHalted { get; private set; }
+
+    /// <inheritdoc />
+    public string? ChainProcessingHaltReason { get; private set; }
+
+    /// <summary>
+    /// How many mempool txids are remembered to raise each transaction once (ZMQ <c>rawtx</c> announces a transaction on
+    /// mempool acceptance and again when a block holding it is connected), and how many reported transactions are
+    /// remembered as parents whose outputs are followed too. The oldest are forgotten first.
+    /// </summary>
+    internal int MaxRememberedMempoolTransactions { get; set; } = 10_000;
 
     /// <summary>
     /// How many times a block is tried in one processing round before the round halts (NL-097).
@@ -187,7 +210,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _logger.LogWarning("The chain tip {Tip} is below our last processed block {Height}; rewinding",
                                currentBlockHeight, _lastProcessedBlockHeight);
             if (!await TryRewindAsync(currentBlockHeight))
-                IsChainProcessingHalted = true;
+                Halt($"the chain tip {currentBlockHeight} is below our last processed block "
+                   + $"{_lastProcessedBlockHeight} and no fork point was found in the header ring");
         }
         else if (currentBlockHeight >= _lastProcessedBlockHeight)
         {
@@ -210,6 +234,12 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         // Start monitoring task
         _monitoringTask = MonitorBlockchainAsync(_cts.Token);
+        if (_txSocket is not null)
+        {
+            var mempoolToken = _cts.Token;
+            _mempoolTask = Task.Factory.StartNew(() => MonitorMempool(mempoolToken), mempoolToken,
+                                                 TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        }
 
         _logger.LogInformation("Blockchain monitor service started successfully");
     }
@@ -221,11 +251,14 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
         await _cts.CancelAsync();
 
-        if (_monitoringTask is not null)
+        foreach (var task in new[] { _monitoringTask, _mempoolTask })
         {
+            if (task is null)
+                continue;
+
             try
             {
-                await _monitoringTask;
+                await task;
             }
             catch (OperationCanceledException)
             {
@@ -506,9 +539,18 @@ public class BlockchainMonitorService : IBlockchainMonitor
             _blockSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqBlockPort}");
             _blockSocket.Subscribe("rawblock");
 
+            // BOLT 5 plan O8: unconfirmed spends of watched outputs (optional; blocks alone are enough)
+            if (_bitcoinOptions.WatchMempool)
+            {
+                _txSocket = new SubscriberSocket();
+                _txSocket.Connect($"tcp://{_bitcoinOptions.ZmqHost}:{_bitcoinOptions.ZmqTxPort}");
+                _txSocket.Subscribe("rawtx");
+            }
+
             if (_logger.IsEnabled(LogLevel.Information))
-                _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort}",
-                                       _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort);
+                _logger.LogInformation("ZMQ sockets initialized - Block: {BlockPort}, Tx: {TxPort} (mempool {Mempool})",
+                                       _bitcoinOptions.ZmqBlockPort, _bitcoinOptions.ZmqTxPort,
+                                       _bitcoinOptions.WatchMempool ? "watched" : "not watched");
         }
         catch (Exception ex)
         {
@@ -524,12 +566,127 @@ public class BlockchainMonitorService : IBlockchainMonitor
         {
             _blockSocket?.Dispose();
             _blockSocket = null;
+            _txSocket?.Dispose();
+            _txSocket = null;
 
             _logger.LogDebug("ZMQ sockets cleaned up");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error cleaning up ZMQ sockets");
+        }
+    }
+
+    /// <summary>
+    /// A transaction announced by ZMQ <c>rawtx</c> (BOLT 5 plan O8): raises
+    /// <see cref="OnWatchedOutpointSpentInMempool"/> once per spent watched outpoint, and once per spent output of a
+    /// transaction reported before (so an HTLC transaction that spends a commitment still in the mempool is seen too).
+    /// </summary>
+    /// <remarks>
+    /// Nothing is saved and no watch is marked spent: an unconfirmed transaction may be replaced, evicted or never
+    /// mined, and only a processed block confirms a spend. A transaction is handled once (bitcoind announces it again
+    /// when a block holding it is connected); txids and reported parents are remembered up to
+    /// <see cref="MaxRememberedMempoolTransactions"/> each, the oldest forgotten first. Returns the number of events
+    /// raised.
+    /// </remarks>
+    internal int ProcessMempoolTransaction(Transaction transaction)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var txId = transaction.GetHash();
+        var spends = new List<MempoolSpendEventArgs>();
+        lock (_mempoolLock)
+        {
+            if (!Remember(_seenMempoolTransactions, _seenMempoolOrder, txId))
+                return 0;
+
+            SignedTransaction? signed = null;
+            foreach (var input in transaction.Inputs)
+            {
+                var spendsParent = false;
+                if (!_watchedOutpoints.TryGetValue(input.PrevOut, out var channelId))
+                {
+                    if (!_reportedMempoolParents.TryGetValue(input.PrevOut.Hash, out channelId))
+                        continue;
+
+                    spendsParent = true;
+                }
+
+                signed ??= new SignedTransaction(new TxId(txId.ToBytes()), transaction.ToBytes());
+                spends.Add(new MempoolSpendEventArgs(channelId, signed, new TxId(input.PrevOut.Hash.ToBytes()),
+                                                     input.PrevOut.N, spendsParent));
+            }
+
+            if (spends.Count == 0)
+                return 0;
+
+            if (_reportedMempoolParents.TryAdd(txId, spends[0].ChannelId))
+            {
+                _reportedMempoolOrder.Enqueue(txId);
+                while (_reportedMempoolOrder.Count > MaxRememberedMempoolTransactions)
+                    _reportedMempoolParents.Remove(_reportedMempoolOrder.Dequeue());
+            }
+        }
+
+        foreach (var spend in spends)
+        {
+            if (_logger.IsEnabled(LogLevel.Information))
+                _logger.LogInformation(
+                    "Unconfirmed transaction {TxId} spends {SpentTxId}:{Index} of channel {ChannelId}{Parent}", txId,
+                    new uint256((byte[])spend.SpentTransactionId), spend.SpentOutputIndex, spend.ChannelId,
+                    spend.SpendsUnconfirmedParent ? " (an output of an unconfirmed transaction)" : string.Empty);
+
+            // Each handler on its own: one that throws does not keep the others from the spend
+            if (OnWatchedOutpointSpentInMempool is not { } handlers)
+                continue;
+            foreach (var handler in handlers.GetInvocationList().Cast<EventHandler<MempoolSpendEventArgs>>())
+                Raise(() => handler(this, spend), "mempool spend");
+        }
+
+        return spends.Count;
+    }
+
+    /// <summary>Adds <paramref name="txId"/> to a bounded set; false when it was already there.</summary>
+    private bool Remember(HashSet<uint256> set, Queue<uint256> order, uint256 txId)
+    {
+        if (!set.Add(txId))
+            return false;
+
+        order.Enqueue(txId);
+        while (order.Count > MaxRememberedMempoolTransactions)
+            set.Remove(order.Dequeue());
+        return true;
+    }
+
+    /// <summary>
+    /// The mempool loop (O8): reads every <c>rawtx</c> message (topic, transaction, sequence) as it arrives. A message
+    /// that is not a transaction is logged and skipped; the loop ends when the monitor stops.
+    /// </summary>
+    private void MonitorMempool(CancellationToken cancellationToken)
+    {
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Starting mempool monitoring loop");
+
+        var frames = new List<byte[]>(3);
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                var socket = _txSocket;
+                if (socket is null)
+                    return;
+
+                if (!socket.TryReceiveMultipartBytes(TimeSpan.FromMilliseconds(100), ref frames, 3))
+                    continue;
+
+                if (frames.Count < 2 || Encoding.ASCII.GetString(frames[0]) != "rawtx")
+                    continue;
+
+                ProcessMempoolTransaction(Transaction.Load(frames[1], _network));
+            }
+            catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogError(ex, "Error in the mempool monitoring loop");
+            }
         }
     }
 
@@ -611,7 +768,8 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 var tip = await _bitcoinChainService.GetCurrentBlockHeightAsync();
                 if (!await TryRewindAsync(Math.Min(_lastProcessedBlockHeight, tip)))
                 {
-                    IsChainProcessingHalted = true;
+                    Halt($"a reorg at height {height} has no fork point in the header ring of {HeaderRingSize} "
+                       + "blocks");
                     return;
                 }
 
@@ -631,7 +789,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
             if (!await TryProcessBlockWithRetriesAsync(block, height, cancellationToken))
             {
-                IsChainProcessingHalted = true;
+                Halt($"block {height} failed {MaxBlockProcessingAttempts} times in a row");
                 _logger.LogCritical(
                     "Chain processing halted at block {Height} after {Attempts} failed attempts; {Pending} blocks remain queued and will be retried when the next block arrives or on restart",
                     height, MaxBlockProcessingAttempts, _blocksToProcess.Count);
@@ -640,6 +798,14 @@ public class BlockchainMonitorService : IBlockchainMonitor
         }
 
         IsChainProcessingHalted = false;
+        ChainProcessingHaltReason = null;
+    }
+
+    /// <summary>Sets the halt (NL-216): the flag, with a reason for the operator (<c>chainstatus</c>).</summary>
+    private void Halt(string reason)
+    {
+        ChainProcessingHaltReason = reason;
+        IsChainProcessingHalted = true;
     }
 
     /// <summary>
