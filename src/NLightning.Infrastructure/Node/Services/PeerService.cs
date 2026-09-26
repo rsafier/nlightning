@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text.Unicode;
 using Microsoft.Extensions.Logging;
 
@@ -6,13 +5,18 @@ namespace NLightning.Infrastructure.Node.Services;
 
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Gossip.Addresses;
+using Domain.Gossip.Interfaces;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Payloads;
+using Domain.Protocol.ValueObjects;
 
 // TODO: Eventually move this to the Application layer
 /// <summary>
@@ -38,8 +42,16 @@ public sealed class PeerService : IPeerService
     /// </summary>
     internal const int MaxPendingChannelUpdates = 64;
 
+    /// <summary>
+    /// The <c>timestamp_range</c> of the bootstrap <c>gossip_timestamp_filter</c>: with <c>first_timestamp</c> 0 it
+    /// asks for every message the peer knows (LND dumps its graph only after a filter, plan BOLT7 G0-T5).
+    /// </summary>
+    internal const uint FullTimestampRange = uint.MaxValue;
+
     private readonly IPeerCommunicationService _peerCommunicationService;
     private readonly ILogger<PeerService> _logger;
+    private readonly IGossipIngress? _gossipIngress;
+    private readonly ChainHash _chainHash;
     private readonly Lock _channelMessageLock = new();
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
     private readonly Lock _disconnectLock = new();
@@ -138,8 +150,15 @@ public sealed class PeerService : IPeerService
     /// <inheritdoc/>
     public CompactPubKey PeerPubKey => _peerCommunicationService.PeerCompactPubKey;
 
-    public string? PreferredHost { get; private set; }
-    public ushort? PreferredPort { get; private set; }
+    /// <inheritdoc />
+    /// <remarks>Never set (NL-344): <c>remote_addr</c> is our address, see <see cref="ObservedAddress"/>.</remarks>
+    public string? PreferredHost => null;
+
+    /// <inheritdoc />
+    public ushort? PreferredPort => null;
+
+    /// <inheritdoc />
+    public AddressDescriptor? ObservedAddress { get; private set; }
 
     public FeatureOptions Features { get; private set; }
 
@@ -153,12 +172,18 @@ public sealed class PeerService : IPeerService
     /// <param name="features">The feature options</param>
     /// <param name="logger">A logger</param>
     /// <param name="networkTimeout">Network timeout</param>
+    /// <param name="gossipIngress">
+    /// Where graph gossip (256/257/258) goes, and whether to ask the peer for its graph after init; null drops graph
+    /// gossip (the <c>channel_update</c> event still fires).
+    /// </param>
     public PeerService(IPeerCommunicationService peerCommunicationService, FeatureOptions features,
-                       ILogger<PeerService> logger, TimeSpan networkTimeout)
+                       ILogger<PeerService> logger, TimeSpan networkTimeout, IGossipIngress? gossipIngress = null)
     {
         _peerCommunicationService = peerCommunicationService;
         Features = features;
         _logger = logger;
+        _gossipIngress = gossipIngress;
+        _chainHash = features.ChainHashes.Any() ? features.ChainHashes.First() : ChainConstants.Main;
 
         // Nobody has to observe a failed init wait (e.g. a connection that closes before anyone asked)
         _ = _initReceived.Task.ContinueWith(t => _ = t.Exception, CancellationToken.None,
@@ -340,22 +365,30 @@ public sealed class PeerService : IPeerService
         }
         else if (message is ChannelUpdateMessage channelUpdateMessage)
         {
-            // BOLT 7: checked (chain, channel, signature) and stored by the subscriber
+            // BOLT 7: checked (chain, channel, signature) and stored by the subscriber (our own channels, W1-E), and
+            // by the graph ingress (public channels, G2-T4), each with its own checks
             _logger.LogDebug("Received channel_update for {shortChannelId} from peer {peer}",
                              channelUpdateMessage.Payload.ShortChannelId, PeerPubKey);
             RaiseChannelUpdate(channelUpdateMessage);
+            _gossipIngress?.TryEnqueue(this, channelUpdateMessage);
         }
         else if (message is GossipTimestampFilterMessage)
         {
             // We never relay gossip (and generate none yet), so there is nothing to filter: accept and ignore
             _logger.LogDebug("Ignoring gossip_timestamp_filter from peer {peer}", PeerPubKey);
         }
-        else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage or ReplyChannelRangeMessage
-                         or ReplyShortChannelIdsEndMessage)
+        else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage)
         {
-            // BOLT 7 graph gossip is not implemented yet (and we never query): accept the message so the connection
-            // stays up, and drop it. announcement_signatures (259) is a channel message: it takes the
-            // IChannelMessage arm above to the channel manager (plan G0-T2)
+            // BOLT 7 graph gossip: validated (signatures, funding output) and stored by the graph ingress (G2-T4),
+            // which warns the peer itself; without an ingress (or with the graph disabled) it is dropped.
+            // announcement_signatures (259) is a channel message: it takes the IChannelMessage arm above (G0-T2)
+            if (_gossipIngress?.TryEnqueue(this, message) != true)
+                _logger.LogTrace("Dropping gossip message ({messageType}) from peer {peer}",
+                                 Enum.GetName(message.Type), PeerPubKey);
+        }
+        else if (message is ReplyChannelRangeMessage or ReplyShortChannelIdsEndMessage)
+        {
+            // We never query yet (G3): accept the message so the connection stays up, and drop it
             _logger.LogDebug("Dropping gossip message ({messageType}) from peer {peer}",
                              Enum.GetName(message.Type), PeerPubKey);
         }
@@ -488,40 +521,42 @@ public sealed class PeerService : IPeerService
             return;
         }
 
+        // BOLT 1: remote_addr is the address the peer sees us at. Keep it only as a hint for our own announced
+        // addresses, never as the peer's address; an undecodable one is dropped, never fatal (odd TLV, NL-344)
         if (initMessage.RemoteAddressTlv is not null)
         {
-            switch (initMessage.RemoteAddressTlv.AddressType)
-            {
-                case 1 or 2:
-                    {
-                        if (!IPAddress.TryParse(initMessage.RemoteAddressTlv.Address, out var ipAddress))
-                        {
-                            _logger.LogWarning("Peer {peer} has an invalid remote address: {address}",
-                                               PeerPubKey, initMessage.RemoteAddressTlv.Address);
-                        }
-                        else
-                        {
-                            PreferredHost = ipAddress.ToString();
-                            PreferredPort = initMessage.RemoteAddressTlv.Port;
-                        }
-
-                        break;
-                    }
-                case 5:
-                    PreferredHost = initMessage.RemoteAddressTlv.Address;
-                    PreferredPort = initMessage.RemoteAddressTlv.Port;
-                    break;
-                default:
-                    _logger.LogWarning("Peer {peer} has an unsupported remote address type: {addressType}",
-                                       PeerPubKey, initMessage.RemoteAddressTlv.AddressType);
-                    break;
-            }
+            ObservedAddress = initMessage.RemoteAddressTlv.Descriptor;
+            _logger.LogDebug("Peer {peer} sees us at {address}", PeerPubKey, ObservedAddress);
+        }
+        else if (initMessage.UndecodableRemoteAddress is not null)
+        {
+            _logger.LogWarning("Ignoring the undecodable remote_addr of peer {peer}: {address}", PeerPubKey,
+                               Convert.ToHexStringLower(initMessage.UndecodableRemoteAddress));
         }
 
         Features = FeatureOptions.GetNodeOptions(negotiatedFeatures, initMessage.Extension);
         _logger.LogTrace("Initialization from peer {peer} completed successfully", PeerPubKey);
         _isInitialized = true;
         _initReceived.TrySetResult();
+
+        RequestGossipIfEnabled();
+    }
+
+    /// <summary>
+    /// The graph bootstrap until the G3 sync exists: a peer that negotiated <c>gossip_queries</c> gets
+    /// <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c> right after init, so it sends us every announcement and update it
+    /// knows (LND dumps its graph only after a filter) and then keeps relaying new gossip. A peer without
+    /// <c>gossip_queries</c> gets nothing (it sends us its gossip unasked, or not at all); nothing is sent while the
+    /// graph is disabled (mainnet by default, plan D12).
+    /// </summary>
+    private void RequestGossipIfEnabled()
+    {
+        if (_gossipIngress is not { IsEnabled: true } || Features.GossipQueries == FeatureSupport.No)
+            return;
+
+        _logger.LogDebug("Asking peer {peer} for its gossip", PeerPubKey);
+        _ = SendGossipReplyAsync(
+            new GossipTimestampFilterMessage(new GossipTimestampFilterPayload(_chainHash, 0, FullTimestampRange)));
     }
 
     public void Dispose()

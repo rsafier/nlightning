@@ -5,6 +5,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Events;
 using Exceptions;
+using Gossip.Addresses;
 using Options;
 
 /// <summary>
@@ -66,8 +67,22 @@ public interface IPeerService : IDisposable
     /// </remarks>
     event EventHandler<ChannelUpdateMessage>? OnChannelUpdateReceived;
 
+    /// <summary>
+    /// An address the peer asked to be reached at. BOLT 1 has no such field (the init <c>remote_addr</c> is the
+    /// address the peer sees <b>us</b> at, see <see cref="ObservedAddress"/>), so this is never set: callers keep the
+    /// address they connected to (NL-344).
+    /// </summary>
     public string? PreferredHost { get; }
+
+    /// <summary>The port of <see cref="PreferredHost"/>; never set (NL-344).</summary>
     public ushort? PreferredPort { get; }
+
+    /// <summary>
+    /// The address the peer says it sees us at (its init <c>remote_addr</c>, BOLT 1), or null when it sent none or one
+    /// that does not decode (logged and dropped, NL-344). Only a hint for our own announced addresses (NL-009); never
+    /// the peer's address.
+    /// </summary>
+    AddressDescriptor? ObservedAddress { get; }
 
     /// <summary>
     /// Completes once the peer's <c>init</c> was received and accepted (ours is sent before the service is handed
