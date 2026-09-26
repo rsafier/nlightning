@@ -37,6 +37,12 @@ internal static class ClientApp
     /// </summary>
     internal const uint MaxCloseWaitSeconds = 300;
 
+    /// <summary>
+    /// The largest openchannel amount or push, in sats: the 21M BTC supply. Everything the validator accepts must
+    /// convert to a <c>long</c> and to msat without overflowing in <c>NamedPipeIpcClient.OpenChannelAsync</c>.
+    /// </summary>
+    internal const ulong MaxOpenChannelSats = 2_100_000_000_000_000;
+
     internal static async Task<int> RunAsync(string[] args, CancellationToken cancellationToken)
     {
         try
@@ -198,8 +204,8 @@ internal static class ClientApp
                 if (commandArgs.Length < 2)
                     return $"Missing arguments. Usage: {cmd} <node> <amount_sats> [push_sats]";
                 if (!ulong.TryParse(commandArgs[1], NumberStyles.None, CultureInfo.InvariantCulture, out var fundingSats)
-                 || fundingSats == 0)
-                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of sats.";
+                 || fundingSats == 0 || fundingSats > MaxOpenChannelSats)
+                    return $"Invalid amount '{commandArgs[1]}': expected a positive number of sats up to {MaxOpenChannelSats}.";
                 if (commandArgs.Length > 2
                  && !(ulong.TryParse(commandArgs[2], NumberStyles.None, CultureInfo.InvariantCulture, out var pushSats)
                    && pushSats < fundingSats))

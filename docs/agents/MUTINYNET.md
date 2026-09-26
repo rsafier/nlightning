@@ -153,7 +153,9 @@ Observations from the run (ledger items, not fixed here):
   closing txid is printed in the usual order. Display only.
 - NL-304: `LocalLightningSigner.SignFundingTransaction` logs a warning for an input it cannot sign (no UTXO or no wallet
   address), leaves it null and then fails with a NullReferenceException; it should throw a `SignerException` naming the
-  input.
+  input. Fixed in the w5e review: the signer now throws `SignerException` naming the input and its outpoint
+  (`test/NLightning.Integration.Tests/Persistence/FundingSigningAfterReloadTests` reloads a UTXO from SQLite, locks
+  it and signs the funding transaction, with and without its wallet address).
 - NL-305: the deposit address `tb1qf2fz...5xt` was still "unused" after it received the deposit, so the cooperative
   close paid our output to it again (address reuse); `getaddress` moved on only after the close output arrived.
 - NL-306: the template's relative paths (`Database:ConnectionString` `Data Source=nltg.db`, Serilog `logs/log-.txt`)

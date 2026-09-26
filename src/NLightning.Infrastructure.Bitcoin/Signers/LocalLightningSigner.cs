@@ -610,21 +610,19 @@ public class LocalLightningSigner : ILightningSigner
             {
                 var input = nBitcoinTx.Inputs[i];
 
-                // Try to get the address being spent
+                // Try to get the address being spent. An input we cannot sign fails the whole transaction here, naming
+                // the input (NL-304): a partly signed funding transaction is useless, and skipping the input used to
+                // end in a NullReferenceException (wrapped as "Failed to sign input N")
                 var utxo = utxoModels.FirstOrDefault(x => x.TxId.Equals(new TxId(input.PrevOut.Hash.ToBytes()))
-                                                       && x.Index.Equals(input.PrevOut.N));
-                if (utxo is null)
-                {
-                    _logger.LogWarning("Could not find UTXO for input {InputIndex} in funding transaction", i);
-                    continue;
-                }
+                                                       && x.Index.Equals(input.PrevOut.N))
+                        ?? throw new SignerException(
+                               $"No locked UTXO for input {i} ({input.PrevOut}) of the funding transaction", channelId,
+                               "Signing error");
 
                 if (utxo.WalletAddress is null)
-                {
-                    _logger.LogWarning(
-                        "UTXO did not have a WalletAddress for input {InputIndex} in funding transaction", i);
-                    continue;
-                }
+                    throw new SignerException(
+                        $"The UTXO of input {i} ({input.PrevOut}) of the funding transaction has no wallet address",
+                        channelId, "Signing error");
 
                 utxos[i] = utxo;
 

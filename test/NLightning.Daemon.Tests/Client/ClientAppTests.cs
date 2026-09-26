@@ -65,6 +65,9 @@ public class ClientAppTests
     [InlineData("openchannel", "peer@host", "lots")]
     [InlineData("openchannel", "peer@host", "50000", "50000")]
     [InlineData("open-channel", "peer@host", "50000", "-1")]
+    [InlineData("openchannel", "peer@host", "99999999999999999999")]
+    [InlineData("openchannel", "peer@host", "9223372036854775808")]
+    [InlineData("openchannel", "peer@host", "2100000000000001")]
     public async Task GivenMissingCommandArguments_WhenRunAsync_ThenReturnsUsageError(
         string command, params string[] commandArgs)
     {
@@ -108,6 +111,7 @@ public class ClientAppTests
     [InlineData("openchannel", "peer@host", "50000")]
     [InlineData("openchannel", "peer@host", "50000", "0")]
     [InlineData("open-channel", "peer@host", "50000", "20000")]
+    [InlineData("openchannel", "peer@host", "2100000000000000", "2099999999999999")]
     public void GivenCommandWithOptionalArguments_WhenValidateArguments_ThenIsValid(string command,
         params string[] commandArgs)
     {
