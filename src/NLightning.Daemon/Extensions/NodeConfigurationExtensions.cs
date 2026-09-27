@@ -6,6 +6,7 @@ using Serilog;
 
 namespace NLightning.Daemon.Extensions;
 
+using Application.OnionMessages;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.ValueObjects;
@@ -253,7 +254,8 @@ public static class NodeConfigurationExtensions
     /// <see cref="RoutingOptions.HtlcMaximumMsat"/> (unset: the channel's own limits only). <c>FeeEstimation</c> reads
     /// mempool.space for the network (mutinynet.com for Mutinynet) in sat/vB, and a fixed rate on regtest.
     /// <c>Bitcoin</c> holds bitcoind's default RPC port for the network; on signets also the ZMQ ports of
-    /// <c>docs/agents/MUTINYNET.md</c>.
+    /// <c>docs/agents/MUTINYNET.md</c>. <c>OnionMessages</c> carries the <see cref="OnionMessageOptions"/> defaults
+    /// (BOLT 4 onion messages, wave M6); they apply only once <c>Node:Features:OptionOnionMessages</c> is advertised.
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -264,6 +266,7 @@ public static class NodeConfigurationExtensions
         var customSignetName = BitcoinNetwork.IsCustomSignet(name) ? name : string.Empty;
         var routing = new RoutingOptions();
         var fees = new FeeEstimationOptions();
+        var onionMessages = new OnionMessageOptions();
         var isMainnet = resolved == BitcoinNetwork.Mainnet;
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
@@ -363,6 +366,19 @@ public static class NodeConfigurationExtensions
                    "AllowPublicChannelsOnMainnet": false,
                    "MaxMemoryMb": 1024
                  },
+                 "OnionMessages": {
+                   "MaxOutboxPerPeer": {{OM_MAX_OUTBOX}},
+                   "MaxQueuedMessages": {{OM_MAX_QUEUED}},
+                   "MaxQueuedHandlerWork": {{OM_MAX_HANDLER_WORK}},
+                   "MaxPendingReplies": {{OM_MAX_PENDING_REPLIES}},
+                   "ReplyTimeout": "{{OM_REPLY_TIMEOUT}}",
+                   "MaxPathHops": {{OM_MAX_PATH_HOPS}},
+                   "PeerBytesPerSecond": {{OM_PEER_BPS}},
+                   "PeerBurstBytes": {{OM_PEER_BURST}},
+                   "PeerMessagesPerSecond": {{OM_PEER_MPS}},
+                   "GlobalBytesPerSecond": {{OM_GLOBAL_BPS}},
+                   "ConnectToReply": false
+                 },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
                    "Url": "{{FEE_URL}}",
@@ -406,6 +422,16 @@ public static class NodeConfigurationExtensions
                   .Replace("{{INVOICE_MIN_FINAL_CLTV_EXPIRY}}", Invariant(routing.InvoiceMinFinalCltvExpiry))
                   .Replace("{{INVOICE_EXPIRY_SECONDS}}", Invariant(routing.InvoiceExpirySeconds))
                   .Replace("{{HTLC_MINIMUM_MSAT}}", Invariant(routing.HtlcMinimumMsat))
+                  .Replace("{{OM_MAX_OUTBOX}}", Invariant(onionMessages.MaxOutboxPerPeer))
+                  .Replace("{{OM_MAX_QUEUED}}", Invariant(onionMessages.MaxQueuedMessages))
+                  .Replace("{{OM_MAX_HANDLER_WORK}}", Invariant(onionMessages.MaxQueuedHandlerWork))
+                  .Replace("{{OM_MAX_PENDING_REPLIES}}", Invariant(onionMessages.MaxPendingReplies))
+                  .Replace("{{OM_REPLY_TIMEOUT}}", Invariant(onionMessages.ReplyTimeout))
+                  .Replace("{{OM_MAX_PATH_HOPS}}", Invariant(onionMessages.MaxPathHops))
+                  .Replace("{{OM_PEER_BPS}}", Invariant(onionMessages.PeerBytesPerSecond))
+                  .Replace("{{OM_PEER_BURST}}", Invariant(onionMessages.PeerBurstBytes))
+                  .Replace("{{OM_PEER_MPS}}", Invariant(onionMessages.PeerMessagesPerSecond))
+                  .Replace("{{OM_GLOBAL_BPS}}", Invariant(onionMessages.GlobalBytesPerSecond))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
                   .Replace("{{FEE_RATE_UNIT}}", FeeRateConverter.SatPerVByte)
