@@ -117,6 +117,10 @@ public class OnionMessagePacketBuilderTests
     [Theory]
     [InlineData(OnionMessageConstants.ReplyPathType)]
     [InlineData(OnionMessageConstants.EncryptedRecipientDataType)]
+    [InlineData(0UL)]
+    [InlineData(6UL)]
+    [InlineData(70UL)]
+    [InlineData(1000UL)]
     public void Given_ContentsWithAReservedType_When_Building_Then_Refused(ulong type)
     {
         // Arrange
@@ -126,6 +130,25 @@ public class OnionMessagePacketBuilderTests
         Assert.Throws<ArgumentException>(() =>
                                              _kit.PacketBuilder.Build([], path, OnionMessageContents.Single(type, new byte[] { 1 }),
                                                                       null));
+    }
+
+    [Theory]
+    [InlineData(OnionMessageConstants.InvoiceRequestType)]
+    [InlineData(OnionMessageConstants.InvoiceType)]
+    [InlineData(OnionMessageConstants.InvoiceErrorType)]
+    [InlineData(71UL)]
+    public void Given_ContentsWithAKnownEvenOrAnOddType_When_Building_Then_TheRecipientGetsThem(ulong type)
+    {
+        // Arrange
+        var path = _kit.PathBuilder.CreateMessagePath(_kit.NodeIds[..1]);
+
+        // Act
+        var message = _kit.PacketBuilder.Build([], path, OnionMessageContents.Single(type, new byte[] { 1 }), null);
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        Assert.Equal(OnionMessageUnwrapStatus.Deliver, result.Status);
+        Assert.Equal(type, Assert.Single(result.Payload!.OtherRecords).Type);
     }
 
     [Fact]
