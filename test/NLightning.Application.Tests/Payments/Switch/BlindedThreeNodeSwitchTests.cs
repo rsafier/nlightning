@@ -170,14 +170,8 @@ public class BlindedThreeNodeSwitchTests
     private static async Task<ThreeNodeHarness> CreateAsync(bool enableBlinding = true) =>
         await ThreeNodeHarness.CreateAsync(h =>
         {
-            if (!enableBlinding)
-                return;
-
             foreach (var node in h.Nodes)
-            {
-                node.Options.Features.AllowExperimentalFeatures = true;
-                node.Options.Features.OptionRouteBlinding = FeatureSupport.Optional;
-            }
+                node.Options.Features.OptionRouteBlinding = enableBlinding ? FeatureSupport.Optional : FeatureSupport.No;
         });
 
     private sealed record BlindedPayment(OnionPacket Packet, IReadOnlyList<Secret> SharedSecrets,
