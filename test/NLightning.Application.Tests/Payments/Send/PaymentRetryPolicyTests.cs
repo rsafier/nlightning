@@ -52,6 +52,20 @@ public class PaymentRetryPolicyTests
         return new PaymentPart(s_toCarol, route, [], "route hint 0");
     }
 
+    /// <summary>
+    /// The same route, but David is the introduction node and the recipient of a one-hop blinded path (index 0).
+    /// </summary>
+    private static PaymentPart OneHopBlindedPart()
+    {
+        var route = Part().Route;
+        var hops = route.Hops.ToList();
+        hops[^1] = hops[^1] with { EncryptedRecipientData = new byte[] { 1, 2, 3 }, CurrentPathKey = s_david };
+        var blinded = new PaymentRoute(hops, route.FirstHopAmount, route.FirstHopCltvExpiry, route.PaymentHash,
+                                       route.PaymentSecret)
+        { BlindedPathIndex = 0 };
+        return new PaymentPart(s_toCarol, blinded, [], "blinded path 0");
+    }
+
     /// <summary>Carol's update for Carol → David (Carol's direction), as a failure field payload.</summary>
     private static ReadOnlyMemory<byte> CarolUpdate(uint timestamp = 10, uint feeBase = 3_000,
                                                     ShortChannelId? scid = null, bool disabled = false,
@@ -98,6 +112,30 @@ public class PaymentRetryPolicyTests
         // Assert
         Assert.False(retry);
         Assert.Contains("permanent", note);
+    }
+
+    [Fact]
+    public void Given_APermanentFailureFromTheRecipientOfAOneHopBlindedPath_When_Decided_Then_NotRetried()
+    {
+        // Act - the introduction node is the recipient: BOLT 4 has it return normal errors
+        var (retry, _) = Policy().Decide(OneHopBlindedPart(), HtlcRemovalKind.Fail,
+                                         FromDavid(FailureCode.IncorrectOrUnknownPaymentDetails), _constraints);
+
+        // Assert - a payee's permanent failure stops the payment; the path is not merely swapped for another
+        Assert.False(retry);
+        Assert.Empty(_constraints.ExcludedBlindedPaths);
+    }
+
+    [Fact]
+    public void Given_InvalidOnionBlindingFromTheIntroductionNode_When_Decided_Then_ThePathIsAvoidedAndRetried()
+    {
+        // Act
+        var (retry, _) = Policy().Decide(OneHopBlindedPart(), HtlcRemovalKind.Fail,
+                                         FromDavid(FailureCode.InvalidOnionBlinding), _constraints);
+
+        // Assert
+        Assert.True(retry);
+        Assert.Contains(0, _constraints.ExcludedBlindedPaths);
     }
 
     [Fact]

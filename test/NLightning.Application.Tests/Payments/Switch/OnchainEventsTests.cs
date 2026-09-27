@@ -289,7 +289,7 @@ public class OnchainEventsTests
         services.AddScoped(_ => _context.UnitOfWork.Object);
         var provider = services.BuildServiceProvider();
         var options = Options.Create(new NodeOptions { EnableHtlcs = true });
-        var onionProcessor = new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
+        var onionProcessor = new IncomingOnionProcessor(new UnreadableOnionSphinx(),
                                                         new Mock<IHopPayloadSerializer>().Object,
                                                         new Mock<IOnionReplayStore>().Object,
                                                         NullLogger<IncomingOnionProcessor>.Instance);

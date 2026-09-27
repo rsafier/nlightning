@@ -225,7 +225,7 @@ public class HtlcSwitchTests
         services.AddSingleton<IForwardingPolicy>(
             new HtlcForwardingPolicy(Options.Create(new NodeOptions { EnableHtlcs = true })));
         services.AddSingleton(Options.Create(new NodeOptions { EnableHtlcs = true }));
-        services.AddSingleton(new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
+        services.AddSingleton(new IncomingOnionProcessor(new UnreadableOnionSphinx(),
                                                          new Mock<IHopPayloadSerializer>().Object,
                                                          new Mock<IOnionReplayStore>().Object,
                                                          NullLogger<IncomingOnionProcessor>.Instance));
@@ -421,7 +421,7 @@ public class HtlcSwitchTests
         if (advertiseAttribution)
             nodeOptions.Features.OptionAttributionData = FeatureSupport.Optional;
         var options = Options.Create(nodeOptions);
-        var onionProcessor = new IncomingOnionProcessor(new Mock<ISphinxService>().Object,
+        var onionProcessor = new IncomingOnionProcessor(new UnreadableOnionSphinx(),
                                                         new Mock<IHopPayloadSerializer>().Object,
                                                         new Mock<IOnionReplayStore>().Object,
                                                         NullLogger<IncomingOnionProcessor>.Instance);

@@ -29,7 +29,9 @@ using Payments.Switch;
 /// <see cref="DustExposurePolicy.CheckLockedInIncoming"/>. The HTLC is failed with <c>temporary_channel_failure</c>
 /// in an error onion made with its onion's shared secret (the onion is peeled without the replay check: it is failed
 /// either way). A malformed onion is left to the decorated switch, which fails it with
-/// <c>update_fail_malformed_htlc</c> (no preimage either way).</para>
+/// <c>update_fail_malformed_htlc</c> (no preimage either way). Inside a blinded route the BOLT 2 rules of
+/// <see cref="BlindedHtlcFailures"/> apply instead: an HTLC with a <c>path_key</c> gets <c>update_fail_malformed_htlc</c>
+/// + <c>invalid_onion_blinding</c>, an introduction-node forward our own <c>invalid_onion_blinding</c>.</para>
 /// <para>Idempotent and safe with replays: the handling of one incoming HTLC is serialized by a per-HTLC lock, an HTLC
 /// that is no longer waiting for a resolution is passed on (the decorated switch skips it), and an HTLC the decorated
 /// switch already started on (a forward circuit or a stored onion secret exists) is never failed here, so an HTLC that
@@ -105,17 +107,29 @@ public sealed class DustExposureHtlcSwitch : IHtlcSwitch
             return false;
         }
 
-        var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, replayOwner: null,
-                                                        htlc.PathKey);
-        if (result.SharedSecretOrNull is not { } sharedSecret)
-            return false;
-
-        var reason = _failureOnionService.CreateErrorPacket(sharedSecret, FailureMessage.TemporaryChannelFailure());
         try
         {
-            await _channelOperations.FailHtlcAsync(channelId, htlcId, reason, cancellationToken);
-            _logger.LogWarning("Failed incoming HTLC {HtlcId} of channel {ChannelId} ({AmountMsat} msat): {Excess} "
-                             + "(B2-DUST-01/02)", htlcId, channelId, htlc.AmountMsat, excess);
+            // Inside a blinded route the BOLT 2 invalid_onion_blinding rules replace temporary_channel_failure (M5):
+            // with a path_key in update_add_htlc always the malformed one, which needs no shared secret
+            if (await BlindedHtlcFailures.TryFailMalformedAsync(_channelOperations, channelId, htlc, cancellationToken))
+            {
+                _logger.LogWarning("Failed blinded incoming HTLC {HtlcId} of channel {ChannelId} ({AmountMsat} msat) "
+                                 + "with invalid_onion_blinding: {Excess} (B2-DUST-01/02)", htlcId, channelId,
+                                   htlc.AmountMsat, excess);
+                return true;
+            }
+
+            var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash,
+                                                            replayOwner: null, htlc.PathKey);
+            if (result.SharedSecretOrNull is not { } sharedSecret)
+                return false;
+
+            var sent = await BlindedHtlcFailures.FailAsync(_channelOperations, _failureOnionService, channelId, htlc,
+                                                           sharedSecret, FailureMessage.TemporaryChannelFailure(),
+                                                           BlindedHtlcFailures.IsIntroductionForward(result),
+                                                           cancellationToken);
+            _logger.LogWarning("Failed incoming HTLC {HtlcId} of channel {ChannelId} ({AmountMsat} msat) with {Sent}: "
+                             + "{Excess} (B2-DUST-01/02)", htlcId, channelId, htlc.AmountMsat, sent, excess);
         }
         catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
         {

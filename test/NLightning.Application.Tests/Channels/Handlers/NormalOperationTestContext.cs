@@ -166,7 +166,8 @@ internal sealed class NormalOperationTestContext
     /// Drives the local engine through an offered or received HTLC until it is locked in on both commitments, with
     /// the fake ports (no persistence, no messages).
     /// </summary>
-    public HtlcRecord LockIn(HtlcDirection direction, ulong amountMsat, Secret preimage)
+    public HtlcRecord LockIn(HtlcDirection direction, ulong amountMsat, Secret preimage,
+                             CompactPubKey? pathKey = null)
     {
         var state = State;
         if (direction == HtlcDirection.Outgoing)
@@ -178,7 +179,8 @@ internal sealed class NormalOperationTestContext
         }
         else
         {
-            state = state.ReceiveAdd(state.RemoteNextHtlcId, amountMsat, HashOf(preimage), 600, Onion).Next;
+            state = state.ReceiveAdd(state.RemoteNextHtlcId, amountMsat, HashOf(preimage), 600, Onion, pathKey)
+                         .Next;
             state = state.ReceiveCommit(Ports.SignaturesFor(state), Ports).Next;
             state = state.SendCommit(Ports).Next;
             state = state.ReceiveRevoke(SecretOf(0x90), Point(0x22), Ports).Next;
