@@ -251,6 +251,22 @@ public class FeatureOptionsTests
     }
 
     [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_OnionMessagesIsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (BOLT 4 onion messages, wave M6: Proof M6 against CLN passed, plan D9)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.DoesNotContain(Feature.OptionOnionMessages, FeatureOptions.ExperimentalFeatures);
+        Assert.True(features.IsFeatureSet(Feature.OptionOnionMessages, false));
+        Assert.False(features.IsFeatureSet(Feature.OptionOnionMessages, true));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
     public void Given_BasicMppNo_When_GetNodeFeatures_Then_NotAdvertised()
     {
         // Arrange
@@ -273,7 +289,6 @@ public class FeatureOptionsTests
 
     [Theory]
     [MemberData(nameof(RequiredExperimentalFeatures))]
-    [InlineData(Feature.OptionOnionMessages)]
     public void Given_ExperimentalFeatureEnabledWithoutOptIn_When_Validating_Then_ErrorAndNotAdvertised(
         Feature feature)
     {

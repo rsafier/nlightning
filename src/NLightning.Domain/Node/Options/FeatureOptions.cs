@@ -17,16 +17,16 @@ public class FeatureOptions
     /// </summary>
     /// <remarks>
     /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers,
-    /// attribution_data error attribution (onion M3b) and onion_messages the onion_message handler (provide_storage
-    /// left the set with the peer_storage handlers and route_blinding with the blinded payloads (onion M5), wave rf1).
+    /// and attribution_data error attribution (onion M3b) (provide_storage left the set with the peer_storage handlers
+    /// and route_blinding with the blinded payloads (onion M5), wave rf1; onion_messages with the onion message service
+    /// after Proof M6, wave M6, plan D9).
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
     {
         Feature.OptionQuiesce,
         Feature.OptionDualFund,
-        Feature.OptionAttributionData,
-        Feature.OptionOnionMessages
+        Feature.OptionAttributionData
     };
 
     /// <summary>
@@ -150,9 +150,9 @@ public class FeatureOptions
     public FeatureSupport OptionAttributionData { get; set; } = FeatureSupport.No;
 
     /// <summary>
-    /// Enable onion messages.
+    /// Enable onion messages (BOLT 4, wave M6): Optional by default since Proof M6 against CLN (plan D9).
     /// </summary>
-    public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Offer BOLT 1 peer storage: keep the latest <c>peer_storage</c> blob of each peer we have a channel with and hand
