@@ -16,6 +16,17 @@ internal readonly record struct CommitmentView(
     /// <summary>The balance of the given node (Local = us) in this view.</summary>
     public long BalanceOf(CommitmentSide node) => node == CommitmentSide.Local ? LocalMsat : RemoteMsat;
 
+    /// <summary>The same view on another funding: the main balances moved by that funding's deltas (splicing plan
+    /// §3.3).</summary>
+    public CommitmentView Shift(long localDeltaMsat, long remoteDeltaMsat) =>
+        localDeltaMsat == 0 && remoteDeltaMsat == 0
+            ? this
+            : this with
+            {
+                LocalMsat = checked(LocalMsat + localDeltaMsat),
+                RemoteMsat = checked(RemoteMsat + remoteDeltaMsat)
+            };
+
     /// <summary>Converts to a <see cref="CommitmentSpec"/>; negative balances are clamped to 0 (callers check the
     /// signed balances first).</summary>
     public CommitmentSpec ToSpec(uint? feeratePerKw = null) =>

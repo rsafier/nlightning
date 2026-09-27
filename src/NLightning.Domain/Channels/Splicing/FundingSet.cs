@@ -9,9 +9,10 @@ using Enums;
 /// new set.
 /// </summary>
 /// <remarks>
-/// The read-only members are implemented here; the transitions (<see cref="AddPending"/>, <see cref="Lock"/>,
-/// <see cref="Discard"/>) are lane SP1-B's (SP1-B-T1/T3), with their rules: a new splice only when nothing is pending,
-/// RBF siblings of the pending splice, lock folds the deltas and discards siblings and ancestors.
+/// The transitions (<see cref="AddPending"/>, <see cref="Lock"/>, <see cref="Discard"/>) enforce the rules: a new splice
+/// only when nothing is pending, RBF siblings of the pending splice, lock folds the deltas and discards siblings and
+/// ancestors. The commitment engine (<c>ChannelCommitments</c>) applies them to its <c>PendingFundings</c> together with
+/// the per-funding signatures.
 /// <c>ChannelModel.FundingOutput</c> stays a view of <see cref="Current"/> so the single-funding code keeps working.
 /// </remarks>
 /// <param name="Current">The current funding (<see cref="ChannelFundingStatus.Current"/>).</param>
@@ -34,24 +35,82 @@ public sealed record FundingSet(ChannelFunding Current, IReadOnlyList<ChannelFun
     /// <summary>The active funding with <paramref name="fundingTxId"/>, or null.</summary>
     public ChannelFunding? Find(TxId fundingTxId) => Active.FirstOrDefault(f => f.FundingTxId == fundingTxId);
 
-    /// <summary>Adds a negotiated splice (or RBF attempt) as pending (lane SP1-B).</summary>
-    public FundingSet AddPending(ChannelFunding funding) =>
-        throw new NotImplementedException("Lane SP1-B (SP1-B-T1)");
+    /// <summary>
+    /// Adds a negotiated splice (or RBF attempt) as pending.
+    /// </summary>
+    /// <remarks>
+    /// SP-S-01: a <see cref="ChannelFundingKind.Splice"/> only when nothing is pending; a
+    /// <see cref="ChannelFundingKind.SpliceRbf"/> only as a sibling of a pending attempt (<see cref="ChannelFunding.RbfOf"/>
+    /// names one). The funding must be <see cref="ChannelFundingStatus.Pending"/>, differ from every active funding, and
+    /// conserve value: <c>(capacity - current capacity) x 1000 == local delta + remote delta</c> (I6 per funding).
+    /// </remarks>
+    /// <exception cref="ArgumentException">One of those rules is broken.</exception>
+    public FundingSet AddPending(ChannelFunding funding)
+    {
+        ArgumentNullException.ThrowIfNull(funding);
+        if (funding.Status != ChannelFundingStatus.Pending)
+            throw new ArgumentException($"Funding {funding.FundingTxId} is {funding.Status}, not Pending",
+                                        nameof(funding));
+        if (Find(funding.FundingTxId) is not null)
+            throw new ArgumentException($"Funding {funding.FundingTxId} is already active", nameof(funding));
+
+        switch (funding.Kind)
+        {
+            case ChannelFundingKind.Splice when HasPending:
+                throw new ArgumentException("SP-S-01: a splice is already pending; only an RBF attempt may be added",
+                                            nameof(funding));
+            case ChannelFundingKind.Splice:
+                break;
+            case ChannelFundingKind.SpliceRbf when funding.RbfOf is { } parent
+                                                && Pending.Any(p => p.FundingTxId == parent):
+                break;
+            case ChannelFundingKind.SpliceRbf:
+                throw new ArgumentException($"RBF attempt {funding.FundingTxId} does not replace a pending splice",
+                                            nameof(funding));
+            default:
+                throw new ArgumentException($"A {funding.Kind} funding cannot be pending", nameof(funding));
+        }
+
+        var capacityDeltaMsat = checked(((long)funding.CapacitySatoshis - (long)Current.CapacitySatoshis) * 1_000);
+        if (checked(funding.LocalBalanceDeltaMsat + funding.RemoteBalanceDeltaMsat) != capacityDeltaMsat)
+            throw new ArgumentException(
+                $"Funding {funding.FundingTxId} deltas {funding.LocalBalanceDeltaMsat} + {funding.RemoteBalanceDeltaMsat} msat do not match the capacity change {capacityDeltaMsat} msat",
+                nameof(funding));
+
+        return this with { Pending = [.. Pending, funding] };
+    }
 
     /// <summary>
     /// Locks the pending funding <paramref name="fundingTxId"/> (<c>splice_locked</c> sent and received for it): it
-    /// becomes <see cref="Current"/> with its deltas folded, the former current becomes
-    /// <see cref="ChannelFundingStatus.Replaced"/>, its siblings <see cref="ChannelFundingStatus.Discarded"/> (lane
-    /// SP1-B-T3).
+    /// becomes <see cref="Current"/> with its deltas folded (0), the former current becomes
+    /// <see cref="ChannelFundingStatus.Replaced"/>, every other pending attempt (its RBF siblings and ancestors, SP-LK-03)
+    /// <see cref="ChannelFundingStatus.Discarded"/>.
     /// </summary>
-    /// <returns>The new set and the fundings that left it (replaced and discarded), for the lock's save.</returns>
-    public (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Lock(TxId fundingTxId) =>
-        throw new NotImplementedException("Lane SP1-B (SP1-B-T3)");
+    /// <returns>The new set and the fundings that left it (replaced first, then the discarded ones), for the lock's
+    /// save.</returns>
+    /// <exception cref="ArgumentException"><paramref name="fundingTxId"/> is not pending (SP-LK-02).</exception>
+    public (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Lock(TxId fundingTxId)
+    {
+        var locked = Pending.FirstOrDefault(p => p.FundingTxId == fundingTxId)
+                  ?? throw new ArgumentException($"Funding {fundingTxId} is not pending", nameof(fundingTxId));
+
+        var current = locked with
+        {
+            Status = ChannelFundingStatus.Current,
+            LocalBalanceDeltaMsat = 0,
+            RemoteBalanceDeltaMsat = 0
+        };
+        var retired = new List<ChannelFunding> { Current with { Status = ChannelFundingStatus.Replaced } };
+        retired.AddRange(Pending.Where(p => p.FundingTxId != fundingTxId)
+                                .Select(p => p with { Status = ChannelFundingStatus.Discarded }));
+        return (Single(current), retired);
+    }
 
     /// <summary>
-    /// Discards every pending funding (a commitment of the current funding confirmed, splicing plan §3.6) (lane
-    /// SP1-B, used by SP2-C).
+    /// Discards every pending funding (a commitment of the current funding confirmed, or the splice was abandoned before
+    /// it could confirm; splicing plan §3.6).
     /// </summary>
+    /// <returns>The set with only <see cref="Current"/>, and the discarded fundings.</returns>
     public (FundingSet Next, IReadOnlyList<ChannelFunding> Discarded) Discard() =>
-        throw new NotImplementedException("Lane SP1-B");
+        (Single(Current), Pending.Select(p => p with { Status = ChannelFundingStatus.Discarded }).ToList());
 }

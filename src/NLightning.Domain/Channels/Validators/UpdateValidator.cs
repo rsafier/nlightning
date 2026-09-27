@@ -45,7 +45,25 @@ internal static class UpdateValidator
             throw Refused("B2-ADD-S09",
                           $"{inFlight} msat in flight exceeds the peer's max_htlc_value_in_flight_msat {p.Remote.MaxHtlcValueInFlightMsat}");
 
-        var reserve = (long)p.LocalReserveMsat;
+        // Splicing SP-OP-01 / SP-I6: the HTLC must be valid on every active funding (the current one first; only the
+        // main balances and the reserve (D9) differ between them)
+        foreach (var funding in commitments.ActiveFundingViews())
+            ValidateSendAddBalances(p, remoteView.Shift(funding.LocalDeltaMsat, funding.RemoteDeltaMsat),
+                                    localView.Shift(funding.LocalDeltaMsat, funding.RemoteDeltaMsat), funding);
+
+        if (p.MaxDustHtlcExposureMsat is { } maxDust)
+        {
+            CheckSendDustExposure(commitments, remoteView, htlc, maxDust, "B2-DUST-03");
+            CheckSendDustExposure(commitments, localView, htlc, maxDust, "B2-DUST-04");
+        }
+    }
+
+    /// <summary>The balance rules of an HTLC we offer (B2-ADD-S01..S04) on one funding's commitments.</summary>
+    private static void ValidateSendAddBalances(CommitmentParams p, CommitmentView remoteView, CommitmentView localView,
+                                                FundingView funding)
+    {
+        var reserve = funding.LocalReserveMsat;
+        var on = funding.Label;
         if (p.LocalIsFunder)
         {
             foreach (var view in (CommitmentView[])[remoteView, localView])
@@ -56,10 +74,10 @@ internal static class UpdateValidator
                             * 1_000;
                 if (view.LocalMsat - baseFee < reserve)
                     throw Refused("B2-ADD-S01",
-                                  $"We could not pay the {view.Holder} commitment fee above our reserve after this HTLC");
+                                  $"We could not pay the {view.Holder} commitment fee above our reserve after this HTLC{on}");
                 if (view.LocalMsat - (long)CommitmentFeeCalculator.FunderCostMsat(spec, holderDust, p.OptionAnchors)
                   < reserve)
-                    throw Refused("B2-ADD-S02", "We could not pay both anchors above our reserve after this HTLC");
+                    throw Refused("B2-ADD-S02", $"We could not pay both anchors above our reserve after this HTLC{on}");
             }
 
             // Fee spike buffer: twice the feerate and one more non-dust HTLC, on both commitments (BOLT 2: "after adding
@@ -73,14 +91,14 @@ internal static class UpdateValidator
                               + (long)(spiked.FeeratePerKw * (ulong)WeightConstants.HtlcOutputWeight / 1000) * 1_000;
                 if (view.LocalMsat - spikeCost < reserve)
                     throw Refused("B2-ADD-S03",
-                                  $"The HTLC would leave no fee spike buffer on the {view.Holder} commitment (2x feerate, one more HTLC)");
+                                  $"The HTLC would leave no fee spike buffer on the {view.Holder} commitment (2x feerate, one more HTLC){on}");
             }
         }
         else
         {
             // BOLT 2 sender: "MUST NOT offer amount_msat it cannot pay for ... while maintaining its channel reserve".
             if (remoteView.LocalMsat < reserve || localView.LocalMsat < reserve)
-                throw Refused("B2-ADD-S01", "The HTLC would take our balance below our channel reserve");
+                throw Refused("B2-ADD-S01", $"The HTLC would take our balance below our channel reserve{on}");
 
             // BOLT 2: "the updated local or remote transaction". Both are needed: with different dust limits an HTLC
             // can be trimmed on one commitment and cost fee on the other.
@@ -89,16 +107,10 @@ internal static class UpdateValidator
                 var funderCost = (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(),
                                                                      p.Holder(view.Holder).DustLimitSatoshis,
                                                                      p.OptionAnchors);
-                if (view.RemoteMsat - funderCost < (long)p.RemoteReserveMsat)
+                if (view.RemoteMsat - funderCost < funding.RemoteReserveMsat)
                     throw Refused("B2-ADD-S04",
-                                  $"The funder could not pay the fee of the {view.Holder} commitment after this HTLC");
+                                  $"The funder could not pay the fee of the {view.Holder} commitment after this HTLC{on}");
             }
-        }
-
-        if (p.MaxDustHtlcExposureMsat is { } maxDust)
-        {
-            CheckSendDustExposure(commitments, remoteView, htlc, maxDust, "B2-DUST-03");
-            CheckSendDustExposure(commitments, localView, htlc, maxDust, "B2-DUST-04");
         }
     }
 
@@ -130,14 +142,19 @@ internal static class UpdateValidator
             throw Violation(commitments, "B2-ADD-R03",
                             $"{inFlight} msat in flight exceeds our max_htlc_value_in_flight_msat {p.Local.MaxHtlcValueInFlightMsat}");
 
-        var cost = p.LocalIsFunder
-                       ? 0
-                       : (long)CommitmentFeeCalculator.FunderCostMsat(localView.ToSpec(), p.Local.DustLimitSatoshis,
-                                                             p.OptionAnchors);
-        var remoteReserve = enforceLimits ? (long)p.RemoteReserveMsat : 0;
-        if (localView.RemoteMsat - cost < remoteReserve)
-            throw Violation(commitments, "B2-ADD-R02",
-                            "The peer cannot afford this HTLC (and the fee it pays) above its channel reserve");
+        // SP-OP-01 / SP-I6: affordable on every active funding (the peer's balance and reserve differ per funding)
+        foreach (var funding in commitments.ActiveFundingViews())
+        {
+            var view = localView.Shift(funding.LocalDeltaMsat, funding.RemoteDeltaMsat);
+            var cost = p.LocalIsFunder
+                           ? 0
+                           : (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Local.DustLimitSatoshis,
+                                                                          p.OptionAnchors);
+            var remoteReserve = enforceLimits ? funding.RemoteReserveMsat : 0;
+            if (view.RemoteMsat - cost < remoteReserve)
+                throw Violation(commitments, "B2-ADD-R02",
+                                $"The peer cannot afford this HTLC (and the fee it pays) above its channel reserve{funding.Label}");
+        }
     }
 
     /// <summary>
@@ -147,12 +164,16 @@ internal static class UpdateValidator
     public static void ValidateSendFee(ChannelCommitments next)
     {
         var p = next.Params;
-        var view = next.BuildProspectiveView(CommitmentSide.Remote, feerateOverride: next.LatestFeeratePerKw);
-        var cost = (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Remote.DustLimitSatoshis,
-                                                               p.OptionAnchors);
-        if (view.LocalMsat - cost < (long)p.LocalReserveMsat)
-            throw Refused("B2-FEE-R03",
-                          $"We could not pay feerate {next.LatestFeeratePerKw} above our reserve on the peer's commitment");
+        var current = next.BuildProspectiveView(CommitmentSide.Remote, feerateOverride: next.LatestFeeratePerKw);
+        foreach (var funding in next.ActiveFundingViews())
+        {
+            var view = current.Shift(funding.LocalDeltaMsat, funding.RemoteDeltaMsat);
+            var cost = (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Remote.DustLimitSatoshis,
+                                                                   p.OptionAnchors);
+            if (view.LocalMsat - cost < funding.LocalReserveMsat)
+                throw Refused("B2-FEE-R03",
+                              $"We could not pay feerate {next.LatestFeeratePerKw} above our reserve on the peer's commitment{funding.Label}");
+        }
     }
 
     /// <summary>
@@ -167,12 +188,18 @@ internal static class UpdateValidator
     {
         var p = next.Params;
         var current = next.LocalCommit.Spec;
-        var spec = new CommitmentSpec(current.Holder, next.LatestFeeratePerKw, current.LocalMsat, current.RemoteMsat,
-                                      current.Htlcs);
-        var cost = (long)CommitmentFeeCalculator.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
-        if ((long)spec.RemoteMsat - cost < 0)
-            throw Violation(next, "B2-FEE-R03",
-                            $"The funder cannot afford feerate {next.LatestFeeratePerKw} on our commitment");
+        var currentSpec = new CommitmentSpec(current.Holder, next.LatestFeeratePerKw, current.LocalMsat,
+                                             current.RemoteMsat, current.Htlcs);
+        foreach (var funding in next.ActiveFundingViews())
+        {
+            var spec = funding.Funding is { } f && !funding.IsCurrent
+                           ? ChannelCommitments.SpecFor(currentSpec, f)
+                           : currentSpec;
+            var cost = (long)CommitmentFeeCalculator.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+            if ((long)spec.RemoteMsat - cost < 0)
+                throw Violation(next, "B2-FEE-R03",
+                                $"The funder cannot afford feerate {next.LatestFeeratePerKw} on our commitment{funding.Label}");
+        }
     }
 
     /// <summary>
@@ -188,16 +215,30 @@ internal static class UpdateValidator
     public static void ValidateReceivedCommitFee(ChannelCommitments current, CommitmentSpec spec)
     {
         var p = current.Params;
+
+        // SP-OP-01: on every active funding the peer signed this commitment for (the current funding's balances are
+        // never negative: BuildSpec checks them)
+        foreach (var funding in current.ActiveFundingViews().Where(f => !f.IsCurrent))
+            if ((long)spec.LocalMsat + funding.LocalDeltaMsat < 0 || (long)spec.RemoteMsat + funding.RemoteDeltaMsat < 0)
+                throw Violation(current, "B2-ADD-R02",
+                                $"The commitment the peer signed has a negative balance{funding.Label}");
+
         if (p.LocalIsFunder)
             return;
 
-        var cost = CommitmentFeeCalculator.FunderCostMsat(spec, p.Local.DustLimitSatoshis, p.OptionAnchors);
-        if (spec.RemoteMsat >= cost)
-            return;
+        foreach (var funding in current.ActiveFundingViews())
+        {
+            var fundingSpec = funding.Funding is { } f && !funding.IsCurrent ? ChannelCommitments.SpecFor(spec, f) : spec;
+            var cost = CommitmentFeeCalculator.FunderCostMsat(fundingSpec, p.Local.DustLimitSatoshis, p.OptionAnchors);
+            if (fundingSpec.RemoteMsat >= cost)
+                continue;
 
-        var requirementId = spec.FeeratePerKw != current.LocalCommit.Spec.FeeratePerKw ? "B2-FEE-R03" : "B2-ADD-R02";
-        throw Violation(current, requirementId,
-                        $"The funder cannot pay the {cost} msat fee of the commitment it signed (it holds {spec.RemoteMsat} msat)");
+            var requirementId = spec.FeeratePerKw != current.LocalCommit.Spec.FeeratePerKw
+                                    ? "B2-FEE-R03"
+                                    : "B2-ADD-R02";
+            throw Violation(current, requirementId,
+                            $"The funder cannot pay the {cost} msat fee of the commitment it signed (it holds {fundingSpec.RemoteMsat} msat){funding.Label}");
+        }
     }
 
     private static void CheckSendDustExposure(ChannelCommitments commitments, CommitmentView view, HtlcRecord htlc,
