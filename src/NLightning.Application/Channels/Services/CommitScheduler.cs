@@ -38,7 +38,7 @@ public sealed class CommitSchedulerOptions
 /// channel's link is up (<see cref="IPeerLivenessProbe"/>, checked again under the lock) and the peer answers a ping
 /// when it was quiet (<see cref="IPingBeforeCommit"/>, before the lock, NL-251), never while a signed
 /// commitment waits for its <c>revoke_and_ack</c> (D7), persisted with its diff before it is enqueued (D3, D4, through
-/// <see cref="ChannelStateTransitionService.SignIfPendingAsync"/>).
+/// <see cref="ChannelStateTransitionService.SignPendingAsync"/>; with pending splices the whole batch, SP-OP-03).
 /// </summary>
 /// <remarks>
 /// Singleton. A scheduled signature runs on the thread pool without the caller's execution context, so its message
@@ -117,11 +117,13 @@ public sealed class CommitScheduler : ICommitScheduler
             return false;
 
         var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
-        var commitmentSigned = await transitions.SignIfPendingAsync(channel);
-        if (commitmentSigned is null)
+        // One commitment_signed, or with pending splices start_batch and one per active funding, published together
+        // under the lock so nothing goes between them (SP-OP-03)
+        var signed = await transitions.SignPendingAsync(channel);
+        if (signed.Count == 0)
             return false;
 
-        _channelMessagePublisher.Publish(channel.RemoteNodeId, [commitmentSigned]);
+        _channelMessagePublisher.Publish(channel.RemoteNodeId, signed);
         return true;
     }
 
