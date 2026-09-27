@@ -317,6 +317,23 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Exports the static channel backup, encrypted to the node key (ClientCommand 21).
+    /// </summary>
+    /// <param name="channelId">Only this channel, when set.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<ExportChanBackupIpcResponse> ExportChanBackupAsync(ChannelId? channelId,
+                                                                   CancellationToken ct = default) =>
+        SendRequestAsync<ExportChanBackupIpcRequest, ExportChanBackupIpcResponse>(
+            ClientCommand.ExportChanBackup, new ExportChanBackupIpcRequest { ChannelId = channelId }, ct);
+
+    /// <summary>
+    /// Checks a static channel backup against the node's key, chain and key derivation (ClientCommand 22).
+    /// </summary>
+    public Task<VerifyChanBackupIpcResponse> VerifyChanBackupAsync(byte[] backup, CancellationToken ct = default) =>
+        SendRequestAsync<VerifyChanBackupIpcRequest, VerifyChanBackupIpcResponse>(
+            ClientCommand.VerifyChanBackup, new VerifyChanBackupIpcRequest { Backup = backup }, ct);
+
+    /// <summary>
     /// Whether the node's chain processing is halted and what it refuses meanwhile (ClientCommand 16, NL-216).
     /// </summary>
     public Task<ChainStatusIpcResponse> ChainStatusAsync(CancellationToken ct = default) =>

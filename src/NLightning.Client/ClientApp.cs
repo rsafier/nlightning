@@ -200,6 +200,22 @@ internal static class ClientApp
                     var sweeps = await client.PendingSweepsAsync(sweepChannel, includeClosed, cancellationToken);
                     new PendingSweepsPrinter().Print(sweeps);
                     break;
+                case "exportchanbackup":
+                case "export-chan-backup":
+                    var exportArgs = ParseExportChanBackupOptions(commandArgs, out _)!;
+                    var export = await client.ExportChanBackupAsync(exportArgs.ChannelId, cancellationToken);
+                    if (exportArgs.OutputPath is not null)
+                        await File.WriteAllBytesAsync(exportArgs.OutputPath, export.Backup, cancellationToken);
+                    new ExportChanBackupPrinter(exportArgs.OutputPath).Print(export);
+                    break;
+                case "verifychanbackup":
+                case "verify-chan-backup":
+                    var backupBytes = await ReadBackupArgumentAsync(commandArgs, cancellationToken);
+                    var verification = await client.VerifyChanBackupAsync(backupBytes, cancellationToken);
+                    new VerifyChanBackupPrinter().Print(verification);
+                    if (!verification.IsValid)
+                        return Failure;
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -336,6 +352,18 @@ internal static class ClientApp
                 }
 
                 return null;
+            case "exportchanbackup":
+            case "export-chan-backup":
+                return ParseExportChanBackupOptions(commandArgs, out var exportError) is null ? exportError : null;
+            case "verifychanbackup":
+            case "verify-chan-backup":
+                if (commandArgs.Length == 1 && !commandArgs[0].StartsWith("--", StringComparison.Ordinal))
+                    return null;
+                if (commandArgs.Length == 2 && string.Equals(commandArgs[0], "--hex", StringComparison.Ordinal))
+                    return TryParseHex(commandArgs[1], out _)
+                               ? null
+                               : $"Invalid hex '{commandArgs[1]}': expected the backup as hex characters.";
+                return $"Missing or invalid arguments. Usage: {cmd} <file> | {cmd} --hex <backup_hex>";
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
@@ -778,6 +806,79 @@ internal static class ClientApp
     }
 
     /// <summary>
+    /// <c>[channel_id] [--output &lt;file&gt;]</c> of exportchanbackup (<c>--output=&lt;file&gt;</c> too).
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static ExportChanBackupArguments? ParseExportChanBackupOptions(string[] commandArgs, out string? error)
+    {
+        error = null;
+        ChannelId? channelId = null;
+        string? outputPath = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (argument.StartsWith("--output=", StringComparison.Ordinal))
+            {
+                outputPath = argument["--output=".Length..];
+            }
+            else if (argument == "--output")
+            {
+                if (i + 1 >= commandArgs.Length)
+                {
+                    error = "Missing value for --output.";
+                    return null;
+                }
+
+                outputPath = commandArgs[++i];
+            }
+            else if (channelId is null && TryParseChannelId(argument, out var parsed))
+            {
+                channelId = parsed;
+            }
+            else
+            {
+                error = $"Invalid argument '{argument}'. Usage: exportchanbackup [channel_id] [--output <file>]";
+                return null;
+            }
+        }
+
+        if (outputPath is not null && string.IsNullOrWhiteSpace(outputPath))
+        {
+            error = "Missing value for --output.";
+            return null;
+        }
+
+        return new ExportChanBackupArguments(channelId, outputPath);
+    }
+
+    private static bool TryParseHex(string value, out byte[] bytes)
+    {
+        bytes = [];
+        if (value.Length == 0 || value.Length % 2 != 0)
+            return false;
+
+        try
+        {
+            bytes = Convert.FromHexString(value);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The backup of verifychanbackup: the file's bytes, or the <c>--hex</c> value.</summary>
+    private static async Task<byte[]> ReadBackupArgumentAsync(string[] commandArgs,
+                                                              CancellationToken cancellationToken)
+    {
+        if (commandArgs.Length == 2 && TryParseHex(commandArgs[1], out var bytes))
+            return bytes;
+
+        return await File.ReadAllBytesAsync(commandArgs[0], cancellationToken);
+    }
+
+    /// <summary>
     /// <c>[take] [skip]</c> of the list commands; take defaults to 100 and skip to 0.
     /// </summary>
     internal static (int Take, int Skip) ParsePage(string[] commandArgs)
@@ -790,6 +891,11 @@ internal static class ClientApp
         return (take, skip);
     }
 }
+
+/// <summary>
+/// The parsed arguments of exportchanbackup.
+/// </summary>
+internal sealed record ExportChanBackupArguments(ChannelId? ChannelId, string? OutputPath);
 
 /// <summary>
 /// The parsed arguments of describegraph.
