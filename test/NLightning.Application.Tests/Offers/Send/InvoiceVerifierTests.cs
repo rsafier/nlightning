@@ -1,3 +1,5 @@
+using NLightning.Tests.Utils.Vectors;
+
 namespace NLightning.Application.Tests.Offers.Send;
 
 using Application.Offers.Send;
@@ -179,6 +181,37 @@ public class InvoiceVerifierTests
         Assert.True(ok, reason);
         Assert.Equal(Key(0x10), Assert.Single(verified!.Paths).Path.FirstNodeId);
         Assert.Equal(2, verified.Invoice.PathCount);
+    }
+
+    [Fact]
+    public void Given_ClnsCapturedInvoice_When_Verifying_Then_ItIsAccepted()
+    {
+        // Arrange (NL-450, B4-T2 positive case): CLN v26.06.8's invoice for our captured request to its offer
+        var requestBytes = Convert.FromHexString(Bolt12ClnVectors.NltgInvoiceRequest);
+        var stream = Bolt12TlvStream.Parse(requestBytes);
+        var parsed = InvoiceRequest.Parse(stream);
+        var request = new BuiltInvoiceRequest(stream, requestBytes, parsed.Fields.Metadata!.Value.ToArray(),
+                                              parsed.Fields.PayerId!.Value, 10_000_000, parsed.Fields.Amount is not null,
+                                              parsed.Fields.Quantity);
+        var chain = ChainConstants.Regtest;
+        var invoiceBytes = Convert.FromHexString(Bolt12ClnVectors.ClnInvoice);
+        var createdAt = DateTimeOffset.FromUnixTimeSeconds(
+            (long)Bolt12Invoice.Parse(Bolt12TlvStream.Parse(invoiceBytes)).Fields.CreatedAt!.Value);
+        var offer = OfferToPay.Parse(
+            Domain.Offers.Encoding.Bolt12Bech32.Encode(Bolt12Constants.OfferHrp,
+                                                       Convert.FromHexString(Bolt12ClnVectors.ClnOffer)),
+            chain, createdAt);
+        var clnNodeId = new Domain.Crypto.ValueObjects.CompactPubKey(Convert.FromHexString(Bolt12ClnVectors.ClnNodeId));
+
+        // Act
+        var ok = InvoiceVerifier.TryVerify(invoiceBytes, request, offer, null, chain, createdAt, _payer,
+                                           n => n.NodeId ?? clnNodeId, out var verified, out var reason);
+
+        // Assert
+        Assert.True(ok, reason);
+        Assert.Equal(clnNodeId, verified!.Invoice.NodeId);
+        Assert.Equal(LightningMoney.MilliSatoshis(10_000_000), verified.Invoice.Amount);
+        Assert.NotEmpty(verified.Paths);
     }
 
     private (OfferToPay Offer, BuiltInvoiceRequest Request) Request()

@@ -13,10 +13,8 @@ using Domain.Offers.Validators;
 /// <c>signature-test.json</c>, byte-exact.
 /// </summary>
 /// <remarks>
-/// TODO (B0-T4): CLN-captured offer, invoice_request, invoice and invoice_error bytes (CLN v26.06.8 <c>offer</c> and
-/// <c>fetchinvoice</c>, raw onion payloads from <c>RawOnionMessageRecorder</c>) belong in
-/// <see cref="Bolt12Vectors"/> once lane B12-E's Docker proof captures them; each must parse, re-encode byte-exact and
-/// validate.
+/// The CLN-captured offer, invoice_request, invoice and invoice_error (B0-T4, NL-450) are in
+/// <see cref="Bolt12ClnVectors"/> and checked by <see cref="Bolt12ClnVectorTests"/>.
 /// </remarks>
 public class Bolt12VectorTests
 {
