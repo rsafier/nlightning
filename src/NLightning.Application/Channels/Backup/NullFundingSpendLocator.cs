@@ -16,4 +16,9 @@ public sealed class NullFundingSpendLocator : IFundingSpendLocator
     public Task<FundingSpendLocation> LocateAsync(ChannelBackupEntry entry, CancellationToken cancellationToken) =>
         Task.FromResult(new FundingSpendLocation(FundingSpendStatus.ChainUnavailable,
                                                  Error: "no chain service is registered"));
+
+    /// <inheritdoc />
+    public Task<FundingSpendLocation> RescanAsync(ChannelBackupEntry entry, uint belowHeight,
+                                                  CancellationToken cancellationToken) =>
+        LocateAsync(entry, cancellationToken);
 }

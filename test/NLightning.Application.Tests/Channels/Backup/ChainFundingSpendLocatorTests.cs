@@ -44,10 +44,10 @@ public class ChainFundingSpendLocatorTests
     }
 
     [Fact]
-    public async Task Given_ABackupWithoutShortChannelId_When_Located_Then_NotConfirmedAndTheChainIsNotRead()
+    public async Task Given_ABackupWithoutShortChannelIdOrFundingHeight_When_Located_Then_NotConfirmedAndTheChainIsNotRead()
     {
         // Act
-        var location = await CreateLocator().LocateAsync(_entry with { ShortChannelId = null },
+        var location = await CreateLocator().LocateAsync(_entry with { ShortChannelId = null, FundingHeight = 0 },
                                                          TestContext.Current.CancellationToken);
 
         // Assert
@@ -64,8 +64,8 @@ public class ChainFundingSpendLocatorTests
         block.AddTransaction(spend);
         _blocks[Tip - 3] = block;
 
-        // Act
-        var location = await CreateLocator().LocateAsync(_entry, TestContext.Current.CancellationToken);
+        // Act: one block at a time
+        var location = await CreateLocator(batchSize: 1).LocateAsync(_entry, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(FundingSpendStatus.SpentFound, location.Status);
@@ -97,7 +97,131 @@ public class ChainFundingSpendLocatorTests
         // Assert
         Assert.Equal(FundingSpendStatus.SpentNotFound, location.Status);
         Assert.Equal(Tip - 9, location.SearchedFromHeight);
+        Assert.Equal(900u, location.FloorHeight);
+        Assert.True(location.HasOlderBlocksToSearch);
         _chain.Verify(c => c.GetBlockAsync(It.IsAny<uint>()), Times.Exactly(10));
+    }
+
+    [Fact]
+    public async Task Given_ASpendOlderThanTheSearchDepth_When_RescannedBelowTheWindow_Then_TheSpendIsFound()
+    {
+        // Arrange: depth 10, the spend 20 blocks below the tip (NL-430)
+        var block = EmptyBlock(Tip - 20);
+        block.AddTransaction(SpendingTransaction());
+        _blocks[Tip - 20] = block;
+
+        // Act
+        var location = await CreateLocator(depth: 10).RescanAsync(_entry, Tip - 9,
+                                                                  TestContext.Current.CancellationToken);
+
+        // Assert: found, and the window already searched is not read again
+        Assert.Equal(FundingSpendStatus.SpentFound, location.Status);
+        Assert.Equal(Tip - 20, location.Spend!.BlockHeight);
+        _chain.Verify(c => c.GetBlockAsync(Tip - 9), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoSpendDownToTheFundingBlock_When_Rescanned_Then_SpentNotFoundWithNothingLeftToSearch()
+    {
+        // Act: from below 991 down to the funding block 900
+        var location = await CreateLocator(depth: 10).RescanAsync(_entry, Tip - 9,
+                                                                  TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendStatus.SpentNotFound, location.Status);
+        Assert.Equal(900u, location.SearchedFromHeight);
+        Assert.False(location.HasOlderBlocksToSearch);
+        _chain.Verify(c => c.GetBlockAsync(900u), Times.Once);
+        _chain.Verify(c => c.GetBlockAsync(899u), Times.Never);
+        _chain.Verify(c => c.GetBlockAsync(It.IsAny<uint>()), Times.Exactly(91));
+    }
+
+    [Fact]
+    public async Task Given_ARescanBelowTheFundingBlock_When_Rescanned_Then_NothingIsRead()
+    {
+        // Act
+        var location = await CreateLocator().RescanAsync(_entry, 900, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendStatus.SpentNotFound, location.Status);
+        Assert.False(location.HasOlderBlocksToSearch);
+        _chain.Verify(c => c.GetBlockAsync(It.IsAny<uint>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ABatchSize_When_Located_Then_BlocksAreReadABatchAtATimeFromTheTop()
+    {
+        // Arrange: batches of 4, the spend in the second batch (tip - 5)
+        var block = EmptyBlock(Tip - 5);
+        block.AddTransaction(SpendingTransaction());
+        _blocks[Tip - 5] = block;
+
+        // Act
+        var location = await CreateLocator(depth: 100, batchSize: 4).LocateAsync(_entry,
+                                                                                 TestContext.Current.CancellationToken);
+
+        // Assert: blocks tip .. tip - 7 read, nothing below
+        Assert.Equal(FundingSpendStatus.SpentFound, location.Status);
+        Assert.Equal(Tip - 5, location.Spend!.BlockHeight);
+        _chain.Verify(c => c.GetBlockAsync(Tip - 7), Times.Once);
+        _chain.Verify(c => c.GetBlockAsync(Tip - 8), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoShortChannelIdButAFundingHeight_When_Located_Then_TheSpendIsSearchedDownToTheFundingHeight()
+    {
+        // Arrange: the backup was written before the funding confirmed (funding height 101); the spend at 500
+        var entry = _entry with { ShortChannelId = null };
+        var block = EmptyBlock(500);
+        block.AddTransaction(SpendingTransaction());
+        _blocks[500] = block;
+
+        // Act
+        var location = await CreateLocator().LocateAsync(entry, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(101u, entry.FundingHeight);
+        Assert.Equal(FundingSpendStatus.SpentFound, location.Status);
+        Assert.Equal(500u, location.Spend!.BlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_NoShortChannelIdAndTheFundingInNoBlock_When_Located_Then_NotConfirmed()
+    {
+        // Act: funding height 101, no block holds the funding or a spend of it
+        var location = await CreateLocator().LocateAsync(_entry with { ShortChannelId = null },
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendStatus.NotConfirmed, location.Status);
+        Assert.Equal(101u, location.FloorHeight);
+        _chain.Verify(c => c.GetBlockAsync(100u), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_NoShortChannelIdAndTheFundingBlockWithoutSpendAbove_When_Located_Then_TheSearchStopsThere()
+    {
+        // Arrange: the funding transaction confirmed at 300 (not recorded in the backup)
+        var funding = Network.RegTest.CreateTransaction();
+        funding.Inputs.Add(new TxIn(new OutPoint(uint256.One, 0)));
+        funding.Outputs.Add(new TxOut(Money.Satoshis(1_000_001), new Script()));
+        var entry = _entry with
+        {
+            ShortChannelId = null,
+            FundingTxId = new Domain.Bitcoin.ValueObjects.TxId(funding.GetHash().ToBytes())
+        };
+        var block = EmptyBlock(300);
+        block.AddTransaction(funding);
+        _blocks[300] = block;
+
+        // Act
+        var location = await CreateLocator(batchSize: 1).LocateAsync(entry, TestContext.Current.CancellationToken);
+
+        // Assert: spent (gettxout has no output) but not above its block, and nothing below it is read
+        Assert.Equal(FundingSpendStatus.SpentNotFound, location.Status);
+        Assert.Equal(300u, location.FloorHeight);
+        Assert.False(location.HasOlderBlocksToSearch);
+        _chain.Verify(c => c.GetBlockAsync(299u), Times.Never);
     }
 
     [Fact]
@@ -127,8 +251,12 @@ public class ChainFundingSpendLocatorTests
         Assert.Equal("rpc down", location.Error);
     }
 
-    private ChainFundingSpendLocator CreateLocator(uint depth = 4032) =>
-        new(_chain.Object, Options.Create(new ChannelBackupOptions { RestoreSpendSearchDepth = depth }));
+    private ChainFundingSpendLocator CreateLocator(uint depth = 4032, uint batchSize = 8) =>
+        new(_chain.Object, Options.Create(new ChannelBackupOptions
+        {
+            RestoreSpendSearchDepth = depth,
+            RestoreSpendSearchBatchSize = batchSize
+        }));
 
     private Transaction SpendingTransaction()
     {
