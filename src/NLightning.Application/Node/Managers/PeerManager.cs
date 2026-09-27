@@ -26,6 +26,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Gossip.Events;
@@ -65,6 +66,11 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// pushes back on a peer that sends faster than we process.
     /// </summary>
     private const int InboundQueueCapacity = 1024;
+
+    /// <summary>
+    /// BOLT 2 "Batching channel messages": a <c>start_batch</c> with a larger <c>batch_size</c> is a warning and close.
+    /// </summary>
+    private const int MaxBatchSize = 20;
 
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
 
@@ -851,13 +857,16 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             if (!cancellationToken.IsCancellationRequested)
                 await StartReestablishAsync(session);
 
+            // The start_batch group being collected on this connection (a batch never spans two connections)
+            var batching = new InboundBatchState();
+
             await foreach (var message in inbound.ReadAllAsync(cancellationToken))
             {
                 // ReadAllAsync keeps returning queued items after cancellation; the connection is gone, drop them
                 if (cancellationToken.IsCancellationRequested)
                     return;
 
-                if (await ProcessChannelMessageAsync(session, message))
+                if (await ProcessInboundMessageAsync(session, message, batching))
                     continue;
 
                 session.Close();
@@ -909,6 +918,124 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         catch (Exception e)
         {
             _logger.LogError(e, "Failed to revert the uncommitted updates of peer {Peer}", session.Peer.NodeId);
+        }
+    }
+
+    /// <summary>
+    /// Routes one inbound message: into the <c>start_batch</c> group being collected, as the start of a new group, or
+    /// to the channel manager. Returns false when the peer is being disconnected.
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 "Batching channel messages" (splicing plan SP-OP-04, D15), receiver side:
+    /// "If `batch_size` is not strictly greater than 1: MUST ignore the `start_batch` message. SHOULD send a
+    /// `warning`." "If `batch_size` is strictly greater than 20: MUST send a `warning` and close the connection, or
+    /// send an `error` and fail the channel." "MUST group the next `batch_size` messages and process them together."
+    /// "If one of those messages is not for the specified `channel_id`: MUST send a `warning` and close the
+    /// connection, or send an `error` and fail the channel." "If `message_type` is missing or not set to the type for
+    /// `commitment_signed`: MUST ignore the `start_batch` message and process the following messages sequentially."
+    /// We always take the warning-and-close option, which leaves the channel usable after a reconnection. A grouped
+    /// message that is not a <c>commitment_signed</c> breaks the sender's "MUST send `batch_size`
+    /// `commitment_signed` messages ... without any other unrelated messages in-between" and is treated the same way.
+    /// A complete group is handed to <see cref="IChannelManager.HandleCommitmentSignedBatchAsync"/> in one call.
+    /// </remarks>
+    private async Task<bool> ProcessInboundMessageAsync(PeerSession session, IChannelMessage message,
+                                                        InboundBatchState batching)
+    {
+        if (batching.Pending is { } pending)
+            return await AddToBatchAsync(session, message, batching, pending);
+
+        if (message is StartBatchMessage startBatch)
+            return StartBatch(session, startBatch, batching);
+
+        return await ProcessChannelMessageAsync(session, message);
+    }
+
+    /// <summary>
+    /// Applies the receiver rules of a <c>start_batch</c> (SP-OP-04) and starts collecting its group when it announces
+    /// a batch of <c>commitment_signed</c>. Returns false when the peer is being disconnected.
+    /// </summary>
+    private bool StartBatch(PeerSession session, StartBatchMessage startBatch, InboundBatchState batching)
+    {
+        var channelId = startBatch.Payload.ChannelId;
+        var batchSize = startBatch.Payload.BatchSize;
+
+        if (batchSize <= 1)
+        {
+            var warning = new ChannelWarningException($"Ignoring start_batch with batch_size {batchSize}", channelId,
+                                                      "start_batch batch_size must be greater than 1");
+            return HandleChannelMessageFailure(session, warning, MessageTypes.StartBatch, channelId);
+        }
+
+        if (batchSize > MaxBatchSize)
+        {
+            var warning = new ChannelWarningException($"start_batch with batch_size {batchSize}", channelId,
+                                                      $"start_batch batch_size must be at most {MaxBatchSize}")
+            {
+                CloseConnection = true
+            };
+            return HandleChannelMessageFailure(session, warning, MessageTypes.StartBatch, channelId);
+        }
+
+        if (startBatch.MessageTypeTlv?.MessageType != (ushort)MessageTypes.CommitmentSigned)
+        {
+            _logger.LogDebug(
+                "Ignoring start_batch of channel {ChannelId} from peer {Peer} with message_type {MessageType}: "
+              + "processing the following messages one by one", channelId, session.Peer.NodeId,
+                startBatch.MessageTypeTlv?.MessageType.ToString() ?? "missing");
+            return true;
+        }
+
+        batching.Pending = new PendingBatch(channelId, batchSize);
+        return true;
+    }
+
+    /// <summary>
+    /// Adds a message to the group being collected and hands the group to the channel manager once it holds
+    /// <c>batch_size</c> messages. Returns false when the peer is being disconnected.
+    /// </summary>
+    private async Task<bool> AddToBatchAsync(PeerSession session, IChannelMessage message,
+                                             InboundBatchState batching, PendingBatch pending)
+    {
+        var messageChannelId = message.Payload?.ChannelId;
+        if (messageChannelId is null || messageChannelId.Value != pending.ChannelId)
+        {
+            batching.Pending = null;
+            var warning = new ChannelWarningException(
+                $"{Enum.GetName(message.Type)} for channel {messageChannelId} inside a start_batch of channel "
+              + $"{pending.ChannelId}", pending.ChannelId, "start_batch message for another channel")
+            {
+                CloseConnection = true
+            };
+            return HandleChannelMessageFailure(session, warning, message.Type, pending.ChannelId);
+        }
+
+        if (message is not CommitmentSignedMessage commitmentSigned)
+        {
+            batching.Pending = null;
+            var warning = new ChannelWarningException(
+                $"{Enum.GetName(message.Type)} inside a start_batch of commitment_signed", pending.ChannelId,
+                "start_batch must be followed by commitment_signed only")
+            {
+                CloseConnection = true
+            };
+            return HandleChannelMessageFailure(session, warning, message.Type, pending.ChannelId);
+        }
+
+        pending.Messages.Add(commitmentSigned);
+        if (pending.Messages.Count < pending.BatchSize)
+            return true;
+
+        batching.Pending = null;
+        try
+        {
+            await _channelManager.HandleCommitmentSignedBatchAsync(
+                new CommitmentSignedBatch(pending.ChannelId, pending.Messages), session.PeerService.Features,
+                session.PeerService.PeerPubKey);
+            return true;
+        }
+        catch (Exception e)
+        {
+            return HandleChannelMessageFailure(session, e, MessageTypes.CommitmentSigned, pending.ChannelId);
         }
     }
 
@@ -1288,5 +1415,23 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             _closeCts.Cancel();
             Outbox.Complete();
         }
+    }
+
+    /// <summary>
+    /// The <c>start_batch</c> group a connection's inbound loop is collecting, if any.
+    /// </summary>
+    private sealed class InboundBatchState
+    {
+        public PendingBatch? Pending { get; set; }
+    }
+
+    /// <summary>
+    /// A <c>start_batch</c> of <c>commitment_signed</c> waiting for its <see cref="BatchSize"/> messages.
+    /// </summary>
+    private sealed class PendingBatch(ChannelId channelId, int batchSize)
+    {
+        public ChannelId ChannelId { get; } = channelId;
+        public int BatchSize { get; } = batchSize;
+        public List<CommitmentSignedMessage> Messages { get; } = new(batchSize);
     }
 }
