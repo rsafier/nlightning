@@ -363,6 +363,10 @@ public static class NodeConfigurationExtensions
                    "Keysend": {
                      "Accept": true,
                      "FinalCltvExpiryDelta": 40
+                   },
+                   "Quiescence": {
+                     "Timeout": "00:01:00",
+                     "IdleTimeout": "00:05:00"
                    }
                  },
                  "Gossip": {
