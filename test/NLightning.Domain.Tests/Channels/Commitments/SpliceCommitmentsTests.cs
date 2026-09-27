@@ -287,7 +287,6 @@ public class SpliceCommitmentsTests
     [Theory]
     [InlineData("missing")]
     [InlineData("duplicate")]
-    [InlineData("unknown")]
     [InlineData("missing-current")]
     public void Given_APendingSplice_When_TheBatchDoesNotMatchTheFundings_Then_ChannelFails(string defect)
     {
@@ -303,9 +302,6 @@ public class SpliceCommitmentsTests
             case "duplicate":
                 batch.Add(batch[1]);
                 break;
-            case "unknown":
-                batch.Add(batch[1] with { FundingTxId = TxIdOf(0x99) });
-                break;
             default:
                 batch.RemoveAt(0);
                 break;
@@ -318,6 +314,29 @@ public class SpliceCommitmentsTests
         // Assert
         Assert.Equal("SP-OP-05", e.RequirementId);
         Assert.True(e.MustFailChannel);
+    }
+
+    [Fact]
+    public void Given_APendingSplice_When_TheBatchAlsoHoldsAnObsoleteMember_Then_ItIsIgnoredAndOneRevokeAndAck()
+    {
+        // Arrange: a member for a funding that is no longer active (a discarded sibling), with an invalid signature
+        var pair = SplicedIn();
+        pair.AliceAdd(10_000 * Sat);
+        var batch = ToBatch(pair.Alice.SendCommit(new BindingCommitmentSigner(546, false)).Outbound).ToList();
+        batch.Insert(1, batch[1] with
+        {
+            FundingTxId = TxIdOf(0x99),
+            Signatures = batch[1].Signatures with { Signature = CommitmentsTestKit.Signature(7) }
+        });
+        var verifier = new BindingCommitmentVerifier();
+
+        // Act
+        var result = pair.Bob.ReceiveCommitBatch(batch, verifier);
+
+        // Assert: SP-OP-06 the obsolete member is neither verified nor stored, SP-OP-07 one revoke_and_ack
+        Assert.IsType<OutboundRevokeAndAck>(Assert.Single(result.Outbound));
+        Assert.Equal(2, verifier.Calls.Count);
+        Assert.Equal(TxIdOf(0x22), Assert.Single(result.Next.LocalCommit.PendingFundingSignatures).FundingTxId);
     }
 
     [Fact]

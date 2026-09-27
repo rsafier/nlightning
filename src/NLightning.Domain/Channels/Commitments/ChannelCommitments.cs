@@ -767,11 +767,11 @@ public sealed record ChannelCommitments
     /// <b>one</b> <c>revoke_and_ack</c> is owed.
     /// </summary>
     /// <remarks>
-    /// <para>A member without <c>funding_txid</c> fails the channel. With pending splices there must be exactly one
-    /// member per active funding (a missing, duplicated or unknown funding fails the channel: the batch cannot be
-    /// validated "based on funding_txid"). Without pending splices, members for other fundings are ignored (obsolete
-    /// ones sent before our <c>splice_locked</c> arrived, SP-OP-06) and exactly one for the current funding is
-    /// required.</para>
+    /// <para>A member without <c>funding_txid</c> fails the channel. Every active funding needs exactly one member (a
+    /// missing or duplicated one fails the channel, SP-OP-05). Members whose <c>funding_txid</c> matches no active
+    /// funding are ignored, with or without pending splices: they are obsolete ones the peer sent before our
+    /// <c>splice_locked</c> or a sibling discard reached it (SP-OP-06; BOLT 2 rationale "we can safely ignore them by
+    /// filtering on funding_txid", Eclair matches members to its active commitments the same way).</para>
     /// <para>All-or-nothing (splicing plan risk 1): any invalid member leaves this snapshot unchanged, so no secret is
     /// ever released for a partially verified batch.</para>
     /// </remarks>
@@ -791,7 +791,10 @@ public sealed record ChannelCommitments
         if (batch.Any(m => m.FundingTxId is null))
             throw FailChannel("SP-OP-05", "A batched commitment_signed has no funding_txid");
 
-        var byFunding = batch.GroupBy(m => m.FundingTxId!.Value).ToList();
+        // Obsolete members (fundings no longer active) are dropped before any check (SP-OP-06)
+        var byFunding = batch.Where(m => IsActiveFunding(m.FundingTxId!.Value))
+                             .GroupBy(m => m.FundingTxId!.Value)
+                             .ToList();
         if (byFunding.FirstOrDefault(g => g.Count() > 1) is { } duplicate)
             throw FailChannel("SP-OP-05", $"The batch holds {duplicate.Count()} commitment_signed for funding {duplicate.Key}");
 
@@ -810,12 +813,12 @@ public sealed record ChannelCommitments
             pendingSignatures.Add(new FundingSignatures(funding.FundingTxId, member.Signatures));
         }
 
-        if (byFunding.Count != PendingFundings.Count + 1)
-            throw FailChannel("SP-OP-05",
-                              $"The batch holds {byFunding.Count} fundings, {PendingFundings.Count + 1} are active");
-
         return ReceiveCommitCore(currentSignatures, pendingSignatures, verifier);
     }
+
+    /// <summary>Whether <paramref name="fundingTxId"/> is the current funding or a pending splice.</summary>
+    private bool IsActiveFunding(TxId fundingTxId) =>
+        Params.Funding?.FundingTxId == fundingTxId || PendingFundings.Any(f => f.FundingTxId == fundingTxId);
 
     /// <summary>The <c>commitment_signed</c> receiver rules on every active funding, then one revocation.</summary>
     private CommitmentsResult ReceiveCommitCore(CommitmentSignatures signatures,
