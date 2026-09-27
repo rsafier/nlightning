@@ -33,6 +33,7 @@ using Gossip.Announcements.Interfaces;
 using Handlers;
 using Handlers.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using InteractiveTx.Interfaces;
 using Interfaces;
 using Onchain.Interfaces;
 using Reestablish;
@@ -563,6 +564,25 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             {
                 _logger.LogError(e, "Could not revert the uncommitted updates of channel {ChannelId}",
                                  channel.ChannelId);
+            }
+        }
+
+        // BOLT 2 interactive-tx (splicing plan IT4-T1): a negotiation without our commitment_signed is forgotten on
+        // disconnection (its wallet reservation released); a stored one stays for the reconnection
+        if (_serviceProvider.GetService<IInteractiveTxDriver>() is not { } interactiveTxDriver)
+            return;
+
+        foreach (var channelId in interactiveTxDriver.GetChannels(peerPubKey))
+        {
+            try
+            {
+                using var channelLock = await _channelLockProvider.AcquireAsync(channelId);
+                await interactiveTxDriver.OnDisconnectedAsync(channelId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Could not end the interactive-tx negotiation of channel {ChannelId} on "
+                                  + "disconnection", channelId);
             }
         }
     }
