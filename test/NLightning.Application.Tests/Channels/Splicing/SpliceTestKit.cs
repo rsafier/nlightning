@@ -22,6 +22,8 @@ using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
@@ -29,6 +31,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Options;
 using Domain.Onchain.Interfaces;
 using Domain.Onchain.Models;
@@ -36,6 +39,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Harness;
@@ -59,6 +63,9 @@ internal sealed class SpliceHarness : IDisposable
 
     public TwoNodeHarness Harness { get; }
 
+    /// <summary>Whether the nodes run on the production engine port and signer (see the constructor).</summary>
+    public bool RealEngine { get; }
+
     /// <summary>Every message either node raised, in raise (wire) order: (sender, message).</summary>
     public ConcurrentQueue<(string From, IChannelMessage Message)> Transcript { get; } = new();
 
@@ -68,8 +75,14 @@ internal sealed class SpliceHarness : IDisposable
     public SpliceNode Alice => _nodes["Alice"];
     public SpliceNode Bob => _nodes["Bob"];
 
-    public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null)
+    /// <param name="configureSplice">Per-node splice options.</param>
+    /// <param name="realEngine">Run on lanes SP1-B/SP1-C's real code instead of the stand-ins: the production
+    /// <see cref="EngineSpliceStatePort"/> over the several-funding engine, the real <c>LocalLightningSigner</c>
+    /// splice members (funding key rotation, SP-I1, the 2-of-2 shared input) and an in-memory
+    /// <see cref="InMemoryChannelFundingRepository"/> committed with each save.</param>
+    public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false)
     {
+        RealEngine = realEngine;
         Harness = new TwoNodeHarness(configureServices: (node, services) => Configure(node, services, configureSplice));
         foreach (var node in new[] { Harness.Alice, Harness.Bob })
         {
@@ -170,7 +183,23 @@ internal sealed class SpliceHarness : IDisposable
     {
         try
         {
-            return await from.DeliverNextAsync();
+            if (from.PeekNext() is not StartBatchMessage startBatch)
+                return await from.DeliverNextAsync();
+
+            // As the peer's inbound loop groups them (lane SP1-A): start_batch and its commitment_signed messages are
+            // handed to the channel manager as one batch, under one acquisition of the channel's lock
+            from.TryTakeNext(out _);
+            var members = new List<CommitmentSignedMessage>();
+            for (var i = 0; i < startBatch.Payload.BatchSize; i++)
+            {
+                if (!from.TryTakeNext(out var member))
+                    throw new InvalidOperationException("A start_batch was published without all its members");
+                members.Add((CommitmentSignedMessage)member);
+            }
+
+            await from.Peer.ChannelManager.HandleCommitmentSignedBatchAsync(
+                new CommitmentSignedBatch(startBatch.Payload.ChannelId, members), from.NegotiatedFeatures, from.NodeId);
+            return true;
         }
         catch (Exception e) when (e is WarningException or ChannelErrorException)
         {
@@ -191,18 +220,24 @@ internal sealed class SpliceHarness : IDisposable
         services.AddSingleton(Options.Create(options));
         services.Configure<SpliceOptions>(o => configure?.Invoke(node.Name, o));
 
-        // SP1-C's signer members: the proxy over the harness's real signer
-        var descriptor = services.Last(d => d.ServiceType == typeof(ILightningSigner));
-        services.Add(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
-                         SpliceSigningProxy.Create((ILightningSigner)descriptor.ImplementationFactory!(sp),
-                                                   spliceNode)));
+        // SP1-C's signer members: the proxy over the harness's real signer, unless the real ones run
+        if (!RealEngine)
+        {
+            var descriptor = services.Last(d => d.ServiceType == typeof(ILightningSigner));
+            services.Add(ServiceDescriptor.Singleton<ILightningSigner>(sp =>
+                             SpliceSigningProxy.Create((ILightningSigner)descriptor.ImplementationFactory!(sp),
+                                                       spliceNode)));
+        }
 
         services.AddQuiescenceServices();
         services.AddSingleton<IInteractiveTxBuilder, InteractiveTxBuilder>();
         services.AddSingleton<IPrevTxInspector>(spliceNode.Inspector);
         services.AddSingleton<IInteractiveTxContributor>(spliceNode.Contributor);
         services.AddInteractiveTxServices();
-        services.AddSingleton<ISpliceStatePort>(sp => spliceNode.CreatePort(sp.GetRequiredService<ILightningSigner>()));
+        if (!RealEngine)
+            services.AddSingleton<ISpliceStatePort>(sp =>
+                                                        spliceNode.CreatePort(
+                                                            sp.GetRequiredService<ILightningSigner>()));
         services.AddSingleton<ISpliceOutDestination>(spliceNode.Destination);
         services.AddSpliceServices();
 
@@ -235,6 +270,9 @@ internal sealed class SpliceNode(string name)
     public FakeSpliceOutDestination Destination { get; } = new();
     public InMemoryInteractiveTxSessionRepository Sessions { get; } = new();
     public FakeSpliceStatePort Port { get; private set; } = null!;
+
+    /// <summary>The <c>ChannelFundings</c> rows of the node (real-engine mode; staged, then committed by a save).</summary>
+    public InMemoryChannelFundingRepository FundingRows { get; } = new();
 
     /// <summary>The broadcast rows the node's unit of work saved.</summary>
     public List<BroadcastTransactionModel> Broadcasts { get; } = [];
@@ -283,6 +321,7 @@ internal sealed class SpliceNode(string name)
             .Callback<WatchedTransactionModel>(stagedWatches.Add);
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(Sessions);
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(FundingRows);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             try
@@ -292,14 +331,16 @@ internal sealed class SpliceNode(string name)
             catch
             {
                 Sessions.DiscardStaged();
-                Port.DiscardStaged();
+                Port?.DiscardStaged();
+                FundingRows.DiscardStaged();
                 stagedBroadcasts.Clear();
                 stagedWatches.Clear();
                 throw;
             }
 
             Sessions.Commit();
-            Port.Commit();
+            Port?.Commit();
+            FundingRows.Commit();
             Broadcasts.AddRange(stagedBroadcasts);
             Watches.AddRange(stagedWatches);
             stagedBroadcasts.Clear();
@@ -523,5 +564,130 @@ public class SpliceSigningProxy : DispatchProxy
             ExceptionDispatchInfo.Capture(e.InnerException).Throw();
             throw;
         }
+    }
+}
+
+/// <summary>
+/// Lane SP1-C's <c>ChannelFundings</c> rows and per-funding commitment slots in memory: every write is staged and
+/// becomes visible to <see cref="Committed"/> only when the node's unit of work saves (reads see staged writes, as the
+/// change tracker does).
+/// </summary>
+[ExcludeFromCodeCoverage]
+internal sealed class InMemoryChannelFundingRepository : IChannelFundingDbRepository
+{
+    private Dictionary<TxId, ChannelFunding> _staged = [];
+    private Dictionary<TxId, LocalCommit> _stagedLocal = [];
+    private Dictionary<TxId, (RemoteCommit, CommitmentSignatures?)> _stagedRemote = [];
+
+    /// <summary>The saved rows by funding txid.</summary>
+    public Dictionary<TxId, ChannelFunding> Committed { get; private set; } = [];
+
+    /// <summary>Our saved local commitments on pending fundings, by funding txid (SP-I2).</summary>
+    public Dictionary<TxId, LocalCommit> CommittedLocal { get; private set; } = [];
+
+    /// <summary>The saved peer commitments on pending fundings with our signatures, by funding txid.</summary>
+    public Dictionary<TxId, (RemoteCommit Commit, CommitmentSignatures? Sent)> CommittedRemote { get; private set; } =
+        [];
+
+    /// <summary>The funding the last saved lock made current, if any.</summary>
+    public ChannelFunding? LockedCurrent { get; private set; }
+
+    private ChannelFunding? _stagedLock;
+
+    public void Commit()
+    {
+        Committed = new Dictionary<TxId, ChannelFunding>(_staged);
+        CommittedLocal = new Dictionary<TxId, LocalCommit>(_stagedLocal);
+        CommittedRemote = new Dictionary<TxId, (RemoteCommit, CommitmentSignatures?)>(_stagedRemote);
+        LockedCurrent = _stagedLock ?? LockedCurrent;
+        _stagedLock = null;
+    }
+
+    public void DiscardStaged()
+    {
+        _staged = new Dictionary<TxId, ChannelFunding>(Committed);
+        _stagedLocal = new Dictionary<TxId, LocalCommit>(CommittedLocal);
+        _stagedRemote = new Dictionary<TxId, (RemoteCommit, CommitmentSignatures?)>(CommittedRemote);
+        _stagedLock = null;
+    }
+
+    public Task<IReadOnlyList<ChannelFunding>> GetByChannelIdAsync(ChannelId channelId) =>
+        Task.FromResult<IReadOnlyList<ChannelFunding>>(_staged.Values.ToList());
+
+    public Task<FundingSet?> GetFundingSetAsync(ChannelId channelId) =>
+        throw new NotSupportedException("The splice harness reads the fundings from the engine");
+
+    public Task UpsertAsync(ChannelId channelId, ChannelFunding funding)
+    {
+        _staged[funding.FundingTxId] = funding;
+        return Task.CompletedTask;
+    }
+
+    public Task ApplyLockAsync(ChannelId channelId, ChannelFunding newCurrent, IReadOnlyList<ChannelFunding> retired)
+    {
+        if (newCurrent.Status != ChannelFundingStatus.Current || !_staged.ContainsKey(newCurrent.FundingTxId))
+            throw new InvalidOperationException($"Funding {newCurrent.FundingTxId} cannot be locked");
+        if (retired.Any(f => f.Status is not (ChannelFundingStatus.Replaced or ChannelFundingStatus.Discarded)))
+            throw new ArgumentException("Retired fundings must be Replaced or Discarded", nameof(retired));
+
+        foreach (var funding in retired)
+        {
+            _staged[funding.FundingTxId] = funding;
+            _stagedLocal.Remove(funding.FundingTxId);
+            _stagedRemote.Remove(funding.FundingTxId);
+        }
+
+        _staged[newCurrent.FundingTxId] = newCurrent;
+        _stagedLocal.Remove(newCurrent.FundingTxId);
+        _stagedRemote.Remove(newCurrent.FundingTxId);
+        _stagedLock = newCurrent;
+        return Task.CompletedTask;
+    }
+
+    public Task StageLocalCommitmentAsync(ChannelId channelId, TxId fundingTxId, LocalCommit commit)
+    {
+        EnsurePending(fundingTxId);
+        if (commit.RemoteSignatures is null)
+            throw new InvalidOperationException("The local commitment carries no remote signatures");
+        _stagedLocal[fundingTxId] = commit;
+        return Task.CompletedTask;
+    }
+
+    public Task StageRemoteCommitmentAsync(ChannelId channelId, TxId fundingTxId, RemoteCommit commit,
+                                           CommitmentSignatures? sentSignatures)
+    {
+        EnsurePending(fundingTxId);
+        _stagedRemote[fundingTxId] = (commit, sentSignatures);
+        return Task.CompletedTask;
+    }
+
+    public Task StageRemoteNextCommitmentAsync(ChannelId channelId, TxId fundingTxId, RemoteNextCommit? next) =>
+        Task.CompletedTask;
+
+    public Task<RemoteNextCommit?> GetRemoteNextCommitmentAsync(ChannelId channelId, TxId fundingTxId) =>
+        Task.FromResult<RemoteNextCommit?>(null);
+
+    public Task<LocalCommit?> GetLocalCommitmentAsync(ChannelId channelId, TxId fundingTxId) =>
+        Task.FromResult(_stagedLocal.GetValueOrDefault(fundingTxId));
+
+    public Task<(RemoteCommit Commit, CommitmentSignatures? SentSignatures)?> GetRemoteCommitmentAsync(
+        ChannelId channelId, TxId fundingTxId) =>
+        Task.FromResult<(RemoteCommit, CommitmentSignatures?)?>(
+            _stagedRemote.TryGetValue(fundingTxId, out var remote) ? remote : null);
+
+    public Task<bool> StageRevokedCommitmentAsync(ChannelId channelId, TxId fundingTxId, RemoteCommit revoked) =>
+        Task.FromResult(false);
+
+    public Task SetDualFundedAsync(ChannelId channelId, LightningMoney localContribution,
+                                   LightningMoney remoteContribution) =>
+        throw new NotSupportedException();
+
+    public Task<(LightningMoney Local, LightningMoney Remote)?> GetDualFundedContributionsAsync(ChannelId channelId) =>
+        Task.FromResult<(LightningMoney, LightningMoney)?>(null);
+
+    private void EnsurePending(TxId fundingTxId)
+    {
+        if (!_staged.TryGetValue(fundingTxId, out var funding) || funding.Status != ChannelFundingStatus.Pending)
+            throw new InvalidOperationException($"Funding {fundingTxId} is not a pending funding of the channel");
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Channels.Splicing;
 
@@ -6,19 +7,24 @@ using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Splicing;
 using Application.Channels.Splicing.Handlers;
 using Application.Channels.Splicing.Interfaces;
+using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments.Interfaces;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 
 /// <summary>
 /// Splicing plan SP1-D-T2 wiring: <c>AddSpliceServices</c> (called by <c>AddApplicationServices</c>) and the default
-/// <see cref="UnavailableSpliceStatePort"/> of lanes SP1-B/SP1-C.
+/// <see cref="EngineSpliceStatePort"/> over lanes SP1-B/SP1-C.
 /// </summary>
 public class SpliceRegistrationTests
 {
@@ -35,7 +41,7 @@ public class SpliceRegistrationTests
         Assert.Single(services, d => d.ServiceType == typeof(ISpliceService));
         Assert.Single(services, d => d.ServiceType == typeof(ISpliceCommitmentReceiver));
         Assert.Single(services, d => d.ServiceType == typeof(SpliceDepthWatcher));
-        Assert.Equal(typeof(UnavailableSpliceStatePort),
+        Assert.Equal(typeof(EngineSpliceStatePort),
                      Assert.Single(services, d => d.ServiceType == typeof(ISpliceStatePort)).ImplementationType);
         Assert.Equal(typeof(SpliceInitMessageHandler),
                      Assert.Single(services, d => d.ServiceType == typeof(IChannelMessageHandler<SpliceInitMessage>))
@@ -66,10 +72,14 @@ public class SpliceRegistrationTests
     }
 
     [Fact]
-    public void Given_TheUnavailablePort_When_Asked_Then_TheChannelWasNeverSplicedAndEveryStepNamesItsLane()
+    public void Given_AChannelWithoutCommitmentState_When_TheEnginePortIsAsked_Then_TheChannelWasNeverSpliced()
     {
         // Arrange
-        var port = new UnavailableSpliceStatePort();
+        var port = new EngineSpliceStatePort(new Mock<IChannelMemoryRepository>().Object,
+                                             new Mock<ICommitmentSigner>().Object,
+                                             new Mock<ICommitmentVerifier>().Object,
+                                             NullLogger<EngineSpliceStatePort>.Instance,
+                                             new Mock<IMessageFactory>().Object, new Mock<ILightningSigner>().Object);
         var key = new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x01, 32)]);
         var other = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x02, 32)]);
         var txId = new TxId(Enumerable.Repeat((byte)0x07, 32).ToArray());
@@ -92,9 +102,7 @@ public class SpliceRegistrationTests
         Assert.False(fundings.HasPending);
         Assert.Equal(txId, fundings.Current.FundingTxId);
         Assert.Equal((ushort)1, fundings.Current.OutputIndex);
-        Assert.Contains("SP1-B", Assert.Throws<NotImplementedException>(
-                                     () => port.AddPending(fundings, fundings.Current)).Message);
-        Assert.Contains("SP1-C", Assert.Throws<NotImplementedException>(
-                                     () => port.OnSpliceCommitmentSaved(channel, fundings.Current)).Message);
+        Assert.Equal(ChannelFundingStatus.Current, fundings.Current.Status);
+        Assert.Throws<InvalidOperationException>(() => port.OnSpliceCommitmentSaved(channel, fundings.Current));
     }
 }

@@ -15,15 +15,15 @@ public static class SpliceServiceCollectionExtensions
     /// <see cref="SpliceService"/> as itself, <see cref="ISpliceService"/> and <see cref="ISpliceCommitmentReceiver"/>
     /// (one instance), <see cref="SpliceDepthWatcher"/> (the host resolves it at startup so it subscribes to the chain
     /// monitor), the default <see cref="ISpliceOutDestination"/> (<see cref="WalletSpliceOutDestination"/>) and the
-    /// default <see cref="ISpliceStatePort"/> (<see cref="UnavailableSpliceStatePort"/>, until lanes SP1-B/SP1-C
-    /// register theirs first). Idempotent (TryAdd). The message handlers (<c>splice_init</c>, <c>splice_ack</c>,
+    /// default <see cref="ISpliceStatePort"/> (<see cref="EngineSpliceStatePort"/>, over the several-funding engine, the
+    /// per-funding signer and the <c>ChannelFundings</c> rows). Idempotent (TryAdd). The message handlers (<c>splice_init</c>, <c>splice_ack</c>,
     /// <c>splice_locked</c>) are registered by <c>AddApplicationServices</c>' reflection scan; the options are the
     /// <c>Splice</c> section (<see cref="SpliceOptions"/>). Needs quiescence (<c>AddQuiescenceServices</c>) and the
     /// interactive-tx driver (<c>AddInteractiveTxServices</c>).
     /// </summary>
     public static IServiceCollection AddSpliceServices(this IServiceCollection services)
     {
-        services.TryAddSingleton<ISpliceStatePort, UnavailableSpliceStatePort>();
+        services.TryAddSingleton<ISpliceStatePort, EngineSpliceStatePort>();
         services.TryAddSingleton<ISpliceOutDestination, WalletSpliceOutDestination>();
         services.TryAddSingleton<SpliceService>();
         services.TryAddSingleton<ISpliceService>(sp => sp.GetRequiredService<SpliceService>());
