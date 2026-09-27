@@ -212,9 +212,10 @@ public class InteractiveTxRbfRulesTests
     }
 
     [Fact]
-    public void Given_PeerContributedBefore_When_OnlyWeDoubleSpend_Then_ThePeersDutyStillFails()
+    public void Given_PeerContributedBefore_When_OnlyWeDoubleSpend_Then_Accepted()
     {
-        // Arrange: the whole transaction conflicts through our input, but the peer dropped its earlier input
+        // Arrange: the whole transaction conflicts through our input and the peer dropped its earlier input (BOLT 2
+        // tx_ack_rbf: a peer may "stop contributing to the funding output"; the double-spend duty is the sender's)
         var previous = new[]
         {
             Attempt(In(0, InteractiveTxParty.Local, 1), In(1, InteractiveTxParty.Remote, 2))
@@ -229,9 +230,28 @@ public class InteractiveTxRbfRulesTests
         var violation = InteractiveTxRbfRules.CheckTxComplete(inputs, previous);
 
         // Assert
-        Assert.NotNull(violation);
-        Assert.Equal("IT-RBF-01", violation.RequirementId);
-        Assert.Contains("peer", violation.Reason);
+        Assert.Null(violation);
+    }
+
+    [Fact]
+    public void Given_PeerContributedBefore_When_NoInputConflicts_Then_Violation()
+    {
+        // Arrange: neither side re-adds an input of the previous attempt, both could confirm
+        var previous = new[]
+        {
+            Attempt(In(0, InteractiveTxParty.Local, 1), In(1, InteractiveTxParty.Remote, 2))
+        };
+        var inputs = new List<InteractiveTxInput>
+        {
+            In(0, InteractiveTxParty.Local, 7),
+            In(1, InteractiveTxParty.Remote, 8)
+        };
+
+        // Act
+        var violation = InteractiveTxRbfRules.CheckTxComplete(inputs, previous);
+
+        // Assert
+        Assert.Equal("IT-RBF-01", violation?.RequirementId);
     }
 
     [Fact]

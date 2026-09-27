@@ -167,6 +167,83 @@ public class InteractiveTxSessionTests
         Assert.Equal(InteractiveTxParty.Local, result.Next.Inputs[0].AddedBy);
     }
 
+    [Theory]
+    [InlineData(true, 0UL)]
+    [InlineData(false, 1UL)]
+    public void Given_Contribution_When_Creating_Then_SerialIdsAreRandomUniqueAndOfOurParity(bool isInitiator,
+        ulong parity)
+    {
+        // Arrange
+        // (BOLT 2 tx_add_input rationale: "serial_id is a randomly chosen number which uniquely identifies this input")
+        var shared = isInitiator ? Splice(true) : null;
+        var contribution = Contribution([Input(1), Input(2), Input(3)], [Output(10_000), Output(20_000)]);
+
+        // Act
+        var sessions = Enumerable.Range(0, 4)
+                                 .Select(_ => InteractiveTxSession.Create(Parameters(isInitiator, contribution, shared)))
+                                 .Select(s => isInitiator ? s.Start().Next : s)
+                                 .ToList();
+        var ids = sessions.Select(s => DrainSerialIds(s, isInitiator)).ToList();
+
+        // Assert
+        Assert.All(ids, list =>
+        {
+            Assert.All(list, id => Assert.Equal(parity, id % 2));
+            Assert.Equal(list.Count, list.Distinct().Count());
+        });
+        Assert.True(ids.Select(l => string.Join(",", l)).Distinct().Count() > 1, "serial ids are not random");
+        Assert.Contains(ids.SelectMany(l => l), id => id > 1_000_000);
+    }
+
+    [Fact]
+    public void Given_SerialIdSourceRepeating_When_Creating_Then_DuplicatesAreDrawnAgainWithOurParity()
+    {
+        // Arrange
+        var values = new Queue<ulong>([6, 7, 6, 10, 11, 42]);
+        var contribution = Contribution([Input(1), Input(2)], [Output(10_000)]);
+
+        // Act
+        var session = InteractiveTxSession.Create(Parameters(true, contribution), () => values.Dequeue());
+        var ids = DrainSerialIds(session.Start().Next, true);
+
+        // Assert: 6; 7 -> 6 (repeat), 6 (repeat), 10; 11 -> 10 (repeat), 42
+        Assert.Equal([6UL, 10UL, 42UL], ids);
+    }
+
+    /// <summary>Our serial ids in sending order: answers each of our messages with the peer's tx_complete.</summary>
+    private List<ulong> DrainSerialIds(InteractiveTxSession session, bool started)
+    {
+        var ids = new List<ulong>();
+        var step = started ? null : Receive(session, Complete());
+        var current = step?.Next ?? session;
+        IEnumerable<IChannelMessage> outbound = step?.Outbound ?? [];
+        if (started)
+        {
+            ids.AddRange(current.Inputs.Select(i => i.SerialId));
+        }
+
+        for (var guard = 0; guard < 20; guard++)
+        {
+            foreach (var message in outbound)
+            {
+                if (message is TxAddInputMessage add)
+                    ids.Add(add.Payload.SerialId);
+                else if (message is TxAddOutputMessage output)
+                    ids.Add(output.Payload.SerialId);
+            }
+
+            if (outbound.Any(m => m is TxCompleteMessage) || current.IsNegotiationComplete
+                                                          || current.State != InteractiveTxSessionState.Negotiating)
+                break;
+
+            step = Receive(current, Complete());
+            current = step.Next;
+            outbound = step.Outbound;
+        }
+
+        return ids;
+    }
+
     [Fact]
     public void Given_InitiatorWithNothing_When_Starting_Then_SendsTxComplete()
     {
@@ -989,6 +1066,50 @@ public class InteractiveTxSessionTests
     }
 
     [Fact]
+    public void Given_Splice_When_PeerAddsTheFundingOutpointWithAPrevTx_Then_Aborts()
+    {
+        // Arrange
+        // (BOLT 2 splicing: the initiator "MUST add the current channel input to the splice transaction by sending
+        // tx_add_input with shared_input_txid [...] MUST NOT include prevtx for that shared input")
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, vout) => bytes.SequenceEqual(PrevTx(9))
+                                            ? new PrevTxInspection(true, FundingTxId, 2,
+                                                                   LightningMoney.Satoshis(1_000_000), FundingScript,
+                                                                   true, null)
+                                            : null
+        };
+        var session = NonInitiator(shared: Splice(false));
+
+        // Act
+        var result = session.Receive(AddInput(0, 9, 1), inspector);
+
+        // Assert
+        AssertAborted(result, "SP-TX-01");
+    }
+
+    [Fact]
+    public void Given_Splice_When_PeerAddsAnotherOutputOfTheFundingTransaction_Then_Accepted()
+    {
+        // Arrange: only the funding outpoint itself must come through shared_input_txid
+        var inspector = new FakePrevTxInspector
+        {
+            Override = (bytes, vout) => bytes.SequenceEqual(PrevTx(9))
+                                            ? new PrevTxInspection(true, FundingTxId, 2, PrevOutAmount, P2Wpkh, true,
+                                                                   null)
+                                            : null
+        };
+        var session = NonInitiator(shared: Splice(false));
+
+        // Act
+        var result = session.Receive(AddInput(0, 9, 0), inspector);
+
+        // Assert
+        Assert.False(result.Aborted, result.AbortReason);
+        Assert.False(Assert.Single(result.Next.Inputs).IsShared);
+    }
+
+    [Fact]
     public void Given_NoSharedFunding_When_PeerAddsSharedInput_Then_Aborts()
     {
         // Act
@@ -1148,6 +1269,63 @@ public class InteractiveTxSessionTests
         Assert.Equal("IT-SIG-02", result.RequirementId);
         Assert.Same(sent, result.Next);
         Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, result.Next.State);
+    }
+
+    public static TheoryData<int> NegotiationMessageKinds => new() { 0, 1, 2, 3, 4 };
+
+    private static IChannelMessage NegotiationMessage(int kind) => kind switch
+    {
+        0 => AddInput(1, 9),
+        1 => AddOutput(1),
+        2 => RemoveInput(1),
+        3 => RemoveOutput(1),
+        _ => Complete()
+    };
+
+    [Theory]
+    [MemberData(nameof(NegotiationMessageKinds))]
+    public void Given_OurTxSignaturesSent_When_PeerSendsANegotiationMessage_Then_NoAbortAndSessionUnchanged(int kind)
+    {
+        // Arrange
+        // (BOLT 2 tx_abort: "A sending node: MUST NOT have already transmitted tx_signatures"; receiver: "if they have
+        // already sent tx_signatures to the peer: MUST NOT forget the channel until any inputs to the negotiated tx
+        // have been spent")
+        var (a, _) = ConstructedPair(50_000); // the initiator signs first
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null).Next;
+
+        // Act
+        var result = sent.Receive(NegotiationMessage(kind), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.False(result.NegotiationComplete);
+        Assert.Equal("IT-ABT-01", result.RequirementId);
+        Assert.Same(sent, result.Next);
+        Assert.Equal(InteractiveTxSessionState.TxSignaturesSent, result.Next.State);
+        Assert.True(result.Next.MustBeRemembered);
+    }
+
+    [Theory]
+    [MemberData(nameof(NegotiationMessageKinds))]
+    public void Given_Signed_When_PeerSendsANegotiationMessage_Then_NoAbortAndSessionUnchanged(int kind)
+    {
+        // Arrange
+        var (a, b) = ConstructedPair(50_000); // the initiator signs first
+        var sent = a.OnCommitmentSignedReceived().SendTxSignatures([P2WpkhWitness()], null);
+        var received = b.OnCommitmentSignedReceived().Receive(Assert.Single(sent.Outbound), _inspector);
+        var signed = received.Next.SendTxSignatures([P2WpkhWitness()], null).Next;
+        Assert.Equal(InteractiveTxSessionState.Signed, signed.State);
+
+        // Act
+        var result = signed.Receive(NegotiationMessage(kind), _inspector);
+
+        // Assert
+        Assert.Empty(result.Outbound);
+        Assert.False(result.Aborted);
+        Assert.Same(signed, result.Next);
+        Assert.Equal(InteractiveTxSessionState.Signed, result.Next.State);
+        Assert.True(result.Next.MustBeRemembered);
     }
 
     [Fact]

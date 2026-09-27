@@ -402,7 +402,12 @@ public static class InteractiveTxRules
             var spending = 0;
             foreach (var input in inputs)
             {
-                if (input.IsShared || (input.PrevTxId == sharedInput.TxId && input.PrevTxVout == sharedInput.Vout))
+                var spendsFunding = input.PrevTxId == sharedInput.TxId && input.PrevTxVout == sharedInput.Vout;
+                if (!input.IsShared && spendsFunding)
+                    return new InteractiveTxRuleViolation("SP-TX-01",
+                                                          "the current funding output is spent by an input that is not the shared input");
+
+                if (input.IsShared)
                     spending++;
             }
 

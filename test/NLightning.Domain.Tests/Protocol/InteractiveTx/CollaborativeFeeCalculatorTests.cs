@@ -245,11 +245,11 @@ public class CollaborativeFeeCalculatorTests
     }
 
     [Fact]
-    public void Given_SpentScript_When_EstimatingOurInputWeight_Then_BasePlusMaximumWitness()
+    public void Given_SpentScript_When_EstimatingOurInputWeight_Then_BasePlusMaximumWitnessNeverBelowBolt3Minimum()
     {
         // Act & Assert
         Assert.Equal(164 + 109, CollaborativeFeeCalculator.EstimateLocalInputWeight(P2Wpkh));
-        Assert.Equal(164 + 67, CollaborativeFeeCalculator.EstimateLocalInputWeight(P2Tr));
+        Assert.Equal(164 + 107, CollaborativeFeeCalculator.EstimateLocalInputWeight(P2Tr)); // BOLT 3's minimum, not 67
         Assert.Throws<ArgumentException>(() => CollaborativeFeeCalculator.EstimateLocalInputWeight(P2Wsh));
     }
 

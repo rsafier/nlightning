@@ -26,7 +26,9 @@ using Money;
 /// such an input 107 would refuse peers (LDK) that budget 66. The <b>maximum</b> is what we budget for our own inputs
 /// (BOLT 2 tx_signatures rationale: "It is the responsibility of the sending peer to correctly account for the required
 /// fee"): 109 for P2WPKH (a 72-byte DER signature, its sighash byte and a 33-byte key) and 67 for a P2TR key path with
-/// an explicit <c>SIGHASH_ALL</c>; P2WSH depends on its script and has no generic maximum.</para>
+/// an explicit <c>SIGHASH_ALL</c>; P2WSH depends on its script and has no generic maximum. What we budget for our own
+/// input is never below BOLT 3's 107 (<see cref="EstimateLocalInputWeight"/>), so a peer that charges every input
+/// 107 never finds our contribution short.</para>
 /// <para>Fees are <c>weight x feerate / 1000</c> in satoshis. <see cref="FeeForWeight"/> rounds up (what Appendix F
 /// charges: 609 wu at 253 sat/kw is 155 sat, 395 wu is 100 sat) and is what we pay; <see cref="MinimumFeeForWeight"/>
 /// rounds down and is what the peer must pay at least (IT-R-04 "based on the <c>minimum fee</c>"), so a peer that
@@ -96,13 +98,21 @@ public static class CollaborativeFeeCalculator
 
     /// <summary>
     /// The weight we budget for a wallet input of ours (<see cref="ContributedInput.InputWeight"/>):
-    /// <see cref="InputBaseWeight"/> plus <see cref="GetMaximumWitnessWeight"/>.
+    /// <see cref="InputBaseWeight"/> plus the larger of <see cref="GetMaximumWitnessWeight"/> and BOLT 3's
+    /// <see cref="MinimumWitnessWeight"/> (164 + 109 for P2WPKH, 164 + 107 for a P2TR key path).
     /// </summary>
+    /// <remarks>
+    /// BOLT 3 charges each contributor "max(number inputs x minimum witness weight, actual witness weight of all
+    /// inputs)" with a minimum witness weight of 107, so a peer applying the text literally charges our P2TR inputs 107
+    /// although their witness weighs 67: budgeting the actual 67 would underpay against such a peer and get a
+    /// <c>tx_abort</c> at <c>tx_complete</c>. The receiver side stays lenient (<see cref="GetMinimumWitnessWeight"/>).
+    /// </remarks>
     /// <exception cref="ArgumentException">The script does not bound its witness (P2WSH or another version).</exception>
     public static int EstimateLocalInputWeight(BitcoinScript spentScript) =>
-        InputBaseWeight + (GetMaximumWitnessWeight(spentScript)
-                           ?? throw new ArgumentException("The witness weight of this script type is not known.",
-                                                          nameof(spentScript)));
+        InputBaseWeight + Math.Max(MinimumWitnessWeight,
+                                   GetMaximumWitnessWeight(spentScript)
+                                   ?? throw new ArgumentException("The witness weight of this script type is not known.",
+                                                                  nameof(spentScript)));
 
     /// <summary>
     /// The weight a receiver charges one input at <c>tx_complete</c>: the shared input's
