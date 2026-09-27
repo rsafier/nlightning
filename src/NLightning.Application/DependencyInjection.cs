@@ -34,6 +34,7 @@ using Onchain.Resolvers.Local;
 using Onchain.Resolvers.Remote;
 using Onchain.Resolvers.Revoked;
 using Onchain.Wallet;
+using OnionMessages;
 using Payments;
 using Payments.Send;
 using Payments.Switch;
@@ -109,6 +110,8 @@ public static class DependencyInjection
         services.AddRemoteCommitResolutionServices();
         services.AddRevokedCommitResolver();
         services.AddAnchorCpfpServices();
+        // BOLT 4 onion messages (wave M6): off until option_onion_messages is advertised
+        services.AddOnionMessageServices();
         services.AddSingleton<IPeerManager, PeerManager>();
         // NL-351: own and relayed gossip goes through the peer's outbox (PeerGossipSender resolves it lazily)
         services.AddSingleton<IPeerGossipOutbox>(sp => (IPeerGossipOutbox)sp.GetRequiredService<IPeerManager>());
