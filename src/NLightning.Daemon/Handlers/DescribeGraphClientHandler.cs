@@ -12,8 +12,8 @@ using Domain.Node.Options;
 using Interfaces;
 
 /// <summary>
-/// Describes the gossip graph (ClientCommand 20, BOLT 7 plan G5-T4): the counts, the store's memory estimate and
-/// pending writes, the ingress queue, dropped messages and orphans, and each connection's sync state; on request one
+/// Describes the gossip graph (ClientCommand 20, BOLT 7 plan G5-T4): the counts, the store's memory estimate, the
+/// process memory against <c>Gossip:MaxMemoryMb</c> (<see cref="GossipMemoryBudget"/>, NL-373), pending writes, the ingress queue, dropped messages and orphans, and each connection's sync state; on request one
 /// page of channels (by short channel id) and one of node announcements (by node id), at most
 /// <see cref="DescribeGraphClientRequest.MaxLimit"/> each. Refused with <c>invalid_operation</c> while the graph is
 /// disabled, and for a negative offset or a limit outside 1 to the maximum.
@@ -24,13 +24,15 @@ public sealed class DescribeGraphClientHandler
     private readonly GossipGraphDescriber _describer;
     private readonly GossipGraphOptions _options;
     private readonly NodeOptions _nodeOptions;
+    private readonly GossipMemoryBudget? _memoryBudget;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.DescribeGraph;
 
     public DescribeGraphClientHandler(GossipGraphDescriber describer, IOptions<GossipGraphOptions> options,
-                                      IOptions<NodeOptions> nodeOptions)
+                                      IOptions<NodeOptions> nodeOptions, GossipMemoryBudget? memoryBudget = null)
     {
+        _memoryBudget = memoryBudget;
         _describer = describer;
         _options = options.Value;
         _nodeOptions = nodeOptions.Value;
@@ -53,6 +55,7 @@ public sealed class DescribeGraphClientHandler
 
         var description = _describer.Describe();
         var snapshot = description.Snapshot;
+        var budget = _memoryBudget?.GetState();
         var response = new DescribeGraphClientResponse
         {
             IsLoaded = description.IsLoaded,
@@ -82,7 +85,12 @@ public sealed class DescribeGraphClientHandler
                                                                   p.OurFilter?.FirstTimestamp,
                                                                   p.OurFilter?.TimestampRange,
                                                                   p.IsQuerySlotPoisoned, p.PendingWork))
-                               .ToList() ?? []
+                               .ToList() ?? [],
+            MemoryBudgetBytes = budget?.BudgetBytes,
+            ProcessWorkingSetBytes = budget?.WorkingSetBytes,
+            ProcessManagedHeapBytes = budget?.ManagedHeapBytes,
+            IsOverMemoryBudget = budget?.IsOverBudget,
+            MemoryBudgetRefused = budget?.Refused
         };
 
         if (request.IncludeChannels)

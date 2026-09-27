@@ -20,13 +20,17 @@ public static class GossipGraphServiceCollectionExtensions
     /// (<see cref="GossipIngress.StopAsync"/>, which writes the pending graph changes). <see cref="GraphPruner"/>
     /// (G2-T5, needs <c>IBlockchainMonitor</c>) is registered too; the host calls <see cref="GraphPruner.Start"/> before
     /// the chain monitor starts and <see cref="GraphPruner.StopAsync"/> on shutdown. Also registers
-    /// <see cref="GossipMetrics"/> (<c>AddGossipMetrics</c>), which the ingress records into.
+    /// <see cref="GossipMetrics"/> (<c>AddGossipMetrics</c>), which the ingress records into, and
+    /// <see cref="GossipMemoryBudget"/> (<c>Gossip:MaxMemoryMb</c> over <see cref="IProcessMemoryReader"/>), which the
+    /// ingress checks before it adds a new channel or node.
     /// </summary>
     public static IServiceCollection AddGossipGraphServices(this IServiceCollection services)
     {
         services.AddOptions<GossipGraphOptions>();
         services.AddGossipMetrics();
         services.TryAddSingleton<IGraphStore, GraphStore>();
+        services.TryAddSingleton<IProcessMemoryReader>(ProcessMemoryReader.Instance);
+        services.TryAddSingleton<GossipMemoryBudget>();
         services.TryAddSingleton<GossipIngress>();
         services.TryAddSingleton<IGossipIngress>(sp => sp.GetRequiredService<GossipIngress>());
         // Replaces the no-op default of the announcement services (G1), whichever registration ran first

@@ -53,6 +53,21 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>The offset of the next node page; null when the page was the last (or not requested).</summary>
     [Key(22)] public int? NextNodeOffset { get; init; }
 
+    /// <summary><c>Gossip:MaxMemoryMb</c> in bytes, 0 when off; null when the node has no budget (NL-373).</summary>
+    [Key(23)] public long? MemoryBudgetBytes { get; init; }
+
+    /// <summary>The process's resident set at the budget's last reading.</summary>
+    [Key(24)] public long? ProcessWorkingSetBytes { get; init; }
+
+    /// <summary>The managed heap at the budget's last reading.</summary>
+    [Key(25)] public long? ProcessManagedHeapBytes { get; init; }
+
+    /// <summary>New channels and nodes from gossip are refused (the process is over the budget).</summary>
+    [Key(26)] public bool? IsOverMemoryBudget { get; init; }
+
+    /// <summary>New channels and nodes refused over the budget since the start.</summary>
+    [Key(27)] public long? MemoryBudgetRefused { get; init; }
+
     public static DescribeGraphIpcResponse FromClientResponse(DescribeGraphClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -94,7 +109,12 @@ public sealed class DescribeGraphIpcResponse
             ChannelPage = clientResponse.ChannelPage.Select(GraphChannelIpcInfo.From).ToList(),
             NodePage = clientResponse.NodePage.Select(GraphNodeIpcInfo.From).ToList(),
             NextChannelOffset = clientResponse.NextChannelOffset,
-            NextNodeOffset = clientResponse.NextNodeOffset
+            NextNodeOffset = clientResponse.NextNodeOffset,
+            MemoryBudgetBytes = clientResponse.MemoryBudgetBytes,
+            ProcessWorkingSetBytes = clientResponse.ProcessWorkingSetBytes,
+            ProcessManagedHeapBytes = clientResponse.ProcessManagedHeapBytes,
+            IsOverMemoryBudget = clientResponse.IsOverMemoryBudget,
+            MemoryBudgetRefused = clientResponse.MemoryBudgetRefused
         };
     }
 }

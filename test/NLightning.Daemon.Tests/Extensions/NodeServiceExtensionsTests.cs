@@ -128,6 +128,14 @@ public class NodeServiceExtensionsTests
         // NL-351: own and relayed gossip goes through the peer manager's per-connection outbox
         Assert.Same(provider.GetRequiredService<IPeerManager>(), provider.GetRequiredService<IPeerGossipOutbox>());
         Assert.True(Assert.IsType<PeerGossipSender>(provider.GetRequiredService<IGossipPeerSender>()).UsesOutbox);
+        // NL-373: Gossip:MaxMemoryMb (1 GiB by default) is one shared budget, checked by the ingress (a private
+        // constructor argument, read by reflection since Daemon.Tests has no internals access) and read by describegraph
+        var budget = provider.GetRequiredService<GossipMemoryBudget>();
+        Assert.Equal(1_024L << 20, budget.BudgetBytes);
+        Assert.Same(budget, typeof(GossipIngress)
+                           .GetField("_memoryBudget", System.Reflection.BindingFlags.Instance
+                                                    | System.Reflection.BindingFlags.NonPublic)!
+                           .GetValue(provider.GetRequiredService<GossipIngress>()));
     }
 
     [Fact]
@@ -485,7 +493,10 @@ public class NodeServiceExtensionsTests
         Assert.Equal(expectedOn, gossip.ArePublicChannelsAllowed(chain));
         // Every key of the section binds to a real option (a typo would bind nothing)
         var gossipKeys = configuration.GetSection(GossipOptions.SectionName).GetChildren().Select(c => c.Key).ToList();
-        Assert.Equal(5, gossipKeys.Count);
+        Assert.Equal(6, gossipKeys.Count);
+        // NL-373: the memory budget is written on every network, 1 GiB
+        Assert.Equal(GossipGraphOptions.DefaultMaxMemoryMb, graph.MaxMemoryMb);
+        Assert.Equal("1024", configuration["Gossip:MaxMemoryMb"]);
         Assert.All(gossipKeys, key => Assert.True(typeof(GossipOptions).GetProperty(key) is not null
                                                || typeof(GossipGraphOptions).GetProperty(key) is not null
                                                || typeof(GossipSyncOptions).GetProperty(key) is not null

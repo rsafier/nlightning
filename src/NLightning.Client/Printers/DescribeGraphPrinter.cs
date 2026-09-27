@@ -26,6 +26,12 @@ public sealed class DescribeGraphPrinter : IPrinter<DescribeGraphIpcResponse>
         Line($"  Nodes:              {item.GraphNodes} ({item.AnnouncedNodes} announced)");
         Line($"  Capacity (sat):     {item.CapacitySat}");
         Line($"  Memory (estimate):  {ToMegabytes(item.EstimatedStoreBytes)} MiB store + {ToMegabytes(item.EstimatedSnapshotBytes)} MiB per snapshot");
+        if (item.MemoryBudgetBytes is { } budget)
+        {
+            var limit = budget > 0 ? $"{ToMegabytes(budget)} MiB" : "off";
+            var state = item.IsOverMemoryBudget == true ? "OVER BUDGET, new channels and nodes refused" : "ok";
+            Line($"  Memory (process):   {ToMegabytes(item.ProcessWorkingSetBytes ?? 0)} MiB RSS, {ToMegabytes(item.ProcessManagedHeapBytes ?? 0)} MiB managed heap; budget {limit} ({state}, {item.MemoryBudgetRefused ?? 0} refused)");
+        }
         Line($"  Pending writes:     {item.PendingWrites}");
         Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans");
         Line($"  Initial sync:       {item.HasCompletedInitialSync switch { true => "complete", false => "not complete", null => "-" }}");

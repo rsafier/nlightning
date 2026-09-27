@@ -77,7 +77,8 @@ internal sealed class GraphTestKit
                         IChannelMemoryRepository? channelMemoryRepository = null,
                         CompactPubKey? ourNodeId = null, int writeBatchSize = GraphStore.DefaultWriteBatchSize,
                         int loadBatchSize = GraphStore.DefaultLoadBatchSize,
-                        Application.Gossip.Metrics.GossipMetrics? metrics = null)
+                        Application.Gossip.Metrics.GossipMetrics? metrics = null,
+                        GossipMemoryBudget? memoryBudget = null)
     {
         Repository = repository ?? new InMemoryGraphDbRepository();
         Clock = new SettableTimeProvider(now ?? DefaultNow);
@@ -115,7 +116,7 @@ internal sealed class GraphTestKit
                                     Microsoft.Extensions.Options.Options.Create(Options),
                                     Microsoft.Extensions.Options.Options.Create(nodeOptions),
                                     NullLogger<GossipIngress>.Instance, Clock, channelMemoryRepository, keyManager,
-                                    metrics);
+                                    metrics, memoryBudget);
     }
 
     public InMemoryGraphDbRepository Repository { get; }

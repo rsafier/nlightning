@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Tests.Ipc.Handlers;
 
 using Application.Gossip.Graph;
+using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Sync;
 using Daemon.Handlers;
 using Daemon.Interfaces;
@@ -280,6 +281,47 @@ public class DescribeGraphIpcHandlerTests
                      (request.IncludeChannels, request.IncludeNodes, request.Offset, request.Limit));
     }
 
+    [Fact]
+    public async Task Given_AMemoryBudget_When_DescribeGraph_Then_BudgetAndProcessMemoryCrossTheWire()
+    {
+        // Arrange (NL-373: Gossip:MaxMemoryMb 1 GiB, the process at 1.5 GiB RSS)
+        var store = CreateGraph();
+        var reader = new Mock<IProcessMemoryReader>();
+        reader.Setup(r => r.Read()).Returns(new ProcessMemoryUsage(1_536L << 20, 700L << 20));
+        var budget = new GossipMemoryBudget(Options.Create(new GossipGraphOptions()),
+                                            NullLogger<GossipMemoryBudget>.Instance, reader.Object);
+        using var provider = BuildProvider(store, budget: budget);
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var payload = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest()),
+                                                     TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Equal(1_024L << 20, payload.MemoryBudgetBytes);
+        Assert.Equal(1_536L << 20, payload.ProcessWorkingSetBytes);
+        Assert.Equal(700L << 20, payload.ProcessManagedHeapBytes);
+        Assert.True(payload.IsOverMemoryBudget);
+        Assert.Equal(0L, payload.MemoryBudgetRefused);
+    }
+
+    [Fact]
+    public async Task Given_NoMemoryBudget_When_DescribeGraph_Then_TheBudgetFieldsAreNull()
+    {
+        // Arrange
+        using var provider = BuildProvider(CreateGraph());
+        var handler = new DescribeGraphIpcHandler(NullLogger<DescribeGraphIpcHandler>.Instance, provider);
+
+        // Act
+        var payload = Read(await handler.HandleAsync(Envelope(new DescribeGraphIpcRequest()),
+                                                     TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Null(payload.MemoryBudgetBytes);
+        Assert.Null(payload.ProcessWorkingSetBytes);
+        Assert.Null(payload.IsOverMemoryBudget);
+    }
+
     /// <summary>
     /// alice-bob (110x1x0: verified, both policies, the second disabled, spent at 250), bob-carol (105x7x1: unverified,
     /// no policy); alice and carol announced, bob not.
@@ -300,7 +342,8 @@ public class DescribeGraphIpcHandlerTests
         return store;
     }
 
-    private static ServiceProvider BuildProvider(GraphStore store, string network = "regtest")
+    private static ServiceProvider BuildProvider(GraphStore store, string network = "regtest",
+                                                 GossipMemoryBudget? budget = null)
     {
         var nodeOptions = Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Resolve(network) });
         var graphOptions = Options.Create(new GossipGraphOptions());
@@ -313,6 +356,8 @@ public class DescribeGraphIpcHandlerTests
         services.AddSingleton(graphOptions);
         services.AddSingleton(nodeOptions);
         services.AddSingleton(new GossipGraphDescriber(store, ingress, sync));
+        if (budget is not null)
+            services.AddSingleton(budget);
         services.AddScoped<IClientCommandHandler<DescribeGraphClientRequest, DescribeGraphClientResponse>,
             DescribeGraphClientHandler>();
         return services.BuildServiceProvider();

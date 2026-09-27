@@ -350,7 +350,8 @@ public static class NodeConfigurationExtensions
                    "SyncEnabled": {{GOSSIP_ON}},
                    "RelayEnabled": {{GOSSIP_ON}},
                    "AcceptPublicChannels": true,
-                   "AllowPublicChannelsOnMainnet": false
+                   "AllowPublicChannelsOnMainnet": false,
+                   "MaxMemoryMb": 1024
                  },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
