@@ -48,6 +48,34 @@ public class SpliceRegistrationTests
                            .ImplementationType);
     }
 
+    /// <summary>
+    /// Proof SP1 found that nothing resolved the depth watcher, so no <c>splice_locked</c> was ever sent: the splice
+    /// service now starts it.
+    /// </summary>
+    [Fact]
+    public void Given_TheSpliceService_When_Resolved_Then_TheDepthWatcherFollowsConfirmations()
+    {
+        // Arrange
+        var monitor = new Mock<Infrastructure.Bitcoin.Wallet.Interfaces.IBlockchainMonitor>();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(monitor.Object);
+        services.AddSingleton(new Mock<Domain.Channels.Interfaces.IChannelLockProvider>().Object);
+        services.AddSingleton(new Mock<Domain.Channels.Interfaces.IChannelMemoryRepository>().Object);
+        services.AddSingleton(new Mock<Domain.Protocol.Interfaces.IMessageFactory>().Object);
+        services.AddSingleton(new Mock<Domain.Bitcoin.Interfaces.ILightningSigner>().Object);
+        services.AddSingleton(new Mock<ISpliceStatePort>().Object);
+        services.AddSpliceServices();
+        using var provider = services.BuildServiceProvider();
+
+        // Act
+        _ = provider.GetRequiredService<ISpliceService>();
+
+        // Assert
+        monitor.VerifyAdd(m => m.OnTransactionConfirmed += It.IsAny<EventHandler<Domain.Bitcoin.Events.TransactionConfirmedEventArgs>>(),
+                          Times.Once);
+    }
+
     [Fact]
     public void Given_AStatePortRegisteredFirst_When_SpliceServicesAdded_Then_ItIsKeptAndTheCallIsIdempotent()
     {
