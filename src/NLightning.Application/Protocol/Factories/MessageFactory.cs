@@ -266,7 +266,8 @@ public class MessageFactory : IMessageFactory
     /// <param name="channelId">The channel id.</param>
     /// <param name="locktime">The locktime.</param>
     /// <param name="feerate">The feerate</param>
-    /// <param name="fundingOutputContrubution">The output contribution.</param>
+    /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
+    /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
     /// <returns>The TxInitRbf message.</returns>
     /// <seealso cref="TxInitRbfMessage"/>
@@ -278,7 +279,8 @@ public class MessageFactory : IMessageFactory
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
 
-        if (fundingOutputContrubution > 0)
+        // s64 on the wire: a splice-out RBF carries a negative contribution; 0 means not contributing (omitted)
+        if (fundingOutputContrubution != 0)
         {
             fundingOutputContributionTlv = new FundingOutputContributionTlv(fundingOutputContrubution);
         }
@@ -288,7 +290,7 @@ public class MessageFactory : IMessageFactory
             requireConfirmedInputsTlv = new RequireConfirmedInputsTlv();
         }
 
-        var payload = new TxInitRbfPayload(channelId, locktime, feerate);
+        var payload = new TxInitRbfPayload(channelId, feerate, locktime);
 
         return new TxInitRbfMessage(payload, fundingOutputContributionTlv, requireConfirmedInputsTlv);
     }
@@ -297,7 +299,8 @@ public class MessageFactory : IMessageFactory
     /// Create a TxAckRbf message.
     /// </summary>
     /// <param name="channelId">The channel id.</param>
-    /// <param name="fundingOutputContrubution">The output contribution.</param>
+    /// <param name="fundingOutputContrubution">The signed contribution in satoshis (negative for a splice-out);
+    /// 0 omits the TLV.</param>
     /// <param name="requireConfirmedInputs">How many confirmed inputs we need.</param>
     /// <returns>The TxAckRbf message.</returns>
     /// <seealso cref="TxAckRbfMessage"/>
@@ -312,7 +315,8 @@ public class MessageFactory : IMessageFactory
         FundingOutputContributionTlv? fundingOutputContributionTlv = null;
         RequireConfirmedInputsTlv? requireConfirmedInputsTlv = null;
 
-        if (fundingOutputContrubution > 0)
+        // s64 on the wire: a splice-out RBF carries a negative contribution; 0 means not contributing (omitted)
+        if (fundingOutputContrubution != 0)
         {
             fundingOutputContributionTlv = new FundingOutputContributionTlv(fundingOutputContrubution);
         }
