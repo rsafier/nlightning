@@ -26,6 +26,10 @@ using Models;
 ///         | u64 max_htlc_value_in_flight_msat | u16 to_self_delay
 /// address: u8 type_length | type (UTF-8) | u8 host_length | host (UTF-8) | u16 port
 /// flags:   bit 0 initiator, bit 1 option_anchors, bit 2 announced, bit 3 inferred params
+/// then, since the splicing revision (still version 1, trailing fields):
+///         | u32 local_funding_key_index | u8 pending_count | pending_count x pending
+/// pending: 32 txid | u16 output_index | u64 capacity_sat | u32 local_funding_key_index | 33 local_funding_pubkey
+///         | 33 remote_funding_pubkey
 /// </code>
 /// A reader skips bytes it does not know at the end of a record (added fields of a later minor revision) and ignores
 /// unknown flag bits; anything else that does not fit is refused.
@@ -163,6 +167,24 @@ public static class ChannelBackupCodec
             writer.U16(address.Port);
         }
 
+        // Splicing revision (NL-478): the key index of the current funding and the pending splices
+        writer.U32(channel.LocalFundingKeyIndex);
+        var pending = channel.PendingFundings;
+        if (pending.Count > byte.MaxValue)
+            throw new ArgumentException($"Channel {channel.ChannelId} has more than {byte.MaxValue} pending fundings.",
+                                        nameof(channel));
+
+        writer.Byte((byte)pending.Count);
+        foreach (var funding in pending)
+        {
+            writer.Bytes(funding.FundingTxId, HashLength);
+            writer.U16(funding.FundingOutputIndex);
+            writer.U64(funding.CapacitySat);
+            writer.U32(funding.LocalFundingKeyIndex);
+            writer.Bytes(funding.LocalFundingPubKey, PubKeyLength);
+            writer.Bytes(funding.RemoteFundingPubKey, PubKeyLength);
+        }
+
         return writer.ToArray();
     }
 
@@ -207,6 +229,24 @@ public static class ChannelBackupCodec
             addresses.Add(new ChannelBackupAddress(type, host, reader.U16()));
         }
 
+        // The splicing revision's fields, absent from a record written before it (current funding = initial funding)
+        uint localFundingKeyIndex = 0;
+        var pending = new List<ChannelBackupFunding>();
+        if (!reader.IsAtEnd)
+        {
+            localFundingKeyIndex = reader.U32();
+            var pendingCount = reader.Byte();
+            for (var i = 0; i < pendingCount; i++)
+            {
+                var txId = reader.Bytes(HashLength).ToArray();
+                var outputIndex = reader.U16();
+                var capacitySat = reader.U64();
+                var pendingKeyIndex = reader.U32();
+                pending.Add(new ChannelBackupFunding(txId, outputIndex, capacitySat, pendingKeyIndex, reader.PubKey(),
+                                                     reader.PubKey()));
+            }
+        }
+
         // Bytes left in the record belong to fields of a later minor revision: skipped
         return new ChannelBackupEntry
         {
@@ -235,7 +275,9 @@ public static class ChannelBackupCodec
             RemoteDelayedPaymentBasepoint = remoteDelayed,
             RemoteHtlcBasepoint = remoteHtlc,
             Local = local,
-            Remote = remote
+            Remote = remote,
+            LocalFundingKeyIndex = localFundingKeyIndex,
+            PendingFundings = pending
         };
     }
 

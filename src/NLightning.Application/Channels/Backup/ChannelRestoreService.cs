@@ -9,12 +9,17 @@ namespace NLightning.Application.Channels.Backup;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -59,6 +64,15 @@ using Onchain.Interfaces;
 /// <para>Before anything is stored, the key manager's last used channel index is advanced past the restored channels'
 /// (<see cref="IChannelKeyIndexReserver"/>), so a stale key file never hands a restored channel's keys to a new
 /// one.</para>
+/// <para>Splices (lane SP2-E, NL-478): a backup's funding is the channel's current one when the backup was written, so
+/// a channel spliced since then has that funding spent by the splice. Before a recovery channel is made, the funding
+/// is followed from spend to spend (<see cref="IFundingSpendLocator.FollowSpliceAsync"/>: a pending splice of the
+/// backup, our deterministic next funding keys, or the witness of the new output's spend) until it is unspent or spent
+/// by a commitment, and the channel is made at that funding (its outpoint, capacity, keys, key index and short channel
+/// id; the key index and pending splices are stored as its funding rows). A recovery channel already stored (a
+/// splice confirmed after the restore, or found by the background search) is moved the same way
+/// (<c>IChannelFundingDbRepository.ApplyLockAsync</c>, its memory model, the signer and a watch of the new outpoint).
+/// </para>
 /// </remarks>
 public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
 {
@@ -82,6 +96,8 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
     private readonly IChannelKeyIndexReserver? _keyIndexReserver;
     private readonly IGraphStore? _graphStore;
     private readonly IChannelMemoryRepository? _channelMemoryRepository;
+    private readonly IChannelFundingKeySource _fundingKeySource;
+    private readonly IChannelLockProvider? _channelLockProvider;
     private readonly SemaphoreSlim _restoreLock = new(1, 1);
     private readonly CancellationTokenSource _backgroundCts = new();
     private readonly ConcurrentDictionary<ChannelId, Task> _rescans = new();
@@ -122,9 +138,13 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                  IOnchainChannelWatcher? onchainWatcher = null,
                                  IChannelKeyIndexReserver? keyIndexReserver = null,
                                  IGraphStore? graphStore = null,
-                                 IChannelMemoryRepository? channelMemoryRepository = null)
+                                 IChannelMemoryRepository? channelMemoryRepository = null,
+                                 IChannelFundingKeySource? fundingKeySource = null,
+                                 IChannelLockProvider? channelLockProvider = null)
     {
         _graphStore = graphStore;
+        _fundingKeySource = fundingKeySource ?? new SignerChannelFundingKeySource(signer);
+        _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
         _spendLocator = spendLocator;
         _onchainWatcher = onchainWatcher;
@@ -194,12 +214,15 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             using (var scope = _serviceScopeFactory.CreateScope())
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-                entries = (await unitOfWork.ChannelDbRepository.GetAllAsync())
-                         .Where(c => RecoveryChannels.IsRecoveryChannel(c)
-                                  && c.FundingOutput is { TransactionId: not null, Index: not null }
-                                  && c.RemoteKeySet is not null)
-                         .Select(c => ChannelBackupService.CreateEntry(c, null))
-                         .ToList();
+                entries = [];
+                foreach (var channel in (await unitOfWork.ChannelDbRepository.GetAllAsync())
+                                       .Where(c => RecoveryChannels.IsRecoveryChannel(c)
+                                                && c.FundingOutput is { TransactionId: not null, Index: not null }
+                                                && c.RemoteKeySet is not null))
+                    entries.Add(ChannelBackupService.CreateEntry(
+                                    channel, null, null,
+                                    await ChannelBackupService.GetFundingSetAsync(unitOfWork, channel.ChannelId,
+                                                                                  _logger)));
             }
 
             foreach (var entry in entries)
@@ -277,7 +300,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                                                   id => existing.TryGetValue(id, out var row)
                                                             ? (true, row.State)
                                                             : (false, null),
-                                                  _signer.GetChannelBasepoints);
+                                                  _signer.GetChannelBasepoints, _fundingKeySource.GetFundingPubKey);
 
             await ReserveKeyIndexesAsync(plan, cancellationToken);
 
@@ -390,11 +413,16 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                 return new ChannelRestoreChannelResult(entry, item.Action, "repeated in the backup");
         }
 
+        // The backed-up funding may have been spliced since the backup: the channel is made at its current funding
+        var backedUp = entry;
+        var (current, location, splices) = await FollowSplicesAsync(entry, null, cancellationToken);
+        entry = current;
+
         ChannelModel channel;
         WatchedOutpointModel fundingWatch;
         try
         {
-            channel = RecoveryChannels.Create(entry, item.LocalBasepoints!.Value, _sha256);
+            channel = RecoveryChannels.Create(entry, item.LocalBasepoints!.Value, entry.LocalFundingPubKey, _sha256);
             var error = _messageFactory.CreateErrorMessage(RecoveryChannels.PeerErrorMessage, entry.ChannelId);
             using (var errorStream = new MemoryStream())
             {
@@ -410,6 +438,7 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
             if (await unitOfWork.PeerDbRepository.GetByNodeIdAsync(entry.RemoteNodeId) is null)
                 await unitOfWork.PeerDbRepository.AddOrUpdateAsync(CreatePeer(entry));
             await unitOfWork.ChannelDbRepository.AddAsync(channel);
+            await StageSpliceFundingsAsync(unitOfWork, entry);
             if (await unitOfWork.WatchedOutpointDbRepository.GetAsync(fundingWatch.TransactionId,
                                                                       fundingWatch.OutputIndex) is null)
                 unitOfWork.WatchedOutpointDbRepository.Add(fundingWatch);
@@ -439,11 +468,205 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         _logger.LogWarning("Recovery channel {ChannelId} with {Peer} restored (funding {FundingTxId}:{Index}, "
                          + "{Capacity} sat); the peer is asked to force close", entry.ChannelId, entry.RemoteNodeId,
                            entry.FundingTxId, entry.FundingOutputIndex, entry.CapacitySat);
-        var spendDetail = await HandleEarlierSpendAsync(entry, fundingWatch, cancellationToken);
-        return new ChannelRestoreChannelResult(entry, ChannelRestoreAction.Restore,
-                                               spendDetail
-                                            ?? "recovery channel stored; the peer is asked to force close and our "
-                                             + "output is swept once its commitment confirms");
+        var spendDetail = location is null
+                              ? null
+                              : await HandleLocationAsync(entry, fundingWatch, location, cancellationToken);
+        return new ChannelRestoreChannelResult(backedUp, ChannelRestoreAction.Restore,
+                                               SplicePrefix(splices, entry)
+                                             + (spendDetail
+                                             ?? "recovery channel stored; the peer is asked to force close and our "
+                                              + "output is swept once its commitment confirms"));
+    }
+
+    /// <summary>
+    /// The result detail's prefix for a channel followed through <paramref name="splices"/> (empty when none):
+    /// <c>FundingSpliced:</c> with the splices and the funding the channel was restored at.
+    /// </summary>
+    private static string SplicePrefix(IReadOnlyList<TxId> splices, ChannelBackupEntry current) =>
+        splices.Count == 0
+            ? string.Empty
+            : $"FundingSpliced: followed {splices.Count} splice(s) ({string.Join(", ", splices)}) to the funding "
+            + $"{current.FundingTxId}:{current.FundingOutputIndex} ({current.CapacitySat} sat, funding key index "
+            + $"{current.LocalFundingKeyIndex}); ";
+
+    /// <summary>
+    /// Follows <paramref name="entry"/>'s funding through the splices that spent it (NL-478): while the funding output
+    /// is spent and the spend is a splice of the channel (<see cref="IFundingSpendLocator.FollowSpliceAsync"/>), the
+    /// channel moves to the splice's funding output and that one is located. Ends at an unspent funding, a commitment
+    /// (or any other spend that is no splice), a chain error or a spend not found. Without a locator: the entry as it
+    /// is, no location.
+    /// </summary>
+    /// <param name="entry">The channel at the funding to start from.</param>
+    /// <param name="location">That funding's location when already known.</param>
+    /// <param name="cancellationToken">Stops the search.</param>
+    private async Task<(ChannelBackupEntry Current, FundingSpendLocation? Location, IReadOnlyList<TxId> Splices)>
+        FollowSplicesAsync(ChannelBackupEntry entry, FundingSpendLocation? location,
+                           CancellationToken cancellationToken)
+    {
+        if (_spendLocator is null)
+            return (entry, location, []);
+
+        var current = entry;
+        var splices = new List<TxId>();
+        location ??= await _spendLocator.LocateAsync(current, cancellationToken);
+        while (location is { Status: FundingSpendStatus.SpentFound, Spend: { } spend }
+            && splices.Count < SpliceSpendFollower.MaxSplices)
+        {
+            var keyIndex = current.KeyIndex;
+            var next = await _spendLocator.FollowSpliceAsync(
+                           current, spend, index => _fundingKeySource.GetFundingPubKey(keyIndex, index),
+                           cancellationToken);
+            if (next is null)
+                break;
+
+            _logger.LogWarning("The funding {FundingTxId}:{Index} of channel {ChannelId} was spliced by {SpliceTxId} at "
+                             + "height {Height}: following it to {NewFundingTxId}:{NewIndex}", current.FundingTxId,
+                               current.FundingOutputIndex, current.ChannelId, spend.SpendingTransaction.TxId,
+                               spend.BlockHeight, next.FundingTxId, next.FundingOutputIndex);
+            splices.Add(spend.SpendingTransaction.TxId);
+            current = next;
+            location = await _spendLocator.LocateAsync(current, cancellationToken);
+        }
+
+        return (current, location, splices);
+    }
+
+    /// <summary>
+    /// Stages the funding rows of a recovery channel whose current funding is a splice's, or whose backup named pending
+    /// splices (<see cref="RecoveryChannels.CreateFundings"/>), on the unit of work that added the channel: the channel
+    /// then reloads with the splice's keys and our rotated key index. Without a funding repository (a unit of work that
+    /// stores none) the channel is stored without them and the loss is logged.
+    /// </summary>
+    private async Task StageSpliceFundingsAsync(IUnitOfWork unitOfWork, ChannelBackupEntry entry)
+    {
+        if (!RecoveryChannels.HasSpliceFundings(entry))
+            return;
+
+        if (GetFundingRepository(unitOfWork) is not { } fundings)
+        {
+            _logger.LogError("Recovery channel {ChannelId} is at a spliced funding (key index {Index}) but this "
+                           + "database stores no channel fundings: it reloads with the original funding key",
+                             entry.ChannelId, entry.LocalFundingKeyIndex);
+            return;
+        }
+
+        var (current, pending) = RecoveryChannels.CreateFundings(entry);
+        await fundings.UpsertAsync(entry.ChannelId, current);
+        foreach (var funding in pending)
+            await fundings.UpsertAsync(entry.ChannelId, funding);
+    }
+
+    /// <summary>The unit of work's funding repository, or null when it stores none.</summary>
+    private static IChannelFundingDbRepository? GetFundingRepository(IUnitOfWork unitOfWork)
+    {
+        try
+        {
+            return unitOfWork.ChannelFundingDbRepository;
+        }
+        catch (NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Moves a stored recovery channel from <paramref name="from"/>'s funding to <paramref name="to"/>'s (a splice found
+    /// after the channel was made, NL-478): the lock's save (<c>ApplyLockAsync</c>: the channel row's funding columns and
+    /// short channel id, the new funding row as current and the old one replaced) with the watch of the new outpoint,
+    /// then the memory model under the channel's lock, the signer (registered and locked like a splice) and the chain
+    /// monitor's watch. False when it could not be saved (logged): the channel stays at the old funding.
+    /// </summary>
+    private async Task<bool> MoveRecoveryChannelAsync(ChannelBackupEntry from, ChannelBackupEntry to,
+                                                      CancellationToken cancellationToken)
+    {
+        var channelId = from.ChannelId;
+        var newWatch = new WatchedOutpointModel(to.FundingTxId, to.FundingOutputIndex, channelId,
+                                                WatchedOutpointPurpose.FundingOutput);
+        var locked = new ChannelFunding(to.FundingTxId, to.FundingOutputIndex, to.CapacitySat, to.LocalFundingPubKey,
+                                        to.RemoteFundingPubKey, to.LocalFundingKeyIndex, 0, 0,
+                                        ChannelFundingKind.Splice, ChannelFundingStatus.Current,
+                                        ConfirmedHeight: to.FundingHeight, ShortChannelId: to.ShortChannelId);
+        var lockHandle = _channelLockProvider is null
+                             ? null
+                             : await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
+        try
+        {
+            using (var scope = _serviceScopeFactory.CreateScope())
+            {
+                var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                var stored = await unitOfWork.ChannelDbRepository.GetByIdAsync(channelId);
+                if (stored is null || !RecoveryChannels.IsRecoveryChannel(stored))
+                {
+                    _logger.LogWarning("Channel {ChannelId} is no longer a recovery channel; it is not moved to the "
+                                     + "splice {FundingTxId}", channelId, to.FundingTxId);
+                    return false;
+                }
+
+                if (GetFundingRepository(unitOfWork) is not { } fundings)
+                {
+                    _logger.LogError("Recovery channel {ChannelId} was spliced to {FundingTxId}:{Index}, but this "
+                                   + "database stores no channel fundings: it can't be moved (sweep by hand if the peer "
+                                   + "closes it there)", channelId, to.FundingTxId, to.FundingOutputIndex);
+                    return false;
+                }
+
+                var rows = await fundings.GetByChannelIdAsync(channelId);
+                if (rows.All(f => f.FundingTxId != to.FundingTxId))
+                    await fundings.UpsertAsync(channelId, locked with { Status = ChannelFundingStatus.Pending });
+
+                var set = await fundings.GetFundingSetAsync(channelId);
+                var retired = new List<ChannelFunding>();
+                if (set is not null)
+                {
+                    retired.Add(set.Current with { Status = ChannelFundingStatus.Replaced });
+                    retired.AddRange(set.Pending.Where(f => f.FundingTxId != to.FundingTxId)
+                                        .Select(f => f with { Status = ChannelFundingStatus.Discarded }));
+                }
+
+                await fundings.ApplyLockAsync(channelId, locked, retired);
+                if (await unitOfWork.WatchedOutpointDbRepository.GetAsync(newWatch.TransactionId,
+                                                                          newWatch.OutputIndex) is null)
+                    unitOfWork.WatchedOutpointDbRepository.Add(newWatch);
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            if (_channelMemoryRepository is not null && _channelMemoryRepository.TryGetChannel(channelId, out var live))
+            {
+                live.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(to.CapacitySat),
+                                                                to.LocalFundingPubKey, to.RemoteFundingPubKey,
+                                                                to.FundingTxId, to.FundingOutputIndex));
+                if (to.ShortChannelId is { } shortChannelId)
+                    live.ShortChannelId = shortChannelId;
+                live.FundingCreatedAtBlockHeight = to.FundingHeight;
+            }
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogError(e, "Could not move recovery channel {ChannelId} to its splice {FundingTxId}:{Index}",
+                             channelId, to.FundingTxId, to.FundingOutputIndex);
+            return false;
+        }
+        finally
+        {
+            lockHandle?.Dispose();
+        }
+
+        // The signer follows the lock (it may also load the channel from the database at its new funding already)
+        try
+        {
+            _signer.RegisterFunding(channelId, locked with { Status = ChannelFundingStatus.Pending });
+            _signer.LockFunding(channelId, to.FundingTxId, to.ShortChannelId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "The signer did not take the splice {FundingTxId} of recovery channel {ChannelId} "
+                              + "(it loads the channel from the database)", to.FundingTxId, channelId);
+        }
+
+        _outpointWatcher.TrackWatchedOutpoint(newWatch);
+        _logger.LogWarning("Recovery channel {ChannelId} moved to its splice {FundingTxId}:{Index} ({Capacity} sat)",
+                           channelId, to.FundingTxId, to.FundingOutputIndex, to.CapacitySat);
+        return true;
     }
 
     /// <summary>
@@ -477,7 +700,30 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         if (_spendLocator is null)
             return null;
 
-        var location = await _spendLocator.LocateAsync(entry, cancellationToken);
+        var (current, location, splices) = await FollowSplicesAsync(entry, null, cancellationToken);
+        if (splices.Count == 0)
+            return await HandleLocationAsync(entry, fundingWatch, location!, cancellationToken);
+
+        if (!await MoveRecoveryChannelAsync(entry, current, cancellationToken))
+            return $"FundingSpliced: the funding was spliced by {splices[0]}, but the recovery channel could not be "
+                 + "moved to the splice: run restorechanbackup again";
+
+        var moved = new WatchedOutpointModel(current.FundingTxId, current.FundingOutputIndex, current.ChannelId,
+                                             WatchedOutpointPurpose.FundingOutput);
+        return SplicePrefix(splices, current)
+             + (await HandleLocationAsync(current, moved, location!, cancellationToken)
+             ?? "the peer is asked to force close and our output is swept once its commitment confirms");
+    }
+
+    /// <summary>
+    /// Acts on where the funding output of <paramref name="entry"/> stands: a spend found is handed to the on-chain
+    /// watcher, an older one searched in the background. Returns the channel's result detail when the funding output is
+    /// not simply unspent (null otherwise).
+    /// </summary>
+    private async Task<string?> HandleLocationAsync(ChannelBackupEntry entry, WatchedOutpointModel fundingWatch,
+                                                    FundingSpendLocation location,
+                                                    CancellationToken cancellationToken)
+    {
         switch (location.Status)
         {
             case FundingSpendStatus.SpentFound when location.Spend is { } spend:
@@ -582,6 +828,34 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
         try
         {
             var location = await _spendLocator!.RescanAsync(entry, belowHeight, cancellationToken);
+            for (var hops = 0;
+                 location is { Status: FundingSpendStatus.SpentFound } && hops < SpliceSpendFollower.MaxSplices;
+                 hops++)
+            {
+                // A splice of the channel found below the window: the channel moves to it, and its funding is
+                // searched in turn (NL-478)
+                var (current, followed, splices) = await FollowSplicesAsync(entry, location, cancellationToken);
+                if (splices.Count == 0)
+                    break;
+
+                if (!await MoveRecoveryChannelAsync(entry, current, cancellationToken))
+                {
+                    _logger.LogError("Recovery channel {ChannelId} was spliced by {SpliceTxId} but could not be moved "
+                                   + "to the splice; run restorechanbackup again", entry.ChannelId, splices[0]);
+                    return;
+                }
+
+                entry = current;
+                fundingWatch = new WatchedOutpointModel(current.FundingTxId, current.FundingOutputIndex,
+                                                        current.ChannelId, WatchedOutpointPurpose.FundingOutput);
+                location = followed is { HasOlderBlocksToSearch: true }
+                               ? await _spendLocator.RescanAsync(current, followed.SearchedFromHeight,
+                                                                 cancellationToken)
+                               : followed;
+                if (location is null or { Status: not FundingSpendStatus.SpentFound })
+                    break;
+            }
+
             switch (location?.Status)
             {
                 case FundingSpendStatus.SpentFound when location.Spend is { } spend:

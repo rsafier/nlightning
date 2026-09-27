@@ -3,6 +3,8 @@ namespace NLightning.Application.Channels.Backup;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
@@ -60,21 +62,45 @@ public static class RecoveryChannels
     }
 
     /// <summary>
-    /// The recovery channel of <paramref name="entry"/>: our keys from <paramref name="localBasepoints"/> (re-derived
-    /// from the entry's key index, never stored in the backup), the peer's basepoints, parameters, funding outpoint and
-    /// short channel id from the backup. Balances are unknown: all of it is shown on the peer's side.
+    /// The recovery channel of <paramref name="entry"/> for a channel never spliced (its current funding key is the
+    /// basepoints' funding key, <see cref="ChannelBackupEntry.LocalFundingKeyIndex"/> 0); see
+    /// <see cref="Create(ChannelBackupEntry, ChannelBasepoints, CompactPubKey, ISha256)"/>.
     /// </summary>
-    /// <param name="entry">The backed-up channel.</param>
-    /// <param name="localBasepoints">Our basepoints of <see cref="ChannelBackupEntry.KeyIndex"/>; they must match the
-    /// entry's funding key and payment basepoint.</param>
-    /// <param name="sha256">For the commitment number obscuring factor.</param>
-    /// <exception cref="ArgumentException">The basepoints are not the ones the entry recorded.</exception>
+    /// <exception cref="ArgumentException">The basepoints are not the ones the entry recorded, or the entry's funding
+    /// key is a rotated one (index above 0: use the overload with the derived key).</exception>
     public static ChannelModel Create(ChannelBackupEntry entry, ChannelBasepoints localBasepoints, ISha256 sha256)
     {
         ArgumentNullException.ThrowIfNull(entry);
+        if (entry.LocalFundingKeyIndex != 0)
+            throw new ArgumentException($"Channel {entry.ChannelId} was spliced: its funding key index "
+                                      + $"{entry.LocalFundingKeyIndex} must be derived", nameof(entry));
+
+        return Create(entry, localBasepoints, localBasepoints.FundingPubKey, sha256);
+    }
+
+    /// <summary>
+    /// The recovery channel of <paramref name="entry"/>: our keys from <paramref name="localBasepoints"/> (re-derived
+    /// from the entry's key index, never stored in the backup), the peer's basepoints, parameters, funding outpoint and
+    /// short channel id from the backup. The funding output is the entry's current funding (a spliced channel's, with
+    /// our rotated key <paramref name="localFundingPubKey"/>, NL-478); the key sets keep the basepoints. Balances are
+    /// unknown: all of it is shown on the peer's side. A spliced channel's funding rows come from
+    /// <see cref="CreateFundings"/>.
+    /// </summary>
+    /// <param name="entry">The backed-up channel.</param>
+    /// <param name="localBasepoints">Our basepoints of <see cref="ChannelBackupEntry.KeyIndex"/>; they must match the
+    /// entry's payment basepoint.</param>
+    /// <param name="localFundingPubKey">Our funding key of the entry's current funding, re-derived from the key index
+    /// and <see cref="ChannelBackupEntry.LocalFundingKeyIndex"/>; it must be the entry's.</param>
+    /// <param name="sha256">For the commitment number obscuring factor.</param>
+    /// <exception cref="ArgumentException">The keys are not the ones the entry recorded.</exception>
+    public static ChannelModel Create(ChannelBackupEntry entry, ChannelBasepoints localBasepoints,
+                                      CompactPubKey localFundingPubKey, ISha256 sha256)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
         ArgumentNullException.ThrowIfNull(sha256);
-        if (localBasepoints.FundingPubKey != entry.LocalFundingPubKey
-         || localBasepoints.PaymentBasepoint != entry.LocalPaymentBasepoint)
+        if (localFundingPubKey != entry.LocalFundingPubKey
+         || localBasepoints.PaymentBasepoint != entry.LocalPaymentBasepoint
+         || (entry.LocalFundingKeyIndex == 0 && localBasepoints.FundingPubKey != entry.LocalFundingPubKey))
             throw new ArgumentException($"Key index {entry.KeyIndex} does not derive the keys of channel "
                                       + $"{entry.ChannelId}", nameof(localBasepoints));
 
@@ -98,9 +124,8 @@ public static class RecoveryChannels
         };
 
         var capacity = LightningMoney.Satoshis(entry.CapacitySat);
-        var fundingOutput = new FundingOutputInfo(capacity, localKeySet.FundingCompactPubKey,
-                                                  remoteKeySet.FundingCompactPubKey, entry.FundingTxId,
-                                                  entry.FundingOutputIndex);
+        var fundingOutput = new FundingOutputInfo(capacity, localFundingPubKey, entry.RemoteFundingPubKey,
+                                                  entry.FundingTxId, entry.FundingOutputIndex);
 
         // BOLT 3: the obscuring factor is SHA256(opener payment_basepoint || accepter payment_basepoint)
         var (opener, accepter) = entry.IsInitiator
@@ -119,6 +144,48 @@ public static class RecoveryChannels
 
         channel.MarkDataLossDetected();
         return channel;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="entry"/>'s current funding is a splice's (our funding key rotated, index above 0) or the
+    /// entry names pending splices: its recovery channel then needs <see cref="CreateFundings"/> stored with it, so the
+    /// channel reloads with that funding's keys and key index (the signer, the splice-aware watcher).
+    /// </summary>
+    public static bool HasSpliceFundings(ChannelBackupEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        return entry.LocalFundingKeyIndex != 0 || entry.PendingFundings.Count > 0;
+    }
+
+    /// <summary>
+    /// The funding rows of a recovery channel restored from <paramref name="entry"/> (splicing plan §3.3, lane SP2-E):
+    /// its current funding (<see cref="ChannelFundingKind.Splice"/> when our key rotated, so the channel reloads with
+    /// its keys, else <see cref="ChannelFundingKind.Initial"/>) and one <see cref="ChannelFundingStatus.Pending"/> row
+    /// per pending splice of the backup, whose balance deltas put the whole capacity change on the peer's side
+    /// (balances are unknown, as for the channel). Nothing signs for them: the rows only let the channel be followed to
+    /// the splice when it confirms.
+    /// </summary>
+    public static (ChannelFunding Current, IReadOnlyList<ChannelFunding> Pending) CreateFundings(
+        ChannelBackupEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        var current = new ChannelFunding(entry.FundingTxId, entry.FundingOutputIndex, entry.CapacitySat,
+                                         entry.LocalFundingPubKey, entry.RemoteFundingPubKey,
+                                         entry.LocalFundingKeyIndex, 0, 0,
+                                         entry.LocalFundingKeyIndex == 0
+                                             ? ChannelFundingKind.Initial
+                                             : ChannelFundingKind.Splice, ChannelFundingStatus.Current,
+                                         ShortChannelId: entry.ShortChannelId);
+        var pending = entry.PendingFundings
+                           .Where(f => f.FundingTxId != entry.FundingTxId)
+                           .Select(f => new ChannelFunding(f.FundingTxId, f.FundingOutputIndex, f.CapacitySat,
+                                                           f.LocalFundingPubKey, f.RemoteFundingPubKey,
+                                                           f.LocalFundingKeyIndex, 0,
+                                                           checked(((long)f.CapacitySat - (long)entry.CapacitySat)
+                                                                 * 1_000),
+                                                           ChannelFundingKind.Splice, ChannelFundingStatus.Pending))
+                           .ToList();
+        return (current, pending);
     }
 
     /// <summary>
