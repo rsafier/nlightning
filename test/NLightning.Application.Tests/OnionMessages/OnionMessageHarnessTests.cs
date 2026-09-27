@@ -155,7 +155,10 @@ public sealed class OnionMessageHarnessTests
         var handler = new RecordingHandler(RequestType);
         using var alice = new OnionMessageTestNode("alice", 1);
         using var bob = new OnionMessageTestNode("bob", 2, rateLimiter: new MessageCountRateLimiter(20, clock));
-        using var carol = new OnionMessageTestNode("carol", 3, [handler]);
+        // Only bob limits: without its own limiter carol would get the production one (a burst of 20 per peer on the
+        // system clock), which drops the 21st message from bob when the test runs fast enough (NL-449)
+        using var carol = new OnionMessageTestNode("carol", 3, [handler],
+                                                   rateLimiter: new MessageCountRateLimiter(100, clock));
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
         var destination = OnionMessageDestination.ToBlindedPath(
@@ -177,6 +180,7 @@ public sealed class OnionMessageHarnessTests
         // Assert
         Assert.Equal(5, bob.Metrics.GetDropped(OnionMessageDropReasons.RateLimited));
         Assert.Equal(21, bob.Metrics.Received);
+        Assert.Equal(0, carol.Metrics.GetDropped(OnionMessageDropReasons.RateLimited));
         Assert.Equal(Enumerable.Range(0, 20).Select(i => (byte)i).Append((byte)99),
                      handler.Received.Select(m => m.Contents.Records[0].Value.Span[0]));
     }
