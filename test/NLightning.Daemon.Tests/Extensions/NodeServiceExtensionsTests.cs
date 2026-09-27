@@ -18,6 +18,8 @@ using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Services;
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
+using Application.Node.Managers;
+using Application.OnionMessages;
 using Application.Payments.Invoices;
 using Application.Payments.Routing;
 using Application.Payments.Routing.Interfaces;
@@ -29,6 +31,7 @@ using Daemon.Interfaces;
 using Daemon.Ipc.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
@@ -44,6 +47,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Gossip;
 using Infrastructure.Bitcoin.Onion;
@@ -284,6 +288,36 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IPeerStorageService>());
         Assert.Equal(FeatureSupport.Optional,
                      provider.GetRequiredService<IOptions<NodeOptions>>().Value.Features.OptionProvideStorage);
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheWaveM6OnionMessagesAndWithdrawAreWired()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("OnionMessages:MaxOutboxPerPeer", "7"),
+                                                        ("OnionMessages:PeerMessagesPerSecond", "3"),
+                                                        ("OnionMessages:PeerBurstMessages", "4")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var peerManager = provider.GetRequiredService<IPeerManager>();
+        var outbox = provider.GetRequiredService<IPeerOnionMessageOutbox>();
+        var limiter = provider.GetRequiredService<IOnionMessageRateLimiter>();
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+
+        // Assert: the outbox is the peer manager, its cap and the limiter follow the OnionMessages section
+        Assert.Same(peerManager, outbox);
+        Assert.Equal(7, Assert.IsType<PeerManager>(peerManager).MaxOutboxOnionMessagesPerPeer);
+        var limits = Assert.IsType<OnionMessageRateLimiter>(limiter).Limits;
+        Assert.Equal(3, limits.PeerMessagesPerSecond);
+        Assert.Equal(4, limits.PeerBurstMessages);
+        Assert.NotNull(provider.GetRequiredService<IOnionMessageService>());
+        Assert.NotNull(provider.GetRequiredService<IWalletSpendService>());
+        Assert.Single(commands, c => c == ClientCommand.Withdraw);
     }
 
     [Fact]
