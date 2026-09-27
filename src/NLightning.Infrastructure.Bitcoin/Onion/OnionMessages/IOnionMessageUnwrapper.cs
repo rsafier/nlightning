@@ -15,8 +15,8 @@ using Domain.Protocol.Messages;
 /// without <c>encrypted_recipient_data</c> or with more than one payload field (types 64 and up): all
 /// <see cref="OnionMessageUnwrapStatus.Ignored"/>. Reply matching (<c>path_id</c> against our reply paths), rate
 /// limits and peer lookup are the caller's.</para>
-/// <para>Never throws for a bad message; only a missing key manager (<see cref="UnwrapAsLocalNode"/>) throws.
-/// Stateless and thread-safe.</para>
+/// <para>Never throws for a bad message; only local faults throw: a missing key manager
+/// (<see cref="UnwrapAsLocalNode"/>) or an invalid node key (<see cref="Unwrap"/>). Stateless and thread-safe.</para>
 /// </remarks>
 public interface IOnionMessageUnwrapper
 {
@@ -29,5 +29,6 @@ public interface IOnionMessageUnwrapper
     /// <summary>
     /// Unwraps a message with the given node key (tests and tools).
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="nodeKey"/> is not a valid private key.</exception>
     OnionMessageUnwrapResult Unwrap(OnionMessageMessage message, PrivKey nodeKey);
 }

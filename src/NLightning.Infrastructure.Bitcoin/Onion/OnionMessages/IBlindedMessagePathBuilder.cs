@@ -10,7 +10,8 @@ using Domain.Protocol.Onion.Models;
 /// <remarks>
 /// <para>Every hop's <c>encrypted_data_tlv</c> is padded to the same length (BOLT 4 route blinding: the creator
 /// SHOULD make all hops equal in size) with a <c>padding</c> record, which the builder owns: any padding given by the
-/// caller is replaced. The longest hop gets no padding record.</para>
+/// caller is replaced. The longest hop gets no padding record unless the target had to grow (a difference
+/// of 1, 255 or 256 bytes cannot be filled exactly), in which case every hop gets one.</para>
 /// <para>Writer rules enforced: no <c>payment_relay</c> or <c>payment_constraints</c> anywhere, every non-final hop
 /// names its next hop (<c>next_node_id</c> or <c>short_channel_id</c>) and carries no <c>path_id</c>.</para>
 /// <para>Stateless and thread-safe.</para>

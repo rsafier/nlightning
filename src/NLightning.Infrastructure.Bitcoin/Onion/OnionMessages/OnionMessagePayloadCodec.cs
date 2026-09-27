@@ -34,7 +34,7 @@ internal static class OnionMessagePayloadCodec
     /// The <c>onionmsg_tlv</c> of the final hop: <c>reply_path</c> (if any), <c>encrypted_recipient_data</c> and the
     /// contents, in ascending type order.
     /// </summary>
-    /// <exception cref="ArgumentException">The contents carry type 2 or 4, or a type twice.</exception>
+    /// <exception cref="ArgumentException">The contents carry type 2 or 4, an even type other than 64, 66 and 68, or a type twice.</exception>
     public static byte[] EncodeFinal(ReadOnlyMemory<byte> encryptedRecipientData, WireBlindedPath? replyPath,
                                      OnionMessageContents contents)
     {
@@ -54,6 +54,15 @@ internal static class OnionMessagePayloadCodec
                             or OnionMessageConstants.EncryptedRecipientDataType)
                 throw new ArgumentException(
                     $"onionmsg_tlv type {record.Type} is not part of the contents.", nameof(contents));
+
+            // Every BOLT 4 reader ignores a message with an unknown even type: only the BOLT 12 fields are known
+            if (record.Type % 2 == 0 && record.Type is not (OnionMessageConstants.InvoiceRequestType
+                                                           or OnionMessageConstants.InvoiceType
+                                                           or OnionMessageConstants.InvoiceErrorType))
+                throw new ArgumentException(
+                    $"onionmsg_tlv type {record.Type} is an unknown even type every reader ignores.",
+                    nameof(contents));
+
             records.Add((record.Type, record.Value.ToArray()));
         }
 

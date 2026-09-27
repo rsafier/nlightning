@@ -1,8 +1,12 @@
 namespace NLightning.Infrastructure.Bitcoin.Tests.Onion.OnionMessages;
 
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Constants;
 using Domain.Protocol.Payloads;
@@ -313,6 +317,108 @@ public class OnionMessageUnwrapperTests
         Assert.Throws<InvalidOperationException>(() => _kit.Unwrapper.UnwrapAsLocalNode(message));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Given_AValidOnionWithRandomEncryptedRecipientData_When_Unwrapping_Then_IgnoredWithoutThrowing(
+        bool finalHop)
+    {
+        // Arrange: the sender made the onion (the Sphinx HMAC verifies) but the hop's data is 40 random bytes
+        var garbage = new byte[40];
+        Random.Shared.NextBytes(garbage);
+        var message = finalHop
+                          ? _kit.BuildRaw([s_pathIdData], (_, _) => Erd(garbage))
+                          : _kit.BuildRaw([_kit.NextNodeData(1), s_pathIdData],
+                                          (i, erd) => i == 0 ? Erd(garbage) : Erd(erd));
+
+        // Act
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        AssertIgnored(result, "InvalidOnionBlinding");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(15)]
+    public void Given_AValidOnionWithEncryptedRecipientDataShorterThanTheTag_When_Unwrapping_Then_Ignored(int length)
+    {
+        // Arrange: shorter than the 16-byte ChaCha20-Poly1305 tag
+        var message = _kit.BuildRaw([s_pathIdData], (_, _) => Erd(new byte[length]));
+
+        // Act
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        AssertIgnored(result, "InvalidOnionBlinding");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Given_AValidOnionWithOneFlippedBitInTheEncryptedRecipientData_When_Unwrapping_Then_Ignored(int index)
+    {
+        // Arrange: the correctly sized blob with one bit of the ciphertext (first byte) or the tag (last byte) flipped
+        var message = _kit.BuildRaw([s_pathIdData], (_, erd) =>
+        {
+            var tampered = erd.ToArray();
+            tampered[index < 0 ? tampered.Length + index : index] ^= 0x01;
+            return Erd(tampered);
+        });
+
+        // Act
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        AssertIgnored(result, "InvalidOnionBlinding");
+    }
+
+    [Fact]
+    public void Given_EncryptedDataThatDecryptsToAnUnknownEvenRecordOnANonFinalHop_When_Unwrapping_Then_Ignored()
+    {
+        // Arrange: authentic ciphertext (the path creator's) whose plaintext carries type 16 besides next_node_id
+        byte[] data = [.. _kit.NextNodeData(1), 0x10, 0x00];
+        var message = _kit.BuildRaw([data, s_pathIdData], (_, erd) => Erd(erd));
+
+        // Act
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        AssertIgnored(result, "InvalidOnionBlinding");
+    }
+
+    [Fact]
+    public void Given_AnInvalidNodeKey_When_Unwrapping_Then_ThrowsInsteadOfIgnoring()
+    {
+        // Arrange: a zero private key is a local fault, not the peer's
+        var message = _kit.BuildRaw([s_pathIdData], (_, erd) => Erd(erd));
+        var zeroKey = new PrivKey(new byte[32]);
+
+        // Act & Assert
+        Assert.ThrowsAny<ArgumentException>(() => _kit.Unwrapper.Unwrap(message, zeroKey));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_AMessage_When_Unwrapped_Then_ThePeelSharedSecretsAreZeroed(bool valid)
+    {
+        // Arrange
+        var sphinx = new CapturingSphinxService(_kit.Sphinx);
+        var unwrapper = new OnionMessageUnwrapper(sphinx, _kit.RouteBlinding);
+        var message = _kit.BuildRaw([s_pathIdData], (_, erd) => valid ? Erd(erd) : Erd(new byte[15]));
+
+        // Act
+        var result = unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        Assert.Equal(valid ? OnionMessageUnwrapStatus.Deliver : OnionMessageUnwrapStatus.Ignored, result.Status);
+        var peeled = sphinx.LastPeeled!;
+        Assert.All((byte[])peeled.SharedSecret, b => Assert.Equal(0, b));
+        Assert.All((byte[])peeled.PathKeySharedSecret!.Value, b => Assert.Equal(0, b));
+    }
+
     private static byte[] Erd(byte[] encryptedRecipientData) =>
         OnionMessageTestKit.Tlv(OnionMessageConstants.EncryptedRecipientDataType, encryptedRecipientData);
 
@@ -322,5 +428,30 @@ public class OnionMessageUnwrapperTests
         Assert.Contains(reasonFragment, result.IgnoreReason);
         Assert.Null(result.NextMessage);
         Assert.Null(result.Payload);
+    }
+
+    private sealed class CapturingSphinxService(ISphinxService inner) : ISphinxService
+    {
+        public PeeledOnion? LastPeeled { get; private set; }
+
+        public OnionPacket Construct(IReadOnlyList<OnionHop> hops, PrivKey sessionKey, ReadOnlySpan<byte> associatedData,
+                                     int hopPayloadsLength, OnionPacketKind packetKind) =>
+            inner.Construct(hops, sessionKey, associatedData, hopPayloadsLength, packetKind);
+
+        public ConstructedOnion ConstructWithSharedSecrets(IReadOnlyList<OnionHop> hops, PrivKey sessionKey,
+                                                           ReadOnlySpan<byte> associatedData, int hopPayloadsLength,
+                                                           OnionPacketKind packetKind) =>
+            inner.ConstructWithSharedSecrets(hops, sessionKey, associatedData, hopPayloadsLength, packetKind);
+
+        public IReadOnlyList<Secret> ComputeSharedSecrets(IReadOnlyList<CompactPubKey> nodeIds, PrivKey sessionKey) =>
+            inner.ComputeSharedSecrets(nodeIds, sessionKey);
+
+        public PeeledOnion PeelAsLocalNode(OnionPacket packet, ReadOnlySpan<byte> associatedData, CompactPubKey? pathKey,
+                                           OnionPacketKind packetKind) =>
+            LastPeeled = inner.PeelAsLocalNode(packet, associatedData, pathKey, packetKind);
+
+        public PeeledOnion Peel(OnionPacket packet, ReadOnlySpan<byte> associatedData, PrivKey nodeKey,
+                                CompactPubKey? pathKey, OnionPacketKind packetKind) =>
+            LastPeeled = inner.Peel(packet, associatedData, nodeKey, pathKey, packetKind);
     }
 }

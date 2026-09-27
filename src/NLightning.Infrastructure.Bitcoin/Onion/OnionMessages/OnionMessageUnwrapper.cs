@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+
 namespace NLightning.Infrastructure.Bitcoin.Onion.OnionMessages;
 
 using Domain.Crypto.ValueObjects;
@@ -46,15 +48,34 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
         ArgumentNullException.ThrowIfNull(message);
 
         var pathKey = message.Payload.PathKey;
+
+        // Only the parse of the peer's packet bytes is under the ArgumentException catch: an invalid node key is a
+        // local fault and must surface from the peel, not drop every message as "ignored".
+        OnionPacket packet;
+        try
+        {
+            var raw = message.Payload.OnionMessagePacket.Span;
+            packet = new OnionPacket(raw, raw.Length - OnionConstants.PacketOverheadLength);
+        }
+        catch (ArgumentException e)
+        {
+            return OnionMessageUnwrapResult.Ignore(e.Message);
+        }
+
         PeeledOnion peeled;
+        try
+        {
+            peeled = peel(packet, pathKey);
+        }
+        catch (OnionException e)
+        {
+            return OnionMessageUnwrapResult.Ignore($"{e.FailureCode}: {e.Message}");
+        }
+
         BlindedHopUnblinding unblinding;
         OnionMessageTlvs? tlvs;
         try
         {
-            var raw = message.Payload.OnionMessagePacket.Span;
-            var packet = new OnionPacket(raw, raw.Length - OnionConstants.PacketOverheadLength);
-            peeled = peel(packet, pathKey);
-
             if (!OnionMessagePayloadCodec.TryDecode(peeled.Payload.Span, out tlvs, out var reason))
                 return OnionMessageUnwrapResult.Ignore(reason!);
 
@@ -68,9 +89,10 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
         {
             return OnionMessageUnwrapResult.Ignore($"{e.FailureCode}: {e.Message}");
         }
-        catch (ArgumentException e)
+        finally
         {
-            return OnionMessageUnwrapResult.Ignore(e.Message);
+            // An onion message needs neither shared secret once unblinded (or refused): wipe them now
+            ZeroSecrets(peeled);
         }
 
         var data = unblinding.RecipientData;
@@ -80,6 +102,13 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
             return OnionMessageUnwrapResult.Ignore("allowed_features has an unknown bit");
 
         return peeled.IsFinal ? UnwrapFinal(data, tlvs) : UnwrapNonFinal(data, tlvs, peeled, unblinding);
+    }
+
+    private static void ZeroSecrets(PeeledOnion peeled)
+    {
+        CryptographicOperations.ZeroMemory((byte[])peeled.SharedSecret);
+        if (peeled.PathKeySharedSecret is { } pathKeySharedSecret)
+            CryptographicOperations.ZeroMemory((byte[])pathKeySharedSecret);
     }
 
     private static OnionMessageUnwrapResult UnwrapNonFinal(BlindedRecipientData data, OnionMessageTlvs tlvs,
