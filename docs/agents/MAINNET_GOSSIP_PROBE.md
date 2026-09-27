@@ -162,7 +162,7 @@ reproduce here: the WAL stays at 5.8 MiB and the database file is checkpointed; 
 
 ## What remains for mainnet gossip (D12)
 
-1. **Chain verification.** `Gossip:AssumeChannelValid` is a probe/light-node mode: the verify run found no invalid
+1. **Chain verification** (measured since against an unpruned node: see "Verified run (real bitcoind)" below). `Gossip:AssumeChannelValid` is a probe/light-node mode: the verify run found no invalid
    channel in 300, but anyone can inject channels, their capacity is estimated and closed channels are only pruned
    when stale. Full D3 verification needs `getblock <hash> 1` for every channel's funding block (heights from 2018)
    plus `gettxout`:
@@ -187,3 +187,164 @@ reproduce here: the WAL stays at 5.8 MiB and the database file is checkpointed; 
    `AssumeChannelValid` serves nothing), still need a run with a verifying node.
 5. The 24 h Mutinynet soak (NL-376) and a long mainnet run (days) for slow growth: this hour showed a flat RSS and
    a bounded WAL.
+
+## Verified run (real bitcoind)
+
+Status 2026-09-27, branch `wip/fafo-mainnet-gossip-verified` (from `wip/fafo-mainnet-gossip`). The same probe and
+peers, but with `Gossip:AssumeChannelValid` **off**: every `channel_announcement` goes through the product's D3 path
+against the owner's **unpruned mainnet bitcoind** on the LAN (Bitcoin Core; no `txindex` needed). New issue IDs
+start at NL-410 (NL-388..NL-399 may be taken by another wave); `docs/agents/ISSUES.md` is not edited here either.
+
+### Method
+
+- **Harness:** `tools/NLightning.GossipProbe run --chain rpc` (README there). The node is built as before, but the
+  chain side is the product's: `BitcoinChainService` (NBitcoin `RPCClient`) and `FundingOutputLookup`
+  (`getblockcount`, `getblockhash`, `getblock <hash> 1`, `gettxout`; LRU of 256 txid lists), with
+  `Gossip:ChainLookupConcurrency` = **3** for these runs (with the block follower and the per-sample
+  `getblockchaininfo`, at most 4-5 RPCs in flight) and the default `ChainLookupsPerSecond` = 50 (never binding).
+  The probe only decorates the two services to count and time every call (`lookups.csv`, `summary.json` → `chain`)
+  and counts every HTTP request of the process through `System.Net.Http`'s meter (the RPCs; the peers are plain TCP).
+  `IBlockchainMonitor` is `RpcBlockFollower`, a poller: every 15 s it reads the blocks connected since the start (at
+  most 10 per poll, `getblock` verbosity 0, one at a time, no history) and raises `OnBlockInputs`, so the
+  `GraphPruner`'s spend detection runs on real blocks; `LastProcessedBlockHeight` (the range sync's end) is
+  bitcoind's header height, so a bitcoind in IBD still gets the whole graph offered.
+- **RPCs:** read-only only (`getblockchaininfo`, `getblockcount`, `getblockhash`, `getblock` 0/1, `gettxout`); no
+  wallet call, no rescan, nothing published (the follower throws on any publish). The credentials go from the mode-600
+  env file into the node's in-memory configuration only.
+- **NL-276 check:** a host `dotnet` process reached the LAN bitcoind (`GossipProbe chaininfo`: `getblockchaininfo`
+  in 226 ms, `getblock` of a 5,860-tx block in 148 ms), so no container was needed on this Mac.
+- **Runs** (raw data in `~/.nltg-gossip-probe/verified/runs/<UTC>-<label>/`: `probe.log`, `samples.csv`,
+  `peers.csv`, `range-replies.csv`, `lookups.csv`, `summary.json`; console output in
+  `~/.nltg-gossip-probe/verified/console-*.txt`; the smoke run in `/tmp/nltg-verified/smoke/runs/`. The
+  AssumeChannelValid database `~/.nltg-gossip-probe/probe.db` is untouched, for comparison):
+
+| Run | Binary | Duration | bitcoind | Purpose |
+|---|---|---|---|---|
+| `20260926T233109Z-smoke` (fresh `/tmp` database) | before NL-410..412 | 5.1 min | **in IBD**: blocks 966,116 → 968,655 of 968,752 headers (about 500 blocks/min); IBD ended at the stop | IBD behaviour, SCIDs above the tip |
+| `20260926T233806Z-verified-run1` (fresh database) | before NL-410..412 | 60.1 min (plateau from 19 min) | synced (968,754 → 968,763) | the main measurement |
+| `20260927T003924Z-verified-restart` (run1's database) | NL-410..412 fixed | 8.1 min | synced | reload of a verified graph, deltas, the fixes |
+
+### Results
+
+**Verified graph vs the AssumeChannelValid run**
+
+| | AssumeChannelValid run1 (2026-09-26 21:47 UTC) | Verified run1 (23:38) | Verified, after the restart (00:47) |
+|---|---|---|---|
+| Channels | 40,457 (all `Assumed`) | **39,663** (all `Verified`, capacity from the chain) | 40,347 |
+| … with two / one / no policy | 23,922 / 6,767 / 9,778 | 23,811 / 6,761 / 9,091 | 23,813 / 6,762 / 9,772 |
+| Nodes with a `node_announcement` | 9,938 | 9,926 | 12,499 |
+| Policies | 54,590 | 54,383 | 54,388 |
+| Capacity | 3,341 BTC (estimate from `htlc_maximum_msat`) | **3,747.6 BTC** (funding outputs) | 3,754.6 BTC |
+
+- The routable part (channels with a policy) matches within 0.4 %: 30,572 verified vs 30,689 assumed, two hours
+  apart. The 685 channels the restart added are all without a policy and first announced by the two CLN peers:
+  NL-406 announcements that run1 dropped at a full per-peer queue (CLN's unsolicited flood, below) and that no other
+  peer serves; the restart got them from CLN again.
+- **Rejected by the chain: only spent outputs.** `OutputSpentOrMissing` 135 lookups (124 distinct channels, SCID
+  heights 832,652..968,734, median 967,218: mostly closed in the last ten days and still served by the peers) in
+  run1, 143 in the restart (the duplicate filter is memory only, so every restart looks the peers' closed channels
+  up again). **0 `ScriptMismatch`, 0 `AmountMismatch`, 0 `TransactionIndexOutOfRange`, 0 `BlockUnavailable`**: no
+  mainnet peer relayed an announcement that contradicts the chain.
+- **Above the tip / IBD** (smoke run): 4 lookups were `BlockNotFound` (SCIDs at 968,134..968,539 while bitcoind was
+  at 966,xxx): deferred, never scored or rejected (G-A lane A3's rule holds in the product: `BlockNotFound` is
+  transient, `GossipIngress` defers it, `FundingOutputLookupTests` covers it). They were not looked up again within
+  the 5 minutes: a retry goes to the back of the ingress queue, which held 4,000-5,000 messages at 11 lookups/s
+  (about 7 minutes), so the effective retry delay is 30 s plus the queue. 26 lookups (0.8 %) ended `ChainMoved`:
+  `BitcoinChainService.GetUnspentOutputAsync` derives the output's height from `gettxout`'s confirmations and a
+  separate `getblockcount`, which races a bitcoind connecting ~8 blocks/s (NL-413).
+- **Transient:** one `ChainUnavailable` in 269,394 requests (bitcoind closed a kept-alive HTTP connection; the lookup
+  was deferred and succeeded later). `OutputSpentInMempool`: 184 lookups, all of **one** channel (`968539x658x1`, a
+  close waiting in the mempool): 10 retries 30 s apart, given up (the 15 `retries_exhausted` drops), marked missed,
+  re-queried and looked up again, about 3 lookups a minute for the whole hour (NL-414).
+- **Peers:** 0 disconnections, 0 bans, 0 `chain_mismatch` rejections, no warning sent over a chain result. A spent
+  output is `Limited(funding_spent)`, never counted against the peer; the ban path (script, amount or index
+  contradictions) never fired. One B7-CA-04 conflict (`828074x797x0`) in the restart, as in the earlier runs.
+
+**Time and RPC load (run1, concurrency 3)**
+
+| | Value |
+|---|---|
+| Funding lookups | 40,262 (39,942 found, 135 spent, 184 spent in the mempool, 1 unavailable) |
+| Time to 50 / 90 / 99 % of the final graph | 9.0 / 17.0 / 19.0 min (AssumeChannelValid: 1.0 / 2.0 min to 50 / 99 %) |
+| Lookup throughput | 2,000-2,500 per minute (about 37/s) for 17 min, then about 10 per minute |
+| Lookup time (the wait for the limits included) | p50 379 ms, p90 465 ms, p99 592 ms, max 1.5 s |
+| HTTP requests (RPCs) | 269,394; 13,700-17,200 per minute during the sync (about 250/s), about 30 per minute after it |
+| RPCs per lookup | 6.7 (5 on a cached block, 7 on a miss; 84 % of lookups missed the 256-block cache) |
+| RPC latency (all) | p50 6.0 ms, p90 27 ms, p99 100 ms; one 27.9 s outlier (the dropped connection) |
+| `getblock <hash> 1` (`GetBlockTxIdsAsync`, 33,953 calls) | p50 42 ms, p90 69 ms, p99 144 ms |
+| `gettxout` (+ `getblockcount`) | p50 12 ms, p90 18 ms, p99 108 ms |
+| Data read (estimate, not measured) | about 34,000 txid lists of 2,000-6,000 txids (about 67 bytes each in JSON): roughly 5-10 GB over the LAN in 17 min |
+| During IBD (smoke) | 11 lookups/s at the same concurrency; RPC p50 6 ms but p99 600 ms (bitcoind busy connecting blocks); IBD kept its pace |
+
+The lookups are bound by the concurrency (3 lookups of about 80 ms of RPC round trips each), not by the rate limit.
+bitcoind was not visibly affected: it kept connecting blocks at full speed during the smoke run and answered p99
+within 100 ms once synced. At the default concurrency 4 the whole graph would take about 13-14 minutes.
+
+**Spent channels**
+
+- At lookup: the 124-143 announcements of already closed channels were rejected (`funding_spent`), not stored, and
+  kept in the duplicate filter, so their re-sends in the same process are dropped without a lookup.
+- After storing: the follower raised 8 new blocks (64,451 spent outpoints) in the hour; the `GraphPruner` matched 3
+  graph channels (`968722x2786x1`, `957204x1875x0`, `968706x196x1`) and marked them spent at the spending block,
+  for removal 72 blocks later (not reached in the run). No bitcoind call is needed for this (D4).
+- A close still in the mempool is not spent yet: NL-414.
+
+**Memory, CPU, database**
+
+| | Verified run1 | AssumeChannelValid run1 |
+|---|---|---|
+| RSS peak / after the sync | 630 MB / 456 MB (at 60 min, after a gen-2 GC) | 425 MB / 400 MB |
+| GC heap size during / after the sync | 408-425 MB / 255 MB | 200-230 MB |
+| CPU | 18-36 % of one core for 18 min, 1 % after | 89-98 % in the first minute, 1 % after |
+| `probe.db` / WAL | 49.7 MiB / 5.2 MiB | 50.2 MiB / 5.8 MiB |
+| Restart: graph load (39,663 channels) / retained heap | 0.58 s / 138 MB | 0.55 s / 128 MB |
+| Restart: funding lookups | 829 (the 685 new channels and 143 spent re-sends; the stored channels' funding txids are persisted, NL-352) | 0 |
+
+The extra ~200 MB during a verified sync is garbage: every `getblock <hash> 1` answer (100-400 KB of JSON parsed into
+Newtonsoft `JToken`s) lands on the large object heap (NL-416).
+
+**Sync traffic with verification:** 142,240 `channel_announcement`s received for 39,663 channels (3.6x; 79,024
+`already_known`), because each of the five sync peers was asked for 20,000-25,000 channels: NL-402's per-batch
+re-diff skips channels already **stored**, but with the chain check the store lags the queue by minutes (NL-415).
+The duplicates cost bandwidth and ingress work, not lookups (the duplicate filter and the store check run before the
+lookup: 40,262 lookups for 39,663 channels). 28,785 messages were dropped at a full per-peer queue, almost all from
+the two CLN peers' unsolicited announcement floods (18,969 and 9,816; NL-406). With bitcoind synced the backpressure
+never timed out; in the IBD smoke run every sync peer's `query_short_channel_ids` waited the full 2 minutes for the
+**global** queue and then went out anyway (NL-412). Eclair answered 109 paced queries during run1 (NL-407 does not
+reproduce at this pace; one later query, at 00:20, and one in the restart timed out).
+
+### Issues found (NL-410..NL-416)
+
+| ID | Severity | Status | Problem |
+|---|---|---|---|
+| NL-410 | Medium | fixed (ed2ddb1) | A `channel_update` dropped at a full queue whose channel's announcement was stored was never asked for again: `GossipSyncManager.RetryMissedShortChannelIds` dropped every missed SCID already in the graph, and a peer without `gossip_queries_ex` never offers the update again. With the chain check the store lags the queue, so updates are orphaned (56,093 in run1) or dropped far more often than with AssumeChannelValid. Now a stored channel stays in the retry until it has both policies (or is spent); one query per miss. Test `Given_ADroppedUpdateOfAStoredChannel_When_Retried_Then_ItIsQueriedAgainUntilBothPoliciesAreKnown`. |
+| NL-411 | Low (RPC load) | fixed (5222fcd) | `FundingOutputLookup` called `getblockhash` before every txid-list fetch although `GetBlockTxIdsAsync` reads the hash itself: 7 RPCs per lookup on a cache miss (84 % of mainnet lookups), now 6 (about 14 % fewer RPCs for a full sync). A cached list is still checked against `getblockhash` first. Test `Given_AHeightNotCached_When_Lookup_Then_NoGetBlockHashBeforeTheTxIdList`. |
+| NL-412 | Medium (sync speed, drops) | fixed (ed2ddb1) | The sync's backpressure (NL-353) waited for the **whole** ingress queue to be at most half of one peer's capacity (1,000 messages), at most `SyncReplyTimeout` (2 min), then queried anyway. With the chain check the ingress drains at the lookup rate, so one peer's flood (CLN) held every other sync peer back 2 minutes per 200-channel batch, and the query then went out into a queue that could drop its answer (IBD smoke: every peer, every batch). Now the querier waits for the queried peer's own queue (`GossipIngress.QueuedCountOf`), where the answer goes, without a time limit (logged once after the timeout). Test `Given_PerPeerQueueDepths_When_Syncing_Then_OnlyThePeersOwnQueueHoldsTheQueryBackWithoutTimeLimit`. |
+| NL-413 | Low | documented | `BitcoinChainService.GetUnspentOutputAsync` computes the output's height as `getblockcount - confirmations + 1` with a `getblockcount` after `gettxout`: a block connected in between shifts it by one and the lookup answers `ChainMoved` (transient, deferred). 0.8 % of lookups while bitcoind connected ~8 blocks/s in IBD, none once synced. Fix: the height of `gettxout`'s `bestblock` (`getblockheader`), the same RPC count. |
+| NL-414 | Low (RPC load) | documented | A channel whose funding output a mempool transaction spends (`OutputSpentInMempool`) is looked up every `RetryDelay` for `MaxRetries`, then dropped as missed, re-queried from a peer and looked up again, for as long as the close stays unconfirmed (days for a low-fee close): 184 lookups (about 1,200 RPCs) for one channel in the hour. Proposal: keep mempool-spent SCIDs aside and look them up again once per new block. |
+| NL-415 | Medium (bandwidth) | documented | With the chain check, five concurrent sync peers were each asked for 20,000-25,000 channels (3.6x the graph received; 1.9x with AssumeChannelValid): NL-402's re-diff sees only stored channels while thousands wait in the ingress for their lookup. Proposal: the ingress keeps the SCIDs whose `channel_announcement` is queued, deferred or being looked up, and the re-diff skips them; or fewer concurrent range syncs while the chain is checked. |
+| NL-416 | Low (memory) | documented | A verified sync peaks at 630 MB RSS (GC heap 425 MB) against 425 MB with AssumeChannelValid: `BitcoinChainService.GetBlockTxIdsAsync` parses each `getblock <hash> 1` answer (100-400 KB) into a `JToken` tree on the large object heap; it is returned after the sync (456 MB RSS, 255 MB heap). For NL-373: budget the sync's garbage, or read the txids with a streaming `JsonReader`. |
+
+Confirmed: NL-406 (all 9,091 channels without an update are **unspent on chain**, so D3 does not remove them; the
+CLN peers streamed them unsolicited again, 28,785 dropped at their full queues in run1 and 5,211 in the restart),
+NL-352 (funding txids persisted: the restart looked up only new channels). Probe-only fix: the probe now also stops
+gracefully on SIGTERM (a background-started process ignores SIGINT; run1 therefore ran to its 60-minute stop rule).
+
+### What this means for D12
+
+- **Full D3 verification against a local unpruned node is practical at mainnet scale.** The whole graph (about
+  40,000 channels) is verified in about 18 minutes at concurrency 3 (about 13-14 at the default 4) with about 270,000
+  small read-only RPCs (about 250/s during the sync, p99 100 ms; about 14 % fewer with NL-411) and roughly 5-10 GB of
+  `getblock` JSON over the LAN; a restart costs only the new channels (829 lookups). bitcoind kept up, even during
+  IBD. A node on the same host as bitcoind would see lower latencies; one on a slow link would want a cheaper txid
+  read (`getblock <hash> 0`, or a persistent txid cache).
+- **An unpruned node in IBD** is handled by design: SCIDs above its tip are deferred, never rejected or scored, and
+  looked up again (after the retry delay plus the ingress queue); outputs spent after the node's tip look unspent
+  until it catches up, and the pruner marks them spent from the blocks as they are connected. Only the first half
+  was observed (5-minute smoke; bitcoind left IBD during it).
+- **Remaining before enabling mainnet gossip:** NL-406 (announcements without updates: verified unspent, so only the
+  pending-cache or zombie-index proposal removes them), NL-415 (redundant sync downloads with verification), NL-414
+  (mempool closes looked up repeatedly), NL-413, the memory budget with the verified numbers (NL-373, NL-416: 630 MB
+  peak, 456 MB after), relay against mainnet peers (untested; a verified node serves `IsChainChecked` channels, so a
+  relay run is now possible), the pruned/assumeutxo variant (the Esplora-txid plus local `gettxout` lookup proposed
+  above, untested) and the long soaks (NL-376).
