@@ -128,7 +128,7 @@ public sealed class SelfIntroducedBlindedPath
             }
 
             ourHops.Add(unblinding);
-            CompactPubKey? next = data.NextNodeId;
+            var next = data.NextNodeId;
             if (next is null && data.ShortChannelId is { } scid)
                 next = channelList.FirstOrDefault(c => c.ShortChannelId == scid
                                                     || c.RemoteAlias == scid
