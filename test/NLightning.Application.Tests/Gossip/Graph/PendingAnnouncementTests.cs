@@ -268,6 +268,86 @@ public class PendingAnnouncementTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_ARealPendingAnnouncement_When_AForgeryFollowsBeforeTheRealUpdate_Then_TheRealChannelIsPromoted()
+    {
+        // Arrange: the real announcement waits, then mallory announces the same scid with her own nodes and keys (the
+        // regression: the forgery used to replace the real one, so the honest update was orphaned)
+        var kit = CreateKit();
+        var mallory = GraphTestKit.CreatePeer(0x55);
+        var honest = GraphTestKit.CreatePeer(0x56);
+        Assert.Equal(GossipIngressOutcome.Pending, (await ProcessAsync(kit, honest.Object, Announcement())).Outcome);
+        var forgery = await ProcessAsync(kit, mallory.Object,
+                                         GraphTestKit.SignedChannelAnnouncement(s_scid, s_mallory, s_malloryTwo,
+                                                                                new TestGossipKey(76),
+                                                                                new TestGossipKey(77)));
+
+        // Act
+        var update = await ProcessAsync(kit, honest.Object, AliceUpdate(s_now - 10));
+
+        // Assert
+        Assert.Equal(GossipIngressOutcome.Pending, forgery.Outcome);
+        Assert.Equal(GossipIngressOutcome.Accepted, update.Outcome);
+        Assert.True(kit.Store.TryGetChannel(s_scid, out var channel));
+        Assert.Contains(s_alice.PubKey, new[] { channel.NodeId1, channel.NodeId2 });
+        Assert.False(kit.Ingress.IsPendingAnnouncement(s_scid));
+        Assert.Equal(0, kit.Ingress.PendingAnnouncementCount);
+        foreach (var peer in new[] { mallory, honest })
+            peer.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_OnlyAForgedPendingAnnouncement_When_TheRealUpdateArrives_Then_ItWaitsAndTheScidIsAskedForAgain()
+    {
+        // Arrange
+        var kit = CreateKit();
+        var mallory = GraphTestKit.CreatePeer(0x55);
+        var honest = GraphTestKit.CreatePeer(0x56);
+        await ProcessAsync(kit, mallory.Object,
+                           GraphTestKit.SignedChannelAnnouncement(s_scid, s_mallory, s_malloryTwo,
+                                                                  new TestGossipKey(76), new TestGossipKey(77)));
+
+        // Act
+        var update = await ProcessAsync(kit, honest.Object, AliceUpdate(s_now - 10));
+
+        // Assert: nobody blamed, and the sync asks for the real announcement again
+        Assert.Equal(GossipIngressOutcome.Orphaned, update.Outcome);
+        Assert.Contains(s_scid, kit.Ingress.TakeMissedShortChannelIds());
+        honest.Verify(p => p.SendWarningAsync(It.IsAny<WarningException>()), Times.Never);
+        Assert.Equal(0, kit.Ingress.Misbehaviour.GetScore(honest.Object.PeerPubKey));
+    }
+
+    [Fact]
+    public async Task Given_APeerFillingThePendingIndex_When_AnotherPeersAnnouncementArrives_Then_TheFloodersOldestMakesRoom()
+    {
+        // Arrange: the honest announcement came first, then mallory fills the index with forgeries of her own
+        var kit = CreateKit(configure: o => o.MaxPendingAnnouncements = 3);
+        var mallory = GraphTestKit.CreatePeer(0x55);
+        var honest = GraphTestKit.CreatePeer(0x56);
+        await ProcessAsync(kit, honest.Object, Announcement());
+        var forged = new[] { new ShortChannelId(140, 1, 0), new ShortChannelId(141, 1, 0) };
+        foreach (var scid in forged)
+        {
+            kit.Clock.Now += TimeSpan.FromSeconds(1);
+            await ProcessAsync(kit, mallory.Object,
+                               GraphTestKit.SignedChannelAnnouncement(scid, s_mallory, s_malloryTwo,
+                                                                      new TestGossipKey(76), new TestGossipKey(77)));
+        }
+
+        // Act
+        kit.Clock.Now += TimeSpan.FromSeconds(1);
+        var another = new ShortChannelId(121, 1, 0);
+        await ProcessAsync(kit, honest.Object, Announcement(another));
+
+        // Assert: the honest entries stay, mallory's oldest went
+        Assert.True(kit.Ingress.IsPendingAnnouncement(s_scid));
+        Assert.True(kit.Ingress.IsPendingAnnouncement(another));
+        Assert.False(kit.Ingress.IsPendingAnnouncement(forged[0]));
+        Assert.True(kit.Ingress.IsPendingAnnouncement(forged[1]));
+        Assert.Equal(GossipIngressOutcome.Accepted,
+                     (await ProcessAsync(kit, honest.Object, AliceUpdate(s_now - 10))).Outcome);
+    }
+
+    [Fact]
     public async Task Given_APendingAnnouncementTheChainContradicts_When_AnotherPeersUpdatePromotesIt_Then_OnlyTheAnnouncerIsScored()
     {
         // Arrange: one contradiction bans; the announcer's connection is not the update's

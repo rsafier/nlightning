@@ -56,8 +56,10 @@ public sealed class GossipGraphOptions
     /// <summary>
     /// Signed <c>channel_announcement</c>s kept outside the graph while no valid <c>channel_update</c> has followed
     /// them (NL-406: BOLT 7 forbids sending one without an update, Core Lightning does it for about a quarter of the
-    /// mainnet graph); the oldest makes room beyond it. They are promoted into the graph, with their chain check, by
-    /// their first valid update. <c>Gossip:MaxPendingAnnouncements</c>, default 50,000.
+    /// mainnet graph); every candidate counts (up to <see cref="PendingAnnouncementIndex.MaxCandidatesPerChannel"/>
+    /// different ones per short channel id, one per peer), and beyond it the oldest entry of the peer holding the most
+    /// makes room. They are promoted into the graph, with their chain check, by their first valid update.
+    /// <c>Gossip:MaxPendingAnnouncements</c>, default 50,000.
     /// </summary>
     public int MaxPendingAnnouncements { get; set; } = 50_000;
 

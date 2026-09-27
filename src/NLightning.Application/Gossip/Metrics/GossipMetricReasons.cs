@@ -66,6 +66,12 @@ public static class GossipMetricReasons
     /// <summary>An announcement without update made room in the full pending index (the oldest goes).</summary>
     public const string PendingFull = "pending_full";
 
+    /// <summary>
+    /// An announcement without update was not kept: as many other peers' different announcements already wait for the
+    /// same short channel id as the pending index keeps (NL-406).
+    /// </summary>
+    public const string PendingCandidatesFull = "pending_candidates_full";
+
     /// <summary>A reason that is none of the above.</summary>
     public const string Other = "other";
 }
