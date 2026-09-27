@@ -27,6 +27,10 @@ public sealed class WithdrawPrinter : IPrinter<WithdrawIpcResponse>
             _output.WriteLine(string.Format(inv, "  Anchor reserve: {0} sats kept in the wallet",
                                             item.AnchorReserveSat));
         if (!item.Published)
-            _output.WriteLine("  bitcoind refused it for now; the node sends it again after every block.");
+        {
+            _output.WriteLine("  bitcoind refused it for now (see the daemon log for why); the node sends it again");
+            _output.WriteLine("  after every block. Do not run withdraw again to retry: a second withdrawal spends");
+            _output.WriteLine("  other outputs, and both could confirm and pay twice.");
+        }
     }
 }

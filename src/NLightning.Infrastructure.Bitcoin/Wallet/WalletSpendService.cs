@@ -38,7 +38,10 @@ using Networks;
 /// (the chain monitor resends it after every block until it confirms). The reservation is released when anything
 /// fails before the row is stored, and kept after (the pending row keeps the outputs out of every other selection
 /// either way). Reservations whose inputs have all left the wallet (their spend was processed in a block) are ended
-/// with <see cref="IFeeInputSelector.ConfirmAsync"/> at the next withdraw, as the chain monitor does at startup.</para>
+/// with <see cref="IFeeInputSelector.ConfirmAsync"/> at the next withdraw, as the chain monitor does at startup; those
+/// none of whose inputs a pending broadcast spends (a crash or an unverifiable save between the reservation and the
+/// row) are released then and by <see cref="ReleaseOrphanedReservationsAsync"/>, which the host runs once at startup.
+/// Withdrawals run one at a time, so that sweep never sees one between its reservation and its row.</para>
 /// </remarks>
 public sealed class WalletSpendService : IWalletSpendService
 {
@@ -62,6 +65,7 @@ public sealed class WalletSpendService : IWalletSpendService
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IFeeInputSelector _feeInputSelector;
     private readonly IFeeService _feeService;
+    private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<WalletSpendService> _logger;
     private readonly Network _network;
@@ -99,8 +103,39 @@ public sealed class WalletSpendService : IWalletSpendService
         var destination = ParseAddress(request.Address, _network).ScriptPubKey;
         var feeRatePerKw = await GetFeeRatePerKwAsync(request.FeeRatePerKw, cancellationToken);
 
-        // Reservations of earlier withdrawals whose spend a processed block holds
-        await ConfirmCompletedWithdrawalsAsync(cancellationToken);
+        // One withdrawal at a time, so the orphan sweep never sees one between its reservation and its row
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            // Reservations of earlier withdrawals whose spend a processed block holds, or that lost their spend
+            await EndStaleReservationsLockedAsync(cancellationToken);
+
+            return await WithdrawLockedAsync(request, destination, feeRatePerKw, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<int> ReleaseOrphanedReservationsAsync(CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            return await EndStaleReservationsLockedAsync(cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private async Task<WalletWithdrawResult> WithdrawLockedAsync(WalletWithdrawRequest request, Script destination,
+                                                                 long feeRatePerKw,
+                                                                 CancellationToken cancellationToken)
+    {
 
         var extraWeight = BaseWeight + GetOutputWeight(destination);
         var dustLimit = GetDustThreshold(destination);
@@ -413,29 +448,64 @@ public sealed class WalletSpendService : IWalletSpendService
     }
 
     /// <summary>
-    /// Ends the withdraw reservations none of whose inputs is still in the wallet: the chain monitor removed them when
-    /// it processed the block holding their spend.
+    /// Under <see cref="_gate"/>: ends the withdraw reservations none of whose inputs is still in the wallet (the chain
+    /// monitor removed them when it processed the block holding their spend), and releases those none of whose inputs a
+    /// pending broadcast spends: a crash, or a failed or unverifiable save, between the reservation and its
+    /// <see cref="BroadcastPurpose.WalletSend"/> row left them without a spend, and nothing else would ever free them.
     /// </summary>
-    private async Task ConfirmCompletedWithdrawalsAsync(CancellationToken cancellationToken)
+    /// <returns>How many reservations were released.</returns>
+    private async Task<int> EndStaleReservationsLockedAsync(CancellationToken cancellationToken)
     {
-        IReadOnlyList<FeeInputReservation> reservations;
+        List<FeeInputReservation> reservations;
         try
         {
-            reservations = await _feeInputSelector.GetAllAsync(cancellationToken);
+            reservations = (await _feeInputSelector.GetAllAsync(cancellationToken))
+                          .Where(r => r.Purpose == ReservationPurpose)
+                          .ToList();
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             _logger.LogWarning(e, "Could not read the fee input reservations; completed withdrawals are ended later");
-            return;
+            return 0;
         }
 
-        foreach (var reservation in reservations.Where(r => r.Purpose == ReservationPurpose))
+        if (reservations.Count == 0)
+            return 0;
+
+        HashSet<(TxId TxId, uint Index)>? pendingSpends;
+        try
         {
-            if (reservation.Inputs.Any(i => _utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _)))
+            using var scope = _scopeFactory.CreateScope();
+            var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            pendingSpends = await PendingBroadcastOutpoints.GetAsync(uow, _network, _logger);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // Unknown: keep every reservation, which never double-spends
+            _logger.LogWarning(e, "Could not read the pending broadcasts; withdraw reservations are checked later");
+            pendingSpends = null;
+        }
+
+        var released = 0;
+        foreach (var reservation in reservations)
+        {
+            if (!reservation.Inputs.Any(i => _utxoMemoryRepository.TryGetUtxo(i.TxId, i.Index, out _)))
+            {
+                await _feeInputSelector.ConfirmAsync(reservation.Id, cancellationToken);
+                continue;
+            }
+
+            if (pendingSpends is null || reservation.Inputs.Any(i => pendingSpends.Contains((i.TxId, i.Index))))
                 continue;
 
-            await _feeInputSelector.ConfirmAsync(reservation.Id, cancellationToken);
+            _logger.LogWarning(
+                "Releasing withdraw reservation {ReservationId} ({Inputs} input(s), {Total} sat): no pending "
+              + "withdrawal spends its inputs", reservation.Id, reservation.Inputs.Count, reservation.Total.Satoshi);
+            await _feeInputSelector.ReleaseAsync(reservation.Id, cancellationToken);
+            released++;
         }
+
+        return released;
     }
 
     private async Task<bool> IsStoredAsync(TxId txId)
