@@ -19,13 +19,14 @@ using Metrics;
 /// <c>channel_update</c>s and newer <c>node_announcement</c>s, pruning goes on, and our own gossip is always applied.
 /// New entries are accepted again once the process is below <see cref="GossipGraphOptions.MemoryResumePercent"/> of
 /// the budget (hysteresis, so a graph at the edge does not flap). Each crossing is logged once (a warning going over,
-/// an information coming back) and counted in <c>nlightning.gossip.memory.budget.exceeded</c>; the last reading is the
-/// gauge <c>nlightning.gossip.memory.working_set</c>. A refused channel is not queued for a re-request: the next range
+/// an information coming back) and counted in <c>nlightning.gossip.memory.budget.exceeded</c>; the gauge
+/// <c>nlightning.gossip.memory.working_set</c> reads the process too (at most once per sample interval). A refused channel is not queued for a re-request: the next range
 /// sync with a peer asks for it again.
 /// </para>
 /// <para>
 /// The process is read lazily, at most once per <see cref="GossipGraphOptions.MemorySampleInterval"/>, when the ingress
-/// is about to add something new or <c>describegraph</c> asks. The budget covers the whole process (graph, snapshots,
+/// is about to add something new, the working-set gauge is observed or <c>describegraph</c> asks. A failed read, or a
+/// reading of 0 bytes, keeps the last decision. The budget covers the whole process (graph, snapshots,
 /// sync garbage such as <c>getblock</c> JSON, NL-416, and everything that is not gossip), since that is what an
 /// operator sizes a machine by. Thread-safe.
 /// </para>
@@ -62,6 +63,9 @@ public sealed class GossipMemoryBudget
         _metrics = metrics;
         metrics?.RegisterMemoryWorkingSet(() =>
         {
+            // Read the process here too (rate-limited by the sample interval), or a synced graph that only takes
+            // channel_updates would never refresh the gauge
+            Refresh();
             lock (_gate)
                 return _lastUsage.WorkingSetBytes;
         });
@@ -144,6 +148,13 @@ public sealed class GossipMemoryBudget
                 return;
             }
 
+            if (usage.WorkingSetBytes <= 0)
+            {
+                // No process has an empty resident set: treat it as a failed read, never as a reason to resume
+                _logger.LogDebug("The process memory reading was {WorkingSet} bytes; ignored", usage.WorkingSetBytes);
+                return;
+            }
+
             _lastUsage = usage;
             if (!IsEnabled)
                 return;
@@ -177,7 +188,7 @@ public sealed class GossipMemoryBudget
 /// <param name="BudgetBytes"><c>Gossip:MaxMemoryMb</c> in bytes; 0 when the budget is off.</param>
 /// <param name="ResumeBytes">The level below which new entries are accepted again.</param>
 /// <param name="WorkingSetBytes">The process's resident set at the last reading (0 before the first).</param>
-/// <param name="ManagedHeapBytes">The managed heap at the last reading.</param>
+/// <param name="ManagedHeapBytes">The memory the GC had committed at the last reading.</param>
 /// <param name="IsOverBudget">New channels and nodes are refused now.</param>
 /// <param name="Crossings">The times the process went over the budget since the start.</param>
 /// <param name="Refused">New channels and nodes refused over the budget since the start.</param>
