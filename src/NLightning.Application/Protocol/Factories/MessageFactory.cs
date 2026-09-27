@@ -455,33 +455,10 @@ public class MessageFactory : IMessageFactory
         return new OpenChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
-    /// <summary>
-    /// Create an OpenChannel2 message.
-    /// </summary>
-    /// <param name="temporaryChannelId">The temporary channel id.</param>
-    /// <param name="fundingFeeRatePerKw">The funding fee rate to open the channel.</param>
-    /// <param name="commitmentFeeRatePerKw">The commitment fee rate.</param>
-    /// <param name="fundingSatoshis">The amount of satoshis we're adding to the channel.</param>
-    /// <param name="fundingPubKey">The funding pubkey of the channel.</param>
-    /// <param name="revocationBasepoint">The revocation pubkey.</param>
-    /// <param name="paymentBasepoint">The payment pubkey.</param>
-    /// <param name="delayedPaymentBasepoint">The delayed payment pubkey.</param>
-    /// <param name="htlcBasepoint">The htlc pubkey.</param>
-    /// <param name="firstPerCommitmentPoint">The first per-commitment pubkey.</param>
-    /// <param name="secondPerCommitmentPoint">The second per-commitment pubkey.</param>
-    /// <param name="channelFlags">The flags for the channel.</param>
-    /// <param name="shutdownScriptPubkey">The shutdown script to be used when closing the channel.</param>
-    /// <param name="channelType">The type of the channel.</param>
-    /// <param name="requireConfirmedInputs">If we want confirmed inputs to open the channel.</param>
-    /// <returns>The OpenChannel2 message.</returns>
-    /// <seealso cref="OpenChannel2Message"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactPubKey"/>
-    /// <seealso cref="ChannelFlags"/>
-    /// <seealso cref="BitcoinScript"/>
-    /// <seealso cref="OpenChannel2Payload"/>
+    /// <inheritdoc />
     public OpenChannel2Message CreateOpenChannel2Message(ChannelId temporaryChannelId, uint fundingFeeRatePerKw,
-                                                         uint commitmentFeeRatePerKw, ulong fundingSatoshis,
+                                                         uint commitmentFeeRatePerKw, LightningMoney fundingAmount,
+                                                         ChannelParty localParams, uint locktime,
                                                          CompactPubKey fundingPubKey,
                                                          CompactPubKey revocationBasepoint,
                                                          CompactPubKey paymentBasepoint,
@@ -489,29 +466,21 @@ public class MessageFactory : IMessageFactory
                                                          CompactPubKey htlcBasepoint,
                                                          CompactPubKey firstPerCommitmentPoint,
                                                          CompactPubKey secondPerCommitmentPoint,
-                                                         ChannelFlags channelFlags,
-                                                         BitcoinScript? shutdownScriptPubkey = null,
-                                                         byte[]? channelType = null,
+                                                         ChannelFlags channelFlags, ChannelTypeTlv channelTypeTlv,
+                                                         UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
                                                          bool requireConfirmedInputs = false)
     {
-        var maxHtlcValueInFlight =
-            LightningMoney.Satoshis(_nodeOptions.AllowUpToPercentageOfChannelFundsInFlight * fundingSatoshis / 100M);
+        ArgumentNullException.ThrowIfNull(localParams);
 
         var payload = new OpenChannel2Payload(_bitcoinNetwork.ChainHash, channelFlags, commitmentFeeRatePerKw,
-                                              delayedPaymentBasepoint, _nodeOptions.DustLimitAmount,
-                                              firstPerCommitmentPoint, fundingSatoshis, fundingFeeRatePerKw,
-                                              fundingPubKey, htlcBasepoint, _nodeOptions.HtlcMinimumAmount,
-                                              _nodeOptions.Locktime, _nodeOptions.MaxAcceptedHtlcs,
-                                              maxHtlcValueInFlight, paymentBasepoint, revocationBasepoint,
-                                              secondPerCommitmentPoint, _nodeOptions.ToSelfDelay, temporaryChannelId);
+                                              delayedPaymentBasepoint, localParams.DustLimitAmount,
+                                              firstPerCommitmentPoint, fundingAmount, fundingFeeRatePerKw,
+                                              fundingPubKey, htlcBasepoint, localParams.HtlcMinimumAmount, locktime,
+                                              localParams.MaxAcceptedHtlcs, localParams.MaxHtlcValueInFlight,
+                                              paymentBasepoint, revocationBasepoint, secondPerCommitmentPoint,
+                                              localParams.ToSelfDelay, temporaryChannelId);
 
-        return new OpenChannel2Message(payload,
-                                       shutdownScriptPubkey is null
-                                           ? null
-                                           : new UpfrontShutdownScriptTlv(shutdownScriptPubkey.Value),
-                                       channelType is null
-                                           ? null
-                                           : new ChannelTypeTlv(channelType),
+        return new OpenChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
                                        requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
     }
 
@@ -557,54 +526,30 @@ public class MessageFactory : IMessageFactory
         return new AcceptChannel1Message(payload, channelTypeTlv, upfrontShutdownScriptTlv);
     }
 
-    /// <summary>
-    /// Create an AcceptChannel2 message.
-    /// </summary>
-    /// <param name="temporaryChannelId">The temporary channel id.</param>
-    /// <param name="fundingSatoshis">The amount of satoshis we're adding to the channel.</param>
-    /// <param name="fundingPubKey">The funding pubkey of the channel.</param>
-    /// <param name="revocationBasepoint">The revocation pubkey.</param>
-    /// <param name="paymentBasepoint">The payment pubkey.</param>
-    /// <param name="delayedPaymentBasepoint">The delayed payment pubkey.</param>
-    /// <param name="htlcBasepoint">The htlc pubkey.</param>
-    /// <param name="firstPerCommitmentPoint">The first per-commitment pubkey.</param>
-    /// <param name="maxHtlcValueInFlight">Maximum HTLC value that can be in flight.</param>
-    /// <param name="shutdownScriptPubkey">The shutdown script to be used when closing the channel.</param>
-    /// <param name="channelType">The type of the channel.</param>
-    /// <param name="requireConfirmedInputs">If we want confirmed inputs to open the channel.</param>
-    /// <returns>The AcceptChannel2 message.</returns>
-    /// <seealso cref="AcceptChannel2Message"/>
-    /// <seealso cref="ChannelId"/>
-    /// <seealso cref="CompactPubKey"/>
-    /// <seealso cref="BitcoinScript"/>
-    /// <seealso cref="AcceptChannel2Payload"/>
+    /// <inheritdoc />
     public AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId,
-                                                             LightningMoney fundingSatoshis,
-                                                             CompactPubKey fundingPubKey,
+                                                             LightningMoney fundingAmount, ChannelParty localParams,
+                                                             uint minimumDepth, CompactPubKey fundingPubKey,
                                                              CompactPubKey revocationBasepoint,
                                                              CompactPubKey paymentBasepoint,
                                                              CompactPubKey delayedPaymentBasepoint,
                                                              CompactPubKey htlcBasepoint,
                                                              CompactPubKey firstPerCommitmentPoint,
-                                                             LightningMoney maxHtlcValueInFlight,
-                                                             BitcoinScript? shutdownScriptPubkey = null,
-                                                             byte[]? channelType = null,
+                                                             CompactPubKey secondPerCommitmentPoint,
+                                                             ChannelTypeTlv channelTypeTlv,
+                                                             UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
                                                              bool requireConfirmedInputs = false)
     {
-        var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, _nodeOptions.DustLimitAmount,
-                                                firstPerCommitmentPoint, fundingSatoshis, fundingPubKey,
-                                                htlcBasepoint, _nodeOptions.HtlcMinimumAmount,
-                                                _nodeOptions.MaxAcceptedHtlcs, maxHtlcValueInFlight,
-                                                _nodeOptions.MinimumDepth, paymentBasepoint, revocationBasepoint,
-                                                temporaryChannelId, _nodeOptions.ToSelfDelay);
+        ArgumentNullException.ThrowIfNull(localParams);
 
-        return new AcceptChannel2Message(payload,
-                                         shutdownScriptPubkey is null
-                                             ? null
-                                             : new UpfrontShutdownScriptTlv(shutdownScriptPubkey.Value),
-                                         channelType is null
-                                             ? null
-                                             : new ChannelTypeTlv(channelType),
+        var payload = new AcceptChannel2Payload(delayedPaymentBasepoint, localParams.DustLimitAmount,
+                                                firstPerCommitmentPoint, fundingAmount, fundingPubKey, htlcBasepoint,
+                                                localParams.HtlcMinimumAmount, localParams.MaxAcceptedHtlcs,
+                                                localParams.MaxHtlcValueInFlight, minimumDepth, paymentBasepoint,
+                                                revocationBasepoint, temporaryChannelId, localParams.ToSelfDelay,
+                                                secondPerCommitmentPoint);
+
+        return new AcceptChannel2Message(payload, upfrontShutdownScriptTlv, channelTypeTlv,
                                          requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
     }
 

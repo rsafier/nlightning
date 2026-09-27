@@ -53,6 +53,7 @@ public class AcceptChannel2PayloadSerializer : IPayloadSerializer<AcceptChannel2
         await stream.WriteAsync(acceptChannel2Payload.DelayedPaymentCompactBasepoint);
         await stream.WriteAsync(acceptChannel2Payload.HtlcCompactBasepoint);
         await stream.WriteAsync(acceptChannel2Payload.FirstPerCommitmentCompactPoint);
+        await stream.WriteAsync(acceptChannel2Payload.SecondPerCommitmentCompactPoint);
     }
 
     public async Task<AcceptChannel2Payload?> DeserializeAsync(Stream stream)
@@ -109,10 +110,14 @@ public class AcceptChannel2PayloadSerializer : IPayloadSerializer<AcceptChannel2
             await stream.ReadExactlyAsync(buffer.AsMemory()[..CryptoConstants.CompactPubkeyLen]);
             var firstPerCommitmentPoint = new CompactPubKey(buffer[..CryptoConstants.CompactPubkeyLen]);
 
+            await stream.ReadExactlyAsync(buffer.AsMemory()[..CryptoConstants.CompactPubkeyLen]);
+            var secondPerCommitmentPoint = new CompactPubKey(buffer[..CryptoConstants.CompactPubkeyLen]);
+
             return new AcceptChannel2Payload(delayedPaymentBasepoint, dustLimitSatoshis, firstPerCommitmentPoint,
                                              fundingSatoshis, fundingPubKey, htlcBasepoint, htlcMinimumMsat,
                                              maxAcceptedHtlcs, maxHtlcValueInFlightMsat, minimumDepth, paymentBasepoint,
-                                             revocationBasepoint, temporaryChannelId, toSelfDelay);
+                                             revocationBasepoint, temporaryChannelId, toSelfDelay,
+                                             secondPerCommitmentPoint);
         }
         catch (Exception e)
         {
