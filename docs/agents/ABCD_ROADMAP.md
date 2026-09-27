@@ -1,6 +1,33 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave M6 @ `641a5fff`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave B12 @ `a3445f3f`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Wave B12 (BOLT 12 offers): integrated into `wip/fafo` @ `a3445f3f` (2026-09-27), gates GREEN
+
+Plan: `BOLT12_PLAN.md` wave B12 (B0-B4, Proof B12; its "Wave B12 record" has the deviations). Five lanes on the B12-0 contracts (6f4bdaad), each with a review/fix step; B12-C was the migration owner (`AddBolt12Offers`, all three providers). Lane commits cherry-picked with `-x` in the order C → A → B → D → E (lane E's merge commits left out). Integrator commit a3445f3f: `ClientCommand` CreateOffer **26**, ListOffers 27, DisableOffer 28, PayOffer 29, FetchInvoice **30** (next free **31**); `AddOffersServices()`/`AddOfferSendServices()` after `AddOnionMessageServices()` (the type-64 `InvoiceRequestHandler` becomes an `IOnionMessageHandler`); `AddOfferIpcServices()`/`AddOfferSendIpcServices()` and `Configure<OfferOptions>` (`Offers`) in `AddNltgNodeServices`; both `Bolt12Wire` seams delegate to lane A's codecs; the BOLT 11 fallback removed; the Docker offer proofs use the composed node. No feature bit (plan F-04).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| B12-A codecs (B0) | done except B0-T4: bech32 string format, TLV stream and typed views, validators (fail-closed amounts, odd signature-range elements ignored), Merkle tree; `format-string-test.json`, `offers-test.json`, `signature-test.json` byte-exact | 95066ae5, b7ac3543 | NL-447 (part); new NL-450, NL-451 |
+| B12-B signer (B1) | done: BIP-340 `IBolt12Signer`, payer id derivation, `SignBolt12` with each tag bound to its key kind, blinded-recipient key (not wired); vector signature byte for byte | 3acf5ca6, 80bd155c | NL-447 (part); new NL-455 |
+| B12-C schema (B2, migration owner) | done: `AddBolt12Offers` x3, `OfferDbRepository`, BOLT 12 invoice/payment persistence, nullable `Bolt11`, SQL-side caps, prune entry point | 03c2bfde, ffc5c62b | NL-447 (part); new NL-448 |
+| B12-D receive (B3) | done: `OfferService`, `InvoiceRequestHandler`, invoices over blinded payment paths, final-hop rule, IPC 26-28; `ClnOfferReceiveTests` 4/4 | 61ea7b02, 883a883f, 16019fb9, bf8da622, 5ec25ce9, f01081a8, 59a0072d, c7f0586d, 1e43d24a | NL-447 (part); new NL-452, NL-449 (seen) |
+| B12-E pay (B4) | done: blinded send with MPP and introduction = us, invoice_request/verify, `OfferPaymentService`, IPC 29-30, three-node offer harness; `ClnOfferPayTests` 4/4 | 9e963b82, bc59fa90, 5a99843b, 4fd7d44e, e6248970, 33e49e03, 8ae4c1b8, b0d3f056, 64f2b1db, 52494429, ba314f36 | NL-447 (part), NL-440 partial |
+| Integration | wiring, command numbers, codec seams | a3445f3f | NL-447; new NL-448, NL-453, NL-454, NL-456 |
+
+Gates at `a3445f3f`:
+- Build: Release and Release.Native on net10.0, 0 errors, the same **5** CS86xx warnings (NL-171) plus three pre-existing MsgPack017 warnings (NL-456, since wave O7b); SDK 11 rc1 net10.0 + net11.0 compile check 0 errors. `dotnet format --verify-no-changes` clean. Schema: `AddBolt12Offers` on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0, Release and Release.Native): **8985** non-Docker, all pass, no skips (Domain 2830, Application 2263, Infrastructure.Bitcoin 1218, Integration 852, Daemon 559, Serialization 551, Infrastructure 434, Bolt11 278). Long simulator 1/1. `OnionMessageHarnessTests`' rate-limit test fails when run alone (NL-449) but passes in the full run.
+- Docker (net10.0, in-container runner with `--network host`, one suite at a time, SQL Server skipped): CLN **39/39** (+3 `Explicit`; incl. `ClnOfferReceiveTests` 4 and `ClnOfferPayTests` 4), LND suite **62/62** (incl. `PostgresTests`), `MultiNodeHarnessTests` 5/5 facts, gossip **28/28**, on-chain legacy + anchors **40/40** (2 `Explicit` not run), ABCD **3 x 10/10**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` Postgres row (NL-429).
+
+### Carried into the next wave (after B12)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate** (unchanged by B12): the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; the `AllowPublicChannelsOnMainnet` decision; BOLT 5 follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336 and anchors NL-384 (partial), NL-386, NL-387, NL-389..NL-391 (none a fund-safety blocker); the canary runbook's accepted gaps (`MAINNET_CANARY_RUNBOOK.md`).
+- **Close the BOLT 12 epic (NL-447):** the expired-invoice prune timer (NL-448, medium: unbounded rows from any onion-message peer), the CLN-captured vectors B0-T4 (NL-450); then the follow-ups NL-451 (report the vector quirk upstream), NL-452 (reachability: public introduction nodes, surface the fallback warning, D2), NL-453 (delete the `Bolt12Wire` seams), NL-454 (template keys, invoice kind in `listinvoices`), NL-455 (BIP-340 aux randomness); NL-440 remainder (BOLT 11 blinded paths, dummy hops).
+- **Test and build hygiene:** NL-449 (onion message harness rate-limit test fails alone), NL-456 (MsgPack017 warnings; count analyzer warnings in the gate), NL-429, flakes NL-434, NL-445, NL-382, NL-394.
+- **M6 follow-ups** (unchanged): NL-442, NL-444, NL-446; an LND 0.21 forward proof once the fixture moves.
+- **rf1 follow-ups** (unchanged): NL-430, NL-431, NL-432, NL-433, NL-435; security NL-224, NL-436..NL-439.
+- **Beyond:** dual funding (NL-037), attribution_data out of experimental (NL-332), wallet coin control and consolidation, the rest of `REMAINING_WORK.md`.
 
 ### Wave M6 (onion messages + on-chain withdraw): integrated into `wip/fafo` @ `641a5fff` (2026-09-27), gates GREEN, `option_onion_messages` ON by default
 

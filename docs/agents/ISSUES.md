@@ -44,6 +44,8 @@ Updated 2026-09-27 after wave rf1 (R1 static channel backup and restore, R2 peer
 
 Updated 2026-09-27 after wave M6 (onion messages: M6-A wire and codecs, M6-B crypto and vectors, M6-C transport and rate limiter, M6-D service and harness, M6-E Docker Proof M6 against CLN; plus lane W1 on-chain `withdraw`; no migration) was integrated into `wip/fafo` (at `641a5fff`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `fc686ff0`, `9639b7cf`, `5ae1701c` and `641a5fff` are `integrate:` commits). The M6 lanes cite NL-079 (the route blinding epic the BOLT 12 plan named as parent); the onion message work is recorded on NL-080, which is fixed, and `option_onion_messages` is advertised Optional by default (D9, 641a5fff). Lane W1 cites "NL-new": the withdraw command is NL-441. NL-441..NL-447 record the integrator's IDs (NL-441..NL-443 kept) and the lanes' open items, and NL-447 is the BOLT 12 offers epic the plan asked the ledger to file. Docker on net10.0 (in-container runner, SQL Server container tests skipped): CLN 33/33 (incl. `ClnOnionMessageTests` 10), LND 66/66, gossip 28/28, on-chain legacy 24 (+2 Explicit), anchors 18/18, ABCD 3 x 10/10.
 
+Updated 2026-09-27 after wave B12 (BOLT 12 offers: B12-A codecs, string format, validators and Merkle tree, B12-B BIP-340 signer, B12-C schema (migration owner, `AddBolt12Offers`), B12-D receive, B12-E pay and blinded send; contracts B12-0 at `6f4bdaad`) was integrated into `wip/fafo` (at `a3445f3f`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `a3445f3f` is the `integrate:` commit, which also appended `ClientCommand` 26-30). NL-447 and NL-440 are partial; no new feature bit (offers ride on the advertised onion-message and route-blinding bits). NL-448..NL-456 record the integrator's and the lanes' open items (NL-448 keeps the ID the integrator cited; the lanes' "NEW" proposals were numbered from the next free ID; lane B12-E's result reached the ledger truncated, so its items are taken from its commits). Docker on net10.0 (in-container runner, SQL Server container tests skipped): CLN 39/39 (+3 Explicit; incl. `ClnOfferReceiveTests` 4 and `ClnOfferPayTests` 4), LND 62/62 (incl. `PostgresTests`), `MultiNodeHarnessTests` 5/5 facts, gossip 28/28, on-chain legacy + anchors 40/40 (+2 Explicit), ABCD 3 x 10/10.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -78,12 +80,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 4 | 18 | 124 | 146 |
+| open | 0 | 4 | 19 | 132 | 155 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
 | fixed | 14 | 54 | 127 | 93 | 288 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **58** | **148** | **222** | **442** |
+| **Total** | **14** | **58** | **149** | **230** | **451** |
 
 ### Epics
 
@@ -94,8 +96,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
-- NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440; onion messages (M6) are NL-080, fixed in wave M6)
-- NL-447: BOLT 12 offers (open, medium; wave B12 of `BOLT12_PLAN.md`; onion messages NL-080 and blinded paths NL-079 are done)
+- NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 (MPP over blinded paths and own-introduction paths done in wave B12); onion messages (M6) are NL-080, fixed in wave M6)
+- NL-447: BOLT 12 offers (open, partial, medium; wave B12 at `a3445f3f`: codecs, signer, schema, `createoffer`/`listoffers`/`disableoffer`/`payoffer`/`fetchinvoice` (IPC 26-30), both directions proven against CLN v26.06.8; left: CLN-captured vectors NL-450, invoice prune NL-448, reachability NL-452, follow-ups NL-451, NL-453..NL-455)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder; gossip wave G-B: G1 public channels and our own announcements relayed, G2 graph ingress/store/pruner and IPC 17/18, Docker Proofs G0-G2 green; gossip wave G-C: G3 sync, query answers and relay, G4 graph routing in `PaymentService` and `getroute` (IPC 19), the goal proofs against LND and CLN green, NL-348..NL-356 fixed; gossip wave G-D: G5-T2..T4 done (rate limits, misbehaviour ban, graph caps, relay backlog bound, `NLightning.Gossip` meter, batched store, 200k-channel measurement, `describegraph` IPC 20), G5-T1/T5 partial; mainnet gossip probe: `Gossip:AssumeChannelValid`, `tools/NLightning.GossipProbe`, the full mainnet graph synced assumed and verified against a real bitcoind, NL-400..NL-405 and NL-410..NL-412 fixed; next: interned node ids and `Gossip:MaxMemoryMb` (NL-373, NL-416), the 24 h soak evaluation before D12 (NL-376), announcements without updates (NL-406), redundant verified-sync downloads (NL-415), follow-ups NL-357, NL-360..NL-377, NL-407, NL-408, NL-413, NL-414)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
@@ -1884,12 +1886,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ---
 
 ### NL-440 Blinded payments: no MPP, no own-introduction paths, no BOLT 11 blinded paths, no dummy hops
-- **Status:** open
+- **Status:** open (partial: 9e963b82, ba314f36)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PayBlindedAsync`), `Invoices/BlindedPathBuilder.cs`
-- **Evidence:** M5 sends one part per blinded payment, cannot pay a path whose introduction node is us, does not decode BOLT 11 blinded paths (LND's field 20; the Docker proof reads them through `DecodePayReq`), and our own paths have no dummy hops (reported by lane M5).
-- **Fix sketch:** Add these with BOLT 12 (offers carry blinded paths) or earlier if an interop case needs them.
+- **Evidence:** M5 sends one part per blinded payment, cannot pay a path whose introduction node is us, does not decode BOLT 11 blinded paths (LND's field 20; the Docker proof reads them through `DecodePayReq`), and our own paths have no dummy hops (reported by lane M5). Update (wave B12, `a3445f3f`): lane B12-E (B4-T1) added MPP over blinded paths (one part per path when no single path carries the amount, planned parts counted against liquidity) and paying a path whose introduction node is us (`Payments/Send/Blinded/SelfIntroducedBlindedPath`, B12-PAY-02; `PaymentRoute.FirstHopPathKey`; a malformed answer excludes the path only when we introduced it, and a self-introduced path whose relay leaves the payee short is skipped) (9e963b82, ba314f36). B12-PAY-02 is proven in-process only (`OfferHarnessTests`): CLN introduces its invoice paths itself even when we are its only peer. Left: BOLT 11 blinded paths (field 20) and dummy hops.
+- **Fix sketch:** Decode BOLT 11 field 20 when an interop case needs it; dummy hops are a MAY (`BOLT12_PLAN.md` out of scope).
 - **Blocks/Blocked-by:** Follow-up of NL-079
 - **Plan ref:** ONION M5
 
@@ -1934,14 +1936,84 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `BOLT12_PLAN.md` §3.4, OM2-T2, OM3-T3
 
 ### NL-447 [EPIC] BOLT 12 offers not implemented
-- **Status:** open
+- **Status:** open (partial: 95066ae5, b7ac3543, 3acf5ca6, 80bd155c, 03c2bfde, ffc5c62b, 61ea7b02, 883a883f, 16019fb9, bf8da622, 5ec25ce9, f01081a8, 59a0072d, c7f0586d, 1e43d24a, 9e963b82, bc59fa90, 5a99843b, 4fd7d44e, e6248970, 33e49e03, 8ae4c1b8, b0d3f056, 64f2b1db, 52494429, ba314f36, a3445f3f)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** planned `src/NLightning.Domain/Offers/`, `src/NLightning.Infrastructure.Bitcoin/Offers/`, `src/NLightning.Application/Offers/`, migration `AddBolt12Offers`
-- **Evidence:** No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures (plan gap OG5); `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields (OG7); no IPC for offers (OG9). Onion messages (NL-080) and route blinding with blinded send (NL-079, OG6) are done; `MinimalOfferEncoder` in `test/NLightning.Tests.Utils/Bolt12/` is test-only (filed by the ledger agent after wave M6 as the plan asked).
-- **Fix sketch:** Wave B12 per `BOLT12_PLAN.md` (B0-B4, lanes B12-A..E, B12-C migration owner).
+- **Evidence:** No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures (plan gap OG5); `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields (OG7); no IPC for offers (OG9). Onion messages (NL-080) and route blinding with blinded send (NL-079, OG6) are done; `MinimalOfferEncoder` in `test/NLightning.Tests.Utils/Bolt12/` is test-only (filed by the ledger agent after wave M6 as the plan asked). Update (wave B12, `wip/fafo` at `a3445f3f`; contracts B12-0 `6f4bdaad`): B0 (B12-A): `Domain/Offers/` `Bolt12Bech32` (all 12 `format-string-test.json` cases), `Bolt12TlvStream` and typed views (every valid `offers-test.json` offer byte-exact, all 33 invalid ones rejected with the requirement id asserted), `OfferValidator`/`InvoiceRequestValidator`/`InvoiceValidator` (fail closed on an overflowing or unconvertible expected amount, expected node id required for paths-only offers, odd 241-1000 elements ignored per BOLT 1), `Bolt12MerkleTree` (every `signature-test.json` leaf, branch and root) (95066ae5, b7ac3543). B1 (B12-B): `IBolt12Signer` (`Infrastructure.Bitcoin/Offers/`), `ILightningSigner.GetBolt12PayerId`/`SignBolt12` with the exact tag bound to each key kind; the vector signature reproduced byte for byte (deterministic, zero aux); `SignAsBlindedRecipient` built, not wired (D2) (3acf5ca6, 80bd155c). B2 (B12-C): migration `AddBolt12Offers` on all three providers (`Offers` table, `Invoices.Kind/OfferId/...`, nullable `Invoices.Bolt11`, BOLT 12 payment columns), `OfferDbRepository` with SQL-side unpaid counts, `PruneExpiredBolt12InvoicesAsync` (no caller yet, NL-448) (03c2bfde, ffc5c62b). B3 (B12-D): `OfferService`, the type-64 `InvoiceRequestHandler` (signature before any answer, unknown offers ignored silently, node-wide token before parsing, per-offer and global limits, D11 caps), `OfferInvoiceFactory` + `BlindedPaymentPathFactory`, the BOLT 12 final-hop rule, `createoffer`/`listoffers`/`disableoffer` (61ea7b02, 883a883f, 16019fb9, bf8da622, f01081a8, 1e43d24a); Docker `ClnOfferReceiveTests` 4/4 (5ec25ce9, 59a0072d, c7f0586d). B4 (B12-E): blinded send with MPP and introduction = us (NL-440 partial), `InvoiceRequestFactory`, `InvoiceVerifier`, `OfferPaymentService`, `payoffer`/`fetchinvoice`, `OfferHarnessTests` with the production issuer and signer (9e963b82, bc59fa90, 5a99843b, 4fd7d44e, 33e49e03, 8ae4c1b8, b0d3f056, 52494429, ba314f36); Docker `ClnOfferPayTests` 4/4 (e6248970, 64f2b1db). Integration (a3445f3f): `ClientCommand` 26-30, `AddOffersServices`/`AddOfferSendServices`/`AddOfferIpcServices`/`AddOfferSendIpcServices`, `OfferOptions` bound from `Offers`, both `Bolt12Wire` seams delegate to lane A's codecs, the BOLT 11 fallback removed; no feature bit (plan F-04). CLN suite 39/39 incl. both offer proofs. Left before the epic closes: CLN-captured vectors (B0-T4, NL-450), the invoice prune timer (NL-448), reachability limits (NL-452); follow-ups NL-451, NL-453, NL-454, NL-455.
+- **Fix sketch:** Remaining: NL-450 (B0-T4 captures, needed to close B4-T2 as planned) and NL-448; then close the epic and carry NL-451..NL-455 as their own entries.
 - **Blocks/Blocked-by:** Blocked-by NL-080, NL-079
 - **Plan ref:** `BOLT12_PLAN.md` wave B12
+
+### NL-448 Expired unpaid BOLT 12 invoice rows are never deleted
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Repositories/Database/Payment/InvoiceDbRepository.cs` (`PruneExpiredBolt12InvoicesAsync`), `src/NLightning.Application/Offers/Receive/`
+- **Evidence:** Lane B12-C added `IInvoiceDbRepository.PruneExpiredBolt12InvoicesAsync(now, max)` (ffc5c62b), but nothing calls it. Every answered invoice_request writes an invoice row; the D11 caps count only open unexpired (and Accepted) rows, so expired rows accumulate without bound, at up to the node-wide invoice_request rate (20/s) from any onion-message peer (reported by the integrator and lanes B12-C, B12-D).
+- **Fix sketch:** A timer (or the block tick) in `Offers/Receive` calls the prune with a batch size and saves; test that a pruned invoice's late HTLC fails like an expired one.
+- **Blocks/Blocked-by:** Follow-up of NL-447
+- **Plan ref:** `BOLT12_PLAN.md` D11, B2-T2
+
+### NL-450 No CLN-captured BOLT 12 vectors (B0-T4)
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Tests.Utils/Vectors/Bolt12Vectors.cs`, `test/NLightning.Integration.Tests/BOLT12/Bolt12VectorTests.cs` (TODO B0-T4)
+- **Evidence:** The plan asks for a CLN v26.06.8 offer, invoice_request, invoice and invoice_error, each parsed, re-encoded byte-exact, validated and signature-verified, and uses the captured invoice as the positive case of `InvoiceVerifierTests` (B4-T2). Lane B12-A could not capture them; lane B12-E's `ClnOfferPayTests` prints CLN's invoice bytes as `VECTOR` lines, but they were not added (reported by lanes B12-A, B12-E).
+- **Fix sketch:** Take the `VECTOR` lines (and an invoice_request/invoice_error through `RawOnionMessageRecorder`) into `Bolt12Vectors.cs` and assert parse, re-encode, validate and verify.
+- **Blocks/Blocked-by:** Part of NL-447
+- **Plan ref:** `BOLT12_PLAN.md` B0-T4, B4-T2
+
+### NL-451 offers-test.json malformed cases fail at the TLV layer, not at the rule they name
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/BOLT12/Vectors/offers-test.json` (bolts 1aadb719), `test/NLightning.Domain.Tests/Offers/`
+- **Evidence:** The six "Malformed ... blinded_path" cases encode `offer_paths` with a length of 2 or 3, and "Contains type > 1999999999" and "unknown even type (1000000002)" encode their type as a 3-byte `fd` BigSize (30517, 15258) with a length past the end, so all eight are rejected as B12-ENC-03 before the rule they name is reached. Our unit tests cover num_hops 0, off-curve points, the range above 1999999999 and 1000000002 with well-formed streams (reported by lane B12-A).
+- **Fix sketch:** Report the vectors upstream (lightning/bolts); update the vector file when fixed.
+- **Blocks/Blocked-by:** Related NL-447
+- **Plan ref:** `BOLT12_PLAN.md` B0-T3
+
+### NL-452 BOLT 12 reachability: private-channel payment paths, fragile offer paths, blinded issuer not wired
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Offers/Receive/{OfferService,BlindedPaymentPathFactory}.cs`
+- **Evidence:** `BlindedPaymentPathFactory` builds payment paths over private channels too, so such a path only works when that channel's peer is the payer (as CLN is in the proof); a third-party payer cannot use it. When no connected onion-message peer has an Open channel, offer paths are introduced by peers without a channel, which we never reconnect to, so the offer dies with the connection (only logged; `createoffer` does not surface the warning). Offers with `IssuerKind.BlindedPaths` (signed by `SignAsBlindedRecipient`) are not wired (plan D2). B12-PAY-02 (introduction = us) is proven only in-process: CLN introduces its own invoice paths (reported by lanes B12-D, B12-E).
+- **Fix sketch:** Prefer announced channels (or the graph) for payment-path introduction nodes, return the fallback warning in the `createoffer` response, and decide D2 when an operator wants a hidden node id.
+- **Blocks/Blocked-by:** Follow-up of NL-447; related NL-440
+- **Plan ref:** `BOLT12_PLAN.md` §3.7, D2, Proof B12 pay (c)
+
+### NL-453 Two Bolt12Wire seams remain over the Domain codecs
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Offers/Receive/Bolt12Wire.cs`, `src/NLightning.Application/Offers/Send/Bolt12Wire.cs`
+- **Evidence:** Lanes B12-D and B12-E each wrote a stand-in for lane B12-A's codecs; at integration both became thin delegates to `Bolt12TlvStream`, `Bolt12MerkleTree`, `Bolt12Bech32`, `Bolt12FieldCodec` and `Bolt12TlvRanges` (8ae4c1b8, a3445f3f) instead of being deleted, so the lanes' tests stayed unchanged (reported by the integrator and lane B12-D; like NL-442 for onion messages).
+- **Fix sketch:** Inline the call sites onto the Domain codecs and delete both files.
+- **Blocks/Blocked-by:** Follow-up of NL-447; related NL-442
+- **Plan ref:** `BOLT12_PLAN.md` B0
+
+### NL-454 Offers operator surface: no template keys, listinvoices without kind or offer
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs`, `src/NLightning.Transport.Ipc/Responses/InvoiceInfoIpcResponse.cs`, `src/NLightning.Client/Printers/`
+- **Evidence:** The `Offers` section (`OfferOptions`, bound since a3445f3f) is not in the daemon's `appsettings.json` template, so the defaults apply silently. `InvoiceInfo` client/IPC responses carry no `Kind`/`OfferId`; `listinvoices` prints `- (BOLT 12)` for a BOLT 12 invoice's `Bolt11` (reported by the integrator and lane B12-C).
+- **Fix sketch:** Add the `Offers` keys to the template; append `Kind` and `OfferId` keys to `InvoiceInfoIpcResponse` and print them.
+- **Blocks/Blocked-by:** Follow-up of NL-447
+- **Plan ref:** `BOLT12_PLAN.md` §3.11
+
+### NL-455 BOLT 12 BIP-340 signatures use zero auxiliary randomness
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Offers/Bolt12TaggedHash.cs` (`SignBip340`)
+- **Evidence:** Signing is deterministic (aux = 32 zero bytes) to match CLN and reproduce `signature-test.json`; BIP-340 recommends fresh aux randomness as side-channel hardening. Acceptable for a software signer with the key in process (reported by lane B12-B).
+- **Fix sketch:** Use random aux in production and keep the zero-aux path for the vector test; revisit with a hardware/VLS signer.
+- **Blocks/Blocked-by:** Follow-up of NL-447
+- **Plan ref:** `BOLT12_PLAN.md` B1-T1
 
 ## BOLT 5: On-chain handling
 
@@ -4531,6 +4603,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed once in a full non-Docker run (collection `[110x1x0]` not empty) and passed when its class ran alone (36/36); not reproduced in the integrator's runs (reported by lane M6-C).
 - **Fix sketch:** Look for a wall-clock or scheduling dependency in the retry give-up path and drive it with the fake clock.
 - **Blocks/Blocked-by:** Related NL-434, NL-382
+- **Plan ref:** —
+
+### NL-449 The onion message harness rate-limit test fails when run alone
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageHarnessTests.cs` (`Given_ARateLimitOf20PerSecondAtBob_When_AliceSends25InOneSecond_Then_BobDropsTheLast5`)
+- **Evidence:** Fails every time when its class or the test alone is run (`OperationCanceledException` in `RecordingHandler.WaitForAsync` after 10 s: carol never sees 20 messages); reproduced 3/3 by the ledger agent at `a3445f3f` (net10.0 Release, `--filter FullyQualifiedName~OnionMessageHarnessTests`), while the whole Application.Tests project passes (2263/2263), so the order or timing of the other tests hides it. Lanes B12-C and B12-D saw it fail on `6f4bdaad`. Suspected, not verified: the M6 onion-message outbox cap on the alice->bob link (wired in 9639b7cf/641a5fff) drops some of the 25 back-to-back sends before bob's limiter is reached.
+- **Fix sketch:** Drain the harness outbox between sends or raise its cap in this test, and assert on the outbox drops separately; add the test to the known-flake list until then.
+- **Blocks/Blocked-by:** Related NL-446, NL-442
+- **Plan ref:** `BOLT12_PLAN.md` OM2-T2, OM3
+
+### NL-456 WalletBalanceIpcResponse raises three MsgPack017 build warnings
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Transport.Ipc/Responses/WalletBalanceIpcResponse.cs:17,26,31`
+- **Evidence:** Three `init` properties with initializers: MessagePack resets them to the type default when the key is missing (MsgPack017). Present since the anchors reserve fields (41ce3200, wave O7b); the gates grep only `warning CS`, so the baseline missed them. Seen by the B12 integrator and reproduced by the ledger agent with a clean Release build of `NLightning.Transport.Ipc`.
+- **Fix sketch:** Drop the initializers (or make the members required) so an older client or daemon cannot silently read the default; count analyzer warnings in the gate.
+- **Blocks/Blocked-by:** Related NL-171
 - **Plan ref:** —
 
 ## Docs

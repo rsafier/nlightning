@@ -6,6 +6,8 @@ This plan covers two waves:
 
 **Status (2026-09-27, `wip/fafo` @ `641a5fff`): wave M6 is done** (NL-080 fixed; Proof M6 10/10 against CLN v26.06.8; `option_onion_messages` Optional by default, D9 at 641a5fff). See "Wave M6 record" at the end of §5 for SHAs, deviations and follow-ups. **Wave B12 is next** (NL-447); its `ClientCommand` values start at **26** (25 is `withdraw`, NL-441).
 
+**Status (2026-09-27, `wip/fafo` @ `a3445f3f`): wave B12 is integrated** (NL-447 partial). B0-T1/T2/T3/T5, B1, B2, B3 and B4-T1..T4 are done, Proof B12 receive and pay are green against CLN v26.06.8 (4/4 each), and `ClientCommand` 26-30 are `createoffer`, `listoffers`, `disableoffer`, `payoffer`, `fetchinvoice`. Open: B0-T4 CLN captures (NL-450), the expired-invoice prune timer (NL-448), reachability limits (NL-452). See "Wave B12 record" at the end of §5.
+
 Every repo claim cites a repo-relative path, verified at `wip/fafo` @ `88d046c7` unless marked otherwise. Claims marked **(unverified)** were not checked against the spec, code or a running peer. Confirm them before relying on them.
 
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-27 through the GitHub contents API:
@@ -204,11 +206,11 @@ Always fetch vectors from `https://raw.githubusercontent.com/lightning/bolts/mas
 | OG2 | No message-path rule set for `encrypted_data_tlv` (M5's validator is for payments only) | NL-080, fixed (db29eccd) |
 | OG3 | No sender for onion messages, and no way to prepend unblinded hops to a blinded path (`next_path_key_override = first_path_key`) | NL-080, fixed (abd81802, e4c10d9c) |
 | OG4 | No rate limits for non-channel peer traffic besides gossip | NL-080, fixed for onion messages (3149da79, 76ee51af); tuning NL-446 |
-| OG5 | No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures | NL-447 (B12 epic) |
-| OG6 | No blinded **send**: `PaymentOnionFactory`/`PaymentRoutePlanner` cannot target a blinded path, and there is no introduction-node-is-us case | partly done in wave rf1 (`PaymentService.PayBlindedAsync`, 8675ca37, NL-079); introduction = us and MPP remain (NL-440) |
-| OG7 | `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields | NL-447 |
+| OG5 | No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures | NL-447, done in wave B12 (95066ae5, b7ac3543, 3acf5ca6, 80bd155c) |
+| OG6 | No blinded **send**: `PaymentOnionFactory`/`PaymentRoutePlanner` cannot target a blinded path, and there is no introduction-node-is-us case | partly done in wave rf1 (`PaymentService.PayBlindedAsync`, 8675ca37, NL-079); introduction = us and MPP done in wave B12 (9e963b82, ba314f36); BOLT 11 blinded paths and dummy hops remain (NL-440) |
+| OG7 | `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields | NL-447, done in wave B12 (`AddBolt12Offers`, 03c2bfde, ffc5c62b) |
 | OG8 | `sciddir_or_pubkey` resolution (SCID + direction → node id) through our own channels and the graph | NL-080, fixed for onion messages (e4c10d9c) |
-| OG9 | No IPC for offers | NL-447 |
+| OG9 | No IPC for offers | NL-447, done in wave B12 (IPC 26-30; 16019fb9, 5a99843b, a3445f3f) |
 
 ---
 
@@ -519,6 +521,37 @@ Follow-ups: NL-442 (one codec, one path builder, the service on `IOnionMessageUn
   - (d) A quantity offer (`quantity_max`).
   - (e) The payer note appears in CLN's `listinvoices` **(verify the field name)**.
 - Proof B12 passes when the vector tests, the harness and both Docker files are green three runs in a row (`--filter "Category=Interop.Cln&FullyQualifiedName~Offer"`).
+
+### Wave B12 record (integrated into `wip/fafo` @ `a3445f3f`, 2026-09-27)
+
+Five lanes on the B12-0 contracts (6f4bdaad), each with a review/fix step; B12-C was the migration owner (`AddBolt12Offers`, all three providers). Lane commits cherry-picked with `-x` in the order C, A, B, D, E (lane E's four merge commits left out; conflicts in `NamedPipeIpcClient.cs` and the Application, Daemon, Transport.Ipc and test CLAUDE.md files, both sides kept).
+
+| Lane | Tasks | `wip/fafo` SHAs | Result |
+|---|---|---|---|
+| B12-A codecs | B0-T1, T2, T3, T5 (T4 open) | 95066ae5, b7ac3543 | done: `Bolt12Bech32` (12/12 `format-string-test.json`), `Bolt12TlvStream` + typed views (20 valid offers byte-exact, 33 invalid rejected with the requirement id), validators, `Bolt12MerkleTree` (every `signature-test.json` value). B0-T4 open (NL-450) |
+| B12-B signer | B1-T1..T3 | 3acf5ca6, 80bd155c | done: `IBolt12Signer`, `ILightningSigner.GetBolt12PayerId`/`SignBolt12(Bolt12SigningKey, tag, root)`; the vector signature reproduced byte for byte (the vector signs with zero aux randomness: open question of B1-T1 answered); each tag bound to its key kind; `SignAsBlindedRecipient` built, not wired |
+| B12-C schema | B2-T1, B2-T2 | 03c2bfde, ffc5c62b | done: `AddBolt12Offers` x3 (generated with dotnet-ef 10.0.12, matching the EF packages), `OfferDbRepository`, BOLT 12 invoice/payment mappings, nullable `InvoiceModel.Bolt11`, SQL-side unpaid counts incl. Accepted, `PruneExpiredBolt12InvoicesAsync` (no caller, NL-448); SQLite and Postgres round trips |
+| B12-D receive | B3-T1..T4, Proof B12 receive | 61ea7b02, 883a883f, 16019fb9, bf8da622, 5ec25ce9, f01081a8, 59a0072d, c7f0586d, 1e43d24a | done: `OfferService`, `InvoiceRequestHandler` (type 64), `OfferInvoiceFactory`, `BlindedPaymentPathFactory`, final-hop rule, IPC 26-28; `ClnOfferReceiveTests` 4/4 (a)-(e) with the channel balance checked |
+| B12-E pay | B4-T1..T4, Proof B12 pay | 9e963b82, bc59fa90, 5a99843b, 4fd7d44e, e6248970, 33e49e03, 8ae4c1b8, b0d3f056, 64f2b1db, 52494429, ba314f36 | done: blinded send with MPP and introduction = us, `InvoiceRequestFactory`, `InvoiceVerifier`, `OfferPaymentService`, IPC 29-30, `OfferHarnessTests` (production issuer, onion messages and signer); `ClnOfferPayTests` 4/4 |
+| Integration | registrations, command numbers, codec seams | a3445f3f | `ClientCommand` 26-30; `AddOffersServices`/`AddOfferSendServices` after `AddOnionMessageServices`, `AddOfferIpcServices`/`AddOfferSendIpcServices`, `OfferOptions` from `Offers`; both `Bolt12Wire` files delegate to lane A's codecs (NL-453); the BOLT 11 fallback removed; composition test for the offer wiring |
+
+Deviations from this plan (spec wins):
+- B12-SIG-03 on the reader side means "a signature is present": odd 241-1000 elements are ignored (BOLT 1), even ones are refused by the strict TLV parse; "exactly one" is a writer rule (b7ac3543, ba314f36).
+- `InvoiceRequestValidator` requires a signature only when the request answers an offer (`offer_issuer_id` or `offer_paths` set): the spec's refund writer rule ("MUST NOT include signature") contradicts its reader rule. Refunds are out of scope; to confirm when they are added.
+- An empty `offer_paths` (or `invoice_paths`) value is rejected as B12-OFR-03 (B12-INV-03). To confirm against CLN/LDK.
+- A currency offer without a converter, or an expected amount that overflows u64, fails closed (B12-IRQ-04). `ValidateAgainstRequest` needs the expected node id for a paths-only offer.
+- §3.6: `nodeOffersSecret` = HMAC-SHA256(node_key, "nltg_bolt12") is derived inside `LocalLightningSigner`, not by `ISecureKeyManager`; the members are `GetBolt12PayerId`/`SignBolt12(Bolt12SigningKey, ...)`, and the signer takes the Merkle root and computes the tagged hash itself.
+- B12-IRQ-03: an invoice_request for an unknown offer is ignored silently (not answered with `invoice_error`), so a prober cannot link offers to our node (1e43d24a). Every invoice_request takes a node-wide rate-limit token before parsing.
+- Offer paths are introduced by connected onion-message peers with an Open channel; others only when there is none, with a logged warning (NL-452).
+- B4-T3: no `InvoiceHandler`/`InvoiceErrorHandler`: the M6 `PendingReplyRegistry` delivers types 66/68 to the waiting fetch.
+- B4-T1: `BlindedPaymentOnionVectorTests` not added: M5's `BlindedPaymentSendVectorTests` already covers `blinded-payment-onion-test.json` byte-exact.
+- Proof B12 receive (e): after `disableoffer` CLN gets our `invoice_error` (CLN error 1004). Proof B12 pay (c): CLN introduces its invoice path itself even when we are its only peer, so B12-PAY-02 is proven in-process only.
+- No feature bit (F-04): offers ride on the advertised onion-message and route-blinding bits.
+- Upstream vector quirk: eight malformed `offers-test.json` cases fail at the TLV layer before the rule they name (NL-451).
+
+Gates at `a3445f3f`: Release and Release.Native (net10.0) 0 errors, the 5 baseline CS86xx warnings (plus the three pre-existing MsgPack017 warnings, NL-456); SDK 11 rc1 net10.0 + net11.0 compile check 0 errors; `dotnet format` clean; `HasPendingModelChanges` false x3; **8985** non-Docker tests on net10.0 (both configs), Long simulator 1/1; Docker (net10.0, in-container runner, SQL Server skipped) CLN 39/39 (+3 Explicit) incl. both offer proofs, LND 62/62, `MultiNodeHarnessTests` 5/5 facts (server-database theory not run, NL-429), gossip 28/28, on-chain legacy + anchors 40/40 (+2 Explicit), ABCD 3 x 10/10. Proof B12's "three runs in a row" was met by the lanes on local merges (receive 6 runs, pay per lane E); the integrated branch ran the CLN suite once.
+
+Follow-ups: NL-448 (prune timer), NL-450 (B0-T4), NL-451, NL-452, NL-453, NL-454, NL-455; NL-440 (BOLT 11 blinded paths, dummy hops); NL-449 (onion message harness test fails alone).
 
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |

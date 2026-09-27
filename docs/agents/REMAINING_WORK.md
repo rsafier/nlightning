@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`), and wave B12 (BOLT 12 offers, `a3445f3f`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -21,6 +21,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - O8 mempool reaction: preimages and penalties from unconfirmed transactions (NL-098), and the `chainstatus` halt gate (NL-216), gossip wave G-A.
 - **BOLT 7 public channels, gossip and graph routing** (waves G-A..G-D): we pay and get paid over public channels without route hints against LND and CLN (goal proofs (a)-(e)); the whole mainnet graph synced and verified on chain against a real bitcoind ([`MAINNET_GOSSIP_PROBE.md`](MAINNET_GOSSIP_PROBE.md)); gossip stays off on mainnet by default (D12).
 - **Onion messages** (wave M6, NL-080): forward, deliver and reply paths with per-peer and global rate limits, proven against CLN; `option_onion_messages` Optional by default. On-chain `withdraw` (NL-441) in the same wave.
+- **BOLT 12 offers** (wave B12, NL-447 partial): `createoffer`/`listoffers`/`disableoffer`/`payoffer`/`fetchinvoice`, invoice_requests answered with node-signed invoices over blinded payment paths, offers paid over the invoice's blinded paths (MPP, introduction = us); both directions proven against CLN v26.06.8.
 - **Mainnet HTLC gate open** (O6-T4, wave G-D): HTLCs on for every network by default after the full BOLT 5 proof set.
 - **Live Mutinynet smoke test.** Open, pay, receive, restart, cooperative close, and a public channel with our node announced as `NLightningFAFO` and visible on mutinynet.com ([`MUTINYNET.md`](MUTINYNET.md)).
 - **Platform.** net10.0 + net11.0; SQLite, Postgres and SQL Server schemas kept in sync.
@@ -57,9 +58,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Attribution data** (M3b). Wired end to end but kept experimental: LND 0.20 does not implement it, so it can't be proven against LND (NL-332). Follow-ups:
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).
-- **Route blinding** (ONION M5): **done in wave rf1** (NL-079, NL-339). Left: MPP over blinded paths, BOLT 11 blinded paths, dummy hops (NL-440).
+- **Route blinding** (ONION M5): **done in wave rf1** (NL-079, NL-339); MPP over blinded paths and introduction = us added in wave B12. Left: BOLT 11 blinded paths, dummy hops (NL-440).
 - **Onion messages** (ONION M6): **done in wave M6** (NL-080; proven against CLN v26.06.8, `option_onion_messages` Optional by default). Left: NL-442 (duplicate reader/path code), NL-444 (malformed 513 closes the connection), NL-446 (tuning, queue gauge).
-- **BOLT 12 offers** (NL-447, wave B12 of [`BOLT12_PLAN.md`](BOLT12_PLAN.md)): both prerequisites, onion messages and blinded paths, are done.
+- **BOLT 12 offers** (NL-447, wave B12 of [`BOLT12_PLAN.md`](BOLT12_PLAN.md)): **integrated in wave B12** (`a3445f3f`). Left: the expired-invoice prune timer (NL-448), CLN-captured vectors (NL-450), reachability (NL-452), follow-ups NL-451, NL-453..NL-455; out of scope: refunds, recurrence, payer proofs, blinded issuer ids (D2).
 - **Dual funding / interactive-tx** (v2 open, NL-037). Messages and validators exist; no handlers.
 - **Splicing and quiescence** (`stfu` is only answered with a warning).
 - **Zero-conf and scid-alias channels** as first-class options.
@@ -84,7 +85,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 ## Tech debt worth scheduling
 
 - `ChannelModel` legacy HTLC collections and the remaining clean-architecture violations (Application → Infrastructure) (NL-032, NL-157).
-- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25; next free 26); richer channel and payment queries remain.
+- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25), the BOLT 12 commands in wave B12 (26-30; next free 31); richer channel and payment queries remain.
 - The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly (NL-185).
 
 ## Standard test cycle
