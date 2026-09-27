@@ -1,3 +1,4 @@
+using System.Runtime.Serialization;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -143,7 +144,7 @@ public sealed class SecureKeyManagerTests : IDisposable
         var second = ReadKeyFile();
 
         // Assert
-        Assert.Equal(KeyFileData.CurrentVersion, first.Version);
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, first.Version);
         Assert.Equal(Argon2Id.SaltLen, Convert.FromBase64String(first.Salt!).Length);
         Assert.Equal(24, Convert.FromBase64String(first.Nonce!).Length);
         Assert.Equal(64UL * 1024 * 1024, first.Argon2MemLimit);
@@ -234,7 +235,7 @@ public sealed class SecureKeyManagerTests : IDisposable
         }
 
         var upgraded = ReadKeyFile();
-        Assert.Equal(KeyFileData.CurrentVersion, upgraded.Version);
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, upgraded.Version);
         Assert.NotNull(upgraded.Salt);
         Assert.NotEqual(Convert.ToBase64String(s_legacySalt), upgraded.Salt);
         Assert.Equal(7u, upgraded.LastUsedIndex);
@@ -315,7 +316,7 @@ public sealed class SecureKeyManagerTests : IDisposable
 
         // Assert: upgraded to v2 with the full UTF-8 encoding, which the truncated encoding cannot open
         var upgraded = ReadKeyFile();
-        Assert.Equal(KeyFileData.CurrentVersion, upgraded.Version);
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, upgraded.Version);
         Assert.Equal(json, File.ReadAllText(_filePath + ".v1.bak"));
         Assert.False(TryDecryptVersion2(upgraded, truncated));
         Assert.True(TryDecryptVersion2(upgraded, Encoding.UTF8.GetBytes(nonAsciiPassword)));
@@ -338,7 +339,7 @@ public sealed class SecureKeyManagerTests : IDisposable
         // Assert
         var backupPath = _filePath + ".v1.bak";
         Assert.Equal(json, File.ReadAllText(backupPath));
-        Assert.Equal(KeyFileData.CurrentVersion, ReadKeyFile().Version);
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, ReadKeyFile().Version);
         if (!OperatingSystem.IsWindows())
             Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(backupPath));
     }
@@ -364,21 +365,43 @@ public sealed class SecureKeyManagerTests : IDisposable
 
     [Fact]
     [UnsupportedOSPlatform("windows")]
-    public async Task Given_KeyFileWithCustomMode_When_UpdateLastUsedChannelIndexOnFile_Then_KeepsItsPermissions()
+    public async Task Given_GroupReadableKeyFile_When_UpdateLastUsedChannelIndexOnFile_Then_DropsGroupAndOtherBits()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
 
         // Arrange
         using var keyManager = NewKeyManager();
         keyManager.SaveToFile(Password);
-        const UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
-        File.SetUnixFileMode(_filePath, mode);
+        File.SetUnixFileMode(_filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead);
 
         // Act
         await keyManager.UpdateLastUsedChannelIndexOnFile();
 
+        // Assert: the owner bits are kept, the group bit is not (SR-02)
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_filePath));
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void Given_WorldReadableVersion1KeyFile_When_FromFilePathUpgradesIt_Then_FileAndBackupAreOwnerOnly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange: older builds wrote the key file with the umask's mode, typically 0644
+        File.WriteAllText(_filePath, CreateLegacyKeyFileJson(Password));
+        File.SetUnixFileMode(_filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead
+                                      | UnixFileMode.OtherRead);
+
+        // Act
+        using (SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password))
+        {
+        }
+
         // Assert
-        Assert.Equal(mode, File.GetUnixFileMode(_filePath));
+        const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, ReadKeyFile().Version);
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(_filePath));
+        Assert.Equal(ownerOnly, File.GetUnixFileMode(_filePath + ".v1.bak"));
     }
 
     [Fact]
@@ -413,7 +436,7 @@ public sealed class SecureKeyManagerTests : IDisposable
 
         // Assert
         Assert.NotNull(new FileInfo(_filePath).LinkTarget);
-        Assert.Equal(KeyFileData.CurrentVersion, ReadKeyFile().Version);
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, ReadKeyFile().Version);
         Assert.Equal(File.ReadAllText(targetPath), File.ReadAllText(_filePath));
     }
 
@@ -429,6 +452,218 @@ public sealed class SecureKeyManagerTests : IDisposable
 
         // Assert
         Assert.Empty(Directory.GetFiles(_directory, "*.tmp"));
+    }
+
+    [Fact]
+    public void Given_APrivateKeyArray_When_ConstructingTheKeyManager_Then_TheArrayIsZeroed()
+    {
+        // Arrange
+        var privateKey = s_privateKey.ToArray();
+
+        // Act
+        using var keyManager = new SecureKeyManager(privateKey, BitcoinNetwork.Regtest, _filePath, 0);
+
+        // Assert
+        Assert.All(privateKey, b => Assert.Equal(0, b));
+        Assert.Equal(ExpectedNodePubKey(), (byte[])keyManager.GetNodePubKey());
+    }
+
+    [Fact]
+    public void Given_ALegacyKeyManager_When_GettingTheNodeKey_Then_ItIsTheMasterKeyAndTheSchemeIsLegacy()
+    {
+        // Arrange
+        using var keyManager = NewKeyManager();
+
+        // Act
+        var keyPair = keyManager.GetNodeKeyPair();
+
+        // Assert: the node id of every existing node (NL-159 keeps it)
+        Assert.Equal(KeyDerivationScheme.LegacyGenesisChainCode, keyManager.DerivationScheme);
+        Assert.Equal(s_privateKey, keyPair.PrivKey.Value.ToArray());
+        Assert.Equal(ExpectedNodePubKey(), (byte[])keyPair.CompactPubKey);
+    }
+
+    [Fact]
+    public void Given_Version1KeyFile_When_Upgraded_Then_KeepsTheNodeIdAndTheLegacyDerivation()
+    {
+        // Arrange
+        File.WriteAllText(_filePath, CreateLegacyKeyFileJson(Password));
+        byte[] channelKeyBefore;
+        using (var legacy = NewKeyManager())
+            channelKeyBefore = legacy.GetChannelKeyAtIndex(3);
+
+        // Act
+        using (SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password))
+        {
+        }
+
+        using var reloaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+
+        // Assert: upgraded to version 2, never to the BIP32 version 3
+        var upgraded = ReadKeyFile();
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, upgraded.Version);
+        Assert.Null(upgraded.NodeKeyPath);
+        Assert.Equal(KeyDerivationScheme.LegacyGenesisChainCode, reloaded.DerivationScheme);
+        Assert.Equal(ExpectedNodePubKey(), (byte[])reloaded.GetNodePubKey());
+        Assert.Equal(channelKeyBefore, (byte[])reloaded.GetChannelKeyAtIndex(3));
+    }
+
+    [Fact]
+    public void Given_ANewNode_When_CreateNewAndSaveToFile_Then_WritesVersion3WithTheNodeKeyOnItsOwnPath()
+    {
+        // Arrange
+        using var keyManager = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, _filePath, 42);
+
+        // Act
+        keyManager.SaveToFile(Password);
+
+        // Assert
+        var data = ReadKeyFile();
+        Assert.Equal(KeyFileData.Bip32Version, data.Version);
+        Assert.Equal(SecureKeyManager.NodeKeyPathString, data.NodeKeyPath);
+        Assert.Equal(KeyDerivationScheme.Bip32, keyManager.DerivationScheme);
+        var master = DecryptMasterKey(data, Network.RegTest);
+        Assert.Equal(0, master.Depth);
+        Assert.NotEqual(Network.RegTest.GenesisHash.ToBytes(), master.ChainCode.ToArray());
+        var expectedNodeKey = master.Derive(new KeyPath(SecureKeyManager.NodeKeyPathString)).PrivateKey;
+        Assert.Equal(expectedNodeKey.PubKey.ToBytes(), (byte[])keyManager.GetNodePubKey());
+        Assert.Equal(expectedNodeKey.ToBytes(), keyManager.GetNodeKeyPair().PrivKey.Value.ToArray());
+        Assert.NotEqual(master.PrivateKey.PubKey.ToBytes(), (byte[])keyManager.GetNodePubKey());
+    }
+
+    [Fact]
+    public void Given_Version3KeyFile_When_FromFilePath_Then_KeepsTheNodeIdAndTheWalletKeys()
+    {
+        // Arrange
+        byte[] nodeId;
+        byte[] depositKey;
+        string descriptor;
+        using (var created = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, _filePath, 42))
+        {
+            created.GetNextChannelKey(out _);
+            created.SaveToFile(Password);
+            nodeId = created.GetNodePubKey();
+            depositKey = created.GetDepositP2WpkhKeyAtIndex(5, false);
+            descriptor = created.OutputDepositP2WshDescriptor;
+        }
+
+        // Act
+        using var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+
+        // Assert
+        Assert.Equal(KeyDerivationScheme.Bip32, loaded.DerivationScheme);
+        Assert.Equal(nodeId, (byte[])loaded.GetNodePubKey());
+        Assert.Equal(depositKey, (byte[])loaded.GetDepositP2WpkhKeyAtIndex(5, false));
+        Assert.Equal(descriptor, loaded.OutputDepositP2WshDescriptor);
+        Assert.Equal(42u, loaded.HeightOfBirth);
+        loaded.GetNextChannelKey(out var index);
+        Assert.Equal(2u, index);
+        Assert.Equal(KeyFileData.Bip32Version, ReadKeyFile().Version);
+        Assert.False(File.Exists(_filePath + ".v1.bak"));
+    }
+
+    [Fact]
+    public void Given_Version3KeyFileWithAnotherNodeKeyPath_When_FromFilePath_Then_Throws()
+    {
+        // Arrange
+        using (var created = SecureKeyManager.CreateNew(BitcoinNetwork.Regtest, _filePath, 42))
+            created.SaveToFile(Password);
+        var data = ReadKeyFile();
+        data.NodeKeyPath = "m/1017'/0'/6'/0/1";
+        File.WriteAllText(_filePath, JsonSerializer.Serialize(data));
+
+        // Act & Assert
+        Assert.Throws<SerializationException>(
+            () => SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password));
+    }
+
+    [Fact]
+    public void Given_TheBip84TestMnemonic_When_FromMnemonic_Then_DerivesTheStandardBip32Keys()
+    {
+        // Arrange: the BIP84 test vector (https://github.com/bitcoin/bips/blob/master/bip-0084.mediawiki)
+        const string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+                                "abandon about";
+
+        // Act
+        using var keyManager = SecureKeyManager.FromMnemonic(mnemonic, string.Empty, BitcoinNetwork.Mainnet,
+                                                             _filePath);
+
+        // Assert: m/84'/0'/0'/0/0 of the vector, so the seed restores in any BIP32 wallet
+        var firstReceiveKey = ExtKey.CreateFromBytes(keyManager.GetDepositP2WpkhKeyAtIndex(0, false)).PrivateKey;
+        Assert.Equal("KyZpNDKnfs94vbrwhJneDi77V6jF64PWPF8x5cdJb8ifgg2DUc9d",
+                     firstReceiveKey.GetWif(Network.Main).ToString());
+        Assert.Equal("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
+                     firstReceiveKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ToString());
+        Assert.Contains("xpub661MyMwAqRbcFkPHucMnrGNzDwb6teAX1RbKQmqtEF8kK3Z7LZ59qafCjB9eCRLiTVG3uxBxgKvRgbubRhqSKXnGGb" +
+                        "1aoaqLrpMBDrVxga8", keyManager.OutputDepositP2WshDescriptor);
+        var root = ExtKey.Parse("xprv9s21ZrQH143K3GJpoapnV8SFfukcVBSfeCficPSGfubmSFDxo1kuHnLisriDvSnRRuL2Qrg5ggqHK" +
+                                "NVpxR86QEC8w35uxmGoggxtQTPvfUu", Network.Main);
+        Assert.Equal(root.Derive(new KeyPath(SecureKeyManager.NodeKeyPathString)).PrivateKey.PubKey.ToBytes(),
+                     (byte[])keyManager.GetNodePubKey());
+    }
+
+    [Fact]
+    public void Given_Version1FileWithAnAnsiCodePagePassword_When_FromFilePathWithTheAnsiEncoder_Then_OpensAndUpgrades()
+    {
+        // Arrange: on Windows the old libsodium P/Invoke marshalled the password as LPStr (ANSI code page, NL-212);
+        // Latin-1 stands in for code page 1252 here, where both give the same bytes for these characters
+        const string nonAsciiPassword = "pässwörd";
+        var ansiBytes = Encoding.Latin1.GetBytes(nonAsciiPassword);
+        var json = CreateLegacyKeyFileJson(ansiBytes);
+        File.WriteAllText(_filePath, json);
+
+        // Act
+        using (var loaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, nonAsciiPassword,
+                                                          p => Encoding.Latin1.GetBytes(p)))
+            Assert.Equal(ExpectedNodePubKey(), (byte[])loaded.GetNodePubKey());
+
+        // Assert: rewritten as version 2 with the full UTF-8 password, the original kept
+        var upgraded = ReadKeyFile();
+        Assert.Equal(KeyFileData.GenesisChainCodeVersion, upgraded.Version);
+        Assert.Equal(json, File.ReadAllText(_filePath + ".v1.bak"));
+        Assert.True(TryDecryptVersion2(upgraded, Encoding.UTF8.GetBytes(nonAsciiPassword)));
+    }
+
+    [Fact]
+    public void Given_Version1FileWithAnAnsiCodePagePassword_When_FromFilePathWithoutTheAnsiEncoder_Then_Throws()
+    {
+        // Arrange
+        const string nonAsciiPassword = "pässwörd";
+        File.WriteAllText(_filePath, CreateLegacyKeyFileJson(Encoding.Latin1.GetBytes(nonAsciiPassword)));
+
+        // Act & Assert
+        Assert.Throws<CryptographicException>(() => SecureKeyManager.FromFilePath(
+                                                  _filePath, BitcoinNetwork.Regtest, nonAsciiPassword, null));
+    }
+
+    [Fact]
+    public void Given_APassword_When_GetSystemAnsiPasswordBytes_Then_ReturnsItsAnsiMarshalling()
+    {
+        // Arrange: Marshal.StringToHGlobalAnsi is the LPStr marshalling (UTF-8 on Unix, the ANSI code page on Windows)
+        const string password = "correct horse";
+
+        // Act
+        var bytes = SecureKeyManager.GetSystemAnsiPasswordBytes(password);
+
+        // Assert
+        Assert.Equal(Encoding.ASCII.GetBytes(password), bytes);
+    }
+
+    private static ExtKey DecryptMasterKey(KeyFileData data, Network network)
+    {
+        var key = new byte[32];
+        using (var argon2Id = new Argon2Id())
+            argon2Id.DeriveKeyFromPasswordBytesAndSalt(Encoding.UTF8.GetBytes(Password),
+                                                       Convert.FromBase64String(data.Salt!), key,
+                                                       data.Argon2OpsLimit, data.Argon2MemLimit);
+
+        var cipherText = Convert.FromBase64String(data.EncryptedExtKey);
+        var plainText = new byte[cipherText.Length - 16];
+        using (var xChaCha20Poly1305 = new XChaCha20Poly1305())
+            xChaCha20Poly1305.Decrypt(key, Convert.FromBase64String(data.Nonce!), ReadOnlySpan<byte>.Empty,
+                                      cipherText, plainText);
+
+        return ExtKey.Parse(Encoding.UTF8.GetString(plainText), network);
     }
 
     private SecureKeyManager NewKeyManager()

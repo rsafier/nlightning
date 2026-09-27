@@ -27,6 +27,13 @@ using Onion;
 public class SecureKeyManager : ISecureKeyManager, IDisposable
 {
     /// <summary>
+    /// BIP32 path of the node key for <see cref="KeyDerivationScheme.Bip32"/> (version 3 key files, NL-159). It follows
+    /// the layout of LND's node key (BIP43 purpose 1017, key family 6); the seed is not an LND seed, so the two are not
+    /// interchangeable.
+    /// </summary>
+    public const string NodeKeyPathString = "m/1017'/0'/6'/0/0";
+
+    /// <summary>
     /// Fixed salt used by version 1 key files. Only used to read them; new files get a random per-file salt.
     /// </summary>
     private static readonly byte[] s_legacySalt =
@@ -40,20 +47,44 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     /// </summary>
     private const ulong LegacyArgon2OpsLimit = 3;
 
+    private const int ChainCodeLength = 32;
+
+    /// <summary>
+    /// Group and other permission bits: a key file or its backup never keeps them (SECURITY_REVIEW SR-02).
+    /// </summary>
+    private const UnixFileMode GroupOrOtherMode = UnixFileMode.GroupRead | UnixFileMode.GroupWrite
+                                                                         | UnixFileMode.GroupExecute
+                                                                         | UnixFileMode.OtherRead
+                                                                         | UnixFileMode.OtherWrite
+                                                                         | UnixFileMode.OtherExecute;
+
     private readonly string _filePath;
     private readonly object _lastUsedIndexLock = new();
     private readonly Network _network;
     private readonly KeyPath _channelKeyPath = new(KeyConstants.ChannelKeyPathString);
     private readonly KeyPath _depositP2TrKeyPath = new(KeyConstants.P2TrKeyPathString);
     private readonly KeyPath _depositP2WpkhKeyPath = new(KeyConstants.P2WpkhKeyPathString);
+    private readonly byte[] _nodePubKey = [];
 
     private uint _lastUsedIndex;
-    private ulong _privateKeyLength;
-    private IntPtr _securePrivateKeyPtr;
+
+    // The master private key, followed by its chain code for the BIP32 scheme
+    private ulong _masterKeyLength;
+    private IntPtr _secureMasterKeyPtr;
+
+    // The node private key (for the legacy scheme a copy of the master private key)
+    private ulong _nodeKeyLength;
+    private IntPtr _secureNodeKeyPtr;
 
     public BitcoinKeyPath ChannelKeyPath => _channelKeyPath.ToBytes();
     public BitcoinKeyPath DepositP2TrKeyPath => _depositP2TrKeyPath.ToBytes();
     public BitcoinKeyPath DepositP2WpkhKeyPath => _depositP2WpkhKeyPath.ToBytes();
+
+    /// <summary>
+    /// How the master and node keys are derived. Chosen when the key is created and recorded by the key file version;
+    /// it never changes for an existing key file, because it decides the node id.
+    /// </summary>
+    public KeyDerivationScheme DerivationScheme { get; }
 
     public string OutputChannelDescriptor { get; init; }
     public string OutputDepositP2TrDescriptor { get; init; }
@@ -66,47 +97,107 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     public uint HeightOfBirth { get; init; }
 
     /// <summary>
-    /// Manages secure key operations for generating and managing cryptographic keys.
-    /// Provides functionality to safely store, load, and derive secure keys protected in memory.
+    /// Manages a key with the legacy derivation (<see cref="KeyDerivationScheme.LegacyGenesisChainCode"/>): the node
+    /// key is <paramref name="privateKey"/> itself, which is also the BIP32 master key with the network's genesis hash
+    /// as its chain code. New nodes use <see cref="CreateNew"/>.
     /// </summary>
-    /// <param name="privateKey">The private key to be managed.</param>
+    /// <param name="privateKey">The private key to be managed. The array is zeroed.</param>
     /// <param name="network">The network associated with the private key.</param>
     /// <param name="filePath">The file path for storing the key data.</param>
     /// <param name="heightOfBirth">Block Height when the wallet was created</param>
     public SecureKeyManager(byte[] privateKey, BitcoinNetwork network, string filePath, uint heightOfBirth)
+        : this(privateKey, null, network, filePath, heightOfBirth)
     {
-        _privateKeyLength = (ulong)privateKey.Length;
+    }
 
-        using var cryptoProvider = CryptoFactory.GetCryptoProvider();
+    /// <param name="privateKey">The master private key. The array is zeroed.</param>
+    /// <param name="chainCode">The master chain code (<see cref="KeyDerivationScheme.Bip32"/>), or null for the legacy
+    /// scheme. The array is zeroed.</param>
+    /// <param name="network">The network associated with the key.</param>
+    /// <param name="filePath">The file path for storing the key data.</param>
+    /// <param name="heightOfBirth">Block Height when the wallet was created</param>
+    private SecureKeyManager(byte[] privateKey, byte[]? chainCode, BitcoinNetwork network, string filePath,
+                             uint heightOfBirth)
+    {
+        ArgumentNullException.ThrowIfNull(privateKey);
 
-        // Allocate secure memory
-        _securePrivateKeyPtr = cryptoProvider.MemoryAlloc(_privateKeyLength);
+        byte[]? masterMaterial = null;
+        byte[]? nodeKey = null;
+        try
+        {
+            if (privateKey.Length != CryptoConstants.PrivkeyLen)
+                throw new ArgumentException($"The private key must be {CryptoConstants.PrivkeyLen} bytes.",
+                                            nameof(privateKey));
+            if (chainCode is not null && chainCode.Length != ChainCodeLength)
+                throw new ArgumentException($"The chain code must be {ChainCodeLength} bytes.", nameof(chainCode));
 
-        // Lock the memory to prevent swapping
-        if (cryptoProvider.MemoryLock(_securePrivateKeyPtr, _privateKeyLength) == -1)
-            throw new InvalidOperationException("Failed to lock memory.");
+            _network = Network.GetNetwork(network)
+                    ?? throw new ArgumentException("Invalid network specified.", nameof(network));
+            DerivationScheme = chainCode is null
+                                   ? KeyDerivationScheme.LegacyGenesisChainCode
+                                   : KeyDerivationScheme.Bip32;
 
-        // Copy the private key to secure memory
-        Marshal.Copy(privateKey, 0, _securePrivateKeyPtr, (int)_privateKeyLength);
+            masterMaterial = new byte[privateKey.Length + (chainCode?.Length ?? 0)];
+            privateKey.CopyTo(masterMaterial, 0);
+            chainCode?.CopyTo(masterMaterial, privateKey.Length);
+            _secureMasterKeyPtr = AllocateSecure(masterMaterial, out _masterKeyLength);
 
-        // Get Output Descriptor
-        _network = Network.GetNetwork(network)
-                ?? throw new ArgumentException("Invalid network specified.", nameof(network));
-        var extKey = new ExtKey(new Key(privateKey), network.ChainHash);
-        var xpub = extKey.Neuter().ToString(_network);
-        var fingerprint = extKey.GetPublicKey().GetHDFingerPrint();
+            // Get Output Descriptor
+            var extKey = GetMasterKey();
+            var xpub = extKey.Neuter().ToString(_network);
+            var fingerprint = extKey.GetPublicKey().GetHDFingerPrint();
 
-        OutputChannelDescriptor = $"wpkh([{fingerprint}/{ChannelKeyPath}/*]{xpub}/0/*)";
-        OutputDepositP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/0/*)";
-        OutputChangeP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/1/*)";
-        OutputDepositP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/0/*)";
-        OutputChangeP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/1/*)";
+            OutputChannelDescriptor = $"wpkh([{fingerprint}/{ChannelKeyPath}/*]{xpub}/0/*)";
+            OutputDepositP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/0/*)";
+            OutputChangeP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/1/*)";
+            OutputDepositP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/0/*)";
+            OutputChangeP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/1/*)";
 
-        // Securely wipe the original key from regular memory
-        cryptoProvider.MemoryZero(Marshal.UnsafeAddrOfPinnedArrayElement(privateKey, 0), _privateKeyLength);
+            var nodePrivateKey = DerivationScheme == KeyDerivationScheme.Bip32
+                                     ? extKey.Derive(new KeyPath(NodeKeyPathString)).PrivateKey
+                                     : extKey.PrivateKey;
+            nodeKey = nodePrivateKey.ToBytes();
+            _nodePubKey = nodePrivateKey.PubKey.ToBytes();
+            _secureNodeKeyPtr = AllocateSecure(nodeKey, out _nodeKeyLength);
+        }
+        catch
+        {
+            ReleaseUnmanagedResources();
+            throw;
+        }
+        finally
+        {
+            // Wipe the plain copies. These arrays are not pinned, so they are zeroed as arrays: zeroing through an
+            // address taken earlier (the old UnsafeAddrOfPinnedArrayElement) can hit wherever the GC moved them to.
+            CryptographicOperations.ZeroMemory(privateKey);
+            if (chainCode is not null)
+                CryptographicOperations.ZeroMemory(chainCode);
+            if (masterMaterial is not null)
+                CryptographicOperations.ZeroMemory(masterMaterial);
+            if (nodeKey is not null)
+                CryptographicOperations.ZeroMemory(nodeKey);
+        }
 
         _filePath = filePath;
         HeightOfBirth = heightOfBirth;
+    }
+
+    /// <summary>
+    /// Creates the key of a new node: a standard BIP32 master key from a random 32-byte seed
+    /// (<see cref="KeyDerivationScheme.Bip32"/>), with the node key at <see cref="NodeKeyPathString"/>. Its key file is
+    /// version <see cref="KeyFileData.Bip32Version"/>.
+    /// </summary>
+    public static SecureKeyManager CreateNew(BitcoinNetwork network, string filePath, uint heightOfBirth)
+    {
+        var seed = RandomNumberGenerator.GetBytes(CryptoConstants.PrivkeyLen);
+        try
+        {
+            return FromBip32MasterKey(ExtKey.CreateFromSeed(seed), network, filePath, heightOfBirth);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(seed);
+        }
     }
 
     public ExtPrivKey GetNextChannelKey(out uint index)
@@ -150,23 +241,21 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
     public CryptoKeyPair GetNodeKeyPair()
     {
-        var masterKey = GetMasterKey();
-        return new CryptoKeyPair(masterKey.PrivateKey.ToBytes(), masterKey.PrivateKey.PubKey.ToBytes());
+        return new CryptoKeyPair(CopyFromSecure(_secureNodeKeyPtr, _nodeKeyLength), _nodePubKey.ToArray());
     }
 
     public CompactPubKey GetNodePubKey()
     {
-        var masterKey = GetMasterKey();
-        return masterKey.PrivateKey.PubKey.ToBytes();
+        return _nodePubKey.ToArray();
     }
 
     /// <inheritdoc/>
     public void ComputeNodeSharedSecret(ReadOnlySpan<byte> publicKey, Span<byte> sharedSecret)
     {
-        // The node key is the master private key; copy it out of locked memory only for the ECDH, then wipe it.
+        // Copy the node key out of locked memory only for the ECDH, then wipe it.
         // Hot path (every peeled HTLC): parse straight into an ECPrivKey and hash with the one-shot BCL SHA-256
         // instead of allocating a native hash state and NBitcoin Key/PubKey wrappers per call.
-        var privateKey = GetPrivateKeyBytes();
+        var privateKey = CopyFromSecure(_secureNodeKeyPtr, _nodeKeyLength);
         try
         {
             using var ecPrivKey = SphinxKeyGenerator.CreatePrivateKey(privateKey, nameof(privateKey));
@@ -195,8 +284,9 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <summary>
-    /// Encrypts the master key with <paramref name="password"/> and writes the key file in the current
-    /// (<see cref="KeyFileData.CurrentVersion"/>) format, with a fresh random salt and nonce.
+    /// Encrypts the master key with <paramref name="password"/> and writes the key file with a fresh random salt and
+    /// nonce: version <see cref="KeyFileData.GenesisChainCodeVersion"/> for the legacy scheme,
+    /// <see cref="KeyFileData.Bip32Version"/> for the BIP32 scheme.
     /// </summary>
     public void SaveToFile(string password)
     {
@@ -235,9 +325,10 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 CryptographicOperations.ZeroMemory(extKeyBytes);
             }
 
+            var isBip32 = DerivationScheme == KeyDerivationScheme.Bip32;
             var data = new KeyFileData
             {
-                Version = KeyFileData.CurrentVersion,
+                Version = isBip32 ? KeyFileData.Bip32Version : KeyFileData.GenesisChainCodeVersion,
                 Network = _network.ToString(),
                 LastUsedIndex = _lastUsedIndex,
                 Descriptor = OutputChannelDescriptor,
@@ -246,13 +337,19 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 Salt = Convert.ToBase64String(salt),
                 Nonce = Convert.ToBase64String(nonce),
                 Argon2MemLimit = Argon2Id.DefaultMemLimit,
-                Argon2OpsLimit = Argon2Id.DefaultOpsLimit
+                Argon2OpsLimit = Argon2Id.DefaultOpsLimit,
+                NodeKeyPath = isBip32 ? NodeKeyPathString : null
             };
             var json = JsonSerializer.Serialize(data);
             WriteFileAtomically(_filePath, json);
         }
     }
 
+    /// <summary>
+    /// Restores a key from a BIP39 mnemonic as the standard BIP32 master key (<see cref="KeyDerivationScheme.Bip32"/>,
+    /// node key at <see cref="NodeKeyPathString"/>). Before NL-159 this dropped the mnemonic's chain code; the daemon
+    /// never called it.
+    /// </summary>
     public static SecureKeyManager FromMnemonic(string mnemonic, string passphrase, BitcoinNetwork network,
                                                 string? filePath = null, uint currentHeight = 0)
     {
@@ -260,11 +357,26 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             filePath = GetKeyFilePath(network);
 
         var mnemonicObj = new Mnemonic(mnemonic, Wordlist.English);
-        var extKey = mnemonicObj.DeriveExtKey(passphrase);
-        return new SecureKeyManager(extKey.PrivateKey.ToBytes(), network, filePath, currentHeight);
+        return FromBip32MasterKey(mnemonicObj.DeriveExtKey(passphrase), network, filePath, currentHeight);
     }
 
     public static SecureKeyManager FromFilePath(string filePath, BitcoinNetwork expectedNetwork, string password)
+    {
+        return FromFilePath(filePath, expectedNetwork, password,
+                            OperatingSystem.IsWindows() ? GetSystemAnsiPasswordBytes : null);
+    }
+
+    /// <summary>
+    /// Loads a key file. The file's version decides the derivation, and so the node id: a version 1 or 2 file keeps
+    /// the legacy scheme when it is upgraded, a version 3 file uses BIP32.
+    /// </summary>
+    /// <param name="filePath">The key file.</param>
+    /// <param name="expectedNetwork">The network the file must be for.</param>
+    /// <param name="password">The key file password.</param>
+    /// <param name="legacyAnsiPasswordEncoder">For version 1 files: how the old libsodium P/Invoke marshalled the
+    /// password as an ANSI string (the system code page on Windows, NL-212); null skips that retry.</param>
+    internal static SecureKeyManager FromFilePath(string filePath, BitcoinNetwork expectedNetwork, string password,
+                                                  Func<string, byte[]?>? legacyAnsiPasswordEncoder)
     {
         var jsonString = File.ReadAllText(filePath);
         var data = JsonSerializer.Deserialize<KeyFileData>(jsonString)
@@ -278,7 +390,10 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         if (expectedNetwork != data.Network.ToLowerInvariant() && Network.GetNetwork(data.Network) != network)
             throw new Exception($"Invalid network. Expected {expectedNetwork}, but got {data.Network}");
 
-        var extKeyBytes = DecryptExtKey(data, password, out var usedLegacyPasswordEncoding);
+        if (data.Version == KeyFileData.Bip32Version && data.NodeKeyPath != NodeKeyPathString)
+            throw new SerializationException($"Invalid key file: unsupported node key path '{data.NodeKeyPath}'");
+
+        var extKeyBytes = DecryptExtKey(data, password, legacyAnsiPasswordEncoder, out var usedLegacyPasswordEncoding);
         ExtKey extKey;
         try
         {
@@ -289,30 +404,33 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             CryptographicOperations.ZeroMemory(extKeyBytes);
         }
 
+        // Versions 1 and 2 keep the legacy derivation (the stored chain code is the genesis hash and is ignored), so
+        // the node id of an existing key file never changes
+        var chainCode = data.Version == KeyFileData.Bip32Version ? extKey.ChainCode.ToArray() : null;
         var keyManager =
-            new SecureKeyManager(extKey.PrivateKey.ToBytes(), expectedNetwork, filePath, data.HeightOfBirth)
+            new SecureKeyManager(extKey.PrivateKey.ToBytes(), chainCode, expectedNetwork, filePath, data.HeightOfBirth)
             {
                 _lastUsedIndex = data.LastUsedIndex,
                 OutputChannelDescriptor = data.Descriptor
             };
 
-        if (data.Version < KeyFileData.CurrentVersion || usedLegacyPasswordEncoding)
+        if (data.Version < KeyFileData.GenesisChainCodeVersion || usedLegacyPasswordEncoding)
         {
             // Migrate legacy key files (fixed salt, zero nonce, weak Argon2id parameters, or a password hashed with
-            // the truncated libsodium encoding) to the current format. Older binaries cannot read the new format,
-            // so keep a copy of the original file first.
+            // the truncated libsodium encoding) to version 2, keeping their derivation. Older binaries cannot read the
+            // new format, so keep a copy of the original file first.
             try
             {
                 var backupPath = BackupKeyFile(filePath, data.Version);
-                Console.Error.WriteLine($"Upgrading key file {filePath} to version {KeyFileData.CurrentVersion}. " +
-                                        $"The original file was saved to {backupPath}; builds older than this " +
-                                        "one cannot read the upgraded file.");
+                Console.Error.WriteLine($"Upgrading key file {filePath} to version " +
+                                        $"{KeyFileData.GenesisChainCodeVersion}. The original file was saved to " +
+                                        $"{backupPath}; builds older than this one cannot read the upgraded file.");
                 keyManager.SaveToFile(password);
             }
             catch (Exception e)
             {
                 Console.Error.WriteLine($"Failed to upgrade key file {filePath} to version " +
-                                        $"{KeyFileData.CurrentVersion}: {e.Message}");
+                                        $"{KeyFileData.GenesisChainCodeVersion}: {e.Message}");
             }
         }
 
@@ -327,7 +445,48 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         return Path.Combine(configPath, "nltg.key.json");
     }
 
-    private static byte[] DecryptExtKey(KeyFileData data, string password, out bool usedLegacyPasswordEncoding)
+    /// <summary>
+    /// The password as the old libsodium P/Invoke passed it on Windows: marshalled as <c>LPStr</c> (the system ANSI code
+    /// page, best-fit mapping) and read for <c>password.Length</c> bytes (NL-212). Null when that encoding is shorter.
+    /// </summary>
+    internal static byte[]? GetSystemAnsiPasswordBytes(string password)
+    {
+        var ptr = Marshal.StringToHGlobalAnsi(password);
+        var ansiLength = 0;
+        try
+        {
+            while (Marshal.ReadByte(ptr, ansiLength) != 0)
+                ansiLength++;
+
+            if (ansiLength < password.Length)
+                return null;
+
+            var bytes = new byte[password.Length];
+            Marshal.Copy(ptr, bytes, 0, password.Length);
+            return bytes;
+        }
+        finally
+        {
+            // The buffer holds the password: wipe it before freeing it
+            for (var i = 0; i < ansiLength; i++)
+                Marshal.WriteByte(ptr, i, 0);
+            Marshal.FreeHGlobal(ptr);
+        }
+    }
+
+    private static SecureKeyManager FromBip32MasterKey(ExtKey masterKey, BitcoinNetwork network, string filePath,
+                                                       uint heightOfBirth)
+    {
+        if (masterKey.Depth != 0)
+            throw new ArgumentException("Not a BIP32 master key.", nameof(masterKey));
+
+        return new SecureKeyManager(masterKey.PrivateKey.ToBytes(), masterKey.ChainCode.ToArray(), network, filePath,
+                                    heightOfBirth);
+    }
+
+    private static byte[] DecryptExtKey(KeyFileData data, string password,
+                                        Func<string, byte[]?>? legacyAnsiPasswordEncoder,
+                                        out bool usedLegacyPasswordEncoding)
     {
         ArgumentNullException.ThrowIfNull(password);
 
@@ -335,6 +494,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         byte[] nonce;
         ulong opsLimit;
         ulong memLimit;
+        var isLegacyFile = false;
         switch (data.Version)
         {
             case 0 or KeyFileData.LegacyVersion:
@@ -342,8 +502,9 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 nonce = new byte[CryptoConstants.Xchacha20Poly1305NonceLen];
                 opsLimit = LegacyArgon2OpsLimit;
                 memLimit = Argon2Id.LegacyMemLimit;
+                isLegacyFile = true;
                 break;
-            case KeyFileData.CurrentVersion:
+            case KeyFileData.GenesisChainCodeVersion or KeyFileData.Bip32Version:
                 salt = DecodeBase64Field(data.Salt, "salt", Argon2Id.SaltLen);
                 nonce = DecodeBase64Field(data.Nonce, "nonce", CryptoConstants.Xchacha20Poly1305NonceLen);
                 opsLimit = data.Argon2OpsLimit;
@@ -371,21 +532,39 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
 
         var extKeyBytes = new byte[encryptedExtKey.Length - CryptoConstants.Xchacha20Poly1305TagLen];
         var passwordBytes = Encoding.UTF8.GetBytes(password);
+        byte[]? ansiPasswordBytes = null;
         try
         {
             usedLegacyPasswordEncoding = false;
             if (TryDecrypt(passwordBytes, salt, nonce, opsLimit, memLimit, encryptedExtKey, extKeyBytes))
                 return extKeyBytes;
 
-            // Before the fix for the libsodium password length, the libsodium backend hashed only the first
-            // password.Length (UTF-16 char count) bytes of the UTF-8 password. For non-ASCII passwords, retry with
-            // that truncated encoding so files written by those builds still open.
-            if (passwordBytes.Length != password.Length
-             && TryDecrypt(passwordBytes.AsSpan(0, password.Length), salt, nonce, opsLimit, memLimit, encryptedExtKey,
-                           extKeyBytes))
+            // Only version 1 files were written with the old libsodium encodings: later versions always hash the full
+            // UTF-8 password, so a wrong password costs them one Argon2id run, not three
+            if (isLegacyFile)
             {
-                usedLegacyPasswordEncoding = true;
-                return extKeyBytes;
+                // Before the fix for the libsodium password length, the libsodium backend hashed only the first
+                // password.Length (UTF-16 char count) bytes of the UTF-8 password. For non-ASCII passwords, retry with
+                // that truncated encoding so files written by those builds still open.
+                if (passwordBytes.Length != password.Length
+                 && TryDecrypt(passwordBytes.AsSpan(0, password.Length), salt, nonce, opsLimit, memLimit,
+                               encryptedExtKey, extKeyBytes))
+                {
+                    usedLegacyPasswordEncoding = true;
+                    return extKeyBytes;
+                }
+
+                // On Windows the P/Invoke marshalled the password as LPStr, in the ANSI code page (NL-212)
+                // (skipped when it gives bytes already tried: an ASCII password, or a UTF-8 code page)
+                ansiPasswordBytes = legacyAnsiPasswordEncoder?.Invoke(password);
+                if (ansiPasswordBytes is not null
+                 && !ansiPasswordBytes.AsSpan().SequenceEqual(passwordBytes)
+                 && !ansiPasswordBytes.AsSpan().SequenceEqual(passwordBytes.AsSpan(0, password.Length))
+                 && TryDecrypt(ansiPasswordBytes, salt, nonce, opsLimit, memLimit, encryptedExtKey, extKeyBytes))
+                {
+                    usedLegacyPasswordEncoding = true;
+                    return extKeyBytes;
+                }
             }
 
             throw new CryptographicException("Decryption failed.");
@@ -398,6 +577,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         finally
         {
             CryptographicOperations.ZeroMemory(passwordBytes);
+            if (ansiPasswordBytes is not null)
+                CryptographicOperations.ZeroMemory(ansiPasswordBytes);
         }
     }
 
@@ -449,8 +630,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <summary>
-    /// Copies the key file to <c>{filePath}.v{version}.bak</c> (keeping its permissions) unless that backup already
-    /// exists, and returns the backup path.
+    /// Copies the key file to <c>{filePath}.v{version}.bak</c> (owner-only, like the key file) unless that backup
+    /// already exists, and returns the backup path.
     /// </summary>
     private static string BackupKeyFile(string filePath, int version)
     {
@@ -475,7 +656,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 stream.Flush(true);
             }
 
-            CopyUnixFileMode(modeSourcePath ?? targetPath, tempPath);
+            CopyOwnerFileMode(modeSourcePath ?? targetPath, tempPath);
             File.Move(tempPath, targetPath, true);
         }
         catch
@@ -497,7 +678,7 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
                 await stream.FlushAsync();
             }
 
-            CopyUnixFileMode(targetPath, tempPath);
+            CopyOwnerFileMode(targetPath, tempPath);
             File.Move(tempPath, targetPath, true);
         }
         catch
@@ -534,14 +715,20 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <summary>
-    /// Keeps the permissions the operator set on the existing file (for example chmod 600) across the replace.
+    /// Keeps the owner bits the operator set on the existing file (for example 0400) across the replace, but never its
+    /// group or other bits: a file written by an old build with the umask's 0644 becomes 0600 (SECURITY_REVIEW SR-02).
     /// </summary>
-    private static void CopyUnixFileMode(string sourcePath, string destinationPath)
+    private static void CopyOwnerFileMode(string sourcePath, string destinationPath)
     {
         if (OperatingSystem.IsWindows() || !File.Exists(sourcePath))
             return;
 
-        File.SetUnixFileMode(destinationPath, File.GetUnixFileMode(sourcePath));
+        var sourceMode = File.GetUnixFileMode(sourcePath);
+        if ((sourceMode & GroupOrOtherMode) != 0)
+            Console.Error.WriteLine($"Key file {sourcePath} was readable by other users; the rewritten file is " +
+                                    "owner-only. Consider the key exposed if other users had access to this host.");
+
+        File.SetUnixFileMode(destinationPath, sourceMode & ~GroupOrOtherMode);
     }
 
     private static void TryDeleteFile(string path)
@@ -556,45 +743,83 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
     }
 
-    private ExtKey GetMasterKey()
+    private static IntPtr AllocateSecure(byte[] material, out ulong length)
     {
-        return new ExtKey(new Key(GetPrivateKeyBytes()), _network.GenesisHash.ToBytes());
+        length = (ulong)material.Length;
+
+        using var cryptoProvider = CryptoFactory.GetCryptoProvider();
+
+        // Allocate secure memory
+        var ptr = cryptoProvider.MemoryAlloc(length);
+
+        // Lock the memory to prevent swapping
+        if (cryptoProvider.MemoryLock(ptr, length) == -1)
+        {
+            cryptoProvider.MemoryFree(ptr);
+            throw new InvalidOperationException("Failed to lock memory.");
+        }
+
+        Marshal.Copy(material, 0, ptr, material.Length);
+        return ptr;
     }
 
-    private void ReleaseUnmanagedResources()
+    private static void FreeSecure(ref IntPtr ptr, ref ulong length)
     {
-        if (_securePrivateKeyPtr == IntPtr.Zero)
+        if (ptr == IntPtr.Zero)
             return;
 
         using var cryptoProvider = CryptoFactory.GetCryptoProvider();
 
         // Securely wipe the memory before freeing it
-        cryptoProvider.MemoryZero(_securePrivateKeyPtr, _privateKeyLength);
+        cryptoProvider.MemoryZero(ptr, length);
 
         // Unlock the memory
-        cryptoProvider.MemoryUnlock(_securePrivateKeyPtr, _privateKeyLength);
+        cryptoProvider.MemoryUnlock(ptr, length);
 
         // MemoryFree the memory
-        cryptoProvider.MemoryFree(_securePrivateKeyPtr);
+        cryptoProvider.MemoryFree(ptr);
 
-        _privateKeyLength = 0;
-        _securePrivateKeyPtr = IntPtr.Zero;
+        length = 0;
+        ptr = IntPtr.Zero;
     }
 
     /// <summary>
-    /// Retrieves the private key stored in secure memory.
+    /// Copies bytes out of secure memory into a new array the caller must zero.
     /// </summary>
-    /// <returns>The private key as a byte array.</returns>
     /// <exception cref="InvalidOperationException">Thrown if the key is not initialized.</exception>
-    private byte[] GetPrivateKeyBytes()
+    private static byte[] CopyFromSecure(IntPtr ptr, ulong length)
     {
-        if (_securePrivateKeyPtr == IntPtr.Zero)
+        if (ptr == IntPtr.Zero)
             throw new InvalidOperationException("Secure key is not initialized.");
 
-        var privateKey = new byte[_privateKeyLength];
-        Marshal.Copy(_securePrivateKeyPtr, privateKey, 0, (int)_privateKeyLength);
+        var bytes = new byte[length];
+        Marshal.Copy(ptr, bytes, 0, (int)length);
+        return bytes;
+    }
 
-        return privateKey;
+    private ExtKey GetMasterKey()
+    {
+        var material = CopyFromSecure(_secureMasterKeyPtr, _masterKeyLength);
+        var privateKey = material.AsSpan(0, CryptoConstants.PrivkeyLen).ToArray();
+        try
+        {
+            // NBitcoin's Key and ExtKey keep their own copies; the plain arrays are wiped here
+            var chainCode = DerivationScheme == KeyDerivationScheme.Bip32
+                                ? material.AsSpan(CryptoConstants.PrivkeyLen, ChainCodeLength).ToArray()
+                                : _network.GenesisHash.ToBytes();
+            return new ExtKey(new Key(privateKey), chainCode);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKey);
+            CryptographicOperations.ZeroMemory(material);
+        }
+    }
+
+    private void ReleaseUnmanagedResources()
+    {
+        FreeSecure(ref _secureMasterKeyPtr, ref _masterKeyLength);
+        FreeSecure(ref _secureNodeKeyPtr, ref _nodeKeyLength);
     }
 
     public void Dispose()

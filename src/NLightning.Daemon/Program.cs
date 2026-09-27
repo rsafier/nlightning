@@ -3,7 +3,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using NBitcoin;
 using NLightning.Daemon.Contracts.Helpers;
 using NLightning.Daemon.Contracts.Utilities;
 using NLightning.Daemon.Extensions;
@@ -98,9 +97,8 @@ try
 
             var heightOfBirth = await bitcoinChainService.GetCurrentBlockHeightAsync();
 
-            // Creates new key
-            var key = new Key();
-            keyManager = new SecureKeyManager(key.ToBytes(), new BitcoinNetwork(network), keyFilePath, heightOfBirth);
+            // Creates a new key: a BIP32 master key with the node key on its own path (version 3 key file, NL-159)
+            keyManager = SecureKeyManager.CreateNew(new BitcoinNetwork(network), keyFilePath, heightOfBirth);
             keyManager.SaveToFile(password);
             Console.WriteLine($"New key created and saved to {keyFilePath}");
         }
