@@ -22,7 +22,8 @@ public class MessageExtensionStrictnessTests
     public static TheoryData<string> MessageNames =>
     [
         "init", "open_channel", "accept_channel", "open_channel2", "accept_channel2", "tx_init_rbf", "tx_ack_rbf",
-        "channel_ready", "channel_reestablish", "closing_signed", "closing_signed_no_fee_range", "commitment_signed"
+        "channel_ready", "channel_reestablish", "closing_signed", "closing_signed_no_fee_range", "commitment_signed",
+        "tx_add_input", "tx_add_input_shared", "tx_signatures", "tx_signatures_shared"
     ];
 
     [Theory]
@@ -115,6 +116,23 @@ public class MessageExtensionStrictnessTests
                 Zero32
               + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"
               + "0000" + "0120" + Zero32),
+            "tx_add_input" => (
+                new TxAddInputMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, serial_id, prevtx_len = 4, prevtx, prevtx_vout, sequence
+                Zero32 + "0000000000000002" + "0004" + "00010203" + "00000000" + "FFFFFFFD"),
+            "tx_add_input_shared" => (
+                new TxAddInputMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, serial_id, prevtx_len = 0, prevtx_vout, sequence, shared_input_txid
+                Zero32 + "0000000000000002" + "0000" + "00000000" + "FFFFFFFD" + "0020" + Zero32),
+            "tx_signatures" => (
+                new TxSignaturesMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, txid, num_witnesses = 0
+                Zero32 + Zero32 + "0000"),
+            "tx_signatures_shared" => (
+                new TxSignaturesMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
+                // channel_id, txid, num_witnesses = 0, shared_input_signature
+                Zero32 + Zero32 + "0000" + "0040"
+              + "4737AF4C6314905296FD31D3610BD638F92C8A3687D0C6D845E3B9EF4957670733A30A9A81F924CD9F73F46805D0FB60D7C293FB2D8100DD3FA92B10934A7320"),
             _ => throw new ArgumentOutOfRangeException(nameof(messageName), messageName, null)
         };
     }
