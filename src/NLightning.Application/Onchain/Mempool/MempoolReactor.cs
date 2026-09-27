@@ -392,7 +392,8 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                 return (classification.Kind, []);
 
             // A penalty abandoned when this commitment left the mempool is revived: the commitment is back, and a
-            // penalty built again would have the same txid (lock time 0, the same address, RFC 6979, the same fee)
+            // penalty built again would have the same txid (lock time 0, the channel's one penalty address, RFC 6979,
+            // the same fee)
             var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
             toPublish = broadcasts.Where(b => b.State is BroadcastState.Pending or BroadcastState.Abandoned
                                            && OnchainChannelWatcher.IsPreparedPurpose(b.Purpose)

@@ -45,7 +45,11 @@ public interface IRevokedCommitDataSource
     /// <summary>The stored broadcast of <paramref name="transactionId"/>, or null.</summary>
     Task<BroadcastTransactionModel?> GetBroadcastAsync(TxId transactionId);
 
-    /// <summary>A wallet script to pay the penalty to (credited to the wallet once it confirms).</summary>
+    /// <summary>
+    /// A wallet script to pay the penalty to (credited to the wallet once it confirms): the same script for every call
+    /// about <paramref name="channelId"/>, also after a restart once a penalty of the channel is stored, so a penalty
+    /// rebuilt at the same fee has the same txid.
+    /// </summary>
     Task<byte[]> GetDestinationScriptAsync(ChannelId channelId, CancellationToken cancellationToken);
 
     /// <summary>The current feerate estimate in sat per 1000 weight units (0 when there is none).</summary>

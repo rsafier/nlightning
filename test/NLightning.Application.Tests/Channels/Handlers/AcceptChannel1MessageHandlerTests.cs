@@ -42,6 +42,8 @@ public class AcceptChannel1MessageHandlerTests
     private readonly Mock<IChannelDbRepository> _mockChannelDbRepository = new();
     private readonly Mock<ICommitmentTransactionBuilder> _mockCommitmentTransactionBuilder = new();
     private readonly Mock<IFundingTransactionBuilder> _mockFundingTransactionBuilder = new();
+    private readonly Mock<IFundingTransactionModelFactory> _mockFundingTransactionModelFactory = new();
+    private readonly Mock<IBitcoinWalletService> _mockWalletService = new();
     private readonly Mock<IUnitOfWork> _mockUnitOfWork = new();
     private readonly Mock<IUtxoMemoryRepository> _mockUtxoMemoryRepository = new();
     private readonly ChannelModel _tempChannel;
@@ -73,12 +75,10 @@ public class AcceptChannel1MessageHandlerTests
 
         _mockUtxoMemoryRepository.Setup(r => r.GetLockedUtxosForChannel(It.IsAny<ChannelId>())).Returns([]);
 
-        var mockWalletService = new Mock<IBitcoinWalletService>();
-        mockWalletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
+        _mockWalletService.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true))
                          .ReturnsAsync(new WalletAddressModel(AddressType.P2Wpkh, 0, true, "bcrt1qchange"));
 
-        var mockFundingTransactionModelFactory = new Mock<IFundingTransactionModelFactory>();
-        mockFundingTransactionModelFactory
+        _mockFundingTransactionModelFactory
            .Setup(f => f.Create(It.IsAny<ChannelModel>(), It.IsAny<List<UtxoModel>>(),
                                 It.IsAny<WalletAddressModel?>()))
            .Returns((ChannelModel c, List<UtxoModel> u, WalletAddressModel? _) =>
@@ -116,12 +116,12 @@ public class AcceptChannel1MessageHandlerTests
         mockValidator.Setup(v => v.PerformMandatoryChecks(It.IsAny<ChannelOpenMandatoryValidationParameters>(),
                                                           out minimumDepth));
 
-        _handler = new AcceptChannel1MessageHandler(mockWalletService.Object, _mockChannelIdFactory.Object,
+        _handler = new AcceptChannel1MessageHandler(_mockWalletService.Object, _mockChannelIdFactory.Object,
                                                     _mockChannelMemoryRepository.Object, mockValidator.Object,
                                                     _mockCommitmentTransactionBuilder.Object,
                                                     mockCommitmentTransactionModelFactory.Object,
                                                     _mockFundingTransactionBuilder.Object,
-                                                    mockFundingTransactionModelFactory.Object, mockSigner.Object,
+                                                    _mockFundingTransactionModelFactory.Object, mockSigner.Object,
                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
                                                     mockMessageFactory.Object, new FakeSha256(),
                                                     _mockUnitOfWork.Object, _mockUtxoMemoryRepository.Object);
@@ -229,6 +229,64 @@ public class AcceptChannel1MessageHandlerTests
         // Assert
         _mockChannelMemoryRepository.Verify(r => r.TryRemoveTemporaryChannel(s_pubKey, s_tempChannelId), Times.Once);
         _mockUtxoMemoryRepository.Verify(r => r.ReturnUtxosNotSpentOnChannel(s_tempChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AFundingWithoutChange_When_HandleAsync_Then_NoChangeAddressIsReserved()
+    {
+        // Arrange (NL-280: every address the wallet hands out stays reserved, so none is used up without change)
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        FundingTransactionModel? built = null;
+        _mockFundingTransactionBuilder.Setup(b => b.Build(It.IsAny<FundingTransactionModel>()))
+                                      .Callback<FundingTransactionModel>(m => built = m)
+                                      .Returns(new FundingTransactionBuildResult(
+                                                   new SignedTransaction(TxId.One, [0x00]), 0));
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()),
+                                  Times.Never);
+        Assert.NotNull(built);
+        Assert.Null(built.ChangeAddress);
+        Assert.Null(_tempChannel.ChangeAddress);
+    }
+
+    [Fact]
+    public async Task Given_AFundingWithChange_When_HandleAsync_Then_OneReservedChangeAddressReplacesTheProbe()
+    {
+        // Arrange: the factory sizes a P2WPKH change output with the probe address it is given
+        var message = CreateMessage(new UpfrontShutdownScriptTlv(Array.Empty<byte>()));
+        WalletAddressModel? probe = null;
+        _mockFundingTransactionModelFactory
+           .Setup(f => f.Create(It.IsAny<ChannelModel>(), It.IsAny<List<UtxoModel>>(),
+                                It.IsAny<WalletAddressModel?>()))
+           .Returns((ChannelModel c, List<UtxoModel> u, WalletAddressModel? change) =>
+            {
+                probe = change;
+                return new FundingTransactionModel(u, c.FundingOutput!, LightningMoney.Satoshis(200))
+                {
+                    ChangeAmount = LightningMoney.Satoshis(5_000),
+                    ChangeAddress = change
+                };
+            });
+        FundingTransactionModel? built = null;
+        _mockFundingTransactionBuilder.Setup(b => b.Build(It.IsAny<FundingTransactionModel>()))
+                                      .Callback<FundingTransactionModel>(m => built = m)
+                                      .Returns(new FundingTransactionBuildResult(
+                                                   new SignedTransaction(TxId.One, [0x00]), 0));
+
+        // Act
+        await _handler.HandleAsync(message, ChannelState.None, new FeatureOptions(), s_pubKey);
+
+        // Assert
+        Assert.NotNull(probe);
+        Assert.Equal(AddressType.P2Wpkh, probe.AddressType);
+        _mockWalletService.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, true), Times.Once);
+        Assert.NotNull(built);
+        Assert.Equal("bcrt1qchange", built.ChangeAddress?.Address);
+        Assert.Equal("bcrt1qchange", _tempChannel.ChangeAddress?.Address);
     }
 
     [Fact]

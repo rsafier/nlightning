@@ -759,6 +759,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
     private readonly Dictionary<(ChannelId, HtlcKey), HtlcOrigin> _origins = [];
     private readonly List<HtlcKey> _stagedPrunes = [];
     private AnnouncementState? _stagedAnnouncement;
+    private ulong? _stagedShutdownBoundary;
+    private bool _shutdownBoundaryStaged;
 
     public ChannelCommitments? Committed { get; private set; }
 
@@ -773,9 +775,19 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
                                            DateTimeOffset? LocalSentAt);
 
     /// <summary>Stages the announcement fields of the channel row, saved by the next <see cref="Commit"/>.</summary>
-    public void StageChannel(ChannelModel channel) =>
+    public void StageChannel(ChannelModel channel)
+    {
         _stagedAnnouncement = new AnnouncementState(channel.RemoteAnnouncementSignatures,
                                                     channel.LocalAnnouncementSignaturesSentAt);
+        _stagedShutdownBoundary = channel.FirstRemoteHtlcIdAfterLocalShutdown;
+        _shutdownBoundaryStaged = true;
+    }
+
+    /// <summary>
+    /// The channel row's <c>FirstRemoteHtlcIdAfterLocalShutdown</c> as last saved (NL-279); null while the row was
+    /// never updated or has no boundary.
+    /// </summary>
+    public ulong? CommittedShutdownBoundary { get; private set; }
 
     /// <summary>Puts the saved announcement fields on a channel model rebuilt by a restart.</summary>
     public void RestoreAnnouncement(ChannelModel channel)
@@ -892,6 +904,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         Pruned.AddRange(_stagedPrunes);
         if (_stagedAnnouncement is not null)
             CommittedAnnouncement = _stagedAnnouncement;
+        if (_shutdownBoundaryStaged)
+            CommittedShutdownBoundary = _stagedShutdownBoundary;
         DiscardStaged();
         Saves++;
     }
@@ -905,6 +919,8 @@ internal sealed class InMemoryChannelStateStore : IChannelStateDbRepository, IRe
         _stagedPrunes.Clear();
         _stagedRevoked.Clear();
         _stagedAnnouncement = null;
+        _stagedShutdownBoundary = null;
+        _shutdownBoundaryStaged = false;
     }
 
     public Task InitializeAsync(ChannelCommitments snapshot, ChannelStateExtras? extras = null)

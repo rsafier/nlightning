@@ -607,7 +607,8 @@ public sealed class OnchainChannelWatcher : IOnchainChannelWatcher
             {
                 // Abandoned when this commitment left the mempool (or while the monitor lagged), and it confirmed
                 // after all: pending again, or the resolver's penalty would find it abandoned and never send it (the
-                // same txid: lock time 0, the same wallet address, RFC 6979 signatures, often the same fee)
+                // same txid: lock time 0, the channel's one penalty address (RevokedCommitDataSource), RFC 6979
+                // signatures, often the same fee)
                 if (fromSpend.Count == 0 || fromSpend.Any(i => spentBy.ContainsKey(i.PreviousVout))
                  || !await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(broadcast.TransactionId))
                     continue;

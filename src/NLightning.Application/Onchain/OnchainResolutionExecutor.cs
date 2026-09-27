@@ -842,7 +842,8 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
                   && await unitOfWork.BroadcastTransactionDbRepository.MarkPendingAsync(stored.TransactionId))
             {
                 // The resolver needs a transaction given up earlier (e.g. a penalty prepared from the mempool and
-                // abandoned when its commitment left it, which confirmed later: rebuilt, it has the same txid)
+                // abandoned when its commitment left it, which confirmed later: rebuilt, it has the same txid, since a channel's penalties always pay to
+                // the one address RevokedCommitDataSource chose for it)
                 stored.MarkPending();
                 toPublish.Add(stored);
                 staged = true;

@@ -9,6 +9,7 @@ using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -28,6 +29,12 @@ using Interfaces;
 
 public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel1Message>
 {
+    /// <summary>
+    /// Sizes a P2WPKH change output before a real change address is reserved; never paid to (it is replaced, or the
+    /// funding has no change).
+    /// </summary>
+    private static readonly WalletAddressModel s_changeAddressProbe = new(AddressType.P2Wpkh, 0, true, string.Empty);
+
     private readonly IBitcoinWalletService _bitcoinWalletService;
     private readonly IChannelIdFactory _channelIdFactory;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
@@ -175,11 +182,16 @@ public class AcceptChannel1MessageHandler : IChannelMessageHandler<AcceptChannel
             // Get the utxos to create the funding transaction
             var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(tempChannel.ChannelId);
 
-            // Get a change address in case we need one
-            var walletAddress = await _bitcoinWalletService.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
+            // Size the funding transaction with a P2WPKH change output first, and reserve a change address only when it
+            // has one: every address the wallet hands out stays reserved (NL-280), so a funding without change must
+            // not use one up. The factory reads only the address type, so the reserved address replaces the probe
+            var fundingTransactionModel = _fundingTransactionModelFactory.Create(tempChannel, utxos,
+                                                                                 s_changeAddressProbe);
+            if (fundingTransactionModel.ChangeAddress is not null)
+                fundingTransactionModel.ChangeAddress =
+                    await _bitcoinWalletService.GetUnusedAddressAsync(AddressType.P2Wpkh, true);
 
             // Create the funding transaction
-            var fundingTransactionModel = _fundingTransactionModelFactory.Create(tempChannel, utxos, walletAddress);
             var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
             fundingOutput.TransactionId = fundingTransaction.Transaction.TxId;
             fundingOutput.Index = fundingTransaction.FundingOutputIndex;
