@@ -11,6 +11,10 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Reestablish;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
+using Domain.Channels.Splicing.Interfaces;
+using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
@@ -22,6 +26,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Infrastructure.Crypto.Hashes;
 
 public class ListChannelsClientHandlerTests
@@ -34,6 +39,9 @@ public class ListChannelsClientHandlerTests
     private readonly Mock<IPeerManager> _peerManagerMock = new();
     private readonly Mock<IReestablishTracker> _reestablishTrackerMock = new();
     private readonly Mock<IUnitOfWork> _unitOfWorkMock = new();
+    private readonly Mock<IChannelFundingDbRepository> _channelFundingDbRepositoryMock = new();
+    private readonly Mock<IBlockchainMonitor> _blockchainMonitorMock = new();
+    private readonly Mock<IRetiredScidMap> _retiredScidMapMock = new();
     private readonly NodeOptions _nodeOptions = new();
 
     public ListChannelsClientHandlerTests()
@@ -263,9 +271,183 @@ public class ListChannelsClientHandlerTests
         Assert.True(Assert.Single(response.Channels).DataLossDetected);
     }
 
-    private ListChannelsClientHandler CreateHandler() =>
+    [Fact]
+    public async Task Given_ChannelWithoutFundingRows_When_HandleAsync_Then_FundingOutputIsTheCurrentFunding()
+    {
+        // Arrange: a channel funded before the splice schema (no ChannelFundings rows) lists its funding output
+        var fundingTxId = CreateTxId(9);
+        var channel = CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open,
+                                    fundingOutput: new FundingOutputInfo(LightningMoney.Satoshis(1_000_000),
+                                                                         CreatePubKey(3), CreatePubKey(4), fundingTxId,
+                                                                         1));
+        channel.ShortChannelId = new ShortChannelId(120, 3, 1);
+        SetupMemory(channel);
+        SetupFundings(channel.ChannelId);
+        _blockchainMonitorMock.SetupGet(x => x.LastProcessedBlockHeight).Returns(125);
+
+        // Act
+        var response = await CreateHandler(true).HandleAsync(new ListChannelsClientRequest(),
+                                                             TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        var funding = Assert.Single(info.Fundings);
+        Assert.Equal(fundingTxId, funding.FundingTxId);
+        Assert.Equal((ushort)1, funding.OutputIndex);
+        Assert.Equal(LightningMoney.Satoshis(1_000_000), funding.Capacity);
+        Assert.Equal(ChannelFundingStatus.Current, funding.Status);
+        Assert.Equal(ChannelFundingKind.Initial, funding.Kind);
+        Assert.Equal(new ShortChannelId(120, 3, 1), funding.ShortChannelId);
+        Assert.Equal(6U, funding.Depth);
+        Assert.Empty(info.RetiredShortChannelIds);
+    }
+
+    [Fact]
+    public async Task Given_SplicedChannel_When_HandleAsync_Then_CurrentPendingAndRetiredFundingsAreListedInOrder()
+    {
+        // Arrange: the first splice locked (initial funding replaced, its scid retired; an older replaced funding
+        // whose scid expired), a splice pending and unconfirmed, an RBF attempt confirmed but not locked, and a
+        // discarded sibling
+        var channelId = CreateChannelId(7);
+        var initialScid = new ShortChannelId(100, 1, 0);
+        var currentScid = new ShortChannelId(200, 2, 1);
+        var channel = CreateChannel(channelId, s_alice, ChannelState.Open,
+                                    fundingOutput: new FundingOutputInfo(LightningMoney.Satoshis(1_500_000),
+                                                                         CreatePubKey(3), CreatePubKey(4),
+                                                                         CreateTxId(2), 1));
+        channel.ShortChannelId = currentScid;
+        SetupMemory(channel);
+        SetupFundings(channelId,
+                      Funding(CreateTxId(5), ChannelFundingKind.Initial, ChannelFundingStatus.Replaced, 900_000,
+                              confirmedHeight: 50, scid: new ShortChannelId(50, 1, 0)),
+                      Funding(CreateTxId(1), ChannelFundingKind.Splice, ChannelFundingStatus.Replaced, 1_000_000,
+                              confirmedHeight: 100, scid: initialScid),
+                      Funding(CreateTxId(2), ChannelFundingKind.Splice, ChannelFundingStatus.Current, 1_500_000,
+                              confirmedHeight: 200, scid: currentScid, lockedSent: true, lockedReceived: true),
+                      Funding(CreateTxId(3), ChannelFundingKind.Splice, ChannelFundingStatus.Pending, 2_000_000),
+                      Funding(CreateTxId(4), ChannelFundingKind.Splice, ChannelFundingStatus.Discarded, 1_900_000),
+                      Funding(CreateTxId(6), ChannelFundingKind.SpliceRbf, ChannelFundingStatus.Pending, 2_100_000,
+                              confirmedHeight: 205, lockedSent: true));
+        _blockchainMonitorMock.SetupGet(x => x.LastProcessedBlockHeight).Returns(207);
+        _retiredScidMapMock.Setup(x => x.GetByChannel(channelId))
+                           .Returns([
+                                new RetiredShortChannelId(initialScid, channelId, 205,
+                                                          205 + RetiredShortChannelId.RetentionBlocks)
+                            ]);
+
+        // Act
+        var response = await CreateHandler(true).HandleAsync(new ListChannelsClientRequest(),
+                                                             TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        Assert.Collection(info.Fundings,
+                          current =>
+                          {
+                              Assert.Equal(CreateTxId(2), current.FundingTxId);
+                              Assert.Equal(ChannelFundingStatus.Current, current.Status);
+                              Assert.Equal(ChannelFundingKind.Splice, current.Kind);
+                              Assert.Equal(LightningMoney.Satoshis(1_500_000), current.Capacity);
+                              Assert.Equal(8U, current.Depth);
+                              Assert.Equal(currentScid, current.ShortChannelId);
+                              Assert.True(current.SpliceLockedSent);
+                              Assert.True(current.SpliceLockedReceived);
+                          },
+                          pending =>
+                          {
+                              Assert.Equal(CreateTxId(3), pending.FundingTxId);
+                              Assert.Equal(ChannelFundingStatus.Pending, pending.Status);
+                              Assert.Null(pending.Depth);
+                              Assert.Null(pending.ShortChannelId);
+                              Assert.False(pending.SpliceLockedSent);
+                          },
+                          confirmedPending =>
+                          {
+                              Assert.Equal(CreateTxId(6), confirmedPending.FundingTxId);
+                              Assert.Equal(ChannelFundingKind.SpliceRbf, confirmedPending.Kind);
+                              Assert.Equal(3U, confirmedPending.Depth);
+                              Assert.True(confirmedPending.SpliceLockedSent);
+                              Assert.False(confirmedPending.SpliceLockedReceived);
+                          },
+                          replaced =>
+                          {
+                              Assert.Equal(CreateTxId(1), replaced.FundingTxId);
+                              Assert.Equal(ChannelFundingStatus.Replaced, replaced.Status);
+                              Assert.Equal(initialScid, replaced.ShortChannelId);
+                              Assert.Equal(108U, replaced.Depth);
+                          });
+        var retired = Assert.Single(info.RetiredShortChannelIds);
+        Assert.Equal(initialScid, retired.ShortChannelId);
+        Assert.Equal(205U, retired.RetiredAtHeight);
+        Assert.Equal(277U, retired.ExpiresAtHeight);
+    }
+
+    [Fact]
+    public async Task Given_NoChainMonitorAndNoRetiredMap_When_HandleAsync_Then_DepthUnknownAndNoReplacedFunding()
+    {
+        // Arrange: without the optional services nothing is guessed
+        var channelId = CreateChannelId(7);
+        SetupMemory(CreateChannel(channelId, s_alice, ChannelState.Open));
+        SetupFundings(channelId,
+                      Funding(CreateTxId(1), ChannelFundingKind.Initial, ChannelFundingStatus.Replaced, 1_000_000,
+                              confirmedHeight: 100, scid: new ShortChannelId(100, 1, 0)),
+                      Funding(CreateTxId(2), ChannelFundingKind.Splice, ChannelFundingStatus.Current, 1_500_000,
+                              confirmedHeight: 200, scid: new ShortChannelId(200, 2, 1)));
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        var info = Assert.Single(response.Channels);
+        var current = Assert.Single(info.Fundings);
+        Assert.Equal(CreateTxId(2), current.FundingTxId);
+        Assert.Null(current.Depth);
+        Assert.Empty(info.RetiredShortChannelIds);
+    }
+
+    [Fact]
+    public async Task Given_UnitOfWorkWithoutFundingStore_When_HandleAsync_Then_FundingOutputIsListed()
+    {
+        // Arrange: a unit of work that stores no fundings throws NotSupportedException from the default member
+        var fundingTxId = CreateTxId(9);
+        SetupMemory(CreateChannel(CreateChannelId(1), s_alice, ChannelState.Open,
+                                  fundingOutput: new FundingOutputInfo(LightningMoney.Satoshis(500_000),
+                                                                       CreatePubKey(3), CreatePubKey(4), fundingTxId,
+                                                                       0)));
+        _unitOfWorkMock.SetupGet(x => x.ChannelFundingDbRepository).Throws(new NotSupportedException());
+
+        // Act
+        var response = await CreateHandler().HandleAsync(new ListChannelsClientRequest(),
+                                                         TestContext.Current.CancellationToken);
+
+        // Assert
+        var funding = Assert.Single(Assert.Single(response.Channels).Fundings);
+        Assert.Equal(fundingTxId, funding.FundingTxId);
+        Assert.Null(funding.ShortChannelId);
+        Assert.Null(funding.Depth);
+    }
+
+    private ListChannelsClientHandler CreateHandler(bool withSpliceServices = false) =>
         new(_channelMemoryRepositoryMock.Object, _peerManagerMock.Object, _reestablishTrackerMock.Object,
-            _unitOfWorkMock.Object, Options.Create(_nodeOptions));
+            _unitOfWorkMock.Object, Options.Create(_nodeOptions), null,
+            withSpliceServices ? _blockchainMonitorMock.Object : null,
+            withSpliceServices ? _retiredScidMapMock.Object : null);
+
+    private void SetupFundings(ChannelId channelId, params ChannelFunding[] fundings)
+    {
+        _unitOfWorkMock.SetupGet(x => x.ChannelFundingDbRepository).Returns(_channelFundingDbRepositoryMock.Object);
+        _channelFundingDbRepositoryMock.Setup(x => x.GetByChannelIdAsync(channelId)).ReturnsAsync(fundings);
+    }
+
+    private static ChannelFunding Funding(TxId txId, ChannelFundingKind kind, ChannelFundingStatus status,
+                                          ulong capacitySat, uint? confirmedHeight = null, ShortChannelId? scid = null,
+                                          bool lockedSent = false, bool lockedReceived = false) =>
+        new(txId, 1, capacitySat, CreatePubKey(3), CreatePubKey(4), 0, 0, 0, kind, status,
+            ConfirmedHeight: confirmedHeight, ShortChannelId: scid, SpliceLockedSent: lockedSent,
+            SpliceLockedReceived: lockedReceived);
+
+    private static TxId CreateTxId(byte fill) => new(Enumerable.Repeat(fill, 32).ToArray());
 
     private static HtlcRecord Record(HtlcDirection direction, ulong id, HtlcState state, HtlcRemoval? removal = null) =>
         new(direction, id, 10_000, new Hash(Enumerable.Repeat((byte)(id + 1), 32).ToArray()), 500, state, removal);

@@ -8,6 +8,10 @@ using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Reestablish;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
+using Domain.Channels.Splicing.Interfaces;
+using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
@@ -16,6 +20,7 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
 /// <summary>
@@ -28,6 +33,13 @@ using Interfaces;
 /// collections are only used for a channel without a snapshot. The routing policy is the one the channel announces
 /// (<see cref="ChannelPolicyRules.Resolve"/>): its <c>setchannelpolicy</c> override where set (wave sp1 lane SP1-G,
 /// through the optional <see cref="IChannelPolicyProvider"/>), the node's <see cref="RoutingOptions"/> elsewhere.
+/// <para>Fundings (splicing plan §3.10, wave sp2 lane SP2-D) come from the <c>ChannelFundings</c> rows: the current
+/// funding first, then the pending splices in creation order, then the replaced fundings whose short channel id still
+/// resolves in the optional <see cref="IRetiredScidMap"/>; discarded fundings are not listed. A channel without rows
+/// (funded before the splice schema, or a unit of work that stores none) lists its funding output as the current
+/// funding. Depths are counted from the chain monitor's last processed block (optional
+/// <see cref="IBlockchainMonitor"/>); the current funding's short channel id falls back to the channel's. Retired short
+/// channel ids come from the same map, oldest first.</para>
 /// </remarks>
 public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>
 {
@@ -37,6 +49,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
     private readonly IUnitOfWork _unitOfWork;
     private readonly RoutingOptions _routingOptions;
     private readonly IChannelPolicyProvider? _channelPolicyProvider;
+    private readonly IBlockchainMonitor? _blockchainMonitor;
+    private readonly IRetiredScidMap? _retiredScidMap;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.ListChannels;
@@ -44,8 +58,12 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
     public ListChannelsClientHandler(IChannelMemoryRepository channelMemoryRepository, IPeerManager peerManager,
                                      IReestablishTracker reestablishTracker, IUnitOfWork unitOfWork,
                                      IOptions<NodeOptions> nodeOptions,
-                                     IChannelPolicyProvider? channelPolicyProvider = null)
+                                     IChannelPolicyProvider? channelPolicyProvider = null,
+                                     IBlockchainMonitor? blockchainMonitor = null,
+                                     IRetiredScidMap? retiredScidMap = null)
     {
+        _blockchainMonitor = blockchainMonitor;
+        _retiredScidMap = retiredScidMap;
         _channelPolicyProvider = channelPolicyProvider;
         _routingOptions = nodeOptions.Value.Routing;
         _channelMemoryRepository = channelMemoryRepository;
@@ -74,14 +92,41 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
                 channels.Add(channel);
         }
 
-        return new ListChannelsClientResponse(channels.Select(ToChannelInfo).ToList());
+        var fundingRepository = GetFundingRepository();
+        var tipHeight = _blockchainMonitor?.LastProcessedBlockHeight ?? 0;
+        var infos = new List<ChannelInfoClientResponse>(channels.Count);
+        foreach (var channel in channels)
+        {
+            ct.ThrowIfCancellationRequested();
+            var fundings = fundingRepository is null
+                               ? []
+                               : await fundingRepository.GetByChannelIdAsync(channel.ChannelId);
+            infos.Add(ToChannelInfo(channel, fundings, tipHeight));
+        }
+
+        return new ListChannelsClientResponse(infos);
+    }
+
+    private IChannelFundingDbRepository? GetFundingRepository()
+    {
+        try
+        {
+            return _unitOfWork.ChannelFundingDbRepository;
+        }
+        catch (NotSupportedException)
+        {
+            // A unit of work without the splice schema stores no fundings: list the funding output alone
+            return null;
+        }
     }
 
     private static bool IsRequested(ChannelModel channel, ListChannelsClientRequest request) =>
         request.PeerId is null || channel.RemoteNodeId == request.PeerId.Value;
 
-    private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel)
+    private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel, IReadOnlyList<ChannelFunding> fundings,
+                                                    uint tipHeight)
     {
+        var retired = _retiredScidMap?.GetByChannel(channel.ChannelId) ?? [];
         var policy = _channelPolicyProvider?.GetEffectivePolicy(channel)
                   ?? ChannelPolicyRules.Resolve(channel, _routingOptions, null);
         return new ChannelInfoClientResponse
@@ -112,7 +157,67 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             CltvExpiryDelta = policy.CltvExpiryDelta,
             HtlcMinimumMsat = policy.HtlcMinimumMsat,
             HtlcMaximumMsat = policy.HtlcMaximumMsat,
-            HasPolicyOverride = policy.Override is not null
+            HasPolicyOverride = policy.Override is not null,
+            Fundings = ToFundingInfos(channel, fundings, retired, tipHeight),
+            RetiredShortChannelIds = retired.Select(r => new RetiredScidInfoClientResponse
+            {
+                ShortChannelId = r.ShortChannelId,
+                RetiredAtHeight = r.RetiredAtHeight,
+                ExpiresAtHeight = r.ExpiresAtHeight
+            }).ToList()
+        };
+    }
+
+    /// <summary>
+    /// The current funding, the pending ones in creation order, then the replaced ones whose short channel id is still
+    /// retired (resolvable); discarded fundings and replaced ones past their retention are left out.
+    /// </summary>
+    private static List<ChannelFundingInfoClientResponse> ToFundingInfos(
+        ChannelModel channel, IReadOnlyList<ChannelFunding> fundings, IReadOnlyList<RetiredShortChannelId> retired,
+        uint tipHeight)
+    {
+        var channelScid = channel.ShortChannelId.BlockHeight == 0 ? (ShortChannelId?)null : channel.ShortChannelId;
+        if (fundings.Count == 0)
+        {
+            // No rows: the funding output is the channel's only (current) funding
+            if (channel.FundingOutput is not { } output || ChannelFunding.FromFundingOutput(output) is not { } initial)
+                return [];
+
+            return [ToFundingInfo(initial, channelScid, tipHeight)];
+        }
+
+        var retiredScids = retired.Select(r => r.ShortChannelId).ToHashSet();
+        var listed = new List<ChannelFundingInfoClientResponse>(fundings.Count);
+        listed.AddRange(fundings.Where(f => f.Status == ChannelFundingStatus.Current)
+                                .Select(f => ToFundingInfo(f, channelScid, tipHeight)));
+        listed.AddRange(fundings.Where(f => f.Status == ChannelFundingStatus.Pending)
+                                .Select(f => ToFundingInfo(f, null, tipHeight)));
+        listed.AddRange(fundings.Where(f => f.Status == ChannelFundingStatus.Replaced
+                                         && f.ShortChannelId is { } scid && retiredScids.Contains(scid))
+                                .Select(f => ToFundingInfo(f, null, tipHeight)));
+        return listed;
+    }
+
+    private static ChannelFundingInfoClientResponse ToFundingInfo(ChannelFunding funding,
+                                                                  ShortChannelId? fallbackScid, uint tipHeight)
+    {
+        var scid = funding.ShortChannelId ?? fallbackScid;
+        // The confirmation height: stored for splices; an initial funding's is its short channel id's block
+        var confirmedHeight = funding.ConfirmedHeight ?? scid?.BlockHeight;
+        uint? depth = confirmedHeight is { } height && height > 0 && tipHeight >= height
+                          ? tipHeight - height + 1
+                          : null;
+        return new ChannelFundingInfoClientResponse
+        {
+            FundingTxId = funding.FundingTxId,
+            OutputIndex = funding.OutputIndex,
+            Capacity = LightningMoney.Satoshis(funding.CapacitySatoshis),
+            Status = funding.Status,
+            Kind = funding.Kind,
+            Depth = depth,
+            ShortChannelId = scid,
+            SpliceLockedSent = funding.SpliceLockedSent,
+            SpliceLockedReceived = funding.SpliceLockedReceived
         };
     }
 

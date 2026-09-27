@@ -8,6 +8,7 @@ using Daemon.Interfaces;
 using Daemon.Ipc.Handlers;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Constants;
 using Domain.Client.Enums;
@@ -101,6 +102,96 @@ public class ListChannelsIpcHandlerTests
         Assert.True(channel.IsReestablished);
         Assert.Equal(2_000U, channel.FeeBaseMsat);
         Assert.Equal(500U, channel.FeePpm);
+    }
+
+    [Fact]
+    public async Task Given_SplicedChannel_When_HandleAsync_Then_FundingsAndRetiredScidsCrossTheWire()
+    {
+        // Arrange: keys 23/24 (wave sp2 lane SP2-D)
+        var currentTxId = new TxId(Enumerable.Repeat((byte)2, 32).ToArray());
+        var pendingTxId = new TxId(Enumerable.Repeat((byte)3, 32).ToArray());
+        var clientHandlerMock =
+            new Mock<IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>>();
+        clientHandlerMock.Setup(x => x.HandleAsync(It.IsAny<ListChannelsClientRequest>(),
+                                                   It.IsAny<CancellationToken>()))
+                         .ReturnsAsync(new ListChannelsClientResponse([
+                             new ChannelInfoClientResponse
+                             {
+                                 ChannelId = new ChannelId(Enumerable.Repeat((byte)7, 32).ToArray()),
+                                 PeerId = CreatePubKey(3),
+                                 State = ChannelState.Open,
+                                 Capacity = LightningMoney.Satoshis(1_500_000),
+                                 LocalBalance = LightningMoney.Zero,
+                                 RemoteBalance = LightningMoney.Zero,
+                                 Fundings =
+                                 [
+                                     new ChannelFundingInfoClientResponse
+                                     {
+                                         FundingTxId = currentTxId,
+                                         OutputIndex = 1,
+                                         Capacity = LightningMoney.Satoshis(1_500_000),
+                                         Status = ChannelFundingStatus.Current,
+                                         Kind = ChannelFundingKind.Splice,
+                                         Depth = 8,
+                                         ShortChannelId = new ShortChannelId(200, 2, 1),
+                                         SpliceLockedSent = true,
+                                         SpliceLockedReceived = true
+                                     },
+                                     new ChannelFundingInfoClientResponse
+                                     {
+                                         FundingTxId = pendingTxId,
+                                         Capacity = LightningMoney.Satoshis(2_000_000),
+                                         Status = ChannelFundingStatus.Pending,
+                                         Kind = ChannelFundingKind.Splice
+                                     }
+                                 ],
+                                 RetiredShortChannelIds =
+                                 [
+                                     new RetiredScidInfoClientResponse
+                                     {
+                                         ShortChannelId = new ShortChannelId(100, 1, 0),
+                                         RetiredAtHeight = 205,
+                                         ExpiresAtHeight = 277
+                                     }
+                                 ]
+                             }
+                         ]));
+        var handler = new ListChannelsIpcHandler(NullLogger<ListChannelsIpcHandler>.Instance,
+                                                 BuildProvider(clientHandlerMock.Object));
+
+        // Act
+        var response = await handler.HandleAsync(CreateEnvelope(new ListChannelsIpcRequest()),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        var payload = MessagePackSerializer.Deserialize<ListChannelsIpcResponse>(
+            response.Payload, s_options, TestContext.Current.CancellationToken);
+        var channel = Assert.Single(payload.Channels);
+        Assert.NotNull(channel.Fundings);
+        Assert.Collection(channel.Fundings,
+                          current =>
+                          {
+                              Assert.Equal(currentTxId, current.FundingTxId);
+                              Assert.Equal((ushort)1, current.OutputIndex);
+                              Assert.Equal(LightningMoney.Satoshis(1_500_000), current.Capacity);
+                              Assert.Equal(ChannelFundingStatus.Current, current.Status);
+                              Assert.Equal(ChannelFundingKind.Splice, current.Kind);
+                              Assert.Equal(8U, current.Depth);
+                              Assert.Equal((200UL << 40) | (2UL << 16) | 1UL, current.ShortChannelId);
+                              Assert.True(current.SpliceLockedSent);
+                              Assert.True(current.SpliceLockedReceived);
+                          },
+                          pending =>
+                          {
+                              Assert.Equal(pendingTxId, pending.FundingTxId);
+                              Assert.Equal(ChannelFundingStatus.Pending, pending.Status);
+                              Assert.Null(pending.Depth);
+                              Assert.Null(pending.ShortChannelId);
+                          });
+        var retired = Assert.Single(channel.RetiredShortChannelIds!);
+        Assert.Equal((100UL << 40) | (1UL << 16), retired.ShortChannelId);
+        Assert.Equal(205U, retired.RetiredAtHeight);
+        Assert.Equal(277U, retired.ExpiresAtHeight);
     }
 
     [Fact]

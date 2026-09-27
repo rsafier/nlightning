@@ -2,6 +2,7 @@ using System.Globalization;
 
 namespace NLightning.Client.Printers;
 
+using Domain.Channels.Splicing.Enums;
 using Transport.Ipc.Responses;
 
 public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
@@ -49,9 +50,45 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
             _output.WriteLine("  CLTV Delta:         {0}", Invariant(channel.CltvExpiryDelta));
             _output.WriteLine("  HTLC (min/max):     {0}/{1} msat", Invariant(channel.HtlcMinimumMsat),
                               Invariant(channel.HtlcMaximumMsat));
+            PrintFundings(channel);
             if (channel.DataLossDetected)
                 _output.WriteLine("  DATA LOSS DETECTED: do not force-close this channel");
             _output.WriteLine(PaymentsPrintFormat.Separator);
+        }
+    }
+
+    /// <summary>
+    /// The fundings (current, pending splices, replaced ones still resolvable) and the retired short channel ids
+    /// (splicing plan §3.10, D12); nothing from a daemon that predates them (null lists).
+    /// </summary>
+    private void PrintFundings(ChannelInfoIpcResponse channel)
+    {
+        if (channel.Fundings is { Count: > 0 } fundings)
+        {
+            _output.WriteLine("  Fundings:");
+            foreach (var funding in fundings)
+            {
+                _output.WriteLine("    - {0} ({1})", funding.Status, funding.Kind);
+                _output.WriteLine("      Outpoint:         {0}:{1}", DisplayOrder.ToHex(funding.FundingTxId),
+                                  Invariant(funding.OutputIndex));
+                _output.WriteLine("      Capacity (sat):   {0}", Invariant(funding.Capacity.Satoshi));
+                _output.WriteLine("      Depth:            {0}",
+                                  funding.Depth is { } depth ? Invariant(depth) : "unconfirmed");
+                _output.WriteLine("      Short Channel Id: {0}", FormatShortChannelId(funding.ShortChannelId));
+                if (funding.Kind != ChannelFundingKind.Initial)
+                    _output.WriteLine("      splice_locked:    sent {0}, received {1}",
+                                      funding.SpliceLockedSent ? "Yes" : "No",
+                                      funding.SpliceLockedReceived ? "Yes" : "No");
+            }
+        }
+
+        if (channel.RetiredShortChannelIds is { Count: > 0 } retired)
+        {
+            _output.WriteLine("  Retired SCIDs:");
+            foreach (var scid in retired)
+                _output.WriteLine("    - {0} (retired at {1}, expires at {2})",
+                                  FormatShortChannelId(scid.ShortChannelId), Invariant(scid.RetiredAtHeight),
+                                  Invariant(scid.ExpiresAtHeight));
         }
     }
 
