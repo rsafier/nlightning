@@ -8,6 +8,7 @@ using Gossip.Interfaces;
 using Node.Interfaces;
 using Node.Models;
 using Node.PeerStorage;
+using Offers.Interfaces;
 using Onchain.Interfaces;
 using Payments.Interfaces;
 using Protocol.Onion.Interfaces;
@@ -58,6 +59,10 @@ public interface IUnitOfWork : IDisposable
 
     // Onion replay set (NL-078)
     IOnionReplayDbRepository OnionReplayDbRepository { get; }
+
+    // BOLT 12 offers (NL-447; implemented with the migration AddBolt12Offers, lane B12-C)
+    IOfferDbRepository OfferDbRepository =>
+        throw new NotSupportedException("This unit of work does not store BOLT 12 offers.");
 
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);

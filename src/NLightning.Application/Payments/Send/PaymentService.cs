@@ -1021,7 +1021,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                     payment = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId,
                                                    stored.Amount, stored.Fee, stored.CreatedAt, PaymentStatus.Failed,
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
-                                                   sourceIndex, reason, now, stored.Route);
+                                                   sourceIndex, reason, now, stored.Route, stored.Bolt12);
                 }
 
                 await repository.UpdateAsync(payment);
@@ -1077,7 +1077,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var row = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId, stored.Amount,
                                            LightningMoney.MilliSatoshis(session.FeesInFlightMsat), stored.CreatedAt,
                                            PaymentStatus.InFlight, next.Channel.ChannelId, next.HtlcId!.Value, null,
-                                           null, null, null, null, next.Hops);
+                                           null, null, null, null, next.Hops, stored.Bolt12);
             await StageReplacementAsync(repository, stored, row, "Superseded by another part in flight.");
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             session.PrimaryPart = next;
@@ -1148,7 +1148,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var succeeded = PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId,
                                                  payment.Amount, settledFee, payment.CreatedAt,
                                                  PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
-                                                 fulfilled.PaymentPreimage, null, null, null, now, part.Hops);
+                                                 fulfilled.PaymentPreimage, null, null, null, now, part.Hops,
+                                                 payment.Bolt12);
             RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
             await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
             payment = succeeded;
@@ -1650,7 +1651,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                       : (fulfilled.ChannelId, fulfilled.HtlcId);
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
-                                    fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route);
+                                    fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
+                                    payment.Bolt12);
     }
 
     private static async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)

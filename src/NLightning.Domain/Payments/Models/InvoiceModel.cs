@@ -3,6 +3,7 @@ namespace NLightning.Domain.Payments.Models;
 using Crypto.ValueObjects;
 using Enums;
 using Money;
+using Offers.Models;
 
 /// <summary>
 /// An invoice we issued (BOLT 11), with the secrets the final hop needs to accept a payment for it.
@@ -64,10 +65,21 @@ public sealed class InvoiceModel
 
     public DateTimeOffset ExpiresAt => CreatedAt.AddSeconds(ExpirySeconds);
 
+    /// <summary>
+    /// The BOLT 12 side of an invoice issued for one of our offers, or null for a BOLT 11 invoice.
+    /// </summary>
+    public Bolt12InvoiceDetails? Bolt12 { get; }
+
+    /// <summary>
+    /// <see cref="InvoiceKind.Bolt12"/> when <see cref="Bolt12"/> is set, else <see cref="InvoiceKind.Bolt11"/>.
+    /// </summary>
+    public InvoiceKind Kind => Bolt12 is null ? InvoiceKind.Bolt11 : InvoiceKind.Bolt12;
+
     public InvoiceModel(Hash paymentHash, Secret preimage, Secret paymentSecret, LightningMoney? amount,
                         string? description, string bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,
-                        LightningMoney? amountReceived = null, DateTimeOffset? settledAt = null)
+                        LightningMoney? amountReceived = null, DateTimeOffset? settledAt = null,
+                        Bolt12InvoiceDetails? bolt12 = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bolt11);
         if (amount is { IsZero: true })
@@ -95,6 +107,7 @@ public sealed class InvoiceModel
         Status = status;
         AmountReceived = amountReceived;
         SettledAt = settledAt;
+        Bolt12 = bolt12;
     }
 
     /// <summary>

@@ -4,6 +4,7 @@ using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Enums;
 using Money;
+using Offers.Models;
 using Protocol.Onion.Enums;
 
 /// <summary>
@@ -34,6 +35,11 @@ public sealed class PaymentModel
     /// The BOLT 11 invoice paid, when the payment came from one.
     /// </summary>
     public string? Bolt11 { get; }
+
+    /// <summary>
+    /// The BOLT 12 offer and invoice paid, when the payment came from an offer (<c>payoffer</c>).
+    /// </summary>
+    public Bolt12PaymentDetails? Bolt12 { get; }
 
     public CompactPubKey PayeeNodeId { get; }
 
@@ -105,8 +111,10 @@ public sealed class PaymentModel
     /// <param name="createdAt">When the payment was created.</param>
     /// <param name="route">The route of the onion (see <see cref="Route"/>); null or empty when not recorded. When
     /// given, its last hop must be <paramref name="payeeNodeId"/>.</param>
+    /// <param name="bolt12">The BOLT 12 offer and invoice paid, if any.</param>
     public PaymentModel(Hash paymentHash, string? bolt11, CompactPubKey payeeNodeId, LightningMoney amount,
-                        LightningMoney fee, DateTimeOffset createdAt, IReadOnlyList<PaymentHop>? route = null)
+                        LightningMoney fee, DateTimeOffset createdAt, IReadOnlyList<PaymentHop>? route = null,
+                        Bolt12PaymentDetails? bolt12 = null)
     {
         ArgumentNullException.ThrowIfNull(amount);
         ArgumentNullException.ThrowIfNull(fee);
@@ -117,6 +125,7 @@ public sealed class PaymentModel
 
         PaymentHash = paymentHash;
         Bolt11 = bolt11;
+        Bolt12 = bolt12;
         PayeeNodeId = payeeNodeId;
         Amount = amount;
         Fee = fee;
@@ -133,7 +142,8 @@ public sealed class PaymentModel
                                        PaymentStatus status, ChannelId? outgoingChannelId, ulong? outgoingHtlcId,
                                        Secret? preimage, FailureCode? failureCode, int? failureSourceIndex,
                                        string? failureReason, DateTimeOffset? completedAt,
-                                       IReadOnlyList<PaymentHop>? route = null)
+                                       IReadOnlyList<PaymentHop>? route = null,
+                                       Bolt12PaymentDetails? bolt12 = null)
     {
         if (!Enum.IsDefined(status))
             throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown payment status.");
@@ -146,7 +156,7 @@ public sealed class PaymentModel
         if (status != PaymentStatus.InFlight && completedAt is null)
             throw new ArgumentException("A completed payment needs its completion time.", nameof(completedAt));
 
-        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt, route)
+        return new PaymentModel(paymentHash, bolt11, payeeNodeId, amount, fee, createdAt, route, bolt12)
         {
             Status = status,
             OutgoingChannelId = outgoingChannelId,
