@@ -80,6 +80,11 @@ public interface IUnitOfWork : IDisposable
     IChannelPolicyDbRepository ChannelPolicyDbRepository =>
         throw new NotSupportedException("This unit of work does not store channel policy overrides.");
 
+    // Channel fundings, per-funding commitments and dual-funding columns (splicing plan SP1-C, migration
+    // AddSpliceFundings); the default is for test doubles that store none
+    IChannelFundingDbRepository ChannelFundingDbRepository =>
+        throw new NotSupportedException("This unit of work does not store channel fundings.");
+
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
     void TrySpendUtxo(TxId transactionId, uint index);

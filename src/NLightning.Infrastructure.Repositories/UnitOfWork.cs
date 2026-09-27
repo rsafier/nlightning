@@ -58,6 +58,8 @@ public class UnitOfWork : IUnitOfWork
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
     private ChannelSigningInfoDbRepository? _channelSigningInfoDbRepository;
     private InteractiveTxSessionDbRepository? _interactiveTxSessionDbRepository;
+    private ChannelFundingDbRepository? _channelFundingDbRepository;
+    private ChannelPolicyDbRepository? _channelPolicyDbRepository;
 
     // Gossip graph
     private GraphDbRepository? _graphDbRepository;
@@ -150,6 +152,12 @@ public class UnitOfWork : IUnitOfWork
 
     public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         _interactiveTxSessionDbRepository ??= new InteractiveTxSessionDbRepository(_context);
+
+    public IChannelFundingDbRepository ChannelFundingDbRepository =>
+        _channelFundingDbRepository ??= new ChannelFundingDbRepository(_context);
+
+    public IChannelPolicyDbRepository ChannelPolicyDbRepository =>
+        _channelPolicyDbRepository ??= new ChannelPolicyDbRepository(_context, _timeProvider);
 
     /// <param name="context">The scope's database context.</param>
     /// <param name="logger">The logger.</param>

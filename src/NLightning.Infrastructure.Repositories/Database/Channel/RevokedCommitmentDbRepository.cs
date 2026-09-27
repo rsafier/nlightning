@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 namespace NLightning.Infrastructure.Repositories.Database.Channel;
 
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.ValueObjects;
 using Domain.Onchain.Interfaces;
@@ -25,19 +26,29 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     }
 
     /// <inheritdoc />
+    /// <remarks>Since migration <c>AddSpliceFundings</c> a number may be logged once per funding (SP-I5): this returns
+    /// the row of the channel's current funding when there is one, else the one of the funding created first.</remarks>
     public async Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, ulong number)
     {
-        var entity = await DbSet.FindAsync(channelId, number);
-        return entity is null || _context.Entry(entity).State == EntityState.Deleted
-                   ? null
-                   : MapEntityToDomain(entity);
+        var channel = await _context.Channels.FindAsync(channelId);
+        if (channel is not null)
+        {
+            var current = await DbSet.FindAsync(channelId, number, channel.FundingTxId);
+            if (current is not null && _context.Entry(current).State != EntityState.Deleted)
+                return MapEntityToDomain(current);
+        }
+
+        var others = await DbSet.Where(r => r.ChannelId == channelId && r.Number == number).ToListAsync();
+        var other = others.FirstOrDefault(r => _context.Entry(r).State != EntityState.Deleted);
+        return other is null ? null : MapEntityToDomain(other);
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<RevokedCommitmentModel>> GetByChannelIdAsync(ChannelId channelId)
     {
         var entities = await DbSet.AsNoTracking().Where(r => r.ChannelId == channelId).ToListAsync();
-        return entities.OrderBy(r => r.Number).Select(MapEntityToDomain).ToList();
+        return entities.OrderBy(r => r.Number).ThenBy(r => r.FundingTxId.ToString(), StringComparer.Ordinal)
+                       .Select(MapEntityToDomain).ToList();
     }
 
     /// <inheritdoc />
@@ -59,24 +70,26 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
     }
 
     /// <summary>
-    /// Stages the log row of <paramref name="revoked"/> when it has HTLCs (D2); does nothing otherwise. A row that
-    /// exists already is rewritten with the same content (a replayed transition).
+    /// Stages the log row of <paramref name="revoked"/> on the funding <paramref name="fundingTxId"/> when it has HTLCs
+    /// (D2); does nothing otherwise. A row that exists already is rewritten with the same content (a replayed
+    /// transition).
     /// </summary>
     /// <returns>True when a row was staged.</returns>
-    internal async Task<bool> StageAsync(ChannelId channelId, RemoteCommit revoked)
+    internal async Task<bool> StageAsync(ChannelId channelId, RemoteCommit revoked, TxId fundingTxId)
     {
         ArgumentNullException.ThrowIfNull(revoked);
         if (revoked.Spec.Htlcs.Count == 0)
             return false;
 
         var spec = revoked.Spec;
-        var entity = await DbSet.FindAsync(channelId, revoked.Number);
+        var entity = await DbSet.FindAsync(channelId, revoked.Number, fundingTxId);
         if (entity is null)
         {
             Insert(new RevokedCommitmentEntity
             {
                 ChannelId = channelId,
                 Number = revoked.Number,
+                FundingTxId = fundingTxId,
                 FeeratePerKw = spec.FeeratePerKw,
                 LocalMsat = spec.LocalMsat,
                 RemoteMsat = spec.RemoteMsat,
