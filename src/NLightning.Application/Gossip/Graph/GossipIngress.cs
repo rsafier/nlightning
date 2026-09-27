@@ -53,7 +53,8 @@ using Metrics;
 /// direction or node is kept and applied once the rate allows it); a keep-alive <c>channel_update</c> (same fields)
 /// only when <see cref="GossipGraphOptions.KeepAliveMinInterval"/> newer; timestamps more than
 /// <see cref="GossipGraphOptions.MaxFutureTimestamp"/> ahead dropped; no new channel or node beyond
-/// <see cref="GossipGraphOptions.MaxChannels"/>/<see cref="GossipGraphOptions.MaxNodes"/>; and a per-peer misbehaviour
+/// <see cref="GossipGraphOptions.MaxChannels"/>/<see cref="GossipGraphOptions.MaxNodes"/>, nor while the process is over
+/// <see cref="GossipGraphOptions.MaxMemoryMb"/> (<see cref="GossipMemoryBudget"/>); and a per-peer misbehaviour
 /// score (<see cref="GossipMisbehaviourTracker"/>: invalid signatures, bad encodings, funding outputs that contradict
 /// the announcement) that bans the peer with one <c>warning</c> and a disconnection. The ban is kept in memory
 /// (bounded by <see cref="GossipGraphOptions.MaxMisbehaviourBans"/>, pruned when it ends) and, for a peer that is a
@@ -95,6 +96,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private readonly GossipRateLimiter _rateLimiter;
     private readonly GossipMisbehaviourTracker _misbehaviour;
     private readonly GossipMetrics? _metrics;
+    private readonly GossipMemoryBudget? _memoryBudget;
     private readonly ConcurrentDictionary<CompactPubKey, DateTimeOffset> _bannedPeers = new();
     private readonly Lock _banGate = new();
     private readonly ConcurrentDictionary<(ShortChannelId, byte), IngressItem> _limitedUpdates = new();
@@ -112,8 +114,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                          IOptions<NodeOptions> nodeOptions, ILogger<GossipIngress> logger,
                          TimeProvider? timeProvider = null,
                          IChannelMemoryRepository? channelMemoryRepository = null,
-                         ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null)
+                         ISecureKeyManager? secureKeyManager = null, GossipMetrics? metrics = null,
+                         GossipMemoryBudget? memoryBudget = null)
     {
+        _memoryBudget = memoryBudget;
         _ourNodeId = secureKeyManager?.GetNodePubKey();
         _store = store;
         _signatureVerifier = signatureVerifier;
@@ -530,6 +534,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return GraphFull($"the graph holds {_options.MaxChannels} channels",
                              announcement.ShortChannelId.ToString());
 
+        // NL-373: over Gossip:MaxMemoryMb no new channel (known ones keep updating)
+        if (known is null && _memoryBudget?.RefuseNew("channels") is { } overBudget)
+            return overBudget;
+
         if (!VerifyChannelAnnouncement(announcement))
         {
             Remember(MessageTypes.ChannelAnnouncement, raw);
@@ -644,6 +652,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
         if (stored is null && _store.NodeCount >= _options.MaxNodes)
             return GraphFull($"the graph holds {_options.MaxNodes} nodes", announcement.NodeId.ToString());
+
+        // NL-373: over Gossip:MaxMemoryMb no new node (announced ones keep updating)
+        if (stored is null && _memoryBudget?.RefuseNew("nodes") is { } overBudgetNode)
+            return overBudgetNode;
 
         // The signature first: only a valid announcement is kept for when the rate allows it again
         if (!_signatureVerifier.Verify(announcement.GetSignatureHash(), announcement.Signature, announcement.NodeId))

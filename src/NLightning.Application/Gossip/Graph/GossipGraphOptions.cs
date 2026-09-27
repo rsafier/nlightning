@@ -65,6 +65,31 @@ public sealed class GossipGraphOptions
     /// </summary>
     public int MaxNodes { get; set; } = 100_000;
 
+    /// <summary>The default of <see cref="MaxMemoryMb"/>: 1 GiB on every network.</summary>
+    public const int DefaultMaxMemoryMb = 1_024;
+
+    /// <summary>
+    /// The process memory budget in MiB (NL-373, G5-T1), checked against the resident set of the whole process
+    /// (<see cref="Environment.WorkingSet"/>) by <see cref="GossipMemoryBudget"/>: above it, new channels and new
+    /// nodes from other peers' gossip are refused (channels and nodes already in the graph keep taking updates, our
+    /// own gossip is always applied) until the process is back below <see cref="MemoryResumePercent"/> of it. Zero
+    /// turns the budget off. Default 1,024 (1 GiB): the whole mainnet graph synced with 400 MB RSS steady and 630 MB
+    /// at the peak of a verified sync. <c>Gossip:MaxMemoryMb</c>.
+    /// </summary>
+    public int MaxMemoryMb { get; set; } = DefaultMaxMemoryMb;
+
+    /// <summary>
+    /// Once over <see cref="MaxMemoryMb"/>, new channels and nodes are accepted again when the process is below this
+    /// percentage of it (hysteresis, default 90). <c>Gossip:MemoryResumePercent</c>.
+    /// </summary>
+    public int MemoryResumePercent { get; set; } = 90;
+
+    /// <summary>
+    /// How often <see cref="GossipMemoryBudget"/> reads the process memory at most (default 1 s); between two reads
+    /// the last one decides. <c>Gossip:MemorySampleInterval</c>.
+    /// </summary>
+    public TimeSpan MemorySampleInterval { get; set; } = TimeSpan.FromSeconds(1);
+
     /// <summary>
     /// A <c>channel_update</c> channel direction gets one accepted update per this interval once its burst is spent
     /// (plan §3.8: 60 s). Zero turns the limit off. <c>Gossip:ChannelUpdateRateInterval</c>.
@@ -245,6 +270,12 @@ public sealed class GossipGraphOptions
             errors.Add($"{nameof(MaxChannels)} must be at least 1");
         if (MaxNodes < 1)
             errors.Add($"{nameof(MaxNodes)} must be at least 1");
+        if (MaxMemoryMb < 0)
+            errors.Add($"{nameof(MaxMemoryMb)} must not be negative (0 turns the budget off)");
+        if (MemoryResumePercent is < 1 or > 100)
+            errors.Add($"{nameof(MemoryResumePercent)} must be between 1 and 100");
+        if (MemorySampleInterval < TimeSpan.Zero)
+            errors.Add($"{nameof(MemorySampleInterval)} must not be negative");
         if (ChannelUpdateBurst < 1)
             errors.Add($"{nameof(ChannelUpdateBurst)} must be at least 1");
         if (MaxFutureTimestamp <= TimeSpan.Zero)

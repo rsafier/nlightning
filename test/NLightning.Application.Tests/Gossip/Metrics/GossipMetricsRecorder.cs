@@ -48,6 +48,13 @@ internal sealed class GossipMetricsRecorder : IDisposable
                             .Select(m => m.Value).LastOrDefault(double.NaN);
     }
 
+    /// <summary>The latest observed value of the observable <paramref name="instrument"/> (no tags).</summary>
+    public double Observe(string instrument)
+    {
+        _listener.RecordObservableInstruments();
+        return _measurements.Where(m => m.Instrument == instrument).Select(m => m.Value).LastOrDefault(double.NaN);
+    }
+
     public void Dispose() => _listener.Dispose();
 
     private void Add(Instrument instrument, double value, ReadOnlySpan<KeyValuePair<string, object?>> tags)

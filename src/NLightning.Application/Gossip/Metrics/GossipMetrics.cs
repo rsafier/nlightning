@@ -28,6 +28,10 @@ using Domain.Protocol.Constants;
 /// <item><c>nlightning.gossip.peers.banned</c>: peers banned for misbehaviour.</item>
 /// <item><c>nlightning.gossip.sync.duration</c> [outcome] (seconds): range syncs with a peer.</item>
 /// <item><c>nlightning.gossip.queue.depth</c> [queue]: the registered queue depths (observable).</item>
+/// <item><c>nlightning.gossip.memory.budget.exceeded</c>: the times the process went over <c>Gossip:MaxMemoryMb</c>
+/// (NL-373).</item>
+/// <item><c>nlightning.gossip.memory.working_set</c> (bytes): the process's resident set at the memory budget's last
+/// reading (observable, once registered).</item>
 /// </list>
 /// <para>Thread-safe; recording never throws and costs nothing while no listener is enabled.</para>
 /// </remarks>
@@ -69,6 +73,7 @@ public sealed class GossipMetrics : IDisposable
     private readonly Counter<long> _banned;
     private readonly Histogram<double> _syncDuration;
     private readonly Histogram<double> _storeDuration;
+    private readonly Counter<long> _memoryBudgetExceeded;
     private readonly Lock _queuesLock = new();
     private readonly Dictionary<string, Func<long>> _queues = new(StringComparer.Ordinal);
 
@@ -95,6 +100,8 @@ public sealed class GossipMetrics : IDisposable
                                                       "Duration of a range sync with a peer");
         _storeDuration = Meter.CreateHistogram<double>("nlightning.gossip.store.duration", "s",
                                                        "Duration of a graph store load or write-behind flush");
+        _memoryBudgetExceeded = Meter.CreateCounter<long>("nlightning.gossip.memory.budget.exceeded", "{crossing}",
+                                                          "Times the process went over Gossip:MaxMemoryMb");
         Meter.CreateObservableGauge("nlightning.gossip.queue.depth", ObserveQueues, "{message}",
                                     "Messages waiting in the gossip queues");
     }
@@ -146,6 +153,20 @@ public sealed class GossipMetrics : IDisposable
         _storeDuration.Record(Math.Max(0, duration.TotalSeconds),
                               new KeyValuePair<string, object?>(OperationTag, operation),
                               new KeyValuePair<string, object?>(OutcomeTag, completed ? "completed" : "failed"));
+
+    /// <summary>The process went over <c>Gossip:MaxMemoryMb</c>.</summary>
+    public void RecordMemoryBudgetExceeded() => _memoryBudgetExceeded.Add(1);
+
+    /// <summary>
+    /// Reports <paramref name="read"/> (bytes) as <c>nlightning.gossip.memory.working_set</c>; call once (the memory
+    /// budget does).
+    /// </summary>
+    public void RegisterMemoryWorkingSet(Func<long> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        Meter.CreateObservableGauge("nlightning.gossip.memory.working_set", read, "By",
+                                    "The process's resident set at the gossip memory budget's last reading");
+    }
 
     /// <summary>
     /// Reports <paramref name="read"/> as the depth of <paramref name="queue"/> (replacing an earlier source of that

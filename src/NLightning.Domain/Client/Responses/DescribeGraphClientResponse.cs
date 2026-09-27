@@ -77,6 +77,21 @@ public sealed record DescribeGraphClientResponse
 
     /// <summary>The offset of the next node page, or null when this page is the last.</summary>
     public int? NextNodeOffset { get; init; }
+
+    /// <summary><c>Gossip:MaxMemoryMb</c> in bytes, 0 when the budget is off, or null without a budget (NL-373).</summary>
+    public long? MemoryBudgetBytes { get; init; }
+
+    /// <summary>The process's resident set at the budget's last reading.</summary>
+    public long? ProcessWorkingSetBytes { get; init; }
+
+    /// <summary>The managed heap at the budget's last reading.</summary>
+    public long? ProcessManagedHeapBytes { get; init; }
+
+    /// <summary>New channels and nodes from gossip are refused because the process is over the budget.</summary>
+    public bool? IsOverMemoryBudget { get; init; }
+
+    /// <summary>New channels and nodes refused over the budget since the start.</summary>
+    public long? MemoryBudgetRefused { get; init; }
 }
 
 /// <summary>The gossip sync state of one connection.</summary>

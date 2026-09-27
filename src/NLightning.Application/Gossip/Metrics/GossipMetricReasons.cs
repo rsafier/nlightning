@@ -15,6 +15,9 @@ public static class GossipMetricReasons
     /// <summary>The graph is at <c>MaxChannels</c> or <c>MaxNodes</c>.</summary>
     public const string GraphFull = "graph_full";
 
+    /// <summary>The process is over <c>Gossip:MaxMemoryMb</c>: no new channel or node (NL-373).</summary>
+    public const string MemoryBudget = "memory_budget";
+
     /// <summary>A timestamp too far in the future.</summary>
     public const string FutureTimestamp = "future_timestamp";
 

@@ -465,6 +465,11 @@ public class PrinterSnapshotTests
             PendingWrites = 4,
             EstimatedStoreBytes = 5 * 1048576,
             EstimatedSnapshotBytes = 1048576 / 2,
+            MemoryBudgetBytes = 1024L * 1048576,
+            ProcessWorkingSetBytes = 400L * 1048576,
+            ProcessManagedHeapBytes = 200L * 1048576,
+            IsOverMemoryBudget = false,
+            MemoryBudgetRefused = 0,
             IngressQueued = 7,
             IngressDropped = 0,
             Orphans = 2,
@@ -513,6 +518,7 @@ public class PrinterSnapshotTests
                          "  Nodes:              3 (2 announced)",
                          "  Capacity (sat):     3000000",
                          "  Memory (estimate):  5.0 MiB store + 0.5 MiB per snapshot",
+                         "  Memory (process):   400.0 MiB RSS, 200.0 MiB managed heap; budget 1024.0 MiB (ok, 0 refused)",
                          "  Pending writes:     4",
                          "  Ingress:            7 queued, 0 dropped, 2 orphans",
                          "  Initial sync:       complete",
@@ -531,6 +537,32 @@ public class PrinterSnapshotTests
                          "  Policy 2 -> 1:      -",
                          Separator,
                          "More channels: describegraph --channels --offset 1"), output);
+    }
+
+    [Theory]
+    [InlineData(1024L, true, "  Memory (process):   1100.0 MiB RSS, 300.0 MiB managed heap; budget 1024.0 MiB (OVER BUDGET, new channels and nodes refused, 12 refused)")]
+    [InlineData(0L, false, "  Memory (process):   1100.0 MiB RSS, 300.0 MiB managed heap; budget off (ok, 12 refused)")]
+    public void Given_AMemoryBudgetState_When_GraphDescriptionPrinted_Then_TheProcessLineShowsIt(long budgetMb,
+        bool over, string expected)
+    {
+        // Arrange (NL-373)
+        var description = new DescribeGraphIpcResponse
+        {
+            MemoryBudgetBytes = budgetMb * 1048576,
+            ProcessWorkingSetBytes = 1100L * 1048576,
+            ProcessManagedHeapBytes = 300L * 1048576,
+            IsOverMemoryBudget = over,
+            MemoryBudgetRefused = 12,
+            Peers = [],
+            ChannelPage = [],
+            NodePage = []
+        };
+
+        // Act
+        var output = Print(w => new DescribeGraphPrinter(w).Print(description));
+
+        // Assert
+        Assert.Contains(expected + "\n", output);
     }
 
     private static string Print(Action<TextWriter> print)
