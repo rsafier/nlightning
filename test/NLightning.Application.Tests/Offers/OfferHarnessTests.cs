@@ -24,7 +24,6 @@ using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
 using Domain.Payments.Enums;
-using Domain.Payments.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.OnionMessages.Interfaces;
@@ -72,7 +71,7 @@ public class OfferHarnessTests
         Assert.Equal(InvoiceKind.Bolt12, invoice.Kind);
         Assert.Equal(offer.OfferId, invoice.Bolt12!.OfferId);
         Assert.Equal("from alice", invoice.Bolt12.PayerNote);
-        Assert.Equal(result.Fetch.Invoice.InvoiceBytes.ToArray(), invoice.Bolt12.InvoiceBytes.ToArray());
+        Assert.Equal(result.Fetch.Invoice!.InvoiceBytes.ToArray(), invoice.Bolt12.InvoiceBytes.ToArray());
         Assert.Equal(invoice.Preimage, payment.Preimage);
 
         // Alice's payment row keeps the offer, the invoice and her request's metadata
