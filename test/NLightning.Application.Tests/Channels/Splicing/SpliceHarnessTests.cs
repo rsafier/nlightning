@@ -282,6 +282,49 @@ public class SpliceHarnessTests
         Assert.Empty(harness.Alice.Contributor.ActiveReservations);
     }
 
+    /// <summary>
+    /// A <c>tx_abort</c> after the commitment step and before our <c>tx_signatures</c> (BOLT 2 interactive-tx: the
+    /// negotiation is forgotten): the peer's splice commitment had already made the new funding pending (SP-CS-02, lane
+    /// SP1-B's engine), so it is discarded again and no later <c>commitment_signed</c> batch covers it.
+    /// </summary>
+    [Fact]
+    public async Task Given_ATxAbortAfterTheSpliceCommitments_When_Received_Then_ThePendingFundingIsDiscarded()
+    {
+        // Arrange: Alice splices in; stop when Bob's tx_signatures is next and Alice verified Bob's commitment_signed
+        using var harness = new SpliceHarness();
+        harness.Alice.Fund(500_000);
+        var start = harness.Alice.Service.StartAsync(
+            new SpliceRequest(TwoNodeHarness.ChannelId, 100_000, SpliceHarness.FeeratePerKw),
+            TestContext.Current.CancellationToken);
+        for (var round = 0; round < 2_000 && harness.Bob.Node.PeekNext() is not TxSignaturesMessage; round++)
+        {
+            await harness.WhenIdleAsync();
+            if (!await harness.Alice.Node.DeliverNextAsync() && !await harness.Bob.Node.DeliverNextAsync())
+                await Task.Delay(2, TestContext.Current.CancellationToken);
+        }
+
+        var spliceTxId = Assert.Single(harness.Alice.Port.GetFundings(harness.Alice.Node.Channel).Pending).FundingTxId;
+        Assert.True(harness.Bob.Node.TryTakeNext(out _));
+
+        // Act: Bob's tx_abort reaches Alice instead of his tx_signatures
+        var abort = new TxAbortMessage(new Domain.Protocol.Payloads.TxAbortPayload(TwoNodeHarness.ChannelId, [0x01]));
+        await harness.Alice.Node.ChannelManager.HandleChannelMessageAsync(abort, SpliceHarness.CreateFeatures(),
+                                                                          SpliceHarness.NodeIdOf("Bob"));
+        var result = await start.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await harness.WhenIdleAsync();
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.Aborted, result.State);
+        Assert.Empty(harness.Alice.Port.GetFundings(harness.Alice.Node.Channel).Pending);
+        var discarded = Assert.Single(harness.Alice.Port.Retired);
+        Assert.Equal(spliceTxId, discarded.FundingTxId);
+        Assert.Equal(ChannelFundingStatus.Discarded, discarded.Status);
+        Assert.Empty(harness.Alice.Port.Saved!.Pending);
+        Assert.DoesNotContain(harness.Transcript, t => t is { From: "Alice", Message: TxSignaturesMessage });
+        Assert.Empty(harness.Alice.Broadcasts);
+        Assert.False(harness.Alice.Quiescence.GetState(TwoNodeHarness.ChannelId).BlocksNewLocalUpdates);
+    }
+
     [Fact]
     public async Task Given_AnInvalidSharedInputSignature_When_Received_Then_TheChannelFails()
     {

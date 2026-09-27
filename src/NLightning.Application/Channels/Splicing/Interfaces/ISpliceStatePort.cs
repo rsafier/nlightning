@@ -61,7 +61,20 @@ public interface ISpliceStatePort
     /// </summary>
     (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Lock(FundingSet fundings, TxId fundingTxId);
 
-    /// <summary>Stages <paramref name="next"/> (and the fundings that left it) on <paramref name="unitOfWork"/>.</summary>
+    /// <summary>
+    /// The set without the pending funding <paramref name="fundingTxId"/>: a splice whose negotiation ended with
+    /// <c>tx_abort</c> after the commitment step (the peer's <c>commitment_signed</c> may already have made it pending,
+    /// SP-CS-02), before any <c>tx_signatures</c> of ours. The funding comes back
+    /// <see cref="Domain.Channels.Splicing.Enums.ChannelFundingStatus.Discarded"/> in <c>Retired</c>; a funding that is not
+    /// pending leaves the set unchanged with nothing retired.
+    /// </summary>
+    (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Discard(FundingSet fundings, TxId fundingTxId);
+
+    /// <summary>
+    /// Stages <paramref name="next"/> (and the fundings that left it) on <paramref name="unitOfWork"/>: a lock when
+    /// <paramref name="next"/>'s current funding is another one, otherwise the pending fundings' flags and the discarded
+    /// ones.
+    /// </summary>
     Task StageFundingsAsync(ChannelModel channel, FundingSet next, IReadOnlyList<ChannelFunding> retired,
                             IUnitOfWork unitOfWork, CancellationToken cancellationToken);
 

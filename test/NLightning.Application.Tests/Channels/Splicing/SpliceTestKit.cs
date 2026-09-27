@@ -383,12 +383,26 @@ internal sealed class FakeSpliceStatePort(string nodeName, ILightningSigner sign
         return Task.CompletedTask;
     }
 
-    public void OnSpliceCommitmentSaved(ChannelModel channel, ChannelFunding funding) =>
+    /// <summary>
+    /// As lane SP1-B's engine: the peer's verified splice commitment makes the funding pending at once
+    /// (<c>ReceiveSpliceCommitment</c>), before any <c>tx_signatures</c>.
+    /// </summary>
+    public void OnSpliceCommitmentSaved(ChannelModel channel, ChannelFunding funding)
+    {
+        _memory = AddPending(GetFundings(channel), funding);
         signer.MarkSpliceCommitmentPersisted(channel.ChannelId, funding.FundingTxId,
                                              channel.Commitments!.LocalCommit.Number);
+    }
 
-    public FundingSet AddPending(FundingSet fundings, ChannelFunding funding) =>
-        new(fundings.Current, [.. fundings.Pending, funding with { Status = ChannelFundingStatus.Pending }]);
+    public FundingSet AddPending(FundingSet fundings, ChannelFunding funding)
+    {
+        var pending = funding with { Status = ChannelFundingStatus.Pending };
+        return fundings.Pending.Any(f => f.FundingTxId == funding.FundingTxId)
+                   ? new FundingSet(fundings.Current,
+                                    fundings.Pending.Select(f => f.FundingTxId == funding.FundingTxId ? pending : f)
+                                            .ToList())
+                   : new FundingSet(fundings.Current, [.. fundings.Pending, pending]);
+    }
 
     public (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Lock(FundingSet fundings, TxId fundingTxId)
     {
@@ -404,6 +418,12 @@ internal sealed class FakeSpliceStatePort(string nodeName, ILightningSigner sign
                                  .Select(f => f with { Status = ChannelFundingStatus.Discarded }));
         return (FundingSet.Single(current), retired);
     }
+
+    public (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Discard(FundingSet fundings, TxId fundingTxId) =>
+        fundings.Pending.FirstOrDefault(f => f.FundingTxId == fundingTxId) is { } discarded
+            ? (new FundingSet(fundings.Current, fundings.Pending.Where(f => f.FundingTxId != fundingTxId).ToList()),
+               [discarded with { Status = ChannelFundingStatus.Discarded }])
+            : (fundings, []);
 
     public Task StageFundingsAsync(ChannelModel channel, FundingSet next, IReadOnlyList<ChannelFunding> retired,
                                    IUnitOfWork unitOfWork, CancellationToken cancellationToken)
