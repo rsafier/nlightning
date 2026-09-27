@@ -14,7 +14,8 @@ using Domain.Protocol.ValueObjects;
 
 /// <summary>
 /// Keysend and custom records (lane lh1-l3): a keysend final payload needs no <c>payment_data</c>, and records of type
-/// 65536 or more are accepted whatever their parity (as LND); below that an unknown even type still fails.
+/// 65536 or more are accepted whatever their parity at the final hop (as LND); below that, or at a forwarding hop, an
+/// unknown even type still fails.
 /// </summary>
 public class HopPayloadValidatorKeysendTests
 {
@@ -55,11 +56,29 @@ public class HopPayloadValidatorKeysendTests
     }
 
     [Fact]
-    public void Given_IntermediatePayloadWithEvenCustomRecord_When_Validating_Then_Succeeds()
+    public void Given_IntermediatePayloadWithEvenCustomRecord_When_Validating_Then_FailsWithItsType()
     {
-        // Arrange: LND accepts custom records at any hop ("we always accept custom fields")
+        // Arrange: the custom-record exemption is limited to the final hop; a forwarding hop keeps BOLT 1's "unknown
+        // even type MUST fail" (LND accepts them at any hop; lane lh1-l3 review)
         var payload = new HopPayload(Amt, Cltv, new OnionShortChannelIdTlv(new ShortChannelId(700_000, 1, 0)),
                                      new BaseTlv(new BigSize(133773310), [0x01]));
+
+        // Act
+        var exception = Assert.Throws<OnionException>(() => HopPayloadValidator.Validate(payload, false, false));
+
+        // Assert
+        Assert.Equal(FailureCode.InvalidOnionPayload, exception.FailureCode);
+        Assert.True(InvalidOnionPayloadFailureFactory.TryDecodeData(exception.FailureData!.Value.Span, out var type,
+                                                                    out _));
+        Assert.Equal(new BigSize(133773310), type);
+    }
+
+    [Fact]
+    public void Given_IntermediatePayloadWithOddCustomRecord_When_Validating_Then_Succeeds()
+    {
+        // Arrange: an unknown odd type is ignored at any hop (BOLT 1)
+        var payload = new HopPayload(Amt, Cltv, new OnionShortChannelIdTlv(new ShortChannelId(700_000, 1, 0)),
+                                     new BaseTlv(new BigSize(133773311), [0x01]));
 
         // Act & Assert
         Assert.True(HopPayloadValidator.TryValidate(payload, false, false, out _));

@@ -97,6 +97,24 @@ public static class CustomRecordCodec
         return records;
     }
 
+    /// <summary>
+    /// Decodes like <see cref="Decode"/> without throwing: bytes that are not a canonical stream of custom records give
+    /// false and no records. Stored rows are read with it, so one bad row never breaks a payment hash lookup.
+    /// </summary>
+    public static bool TryDecode(ReadOnlySpan<byte> bytes, out IReadOnlyList<CustomRecord> records)
+    {
+        try
+        {
+            records = Decode(bytes);
+            return true;
+        }
+        catch (FormatException)
+        {
+            records = [];
+            return false;
+        }
+    }
+
     private static void WriteBigSize(Stream stream, ulong value)
     {
         Span<byte> buffer = stackalloc byte[9];

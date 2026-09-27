@@ -4,6 +4,8 @@ namespace NLightning.Application.Payments.Routing;
 
 using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.Tlv;
@@ -78,6 +80,45 @@ public sealed class PaymentOnionFactory
 
         var constructed = _sphinxService.ConstructWithSharedSecrets(hops, sessionKey, route.PaymentHash);
         return new PaymentOnion(route, constructed.Packet, constructed.SharedSecrets);
+    }
+
+    /// <summary>
+    /// The bytes the hop payloads of <paramref name="route"/> take in the onion, framed as Sphinx frames them (BigSize
+    /// length, payload, HMAC); the onion holds <see cref="OnionConstants.HopPayloadsLength"/>.
+    /// </summary>
+    public async Task<int> GetFramedLengthAsync(PaymentRoute route, KeysendFinalRecords? keysend = null)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+
+        var total = 0;
+        foreach (var hop in route.Hops)
+            total += await GetFramedLengthAsync(CreatePayload(hop, route, keysend));
+
+        return total;
+    }
+
+    /// <summary>
+    /// The framed bytes (as <see cref="GetFramedLengthAsync(PaymentRoute, KeysendFinalRecords?)"/>) of a keysend payee's
+    /// layer alone: the least any route to it takes, so a payment whose layer does not fit can be refused before any
+    /// route is tried.
+    /// </summary>
+    public Task<int> GetKeysendFinalFramedLengthAsync(LightningMoney amount, uint outgoingCltvValue,
+                                                      KeysendFinalRecords keysend)
+    {
+        ArgumentNullException.ThrowIfNull(keysend);
+
+        var tlvs = new List<BaseTlv> { new AmtToForwardTlv(amount), new OutgoingCltvValueTlv(outgoingCltvValue) };
+        tlvs.AddRange(keysend.ToTlvs());
+        return GetFramedLengthAsync(new HopPayload(tlvs.ToArray()));
+    }
+
+    private async Task<int> GetFramedLengthAsync(HopPayload payload)
+    {
+        using var stream = new MemoryStream();
+        await _hopPayloadSerializer.SerializeAsync(payload, stream);
+        var length = (int)stream.Length;
+        var lengthPrefix = length < 0xfd ? 1 : length <= 0xffff ? 3 : 5;
+        return lengthPrefix + length + OnionConstants.HmacLength;
     }
 
     /// <summary>

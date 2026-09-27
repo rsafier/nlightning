@@ -69,6 +69,21 @@ public class CustomRecordCodecTests
         Assert.Throws<FormatException>(() => CustomRecordCodec.Decode(Convert.FromHexString(hex)));
     }
 
+    [Theory]
+    [InlineData("fe000100", false)]
+    [InlineData("fe0001000100", true)]
+    [InlineData("", true)]
+    public void Given_StoredBytes_When_TryDecoding_Then_NeverThrows(string hex, bool readable)
+    {
+        // Act
+        var result = CustomRecordCodec.TryDecode(Convert.FromHexString(hex), out var records);
+
+        // Assert
+        Assert.Equal(readable, result);
+        if (!readable)
+            Assert.Empty(records);
+    }
+
     [Fact]
     public void Given_TwoRecordsWithSameBytes_When_Comparing_Then_EqualByValue()
     {

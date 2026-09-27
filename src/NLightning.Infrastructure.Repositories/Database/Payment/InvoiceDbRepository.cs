@@ -149,10 +149,15 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
                                 MapKeysend(entity));
     }
 
-    private static KeysendDetails? MapKeysend(InvoiceEntity entity) =>
-        entity.Kind == (byte)InvoiceKind.Keysend
-            ? new KeysendDetails(CustomRecordCodec.Decode(entity.Bolt12InvoiceBytes ?? []))
-            : null;
+    private static KeysendDetails? MapKeysend(InvoiceEntity entity)
+    {
+        if (entity.Kind != (byte)InvoiceKind.Keysend)
+            return null;
+
+        // Unreadable bytes give a record without custom records, never an exception under the switch's hash lock
+        CustomRecordCodec.TryDecode(entity.Bolt12InvoiceBytes ?? [], out var records);
+        return new KeysendDetails(records);
+    }
 
     private static Bolt12InvoiceDetails? MapBolt12(InvoiceEntity entity)
     {

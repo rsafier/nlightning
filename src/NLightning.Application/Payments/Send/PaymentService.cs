@@ -30,6 +30,7 @@ using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Interpreters;
@@ -342,6 +343,17 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var paymentHash = new Hash(SHA256.HashData(preimageBytes));
 
         var keysendOptions = _nodeOptions.Value.Keysend;
+        var keysend = new KeysendFinalRecords(preimage, customRecords);
+
+        // The payee's layer alone must fit the onion (the least any route takes): refuse oversized records at once
+        var finalLayer = await _onionFactory.GetKeysendFinalFramedLengthAsync(
+                             request.Amount,
+                             _blockchainMonitor.LastProcessedBlockHeight + keysendOptions.FinalCltvExpiryDelta,
+                             keysend);
+        if (finalLayer > OnionConstants.HopPayloadsLength)
+            throw new ArgumentException($"The custom records do not fit the onion: the payee's layer takes {finalLayer} "
+                                      + $"of {OnionConstants.HopPayloadsLength} bytes.", nameof(request));
+
         var target = new PaymentTarget(request.Destination, paymentHash, new Secret(new byte[32]), request.Amount,
                                        keysendOptions.FinalCltvExpiryDelta, [], SupportsMpp: false);
         var sendOptions = _sendOptions.Value;
@@ -351,7 +363,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                          options.MaxFee ?? sendOptions.GetMaxFee(request.Amount), 1,
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now)
         {
-            Keysend = new KeysendFinalRecords(preimage, customRecords)
+            Keysend = keysend
         };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
@@ -739,6 +751,20 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 }
 
                 await FinishFailedAsync(session, noRouteReason);
+                return;
+            }
+
+            if (session.Keysend is { } keysend && await FindOversizedKeysendRouteAsync(planned, keysend) is { } tooLong)
+            {
+                // A keysend's custom records fit the payee's layer (checked up front) but not this longer route: say
+                // so instead of letting the onion builder throw (lane lh1-l3 review)
+                if (session.HasPartsInFlight)
+                {
+                    session.TerminalReason ??= tooLong;
+                    return;
+                }
+
+                await FinishFailedAsync(session, tooLong);
                 return;
             }
 
@@ -1195,6 +1221,25 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                          && htlc.CltvExpiry == part.Route.FirstHopCltvExpiry
                                                          && session.FindPart(part.Channel.ChannelId, htlc.Id) is null)
                 return htlc.Id;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The failure reason when a planned route's hop payloads, with the keysend payee's custom records, do not fit the
+    /// onion; null when every route fits.
+    /// </summary>
+    private async Task<string?> FindOversizedKeysendRouteAsync(IReadOnlyList<PlannedPart> planned,
+                                                               KeysendFinalRecords keysend)
+    {
+        foreach (var plannedPart in planned)
+        {
+            var length = await _onionFactory.GetFramedLengthAsync(plannedPart.Route, keysend);
+            if (length > OnionConstants.HopPayloadsLength)
+                return $"The keysend custom records do not fit the onion over the {plannedPart.Route.Hops.Count}-hop "
+                     + $"route found ({length} of {OnionConstants.HopPayloadsLength} bytes); send fewer or smaller "
+                     + "records.";
         }
 
         return null;

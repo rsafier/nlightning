@@ -11,6 +11,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 
@@ -110,6 +111,32 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
     }
 
     [Fact]
+    public async Task Given_AKeysendHtlcTheSwitchNeverSaw_When_ThePeerCommitmentConfirms_Then_TheSwitchDecidesAndItIsClaimed()
+    {
+        // Arrange (lane lh1-l3 review): a keysend HTLC has no invoice until the switch accepts it; it locked in while
+        // the switch was away and the peer force-closed, so the resolver must still ask the switch
+        var preimage = RealSigningCommitmentPair.Preimage(3);
+        var id = Pair.Add(Pair.Bob, AmountMsat, preimage, Cltv);
+        Pair.Settle(Pair.Bob);
+        _context.UseSnapshot();
+        _context.CloseWith(Pair.Alice.State.RemoteCommit, ChannelCloseKind.RemoteCommitment);
+        await _context.BeginAsync(RemoteResolutionTestContext.CloseHeight);
+        var decision = Assert.Single(_context.SwitchEvents.OfType<IncomingHtlcLockedIn>());
+        Assert.Equal(id, decision.Htlc.Id);
+
+        // Act: the switch accepts it as a keysend (its Keysend record settled, the preimage on the HTLC's record)
+        _context.UseSnapshot(WithKnownPreimage(Pair.Alice.State, id, preimage));
+        var record = AddInvoice(preimage, bolt11: null);
+        record.Accept(LightningMoney.MilliSatoshis(AmountMsat));
+        record.Settle(DateTimeOffset.UtcNow);
+        await _context.ResolveAsync(RemoteResolutionTestContext.CloseHeight + 1);
+
+        // Assert
+        AssertPreimageClaim(id, preimage);
+        Assert.Single(_context.SwitchEvents.OfType<IncomingHtlcLockedIn>());
+    }
+
+    [Fact]
     public async Task Given_ARecordPreimageOfAnotherHash_When_Resolved_Then_NeverClaimed()
     {
         // Arrange: whatever the record holds, only a preimage of the HTLC's own hash may be revealed
@@ -174,7 +201,6 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
     }
 
     [Theory]
-    [InlineData("unknown")]
     [InlineData("settled")]
     [InlineData("canceled")]
     [InlineData("forward")]
@@ -221,12 +247,13 @@ public sealed class RemoteFinalHopClaimTests : IDisposable
 
     public void Dispose() => _context.Dispose();
 
-    private InvoiceModel AddInvoice(Secret preimage)
+    private InvoiceModel AddInvoice(Secret preimage, string? bolt11 = "lnbcrt-test")
     {
         var invoice = new InvoiceModel(RealSigningCommitmentPair.Hash(preimage), preimage,
                                        new Secret(Enumerable.Repeat((byte)0x53, 32).ToArray()),
-                                       LightningMoney.MilliSatoshis(AmountMsat), "final hop", "lnbcrt-test",
-                                       DateTimeOffset.UtcNow, 3_600, 18);
+                                       LightningMoney.MilliSatoshis(AmountMsat), "final hop", bolt11,
+                                       DateTimeOffset.UtcNow, 3_600, 18,
+                                       keysend: bolt11 is null ? new KeysendDetails([]) : null);
         _context.Store.Invoices[invoice.PaymentHash] = invoice;
         return invoice;
     }

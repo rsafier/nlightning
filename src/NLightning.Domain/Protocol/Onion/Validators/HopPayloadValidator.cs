@@ -30,8 +30,11 @@ using Protocol.ValueObjects;
 /// </para>
 /// <para>
 /// Custom records (types of 65536 and up, <see cref="OnionPayloadTlvTypes.CustomRecordTypeStart"/>) are accepted
-/// whatever their parity, as LND does, and a non-blinded final hop with a <c>keysend_preimage</c> needs no
-/// <c>payment_data</c> (keysend, a spontaneous payment without an invoice; lane lh1-l3).
+/// whatever their parity at a final hop, as LND does (keysend's own record is even), and a non-blinded final hop with a
+/// <c>keysend_preimage</c> needs no <c>payment_data</c> (keysend, a spontaneous payment without an invoice; lane
+/// lh1-l3). This is an interop deviation from BOLT 1 ("if type is even: MUST fail to parse") limited to the final
+/// hop, the only place a custom record means anything: a forwarding hop keeps BOLT 1's strictness (LND accepts them at
+/// every hop), and a blinded hop allows only its fixed set of types.
 /// </para>
 /// <para>
 /// A non-blinded final hop that carries <c>short_channel_id</c> is accepted: "MUST NOT include short_channel_id" is a
@@ -81,7 +84,7 @@ public static class HopPayloadValidator
     {
         ArgumentNullException.ThrowIfNull(payload);
 
-        error = FindUnknownEvenType(payload)
+        error = FindUnknownEvenType(payload, isFinalHop)
              ?? (payload.IsBlinded
                      ? ValidateBlinded(payload, isFinalHop, hasUpdateAddPathKey)
                      : ValidateNonBlinded(payload, isFinalHop, hasUpdateAddPathKey));
@@ -89,14 +92,16 @@ public static class HopPayloadValidator
         return error is null;
     }
 
-    private static OnionException? FindUnknownEvenType(HopPayload payload)
+    private static OnionException? FindUnknownEvenType(HopPayload payload, bool isFinalHop)
     {
-        // BOLT 1: an unknown even type MUST fail the stream. The parser already enforces this; repeat it here for
-        // payloads that were built by hand. Custom records (65536 and up) are accepted whatever their parity, as LND
-        // does: they are for the final node's application (keysend's preimage is one, and even)
+        // BOLT 1: an unknown even type MUST fail the stream. The parser enforces it below the custom range (it cannot
+        // tell a final hop); repeat it here for payloads built by hand. Custom records (65536 and up) are accepted
+        // whatever their parity at the final hop only, as LND does: they are for the final node's application
+        // (keysend's preimage is one, and even). A forwarding hop has no use for them and keeps BOLT 1's rule
         var unknownEven = payload.UnknownTlvs.FirstOrDefault(tlv => tlv.Type.Value % 2 == 0
-                                                                 && tlv.Type < OnionPayloadTlvTypes
-                                                                              .CustomRecordTypeStart);
+                                                                 && (!isFinalHop
+                                                                  || tlv.Type < OnionPayloadTlvTypes
+                                                                                .CustomRecordTypeStart));
 
         return unknownEven is null
                    ? null

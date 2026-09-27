@@ -51,11 +51,12 @@ internal static class FinalHopClaims
     /// The switch event that makes it decide on an incoming HTLC of a channel closing on chain: an
     /// <see cref="IncomingHtlcLockedIn"/> for an HTLC irrevocably committed by the peer, without our removal, not
     /// expired at <paramref name="height"/>, that is not a forward (no outgoing HTLC carries its origin, no circuit),
-    /// whose payment hash is one of our <c>Open</c> invoices. The switch accepts it with the final-hop checks and
-    /// persists the preimage (and settles the invoice), or leaves it to time out. Null when there is nothing to decide.
+    /// whose payment hash is one of our <c>Open</c> invoices or no invoice of ours (a keysend payment the switch has not
+    /// accepted yet). The switch accepts it with the final-hop checks and persists the preimage (and settles the
+    /// invoice), or leaves it to time out. Null when there is nothing to decide.
     /// </summary>
-    /// <remarks>Raised every round while the invoice stays <c>Open</c> (the switch is idempotent): after a restart, or
-    /// when the switch was away, the next round asks again.</remarks>
+    /// <remarks>Raised every round while the invoice stays <c>Open</c> or absent (the switch is idempotent): after a
+    /// restart, or when the switch was away, the next round asks again.</remarks>
     public static async Task<IncomingHtlcLockedIn?> GetFinalHopDecisionAsync(IUnitOfWork unitOfWork,
                                                                             ChannelId channelId, HtlcRecord? record,
                                                                             uint height)
@@ -70,8 +71,11 @@ internal static class FinalHopClaims
          || await unitOfWork.ForwardCircuitDbRepository.GetByIncomingAsync(channelId, record.Id) is not null)
             return null;
 
+        // No invoice for the hash: it may be a keysend payment, whose record the switch makes only when it accepts the
+        // HTLC (lane lh1-l3). The switch peels the onion and decides; on a channel closing on chain it never forwards,
+        // and a refusal persists nothing (the HTLC then times out on chain)
         var invoice = await unitOfWork.InvoiceDbRepository.GetByPaymentHashAsync(record.PaymentHash);
-        return invoice is { Status: InvoiceStatus.Open } ? new IncomingHtlcLockedIn(channelId, record) : null;
+        return invoice is null or { Status: InvoiceStatus.Open } ? new IncomingHtlcLockedIn(channelId, record) : null;
     }
 
     private static bool Hashes(Secret preimage, Hash paymentHash) =>
