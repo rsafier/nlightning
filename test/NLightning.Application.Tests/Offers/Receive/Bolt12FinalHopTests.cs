@@ -30,10 +30,23 @@ public class Bolt12FinalHopTests
 
     private readonly FinalHopProcessor _processor = new(NullLogger<FinalHopProcessor>.Instance);
 
-    private static InvoiceModel Bolt12Invoice() =>
-        new(s_paymentHash, s_preimage, s_paymentSecret, LightningMoney.MilliSatoshis(AmountMsat), "coffee",
-            "lni1test", DateTimeOffset.UtcNow, 7_200, MinFinalCltv,
-            bolt12: new Bolt12InvoiceDetails(new Hash(new byte[32]), new byte[] { 1 }, TestPaths.Point(0x02)));
+    private static InvoiceModel Bolt12Invoice()
+    {
+        var details = new Bolt12InvoiceDetails(new Hash(new byte[32]), new byte[] { 1 }, TestPaths.Point(0x02));
+        // B12-0's InvoiceModel requires a string; B12-C's refuses one for a BOLT 12 invoice
+        try
+        {
+            return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret,
+                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", null, DateTimeOffset.UtcNow,
+                                    7_200, MinFinalCltv, bolt12: details);
+        }
+        catch (ArgumentException)
+        {
+            return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret,
+                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", "lni1test",
+                                    DateTimeOffset.UtcNow, 7_200, MinFinalCltv, bolt12: details);
+        }
+    }
 
     [Fact]
     public void Given_ABolt12Invoice_When_PaidAtTheEndOfItsBlindedPath_Then_Accepted()

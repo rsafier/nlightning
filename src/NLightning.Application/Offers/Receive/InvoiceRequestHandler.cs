@@ -57,8 +57,7 @@ public enum InvoiceRequestOutcome
 /// <c>offer_issuer_id</c>). Its <see cref="InvoiceModel"/> (<c>Kind</c> BOLT 12, with the offer id, the invoice bytes,
 /// the payer id, the quantity and the note) is saved <b>before</b> the reply is sent, so no payment can arrive for an
 /// invoice we forgot; the final hop then accepts it only through its blinded paths (<c>FinalHopProcessor</c>). The
-/// row's <c>Bolt11</c> column holds the invoice as an <c>lni1...</c> string (CLN's convention; BOLT 12 defines no
-/// string for invoices). Every invoice is new: we never answer twice with the same invoice (BOLT 12 allows it only
+/// row has no BOLT 11 string (see <see cref="CreateInvoiceModel"/>). Every invoice is new: we never answer twice with the same invoice (BOLT 12 allows it only
 /// with an issuer id and the same metadata, MAY).</para>
 /// <para>Replies go through the request's <c>reply_path</c> with <see cref="IOnionMessageService.SendAsync"/>, resolved
 /// lazily (the onion-message service takes every handler, this one included). Singleton; handles one message at a
@@ -219,13 +218,10 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
                                                              nodeOptions.Features.BasicMpp != FeatureSupport.No,
                                                              _secureKeyManager.GetNodePubKey(), _signer);
 
-        var invoice = new InvoiceModel(paymentHash, new Secret(preimage),
-                                       new Secret(RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen)), amount,
-                                       offer.Description,
-                                       Bolt12Wire.ToBolt12String(Bolt12Constants.InvoiceHrp, invoiceBytes), createdAt,
-                                       relativeExpiry, nodeOptions.Routing.InvoiceMinFinalCltvExpiry,
-                                       bolt12: new Bolt12InvoiceDetails(offer.OfferId, invoiceBytes, request.PayerId,
-                                                                        request.Quantity, request.PayerNote));
+        var invoice = CreateInvoiceModel(paymentHash, preimage, amount, offer.Description, createdAt, relativeExpiry,
+                                         nodeOptions.Routing.InvoiceMinFinalCltvExpiry,
+                                         new Bolt12InvoiceDetails(offer.OfferId, invoiceBytes, request.PayerId,
+                                                                  request.Quantity, request.PayerNote));
         await unitOfWork.InvoiceDbRepository.AddAsync(invoice);
         await unitOfWork.SaveChangesAsync();
 
@@ -237,6 +233,30 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
               + "{PathCount} path(s)): {Status}", offer.OfferId, paymentHash, amountMsat, paths.Count, result);
 
         return InvoiceRequestOutcome.Invoice;
+    }
+
+    /// <summary>
+    /// The invoice row: no BOLT 11 string (BOLT 12 invoices have none; lane B12-C's <see cref="InvoiceModel"/>), or,
+    /// with the B12-0 contract that still requires one, the invoice as an <c>lni1...</c> string (CLN's convention).
+    /// </summary>
+    /// <remarks>Integration seam: once B12-C is merged the fallback is dead and goes.</remarks>
+    private static InvoiceModel CreateInvoiceModel(Hash paymentHash, byte[] preimage, LightningMoney amount,
+                                                   string? description, DateTimeOffset createdAt, uint expirySeconds,
+                                                   ushort minFinalCltvExpiry, Bolt12InvoiceDetails details)
+    {
+        var paymentSecret = new Secret(RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen));
+        try
+        {
+            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description, null,
+                                    createdAt, expirySeconds, minFinalCltvExpiry, bolt12: details);
+        }
+        catch (ArgumentException)
+        {
+            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description,
+                                    Bolt12Wire.ToBolt12String(Bolt12Constants.InvoiceHrp,
+                                                              details.InvoiceBytes.Span),
+                                    createdAt, expirySeconds, minFinalCltvExpiry, bolt12: details);
+        }
     }
 
     private async Task<InvoiceRequestOutcome> RefuseAsync(WireBlindedPath replyPath, InvoiceRequestRefusal refusal,
