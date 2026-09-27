@@ -15,10 +15,11 @@ using Interfaces;
 public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<ChannelReestablishMessage>
 {
     /// <summary>
-    /// The <c>channel_reestablish_tlvs</c> types this node understands. BOLT 1: an unknown even type MUST fail the stream.
+    /// The <c>channel_reestablish_tlvs</c> types this node understands: 1 (<c>next_funding</c>) and 5
+    /// (<c>my_current_funding_locked</c>, SP-RE-02). BOLT 1: an unknown even type MUST fail the stream.
     /// </summary>
     private static readonly IReadOnlySet<BigSize> s_knownExtensionTypes =
-        new HashSet<BigSize> { TlvConstants.NextFunding };
+        new HashSet<BigSize> { TlvConstants.NextFunding, TlvConstants.MyCurrentFundingLocked };
 
     private readonly IPayloadSerializerFactory _payloadSerializerFactory;
     private readonly ITlvConverterFactory _tlvConverterFactory;
@@ -80,7 +81,16 @@ public class ChannelReestablishMessageTypeSerializer : IMessageTypeSerializer<Ch
                 nextFundingTlv = tlvConverter.ConvertFromBase(baseNextFundingTlv!);
             }
 
-            return new ChannelReestablishMessage(payload, nextFundingTlv);
+            MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null;
+            if (extension.TryGetTlv(TlvConstants.MyCurrentFundingLocked, out var baseMyCurrentFundingLockedTlv))
+            {
+                var tlvConverter = _tlvConverterFactory.GetConverter<MyCurrentFundingLockedTlv>()
+                                ?? throw new SerializationException(
+                                       $"No serializer found for tlv type {nameof(MyCurrentFundingLockedTlv)}");
+                myCurrentFundingLockedTlv = tlvConverter.ConvertFromBase(baseMyCurrentFundingLockedTlv!);
+            }
+
+            return new ChannelReestablishMessage(payload, nextFundingTlv, myCurrentFundingLockedTlv);
         }
         catch (SerializationException e)
         {

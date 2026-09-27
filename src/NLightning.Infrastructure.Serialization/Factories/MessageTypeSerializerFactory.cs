@@ -93,6 +93,17 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _serializers.Add(typeof(RevokeAndAckMessage),
                          new RevokeAndAckMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(ShutdownMessage), new ShutdownMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(SpliceAckMessage),
+                         new SpliceAckMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                            _tlvStreamSerializer));
+        _serializers.Add(typeof(SpliceInitMessage),
+                         new SpliceInitMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                             _tlvStreamSerializer));
+        _serializers.Add(typeof(SpliceLockedMessage),
+                         new SpliceLockedMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(StartBatchMessage),
+                         new StartBatchMessageTypeSerializer(_payloadSerializerFactory, _tlvConverterFactory,
+                                                             _tlvStreamSerializer));
         _serializers.Add(typeof(StfuMessage), new StfuMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(TxAbortMessage), new TxAbortMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(TxAckRbfMessage),
@@ -181,6 +192,10 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalMessage));
         _messageTypeDictionary.Add(MessageTypes.RevokeAndAck, typeof(RevokeAndAckMessage));
         _messageTypeDictionary.Add(MessageTypes.Shutdown, typeof(ShutdownMessage));
+        _messageTypeDictionary.Add(MessageTypes.SpliceAck, typeof(SpliceAckMessage));
+        _messageTypeDictionary.Add(MessageTypes.SpliceInit, typeof(SpliceInitMessage));
+        _messageTypeDictionary.Add(MessageTypes.SpliceLocked, typeof(SpliceLockedMessage));
+        _messageTypeDictionary.Add(MessageTypes.StartBatch, typeof(StartBatchMessage));
         _messageTypeDictionary.Add(MessageTypes.Stfu, typeof(StfuMessage));
         _messageTypeDictionary.Add(MessageTypes.TxAbort, typeof(TxAbortMessage));
         _messageTypeDictionary.Add(MessageTypes.TxAckRbf, typeof(TxAckRbfMessage));
