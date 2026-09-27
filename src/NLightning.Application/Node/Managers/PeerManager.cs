@@ -937,6 +937,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// message that is not a <c>commitment_signed</c> breaks the sender's "MUST send `batch_size`
     /// `commitment_signed` messages ... without any other unrelated messages in-between" and is treated the same way.
     /// A complete group is handed to <see cref="IChannelManager.HandleCommitmentSignedBatchAsync"/> in one call.
+    /// A <c>start_batch</c> from a peer without negotiated <c>option_splice</c> is dropped like any unknown odd message.
     /// </remarks>
     private async Task<bool> ProcessInboundMessageAsync(PeerSession session, IChannelMessage message,
                                                         InboundBatchState batching)
@@ -945,7 +946,19 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
             return await AddToBatchAsync(session, message, batching, pending);
 
         if (message is StartBatchMessage startBatch)
+        {
+            // Only a spliced channel batches commitment_signed. Without negotiated option_splice, start_batch (127,
+            // odd) stays an unknown message: dropped, and what follows is processed one by one as before the
+            // splicing wire existed, so no batch reaches a channel manager that cannot handle one
+            if (session.PeerService.Features.OptionSplice == FeatureSupport.No)
+            {
+                _logger.LogDebug("Ignoring start_batch of channel {ChannelId} from peer {Peer}: option_splice not "
+                               + "negotiated", startBatch.Payload.ChannelId, session.Peer.NodeId);
+                return true;
+            }
+
             return StartBatch(session, startBatch, batching);
+        }
 
         return await ProcessChannelMessageAsync(session, message);
     }

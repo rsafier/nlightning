@@ -11,6 +11,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
@@ -60,6 +61,12 @@ public class PeerManagerBatchTests
     private readonly Mock<IChannelMemoryRepository> _mockChannelMemoryRepository = new();
     private readonly Mock<ISecureKeyManager> _mockSecureKeyManager = new();
 
+    // The peer services the factory hands out, one per connection
+    private readonly Queue<Mock<IPeerService>> _peerServices = new();
+
+    // Negotiated option_splice of the peer (start_batch is grouped only when it is not No)
+    private FeatureSupport _optionSplice = FeatureSupport.Optional;
+
     // What the channel manager was handed, in order: single messages and whole batches
     private readonly List<object> _handled = [];
     private readonly List<WarningException> _warnings = [];
@@ -68,22 +75,12 @@ public class PeerManagerBatchTests
 
     public PeerManagerBatchTests()
     {
-        _mockPeerService.SetupGet(p => p.PeerPubKey).Returns(_peerKey);
-        _mockPeerService.SetupGet(p => p.Features).Returns(new FeatureOptions());
-        _mockPeerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
-        _mockPeerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>()))
-                        .Callback((WarningException w) =>
-                         {
-                             lock (_warnings)
-                                 _warnings.Add(w);
-                         })
-                        .Returns(Task.CompletedTask);
-        _mockPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
-                        .Callback((Exception? e) => _disconnect.TrySetResult(e));
+        SetupPeerService(_mockPeerService);
+        _peerServices.Enqueue(_mockPeerService);
 
         _mockPeerServiceFactory
            .Setup(f => f.CreateConnectedPeerAsync(It.IsAny<CompactPubKey>(), It.IsAny<TcpClient>()))
-           .ReturnsAsync(_mockPeerService.Object);
+           .ReturnsAsync(() => _peerServices.Dequeue().Object);
 
         _mockChannelManager
            .Setup(cm => cm.HandleChannelMessageAsync(It.IsAny<IChannelMessage>(), It.IsAny<FeatureOptions>(),
@@ -318,6 +315,75 @@ public class PeerManagerBatchTests
         _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Given_SpliceNotNegotiated_When_StartBatchIsReceived_Then_ItIsIgnoredAndTheMessagesAreSequential()
+    {
+        // Arrange (start_batch stays an unknown odd message without option_splice: no batch reaches the channel
+        // manager, no warning, no disconnect)
+        _optionSplice = FeatureSupport.No;
+        await ConnectAsync();
+        var first = CommitmentSigned(s_channelA, 1);
+        var second = CommitmentSigned(s_channelA, 2);
+
+        // Act
+        Raise(StartBatch(s_channelA, 2));
+        Raise(first);
+        Raise(second);
+        await WaitForHandledAsync(2);
+
+        // Assert
+        Assert.Same(first, Handled(0));
+        Assert.Same(second, Handled(1));
+        VerifyNoBatch();
+        Assert.Empty(Warnings());
+        _mockPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_APartialBatch_When_TheConnectionDrops_Then_TheNextConnectionHandlesCommitmentSignedAlone()
+    {
+        // Arrange (a batch never spans two connections: two of three commitment_signed arrive, then the peer drops)
+        var secondPeerService = new Mock<IPeerService>();
+        SetupPeerService(secondPeerService);
+        _peerServices.Enqueue(secondPeerService);
+        var peerManager = await ConnectAsync();
+
+        Raise(StartBatch(s_channelA, 3));
+        Raise(CommitmentSigned(s_channelA, 1));
+        Raise(CommitmentSigned(s_channelA, 2));
+        // Let the first connection's loop group them (the assertions hold either way; queued messages of a closed
+        // connection are dropped)
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        RaiseDisconnect(_mockPeerService);
+        await ReconnectAsync(peerManager);
+        var afterReconnect = CommitmentSigned(s_channelA, 3);
+
+        // Act
+        Raise(secondPeerService, afterReconnect);
+        await WaitForHandledAsync(1);
+
+        // Assert (handled on its own, not as the third message of the first connection's batch)
+        Assert.Same(afterReconnect, Handled(0));
+        VerifyNoBatch();
+        Assert.Empty(Warnings());
+    }
+
+    private void SetupPeerService(Mock<IPeerService> peerService)
+    {
+        peerService.SetupGet(p => p.PeerPubKey).Returns(_peerKey);
+        peerService.SetupGet(p => p.Features).Returns(() => new FeatureOptions { OptionSplice = _optionSplice });
+        peerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
+        peerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>()))
+                   .Callback((WarningException w) =>
+                    {
+                        lock (_warnings)
+                            _warnings.Add(w);
+                    })
+                   .Returns(Task.CompletedTask);
+        peerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                   .Callback((Exception? e) => _disconnect.TrySetResult(e));
+    }
+
     private void Record(object handled)
     {
         lock (_handled)
@@ -353,7 +419,7 @@ public class PeerManagerBatchTests
                                    Times.Never);
     }
 
-    private async Task ConnectAsync()
+    private async Task<PeerManager> ConnectAsync()
     {
         var peerManager = new PeerManager(_mockChannelManager.Object, _mockChannelMemoryRepository.Object,
                                           new Mock<ILogger<PeerManager>>().Object, _mockPeerServiceFactory.Object,
@@ -362,12 +428,28 @@ public class PeerManagerBatchTests
         _mockTcpService.Setup(t => t.ConnectToPeerAsync(It.IsAny<PeerAddress>()))
                        .ReturnsAsync(new ConnectedPeer(_peerKey, "127.0.0.1", 9735, new Mock<TcpClient>().Object));
         await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_peerKey}@127.0.0.1:9735"));
+        return peerManager;
+    }
+
+    private Task ReconnectAsync(PeerManager peerManager)
+    {
+        return peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_peerKey}@127.0.0.1:9735"));
+    }
+
+    private void RaiseDisconnect(Mock<IPeerService> peerService)
+    {
+        peerService.Raise(p => p.OnDisconnect += null, peerService.Object, new PeerDisconnectedEventArgs(_peerKey));
     }
 
     private void Raise(IChannelMessage message)
     {
-        _mockPeerService.Raise(p => p.OnChannelMessageReceived += null, _mockPeerService.Object,
-                               new ChannelMessageEventArgs(message, _peerKey));
+        Raise(_mockPeerService, message);
+    }
+
+    private void Raise(Mock<IPeerService> peerService, IChannelMessage message)
+    {
+        peerService.Raise(p => p.OnChannelMessageReceived += null, peerService.Object,
+                          new ChannelMessageEventArgs(message, _peerKey));
     }
 
     private static StartBatchMessage StartBatch(ChannelId channelId, ushort batchSize)
