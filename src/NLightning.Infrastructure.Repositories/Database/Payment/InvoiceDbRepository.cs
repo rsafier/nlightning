@@ -22,6 +22,9 @@ using Persistence.Entities.Payment;
 /// </remarks>
 public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRepository
 {
+    private const byte Bolt12Kind = (byte)InvoiceKind.Bolt12;
+    private const byte OpenStatus = (byte)InvoiceStatus.Open;
+
     public InvoiceDbRepository(NLightningDbContext context) : base(context)
     {
     }
@@ -94,6 +97,41 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
                                   .ToListAsync();
 
         return entities.Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The expiry <c>CreatedAt + ExpirySeconds</c> does not translate over the ticks converter, so the expired rows are
+    /// selected once per distinct <c>ExpirySeconds</c> (our configured invoice expiries, a handful) with the bound
+    /// <c>CreatedAt &lt;= now - ExpirySeconds</c>, at most <paramref name="max"/> each, oldest first. A row this unit of
+    /// work already moved out of <c>Open</c> is skipped.
+    /// </remarks>
+    public async Task<int> PruneExpiredBolt12InvoicesAsync(DateTimeOffset now, int max)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(max);
+        if (max == 0)
+            return 0;
+
+        var open = DbSet.Where(e => e.Kind == Bolt12Kind && e.Status == OpenStatus);
+        var expiries = await open.Select(e => e.ExpirySeconds).Distinct().ToListAsync();
+        var expired = new List<InvoiceEntity>();
+        foreach (var expiry in expiries)
+        {
+            // Expired: now >= CreatedAt + expiry, that is CreatedAt <= now - expiry
+            var createdAtOrBefore = now.AddSeconds(-(double)expiry);
+            expired.AddRange(await open.Where(e => e.ExpirySeconds == expiry && e.CreatedAt <= createdAtOrBefore)
+                                       .OrderBy(e => e.CreatedAt)
+                                       .Take(max)
+                                       .ToListAsync());
+        }
+
+        var pruned = expired.Where(e => e.Status == OpenStatus)
+                            .OrderBy(e => e.CreatedAt.AddSeconds(e.ExpirySeconds))
+                            .Take(max)
+                            .ToList();
+        DbSet.RemoveRange(pruned);
+
+        return pruned.Count;
     }
 
     internal static InvoiceModel MapEntityToDomain(InvoiceEntity entity)

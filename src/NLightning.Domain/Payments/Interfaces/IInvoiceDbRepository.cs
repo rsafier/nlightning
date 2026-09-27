@@ -34,4 +34,18 @@ public interface IInvoiceDbRepository
     /// <param name="skip">How many of the newest to skip.</param>
     /// <param name="take">The most to return.</param>
     Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take);
+
+    /// <summary>
+    /// Stages the deletion of at most <paramref name="max"/> BOLT 12 invoices that are still <c>Open</c> and expired at
+    /// <paramref name="now"/> (<c>CreatedAt + ExpirySeconds &lt;= now</c>), oldest expiry first, and returns how many
+    /// it staged (BOLT 12 plan §3.7 step 6, D11: every answered invoice_request adds a row, so the expired unpaid ones
+    /// are swept to keep the table and the caps bounded).
+    /// </summary>
+    /// <remarks>
+    /// BOLT 11 invoices and <c>Accepted</c>, <c>Settled</c> or <c>Canceled</c> rows are never touched. An HTLC that
+    /// arrives later for a pruned invoice finds no invoice, which the final hop already treats like an expired one.
+    /// The default is for test doubles that store no BOLT 12 invoices.
+    /// </remarks>
+    Task<int> PruneExpiredBolt12InvoicesAsync(DateTimeOffset now, int max) =>
+        throw new NotSupportedException("This repository does not prune BOLT 12 invoices.");
 }

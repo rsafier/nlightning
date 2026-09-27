@@ -24,6 +24,7 @@ public class OfferDbRepository : BaseDbRepository<OfferEntity>, IOfferDbReposito
 {
     private const byte Bolt12Kind = (byte)InvoiceKind.Bolt12;
     private const byte OpenStatus = (byte)InvoiceStatus.Open;
+    private const byte AcceptedStatus = (byte)InvoiceStatus.Accepted;
     private const byte SettledStatus = (byte)InvoiceStatus.Settled;
 
     private readonly NLightningDbContext _context;
@@ -125,28 +126,38 @@ public class OfferDbRepository : BaseDbRepository<OfferEntity>, IOfferDbReposito
     public async Task<OfferInvoiceCounts> GetInvoiceCountsAsync(Hash offerId, DateTimeOffset now)
     {
         Hash? id = offerId;
-        var paid = await _context.Invoices.AsNoTracking()
-                                 .CountAsync(e => e.Kind == Bolt12Kind && e.OfferId == id
-                                                                       && e.Status == SettledStatus);
-        var open = await _context.Invoices.AsNoTracking()
-                                 .Where(e => e.Kind == Bolt12Kind && e.OfferId == id && e.Status == OpenStatus)
-                                 .Select(e => new { e.CreatedAt, e.ExpirySeconds })
-                                 .ToListAsync();
+        var rows = _context.Invoices.AsNoTracking().Where(e => e.Kind == Bolt12Kind && e.OfferId == id);
+        var paid = await rows.CountAsync(e => e.Status == SettledStatus);
 
-        return new OfferInvoiceCounts(paid, open.Count(e => now < e.CreatedAt.AddSeconds(e.ExpirySeconds)));
+        return new OfferInvoiceCounts(paid, await CountUnpaidAsync(rows, now));
     }
 
     /// <inheritdoc />
-    public async Task<int> CountUnpaidInvoicesAsync(DateTimeOffset now)
-    {
-        // The expiry is CreatedAt + ExpirySeconds, which does not translate over the ticks converter on every
-        // provider; the open BOLT 12 rows are capped (plan D11), so they are filtered here
-        var open = await _context.Invoices.AsNoTracking()
-                                 .Where(e => e.Kind == Bolt12Kind && e.Status == OpenStatus)
-                                 .Select(e => new { e.CreatedAt, e.ExpirySeconds })
-                                 .ToListAsync();
+    public Task<int> CountUnpaidInvoicesAsync(DateTimeOffset now) =>
+        CountUnpaidAsync(_context.Invoices.AsNoTracking().Where(e => e.Kind == Bolt12Kind), now);
 
-        return open.Count(e => now < e.CreatedAt.AddSeconds(e.ExpirySeconds));
+    /// <summary>
+    /// Counts, in the database, the accepted rows and the open rows that have not expired at <paramref name="now"/>.
+    /// </summary>
+    /// <remarks>
+    /// The expiry <c>CreatedAt + ExpirySeconds</c> does not translate over the ticks converter, so the open rows are
+    /// counted once per distinct <c>ExpirySeconds</c> (our configured invoice expiries, a handful) with the bound
+    /// <c>CreatedAt &gt; now - ExpirySeconds</c>, which is exact: <c>AddSeconds</c> of whole seconds is exact in ticks.
+    /// </remarks>
+    internal static async Task<int> CountUnpaidAsync(IQueryable<InvoiceEntity> bolt12Rows, DateTimeOffset now)
+    {
+        var unpaid = await bolt12Rows.CountAsync(e => e.Status == AcceptedStatus);
+
+        var open = bolt12Rows.Where(e => e.Status == OpenStatus);
+        var expiries = await open.Select(e => e.ExpirySeconds).Distinct().ToListAsync();
+        foreach (var expiry in expiries)
+        {
+            // Unexpired: now < CreatedAt + expiry, that is CreatedAt > now - expiry
+            var createdAfter = now.AddSeconds(-(double)expiry);
+            unpaid += await open.CountAsync(e => e.ExpirySeconds == expiry && e.CreatedAt > createdAfter);
+        }
+
+        return unpaid;
     }
 
     internal static OfferModel MapEntityToDomain(OfferEntity entity)

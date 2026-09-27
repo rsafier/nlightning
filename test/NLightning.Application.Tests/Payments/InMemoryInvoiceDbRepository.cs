@@ -1,6 +1,7 @@
 namespace NLightning.Application.Tests.Payments;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
 
@@ -38,4 +39,14 @@ internal sealed class InMemoryInvoiceDbRepository : IInvoiceDbRepository
     public Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take) =>
         Task.FromResult<IReadOnlyList<InvoiceModel>>(_invoices.Values.OrderByDescending(i => i.CreatedAt)
                                                               .Skip(skip).Take(take).ToList());
+
+    public Task<int> PruneExpiredBolt12InvoicesAsync(DateTimeOffset now, int max)
+    {
+        var pruned = _invoices.Values.Where(i => i.Kind == InvoiceKind.Bolt12 && i.IsExpired(now))
+                              .OrderBy(i => i.ExpiresAt).Take(max).ToList();
+        foreach (var invoice in pruned)
+            _invoices.Remove(invoice.PaymentHash);
+
+        return Task.FromResult(pruned.Count);
+    }
 }
