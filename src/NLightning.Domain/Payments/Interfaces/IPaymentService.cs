@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Payments.Interfaces;
 
 using Crypto.ValueObjects;
+using Keysend;
 using Models;
 using Money;
 
@@ -84,6 +85,28 @@ public interface IPaymentService
     /// <exception cref="InvalidOperationException">A payment for the hash is already in flight or succeeded. Nothing
     /// is persisted.</exception>
     Task<PayInvoiceResult> PayBlindedAsync(PayBlindedRequest request, PayInvoiceOptions options,
+                                           CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Sends a spontaneous (keysend) payment and waits for the outcome.
+    /// </summary>
+    /// <remarks>
+    /// A fresh CSPRNG preimage, payment hash = SHA256(preimage); the payee's hop payload carries <c>amt_to_forward</c>,
+    /// <c>outgoing_cltv_value</c>, <c>keysend_preimage</c> (5482373484) and the request's custom records, and no
+    /// <c>payment_data</c> (there is no invoice, so no <c>payment_secret</c>). The route is planned like an invoice
+    /// payment without route hints (a direct channel, or the graph), with <c>Node:Keysend:FinalCltvExpiryDelta</c> as
+    /// the final CLTV delta. Always one HTLC at a time (no split: keysend has no standard multi-part form and LND refuses
+    /// multi-part keysend); retries as for an invoice. The payment is stored with <c>PaymentModel.Keysend</c> (its custom
+    /// records). Persistence and outcome are those of
+    /// <see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>.
+    /// </remarks>
+    /// <param name="request">The payee, the amount and the custom records.</param>
+    /// <param name="options">The per-call fee limit and timeout (<see cref="PayInvoiceOptions.MaxParts"/> is ignored).
+    /// </param>
+    /// <param name="cancellationToken">Stops waiting and retrying, like the timeout.</param>
+    /// <exception cref="ArgumentException">The amount is zero, the payee is this node, a custom record is invalid, or an
+    /// option is out of range. Nothing is persisted.</exception>
+    Task<PayInvoiceResult> PayKeysendAsync(PayKeysendRequest request, PayInvoiceOptions options,
                                            CancellationToken cancellationToken = default);
 
     /// <summary>

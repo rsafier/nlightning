@@ -25,6 +25,7 @@ using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Persistence.Interfaces;
@@ -38,6 +39,7 @@ using Domain.Protocol.Tlv;
 using Domain.Routing.Pathfinding;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Keysend;
 using Routing;
 using Routing.Interfaces;
 
@@ -303,6 +305,53 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         {
             BlindedPaths = paths,
             Bolt12 = request.Bolt12
+        };
+
+        return await RunSessionAsync(session, options.Timeout, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// The target is the destination without route hints or payment secret; the round planner then finds a direct
+    /// channel or a graph route as for an invoice. The final CLTV delta is <c>Node:Keysend:FinalCltvExpiryDelta</c>
+    /// (<see cref="KeysendOptions.FinalCltvExpiryDelta"/>). One part at a time (<see cref="PayInvoiceOptions.MaxParts"/>
+    /// is ignored). The preimage stays in the session (a fulfill proves it, and the stored row gets it then).
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Also when no block was processed yet. Nothing is persisted.
+    /// </exception>
+    public async Task<PayInvoiceResult> PayKeysendAsync(PayKeysendRequest request, PayInvoiceOptions options,
+                                                        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(request.Amount);
+        if (request.Amount.IsZero)
+            throw new ArgumentException("The amount must be positive.", nameof(request));
+        if (options.Timeout <= TimeSpan.Zero && options.Timeout != Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(options), "The timeout must be positive.");
+        if (request.Destination == _secureKeyManager.GetNodePubKey())
+            throw new ArgumentException("The destination is this node; a node cannot pay itself.", nameof(request));
+
+        var customRecords = CustomRecordCodec.Validate(request.CustomRecords);
+        if (_blockchainMonitor.LastProcessedBlockHeight == 0)
+            throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
+
+        // Our preimage (CSPRNG) and its hash; the payee learns the preimage from the onion and reveals it to settle
+        var preimageBytes = RandomNumberGenerator.GetBytes(32);
+        var preimage = new Secret(preimageBytes);
+        var paymentHash = new Hash(SHA256.HashData(preimageBytes));
+
+        var keysendOptions = _nodeOptions.Value.Keysend;
+        var target = new PaymentTarget(request.Destination, paymentHash, new Secret(new byte[32]), request.Amount,
+                                       keysendOptions.FinalCltvExpiryDelta, [], SupportsMpp: false);
+        var sendOptions = _sendOptions.Value;
+        var now = _timeProvider.GetUtcNow();
+        DateTimeOffset? deadline = options.Timeout == Timeout.InfiniteTimeSpan ? null : now + options.Timeout;
+        var session = new PaymentSession(target, null, request.Amount,
+                                         options.MaxFee ?? sendOptions.GetMaxFee(request.Amount), 1,
+                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now)
+        {
+            Keysend = new KeysendFinalRecords(preimage, customRecords)
         };
 
         return await RunSessionAsync(session, options.Timeout, cancellationToken);
@@ -696,7 +745,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var round = new List<(PaymentPart Part, OnionPacket Packet)>(planned.Count);
             foreach (var plannedPart in planned)
             {
-                var onion = await _onionFactory.CreateAsync(plannedPart.Route);
+                var onion = await _onionFactory.CreateAsync(plannedPart.Route, session.Keysend);
                 round.Add((new PaymentPart(plannedPart.Channel, plannedPart.Route,
                                            BuildHops(plannedPart.Route, onion.SharedSecrets,
                                                      plannedPart.Channel.ShortChannelId,
@@ -1023,7 +1072,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var first = round[0];
         var fee = LightningMoney.MilliSatoshis(round.Aggregate(0UL, (sum, p) => sum + p.Route.Fee.MilliSatoshi));
         var row = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId, session.Amount,
-                                   fee, session.CreatedAt, first.Hops, session.Bolt12);
+                                   fee, session.CreatedAt, first.Hops, session.Bolt12, session.KeysendDetails);
 
         using var scope = _serviceScopeFactory.CreateScope();
         var repository = scope.ServiceProvider.GetRequiredService<IPaymentDbRepository>();
@@ -1219,7 +1268,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             {
                 payment = new PaymentModel(session.PaymentHash, session.Bolt11, session.Target.PayeeNodeId,
                                            session.Amount, LightningMoney.Zero, session.CreatedAt,
-                                           bolt12: session.Bolt12);
+                                           bolt12: session.Bolt12, keysend: session.KeysendDetails);
                 payment.Fail(code, sourceIndex, reason, now);
                 await repository.AddAsync(payment);
                 session.RowCreated = true;
@@ -1245,7 +1294,8 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                     payment = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId,
                                                    stored.Amount, stored.Fee, stored.CreatedAt, PaymentStatus.Failed,
                                                    stored.OutgoingChannelId, stored.OutgoingHtlcId, null, code,
-                                                   sourceIndex, reason, now, stored.Route, stored.Bolt12);
+                                                   sourceIndex, reason, now, stored.Route, stored.Bolt12,
+                                                   stored.Keysend);
                 }
 
                 await repository.UpdateAsync(payment);
@@ -1301,7 +1351,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             var row = PaymentModel.Restore(stored.PaymentHash, stored.Bolt11, stored.PayeeNodeId, stored.Amount,
                                            LightningMoney.MilliSatoshis(session.FeesInFlightMsat), stored.CreatedAt,
                                            PaymentStatus.InFlight, next.Channel.ChannelId, next.HtlcId!.Value, null,
-                                           null, null, null, null, next.Hops, stored.Bolt12);
+                                           null, null, null, null, next.Hops, stored.Bolt12, stored.Keysend);
             await StageReplacementAsync(repository, stored, row, "Superseded by another part in flight.");
             await scope.ServiceProvider.GetRequiredService<IUnitOfWork>().SaveChangesAsync();
             session.PrimaryPart = next;
@@ -1373,7 +1423,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                  payment.Amount, settledFee, payment.CreatedAt,
                                                  PaymentStatus.Succeeded, fulfilled.ChannelId, fulfilled.HtlcId,
                                                  fulfilled.PaymentPreimage, null, null, null, now, part.Hops,
-                                                 payment.Bolt12);
+                                                 payment.Bolt12, payment.Keysend);
             RecordFulfillHoldTimes(succeeded, fulfilled, part.Hops);
             await StageReplacementAsync(repository, payment, succeeded, "Superseded by the fulfilled part.");
             payment = succeeded;
@@ -1882,7 +1932,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         return PaymentModel.Restore(payment.PaymentHash, payment.Bolt11, payment.PayeeNodeId, payment.Amount,
                                     payment.Fee, payment.CreatedAt, PaymentStatus.Succeeded, channelId, htlcId,
                                     fulfilled.PaymentPreimage, null, null, null, completedAt, payment.Route,
-                                    payment.Bolt12);
+                                    payment.Bolt12, payment.Keysend);
     }
 
     private static async Task WaitAsync(Task outcome, TimeSpan timeout, CancellationToken cancellationToken)

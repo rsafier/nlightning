@@ -3,6 +3,7 @@ namespace NLightning.Domain.Client.Responses;
 using Crypto.ValueObjects;
 using Money;
 using Payments.Enums;
+using Payments.Keysend;
 using Payments.Models;
 
 /// <summary>
@@ -40,7 +41,8 @@ public sealed class InvoiceInfoClientResponse
     public DateTimeOffset? SettledAt { get; init; }
 
     /// <summary>
-    /// BOLT 11 (a <c>createinvoice</c> string) or BOLT 12 (issued for one of our offers), NL-454.
+    /// BOLT 11 (a <c>createinvoice</c> string), BOLT 12 (issued for one of our offers, NL-454) or a received keysend
+    /// payment (lane lh1-l3).
     /// </summary>
     public InvoiceKind Kind { get; init; }
 
@@ -48,6 +50,11 @@ public sealed class InvoiceInfoClientResponse
     /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
     /// </summary>
     public Hash? OfferId { get; init; }
+
+    /// <summary>
+    /// The custom records a keysend payer attached (empty for invoices we issued).
+    /// </summary>
+    public IReadOnlyList<CustomRecord> CustomRecords { get; init; } = [];
 
     /// <summary>
     /// Maps a stored invoice; <paramref name="now"/> decides <see cref="IsExpired"/>.
@@ -68,7 +75,8 @@ public sealed class InvoiceInfoClientResponse
             AmountReceived = invoice.AmountReceived,
             SettledAt = invoice.SettledAt,
             Kind = invoice.Kind,
-            OfferId = invoice.Bolt12?.OfferId
+            OfferId = invoice.Bolt12?.OfferId,
+            CustomRecords = invoice.Keysend?.CustomRecords ?? []
         };
     }
 }

@@ -95,6 +95,8 @@ public class LightningRegtestNetworkFixture : IDisposable
         // alice signals LND's option_simple_close (bits 61/161, "rbf-coop-close"): used only with a peer that signals it
         // too (CooperativeCloseFlowTests' simple-close cases); every other close with her stays legacy
         Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--protocol.rbf-coop-close");
+        // alice receives spontaneous payments (keysend, lane lh1-l3: KeysendFlowTests); off by default in LND
+        Builder.Configuration.LNDNodes.Single(n => n.Name == "alice").Cmd.Add("--accept-keysend");
 
         Builder.AddPolarLNDNode("bob",
         [

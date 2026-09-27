@@ -53,6 +53,16 @@ public sealed class PaymentInfoIpcResponse
     [Key(12)] public required DateTimeOffset CreatedAt { get; init; }
     [Key(13)] public DateTimeOffset? CompletedAt { get; init; }
 
+    /// <summary>
+    /// True for a spontaneous (keysend) payment.
+    /// </summary>
+    [Key(14)] public bool IsKeysend { get; init; }
+
+    /// <summary>
+    /// The custom records sent with a keysend payment, by type (null or empty for other payments).
+    /// </summary>
+    [Key(15)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
+
     public static PaymentInfoIpcResponse FromClientResponse(PaymentInfoClientResponse payment)
     {
         ArgumentNullException.ThrowIfNull(payment);
@@ -71,7 +81,9 @@ public sealed class PaymentInfoIpcResponse
             OutgoingChannelId = payment.OutgoingChannelId,
             OutgoingHtlcId = payment.OutgoingHtlcId,
             CreatedAt = payment.CreatedAt,
-            CompletedAt = payment.CompletedAt
+            CompletedAt = payment.CompletedAt,
+            IsKeysend = payment.IsKeysend,
+            CustomRecords = CustomRecordsIpc.FromRecords(payment.CustomRecords)
         };
     }
 }

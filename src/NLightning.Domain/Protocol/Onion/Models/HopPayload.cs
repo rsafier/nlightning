@@ -4,6 +4,7 @@ using Channels.ValueObjects;
 using Constants;
 using Crypto.ValueObjects;
 using Money;
+using Payments.Keysend;
 using Protocol.Models;
 using Protocol.Tlv;
 using Protocol.ValueObjects;
@@ -64,6 +65,22 @@ public sealed class HopPayload
 
     /// <summary>total_amount_msat (type 18).</summary>
     public LightningMoney? TotalAmountMsat { get; }
+
+    /// <summary>
+    /// keysend_preimage (type 5482373484, <see cref="OnionPayloadTlvTypes.KeysendPreimage"/>): the preimage of a
+    /// spontaneous payment, as sent (its length is not checked here).
+    /// </summary>
+    public ReadOnlyMemory<byte>? KeysendPreimage { get; }
+
+    /// <summary>
+    /// The records of type 65536 or more (<see cref="OnionPayloadTlvTypes.CustomRecordTypeStart"/>) other than
+    /// <see cref="KeysendPreimage"/>, ascending: the application records a payer attached for the final node.
+    /// </summary>
+    public IReadOnlyList<CustomRecord> CustomRecords =>
+        Tlvs.Where(tlv => tlv.Type >= OnionPayloadTlvTypes.CustomRecordTypeStart
+                       && tlv.Type != OnionPayloadTlvTypes.KeysendPreimage)
+            .Select(tlv => new CustomRecord(tlv.Type.Value, tlv.Value))
+            .ToList();
 
     /// <summary>
     /// Whether the payload is for a hop inside a blinded route (<c>encrypted_recipient_data</c> is present).
@@ -143,6 +160,10 @@ public sealed class HopPayload
                     break;
                 case TotalAmountMsatTlv totalAmountMsat:
                     TotalAmountMsat = totalAmountMsat.TotalAmount;
+                    break;
+                default:
+                    if (tlv.Type == OnionPayloadTlvTypes.KeysendPreimage)
+                        KeysendPreimage = tlv.Value.ToArray();
                     break;
             }
         }

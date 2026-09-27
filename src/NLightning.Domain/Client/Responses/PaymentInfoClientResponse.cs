@@ -4,6 +4,7 @@ using Channels.ValueObjects;
 using Crypto.ValueObjects;
 using Money;
 using Payments.Enums;
+using Payments.Keysend;
 using Payments.Models;
 using Protocol.Onion.Enums;
 
@@ -49,6 +50,16 @@ public sealed class PaymentInfoClientResponse
     public required DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
 
+    /// <summary>
+    /// True for a spontaneous (keysend) payment (lane lh1-l3).
+    /// </summary>
+    public bool IsKeysend { get; init; }
+
+    /// <summary>
+    /// The custom records sent with a keysend payment (empty for other payments).
+    /// </summary>
+    public IReadOnlyList<CustomRecord> CustomRecords { get; init; } = [];
+
     public static PaymentInfoClientResponse FromModel(PaymentModel payment)
     {
         ArgumentNullException.ThrowIfNull(payment);
@@ -67,7 +78,9 @@ public sealed class PaymentInfoClientResponse
             OutgoingChannelId = payment.OutgoingChannelId,
             OutgoingHtlcId = payment.OutgoingHtlcId,
             CreatedAt = payment.CreatedAt,
-            CompletedAt = payment.CompletedAt
+            CompletedAt = payment.CompletedAt,
+            IsKeysend = payment.Keysend is not null,
+            CustomRecords = payment.Keysend?.CustomRecords ?? []
         };
     }
 }

@@ -4,9 +4,11 @@ using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Offers.Models;
+using Domain.Payments.Keysend;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
+using Keysend;
 using Routing;
 
 /// <summary>
@@ -39,6 +41,17 @@ internal sealed class PaymentSession
     /// The BOLT 12 offer and invoice the payment is for, stored with every row of the payment; null otherwise.
     /// </summary>
     public Bolt12PaymentDetails? Bolt12 { get; init; }
+
+    /// <summary>
+    /// The keysend records of the payee's payload (our preimage and the custom records) for a keysend payment; null
+    /// for an invoice payment.
+    /// </summary>
+    public KeysendFinalRecords? Keysend { get; init; }
+
+    /// <summary>
+    /// What the stored row keeps of <see cref="Keysend"/> (its custom records), or null.
+    /// </summary>
+    public KeysendDetails? KeysendDetails => Keysend is null ? null : new KeysendDetails(Keysend.CustomRecords);
 
     public string? Bolt11 { get; }
     public Hash PaymentHash => Target.PaymentHash;

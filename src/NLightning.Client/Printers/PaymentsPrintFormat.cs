@@ -23,6 +23,10 @@ internal static class PaymentsPrintFormat
             output.WriteLine("  Offer Id:           {0}",
                              invoice.OfferId is { } offerId ? offerId.ToString() : "-");
         }
+        else if (invoice.Kind == InvoiceKind.Keysend)
+        {
+            output.WriteLine("  Kind:               keysend");
+        }
         else
         {
             output.WriteLine("  Kind:               BOLT 11");
@@ -45,6 +49,19 @@ internal static class PaymentsPrintFormat
             output.WriteLine("  Received (msat):    {0}", Invariant(invoice.AmountReceived.MilliSatoshi));
         if (invoice.SettledAt is { } settledAt)
             output.WriteLine("  Settled:            {0}", FormatTime(settledAt));
+        WriteCustomRecords(output, invoice.CustomRecords);
+    }
+
+    /// <summary>
+    /// One line per keysend custom record, ascending by type: <c>type=hex</c>.
+    /// </summary>
+    internal static void WriteCustomRecords(TextWriter output, IReadOnlyDictionary<ulong, byte[]>? records)
+    {
+        if (records is not { Count: > 0 })
+            return;
+
+        foreach (var (type, value) in records.OrderBy(pair => pair.Key))
+            output.WriteLine("  Custom Record:      {0}={1}", Invariant(type), Convert.ToHexStringLower(value));
     }
 
     internal static void WritePayment(TextWriter output, PaymentInfoIpcResponse payment)
@@ -68,6 +85,9 @@ internal static class PaymentsPrintFormat
             output.WriteLine("  Completed:          {0}", FormatTime(completedAt));
         if (!string.IsNullOrEmpty(payment.Bolt11))
             output.WriteLine("  Bolt11:             {0}", payment.Bolt11);
+        if (payment.IsKeysend)
+            output.WriteLine("  Keysend:            yes");
+        WriteCustomRecords(output, payment.CustomRecords);
     }
 
     /// <summary>
