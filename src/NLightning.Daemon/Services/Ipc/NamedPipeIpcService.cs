@@ -23,6 +23,12 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
     /// </summary>
     internal const int MaxServerInstances = 64;
 
+    /// <summary>
+    /// How long a client has to send its request, before it is authenticated. A connection that sends nothing (or
+    /// trickles bytes) would otherwise hold one of the <see cref="MaxServerInstances"/> instances forever.
+    /// </summary>
+    internal static TimeSpan DefaultRequestReadTimeout { get; } = TimeSpan.FromSeconds(30);
+
     private readonly ILogger<NamedPipeIpcService> _logger;
     private readonly IIpcAuthenticator _authenticator;
     private readonly IIpcFraming _framing;
@@ -32,6 +38,11 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
 
     private CancellationTokenSource? _cts;
     private Task? _listenerTask;
+
+    /// <summary>
+    /// See <see cref="DefaultRequestReadTimeout"/>; settable for tests.
+    /// </summary>
+    internal TimeSpan RequestReadTimeout { get; init; } = DefaultRequestReadTimeout;
 
     public NamedPipeIpcService(IIpcAuthenticator authenticator, string configPath, IIpcFraming framing,
                                ILogger<NamedPipeIpcService> logger, IIpcRequestRouter router)
@@ -87,9 +98,13 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             {
                 try
                 {
+                    // CurrentUserOnly: on Unix the socket is created owner-only and a peer running as another user
+                    // is refused; on Windows the pipe's ACL grants only the current user. The cookie stays the
+                    // authentication; this keeps other local users away from the unauthenticated request parser.
                     var server = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, MaxServerInstances,
                                                            PipeTransmissionMode.Byte,
-                                                           PipeOptions.Asynchronous);
+                                                           PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+                    RestrictSocketPermissions();
                     await server.WaitForConnectionAsync(cancellationToken);
 
                     _ = Task.Run(() => HandleClientAsync(server, cancellationToken), cancellationToken);
@@ -113,9 +128,24 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
 
     private async Task HandleClientAsync(NamedPipeServerStream stream, CancellationToken ct)
     {
+        var authenticated = false;
         try
         {
-            var request = await _framing.ReadAsync(stream, ct);
+            IpcEnvelope request;
+            using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                readCts.CancelAfter(RequestReadTimeout);
+                try
+                {
+                    request = await _framing.ReadAsync(stream, readCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogWarning("IPC client sent no request within {Timeout}; closing the connection",
+                                       RequestReadTimeout);
+                    return;
+                }
+            }
 
             if (!await _authenticator.ValidateAsync(request.AuthToken, ct))
             {
@@ -125,6 +155,7 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
                 return;
             }
 
+            authenticated = true;
             var response = await _router.RouteAsync(request, ct);
             await _framing.WriteAsync(stream, response, ct);
         }
@@ -133,9 +164,11 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
             _logger.LogError(ex, "IPC client handling failed");
             try
             {
-                // Try to write a generic error if we still can read an envelope
+                // Try to write a generic error if we still can read an envelope. Only an authenticated client gets
+                // the exception's message: before that, whoever opened the pipe could read internals from it.
                 var env = new IpcEnvelope { Version = 1, CorrelationId = Guid.NewGuid(), Kind = IpcEnvelopeKind.Error };
-                var err = IpcErrorFactory.CreateErrorEnvelope(env, ErrorCodes.ServerError, ex.Message);
+                var err = IpcErrorFactory.CreateErrorEnvelope(env, ErrorCodes.ServerError,
+                                                              authenticated ? ex.Message : "Invalid request.");
                 await _framing.WriteAsync(stream, err, ct);
             }
             catch
@@ -179,6 +212,27 @@ internal sealed class NamedPipeIpcService : INamedPipeIpcService
         {
             _logger.LogError(ex, "Failed to write the IPC cookie at {Path}", _cookiePath);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// On Unix the pipe is a socket file created with the umask's mode (often 0755); make it owner-only (0600), like
+    /// the cookie. .NET recreates the socket when the last server instance goes away, so this runs for every instance.
+    /// </summary>
+    private void RestrictSocketPermissions()
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(_pipeName))
+            return;
+
+        const UnixFileMode ownerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        try
+        {
+            if (File.GetUnixFileMode(_pipeName) != ownerOnly)
+                File.SetUnixFileMode(_pipeName, ownerOnly);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not restrict the IPC socket at {Path} to its owner", _pipeName);
         }
     }
 

@@ -1,4 +1,5 @@
 using System.IO.Pipes;
+using MessagePack;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Services.Ipc;
@@ -6,7 +7,10 @@ namespace NLightning.Daemon.Tests.Services.Ipc;
 using Daemon.Contracts.Utilities;
 using Daemon.Ipc.Interfaces;
 using Daemon.Services.Ipc;
+using Domain.Client.Constants;
+using Domain.Client.Enums;
 using TestCollections;
+using Transport.Ipc;
 
 [Collection(SerialTestCollection.Name)]
 public class NamedPipeIpcServiceTests : IDisposable
@@ -158,6 +162,137 @@ public class NamedPipeIpcServiceTests : IDisposable
                 await connection.DisposeAsync();
             await service.StopAsync();
         }
+    }
+
+    [Fact]
+    public async Task Given_AClientThatSendsNothing_When_TheReadTimeoutPasses_Then_TheConnectionIsClosed()
+    {
+        // Arrange: without a deadline a silent client held a pipe instance until the daemon stopped
+        var service = new NamedPipeIpcService(new Mock<IIpcAuthenticator>().Object, _configPath,
+                                              new LengthPrefixedIpcFraming(),
+                                              NullLogger<NamedPipeIpcService>.Instance,
+                                              new Mock<IIpcRequestRouter>().Object)
+        {
+            RequestReadTimeout = TimeSpan.FromMilliseconds(200)
+        };
+        await service.StartAsync(CancellationToken.None);
+        await using var client = new NamedPipeClientStream(".", NodeUtils.GetNamedPipeFilePath(_configPath),
+                                                           PipeDirection.InOut,
+                                                           PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+
+        try
+        {
+            await client.ConnectAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+
+            // Act
+            var buffer = new byte[16];
+            using var readTimeout = CancellationTokenSource.CreateLinkedTokenSource(
+                TestContext.Current.CancellationToken);
+            readTimeout.CancelAfter(TimeSpan.FromSeconds(10));
+            var read = await client.ReadAsync(buffer, readTimeout.Token);
+
+            // Assert: closed by the server with nothing written
+            Assert.Equal(0, read);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AnUnreadableRequest_When_Handled_Then_TheErrorDoesNotCarryTheExceptionMessage()
+    {
+        // Arrange
+        var written = new TaskCompletionSource<IpcEnvelope>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var framingMock = new Mock<IIpcFraming>();
+        framingMock.Setup(x => x.ReadAsync(It.IsAny<Stream>(), It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new InvalidOperationException("internal detail /home/node/.nltg"));
+        framingMock.Setup(x => x.WriteAsync(It.IsAny<Stream>(), It.IsAny<IpcEnvelope>(),
+                                            It.IsAny<CancellationToken>()))
+                   .Callback((Stream _, IpcEnvelope envelope, CancellationToken _) => written.TrySetResult(envelope))
+                   .Returns(Task.CompletedTask);
+        var service = new NamedPipeIpcService(new Mock<IIpcAuthenticator>().Object, _configPath, framingMock.Object,
+                                              NullLogger<NamedPipeIpcService>.Instance,
+                                              new Mock<IIpcRequestRouter>().Object);
+        await service.StartAsync(CancellationToken.None);
+        await using var client = new NamedPipeClientStream(".", NodeUtils.GetNamedPipeFilePath(_configPath),
+                                                           PipeDirection.InOut, PipeOptions.Asynchronous);
+
+        try
+        {
+            // Act
+            await client.ConnectAsync(TimeSpan.FromSeconds(2), TestContext.Current.CancellationToken);
+            var envelope = await written.Task.WaitAsync(TimeSpan.FromSeconds(10),
+                                                        TestContext.Current.CancellationToken);
+
+            // Assert
+            var error = MessagePackSerializer.Deserialize<IpcError>(envelope.Payload,
+                                                                    cancellationToken: TestContext.Current
+                                                                       .CancellationToken);
+            Assert.Equal(IpcEnvelopeKind.Error, envelope.Kind);
+            Assert.Equal(ErrorCodes.ServerError, error.Code);
+            Assert.DoesNotContain("internal detail", error.Message);
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_StartedService_When_Listening_Then_TheUnixSocketIsOwnerOnly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix sockets only");
+
+        // Arrange
+        var service = CreateService();
+        var pipePath = NodeUtils.GetNamedPipeFilePath(_configPath);
+
+        // Act
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!File.Exists(pipePath) && DateTime.UtcNow < deadline)
+                await Task.Delay(20, TestContext.Current.CancellationToken);
+
+            // Assert: PipeOptions.CurrentUserOnly, so other local users cannot connect
+            var mode = OperatingSystem.IsWindows() ? UnixFileMode.None : File.GetUnixFileMode(pipePath);
+            Assert.Equal(UnixFileMode.None, mode & (UnixFileMode.GroupRead | UnixFileMode.GroupWrite
+                                                                           | UnixFileMode.OtherRead
+                                                                           | UnixFileMode.OtherWrite));
+        }
+        finally
+        {
+            await service.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Given_AnEnvelope_When_WrittenAndReadByTheFraming_Then_RoundTrips()
+    {
+        // Arrange: the server reads with MessagePack's untrusted-data security
+        var framing = new LengthPrefixedIpcFraming();
+        var envelope = new IpcEnvelope
+        {
+            Command = ClientCommand.NodeInfo,
+            AuthToken = "token",
+            Payload = [1, 2, 3],
+            Kind = IpcEnvelopeKind.Request
+        };
+        using var stream = new MemoryStream();
+
+        // Act
+        await framing.WriteAsync(stream, envelope, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var read = await framing.ReadAsync(stream, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(envelope.CorrelationId, read.CorrelationId);
+        Assert.Equal("token", read.AuthToken);
+        Assert.Equal(envelope.Payload, read.Payload);
+        Assert.Equal(ClientCommand.NodeInfo, read.Command);
     }
 
     private NamedPipeIpcService CreateService()

@@ -427,8 +427,11 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
 
     private async Task<IpcEnvelope> SendAsync(IpcEnvelope envelope, CancellationToken ct)
     {
+        // CurrentUserOnly: the server must run as the same user, so another local user cannot stand in for the
+        // daemon (e.g. after it stopped) and collect the cookie this request carries
         await using var client =
-            new NamedPipeClientStream(_server, _namedPipeFilePath, PipeDirection.InOut, PipeOptions.Asynchronous);
+            new NamedPipeClientStream(_server, _namedPipeFilePath, PipeDirection.InOut,
+                                      PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
         try
         {
