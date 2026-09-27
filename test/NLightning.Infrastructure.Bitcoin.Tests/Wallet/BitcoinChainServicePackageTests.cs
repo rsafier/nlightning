@@ -1,8 +1,3 @@
-using System.Net;
-using System.Net.Sockets;
-using System.Text;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Options;
 using NBitcoin;
 using NBitcoin.RPC;
 using Newtonsoft.Json.Linq;
@@ -11,9 +6,6 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.Wallet;
 
 using Bitcoin.Wallet;
 using Bitcoin.Wallet.Models;
-using Domain.Node.Options;
-using Domain.Protocol.ValueObjects;
-using Options;
 
 /// <summary>
 /// NL-380: <see cref="BitcoinChainService.SubmitPackageAsync"/> (<c>submitpackage</c>, Bitcoin Core 28+ 1p1c): the
