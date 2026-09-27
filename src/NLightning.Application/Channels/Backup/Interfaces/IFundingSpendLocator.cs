@@ -10,6 +10,18 @@ using Models;
 /// </summary>
 public interface IFundingSpendLocator
 {
-    /// <summary>Checks the funding output of <paramref name="entry"/>; never throws for a chain failure.</summary>
+    /// <summary>
+    /// Checks the funding output of <paramref name="entry"/> and, when it is spent, searches the recent blocks
+    /// (<see cref="ChannelBackupOptions.RestoreSpendSearchDepth"/>) for the spend; never throws for a chain failure.
+    /// </summary>
     Task<FundingSpendLocation> LocateAsync(ChannelBackupEntry entry, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Searches the blocks below <paramref name="belowHeight"/> (exclusive) down to the funding block for the spend of
+    /// <paramref name="entry"/>'s funding output (NL-430: a spend older than <see cref="LocateAsync"/>'s window);
+    /// never throws for a chain failure. <see cref="FundingSpendStatus.SpentNotFound"/> then means the whole range
+    /// was searched.
+    /// </summary>
+    Task<FundingSpendLocation> RescanAsync(ChannelBackupEntry entry, uint belowHeight,
+                                           CancellationToken cancellationToken);
 }

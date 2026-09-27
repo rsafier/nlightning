@@ -40,6 +40,8 @@ using Utils;
 [Collection(OnchainRegtestCollection.Name)]
 public class BackupRestoreFlowTests : IAsyncLifetime
 {
+    private const int OldSpendSearchDepth = 5;
+
     private static readonly TimeSpan s_timeout = TimeSpan.FromSeconds(180);
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
 
@@ -79,16 +81,40 @@ public class BackupRestoreFlowTests : IAsyncLifetime
         bool anchors) =>
         RunAsync(anchors, true);
 
-    private async Task RunAsync(bool anchors, bool peerClosesFirst)
+    /// <summary>
+    /// NL-430: LND's commitment is buried deeper than <c>Node:Backup:RestoreSpendSearchDepth</c> (5 here) when
+    /// <c>restorechanbackup</c> runs: the restore reports a background search, which finds the spend below the recent
+    /// window, and our <c>to_remote</c> is still swept.
+    /// </summary>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task Given_LndForceClosedLongBeforeTheRestore_When_Restored_Then_TheBackgroundRescanFindsTheSpendAndOurToRemoteIsSwept(
+        bool anchors) =>
+        RunAsync(anchors, true, OldSpendSearchDepth + 7);
+
+    private async Task RunAsync(bool anchors, bool peerClosesFirst, int blocksAfterTheClose = 3)
     {
         // Arrange: a used channel and its backup
         var ct = TestContext.Current.CancellationToken;
         var david = _fixture.GetLndNode("david");
-        var node = await _harness.CreateNodeAsync((anchors ? "scb-anchors" : "scb-legacy") + (peerClosesFirst ? "-early" : ""),
+        var oldSpend = blocksAfterTheClose > OldSpendSearchDepth;
+        var node = await _harness.CreateNodeAsync((anchors ? "scb-anchors" : "scb-legacy")
+                                                + (peerClosesFirst ? oldSpend ? "-old" : "-early" : ""),
                                                   ct,
                                                   o => o.Features.OptionAnchors = anchors
                                                                                      ? FeatureSupport.Optional
-                                                                                     : FeatureSupport.No);
+                                                                                     : FeatureSupport.No,
+                                                  n =>
+                                                  {
+                                                      if (!oldSpend)
+                                                          return;
+
+                                                      n.ExtraConfiguration["Node:Backup:RestoreSpendSearchDepth"] =
+                                                          OldSpendSearchDepth.ToString();
+                                                      n.ExtraConfiguration["Node:Backup:RestoreSpendSearchBatchSize"] =
+                                                          "2";
+                                                  });
         var channel = await OpenChannelAsync(node, david, anchors, ct);
         await AnchorsHarness.PayLndAsync(node, david, channel.ChannelId, channel.ChannelPoint(), 50_000, ct);
         await AnchorsHarness.PayLndAsync(node, david, channel.ChannelId, channel.ChannelPoint(), 20_000, ct);
@@ -118,7 +144,7 @@ public class BackupRestoreFlowTests : IAsyncLifetime
             // LND force-closes on its own and its commitment is buried before the restore
             lndCommitment = await ForceCloseAsync(david, fundingOutPoint, ct);
             await _harness.MineUntilConfirmedAsync(node, [david], lndCommitment.GetHash(), ct);
-            await ChainSync.MineAndWaitAsync(_fixture, 3, [david], [node], ct);
+            await ChainSync.MineAndWaitAsync(_fixture, blocksAfterTheClose, [david], [node], ct);
         }
 
         // Act 2: restorechanbackup
@@ -131,7 +157,15 @@ public class BackupRestoreFlowTests : IAsyncLifetime
         Assert.Equal("Restore", restored.Outcome);
         Assert.Equal(anchors, restored.OptionAnchors);
         Assert.True(node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out var recovery));
-        if (peerClosesFirst)
+        if (peerClosesFirst && oldSpend)
+        {
+            // Older than the recent window: searched in the background, then handed to the on-chain watcher
+            Assert.StartsWith("FundingSpendRescan", restored.Detail);
+            await Poll.UntilAsync(() => node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out var c)
+                                     && c.State == ChannelState.OnchainResolving,
+                                  s_timeout, "the background search to hand the old spend over", ct);
+        }
+        else if (peerClosesFirst)
         {
             // The earlier spend was handed to the on-chain watcher during the restore: already resolving
             Assert.Contains("already closed", restored.Detail);

@@ -5,6 +5,7 @@ namespace NLightning.Application.Tests.Channels.Backup;
 
 using Application.Channels.Backup;
 using Application.Channels.Backup.Models;
+using Application.Gossip.Graph.Interfaces;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Enums;
@@ -13,6 +14,8 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Gossip.Addresses;
+using Domain.Gossip.Graph;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
@@ -112,11 +115,29 @@ internal sealed class BackupTestData
         return services.BuildServiceProvider();
     }
 
-    public ChannelBackupService CreateService(IServiceProvider? provider = null) =>
+    public ChannelBackupService CreateService(IServiceProvider? provider = null, IGraphStore? graphStore = null) =>
         new((provider ?? BuildProvider()).GetRequiredService<IServiceScopeFactory>(), KeyManager, Signer.Object,
             Microsoft.Extensions.Options.Options.Create(new NodeOptions { BitcoinNetwork = Network }),
             Microsoft.Extensions.Options.Options.Create(Options), new FixedTimeProvider(this),
-            NullLogger<ChannelBackupService>.Instance);
+            NullLogger<ChannelBackupService>.Instance, graphStore);
+
+    /// <summary>A graph node of <paramref name="nodeId"/> announcing <paramref name="addresses"/>.</summary>
+    public static GraphNode GraphNodeWith(CompactPubKey nodeId, params AddressDescriptor[] addresses) =>
+        new(nodeId, 1, ReadOnlyMemory<byte>.Empty, new byte[GraphNode.AliasLength], new byte[GraphNode.ColorLength],
+            addresses);
+
+    /// <summary>A graph that knows <paramref name="nodes"/> (and no other node).</summary>
+    public static Mock<IGraphStore> GraphWith(params GraphNode[] nodes)
+    {
+        var graph = new Mock<IGraphStore>();
+        foreach (var node in nodes)
+        {
+            var found = node;
+            graph.Setup(g => g.TryGetNode(node.NodeId, out found)).Returns(true);
+        }
+
+        return graph;
+    }
 
     /// <summary>A backup snapshot with every field set, for codec tests.</summary>
     public static ChannelBackupSnapshot SampleSnapshot()

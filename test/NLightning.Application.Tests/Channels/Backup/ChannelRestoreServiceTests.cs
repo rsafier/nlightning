@@ -7,6 +7,7 @@ namespace NLightning.Application.Tests.Channels.Backup;
 using Application.Channels.Backup;
 using Application.Channels.Backup.Interfaces;
 using Application.Channels.Backup.Models;
+using Application.Gossip.Graph.Interfaces;
 using Application.Onchain.Interfaces;
 using Application.Protocol.Factories;
 using Domain.Bitcoin.Events;
@@ -15,6 +16,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Gossip.Addresses;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
@@ -42,10 +44,13 @@ public class ChannelRestoreServiceTests : IDisposable
     private readonly Mock<IChannelManager> _channelManager = new();
     private readonly Sha256 _sha256 = new();
     private readonly List<(TxId TxId, uint Index, TxId Spender, uint Height)> _markedSpent = [];
+    private readonly List<ChannelRestoreService> _services = [];
     private int _saves;
 
     public void Dispose()
     {
+        foreach (var service in _services)
+            service.Dispose();
         _sha256.Dispose();
         GC.SuppressFinalize(this);
     }
@@ -226,7 +231,8 @@ public class ChannelRestoreServiceTests : IDisposable
         Assert.Equal(ChannelRestoreAction.Restore, Assert.Single(result.Channels).Action);
         var peer = Assert.Single(result.Peers);
         Assert.False(peer.Connected);
-        Assert.Equal("no answer", peer.Error);
+        Assert.Contains("no answer", peer.Error);
+        Assert.Contains("retried in the background", peer.Error);
         Assert.Single(_registered);
     }
 
@@ -298,7 +304,8 @@ public class ChannelRestoreServiceTests : IDisposable
         var backup = await ExportAsync(ct, (1, false));
         var locator = new Mock<IFundingSpendLocator>();
         locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
-               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: 5_000));
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: 5_000,
+                                                      FloorHeight: 5_000));
         var watcher = new Mock<IOnchainChannelWatcher>();
         var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
 
@@ -393,6 +400,177 @@ public class ChannelRestoreServiceTests : IDisposable
         Assert.Equal(ChannelRestoreAction.Restore, Assert.Single(result.Channels).Action);
     }
 
+    [Fact]
+    public async Task Given_ASpendOlderThanTheSearchDepth_When_Restored_Then_TheBackgroundRescanFindsItAndHandsItOver()
+    {
+        // Arrange: not in the recent blocks (5000 to the tip), found below them by the rescan (NL-430)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, true));
+        var spendingTxId = new TxId(Enumerable.Repeat((byte)0x6E, 32).ToArray());
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: 5_000,
+                                                      FloorHeight: 900));
+        OutpointSpentEventArgs? located = null;
+        locator.Setup(l => l.RescanAsync(It.IsAny<ChannelBackupEntry>(), 5_000u, It.IsAny<CancellationToken>()))
+               .ReturnsAsync((ChannelBackupEntry entry, uint _, CancellationToken _) =>
+                {
+                    located = new OutpointSpentEventArgs(entry.ChannelId,
+                                                         new SignedTransaction(spendingTxId, [0x02, 0x00]), 950, 1,
+                                                         entry.FundingTxId, entry.FundingOutputIndex,
+                                                         new Hash(new byte[32]));
+                    return new FundingSpendLocation(FundingSpendStatus.SpentFound, located);
+                });
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+        await service.WaitForBackgroundWorkAsync();
+
+        // Assert: the result says a background search runs; it found the spend, marked the watch, handed it over
+        var channel = Assert.Single(result.Channels);
+        Assert.Equal(ChannelRestoreAction.Restore, channel.Action);
+        Assert.StartsWith("FundingSpendRescan", channel.Detail);
+        Assert.Contains("4999 down to 900", channel.Detail);
+        watcher.Verify(w => w.HandleFundingSpentAsync(located!, It.IsAny<CancellationToken>()), Times.Once);
+        var marked = Assert.Single(_markedSpent);
+        Assert.Equal(spendingTxId, marked.Spender);
+        Assert.Equal(950u, marked.Height);
+    }
+
+    [Fact]
+    public async Task Given_ARecoveryChannelStillWaiting_When_RestoredAgain_Then_TheSpendIsLookedUpAgainAndTheChannelKept()
+    {
+        // Arrange: the first restore could not read the chain
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.ChainUnavailable, Error: "rpc down"));
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+        var first = await service.RestoreAsync(backup, ct);
+        Assert.Contains("run restorechanbackup again", Assert.Single(first.Channels).Detail);
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync((ChannelBackupEntry entry, CancellationToken _) =>
+                                 new FundingSpendLocation(FundingSpendStatus.SpentFound,
+                                                          new OutpointSpentEventArgs(
+                                                              entry.ChannelId,
+                                                              new SignedTransaction(
+                                                                  new TxId(Enumerable.Repeat((byte)0x7E, 32)
+                                                                                     .ToArray()), [0x02]), 960, 1,
+                                                              entry.FundingTxId, entry.FundingOutputIndex,
+                                                              new Hash(new byte[32]))));
+
+        // Act
+        var second = await service.RestoreAsync(backup, ct);
+
+        // Assert: not stored again, the spend handed over, the peer (not connected) asked again
+        var channel = Assert.Single(second.Channels);
+        Assert.Equal(ChannelRestoreAction.AlreadyExists, channel.Action);
+        Assert.Contains("recovery channel", channel.Detail);
+        Assert.Contains("already closed", channel.Detail);
+        Assert.Single(_storedChannels);
+        Assert.Single(_registered);
+        watcher.Verify(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                      It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(2, _connects.Count);
+    }
+
+    [Fact]
+    public async Task Given_ALiveChannelAlreadyInTheDatabase_When_Restored_Then_ItsSpendIsNotLookedUp()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        _storedChannels.Add(new BackupTestData().AddChannel(1));
+        var locator = new Mock<IFundingSpendLocator>();
+        var service = CreateService(spendLocator: locator.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        Assert.Equal(ChannelRestoreAction.AlreadyExists, Assert.Single(result.Channels).Action);
+        locator.VerifyNoOtherCalls();
+        Assert.Empty(result.Peers);
+    }
+
+    [Fact]
+    public async Task Given_ThePeerAnnouncedAnotherAddress_When_Restored_Then_EveryKnownAddressIsTriedGraphFirst()
+    {
+        // Arrange: the graph's addresses are tried first and fail; the backup's address answers (NL-431)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var nodeId = BackupTestData.Key(0x03, 1, 9);
+        var graph = BackupTestData.GraphWith(BackupTestData.GraphNodeWith(
+                                                 nodeId,
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv4, "192.0.2.5",
+                                                                            9735),
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv6, "2001:db8::1",
+                                                                            9735)));
+        var service = CreateService(graphStore: graph.Object);
+        FailConnectsTo(a => !a.EndsWith("@10.0.0.1:9736", StringComparison.Ordinal));
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        var peer = Assert.Single(result.Peers);
+        Assert.True(peer.Connected);
+        Assert.Equal("10.0.0.1:9736", peer.Address);
+        Assert.Equal([$"{nodeId}@192.0.2.5:9735", $"{nodeId}@[2001:db8::1]:9735", $"{nodeId}@10.0.0.1:9736"],
+                     _connects);
+    }
+
+    [Fact]
+    public async Task Given_NoAddressAnswers_When_TheGraphLearnsANewOne_Then_ThePeerIsReconnectedInTheBackground()
+    {
+        // Arrange: the backup's address is dead and the graph does not know the peer yet
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var nodeId = BackupTestData.Key(0x03, 1, 9);
+        var graph = new Mock<IGraphStore>();
+        var service = CreateService(graphStore: graph.Object, reconnectDelay: TimeSpan.FromMilliseconds(20));
+        FailConnectsTo(a => !a.EndsWith("@198.51.100.7:9735", StringComparison.Ordinal));
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+        Assert.False(Assert.Single(result.Peers).Connected);
+        var announced = BackupTestData.GraphNodeWith(nodeId, AddressDescriptor.FromHost(AddressDescriptorType.IPv4,
+                                                                                        "198.51.100.7", 9735));
+        graph.Setup(g => g.TryGetNode(nodeId, out announced)).Returns(true);
+        await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: retried until the announced address answered, then stopped
+        string[] connects;
+        lock (_connects)
+            connects = _connects.ToArray();
+        Assert.Equal($"{nodeId}@198.51.100.7:9735", connects[^1]);
+        Assert.Contains($"{nodeId}@10.0.0.1:9736", connects);
+    }
+
+    [Fact]
+    public async Task Given_ThePeerConnectsByItself_When_Reconnecting_Then_TheBackgroundLoopStops()
+    {
+        // Arrange: nothing answers; the peer then connects to us
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var service = CreateService(reconnectDelay: TimeSpan.FromMilliseconds(20));
+        FailConnectsTo(_ => true);
+
+        // Act
+        await service.RestoreAsync(backup, ct);
+        _peerManager.Setup(p => p.GetPeer(It.IsAny<CompactPubKey>()))
+                    .Returns((CompactPubKey id) => new PeerModel(id, "10.0.0.1", 9736, "IPv4"));
+        await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: it ended without connecting anywhere else
+        lock (_connects)
+            Assert.All(_connects, a => Assert.EndsWith("@10.0.0.1:9736", a));
+    }
+
     private async Task<byte[]> ExportAsync(CancellationToken ct, params (byte Tag, bool Anchors)[] channels)
     {
         // The same node key (seed 7) and channel key derivation as _node
@@ -404,7 +582,8 @@ public class ChannelRestoreServiceTests : IDisposable
 
     private ChannelRestoreService CreateService(bool failSave = false, IFundingSpendLocator? spendLocator = null,
                                                 IOnchainChannelWatcher? onchainWatcher = null,
-                                                IChannelKeyIndexReserver? keyIndexReserver = null)
+                                                IChannelKeyIndexReserver? keyIndexReserver = null,
+                                                IGraphStore? graphStore = null, TimeSpan? reconnectDelay = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -476,15 +655,37 @@ public class ChannelRestoreServiceTests : IDisposable
         serializer.Setup(s => s.SerializeAsync(It.IsAny<IMessage>(), It.IsAny<Stream>()))
                   .Returns((IMessage _, Stream stream) => stream.WriteAsync(new byte[] { 0x00, 0x11 }).AsTask());
 
-        return new ChannelRestoreService(_node.CreateService(provider), _channelManager.Object,
+        var service = new ChannelRestoreService(_node.CreateService(provider), _channelManager.Object,
                                          new MessageFactory(Options.Create(new NodeOptions())), serializer.Object,
                                          Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
                                          watcher.Object, _peerManager.Object, _node.KeyManager,
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
-                                         spendLocator, onchainWatcher, keyIndexReserver)
+                                         spendLocator, onchainWatcher, keyIndexReserver, graphStore)
         {
-            DisconnectTimeout = TimeSpan.FromSeconds(1)
+            DisconnectTimeout = TimeSpan.FromSeconds(1),
+            ReconnectInitialDelay = reconnectDelay ?? TimeSpan.FromMinutes(5),
+            ReconnectMaxDelay = reconnectDelay ?? TimeSpan.FromMinutes(5)
         };
+        _services.Add(service);
+        return service;
+    }
+
+    /// <summary>Connection attempts record their address and fail for <paramref name="unreachable"/>.</summary>
+    private void FailConnectsTo(Func<string, bool> unreachable)
+    {
+        _peerManager.Setup(p => p.ConnectToPeerAsync(It.IsAny<PeerAddressInfo>()))
+                    .Returns((PeerAddressInfo a) =>
+                     {
+                         lock (_connects)
+                         {
+                             _calls.Add("connect");
+                             _connects.Add(a.Address);
+                         }
+
+                         return unreachable(a.Address)
+                                    ? Task.FromException<PeerModel>(new TimeoutException("no answer"))
+                                    : Task.FromResult(new PeerModel(BackupTestData.Key(0x03, 1, 9), "h", 1, "IPv4"));
+                     });
     }
 }

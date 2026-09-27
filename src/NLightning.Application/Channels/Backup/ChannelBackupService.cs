@@ -10,10 +10,13 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Addresses;
+using Domain.Gossip.Graph;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Gossip.Graph.Interfaces;
 using Interfaces;
 using Models;
 
@@ -27,9 +30,15 @@ using Models;
 /// row for at all (lost, not closed through this database: e.g. a new channel opened on a wiped database before the
 /// restore) is moved aside as <c>&lt;file&gt;.&lt;UTC time&gt;.superseded</c> before the new file is written, so no
 /// lost channel's backup is ever dropped.
+/// <para>Each channel carries the peer's stored address and the connectable addresses of its
+/// <c>node_announcement</c> in the gossip graph (at most <see cref="MaxAddressesPerChannel"/>), so a restore can reach
+/// a peer whose address changed (NL-431).</para>
 /// </remarks>
 public sealed class ChannelBackupService : IChannelBackupService
 {
+    /// <summary>The most addresses a backed-up channel holds for its peer.</summary>
+    public const int MaxAddressesPerChannel = 8;
+
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly ILightningSigner _signer;
@@ -37,6 +46,7 @@ public sealed class ChannelBackupService : IChannelBackupService
     private readonly ChannelBackupOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<ChannelBackupService> _logger;
+    private readonly IGraphStore? _graphStore;
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
     private byte[]? _lastWrittenContent;
@@ -45,8 +55,9 @@ public sealed class ChannelBackupService : IChannelBackupService
     public ChannelBackupService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                                 ILightningSigner signer, IOptions<NodeOptions> nodeOptions,
                                 IOptions<ChannelBackupOptions>? options = null, TimeProvider? timeProvider = null,
-                                ILogger<ChannelBackupService>? logger = null)
+                                ILogger<ChannelBackupService>? logger = null, IGraphStore? graphStore = null)
     {
+        _graphStore = graphStore;
         _serviceScopeFactory = serviceScopeFactory;
         _secureKeyManager = secureKeyManager;
         _signer = signer;
@@ -242,7 +253,7 @@ public sealed class ChannelBackupService : IChannelBackupService
                 peers[channel.RemoteNodeId] = peer;
             }
 
-            entries.Add(CreateEntry(channel, peer));
+            entries.Add(CreateEntry(channel, peer, GetGraphNode(channel.RemoteNodeId)));
         }
 
         var createdAt = DateTimeOffset.FromUnixTimeSeconds(_timeProvider.GetUtcNow().ToUnixTimeSeconds());
@@ -251,13 +262,53 @@ public sealed class ChannelBackupService : IChannelBackupService
         return (snapshot, channels.Select(c => c.ChannelId).ToHashSet());
     }
 
-    internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer)
+    /// <summary>
+    /// The addresses of <paramref name="node"/>'s announcement this node can connect to: IPv4, IPv6 and DNS with a
+    /// port (no Tor support).
+    /// </summary>
+    public static IEnumerable<AddressDescriptor> ConnectableAddresses(GraphNode node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        return node.Addresses.Where(a => a.Port > 0
+                                      && a.Type is AddressDescriptorType.IPv4 or AddressDescriptorType.IPv6
+                                                   or AddressDescriptorType.Dns);
+    }
+
+    private GraphNode? GetGraphNode(Domain.Crypto.ValueObjects.CompactPubKey nodeId)
+    {
+        try
+        {
+            return _graphStore is not null && _graphStore.TryGetNode(nodeId, out var node) ? node : null;
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not read the graph node {Peer}", nodeId);
+            return null;
+        }
+    }
+
+    internal static ChannelBackupEntry CreateEntry(ChannelModel channel, PeerModel? peer, GraphNode? graphNode = null)
     {
         var funding = channel.FundingOutput!;
         var remote = channel.RemoteKeySet!;
         var addresses = new List<ChannelBackupAddress>();
         if (peer is not null && !string.IsNullOrWhiteSpace(peer.Host) && peer.Port is > 0 and <= ushort.MaxValue)
             addresses.Add(new ChannelBackupAddress(peer.Type, peer.Host, (ushort)peer.Port));
+
+        // The peer's announced addresses: the peer row may hold only where it connected from (NL-431)
+        if (graphNode is not null)
+            foreach (var descriptor in ConnectableAddresses(graphNode))
+            {
+                if (addresses.Count >= MaxAddressesPerChannel)
+                    break;
+
+                var host = descriptor.Host;
+                if (addresses.Any(a => a.Port == descriptor.Port
+                                    && string.Equals(a.Host, host, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                addresses.Add(new ChannelBackupAddress(ToPeerType(descriptor.Type), host, descriptor.Port));
+            }
 
         return new ChannelBackupEntry
         {
@@ -289,6 +340,13 @@ public sealed class ChannelBackupService : IChannelBackupService
             Remote = ChannelBackupParty.From(channel.ChannelParams.Remote)
         };
     }
+
+    private static string ToPeerType(AddressDescriptorType type) => type switch
+    {
+        AddressDescriptorType.IPv4 => "IPv4",
+        AddressDescriptorType.IPv6 => "IPv6",
+        _ => "DNS"
+    };
 
     private static bool HasShortChannelId(ShortChannelId shortChannelId)
     {

@@ -32,7 +32,15 @@ public sealed class ChannelBackupOptions
     /// <summary>
     /// How many blocks below the tip <c>restorechanbackup</c> searches for the spend of a funding output that is
     /// already spent (default 4032, about four weeks; never below the funding block). A spend older than that is
-    /// reported with the height to rescan from.
+    /// searched in the
+    /// background down to the funding block, and handed to the on-chain resolution once found (NL-430).
     /// </summary>
     public uint RestoreSpendSearchDepth { get; set; } = 4032;
+
+    /// <summary>
+    /// How many blocks the funding spend search reads at once (default 8, at least 1). A spend older than
+    /// <see cref="RestoreSpendSearchDepth"/> is searched in the background, batch by batch, down to the funding block
+    /// (NL-430).
+    /// </summary>
+    public uint RestoreSpendSearchBatchSize { get; set; } = 8;
 }

@@ -4,6 +4,7 @@ using Application.Channels.Backup;
 using Application.Channels.Backup.Models;
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Gossip.Addresses;
 using Domain.Protocol.ValueObjects;
 
 public sealed class ChannelBackupServiceTests : IDisposable
@@ -60,6 +61,34 @@ public sealed class ChannelBackupServiceTests : IDisposable
         Assert.Equal(new ChannelBackupAddress("IPv4", "10.0.0.1", 9736), Assert.Single(anchors.Addresses));
         Assert.Null(snapshot.Channels[1].ShortChannelId);
         Assert.False(snapshot.Channels[1].OptionAnchorOutputs);
+    }
+
+    [Fact]
+    public async Task Given_ThePeerAnnouncedAddresses_When_Exported_Then_TheConnectableOnesAreBackedUpAfterThePeerRow()
+    {
+        // Arrange: the peer row holds 10.0.0.1:9736; the graph repeats it and adds an IPv6, a DNS and a Tor address
+        var data = new BackupTestData();
+        var channel = data.AddChannel(1);
+        var graph = BackupTestData.GraphWith(BackupTestData.GraphNodeWith(
+                                                 channel.RemoteNodeId,
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv4, "10.0.0.1",
+                                                                            9736),
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv6, "2001:db8::7",
+                                                                            9735),
+                                                 new AddressDescriptor(AddressDescriptorType.TorV3, new byte[35], 9735),
+                                                 AddressDescriptor.FromDnsHostname("peer.example.com", 9737)));
+        var service = data.CreateService(graphStore: graph.Object);
+
+        // Act
+        var export = await service.ExportAsync(null, TestContext.Current.CancellationToken);
+        var decrypted = service.Decrypt(export.Backup);
+
+        // Assert: no repeat, no Tor, the peer row first, and the addresses survive the encryption
+        Assert.Equal([
+                         new ChannelBackupAddress("IPv4", "10.0.0.1", 9736),
+                         new ChannelBackupAddress("IPv6", "2001:db8::7", 9735),
+                         new ChannelBackupAddress("DNS", "peer.example.com", 9737)
+                     ], Assert.Single(decrypted.Channels).Addresses);
     }
 
     [Fact]
