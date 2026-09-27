@@ -23,6 +23,7 @@ using Daemon.Services;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Client.Requests;
@@ -317,6 +318,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             // As the daemon does: BOLT 5 O8, unconfirmed spends of our outputs (before the monitor's mempool loop)
             Services.GetRequiredService<IMempoolReactor>().Start();
             await BlockchainMonitor.StartAsync(currentHeight, cancellationToken);
+            // As the daemon does: release orphaned withdraw reservations (wave m6 W1)
+            var walletSpendService = Services.GetService<IWalletSpendService>();
+            if (walletSpendService is not null)
+                await walletSpendService.ReleaseOrphanedReservationsAsync(cancellationToken);
             // As the daemon does: prune the onion replay set on every block (NL-327)
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
             _started = true;

@@ -171,7 +171,7 @@ public sealed class OnionMessageServiceTests : IDisposable
         // Arrange
         var path = _carol.PathFactory.Create([_bob.NodeId, _carol.NodeId]);
         var message = Craft(path, (i, hop) => i == 0
-                                                  ? OnionMessagePayloadCodec.Encode(new OnionMessageTlvs(null, null, []))
+                                                  ? OnionMessageTlvsCodec.Encode(new OnionMessageTlvs(null, null, []))
                                                   : Tlvs(hop, [Record(TestType)]));
 
         // Act
@@ -346,7 +346,7 @@ public sealed class OnionMessageServiceTests : IDisposable
                                          path.Hops.Select((hop, i) => payloadFor(i, hop)).ToList());
 
     private static byte[] Tlvs(BlindedPathHop hop, IReadOnlyList<OnionMessageTlvRecord> records) =>
-        OnionMessagePayloadCodec.Encode(new OnionMessageTlvs(null, hop.EncryptedRecipientData, records));
+        OnionMessageTlvsCodec.Encode(new OnionMessageTlvs(null, hop.EncryptedRecipientData, records));
 
     private static OnionMessageTlvRecord Record(ulong type) => new(type, new byte[] { 0x42 });
 

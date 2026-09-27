@@ -32,6 +32,15 @@ public static class OnionMessageServiceCollectionExtensions
     {
         services.AddOptions<OnionMessageOptions>();
         services.TryAddSingleton<OnionMessageMetrics>();
+        // M6 OM2-T2: the per-peer and node-wide token buckets, from the OnionMessages section
+        services.TryAddSingleton<IOnionMessageRateLimiter>(sp =>
+        {
+            var o = sp.GetService<IOptions<OnionMessageOptions>>()?.Value ?? new OnionMessageOptions();
+            var limits = new OnionMessageRateLimits(o.PeerBytesPerSecond, o.PeerBurstBytes, o.PeerMessagesPerSecond,
+                                                    o.PeerBurstMessages, o.GlobalBytesPerSecond, o.GlobalBurstBytes,
+                                                    o.GlobalMessagesPerSecond, o.GlobalBurstMessages);
+            return new OnionMessageRateLimiter(limits, sp.GetService<TimeProvider>());
+        });
         services.TryAddSingleton(sp => new OnionMessageService(
                                      sp.GetRequiredService<IOptions<NodeOptions>>(),
                                      sp.GetRequiredService<ISecureKeyManager>(),

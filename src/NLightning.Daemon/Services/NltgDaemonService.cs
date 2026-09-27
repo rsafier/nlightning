@@ -11,6 +11,7 @@ using Application.Channels.Safety.Interfaces;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
@@ -39,6 +40,7 @@ public class NltgDaemonService : BackgroundService
     private readonly IPeerStorageService? _peerStorageService;
     private readonly IServiceScopeFactory? _scopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
+    private readonly IWalletSpendService? _walletSpendService;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -47,8 +49,10 @@ public class NltgDaemonService : BackgroundService
                              OnionReplayBlockPruner onionReplayBlockPruner, IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
                              IPeerManager peerManager, ISecureKeyManager secureKeyManager,
                              IMempoolReactor mempoolReactor, IServiceScopeFactory? scopeFactory = null,
-                             IPeerStorageService? peerStorageService = null)
+                             IPeerStorageService? peerStorageService = null,
+                             IWalletSpendService? walletSpendService = null)
     {
+        _walletSpendService = walletSpendService;
         _scopeFactory = scopeFactory;
         _peerStorageService = peerStorageService;
         _mempoolReactor = mempoolReactor;
@@ -110,6 +114,10 @@ public class NltgDaemonService : BackgroundService
 
             // Start the blockchain monitor service
             await _blockchainMonitor.StartAsync(_secureKeyManager.HeightOfBirth, stoppingToken);
+
+            // Release the withdraw reservations a crash left without their broadcast row (wave m6 W1)
+            if (_walletSpendService is not null)
+                await _walletSpendService.ReleaseOrphanedReservationsAsync(stoppingToken);
 
             // Prune the onion replay set on every block (NL-327)
             _onionReplayBlockPruner.Start();

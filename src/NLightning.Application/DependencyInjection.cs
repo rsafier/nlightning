@@ -112,9 +112,21 @@ public static class DependencyInjection
         services.AddAnchorCpfpServices();
         // BOLT 4 onion messages (wave M6): off until option_onion_messages is advertised
         services.AddOnionMessageServices();
-        services.AddSingleton<IPeerManager, PeerManager>();
+        services.AddSingleton<IPeerManager>(sp =>
+        {
+            var peerManager = ActivatorUtilities.CreateInstance<PeerManager>(sp);
+            // M6 OM2-T1: the per-connection onion message outbox cap (OnionMessages:MaxOutboxPerPeer)
+            var onionMessageOptions = sp.GetService<IOptions<OnionMessageOptions>>()?.Value;
+            if (onionMessageOptions is { MaxOutboxPerPeer: > 0 })
+                peerManager.MaxOutboxOnionMessagesPerPeer = onionMessageOptions.MaxOutboxPerPeer;
+            return peerManager;
+        });
         // NL-351: own and relayed gossip goes through the peer's outbox (PeerGossipSender resolves it lazily)
         services.AddSingleton<IPeerGossipOutbox>(sp => (IPeerGossipOutbox)sp.GetRequiredService<IPeerManager>());
+        // M6 OM2-T1: onion messages go through the peer's outbox as a bounded low-priority class
+        services.AddSingleton<IPeerOnionMessageOutbox>(sp =>
+                                                           (IPeerOnionMessageOutbox)sp
+                                                              .GetRequiredService<IPeerManager>());
 
         // Automatically register all channel message handlers
         services.AddChannelMessageHandlers();

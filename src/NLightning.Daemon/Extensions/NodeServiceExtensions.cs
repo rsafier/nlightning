@@ -21,6 +21,7 @@ using Application.Onchain.Mempool;
 using Application.Onchain.Resolvers.Local;
 using Application.Onchain.Resolvers.Remote;
 using Application.Onchain.Resolvers.Revoked;
+using Application.OnionMessages;
 using Application.Payments.Invoices;
 using Application.Payments.Routing.Interfaces;
 using Application.Payments.Send;
@@ -209,6 +210,11 @@ public static class NodeServiceExtensions
         // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once
         services.AddChannelBackupNodeServices(configuration);
         services.AddOperatorIpcServices();
+        // On-chain withdraw (wave m6 W1, ClientCommand 25)
+        services.AddWithdrawIpcServices();
+
+        // BOLT 4 onion messages (wave M6): the service, rate limiter and outbox cap read this section
+        services.Configure<OnionMessageOptions>(configuration.GetSection(OnionMessageOptions.SectionName));
 
         // BOLT 1 peer storage (wave rf1 R2, NL-010): after the backup services, so a static-channel-backup blob
         // provider registered there would win over the default channel list (TryAdd keeps the first)

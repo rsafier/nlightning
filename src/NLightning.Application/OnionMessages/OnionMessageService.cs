@@ -253,7 +253,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return;
         }
 
-        if (!OnionMessagePayloadCodec.TryDecode(peeled.Payload.Span, out var tlvs) || tlvs is null)
+        if (!OnionMessageTlvsCodec.TryDecode(peeled.Payload.Span, out var tlvs, out _))
         {
             Drop(OnionMessageDropReasons.InvalidPayload, fromPeer);
             return;
@@ -378,7 +378,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 
     private void Deliver(CompactPubKey fromPeer, OnionMessageTlvs tlvs, BlindedRecipientData recipientData)
     {
-        if (OnionMessagePayloadCodec.CountPayloadFields(tlvs.OtherRecords) > 1)
+        if (OnionMessageTlvsCodec.CountPayloadFields(tlvs.OtherRecords) > 1)
         {
             Drop(OnionMessageDropReasons.MultiplePayloadFields, fromPeer);
             return;

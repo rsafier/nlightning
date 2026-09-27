@@ -1,6 +1,5 @@
 namespace NLightning.Application.Tests.OnionMessages.Harness;
 
-using Application.OnionMessages;
 using Application.Payments.Routing;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Messages;
@@ -59,7 +58,7 @@ internal sealed class HarnessOnionMessagePacketBuilder(ISphinxService sphinxServ
         for (var i = 0; i < hops.Count; i++)
         {
             var final = i == hops.Count - 1;
-            payloads.Add(OnionMessagePayloadCodec.Encode(
+            payloads.Add(OnionMessageTlvsCodec.Encode(
                              new OnionMessageTlvs(final ? replyPath : null, hops[i].EncryptedRecipientData,
                                                   final ? contents.Records : [])));
         }
