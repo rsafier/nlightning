@@ -82,6 +82,11 @@ public static class ChannelEntityConfiguration
                   .HasConversion<UtcTicksConverter>()
                   .IsRequired(false);
 
+            // Dual funding (migration AddSpliceFundings, splicing plan wave DF)
+            entity.Property(e => e.IsDualFunded).IsRequired();
+            entity.Property(e => e.LocalFundingContributionSatoshis).IsRequired(false);
+            entity.Property(e => e.RemoteFundingContributionSatoshis).IsRequired(false);
+
             // Configure the relationship with ChannelConfig (1:1)
             entity.HasOne(e => e.Config)
                   .WithOne()

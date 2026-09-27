@@ -2,12 +2,13 @@
 
 namespace NLightning.Infrastructure.Persistence.Entities.Channel;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 
 /// <summary>
 /// One entry of the revocation log (BOLT 5 plan O1-T1, D2): the content of a peer commitment the peer revoked, in the
 /// <see cref="CommitmentEntity"/> format, written in the same save as the <c>revoke_and_ack</c> and only when it had
-/// at least one HTLC. Keyed by (channel, commitment number).
+/// at least one HTLC. Keyed by (channel, commitment number, funding txid).
 /// </summary>
 public class RevokedCommitmentEntity
 {
@@ -15,6 +16,12 @@ public class RevokedCommitmentEntity
 
     /// <summary>The peer's commitment number.</summary>
     public required ulong Number { get; set; }
+
+    /// <summary>
+    /// The funding the revoked commitment spent (migration <c>AddSpliceFundings</c>): revoking number <c>n</c> revokes
+    /// it on every active funding, and a revoked commitment of any of them must be punishable (SP-I5).
+    /// </summary>
+    public required TxId FundingTxId { get; set; }
 
     public required uint FeeratePerKw { get; set; }
 

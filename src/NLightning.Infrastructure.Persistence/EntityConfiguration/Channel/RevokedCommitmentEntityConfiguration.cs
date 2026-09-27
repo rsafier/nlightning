@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace NLightning.Infrastructure.Persistence.EntityConfiguration.Channel;
 
 using Domain.Channels.Constants;
+using Domain.Crypto.Constants;
 using Entities.Channel;
 using Enums;
 using ValueConverters;
@@ -15,10 +16,14 @@ public static class RevokedCommitmentEntityConfiguration
         modelBuilder.Entity<RevokedCommitmentEntity>(entity =>
         {
             // One row per revoked peer commitment with HTLCs (migration AddOnchainResolution, BOLT 5 plan O1-T1)
-            entity.HasKey(e => new { e.ChannelId, e.Number });
+            // The funding txid joined the key in migration AddSpliceFundings (SP-I5: per funding)
+            entity.HasKey(e => new { e.ChannelId, e.Number, e.FundingTxId });
 
             entity.Property(e => e.ChannelId)
                   .HasConversion<ChannelIdConverter>()
+                  .IsRequired();
+            entity.Property(e => e.FundingTxId)
+                  .HasConversion<TxIdConverter>()
                   .IsRequired();
             entity.Property(e => e.Number).IsRequired();
             entity.Property(e => e.FeeratePerKw).IsRequired();
@@ -40,6 +45,7 @@ public static class RevokedCommitmentEntityConfiguration
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<RevokedCommitmentEntity> entity)
     {
         entity.Property(e => e.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
+        entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(e => e.Htlcs).HasColumnType("varbinary(max)");
     }
 }

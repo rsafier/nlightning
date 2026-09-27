@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.ValueObjects;
 
 using Bitcoin.ValueObjects;
 using Crypto.ValueObjects;
+using Splicing;
 
 /// <summary>
 /// Information needed by the signer for a specific channel
@@ -60,6 +61,27 @@ public record struct ChannelSigningInfo
     /// a channel where it is false.
     /// </summary>
     public bool AnnounceChannel { get; init; }
+
+    /// <summary>
+    /// The derivation index of our funding key in the current funding (splicing plan D5): 0 for a channel that was
+    /// never spliced, the locked splice's <see cref="ChannelFunding.LocalFundingKeyIndex"/> after a splice.
+    /// </summary>
+    public uint LocalFundingKeyIndex { get; init; }
+
+    /// <summary>
+    /// The channel's other fundings (splicing plan SP1-C-T1): the pending splices commitments are signed for, and the
+    /// retired (replaced or discarded) ones whose keys the on-chain resolution may still need (SP-I5). Null or empty for
+    /// a channel that was never spliced. <c>ILightningSigner.RegisterChannel</c> registers each of them.
+    /// </summary>
+    public IReadOnlyList<ChannelFunding>? Fundings { get; init; }
+
+    /// <summary>
+    /// Invariant SP-I1 across restarts: per pending splice funding txid, the local commitment number at which our
+    /// commitment spending it, with the peer's verified signatures, is persisted. <c>ILightningSigner.RegisterChannel</c>
+    /// applies each entry as <c>MarkSpliceCommitmentPersisted</c> would, so the shared input can be signed again after a
+    /// restart only when that commitment was saved.
+    /// </summary>
+    public IReadOnlyDictionary<TxId, ulong>? PersistedSpliceCommitments { get; init; }
 
     public ChannelSigningInfo(TxId fundingTxId, ushort fundingOutputIndex, ulong fundingSatoshis,
                               CompactPubKey localFundingPubKey, CompactPubKey remoteFundingPubKey,

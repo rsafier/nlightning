@@ -2,6 +2,7 @@
 
 namespace NLightning.Infrastructure.Persistence.Entities.Channel;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 
 /// <summary>
@@ -39,6 +40,13 @@ public class CommitmentEntity
     /// <see cref="RemoteNextSlot"/>).
     /// </summary>
     public required byte Slot { get; set; }
+
+    /// <summary>
+    /// The funding the commitment spends (migration <c>AddSpliceFundings</c>, splicing plan §3.8): the channel's
+    /// current funding (<c>Channels.FundingTxId</c>) for the rows of the commitment state machine, or a pending splice
+    /// funding for the commitments signed for it.
+    /// </summary>
+    public required TxId FundingTxId { get; set; }
 
     /// <summary>
     /// The commitment number.

@@ -7,6 +7,8 @@ using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -194,6 +196,55 @@ public class ChannelRoundTripTests
         Assert.Equal(new ShortChannelId(700_000, 5, 1), reloaded.ShortChannelId);
         Assert.Equal(channel.LocalBalance, reloaded.LocalBalance);
     }
+
+    [Fact]
+    public async Task Given_ChannelWithThreeFundings_When_Reloaded_Then_EveryFundingAndTheCurrentOneAreEqual()
+    {
+        // Arrange (splicing plan §3.8, SP1-C-T4): the initial funding, two pending splice attempts and a discarded
+        // one, every ChannelFunding field set
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await AddChangeAddressAsync(db);
+        var channel = CreateFullChannel(true);
+        await SaveAndReloadAsync(db, channel);
+        var splice = new ChannelFunding(TxIdOf(0x41), 2, 1_500_000, s_key7, s_key8, 3, 500_000_001, -1,
+                                        ChannelFundingKind.Splice, ChannelFundingStatus.Pending, 2_536, 812_345,
+                                        null, 812_350, new ShortChannelId(812_350, 7, 2), true, false, true);
+        var rbf = new ChannelFunding(TxIdOf(0x42), 0, 1_499_000, s_key6, s_key5, 4, 499_000_000, 0,
+                                     ChannelFundingKind.SpliceRbf, ChannelFundingStatus.Pending, 3_000, 812_346,
+                                     splice.FundingTxId, null, null, false, true, false);
+        var discarded = new ChannelFunding(TxIdOf(0x43), 1, 900_000, s_key4, s_key3, 2, -100_000_000, 0,
+                                           ChannelFundingKind.Splice, ChannelFundingStatus.Discarded, 1_000, 0);
+
+        // Act
+        await using (var writeContext = db.CreateDbContext())
+        {
+            var repository = new ChannelFundingDbRepository(writeContext);
+            await repository.UpsertAsync(channel.ChannelId, discarded);
+            await repository.UpsertAsync(channel.ChannelId, splice);
+            await repository.UpsertAsync(channel.ChannelId, rbf);
+            await writeContext.SaveChangesAsync(TestContext.Current.CancellationToken);
+        }
+
+        var reloaded = await UpdateAndReloadAsync(db, channel);
+
+        // Assert: the channel is unchanged, its current funding is the initial one, the others keep every field
+        AssertChannelsEqual(channel, reloaded);
+        await using var readContext = db.CreateDbContext();
+        var fundingRepository = new ChannelFundingDbRepository(readContext);
+        var initial = ChannelFunding.FromFundingOutput(channel.FundingOutput!)! with
+        {
+            ShortChannelId = channel.ShortChannelId
+        };
+        Assert.Equal([initial, discarded, splice, rbf],
+                     await fundingRepository.GetByChannelIdAsync(channel.ChannelId));
+        var set = await fundingRepository.GetFundingSetAsync(channel.ChannelId);
+        Assert.NotNull(set);
+        Assert.Equal(initial, set.Current);
+        Assert.Equal([splice, rbf], set.Pending);
+        Assert.Equal(3, set.ActiveCount);
+    }
+
+    private static TxId TxIdOf(byte seed) => new(Enumerable.Repeat(seed, 32).ToArray());
 
     private static async Task<ChannelModel> SaveAndReloadAsync(SqliteDbTestContext db, ChannelModel channel)
     {

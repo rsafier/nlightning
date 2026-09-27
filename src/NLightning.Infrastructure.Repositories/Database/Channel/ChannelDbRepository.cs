@@ -17,6 +17,8 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.Constants;
 using Domain.Crypto.Hashes;
@@ -47,7 +49,24 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         nameof(ChannelEntity.MaxDustHtlcExposureMsat),
 
         // Set by migration AddOnchainResolution only (BOLT 5 plan O1-T3)
-        nameof(ChannelEntity.RevocationLogFromNumber)
+        nameof(ChannelEntity.RevocationLogFromNumber),
+
+        // Written only through ChannelFundingDbRepository (migration AddSpliceFundings, splicing plan wave DF)
+        nameof(ChannelEntity.IsDualFunded),
+        nameof(ChannelEntity.LocalFundingContributionSatoshis),
+        nameof(ChannelEntity.RemoteFundingContributionSatoshis)
+    ];
+
+    /// <summary>
+    /// The current funding columns: once a splice was locked they follow <c>ChannelFundingDbRepository.ApplyLockAsync</c>,
+    /// and <see cref="UpdateAsync"/> leaves them alone, so a model that predates the lock never moves them back.
+    /// </summary>
+    private static readonly string[] s_currentFundingColumns =
+    [
+        nameof(ChannelEntity.FundingTxId),
+        nameof(ChannelEntity.FundingOutputIndex),
+        nameof(ChannelEntity.FundingAmountSatoshis),
+        nameof(ChannelEntity.ShortChannelId)
     ];
 
     /// <summary>
@@ -91,6 +110,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
         Insert(channelEntity);
         SetChangeAddressForeignKey(channelEntity, channelModel.ChangeAddress);
+        await EnsureInitialFundingAsync(channelModel);
 
         if (channelModel.Commitments is { } commitments)
             await _channelStateDbRepository.InitializeAsync(commitments, new ChannelStateExtras
@@ -121,9 +141,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         // The model may predate the channel's first snapshot, e.g. when InitializeAsync staged it earlier in this unit
         // of work (invariant I2 swaps the in-memory snapshot only after the save)
         var keptColumns = await HasSnapshotAsync(channelModel)
-                              ? s_stateOnlyColumns.Concat(s_snapshotColumns).ToArray()
-                              : s_stateOnlyColumns;
-        UpdateExcept(channelEntity, keptColumns);
+                                              ? s_stateOnlyColumns.Concat(s_snapshotColumns)
+                                              : s_stateOnlyColumns;
+        if (await IsSplicedAsync(channelModel.ChannelId))
+            keptColumns = keptColumns.Concat(s_currentFundingColumns);
+        UpdateExcept(channelEntity, keptColumns.ToArray());
 
         // Update() may have copied the values onto an already tracked instance
         var trackedEntity = DbSet.Local.FirstOrDefault(c => c.ChannelId == channelEntity.ChannelId) ?? channelEntity;
@@ -138,6 +160,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         // A tracked channel still references the removed children, and change detection must not add them back
         foreach (var alias in removedAliases)
             trackedEntity.LocalAliases?.Remove(alias);
+
+        await EnsureInitialFundingAsync(channelModel);
     }
 
     public async Task<IReadOnlyCollection<(ChannelId ChannelId, ShortChannelId Alias)>> GetLocalAliasesAsync()
@@ -241,7 +265,11 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     /// <exception cref="InvalidOperationException">The channel has HTLC rows in a legacy state (NL-025).</exception>
     private async Task<ChannelModel> MapWithStateAsync(ChannelEntity channelEntity)
     {
-        var channelModel = MapEntityToDomain(channelEntity, _sha256);
+        // After a splice the current funding's keys are the funding row's (our key rotated, splicing plan D5)
+        var currentFunding = await _context.ChannelFundings.AsNoTracking()
+                                           .FirstOrDefaultAsync(f => f.ChannelId == channelEntity.ChannelId
+                                                                  && f.FundingTxId == channelEntity.FundingTxId);
+        var channelModel = MapEntityToDomain(channelEntity, _sha256, currentFunding);
 
         // The snapshot runs under the dust policy it was saved with (NL-242) and keeps the inferred-limits flag of a
         // channel migrated by SplitChannelParams, so its guessed limits are still never enforced after a restart
@@ -293,6 +321,50 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
             return true;
 
         return await _context.Commitments.AsNoTracking().AnyAsync(c => c.ChannelId == channelId);
+    }
+
+    /// <summary>
+    /// Whether the channel has a funding other than its initial one (staged in this unit of work or stored).
+    /// </summary>
+    private async Task<bool> IsSplicedAsync(ChannelId channelId)
+    {
+        var fundings = await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelId);
+        return fundings.Any(f => f.Kind != (byte)ChannelFundingKind.Initial);
+    }
+
+    /// <summary>
+    /// Stages the channel's <see cref="ChannelFundingKind.Initial"/>, <see cref="ChannelFundingStatus.Current"/>
+    /// funding row (splicing plan §3.8) once its funding outpoint is known, and keeps it in step with the channel while
+    /// the channel was never spliced (the funding keys are the key sets', as the migration's data step writes them).
+    /// </summary>
+    private async Task EnsureInitialFundingAsync(ChannelModel channelModel)
+    {
+        var fundingOutput = channelModel.FundingOutput;
+        if (fundingOutput?.TransactionId is not { IsZero: false } txId || fundingOutput.Index is not { } index
+                                                                       || channelModel.RemoteKeySet is null)
+            return;
+
+        var initial = new ChannelFunding(txId, index, (ulong)fundingOutput.Amount.Satoshi,
+                                         channelModel.LocalKeySet.FundingCompactPubKey,
+                                         channelModel.RemoteKeySet.FundingCompactPubKey, 0, 0, 0,
+                                         ChannelFundingKind.Initial, ChannelFundingStatus.Current,
+                                         ShortChannelId: IsSet(channelModel.ShortChannelId)
+                                                             ? channelModel.ShortChannelId
+                                                             : (ShortChannelId?)null);
+
+        var fundings = await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelModel.ChannelId);
+        switch (fundings)
+        {
+            case []:
+                _context.ChannelFundings.Add(ChannelFundingDbRepository.CreateEntity(channelModel.ChannelId, initial,
+                                                                                     0));
+                break;
+
+            // A channel never spliced: its initial funding follows the channel (the confirmation, a reorg)
+            case [{ Kind: (byte)ChannelFundingKind.Initial } row] when row.FundingTxId == txId:
+                ChannelFundingDbRepository.CopyFields(initial, row);
+                break;
+        }
     }
 
     /// <summary>
@@ -397,7 +469,8 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     /// commitments) is attached separately from <see cref="ChannelStateDbRepository"/>; the legacy HTLC collections of
     /// <see cref="ChannelModel"/> are no longer persisted and stay empty.
     /// </summary>
-    internal static ChannelModel MapEntityToDomain(ChannelEntity channelEntity, ISha256 sha256)
+    internal static ChannelModel MapEntityToDomain(ChannelEntity channelEntity, ISha256 sha256,
+                                                   ChannelFundingEntity? currentFunding = null)
     {
         if (channelEntity.Config is null)
             throw new InvalidOperationException(
@@ -417,8 +490,13 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var localKeySet = ChannelKeySetDbRepository.MapEntityToDomain(localKeySetEntity);
         var remoteKeySet = ChannelKeySetDbRepository.MapEntityToDomain(remoteKeySetEntity);
 
+        // After a splice the current funding's keys are its row's (our key rotates per splice, D5); the initial
+        // funding's are the key sets'
+        var splicedFunding = currentFunding is { Kind: not (byte)ChannelFundingKind.Initial } ? currentFunding : null;
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(channelEntity.FundingAmountSatoshis),
-                                                  localKeySet.FundingCompactPubKey, remoteKeySet.FundingCompactPubKey)
+                                                  splicedFunding?.LocalFundingPubKey ?? localKeySet.FundingCompactPubKey,
+                                                  splicedFunding?.RemoteFundingPubKey
+                                               ?? remoteKeySet.FundingCompactPubKey)
         {
             Index = channelEntity.FundingOutputIndex,
             TransactionId = channelEntity.FundingTxId

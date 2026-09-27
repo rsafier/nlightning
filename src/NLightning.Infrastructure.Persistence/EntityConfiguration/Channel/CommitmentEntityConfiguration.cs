@@ -15,11 +15,15 @@ public static class CommitmentEntityConfiguration
     {
         modelBuilder.Entity<CommitmentEntity>(entity =>
         {
-            // One row per slot (local current, remote current, remote next) and channel
-            entity.HasKey(e => new { e.ChannelId, e.Slot });
+            // One row per slot (local current, remote current, remote next), funding and channel (migration
+            // AddSpliceFundings: a pending splice has commitments of its own)
+            entity.HasKey(e => new { e.ChannelId, e.Slot, e.FundingTxId });
 
             entity.Property(e => e.ChannelId)
                   .HasConversion<ChannelIdConverter>()
+                  .IsRequired();
+            entity.Property(e => e.FundingTxId)
+                  .HasConversion<TxIdConverter>()
                   .IsRequired();
             entity.Property(e => e.Slot).IsRequired();
             entity.Property(e => e.Number).IsRequired();
@@ -45,6 +49,7 @@ public static class CommitmentEntityConfiguration
     private static void OptimizeConfigurationForSqlServer(EntityTypeBuilder<CommitmentEntity> entity)
     {
         entity.Property(e => e.ChannelId).HasColumnType($"varbinary({ChannelConstants.ChannelIdLength})");
+        entity.Property(e => e.FundingTxId).HasColumnType($"varbinary({CryptoConstants.Sha256HashLen})");
         entity.Property(e => e.Htlcs).HasColumnType("varbinary(max)");
         entity.Property(e => e.PerCommitmentPoint).HasColumnType($"varbinary({CryptoConstants.CompactPubkeyLen})");
         entity.Property(e => e.Signature).HasColumnType($"varbinary({CryptoConstants.MaxSignatureSize})");
