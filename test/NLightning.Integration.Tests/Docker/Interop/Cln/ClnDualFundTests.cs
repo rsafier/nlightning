@@ -61,15 +61,24 @@ public sealed class ClnDualFundTests(ClnFixture fixture) : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         await DockerContainerUtils.RemoveContainerAsync(_docker, ContainerName);
-        _clnHostPort = await StartClnAsync();
-        _cln = new ClnClient(_docker, ContainerName);
-        await DockerContainerUtils.WaitUntilReadyAsync(ContainerName, async ct => await _cln.GetInfoAsync(ct),
-                                                       TimeSpan.FromMinutes(2));
-        _clnNodeId = (await _cln.GetInfoAsync(CancellationToken.None))["id"]!.GetValue<string>();
+        try
+        {
+            _clnHostPort = await StartClnAsync();
+            _cln = new ClnClient(_docker, ContainerName);
+            await DockerContainerUtils.WaitUntilReadyAsync(ContainerName, async ct => await _cln.GetInfoAsync(ct),
+                                                           TimeSpan.FromMinutes(2));
+            _clnNodeId = (await _cln.GetInfoAsync(CancellationToken.None))["id"]!.GetValue<string>();
 
-        // CLN's wallet: two confirmed outputs, so it can contribute and still fund its own open
-        for (var i = 0; i < 2; i++)
-            await FundClnAsync(LightningMoney.Satoshis(1_500_000), CancellationToken.None);
+            // CLN's wallet: two confirmed outputs, so it can contribute and still fund its own open
+            for (var i = 0; i < 2; i++)
+                await FundClnAsync(LightningMoney.Satoshis(1_500_000), CancellationToken.None);
+        }
+        catch
+        {
+            // A failed setup (e.g. the fixture's bitcoind gone) must not leave nltg-cln-df running
+            await DockerContainerUtils.RemoveContainerAsync(_docker, ContainerName);
+            throw;
+        }
     }
 
     public async ValueTask DisposeAsync()
