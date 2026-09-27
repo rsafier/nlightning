@@ -5,6 +5,7 @@ namespace NLightning.Application.Offers.Send;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
+using Domain.Offers;
 using Domain.Offers.Constants;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
@@ -221,7 +222,7 @@ public sealed class OfferPaymentService : IOfferPaymentService
     {
         try
         {
-            var stream = Bolt12Wire.ParseStream(bytes);
+            var stream = Bolt12TlvStream.Parse(bytes);
             ulong? field = null;
             if (stream.TryGetValue(Bolt12TlvTypes.ErroneousField, out var fieldValue)
              && TruncatedInt.TryDecodeTu64(fieldValue.Span, out var decoded))

@@ -119,4 +119,28 @@ public class Bolt12Bech32Tests
         // Act & Assert
         Assert.ThrowsAny<ArgumentException>(() => Bolt12Bech32.Encode(hrp, [1]));
     }
+
+    [Theory]
+    [InlineData("lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese")]
+    [InlineData("LNO1ZCSS9MK8Y3WKKLFVEVCRSZLMU23KFRXH49PX20665DQWMN4P72PKSESE")]
+    public void Given_TheExpectedPrefix_When_DecodingWithAnHrp_Then_TheDataIsReturned(string text)
+    {
+        // Act
+        var data = Bolt12Bech32.Decode(text, "lno");
+
+        // Assert
+        Assert.Equal(Convert.FromHexString("162102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619"),
+                     data);
+    }
+
+    [Theory]
+    [InlineData("lnr")]
+    [InlineData("lni")]
+    public void Given_AnotherPrefix_When_DecodingWithAnHrp_Then_ItIsRefused(string expectedHrp)
+    {
+        // Act & Assert
+        var e = Assert.Throws<FormatException>(() =>
+            Bolt12Bech32.Decode("lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese", expectedHrp));
+        Assert.Contains("'lno'", e.Message);
+    }
 }

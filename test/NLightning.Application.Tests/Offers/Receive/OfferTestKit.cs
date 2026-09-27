@@ -5,13 +5,14 @@ using NBitcoin.Secp256k1;
 
 namespace NLightning.Application.Tests.Offers.Receive;
 
-using Application.Offers.Receive;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Interfaces;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Models;
@@ -249,7 +250,7 @@ internal sealed class InvoiceRequestBuilder
 
     public InvoiceRequestBuilder(ReadOnlyMemory<byte> offerBytes)
     {
-        if (!Bolt12Wire.TryParse(offerBytes, out var offer))
+        if (!Bolt12TlvStream.TryParse(offerBytes, out var offer))
             throw new ArgumentException("Not an offer.", nameof(offerBytes));
 
         _records = [.. offer!.Records];
@@ -287,13 +288,13 @@ internal sealed class InvoiceRequestBuilder
     /// <summary>The request signed by <paramref name="payerKey"/> (default <see cref="PayerKey"/>).</summary>
     public byte[] Build(byte[]? payerKey = null)
     {
-        var records = _records.Where(r => !Bolt12Wire.IsSignatureType(r.Type)).ToList();
-        var root = Bolt12Wire.ComputeMerkleRoot(records);
+        var records = _records.Where(r => !Bolt12TlvRanges.IsSignatureField(r.Type)).ToList();
+        var root = Bolt12MerkleTree.ComputeRoot(new Bolt12TlvStream(records));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.Signature,
                                         Bip340.Sign(payerKey ?? PayerKey,
                                                     Bolt12Constants.InvoiceRequestSignatureTag, root)));
         records.Sort((a, b) => a.Type.CompareTo(b.Type));
-        return Bolt12Wire.Encode(records);
+        return new Bolt12TlvStream(records).Encode();
     }
 }
 

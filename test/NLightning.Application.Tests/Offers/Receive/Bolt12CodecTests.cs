@@ -5,14 +5,16 @@ namespace NLightning.Application.Tests.Offers.Receive;
 using Application.Offers.Receive;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
+using Domain.Offers.Signing;
 using Domain.Protocol.Onion.Models;
 
 /// <summary>
-/// The receive side's BOLT 12 wire copy (until lane B12-A's codecs land): the Merkle root against
+/// The Domain BOLT 12 codecs the receive side calls (its <c>Bolt12Wire</c> seam was removed, NL-453): the Merkle root against
 /// <c>bolt12/signature-test.json</c> (lightning/bolts master, fetched 2026-09-27), the string form, strict TLV parsing and
 /// <c>blinded_payinfo</c>.
 /// </summary>
-public class Bolt12WireTests
+public class Bolt12CodecTests
 {
     // signature-test.json, the invoice_request case: issuer 0x41..., payer 0x42..., metadata 0x00 x 8
     private const string SignatureTestInvoiceRequest =
@@ -35,10 +37,10 @@ public class Bolt12WireTests
     public void Given_SignatureTestVector_When_ComputingTheMerkleRoot_Then_ItMatches(string tlvHex, string merkleHex)
     {
         // Arrange
-        Assert.True(Bolt12Wire.TryParse(Convert.FromHexString(tlvHex), out var stream));
+        Assert.True(Bolt12TlvStream.TryParse(Convert.FromHexString(tlvHex), out var stream));
 
         // Act
-        var root = Bolt12Wire.ComputeMerkleRoot(stream!.Records);
+        var root = Bolt12MerkleTree.ComputeRoot(stream!);
 
         // Assert
         Assert.Equal(merkleHex, Convert.ToHexStringLower(root));
@@ -52,7 +54,7 @@ public class Bolt12WireTests
 
         // Act
         var read = InvoiceRequestReader.TryRead(bytes, out var request, out var reason);
-        var root = Bolt12Wire.ComputeMerkleRoot(request!.Stream.Records);
+        var root = Bolt12MerkleTree.ComputeRoot(request!.Stream);
 
         // Assert
         Assert.Equal("lnr", hrp);
@@ -80,7 +82,7 @@ public class Bolt12WireTests
         var bytes = Enumerable.Range(0, 97).Select(i => (byte)(i * 7)).ToArray();
 
         // Act
-        var text = Bolt12Wire.ToBolt12String(Bolt12Constants.OfferHrp, bytes);
+        var text = Bolt12Bech32.Encode(Bolt12Constants.OfferHrp, bytes);
 
         // Assert
         Assert.Equal(MinimalOfferEncoder.ToBolt12String(Bolt12Constants.OfferHrp, bytes), text);
@@ -98,7 +100,7 @@ public class Bolt12WireTests
     public void Given_AnInvalidTlvStream_When_Parsed_Then_Refused(string hex, string why)
     {
         // Act
-        var parsed = Bolt12Wire.TryParse(Convert.FromHexString(hex), out _);
+        var parsed = Bolt12TlvStream.TryParse(Convert.FromHexString(hex), out _);
 
         // Assert
         Assert.False(parsed, why);
@@ -114,14 +116,14 @@ public class Bolt12WireTests
         ];
 
         // Act
-        var bytes = Bolt12Wire.Encode(records);
-        var parsed = Bolt12Wire.TryParse(bytes, out var stream);
+        var bytes = new Bolt12TlvStream(records).Encode();
+        var parsed = Bolt12TlvStream.TryParse(bytes, out var stream);
 
         // Assert
         Assert.True(parsed);
         Assert.Equal(records.Select(r => r.Type), stream!.Records.Select(r => r.Type));
         Assert.Equal(records.Select(r => r.Value.Length), stream.Records.Select(r => r.Value.Length));
-        Assert.Equal(bytes, Bolt12Wire.Encode(stream.Records));
+        Assert.Equal(bytes, stream.Encode());
     }
 
     [Fact]
@@ -132,7 +134,7 @@ public class Bolt12WireTests
                                          new byte[] { 0xff });
 
         // Act
-        var bytes = Bolt12Wire.EncodePayInfo(payInfo);
+        var bytes = Bolt12FieldCodec.EncodePayInfos([payInfo]);
 
         // Assert
         Assert.Equal("01020304" + "05060708" + "090a" + "0b0c0d0e0f101112" + "131415161718191a" + "0001" + "ff",
@@ -148,7 +150,7 @@ public class Bolt12WireTests
     public void Given_Features_When_Checked_Then_UnknownEvenBitsAreFound(string hex, bool expected)
     {
         // Act
-        var found = Bolt12Wire.HasUnknownEvenBit(Convert.FromHexString(hex));
+        var found = Bolt12FieldCodec.FindUnknownEvenBit(Convert.FromHexString(hex)) is not null;
 
         // Assert
         Assert.Equal(expected, found);

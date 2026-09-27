@@ -7,6 +7,7 @@ using Domain.Crypto.Constants;
 using Domain.Crypto.ValueObjects;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
@@ -94,13 +95,13 @@ public static class InvoiceRequestReader
     public static bool TryRead(ReadOnlyMemory<byte> bytes, out ReadInvoiceRequest? request, out string? reason)
     {
         request = null;
-        if (!Bolt12Wire.TryParse(bytes, out var stream) || stream is null)
+        if (!Bolt12TlvStream.TryParse(bytes, out var stream) || stream is null)
             return Fail("not a valid TLV stream", out reason);
 
         ReadOnlyMemory<byte>? signature = null;
         foreach (var record in stream.Records)
         {
-            if (Bolt12Wire.IsSignatureType(record.Type))
+            if (Bolt12TlvRanges.IsSignatureField(record.Type))
             {
                 // BOLT 12: exactly one signature element, `signature`
                 if (record.Type != Bolt12TlvTypes.Signature || signature is not null)
@@ -127,7 +128,7 @@ public static class InvoiceRequestReader
             return Fail("invreq_payer_id missing or not a point", out reason);
 
         if (stream.TryGetValue(Bolt12TlvTypes.InvreqFeatures, out var features)
-         && Bolt12Wire.HasUnknownEvenBit(features.Span))
+         && Bolt12FieldCodec.FindUnknownEvenBit(features.Span) is not null)
             return Fail("invreq_features has an unknown even bit", out reason);
 
         if (stream.TryGetValue(Bolt12TlvTypes.InvreqPaths, out var paths)
@@ -164,7 +165,7 @@ public static class InvoiceRequestReader
         var offerRecords = stream.Records.Where(r => IsOfferType(r.Type)).ToList();
         request = new ReadInvoiceRequest(
             stream,
-            offerRecords.Count == 0 ? ReadOnlyMemory<byte>.Empty : Bolt12Wire.Encode(offerRecords),
+            offerRecords.Count == 0 ? ReadOnlyMemory<byte>.Empty : new Bolt12TlvStream(offerRecords).Encode(),
             new CompactPubKey(payerIdBytes.ToArray()),
             metadata,
             signature.Value,

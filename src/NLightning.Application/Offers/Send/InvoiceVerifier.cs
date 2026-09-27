@@ -7,8 +7,10 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
@@ -80,7 +82,7 @@ public static class InvoiceVerifier
         Bolt12TlvStream stream;
         try
         {
-            stream = Bolt12Wire.ParseStream(invoiceBytes);
+            stream = Bolt12TlvStream.Parse(invoiceBytes);
         }
         catch (FormatException e)
         {
@@ -90,7 +92,7 @@ public static class InvoiceVerifier
 
         foreach (var record in stream.Records)
         {
-            if (Bolt12Wire.IsSignatureType(record.Type))
+            if (Bolt12TlvRanges.IsSignatureField(record.Type))
             {
                 // Odd signature-range elements are ignored (outside the Merkle tree), unknown even ones rejected.
                 if (record.Type != Bolt12TlvTypes.Signature && record.Type % 2 == 0)
@@ -183,7 +185,7 @@ public static class InvoiceVerifier
         }
 
         if (!stream.TryGetValue(Bolt12TlvTypes.Signature, out var signature)
-         || !signer.Verify(Bolt12Constants.InvoiceSignatureTag, Bolt12Wire.MerkleRoot(stream), nodeId, signature))
+         || !signer.Verify(Bolt12Constants.InvoiceSignatureTag, Bolt12MerkleTree.ComputeRoot(stream), nodeId, signature))
         {
             reason = "B12-INV-04: the invoice's signature is missing or does not verify with invoice_node_id";
             return false;

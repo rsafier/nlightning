@@ -8,6 +8,7 @@ using Domain.Offers;
 using Domain.Offers.Constants;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Tlv;
 using Domain.Protocol.ValueObjects;
@@ -68,12 +69,12 @@ public static class InvoiceRequestFactory
 
         var unsigned = new Bolt12TlvStream(records.OrderBy(r => r.Type).ToList());
         var signature = signer.SignAsPayer(metadata, Bolt12Constants.InvoiceRequestSignatureTag,
-                                           Bolt12Wire.MerkleRoot(unsigned));
+                                           Bolt12MerkleTree.ComputeRoot(unsigned));
         var stream = new Bolt12TlvStream(unsigned.Records
                                                  .Append(new Bolt12TlvRecord(Bolt12TlvTypes.Signature, signature))
                                                  .OrderBy(r => r.Type)
                                                  .ToList());
-        return new BuiltInvoiceRequest(stream, Bolt12Wire.Encode(stream), metadata, payerId, expected,
+        return new BuiltInvoiceRequest(stream, stream.Encode(), metadata, payerId, expected,
                                        request.Amount is not null, quantity);
     }
 

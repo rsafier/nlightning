@@ -6,6 +6,8 @@ using Application.Offers.Send;
 using Domain.Crypto.ValueObjects;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
+using Domain.Offers.Signing;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.Tlv;
@@ -57,7 +59,7 @@ internal sealed class TestOfferIssuer
             records.AddRange(extra);
 
         var stream = new Bolt12TlvStream(records.OrderBy(r => r.Type).ToList());
-        return Bolt12Wire.EncodeString(Bolt12Constants.OfferHrp, Bolt12Wire.Encode(stream));
+        return Bolt12Bech32.Encode(Bolt12Constants.OfferHrp, stream.Encode());
     }
 
     /// <summary>
@@ -71,8 +73,8 @@ internal sealed class TestOfferIssuer
                                 Func<List<Bolt12TlvRecord>, List<Bolt12TlvRecord>>? mutate = null,
                                 byte[]? signingKey = null)
     {
-        var request = Bolt12Wire.ParseStream(invoiceRequest);
-        var records = request.Records.Where(r => !Bolt12Wire.IsSignatureType(r.Type)).ToList();
+        var request = Bolt12TlvStream.Parse(invoiceRequest);
+        var records = request.Records.Where(r => !Bolt12TlvRanges.IsSignatureField(r.Type)).ToList();
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoicePaths,
                                         BlindedPathCodec.EncodeList(paths.Select(p => WireBlindedPath.FromBlindedPath(p.Path))
                                                                          .ToList())));
@@ -92,14 +94,13 @@ internal sealed class TestOfferIssuer
 
         var unsigned = new Bolt12TlvStream(records.OrderBy(r => r.Type).ToList());
         var signature = signingKey is null
-                            ? Signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, Bolt12Wire.MerkleRoot(unsigned))
+                            ? Signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, Bolt12MerkleTree.ComputeRoot(unsigned))
                             : TestBolt12Signer.Sign(signingKey, Bolt12Constants.InvoiceSignatureTag,
-                                                    Bolt12Wire.MerkleRoot(unsigned));
-        return Bolt12Wire.Encode(new Bolt12TlvStream(unsigned.Records
-                                                              .Append(new Bolt12TlvRecord(Bolt12TlvTypes.Signature,
-                                                                                          signature))
-                                                              .OrderBy(r => r.Type)
-                                                              .ToList()));
+                                                    Bolt12MerkleTree.ComputeRoot(unsigned));
+        return new Bolt12TlvStream(unsigned.Records
+                                           .Append(new Bolt12TlvRecord(Bolt12TlvTypes.Signature, signature))
+                                           .OrderBy(r => r.Type)
+                                           .ToList()).Encode();
     }
 
     /// <summary>
@@ -111,6 +112,6 @@ internal sealed class TestOfferIssuer
         if (erroneousField is { } field)
             records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.ErroneousField, TruncatedInt.EncodeTu64(field)));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.Error, Encoding.UTF8.GetBytes(error)));
-        return Bolt12Wire.Encode(new Bolt12TlvStream(records));
+        return new Bolt12TlvStream(records).Encode();
     }
 }

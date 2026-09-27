@@ -2,9 +2,9 @@ using NBitcoin.Secp256k1;
 
 namespace NLightning.Application.Tests.Offers.Send;
 
-using Application.Offers.Send;
 using Domain.Crypto.ValueObjects;
 using Domain.Offers.Interfaces;
+using Domain.Offers.Signing;
 
 /// <summary>
 /// A BIP-340 <see cref="IBolt12Signer"/> for tests (stand-in for lane B12-B's <c>Bolt12Signer</c>): signs with a given
@@ -31,7 +31,7 @@ internal sealed class TestBolt12Signer : IBolt12Signer
          || !SecpSchnorrSignature.TryCreate(signature.Span, out var schnorr))
             return false;
 
-        return key.ToXOnlyPubKey().SigVerifyBIP340(schnorr, Bolt12Wire.TaggedHash(tag, merkleRoot));
+        return key.ToXOnlyPubKey().SigVerifyBIP340(schnorr, Bolt12MerkleTree.GetSignatureDigest(tag, merkleRoot));
     }
 
     public byte[] SignAsNode(string tag, Hash merkleRoot) => Sign(_nodeKey, tag, merkleRoot);
@@ -51,7 +51,7 @@ internal sealed class TestBolt12Signer : IBolt12Signer
     public static byte[] Sign(byte[] privateKey, string tag, Hash merkleRoot)
     {
         var key = ECPrivKey.Create(privateKey);
-        var signature = key.SignBIP340(Bolt12Wire.TaggedHash(tag, merkleRoot));
+        var signature = key.SignBIP340(Bolt12MerkleTree.GetSignatureDigest(tag, merkleRoot));
         var bytes = new byte[64];
         signature.WriteToSpan(bytes);
         return bytes;
