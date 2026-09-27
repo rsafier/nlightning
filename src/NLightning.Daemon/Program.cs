@@ -55,8 +55,10 @@ try
         return 0;
     }
 
+    SensitiveLoggingUtils.WarnIfSensitiveQueryLoggingEnabled(initialConfig, Log.Logger);
+
     // Get the password from --password-file, --password-stdin, --password or NLTG_PASSWORD, or prompt for it
-    var password = PasswordUtils.ResolvePassword(args, Console.In, Log.Logger);
+    var password = PasswordUtils.ResolvePassword(args, PasswordUtils.OpenStdinReader(), Log.Logger);
 
     // Don't leak the password to anything else that reads our environment
     Environment.SetEnvironmentVariable(PasswordUtils.PasswordEnvironmentVariable, null);
