@@ -163,6 +163,15 @@ public sealed class ProbeRun
         _summary["final_flush_pending_changes"] = pendingAtStop;
         _summary["final_flush_seconds"] = watch.Elapsed.TotalSeconds;
         _summary["final_channels"] = store.ChannelCount;
+        _summary["final_pending_announcements"] =
+            node.Services.GetService<GossipIngress>()?.PendingAnnouncementCount;
+        if (node.Services.GetService<GossipMemoryBudget>() is { } finalBudget)
+            _summary["memory_budget"] = new Dictionary<string, object?>
+            {
+                ["budget_mb"] = finalBudget.BudgetBytes / 1048576.0,
+                ["over_budget_at_stop"] = finalBudget.IsOverBudget,
+                ["refused"] = finalBudget.RefusedCount
+            };
         _summary["final_nodes"] = store.NodeCount;
         _summary["final_policies"] = store.PolicyCount;
         _summary["database_bytes_at_stop"] = FileSize(node.DatabasePath);
@@ -225,7 +234,8 @@ public sealed class ProbeRun
       + "q_ingress,q_orphans,q_retries,q_rate_limited,q_write_behind,peers_connected,sync_complete,rss_mb,"
       + "private_mb,managed_heap_mb,gc_heap_size_mb,gc0,gc1,gc2,cpu_pct_one_core,db_mb,wal_mb,warnings,errors,"
       + "funding_lookups,flushes,flush_seconds_sum,flush_seconds_max,http_requests,http_failures,"
-      + "bitcoind_blocks,follower_height,follower_blocks,verified,spent_marked";
+      + "bitcoind_blocks,follower_height,follower_blocks,verified,spent_marked,pending_announcements,"
+      + "q_relay_pending,q_outbox_gossip,over_memory_budget,memory_budget_refused";
 
     private const string PeerHeader =
         "utc,elapsed_min,peer,connected,connects,disconnects_seen,initialized,queries,queries_ex,sync_peer,"
@@ -242,6 +252,7 @@ public sealed class ProbeRun
         var verified = node.Services.GetRequiredService<IGraphStore>().GetSnapshot().Channels
                            .Count(c => c.Verification == Domain.Gossip.Graph.GraphChannelVerification.Verified);
         var gauges = meters.ReadGauges();
+        var budget = node.Services.GetService<GossipMemoryBudget>();
         var process = Process.GetCurrentProcess();
         process.Refresh();
         var wall = _clock.Elapsed.TotalSeconds;
@@ -274,14 +285,18 @@ public sealed class ProbeRun
             I(node.LoggerProvider.Warnings), I(node.LoggerProvider.Errors), I(node.FundingLookupCount),
             I(flushes.Sum(f => f.Count)), F(flushes.Sum(f => f.Sum)), F(flushes.Count == 0 ? 0 : flushes.Max(f => f.Max)),
             I(http?.Requests.Count ?? 0), I(http?.Requests.Failures ?? 0), I(chainNow?.Blocks ?? 0),
-            I(node.Follower?.LastBlockHeight ?? 0), I(node.Follower?.BlocksProcessed ?? 0), I(verified), I(d.SpentChannels)
+            I(node.Follower?.LastBlockHeight ?? 0), I(node.Follower?.BlocksProcessed ?? 0), I(verified), I(d.SpentChannels),
+            I(d.Ingress?.PendingAnnouncements ?? 0), I(gauges.GetValueOrDefault("relay_pending")),
+            I(gauges.GetValueOrDefault("outbox_gossip")), budget?.IsOverBudget == true ? "1" : "0",
+            I(budget?.RefusedCount ?? 0)
         ]);
         node.TimedLookups?.Flush();
         await samples.WriteLineAsync(row);
         await samples.FlushAsync();
         Console.WriteLine($"[{minutes,6:F1} min] channels {d.Channels} nodes {d.GraphNodes} (announced "
                         + $"{d.AnnouncedNodes}) policies {d.Policies} peers {connected.Count} ingress "
-                        + $"{gauges.GetValueOrDefault("ingress")} orphans {gauges.GetValueOrDefault("orphans")} "
+                        + $"{gauges.GetValueOrDefault("ingress")} orphans {gauges.GetValueOrDefault("orphans")} pending "
+                        + $"{d.Ingress?.PendingAnnouncements ?? 0} relay {gauges.GetValueOrDefault("relay_pending")} "
                         + $"rss {Mb(process.WorkingSet64)} MB cpu {cpuPct:F0}%"
                         + (_rpc is null
                                ? ""
