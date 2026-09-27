@@ -92,6 +92,26 @@ public class DaemonArgsTests : IDisposable
     }
 
     [Fact]
+    public void GivenNoConfig_WhenReadInitialConfiguration_ThenDirectoryAndFileAreOwnerOnly()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");
+
+        // Arrange: the file holds the bitcoind RPC password and the directory the key file, cookie and database
+        Environment.SetEnvironmentVariable("HOME", _tempHome);
+
+        // Act
+        var (_, _, configPath) = NodeConfigurationExtensions.ReadInitialConfiguration(["-n", "regtest"]);
+
+        // Assert
+        var mode = OperatingSystem.IsWindows() ? UnixFileMode.None : File.GetUnixFileMode(configPath);
+        var fileMode = OperatingSystem.IsWindows()
+                           ? UnixFileMode.None
+                           : File.GetUnixFileMode(Path.Combine(configPath, "appsettings.json"));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, mode);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, fileMode);
+    }
+
+    [Fact]
     public void GivenExistingConfigWithOtherNetwork_WhenReadInitialConfiguration_ThenThrowsInsteadOfOverriding()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Uses HOME to redirect the default config dir");

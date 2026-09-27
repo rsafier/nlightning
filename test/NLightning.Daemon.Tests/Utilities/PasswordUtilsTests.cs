@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Serilog;
 
 namespace NLightning.Daemon.Tests.Utilities;
@@ -53,6 +54,45 @@ public class PasswordUtilsTests : IDisposable
 
         // Assert
         Assert.Equal("file-secret", password);
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void GivenOwnerOnlyPasswordFile_WhenResolvePassword_ThenDoesNotWarn()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        File.WriteAllText(_tempFile, "file-secret\n");
+        File.SetUnixFileMode(_tempFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        // Act
+        var password = PasswordUtils.ResolvePassword(["--password-file", _tempFile], TextReader.Null,
+                                                     _loggerMock.Object);
+
+        // Assert
+        Assert.Equal("file-secret", password);
+        VerifyWarned(Times.Never());
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public void GivenWorldReadablePasswordFile_WhenResolvePassword_ThenReadsItAndWarns()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes only");
+
+        // Arrange
+        File.WriteAllText(_tempFile, "file-secret\n");
+        File.SetUnixFileMode(_tempFile, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead
+                                      | UnixFileMode.OtherRead);
+
+        // Act
+        var password = PasswordUtils.ResolvePassword(["--password-file", _tempFile], TextReader.Null,
+                                                     _loggerMock.Object);
+
+        // Assert
+        Assert.Equal("file-secret", password);
+        VerifyWarned(Times.Once());
     }
 
     [Fact]
