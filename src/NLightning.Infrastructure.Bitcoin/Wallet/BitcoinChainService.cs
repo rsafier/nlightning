@@ -153,6 +153,12 @@ public class BitcoinChainService : IBitcoinChainService
         code == RPCErrorCode.RPC_MISC_ERROR
      && message?.Contains("pruned", StringComparison.OrdinalIgnoreCase) == true;
 
+    /// <summary>
+    /// <c>gettxout</c>, with the output's height from the answer's own <c>bestblock</c> (NL-413): the height of that
+    /// block (<c>getblockheader</c>) minus the confirmations plus one. A separate <c>getblockcount</c> could see a block
+    /// connected after <c>gettxout</c> answered and report the output one block too high (the funding output lookup
+    /// then answered <c>ChainMoved</c>); the same number of RPCs.
+    /// </summary>
     private async Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint, bool includeMempool)
     {
         try
@@ -161,14 +167,23 @@ public class BitcoinChainService : IBitcoinChainService
             if (response is null || response.Confirmations <= 0)
                 return null;
 
-            var tip = await _rpcClient.GetBlockCountAsync();
-            return (response.TxOut, (uint)(tip - response.Confirmations + 1));
+            var bestHeight = await GetBlockHeightAsync(response.BestBlock);
+            return (response.TxOut, (uint)(bestHeight - response.Confirmations + 1));
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to get the unspent output {OutPoint}", outPoint);
             throw;
         }
+    }
+
+    /// <summary>The height of <paramref name="blockHash"/> (<c>getblockheader &lt;hash&gt; true</c>), also for a stale
+    /// block.</summary>
+    private async Task<long> GetBlockHeightAsync(uint256 blockHash)
+    {
+        var response = await _rpcClient.SendCommandAsync("getblockheader", blockHash.ToString(), true);
+        return response.Result?["height"]?.Value<long>()
+            ?? throw new InvalidOperationException($"getblockheader {blockHash} returned no height");
     }
 
     public async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetBlockTxIdsAsync(uint height)
