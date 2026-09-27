@@ -251,6 +251,66 @@ public class ChainFundingSpendLocatorTests
         Assert.Equal("rpc down", location.Error);
     }
 
+    [Fact]
+    public async Task Given_APrunedNode_When_RescannedIntoItsPrunedBlocks_Then_BlocksPrunedWithTheHighestPrunedBlock()
+    {
+        // Arrange: bitcoind pruned block 950 and below (review of NL-430: this used to be a retryable chain error)
+        _chain.Setup(c => c.GetBlockAsync(It.IsAny<uint>()))
+              .Returns((uint height) => height <= 950
+                                            ? Task.FromException<Block?>(
+                                                new InvalidOperationException("Block not available (pruned data)"))
+                                            : Task.FromResult<Block?>(EmptyBlock(height)));
+
+        // Act
+        var location = await CreateLocator(depth: 10).RescanAsync(_entry, Tip - 9,
+                                                                  TestContext.Current.CancellationToken);
+
+        // Assert: the blocks above were searched, the pruned height reported
+        Assert.Equal(FundingSpendStatus.BlocksPruned, location.Status);
+        Assert.Equal(950u, location.PrunedHeight);
+        Assert.Equal(951u, location.SearchedFromHeight);
+        Assert.Equal(900u, location.FloorHeight);
+        Assert.False(location.HasOlderBlocksToSearch);
+    }
+
+    [Fact]
+    public async Task Given_ASpendAboveThePrunedBlocks_When_Rescanned_Then_TheSpendIsFound()
+    {
+        // Arrange: the spend in block 960, pruned from 955 down, one batch covering both
+        var block = EmptyBlock(960);
+        block.AddTransaction(SpendingTransaction());
+        _chain.Setup(c => c.GetBlockAsync(It.IsAny<uint>()))
+              .Returns((uint height) => height <= 955
+                                            ? Task.FromException<Block?>(
+                                                new InvalidOperationException("Block not available (pruned data)"))
+                                            : Task.FromResult<Block?>(height == 960 ? block : EmptyBlock(height)));
+
+        // Act
+        var location = await CreateLocator(depth: 10, batchSize: 64).RescanAsync(_entry, Tip - 9,
+                                                                                  TestContext.Current
+                                                                                             .CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendStatus.SpentFound, location.Status);
+        Assert.Equal(960u, location.Spend!.BlockHeight);
+    }
+
+    [Fact]
+    public async Task Given_AnotherBlockReadError_When_Rescanned_Then_ChainUnavailable()
+    {
+        // Arrange
+        _chain.Setup(c => c.GetBlockAsync(It.IsAny<uint>()))
+              .ThrowsAsync(new InvalidOperationException("connection refused"));
+
+        // Act
+        var location = await CreateLocator(depth: 10).RescanAsync(_entry, Tip - 9,
+                                                                  TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(FundingSpendStatus.ChainUnavailable, location.Status);
+        Assert.Equal("connection refused", location.Error);
+    }
+
     private ChainFundingSpendLocator CreateLocator(uint depth = 4032, uint batchSize = 8) =>
         new(_chain.Object, Options.Create(new ChannelBackupOptions
         {

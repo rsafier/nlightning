@@ -47,6 +47,8 @@ public class ChannelRestoreServiceTests : IDisposable
     private readonly List<ChannelRestoreService> _services = [];
     private int _saves;
 
+    private delegate bool TryGetChannelCallback(ChannelId channelId, out ChannelModel? channel);
+
     public void Dispose()
     {
         foreach (var service in _services)
@@ -571,6 +573,150 @@ public class ChannelRestoreServiceTests : IDisposable
             Assert.All(_connects, a => Assert.EndsWith("@10.0.0.1:9736", a));
     }
 
+    [Fact]
+    public async Task Given_ABackgroundSearchInterruptedByARestart_When_TheNodeStarts_Then_TheSearchResumesAndHandsTheSpendOver()
+    {
+        // Arrange: the first process restored the channel and its background search ended without the spend (the
+        // restart); a live channel is stored too (review of NL-430)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var firstLocator = new Mock<IFundingSpendLocator>();
+        firstLocator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+                    .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound,
+                                                           SearchedFromHeight: 5_000, FloorHeight: 900));
+        firstLocator.Setup(l => l.RescanAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<uint>(),
+                                              It.IsAny<CancellationToken>()))
+                    .ThrowsAsync(new OperationCanceledException());
+        var first = CreateService(spendLocator: firstLocator.Object,
+                                  onchainWatcher: new Mock<IOnchainChannelWatcher>().Object);
+        await first.RestoreAsync(backup, ct);
+        await first.WaitForBackgroundWorkAsync();
+        first.Dispose();
+        var recovery = Assert.Single(_storedChannels);
+        _storedChannels.Add(new BackupTestData().AddChannel(2));
+
+        // The new process: the channel is loaded by the start-up registration a moment after the resume starts
+        var loaded = false;
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
+              .Returns(new TryGetChannelCallback((ChannelId id, out ChannelModel? channel) =>
+               {
+                   channel = recovery;
+                   return loaded && id == recovery.ChannelId;
+               }));
+        var spendingTxId = new TxId(Enumerable.Repeat((byte)0x5D, 32).ToArray());
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.SpentNotFound, SearchedFromHeight: 5_100,
+                                                      FloorHeight: 900));
+        locator.Setup(l => l.RescanAsync(It.IsAny<ChannelBackupEntry>(), 5_100u, It.IsAny<CancellationToken>()))
+               .ReturnsAsync((ChannelBackupEntry entry, uint _, CancellationToken _) =>
+                                 new FundingSpendLocation(FundingSpendStatus.SpentFound,
+                                                          new OutpointSpentEventArgs(
+                                                              entry.ChannelId, new SignedTransaction(spendingTxId, [0x02]),
+                                                              950, 1, entry.FundingTxId, entry.FundingOutputIndex,
+                                                              new Hash(new byte[32]))));
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object,
+                                    channelMemory: memory.Object);
+
+        // Act
+        service.ResumeSpendSearches();
+        await Task.Delay(300, ct);
+        loaded = true;
+        await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: only the recovery channel looked up, the older blocks searched again, the spend handed over
+        locator.Verify(l => l.LocateAsync(It.Is<ChannelBackupEntry>(e => e.ChannelId == recovery.ChannelId),
+                                          It.IsAny<CancellationToken>()), Times.Once);
+        locator.Verify(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()),
+                       Times.Once);
+        watcher.Verify(w => w.HandleFundingSpentAsync(It.Is<OutpointSpentEventArgs>(a => a.BlockHeight == 950),
+                                                      It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(spendingTxId, Assert.Single(_markedSpent).Spender);
+    }
+
+    [Fact]
+    public async Task Given_ARecoveryChannelNeverLoaded_When_TheNodeStarts_Then_ItsSpendIsNotLookedUp()
+    {
+        // Arrange: handing a spend over for a channel that is not loaded would mark the watch and lose the spend
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        await CreateService().RestoreAsync(backup, ct);
+        var locator = new Mock<IFundingSpendLocator>();
+        var service = CreateService(spendLocator: locator.Object,
+                                    onchainWatcher: new Mock<IOnchainChannelWatcher>().Object,
+                                    channelMemory: new Mock<IChannelMemoryRepository>().Object,
+                                    resumeTimeout: TimeSpan.FromMilliseconds(300));
+
+        // Act
+        service.ResumeSpendSearches();
+        await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert
+        locator.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_ASpendBelowThePrunedBlocks_When_Restored_Then_TheResultSaysToSweepByHandNotToRetry()
+    {
+        // Arrange (review of NL-430)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var locator = new Mock<IFundingSpendLocator>();
+        locator.Setup(l => l.LocateAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<CancellationToken>()))
+               .ReturnsAsync(new FundingSpendLocation(FundingSpendStatus.BlocksPruned, SearchedFromHeight: 4_001,
+                                                      FloorHeight: 900, PrunedHeight: 4_000));
+        var watcher = new Mock<IOnchainChannelWatcher>();
+        var service = CreateService(spendLocator: locator.Object, onchainWatcher: watcher.Object);
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+
+        // Assert
+        var detail = Assert.Single(result.Channels).Detail;
+        Assert.StartsWith("FundingSpendPruned", detail);
+        Assert.Contains("pruned block 4000", detail);
+        Assert.Contains("by hand", detail);
+        Assert.DoesNotContain("restorechanbackup again", detail);
+        locator.Verify(l => l.RescanAsync(It.IsAny<ChannelBackupEntry>(), It.IsAny<uint>(),
+                                          It.IsAny<CancellationToken>()), Times.Never);
+        watcher.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_TheConnectBudgetSpent_When_Restored_Then_TheOtherAddressesAreTriedInTheBackgroundAtOnce()
+    {
+        // Arrange: two dead graph addresses before the backup's; the restore may only try the first (NL-431 review)
+        var ct = TestContext.Current.CancellationToken;
+        var backup = await ExportAsync(ct, (1, false));
+        var nodeId = BackupTestData.Key(0x03, 1, 9);
+        var graph = BackupTestData.GraphWith(BackupTestData.GraphNodeWith(
+                                                 nodeId,
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv4, "192.0.2.5",
+                                                                            9735),
+                                                 AddressDescriptor.FromHost(AddressDescriptorType.IPv4, "192.0.2.6",
+                                                                            9735)));
+        var service = CreateService(graphStore: graph.Object, connectBudget: TimeSpan.Zero);
+        FailConnectsTo(a => !a.EndsWith("@10.0.0.1:9736", StringComparison.Ordinal));
+
+        // Act
+        var result = await service.RestoreAsync(backup, ct);
+        string[] synchronous;
+        lock (_connects)
+            synchronous = _connects.ToArray();
+        await service.WaitForBackgroundWorkAsync().WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: one attempt inside the restore; the rest right away (the backoff is 5 min here), then connected
+        var peer = Assert.Single(result.Peers);
+        Assert.False(peer.Connected);
+        Assert.Contains("2 more known address(es)", peer.Error);
+        Assert.Equal([$"{nodeId}@192.0.2.5:9735"], synchronous);
+        lock (_connects)
+            Assert.Equal([$"{nodeId}@192.0.2.5:9735", $"{nodeId}@192.0.2.6:9735", $"{nodeId}@10.0.0.1:9736"],
+                         _connects);
+    }
+
     private async Task<byte[]> ExportAsync(CancellationToken ct, params (byte Tag, bool Anchors)[] channels)
     {
         // The same node key (seed 7) and channel key derivation as _node
@@ -583,7 +729,9 @@ public class ChannelRestoreServiceTests : IDisposable
     private ChannelRestoreService CreateService(bool failSave = false, IFundingSpendLocator? spendLocator = null,
                                                 IOnchainChannelWatcher? onchainWatcher = null,
                                                 IChannelKeyIndexReserver? keyIndexReserver = null,
-                                                IGraphStore? graphStore = null, TimeSpan? reconnectDelay = null)
+                                                IGraphStore? graphStore = null, TimeSpan? reconnectDelay = null,
+                                                IChannelMemoryRepository? channelMemory = null,
+                                                TimeSpan? connectBudget = null, TimeSpan? resumeTimeout = null)
     {
         var channelRepository = new Mock<IChannelDbRepository>();
         channelRepository.Setup(r => r.GetByIdAsync(It.IsAny<ChannelId>()))
@@ -661,9 +809,11 @@ public class ChannelRestoreServiceTests : IDisposable
                                          watcher.Object, _peerManager.Object, _node.KeyManager,
                                          provider.GetRequiredService<IServiceScopeFactory>(), _sha256,
                                          _node.Signer.Object, NullLogger<ChannelRestoreService>.Instance,
-                                         spendLocator, onchainWatcher, keyIndexReserver, graphStore)
+                                         spendLocator, onchainWatcher, keyIndexReserver, graphStore, channelMemory)
         {
             DisconnectTimeout = TimeSpan.FromSeconds(1),
+            ConnectBudget = connectBudget ?? TimeSpan.FromSeconds(20),
+            ResumeRegistrationTimeout = resumeTimeout ?? TimeSpan.FromSeconds(10),
             ReconnectInitialDelay = reconnectDelay ?? TimeSpan.FromMinutes(5),
             ReconnectMaxDelay = reconnectDelay ?? TimeSpan.FromMinutes(5)
         };

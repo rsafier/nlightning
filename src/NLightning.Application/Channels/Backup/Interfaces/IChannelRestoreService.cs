@@ -16,4 +16,13 @@ public interface IChannelRestoreService
     /// <exception cref="ChannelBackupException">The backup does not decrypt with the node key, is tampered with or
     /// malformed, or is for another node or chain.</exception>
     Task<ChannelRestoreResult> RestoreAsync(ReadOnlyMemory<byte> backup, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Called once at start (NL-430): in the background, every recovery channel still waiting for its peer's close
+    /// has its funding spend looked up again once it is loaded, and the search of a spend older than the recent
+    /// window starts again (the search lives in memory only). Returns at once; the default does nothing.
+    /// </summary>
+    void ResumeSpendSearches()
+    {
+    }
 }
