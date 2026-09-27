@@ -7,6 +7,8 @@ using Application.Channels.Close;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
+using Domain.Channels.DualFunding.Interfaces;
+using Domain.Channels.DualFunding.Models;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
@@ -45,6 +47,7 @@ public sealed class OpenChannelClientHandler
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
     private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
+    private readonly IDualFundedOpenService? _dualFundedOpenService;
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
@@ -70,8 +73,10 @@ public sealed class OpenChannelClientHandler
                                     IOptions<NodeOptions>? nodeOptions = null,
                                     IAnchorReserveService? anchorReserveService = null,
                                     IChannelLockProvider? channelLockProvider = null,
-                                    UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null)
+                                    UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null,
+                                    IDualFundedOpenService? dualFundedOpenService = null)
     {
+        _dualFundedOpenService = dualFundedOpenService;
         _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _channelLockProvider = channelLockProvider;
         _anchorReserveService = anchorReserveService;
@@ -118,6 +123,10 @@ public sealed class OpenChannelClientHandler
         // Check if we're connected to the peer
         var peer = _peerManager.GetPeer(peerId)
                 ?? await _peerManager.ConnectToPeerAsync(new PeerAddressInfo(request.NodeInfo));
+
+        // Wave DF: a dual-funded (v2) open negotiates the funding transaction interactively, our share from the wallet
+        if (request.IsDualFunded)
+            return await OpenDualFundedAsync(request, peerId, ct);
 
         // Let's check if we have enough funds to open this channel
         var currentHeight = _blockchainMonitor.LastProcessedBlockHeight;
@@ -302,6 +311,46 @@ public sealed class OpenChannelClientHandler
 
         void ChannelUpgradedHandlerEnvelope(object? _, ChannelUpgradedEventArgs args) =>
             HandleChannelUpgraded(args, tsc);
+    }
+
+    /// <summary>
+    /// <c>openchannel --dual-fund</c>: <c>open_channel2</c> with <see cref="OpenChannelClientRequest.FundingAmount"/>
+    /// as our contribution (BOLT 2 "Channel Establishment v2"); completes once both <c>tx_signatures</c> were exchanged.
+    /// </summary>
+    private async Task<OpenChannelClientResponse> OpenDualFundedAsync(OpenChannelClientRequest request,
+                                                                     CompactPubKey peerId, CancellationToken ct)
+    {
+        if (_dualFundedOpenService is null)
+            throw new ClientException(ErrorCodes.InvalidOperation, "Dual-funded opens are not available on this node");
+        if (request.PushAmount is { IsZero: false })
+            throw new ClientException(ErrorCodes.InvalidOperation, "A dual-funded open has no push amount");
+        if (request.IsZeroConfChannel)
+            throw new ClientException(ErrorCodes.InvalidOperation, "A dual-funded open can't be zero-conf");
+
+        var currentHeight = _blockchainMonitor.LastProcessedBlockHeight;
+        if (_utxoMemoryRepository.GetConfirmedBalance(currentHeight) < request.FundingAmount)
+            throw new ClientException(ErrorCodes.NotEnoughBalance, "We don't have enough balance to open this channel");
+
+        DualFundedOpenResult result;
+        try
+        {
+            result = await _dualFundedOpenService.OpenAsync(
+                         new DualFundedOpenRequest(peerId, request.FundingAmount,
+                                                   request.FeeRatePerKw is { } feerate ? (uint)feerate.Satoshi : null,
+                                                   null, request.IsPublic), ct);
+        }
+        catch (InvalidOperationException e)
+        {
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message);
+        }
+
+        if (result.FailureReason is not null)
+            throw new ClientException(ErrorCodes.InvalidOperation, $"Dual-funded open failed: {result.FailureReason}");
+
+        if (_logger.IsEnabled(LogLevel.Information))
+            _logger.LogInformation("Dual-funded channel {ChannelId} opened with funding {TxId}", result.ChannelId,
+                                   result.FundingTxId);
+        return new OpenChannelClientResponse(result.ChannelId);
     }
 
     /// <summary>

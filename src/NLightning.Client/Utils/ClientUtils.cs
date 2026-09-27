@@ -29,9 +29,11 @@ public static class ClientUtils
         Console.WriteLine("                               send-coins); all sends every confirmed output minus the");
         Console.WriteLine("                               fee and keeps the anchors reserve as change; fee rate");
         Console.WriteLine("                               1-1000 sat/vB [default: the node's estimate]");
-        Console.WriteLine("  openchannel <node> <sats> [push_sats] [--public]");
+        Console.WriteLine("  openchannel <node> <sats> [push_sats] [--public] [--dual-fund]");
         Console.WriteLine("                               Open a channel to peer, optionally giving it push_sats;");
-        Console.WriteLine("                               --public announces it once 6 blocks deep [default: private]");
+        Console.WriteLine("                               --public announces it once 6 blocks deep [default: private];");
+        Console.WriteLine("                               --dual-fund opens with open_channel2 (the peer may add");
+        Console.WriteLine("                               funds; no push_sats; needs option_dual_fund)");
         Console.WriteLine("  createinvoice <msat|any> [description] [expiry_seconds]");
         Console.WriteLine("                               Create an invoice (alias: addinvoice)");
         Console.WriteLine("  payinvoice <bolt11> [msat] [timeout_seconds] [--max-fee-msat <msat>] [--max-parts <n>]");

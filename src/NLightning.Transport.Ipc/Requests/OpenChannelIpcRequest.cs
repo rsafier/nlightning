@@ -26,7 +26,7 @@ public sealed class OpenChannelIpcRequest
 
     /// <summary>
     /// Open a dual-funded (v2) channel (<c>openchannel --dual-fund</c>, wave DF lane SP1-F); absent (an older client)
-    /// means a v1 open. Not acted on until lane SP1-F.
+    /// means a v1 open.
     /// </summary>
     [Key(5)] public bool IsDualFunded { get; init; }
 

@@ -18,6 +18,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
+using DualFunding;
 using Interfaces;
 using Reestablish;
 using Services;
@@ -51,6 +52,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
     private readonly ChannelStateTransitionService _transitions;
     private readonly IUnitOfWork _unitOfWork;
     private readonly ClosingNegotiationRegistry? _closingRegistry;
+    private readonly DualFundReestablish? _dualFundReestablish;
 
     public ChannelReestablishMessageHandler(IChannelMemoryRepository channelMemoryRepository,
                                             ILightningSigner lightningSigner,
@@ -58,9 +60,11 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                                             IMessageFactory messageFactory, IMessageSerializer messageSerializer,
                                             ReestablishService reestablishService, ReestablishTracker tracker,
                                             ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
-                                            ClosingNegotiationRegistry? closingRegistry = null)
+                                            ClosingNegotiationRegistry? closingRegistry = null,
+                                            DualFundReestablish? dualFundReestablish = null)
     {
         _closingRegistry = closingRegistry;
+        _dualFundReestablish = dualFundReestablish;
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
         _logger = logger;
@@ -154,8 +158,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 };
         }
 
+        // next_funding of a dual-funded open (wave DF) replaces the v1 tx_abort step
+        var dualFundReplies = _dualFundReestablish is null ? null : await _dualFundReestablish.RespondAsync(channel, message);
         foreach (var step in plan.Steps)
-            replies.AddRange(await BuildStepAsync(channel, step, local));
+            replies.AddRange(step == ReestablishStep.TxAbort && dualFundReplies is not null
+                                 ? dualFundReplies
+                                 : await BuildStepAsync(channel, step, local));
 
         // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
         if (channel.LocalShutdownScript is { } shutdownScript)
