@@ -240,6 +240,13 @@ internal sealed class SpliceHarness : IDisposable
                                                             sp.GetRequiredService<ILightningSigner>()));
         services.AddSingleton<ISpliceOutDestination>(spliceNode.Destination);
         services.AddSpliceServices();
+        var fundingSpends = new Mock<Application.Onchain.Interfaces.IOnchainChannelWatcher>();
+        fundingSpends.Setup(w => w.HandleFundingSpentAsync(It.IsAny<OutpointSpentEventArgs>(),
+                                                           It.IsAny<CancellationToken>()))
+                     .Callback<OutpointSpentEventArgs, CancellationToken>((args, _) =>
+                                                                             spliceNode.FundingSpends.Enqueue(args))
+                     .ReturnsAsync((Application.Onchain.Interfaces.FundingSpendOutcome?)null);
+        services.AddSingleton(fundingSpends.Object);
 
         services.AddScoped<IChannelMessageHandler<StfuMessage>, StfuMessageHandler>();
         services.AddScoped<IChannelMessageHandler<TxAddInputMessage>, TxAddInputMessageHandler>();
@@ -273,6 +280,9 @@ internal sealed class SpliceNode(string name)
 
     /// <summary>The <c>ChannelFundings</c> rows of the node (real-engine mode; staged, then committed by a save).</summary>
     public InMemoryChannelFundingRepository FundingRows { get; } = new();
+
+    /// <summary>Funding spends the channel manager handed to the on-chain watcher (a close, never a splice).</summary>
+    public ConcurrentQueue<OutpointSpentEventArgs> FundingSpends { get; } = new();
 
     /// <summary>The broadcast rows the node's unit of work saved.</summary>
     public List<BroadcastTransactionModel> Broadcasts { get; } = [];
