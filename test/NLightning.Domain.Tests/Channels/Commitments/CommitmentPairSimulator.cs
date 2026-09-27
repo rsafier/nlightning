@@ -10,6 +10,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -1240,8 +1241,8 @@ internal sealed record RevokeMessage(ulong RevokedNumber, Secret Secret, Compact
 /// </summary>
 internal sealed class DigestCommitmentSigner(SimNode node) : ICommitmentSigner
 {
-    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                     CompactPubKey remotePerCommitmentPoint)
+    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
     {
         var state = node.State;
         if (number != state.RemoteCommit.Number + 1 || number <= node.RevokedByPeer)
@@ -1257,7 +1258,7 @@ internal sealed class DigestCommitmentSigner(SimNode node) : ICommitmentSigner
 /// <summary>Accepts exactly the signatures <see cref="DigestCommitmentSigner"/> produces for the same content.</summary>
 internal sealed class DigestCommitmentVerifier(ulong localDustSat, bool anchors) : ICommitmentVerifier
 {
-    public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
+    public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures) => Matches(number, spec, signatures);
 
     public bool Matches(ulong number, CommitmentSpec spec, CommitmentSignatures signatures) =>

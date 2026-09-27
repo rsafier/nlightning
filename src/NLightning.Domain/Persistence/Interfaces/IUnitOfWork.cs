@@ -75,6 +75,11 @@ public interface IUnitOfWork : IDisposable
     IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
         throw new NotSupportedException("This unit of work does not store interactive-tx sessions.");
 
+    // Per-channel routing policy overrides (wave sp1 lane SP1-G, table in lane SP1-C's migration); the default is for
+    // units of work and test doubles that store none until that lane lands
+    IChannelPolicyDbRepository ChannelPolicyDbRepository =>
+        throw new NotSupportedException("This unit of work does not store channel policy overrides.");
+
     Task<ICollection<PeerModel>> GetPeersForStartupAsync();
     void AddUtxo(UtxoModel utxoModel);
     void TrySpendUtxo(TxId transactionId, uint index);

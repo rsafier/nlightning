@@ -23,6 +23,13 @@ public sealed class OpenChannelClientRequest
     /// </summary>
     public bool IsPublic { get; set; }
 
+    /// <summary>
+    /// Open a dual-funded (v2) channel with <c>open_channel2</c> (BOLT 2 "Channel Establishment v2",
+    /// <c>IDualFundedOpenService</c>, wave DF lane SP1-F). Not acted on until that lane; <c>option_dual_fund</c> stays
+    /// experimental.
+    /// </summary>
+    public bool IsDualFunded { get; set; }
+
     public OpenChannelClientRequest(string nodeInfo, LightningMoney fundingAmount)
     {
         NodeInfo = nodeInfo;

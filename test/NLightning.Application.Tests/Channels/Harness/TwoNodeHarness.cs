@@ -29,6 +29,7 @@ using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -707,14 +708,14 @@ internal sealed class HarnessNode : IDisposable
     {
         private readonly EngineCommitmentSignerPort _inner = new(service, channels);
 
-        public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                         CompactPubKey remotePerCommitmentPoint)
+        public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
         {
             channels.TryGetChannel(channelId, out var channel);
             var txId = service.SignRemoteCommitment(channel!, CommitmentTxSpec.FromCommitmentSpec(spec), number,
                                                     remotePerCommitmentPoint).CommitmentTxId;
             signed.Add((number, txId));
-            return _inner.SignRemoteCommitment(channelId, number, spec, remotePerCommitmentPoint);
+            return _inner.SignRemoteCommitment(channelId, funding, number, spec, remotePerCommitmentPoint);
         }
     }
 
@@ -725,10 +726,10 @@ internal sealed class HarnessNode : IDisposable
         private readonly EngineCommitmentVerifierPort _inner =
             new(service, channels, NullLogger<EngineCommitmentVerifierPort>.Instance);
 
-        public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                          CommitmentSignatures signatures)
+        public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                          CommitmentSpec spec, CommitmentSignatures signatures)
         {
-            if (!_inner.VerifyLocalCommitment(channelId, number, spec, signatures))
+            if (!_inner.VerifyLocalCommitment(channelId, funding, number, spec, signatures))
                 return false;
 
             channels.TryGetChannel(channelId, out var channel);

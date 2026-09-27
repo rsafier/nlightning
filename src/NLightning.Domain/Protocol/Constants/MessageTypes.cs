@@ -34,6 +34,22 @@ public enum MessageTypes : ushort
 
     #endregion
 
+    #region Splicing
+
+    /// <summary>BOLT 2 <c>splice_locked</c> (SP-LK-01).</summary>
+    SpliceLocked = 77,
+
+    /// <summary>BOLT 2 <c>splice_init</c> (SP-W-01).</summary>
+    SpliceInit = 80,
+
+    /// <summary>BOLT 2 <c>splice_ack</c> (SP-W-02).</summary>
+    SpliceAck = 81,
+
+    /// <summary>BOLT 2 "Batching channel messages" <c>start_batch</c> (SP-OP-03/04).</summary>
+    StartBatch = 127,
+
+    #endregion
+
     #region Interactive Transaction Construction
 
     TxAddInput = 66,

@@ -21,15 +21,26 @@ public sealed class ChannelReestablishMessage : BaseChannelMessage
 
     public NextFundingTlv? NextFundingTlv { get; }
 
-    public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null)
+    /// <summary>
+    /// BOLT 2 <c>channel_reestablish_tlvs</c> type 5 (<c>my_current_funding_locked</c>, SP-RE-02). Not read or written
+    /// by the serializer until lane SP1-A-T2.
+    /// </summary>
+    public MyCurrentFundingLockedTlv? MyCurrentFundingLockedTlv { get; }
+
+    public ChannelReestablishMessage(ChannelReestablishPayload payload, NextFundingTlv? nextFundingTlv = null,
+                                     MyCurrentFundingLockedTlv? myCurrentFundingLockedTlv = null)
         : base(MessageTypes.ChannelReestablish, payload)
     {
         NextFundingTlv = nextFundingTlv;
+        MyCurrentFundingLockedTlv = myCurrentFundingLockedTlv;
 
+        if (NextFundingTlv is null && MyCurrentFundingLockedTlv is null)
+            return;
+
+        Extension = new TlvStream();
         if (NextFundingTlv is not null)
-        {
-            Extension = new TlvStream();
             Extension.Add(NextFundingTlv);
-        }
+        if (MyCurrentFundingLockedTlv is not null)
+            Extension.Add(MyCurrentFundingLockedTlv);
     }
 }

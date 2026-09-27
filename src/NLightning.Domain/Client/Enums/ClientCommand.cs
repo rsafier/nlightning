@@ -4,7 +4,7 @@ namespace NLightning.Domain.Client.Enums;
 /// Commands sent by a client.
 /// </summary>
 /// <remarks>
-/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 33.
+/// Append-only: never renumber a value, the client and daemon exchange them on the wire. The next free value is 37.
 /// </remarks>
 public enum ClientCommand
 {
@@ -44,5 +44,17 @@ public enum ClientCommand
     /// <summary>A spontaneous (keysend) payment (lane lh1-l3).</summary>
     Keysend = 31,
 
-    ListPeerStorage = 32
+    ListPeerStorage = 32,
+
+    /// <summary>Splice wallet funds into a channel (splicing plan §3.10, wave SP1 lane SP1-E).</summary>
+    SpliceIn = 33,
+
+    /// <summary>Splice funds out of a channel to an address or our wallet (wave SP1 lane SP1-E).</summary>
+    SpliceOut = 34,
+
+    /// <summary>Set a channel's routing policy override (wave sp1 lane SP1-G).</summary>
+    SetChannelPolicy = 35,
+
+    /// <summary>Read a channel's routing policy in force (wave sp1 lane SP1-G).</summary>
+    GetChannelPolicy = 36
 }

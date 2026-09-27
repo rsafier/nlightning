@@ -232,7 +232,7 @@ public sealed class ChannelFailureServiceTests : IDisposable
         var builder = _provider.GetRequiredService<LocalCommitmentBroadcastBuilder>();
         Assert.Throws<SignerException>(() => builder.Build(_channel));
         Assert.Throws<SignerException>(() => _pair.Alice.CommitmentSigner.SignRemoteCommitment(
-                                                 _channel.ChannelId, 5,
+                                                 _channel.ChannelId, null, 5,
                                                  _pair.Alice.State.BuildSpec(
                                                      Domain.Bitcoin.Transactions.Enums.CommitmentSide.Remote),
                                                  _pair.Bob.Point(5)));

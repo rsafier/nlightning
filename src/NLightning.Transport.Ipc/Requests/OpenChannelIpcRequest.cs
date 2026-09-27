@@ -24,8 +24,19 @@ public sealed class OpenChannelIpcRequest
     /// </summary>
     [Key(4)] public bool IsPublic { get; init; }
 
+    /// <summary>
+    /// Open a dual-funded (v2) channel (<c>openchannel --dual-fund</c>, wave DF lane SP1-F); absent (an older client)
+    /// means a v1 open. Not acted on until lane SP1-F.
+    /// </summary>
+    [Key(5)] public bool IsDualFunded { get; init; }
+
     public OpenChannelClientRequest ToClientRequest()
     {
-        return new OpenChannelClientRequest(NodeInfo, Amount) { PushAmount = PushAmount, IsPublic = IsPublic };
+        return new OpenChannelClientRequest(NodeInfo, Amount)
+        {
+            PushAmount = PushAmount,
+            IsPublic = IsPublic,
+            IsDualFunded = IsDualFunded
+        };
     }
 }

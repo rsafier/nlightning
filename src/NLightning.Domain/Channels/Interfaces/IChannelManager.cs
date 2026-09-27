@@ -3,6 +3,7 @@ namespace NLightning.Domain.Channels.Interfaces;
 using Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Events;
 using Models;
 using Node.Options;
@@ -28,6 +29,17 @@ public interface IChannelManager
     /// </summary>
     Task HandleChannelMessageAsync(IChannelMessage message, FeatureOptions negotiatedFeatures,
                                    CompactPubKey peerPubKey);
+
+    /// <summary>
+    /// Processes a <c>start_batch</c> group of <c>commitment_signed</c> messages (BOLT 2 "Batching channel messages";
+    /// splicing plan D15, SP-OP-03..07) from <paramref name="peerPubKey"/> under one acquisition of the channel's lock,
+    /// like <see cref="HandleChannelMessageAsync"/>: one CS per active funding, answered by a single
+    /// <c>revoke_and_ack</c>. The per-peer inbound loop (<c>PeerManager</c>, lane SP1-A) builds the batch; the
+    /// processing is lanes SP1-B/SP1-D's (the default throws until then).
+    /// </summary>
+    Task HandleCommitmentSignedBatchAsync(CommitmentSignedBatch batch, FeatureOptions negotiatedFeatures,
+                                          CompactPubKey peerPubKey) =>
+        throw new NotImplementedException("Lanes SP1-A/SP1-B (SP1-A-T3, SP1-B-T2)");
 
     /// <summary>
     /// A new connection with <paramref name="peerPubKey"/> is ready (after <c>init</c>), and nothing else was sent
