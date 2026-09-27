@@ -34,8 +34,12 @@ close and CPFP fees.
     peer's public open. Leave it off for the canary unless the owner opts in (§3, optional).
   - Experimental features (route blinding, attribution_data, dual funding): off
     (`Features:AllowExperimentalFeatures=false`).
+  - Note (wave M6, after this runbook was written): route blinding (rf1) and onion messages (M6,
+    `Node:Features:OptionOnionMessages`) are no longer experimental and are advertised Optional by default on every
+    network. Onion messages are forwarded only to connected peers, within `OnionMessages` rate limits; set
+    `OptionOnionMessages=No` for the canary if the owner wants them off.
 - [ ] **Known gaps accepted** (from [`ISSUES.md`](ISSUES.md) and [`REMAINING_WORK.md`](REMAINING_WORK.md)):
-  - **No on-chain send or withdraw over IPC** (no NL ID yet; REMAINING_WORK "Wallet features"). After the close, the
+  - ~~**No on-chain send or withdraw over IPC**~~ **Landed after this runbook was written** (wave M6, `withdraw`, ClientCommand 25, NL-441; proven against LND in `WithdrawFlowTests`). Original note: after the close, the
     coins stay in the nltg wallet. They can only leave through another channel open until a send command lands.
   - **No standard seed (NL-159).** The node key is a random key in `nltg.key.json`, not a BIP39 mnemonic. No other
     wallet can restore it. The key file plus its password is the only backup of the on-chain funds.

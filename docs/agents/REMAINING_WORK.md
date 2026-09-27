@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -20,6 +20,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - RBF sweeps and reorgs.
   - O8 mempool reaction: preimages and penalties from unconfirmed transactions (NL-098), and the `chainstatus` halt gate (NL-216), gossip wave G-A.
 - **BOLT 7 public channels, gossip and graph routing** (waves G-A..G-D): we pay and get paid over public channels without route hints against LND and CLN (goal proofs (a)-(e)); the whole mainnet graph synced and verified on chain against a real bitcoind ([`MAINNET_GOSSIP_PROBE.md`](MAINNET_GOSSIP_PROBE.md)); gossip stays off on mainnet by default (D12).
+- **Onion messages** (wave M6, NL-080): forward, deliver and reply paths with per-peer and global rate limits, proven against CLN; `option_onion_messages` Optional by default. On-chain `withdraw` (NL-441) in the same wave.
 - **Mainnet HTLC gate open** (O6-T4, wave G-D): HTLCs on for every network by default after the full BOLT 5 proof set.
 - **Live Mutinynet smoke test.** Open, pay, receive, restart, cooperative close, and a public channel with our node announced as `NLightningFAFO` and visible on mutinynet.com ([`MUTINYNET.md`](MUTINYNET.md)).
 - **Platform.** net10.0 + net11.0; SQLite, Postgres and SQL Server schemas kept in sync.
@@ -57,8 +58,8 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).
 - **Route blinding** (ONION M5): **done in wave rf1** (NL-079, NL-339). Left: MPP over blinded paths, BOLT 11 blinded paths, dummy hops (NL-440).
-- **Onion messages** (ONION M6, optional).
-- **BOLT 12 offers** (needs onion messages and blinded paths).
+- **Onion messages** (ONION M6): **done in wave M6** (NL-080; proven against CLN v26.06.8, `option_onion_messages` Optional by default). Left: NL-442 (duplicate reader/path code), NL-444 (malformed 513 closes the connection), NL-446 (tuning, queue gauge).
+- **BOLT 12 offers** (NL-447, wave B12 of [`BOLT12_PLAN.md`](BOLT12_PLAN.md)): both prerequisites, onion messages and blinded paths, are done.
 - **Dual funding / interactive-tx** (v2 open, NL-037). Messages and validators exist; no handlers.
 - **Splicing and quiescence** (`stfu` is only answered with a warning).
 - **Zero-conf and scid-alias channels** as first-class options.
@@ -69,7 +70,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 
 - MPP send parts persisted across restarts (NL-321); hold times of parts are in memory only.
 - A duplicate HTLC for a Settled invoice from before NL-323 (upgrade path).
-- Wallet features: on-chain send, coin control, consolidation, better fee estimation per target (partly done for sweeps).
+- Wallet features: on-chain send **done in wave M6** (`withdraw`, ClientCommand 25, NL-441); coin control, consolidation, better fee estimation per target (partly done for sweeps) remain.
 
 ## Interop and testing
 
@@ -83,7 +84,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 ## Tech debt worth scheduling
 
 - `ChannelModel` legacy HTLC collections and the remaining clean-architecture violations (Application → Infrastructure) (NL-032, NL-157).
-- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed; next free 25); richer channel and payment queries remain.
+- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed), `withdraw` in wave M6 (25; next free 26); richer channel and payment queries remain.
 - The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly (NL-185).
 
 ## Standard test cycle

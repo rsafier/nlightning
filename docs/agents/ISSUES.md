@@ -42,6 +42,8 @@ Updated 2026-09-27 after wave d12 (Z1 graph hygiene, Z2 memory budget, Z3 verifi
 
 Updated 2026-09-27 after wave rf1 (R1 static channel backup and restore, R2 peer storage (migration owner, `AddPeerStorage`), R3 key material and local attack surface security review (`docs/agents/SECURITY_REVIEW.md`), R4 operator IPC and open cleanup, M5 route blinding) was integrated into `wip/fafo` (at `be9fd000`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `aa9d67e0` and `be9fd000` are `integrate:` commits). NL-010, NL-026, NL-077, NL-079, NL-152, NL-159, NL-212, NL-339, NL-392 and NL-393 are fixed and NL-148 gained its last fix. Lane R1's commits cite NL-417, which is the D12 relay entry: static channel backup and restore is recorded as NL-426. NL-426..NL-440 record the lanes' and the integrator's new findings (the lanes' proposed IDs and the integrator's NL-430..NL-433 were renumbered from the next free ID); the security review's SR-## IDs stay local to `SECURITY_REVIEW.md`, and its open ones are NL-224 (SR-14), NL-436 (SR-17) and NL-437 (SR-09). Docker on net10.0 (in-container runner, SQL Server container tests skipped): LND 64/64, CLN 23/23, gossip 28/28, on-chain legacy 24 (+2 Explicit), anchors 18/18, ABCD 3 x 10/10.
 
+Updated 2026-09-27 after wave M6 (onion messages: M6-A wire and codecs, M6-B crypto and vectors, M6-C transport and rate limiter, M6-D service and harness, M6-E Docker Proof M6 against CLN; plus lane W1 on-chain `withdraw`; no migration) was integrated into `wip/fafo` (at `641a5fff`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `fc686ff0`, `9639b7cf`, `5ae1701c` and `641a5fff` are `integrate:` commits). The M6 lanes cite NL-079 (the route blinding epic the BOLT 12 plan named as parent); the onion message work is recorded on NL-080, which is fixed, and `option_onion_messages` is advertised Optional by default (D9, 641a5fff). Lane W1 cites "NL-new": the withdraw command is NL-441. NL-441..NL-447 record the integrator's IDs (NL-441..NL-443 kept) and the lanes' open items, and NL-447 is the BOLT 12 offers epic the plan asked the ledger to file. Docker on net10.0 (in-container runner, SQL Server container tests skipped): CLN 33/33 (incl. `ClnOnionMessageTests` 10), LND 66/66, gossip 28/28, on-chain legacy 24 (+2 Explicit), anchors 18/18, ABCD 3 x 10/10.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -76,12 +78,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 4 | 17 | 121 | 142 |
+| open | 0 | 4 | 18 | 124 | 146 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 54 | 126 | 91 | 285 |
+| fixed | 14 | 54 | 127 | 93 | 288 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **58** | **146** | **217** | **435** |
+| **Total** | **14** | **58** | **148** | **222** | **442** |
 
 ### Epics
 
@@ -92,7 +94,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
-- NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440)
+- NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440; onion messages (M6) are NL-080, fixed in wave M6)
+- NL-447: BOLT 12 offers (open, medium; wave B12 of `BOLT12_PLAN.md`; onion messages NL-080 and blinded paths NL-079 are done)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder; gossip wave G-B: G1 public channels and our own announcements relayed, G2 graph ingress/store/pruner and IPC 17/18, Docker Proofs G0-G2 green; gossip wave G-C: G3 sync, query answers and relay, G4 graph routing in `PaymentService` and `getroute` (IPC 19), the goal proofs against LND and CLN green, NL-348..NL-356 fixed; gossip wave G-D: G5-T2..T4 done (rate limits, misbehaviour ban, graph caps, relay backlog bound, `NLightning.Gossip` meter, batched store, 200k-channel measurement, `describegraph` IPC 20), G5-T1/T5 partial; mainnet gossip probe: `Gossip:AssumeChannelValid`, `tools/NLightning.GossipProbe`, the full mainnet graph synced assumed and verified against a real bitcoind, NL-400..NL-405 and NL-410..NL-412 fixed; next: interned node ids and `Gossip:MaxMemoryMb` (NL-373, NL-416), the 24 h soak evaluation before D12 (NL-376), announcements without updates (NL-406), redundant verified-sync downloads (NL-415), follow-ups NL-357, NL-360..NL-377, NL-407, NL-408, NL-413, NL-414)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
@@ -1543,20 +1546,20 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** planned `src/NLightning.Infrastructure.Bitcoin/Onion/RouteBlinding/`
-- **Evidence:** Peel applies the path_key tweak and exposes `PathKeySharedSecret`, but no `encrypted_recipient_data` decrypt, no blinded path builder, no `invalid_onion_blinding` remap in the validator. `route-blinding-test.json` is only loaded. Update (wave rf1, `wip/fafo` at `be9fd000`): M5 done (lane rf1-m5): route-blinding crypto and `encrypted_data_tlv` codec byte-exact against `route-blinding-test.json` and `blinded-payment-onion-test.json`; `IncomingOnionProcessor`/`HtlcSwitch` forward and receive blinded payments with the `invalid_onion_blinding` rules (introduction-node errors delayed, malformed inside the path); `PaymentService.PayBlindedAsync` sends to blinded paths and `BlindedPathBuilder` builds ours; `option_route_blinding` advertised Optional (2be510fc); Docker `Docker/Gossip/RouteBlindingFlowTests` against LND 0.20 (4/4). Limits: NL-440.
+- **Evidence:** Peel applies the path_key tweak and exposes `PathKeySharedSecret`, but no `encrypted_recipient_data` decrypt, no blinded path builder, no `invalid_onion_blinding` remap in the validator. `route-blinding-test.json` is only loaded. Update (wave rf1, `wip/fafo` at `be9fd000`): M5 done (lane rf1-m5): route-blinding crypto and `encrypted_data_tlv` codec byte-exact against `route-blinding-test.json` and `blinded-payment-onion-test.json`; `IncomingOnionProcessor`/`HtlcSwitch` forward and receive blinded payments with the `invalid_onion_blinding` rules (introduction-node errors delayed, malformed inside the path); `PaymentService.PayBlindedAsync` sends to blinded paths and `BlindedPathBuilder` builds ours; `option_route_blinding` advertised Optional (2be510fc); Docker `Docker/Gossip/RouteBlindingFlowTests` against LND 0.20 (4/4). Limits: NL-440. Note (wave M6, `641a5fff`): the onion message commits cite NL-079 as the plan's parent epic; that work is recorded on NL-080.
 - **Fix sketch:** M5 per plan. Sub-issues: NL-077, NL-026.
 - **Blocks/Blocked-by:** Blocked-by NL-073
 - **Plan ref:** ONION M5
 
 ### NL-080 Onion messages (type 513) not implemented (ONION M6)
-- **Status:** open
+- **Status:** fixed (a16baab2, 6aea59de, a99af0d2, db29eccd, 47adc130, 3fdf4b00, abd81802, 7f0afe02, 413d420b, 3149da79, 76ee51af, e4c10d9c, b81a1fd9, dcd9d5d8, 365e3128, fc686ff0, 9639b7cf, 641a5fff)
 - **Severity:** low
 - **Kind:** gap
-- **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs`, `src/NLightning.Domain/Node/Interfaces/IPeerService.cs`
-- **Evidence:** No type; `PeerService.HandleMessage` drops non-channel messages; `IPeerService.SendMessageAsync` only accepts `IChannelMessage`. Sphinx core already supports `OnionPacketKind.OnionMessage`.
-- **Fix sketch:** M6 per plan.
-- **Blocks/Blocked-by:** Blocked-by NL-079
-- **Plan ref:** ONION M6
+- **Location:** `src/NLightning.Infrastructure.Serialization/Payloads/OnionMessagePayloadSerializer.cs`, `src/NLightning.Domain/Protocol/OnionMessages/`, `src/NLightning.Infrastructure.Bitcoin/Onion/OnionMessages/`, `src/NLightning.Infrastructure/Node/Services/PeerService.cs`, `src/NLightning.Application/Node/Services/PeerOutbox.cs`, `src/NLightning.Application/OnionMessages/`
+- **Evidence:** No type; `PeerService.HandleMessage` drops non-channel messages; `IPeerService.SendMessageAsync` only accepts `IChannelMessage`. Sphinx core already supports `OnionPacketKind.OnionMessage`. Update (wave M6, `wip/fafo` at `641a5fff`; the commits cite NL-079): done per `BOLT12_PLAN.md` OM0-OM3. OM0 (M6-A): the 513 serializer in both factory dictionaries, the strict `OnionMessageTlvsCodec`, `BlindedPathCodec`/`SciddirOrPubkeyCodec` (byte-exact against `blinded-onion-message-onion-test.json` and the `bolt12/offers-test.json` offer_paths) and `MessagePathRecipientDataRules` (a16baab2..3fdf4b00). OM1 (M6-B): `BlindedMessagePathBuilder`, `OnionMessagePacketBuilder`, `OnionMessageUnwrapper`, byte-exact for generate, route, packet and every decrypt hop; the vector's `generate.session_key` is the Sphinx session key (abd81802, 7f0afe02). OM2-T1/T2 (M6-C): the `PeerService` 513 arm and gated `SendOnionMessageAsync`, the capped low-priority onion class in `PeerOutbox` (interleaved 1 per 8 gossip sends, never ahead of channel/warning/error/disconnect), the Domain port `IPeerOnionMessageOutbox` on `PeerManager`, `OnionMessageRateLimiter` per peer and node-wide (413d420b, 3149da79, 76ee51af). OM2-T3..T5/OM3 (M6-D): `OnionMessageService` (rate limit, queue, peel, strict decode, unblind, reader rules, forward by node id or SCID through the capped outbox, deliver by type, `PendingReplyRegistry`), `OnionMessagePathFinder`, `ReplyPathFactory`, `OnionMessageOptions` (`OnionMessages` section; invalid options keep the service off), `Meter("NLightning.OnionMessages")`, the three-node harness and the BOLT 4 vector through four service nodes (e4c10d9c, b81a1fd9). Integration: `IPeerOnionMessageOutbox`, the outbox cap from `OnionMessages:MaxOutboxPerPeer`, the rate limits from `OnionMessageOptions`, the service on lane A's Domain codec (fc686ff0, 9639b7cf). Proof M6 (M6-E): `Docker/Interop/Cln/ClnOnionMessageTests` 10/10 against CLN v26.06.8 (CLN as our prefix hop and introduction node, `injectonionmessage`, `fetchinvoice` answered with `invoice_error` through CLN's reply path and through an offer path we forward, our reply path through CLN, a direct burst dropped by the rate limit, a corrupt HMAC ignored, bit 39 both ways; dcd9d5d8, 365e3128). D9: `OptionOnionMessages` Optional by default and out of `ExperimentalFeatures` (641a5fff). Follow-ups: NL-442, NL-444, NL-446; BOLT 12 offers NL-447.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Blocked-by NL-079; blocks NL-447
+- **Plan ref:** ONION M6; `BOLT12_PLAN.md` OM0-OM3, Proof M6
 
 ### NL-081 Basic MPP (final-hop HTLC sets) missing while basic_mpp is advertised
 - **Status:** fixed (ba3db36, 451aa79, 78a3beb, 9692ba4)
@@ -1889,6 +1892,56 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Add these with BOLT 12 (offers carry blinded paths) or earlier if an interop case needs them.
 - **Blocks/Blocked-by:** Follow-up of NL-079
 - **Plan ref:** ONION M5
+
+### NL-442 Onion message reader and path code exists twice
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Onion/OnionMessages/{OnionMessagePayloadCodec,IOnionMessageUnwrapper,IBlindedMessagePathBuilder,OnionMessageUnwrapResult}.cs`, `src/NLightning.Application/OnionMessages/{OnionMessageService,MessagePathFactory}.cs`, `test/NLightning.Application.Tests/OnionMessages/` (`HarnessOnionMessagePacketBuilder`)
+- **Evidence:** Lanes M6-A, M6-B and M6-D were written in parallel. The Bitcoin-side `OnionMessagePayloadCodec` duplicates the Domain `OnionMessageTlvsCodec`/`BlindedPathCodec` (lane D's Application copy was deleted at integration, fc686ff0); `OnionMessageService` does its own peel, unblind and ignore rules instead of calling `IOnionMessageUnwrapper`; `MessagePathFactory` overlaps `BlindedMessagePathBuilder`; the Application harness uses its own packet builder, so the send-side encoding (reply_path, sciddir) is proven only by the vector and the CLN proof. The public `IOnionMessageUnwrapper`, `IBlindedMessagePathBuilder` and the unwrap result types live in Infrastructure.Bitcoin rather than Domain, so Application depends on Infrastructure.Bitcoin for them (reported by lanes M6-B, M6-D and the integrator).
+- **Fix sketch:** Move the interfaces and result types to `Domain/Protocol/OnionMessages/Interfaces`, keep one codec (Domain) and one path builder, make the service call `IOnionMessageUnwrapper`, and run the harness through `OnionMessagePacketBuilder`, `OnionMessageRateLimiter` and the real `PeerOutbox`.
+- **Blocks/Blocked-by:** Follow-up of NL-080; related NL-157
+- **Plan ref:** `BOLT12_PLAN.md` OM1, OM2-T3, OM2-T5
+
+### NL-443 The CLN onion message proof sent an empty path_id where it meant none
+- **Status:** fixed (5ae1701c)
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnOnionMessageTests.cs` (`CreateMessagePath`)
+- **Evidence:** A null `byte[]` converted to an empty, non-null `ReadOnlyMemory<byte>?`, so the prefix-hop path carried an empty `path_id` and `Assert.Null(delivered.PathId)` failed; a conditional `x is null ? null : x` has the same problem. Fixed by leaving the field unset when there is no path id (reported by the integrator).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `BOLT12_PLAN.md` Proof M6
+
+### NL-444 A malformed onion_message gets a warning and a closed connection
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Infrastructure.Serialization/Payloads/OnionMessagePayloadSerializer.cs`, `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs`
+- **Evidence:** A 513 whose `len` is below 66, whose key prefix is bad or that is truncated throws `PayloadSerializationException`, which takes the NL-207 path (warning and close). BOLT 4 asks only that an invalid onion message be ignored; the plan sanctioned the NL-207 behavior for OM0-T1. Since 641a5fff bits 38/39 are advertised by default, so any peer can trigger the close of its own connection (no channel impact beyond the reconnect) (reported by lane M6-A).
+- **Fix sketch:** Drop a malformed 513 with a `dropped{reason=malformed}` count and keep the connection, or record the NL-207 policy as deliberate.
+- **Blocks/Blocked-by:** Follow-up of NL-080; related NL-207
+- **Plan ref:** `BOLT12_PLAN.md` OM0-T1
+
+### NL-446 Onion message rate-limit defaults are untuned and the meter has no queue gauge
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/OnionMessages/{OnionMessageRateLimiter,OnionMessageMetrics,OnionMessageOptions}.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs`
+- **Evidence:** The global burst (2,560 KiB), global message cap (200/s, burst 200) and per-peer message burst (20) were chosen by lane M6-C; plan §3.4 gives only 640 KiB/s global and marks every value "to be tuned". `PeerManager.QueuedOutboxOnionMessageCount` exists but no gauge publishes it in `Meter("NLightning.OnionMessages")` (plan §3.4 asks for the queue depth); outbox refusals are counted by the service as `dropped{reason=outbox_full}` (reported by lane M6-C).
+- **Fix sketch:** Add an observable gauge for the outbox and handler queues; tune the defaults from a Mutinynet or mainnet run with LND 0.21/CLN peers.
+- **Blocks/Blocked-by:** Follow-up of NL-080
+- **Plan ref:** `BOLT12_PLAN.md` §3.4, OM2-T2, OM3-T3
+
+### NL-447 [EPIC] BOLT 12 offers not implemented
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** planned `src/NLightning.Domain/Offers/`, `src/NLightning.Infrastructure.Bitcoin/Offers/`, `src/NLightning.Application/Offers/`, migration `AddBolt12Offers`
+- **Evidence:** No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures (plan gap OG5); `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields (OG7); no IPC for offers (OG9). Onion messages (NL-080) and route blinding with blinded send (NL-079, OG6) are done; `MinimalOfferEncoder` in `test/NLightning.Tests.Utils/Bolt12/` is test-only (filed by the ledger agent after wave M6 as the plan asked).
+- **Fix sketch:** Wave B12 per `BOLT12_PLAN.md` (B0-B4, lanes B12-A..E, B12-C migration owner).
+- **Blocks/Blocked-by:** Blocked-by NL-080, NL-079
+- **Plan ref:** `BOLT12_PLAN.md` wave B12
 
 ## BOLT 5: On-chain handling
 
@@ -3840,6 +3893,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Blocks/Blocked-by:** —
 - **Plan ref:** `MUTINYNET.md`
 
+### NL-441 No on-chain send (withdraw) command
+- **Status:** fixed (4446f400, d2fdae94, 42011660, fc686ff0)
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/WalletSpendService.cs`, `src/NLightning.Daemon/Ipc/Handlers/WithdrawIpcHandler.cs`, `ClientCommand.Withdraw` (25)
+- **Evidence:** Coins left in the wallet after a close could only leave through another channel open (`MAINNET_CANARY_RUNBOOK.md` known gap, `REMAINING_WORK.md` "Wallet features"). Update (wave M6, lane W1, `wip/fafo` at `641a5fff`; the commits cite "NL-new"): `withdraw <address> <amount_sat|all> [--sat-per-vb N]` (ClientCommand 25). `WalletSpendService` checks the address network, reserves confirmed wallet outputs through `IFeeInputSelector` (never channel-locked or pending-broadcast outputs), keeps the anchors reserve, signs with `SignWalletTransaction`, re-verifies every input and stores a `WalletSend` `BroadcastTransactions` row before sending (rebroadcast until confirmed); dust, out-of-bounds fee rates and a halted chain are refused (4446f400). Withdrawals run one at a time and release orphaned withdraw reservations first, also at startup through `ReleaseOrphanedReservationsAsync`; `--sat-per-vb 1` maps to 253 sat/kw; the anchors reserve is read under its admission gate (42011660). Docker `WithdrawFlowTests` 2/2 against LND (P2WPKH and P2TR outputs, `all` with the reserve kept) (d2fdae94). Wired by `AddWithdrawIpcServices()` in `AddNltgNodeServices`, startup release in `NltgDaemonService` and `NLightningTestNode` (fc686ff0). Left: coin control and consolidation (`REMAINING_WORK.md`).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** `REMAINING_WORK.md` "Payments and wallet"
+
 ---
 
 ## Crypto providers and key management
@@ -4445,7 +4508,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Docker/MultiNodeHarnessTests.cs` (`Given_ServerDatabase_When_NodeRestarts...`)
-- **Evidence:** xunit cannot filter out one data row, so skipping SQL Server (standard test cycle) also skips the Postgres restart case; it was not run in waves d12 and rf1 (reported by the rf1 integrator).
+- **Evidence:** xunit cannot filter out one data row, so skipping SQL Server (standard test cycle) also skips the Postgres restart case; it was not run in waves d12, rf1 and M6 (reported by the rf1 integrator).
 - **Fix sketch:** Split the theory into one test per provider, or add a trait per row.
 - **Blocks/Blocked-by:** Related NL-347
 - **Plan ref:** —
@@ -4458,6 +4521,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Both failed once in a full run under load and passed alone: a lower-bound assertion affected by clock decay and a 50 ms search budget (reported by lane R2).
 - **Fix sketch:** Use the fake clock in the MissionControl assertion and a generous or count-based budget in the pathfinder test.
 - **Blocks/Blocked-by:** Related NL-382
+- **Plan ref:** —
+
+### NL-445 GossipIngressTests retry case failed once under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Gossip/Graph/GossipIngressTests.cs` (`Given_AnAnnouncementGivenUpAfterItsRetries_When_ItsUpdateArrivesAgainLater_Then_ItIsMissedUntilStored`, `Assert.Empty` at line 549)
+- **Evidence:** Failed once in a full non-Docker run (collection `[110x1x0]` not empty) and passed when its class ran alone (36/36); not reproduced in the integrator's runs (reported by lane M6-C).
+- **Fix sketch:** Look for a wall-clock or scheduling dependency in the retry give-up path and drive it with the fake clock.
+- **Blocks/Blocked-by:** Related NL-434, NL-382
 - **Plan ref:** —
 
 ## Docs

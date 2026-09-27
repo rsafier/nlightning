@@ -4,6 +4,8 @@ This plan covers two waves:
 - **Wave M6: onion messages** (BOLT 4 "Onion Messages", BOLT 9 `option_onion_messages`). It covers the wire message, construct and peel, forwarding as an intermediate or introduction node of a blinded message path, receiving with dispatch to per-TLV handlers, reply paths, per-peer rate limits, and the feature bit, which is advertised only once proven.
 - **Wave B12: BOLT 12 offers** (`12-offer-encoding.md`). It covers the TLV codecs, the bech32 string format without a checksum, Merkle signatures, offers (`createoffer`), paying an offer (`payoffer`: invoice_request, invoice, verify, and a blinded payment over the invoice's paths), answering invoice_requests, settling blinded payments with `path_id`, and persistence.
 
+**Status (2026-09-27, `wip/fafo` @ `641a5fff`): wave M6 is done** (NL-080 fixed; Proof M6 10/10 against CLN v26.06.8; `option_onion_messages` Optional by default, D9 at 641a5fff). See "Wave M6 record" at the end of §5 for SHAs, deviations and follow-ups. **Wave B12 is next** (NL-447); its `ClientCommand` values start at **26** (25 is `withdraw`, NL-441).
+
 Every repo claim cites a repo-relative path, verified at `wip/fafo` @ `88d046c7` unless marked otherwise. Claims marked **(unverified)** were not checked against the spec, code or a running peer. Confirm them before relying on them.
 
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-27 through the GitHub contents API:
@@ -23,7 +25,7 @@ Every repo claim cites a repo-relative path, verified at `wip/fafo` @ `88d046c7`
     - Switch and final-hop support for **receiving and forwarding** blinded HTLCs.
   - The task brief calls the path creator `BlindedPathBuilder`; M5 ships it as `IRouteBlindingService.CreateBlindedPath`. This plan uses the M5 names.
   - **M5 does not include a blinded send** (paying *to* a blinded path): the M5 branch touches no file in `Payments/Send/` or `Payments/Routing/`. BOLT 12 needs it, so wave B12 owns it (lane B12-E, gap OG6).
-- **Issue ledger:** cite **NL-079** (route blinding epic, the parent of this work) until the ledger agent files the new epics. New gaps found while writing this plan are the `OG#` rows in §2.2, marked "new". The next free ID at `88d046c7` is **NL-426**, and RF1 may take some. Tasks say "Resolves OG#" until IDs are assigned, and each fix updates its ledger entry in the same commit.
+- **Issue ledger:** onion messages are **NL-080** (fixed in wave M6; the M6 commits cite NL-079) and BOLT 12 offers are the epic **NL-447**; B12 lanes cite NL-447. Originally: cite **NL-079** (route blinding epic, the parent of this work) until the ledger agent files the new epics. New gaps found while writing this plan are the `OG#` rows in §2.2, marked "new". The next free ID at `88d046c7` is **NL-426**, and RF1 may take some. Tasks say "Resolves OG#" until IDs are assigned, and each fix updates its ledger entry in the same commit.
 - **Out of scope for both waves:**
   - payer proofs (`lnp`, `payer-proof-test.json`);
   - recurrence (not in the spec; CLN's own format changed incompatibly in 25.12);
@@ -100,7 +102,7 @@ Requirement IDs are used by the tasks and by the traceability matrix (§6).
 | OM-R-04 | Non-final hop: ignore it if the `onionmsg_tlv` has anything besides `encrypted_recipient_data`, or if the decrypted data has `path_id` |
 | OM-R-05 | Non-final hop: the next peer is `next_node_id`, else `short_channel_id` (announced SCID or local alias), else ignore. SHOULD forward with `path_key` = `next_path_key_override` if present, else `SHA256(E_i ‖ ss_i) * E_i` |
 | OM-R-06 | Final hop: if `path_id` matches a reply_path we published but the message is not a reply to the onion that carried it, ignore it. A reply to an onion that had a `path_id` gets the same answer as if we had never sent the original |
-| OM-R-07 | Final hop: ignore it if it carries more than one payload field (64/66/68) |
+| OM-R-07 | Final hop: ignore it if it carries more than one payload field (every type >= 64: "Field numbers 64 and above are reserved for payloads for the final hop"; wave M6 record) |
 | OM-R-08 | Reply through `reply_path`: send `onion_message` to `first_node_id` with the reply path's `first_path_key` |
 | OM-R-09 | A node that advertises `option_onion_messages_only_channels` MUST NOT accept messages from peers without a channel. We never advertise it. Otherwise it SHOULD accept messages from peers without a channel |
 
@@ -198,15 +200,15 @@ Always fetch vectors from `https://raw.githubusercontent.com/lightning/bolts/mas
 ### 2.2 Gaps (the ledger agent files the "new" ones)
 | # | Gap | NL |
 |---|---|---|
-| OG1 | No `onion_message` type, payload, serializer or dispatch; `PeerService` drops 513 | new (M6 epic) |
-| OG2 | No message-path rule set for `encrypted_data_tlv` (M5's validator is for payments only) | new |
-| OG3 | No sender for onion messages, and no way to prepend unblinded hops to a blinded path (`next_path_key_override = first_path_key`) | new |
-| OG4 | No rate limits for non-channel peer traffic besides gossip | new |
-| OG5 | No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures | new (B12 epic) |
-| OG6 | No blinded **send**: `PaymentOnionFactory`/`PaymentRoutePlanner` cannot target a blinded path, and there is no introduction-node-is-us case | new |
-| OG7 | `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields | new |
-| OG8 | `sciddir_or_pubkey` resolution (SCID + direction → node id) through our own channels and the graph | new |
-| OG9 | No IPC for offers | new |
+| OG1 | No `onion_message` type, payload, serializer or dispatch; `PeerService` drops 513 | NL-080, fixed in wave M6 |
+| OG2 | No message-path rule set for `encrypted_data_tlv` (M5's validator is for payments only) | NL-080, fixed (db29eccd) |
+| OG3 | No sender for onion messages, and no way to prepend unblinded hops to a blinded path (`next_path_key_override = first_path_key`) | NL-080, fixed (abd81802, e4c10d9c) |
+| OG4 | No rate limits for non-channel peer traffic besides gossip | NL-080, fixed for onion messages (3149da79, 76ee51af); tuning NL-446 |
+| OG5 | No BOLT 12 codecs, bech32 without checksum, Merkle tree or BIP-340 message signatures | NL-447 (B12 epic) |
+| OG6 | No blinded **send**: `PaymentOnionFactory`/`PaymentRoutePlanner` cannot target a blinded path, and there is no introduction-node-is-us case | partly done in wave rf1 (`PaymentService.PayBlindedAsync`, 8675ca37, NL-079); introduction = us and MPP remain (NL-440) |
+| OG7 | `InvoiceEntity.Bolt11` is required and `PaymentEntity` has no BOLT 12 fields | NL-447 |
+| OG8 | `sciddir_or_pubkey` resolution (SCID + direction → node id) through our own channels and the graph | NL-080, fixed for onion messages (e4c10d9c) |
+| OG9 | No IPC for offers | NL-447 |
 
 ---
 
@@ -230,7 +232,7 @@ Always fetch vectors from `https://raw.githubusercontent.com/lightning/bolts/mas
 2. **Rate limit** (`OnionMessageRateLimiter`, OM-R-01): a token bucket per incoming peer and a global one, in bytes and in messages. Over the limit, the message is dropped and the `dropped{reason=rate}` counter increments. Nothing is sent back.
 3. **Peel:** `ISphinxService.PeelAsLocalNode(packet, [], path_key, OnionPacketKind.OnionMessage)`. Any `OnionException` → ignore (no replay set: onion messages have no replay rule; a replayed message is only forwarded again, inside the rate limit).
 4. **Parse** `onionmsg_tlv` strictly (known types 2, 4, 64, 66, 68; unknown even → ignore).
-5. **Unblind:** `IRouteBlindingService.UnblindAsLocalNode(path_key, encrypted_recipient_data, peeled.PathKeySharedSecret)`, then `MessagePathRecipientDataRules` (OM-R-03, OM-R-04, and no payment_relay or constraints expected).
+5. **Unblind:** `IRouteBlindingService.UnblindAsLocalNode(path_key, encrypted_recipient_data, peeled.PathKeySharedSecret)`, then `MessagePathRecipientDataRules` (OM-R-03, OM-R-04, and no payment_relay or constraints expected). *As built:* BOLT 4 has no reader rule against `payment_relay`/`payment_constraints` in a message path, so the reader accepts and ignores them; only the writer refuses them (OM-S-04).
 6. **Forward** (`peeled.NextPacket` is not null):
    - Only `encrypted_recipient_data` may be present.
    - Resolve the next node from `next_node_id`, or from `short_channel_id` through our channels by real SCID or alias, then the graph (OG8).
@@ -401,7 +403,7 @@ Before the lanes fork, the integrator lands one commit that adds only interfaces
 |---|---|---|
 | OM0-T1 `onion_message` serializer | `src/NLightning.Infrastructure.Serialization/Payloads/OnionMessagePayloadSerializer.cs`, `Messages/Types/OnionMessageMessageTypeSerializer.cs`, both dictionaries in `Factories/PayloadSerializerFactory.cs` and `Factories/MessageTypeSerializerFactory.cs` | Round trip of every `decrypt.hops[i].onion_message` in the message vector byte-exact. `len` other than 1366/32834 is accepted (only the writer SHOULD). `len < 66` or a truncated message → `PayloadSerializationException` (the peer gets a warning and close, NL-207). Not raised as a channel message |
 | OM0-T2 `onionmsg_tlv` codec | `src/NLightning.Domain/Protocol/OnionMessages/OnionMessageTlvsCodec.cs` | Strict: increasing types, minimal bigsize, unknown even → rejected, unknown odd kept. Final-field count helper (OM-R-07) |
-| OM0-T3 `blinded_path` + `sciddir_or_pubkey` codec | `src/NLightning.Domain/Protocol/OnionMessages/{BlindedPathCodec,SciddirOrPubkey}.cs` | Round trip of the vector's `route`; `num_hops` 0 and `enclen` overflow rejected; 0/1 prefix → SCID with direction, 2/3 → point, any other byte rejected. The codec maps to and from M5's `BlindedPath` (introduction as a node id, or unresolved SCID + direction) |
+| OM0-T3 `blinded_path` + `sciddir_or_pubkey` codec | `src/NLightning.Domain/Protocol/OnionMessages/{BlindedPathCodec,SciddirOrPubkeyCodec}.cs` (the `SciddirOrPubkey` record is M6-0's `SciddirOrPubkey.cs`) | Round trip of the vector's `route`; `num_hops` 0 and `enclen` overflow rejected; 0/1 prefix → SCID with direction, 2/3 → point, any other byte rejected. The codec maps to and from M5's `BlindedPath` (introduction as a node id, or unresolved SCID + direction) |
 | OM0-T4 Message-path recipient-data rules | `src/NLightning.Domain/Protocol/OnionMessages/MessagePathRecipientDataRules.cs` | Table tests: OM-R-03 (any `allowed_features` bit → ignore), OM-R-04 (non-final with `path_id` → ignore), OM-S-04 (writer refuses `payment_relay` and constraints), a non-final without next node or SCID → ignore |
 
 **OM1: Construct and peel with vectors** (lane M6-B)
@@ -436,6 +438,33 @@ Before the lanes fork, the integrator lands one commit that adds only interfaces
 - (e) **Feature interop:** CLN's `listpeers` shows our features with bit 39. Our node_announcement (a public channel from `ClnGossipTests`' topology, if present) carries 39 **(optional)**.
 
 LND 0.20 has no onion messages. LND 0.21 forwards them (§7), and a forward proof against it is optional, for a later LND bump.
+
+### Wave M6 record (integrated into `wip/fafo` @ `641a5fff`, 2026-09-27)
+
+Five lanes on the M6-0 contracts (b4d3eed3), each with a review/fix step, plus lane W1 (on-chain `withdraw`, unrelated to M6, NL-441). Lane commits cherry-picked with `-x` in the order A, B, C, D, W1, E (one conflict: `src/NLightning.Application/CLAUDE.md`, both sections kept). The commits cite NL-079; the ledger records the work on NL-080.
+
+| Lane | Tasks | `wip/fafo` SHAs | Result |
+|---|---|---|---|
+| M6-A wire + codecs | OM0-T1..T4 | a16baab2, 6aea59de, a99af0d2, db29eccd, 47adc130, 3fdf4b00 | done: 513 serializer (any `len` >= 66; strict trailing TLVs), `OnionMessageTlvsCodec`, `BlindedPathCodec` + `SciddirOrPubkeyCodec`, `MessagePathRecipientDataRules`; vector wire messages byte-exact; `blinded_path` independently proven against the `bolt12/offers-test.json` offer_paths (3fdf4b00) |
+| M6-B crypto | OM1-T1..T4 | abd81802, 7f0afe02 | done: `BlindedMessagePathBuilder`, `OnionMessagePacketBuilder`, `OnionMessageUnwrapper` (`AddOnionMessageCryptoServices()` in `AddBitcoinInfrastructure`); `blinded-onion-message-onion-test.json` byte-exact (generate, route, packet, every decrypt hop). Risk 2 resolved: `generate.session_key` is the Sphinx session key; each path segment uses its own first `path_key_secret` |
+| M6-C transport | OM2-T1, OM2-T2 | 413d420b, 3149da79, 76ee51af | done: `PeerService` 513 arm and gated send, `PeerOutbox` onion class (cap 64, 1 onion message per 8 gossip sends, never ahead of channel/warning/error/disconnect), `IPeerOnionMessageOutbox` on `PeerManager`, `OnionMessageRateLimiter` (per peer 64 KiB/s burst 256 KiB and 20 msg/s burst 20; global 640 KiB/s burst 2,560 KiB and 200 msg/s burst 200; buckets swept once refilled) |
+| M6-D pipeline | OM2-T3..T5, OM3 | e4c10d9c, b81a1fd9 | done: `OnionMessageService` (forwards and sends through the capped outbox, never awaited), path finder, reply paths, `PendingReplyRegistry`, `OnionMessageOptions` (invalid options keep the service off), meter, three-node harness, the BOLT 4 vector through four service nodes |
+| M6-E Docker proof | Proof M6 (a)-(e) | dcd9d5d8, 365e3128 (+ 5ae1701c) | done: `ClnOnionMessageTests` 10/10 against CLN v26.06.8 |
+| Integration | registrations, codec swap, D9 | fc686ff0, 9639b7cf, 5ae1701c, 641a5fff | outbox, cap and limiter bound from `OnionMessages`; lane D's codec copy deleted; `OptionOnionMessages` Optional by default and out of `ExperimentalFeatures` |
+
+Deviations from this plan (spec wins):
+- OM-R-07 counts every type >= 64 as a payload field (the row above is corrected); a test shows 65 counts.
+- The codec file is `SciddirOrPubkeyCodec.cs`; `SciddirOrPubkey.cs` is M6-0's record.
+- A message path may carry both `next_node_id` and `short_channel_id`; `next_node_id` wins (BOLT 4 onion-message reader). M5's payment validator refuses that case, so the rule sets differ on purpose.
+- `payment_relay`/`payment_constraints` in a message path are accepted and ignored by the reader (§3.2 step 5); the writer refuses them.
+- A forward to ourselves is dropped as `loop` rather than processed as a dummy hop (our paths have no dummy hops).
+- D7 relaxed: the reply path's introduction node is a connected onion-message peer with an open channel first, then any connected onion-message peer, then us, so channelless topologies (the CLN proof) work.
+- A malformed 513 still takes the NL-207 warning-and-close path (NL-444).
+- The rate-limit values beyond §3.4 were chosen by lane M6-C (NL-446).
+
+Gates at `641a5fff`: Release and Release.Native 0 errors, the 5 baseline CS86xx warnings, net11.0 compile check green, `dotnet format` clean; 8332 non-Docker tests on net10.0 (both configs), Long simulator 1/1; Docker (net10.0, in-container runner, SQL Server skipped) CLN 33/33 incl. Proof M6, LND 66/66, gossip 28/28, ABCD 3 x 10/10, on-chain legacy 24 (+2 Explicit), anchors 18/18. Proof M6 passed before the D9 flip, and every suite above ran after it.
+
+Follow-ups: NL-442 (one codec, one path builder, the service on `IOnionMessageUnwrapper`, interfaces to Domain, the harness on the real builder/limiter/outbox), NL-444, NL-446, NL-445 (a flake seen by lane M6-C). Proof M6 (e) checked bit 39 in `listpeers` both ways; our `node_announcement` carrying 39 was not asserted (optional). A forward proof through LND 0.21 waits for a fixture bump.
 
 ### B12 milestones
 **B0: Codecs and strings** (lane B12-A)
@@ -494,7 +523,7 @@ LND 0.20 has no onion messages. LND 0.21 forwards them (§7), and a forward proo
 ### Waves and lanes (for the multi-agent wave workflow)
 | Wave | Lane | Files owned (exclusive) | Depends on | Proof |
 |---|---|---|---|---|
-| **M6** | **M6-A wire + codecs** (OM0) | `src/NLightning.Infrastructure.Serialization/{Payloads/OnionMessagePayloadSerializer.cs, Messages/Types/OnionMessageMessageTypeSerializer.cs}` + the two factory registrations; `src/NLightning.Domain/Protocol/OnionMessages/{OnionMessageTlvsCodec,BlindedPathCodec,SciddirOrPubkey,MessagePathRecipientDataRules}.cs`; tests in `test/NLightning.Infrastructure.Serialization.Tests/Messages/OnionMessageMessageTests.cs`, `test/NLightning.Domain.Tests/Protocol/OnionMessages/` | M6-0 | vector round trips, codec/rule tables |
+| **M6** | **M6-A wire + codecs** (OM0) | `src/NLightning.Infrastructure.Serialization/{Payloads/OnionMessagePayloadSerializer.cs, Messages/Types/OnionMessageMessageTypeSerializer.cs}` + the two factory registrations; `src/NLightning.Domain/Protocol/OnionMessages/{OnionMessageTlvsCodec,BlindedPathCodec,SciddirOrPubkeyCodec,MessagePathRecipientDataRules}.cs`; tests in `test/NLightning.Infrastructure.Serialization.Tests/Messages/OnionMessageMessageTests.cs`, `test/NLightning.Domain.Tests/Protocol/OnionMessages/` | M6-0 | vector round trips, codec/rule tables |
 | M6 | **M6-B crypto** (OM1) | `src/NLightning.Infrastructure.Bitcoin/Onion/OnionMessages/**`, its DI line in `src/NLightning.Infrastructure.Bitcoin/DependencyInjection.cs`; `test/NLightning.Integration.Tests/BOLT4/OnionMessageVectorTests.cs`, `test/NLightning.Infrastructure.Bitcoin.Tests/Onion/OnionMessages/` | M6-0, RF1 M5 merged | `blinded-onion-message-onion-test.json` byte-exact (generate, route, packet, decrypt) |
 | M6 | **M6-C transport** (OM2-T1, OM2-T2) | `src/NLightning.Infrastructure/Node/Services/PeerService.cs` (513 arm + send method only), `src/NLightning.Infrastructure/Node/Factories/PeerServiceFactory.cs`, `src/NLightning.Domain/Node/Interfaces/{IPeerService,IPeerOnionMessageOutbox}.cs`, `src/NLightning.Application/Node/Services/PeerOutbox.cs`, `src/NLightning.Application/Node/Managers/PeerManager.cs` (outbox port only), `src/NLightning.Application/OnionMessages/OnionMessageRateLimiter.cs`; tests `test/NLightning.Infrastructure.Tests/Node/Services/PeerServiceOnionMessageTests.cs`, `test/NLightning.Application.Tests/Node/`… | M6-0 | transport + limiter unit tests |
 | M6 | **M6-D pipeline** (OM2-T3..T5, OM3) | `src/NLightning.Application/OnionMessages/**` except the rate limiter; `src/NLightning.Application/DependencyInjection.cs` (one `AddOnionMessageServices()` line); `src/NLightning.Daemon/Extensions/NodeConfigurationExtensions.cs` (template keys); `test/NLightning.Application.Tests/OnionMessages/**` | M6-0 (codes against the M6-A/B/C interfaces with fakes) | three-node harness |
@@ -512,7 +541,7 @@ LND 0.20 has no onion messages. LND 0.21 forwards them (§7), and a forward proo
 **`ClientCommand`:**
 - M6: none.
 - B12: `CreateOffer`, `ListOffers`, `DisableOffer` (B12-D), then `PayOffer` and optional `FetchInvoice` (B12-E).
-- The integrator appends them after the current maximum at merge time: 21 is free at `88d046c7` and taken by RF1 R4's `DisconnectPeer` on its branch, so expect **22-26** if nothing else lands first. Lanes use placeholder values in their branches and never edit `ClientCommand.cs`; the integrator edits it and the `NodeServiceExtensions` registrations.
+- The integrator appends them after the current maximum at merge time: 21 is free at `88d046c7` and taken by RF1 R4's `DisconnectPeer` on its branch, so expect **22-26** if nothing else lands first. *Update:* 21-23 are the backup commands, 24 `disconnect` and 25 `withdraw`, so B12 starts at **26**. Lanes use placeholder values in their branches and never edit `ClientCommand.cs`; the integrator edits it and the `NodeServiceExtensions` registrations.
 
 **Seams to reconcile at integration:**
 - `PeerService.HandleMessage`: M6-C adds the 513 arm next to RF1 R2's peer-storage arm.
@@ -541,7 +570,7 @@ Everything below is **MISSING** at `88d046c7`. Test prefixes:
 | OM-W-01/02 | MUST | OM0-T1 | `ST/Messages/OnionMessageMessageTests` (vector wire messages) |
 | OM-W-03 | MUST | OM1-T3 | `IT/BOLT4/OnionMessageVectorTests` (empty payload case) |
 | OM-W-04 | MUST | OM0-T2 | `DT/Protocol/OnionMessages/OnionMessageTlvsCodecTests` |
-| OM-W-05/06 | MUST | OM0-T3 | `DT/…/BlindedPathCodecTests`, `SciddirOrPubkeyTests` |
+| OM-W-05/06 | MUST | OM0-T3 | `DT/…/BlindedPathCodecTests`, `BlindedPathOffersVectorTests`, `SciddirOrPubkeyCodecTests` |
 | OM-S-01 | MUST | OM1-T2 | vector packet byte-exact |
 | OM-S-02 | SHOULD | OM1-T2 | size-choice test (1300 / 32768 / refuse above) |
 | OM-S-03 | MUST | OM1-T2, OM2-T4 | `BT/Onion/OnionMessages/OnionMessagePacketBuilderTests` (only field 4 in prefix hops) |
@@ -605,7 +634,8 @@ Everything below is **MISSING** at `88d046c7`. Test prefixes:
 - **Core Lightning.**
   - Onion messages are on by default since **v24.08** (`--experimental-onion-messages` is ignored; `sendonionmessage` was removed, #7461).
   - BOLT 12 is on by default since **v24.11** (#7833); the `--experimental-offers` flag was removed in 25.12 (#8523).
-  - Our fixture's `v26.06.8` therefore needs **no extra flags** for either **(verify in Proof M6; if CLN refuses, record the flag)**. `--developer` stays.
+  - Our fixture's `v26.06.8` therefore needs **no extra flags** for either (verified in Proof M6: bit 39 is set by default and onion messages work without flags). `--developer` stays.
+  - Verified in Proof M6 (wave M6): `injectonionmessage` takes `path_key` and `message` (the `onion_message_packet` hex; the old parameter name `blinding` is refused with -32602; a bad packet returns -1 `onion_message_parse: can't parse onionpacket`). `decode` accepts a minimal regtest offer (TLVs 2, 10, 22). `fetchinvoice` to an issuer that is not its peer fails with 1003 "could not route or connect directly". An `invoice_error` we send back through CLN's reply path makes `fetchinvoice` fail with code **1004** "Remote node sent failure message" and `data.error` = our text (CLN logs `plugin-offers: Received onion message reply for invoice_request`).
   - RPCs used by the proofs: `offer`, `listoffers`, `fetchinvoice`, `pay`, `xpay` (a plain offer since 25.09), `decode`, `listinvoices`, `injectonionmessage {path_key, message}` (v24.11+), `listpeers`.
   - There is no raw-send RPC. `injectonionmessage` processes an onion as if a peer had sent it, which is how Proof M6 (b) makes CLN send.
   - The hooks `onion_message_recv` and `onion_message_recv_secret` need a plugin, which we do not use.
@@ -666,7 +696,7 @@ Everything below is **MISSING** at `88d046c7`. Test prefixes:
 ## Appendix: compact lane table (for the workflow args)
 | Lane | Files owned | Proof |
 |---|---|---|
-| M6-A | `Infrastructure.Serialization/{Payloads/OnionMessagePayloadSerializer,Messages/Types/OnionMessageMessageTypeSerializer}.cs` + factory registrations; `Domain/Protocol/OnionMessages/{OnionMessageTlvsCodec,BlindedPathCodec,SciddirOrPubkey,MessagePathRecipientDataRules}.cs`; their tests | wire round trip of the vector's `onion_message`s; codec/rule tables |
+| M6-A | `Infrastructure.Serialization/{Payloads/OnionMessagePayloadSerializer,Messages/Types/OnionMessageMessageTypeSerializer}.cs` + factory registrations; `Domain/Protocol/OnionMessages/{OnionMessageTlvsCodec,BlindedPathCodec,SciddirOrPubkeyCodec,MessagePathRecipientDataRules}.cs`; their tests | wire round trip of the vector's `onion_message`s; codec/rule tables |
 | M6-B | `Infrastructure.Bitcoin/Onion/OnionMessages/**` (+ DI line); `IT/BOLT4/OnionMessageVectorTests.cs`; `BT/Onion/OnionMessages/**` | `blinded-onion-message-onion-test.json` byte-exact (generate, route, packet, decrypt) |
 | M6-C | `Infrastructure/Node/Services/PeerService.cs` (513 arm + send), `Infrastructure/Node/Factories/PeerServiceFactory.cs`, `Domain/Node/Interfaces/{IPeerService,IPeerOnionMessageOutbox}.cs`, `Application/Node/Services/PeerOutbox.cs`, `Application/Node/Managers/PeerManager.cs` (port), `Application/OnionMessages/OnionMessageRateLimiter.cs`; tests | transport and rate-limiter unit tests |
 | M6-D | `Application/OnionMessages/**` (not the limiter), one line in `Application/DependencyInjection.cs`, template keys in `Daemon/Extensions/NodeConfigurationExtensions.cs`; `AT/OnionMessages/**` | three-node harness (forward, reply, 32 KiB, rate limit) |
