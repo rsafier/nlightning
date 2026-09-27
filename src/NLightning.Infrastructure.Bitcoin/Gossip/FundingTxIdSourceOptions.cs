@@ -15,8 +15,10 @@ public enum FundingTxIdSourceKind
 }
 
 /// <summary>
-/// The funding txid source (BOLT 7 plan D12, pruned nodes). The property names are the <c>Gossip:*</c> keys, so the
-/// host binds this class from the <c>Gossip</c> section like <see cref="FundingOutputLookupOptions"/>.
+/// The funding txid source (BOLT 7 plan D12, pruned nodes). The property names are the <c>Gossip:*</c> keys; the host
+/// must bind this class from the <c>Gossip</c> section like <see cref="FundingOutputLookupOptions"/>
+/// (<c>services.Configure&lt;FundingTxIdSourceOptions&gt;(configuration.GetSection("Gossip"))</c>), or the defaults
+/// (bitcoind) apply whatever the configuration says.
 /// </summary>
 public sealed class FundingTxIdSourceOptions
 {
@@ -32,7 +34,10 @@ public sealed class FundingTxIdSourceOptions
 
     /// <summary>
     /// <c>Gossip:EsploraRequestsPerSecond</c>: HTTP requests started per second (burst the same), default 2, polite for
-    /// public servers; raise it for a self-hosted index. Each uncached lookup costs two requests.
+    /// public servers; raise it for a self-hosted index. Each uncached lookup costs two requests, so the default verifies
+    /// about one new channel per second: an initial mainnet sync of some 45,000-50,000 channel announcements takes
+    /// over 12 hours against a public server (the ingress defers what waits and the sync re-queries what it dropped).
+    /// Use a self-hosted esplora/electrs with a higher rate for a faster sync.
     /// </summary>
     public int EsploraRequestsPerSecond { get; set; } = 2;
 
@@ -50,6 +55,13 @@ public sealed class FundingTxIdSourceOptions
 
     /// <summary><c>Gossip:EsploraMaxBackoff</c>: the longest pause, also for a longer <c>Retry-After</c>, default 5 min.</summary>
     public TimeSpan EsploraMaxBackoff { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// <c>Gossip:EsploraMaxInlineWait</c>: the longest 429 pause a request waits out inside the lookup, default 5 s; a
+    /// longer pause fails the requests that meet it at once as transient (<c>ChainUnavailable</c>), so the lookup's
+    /// concurrency slot is not held while the index is rate limiting us.
+    /// </summary>
+    public TimeSpan EsploraMaxInlineWait { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary><c>Gossip:EsploraTimeout</c>: the timeout of one HTTP request, default 30 s.</summary>
     public TimeSpan EsploraTimeout { get; set; } = TimeSpan.FromSeconds(30);
@@ -90,6 +102,8 @@ public sealed class FundingTxIdSourceOptions
             errors.Add($"{nameof(EsploraInitialBackoff)} must be positive");
         if (EsploraMaxBackoff < EsploraInitialBackoff)
             errors.Add($"{nameof(EsploraMaxBackoff)} must be at least {nameof(EsploraInitialBackoff)}");
+        if (EsploraMaxInlineWait < TimeSpan.Zero)
+            errors.Add($"{nameof(EsploraMaxInlineWait)} must not be negative");
         if (EsploraTimeout <= TimeSpan.Zero)
             errors.Add($"{nameof(EsploraTimeout)} must be positive");
         if (EsploraCacheEntries < 1)
