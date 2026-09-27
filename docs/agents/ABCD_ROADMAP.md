@@ -1,6 +1,35 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave O7 @ `8364a01`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave O7b @ `c16d6e1`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Wave O7b (BOLT 5 anchors gaps and O7-T4): integrated into `wip/fafo` @ `c16d6e1` (2026-09-26), gates GREEN, `option_anchors` ON by default
+
+Three lanes (Y1 anchors on-chain reserve and funding selection, Y2 package relay and the peer-anchor bump, Y3 anchors gap Docker proofs), each with a review/fix step; no migration. Lane commits cherry-picked with `-x` onto `897f032` in the order Y1 → Y2 → Y3 (conflicts: the Infrastructure.Bitcoin `CLAUDE.md` wallet paragraph, both kept; Y1 and Y3 both added `AnchorsReserveTests.cs`, Y3's file is now `AnchorsReserveGapTests.cs`). No hub registration was needed (Y1 registered in `AddBitcoinInfrastructure`, Y2 uses optional lookups). Integrator commits:
+- d4cc3f8 (from the scratch worktree `.claude/worktrees/o7b-flip`, branch `wip/fafo-o7b-integrator-flip`, ad25b6e; left in place): O7-T4 flip, `FeatureOptions.OptionAnchors` Optional by default and out of `ExperimentalFeatures`; Docker fixtures follow (legacy on-chain, non-anchor `update_fee` and the CLN fee-floor proofs pin `option_static_remotekey` via `Docker/Onchain/LegacyChannelOptions`; fundees of anchors opens fund the reserve first; LND balance checks add the funder's anchors, `LndTestHelpers.FunderAnchorsSat`; the trimmed-HTLC proof uses zero-fee HTLC thresholds; ABCD asserts every hop is anchors).
+- c16d6e1: the O7b record and the O7-T4 decision in `BOLT5_ONCHAIN_PLAN.md`; root, Domain and test `CLAUDE.md`.
+
+Gates at `c16d6e1`:
+- Build: Release and Release.Native, net10.0 and net11.0, 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7371** non-Docker, all pass, no skips (Domain 2415, Application 1691, Integration 713, Serialization 520, Infrastructure 401, Infrastructure.Bitcoin 965, Bolt11 278, Daemon 388). Long simulator 1/1.
+- Docker (net10.0, host-built dll in `sdk:10.0` with `--network host`, one process at a time, SQL Server skipped), before the flip on `2b20449` and final on `d4cc3f8`, identical: anchors **18/18**; on-chain (static_remotekey pinned) with `-explicit on` **24/24**; LND suite **59/59**; CLN **22/22**; ABCD **3 x 10/10**; gossip **24/24**. The first flip run before the fixture changes failed 11 LND, 8 CLN and 1 gossip tests, all fixture assumptions (fundee reserve, the funder's 660 sat of anchors, non-anchor expectations).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| Y1 anchors reserve + funding selection | done: `IAnchorReserveService` → `AnchorReserveService` (`Node:Anchors` 10,000 sat per channel, cap 100,000, `PendingOpenTimeout`), opener and fundee refusal, atomic reserve in the 6-arg `LockUtxosToSpendOnChannel` incl. the funding fee, backed only by fee-selector-spendable outputs, in-flight opens counted under one semaphore, `walletbalance` keys 2-5; funding selection skips outputs of pending broadcasts; Docker `AnchorsReserveTests` against LND as opener and fundee | 41ce320, 083424e, db1afdb | NL-379 fixed, NL-385 fixed, NL-384 partial; new NL-392, NL-393 |
+| Y2 package relay + peer anchor | done: `IBitcoinChainService.SubmitPackageAsync` (1p1c, feature-detected), commitment + child as a package on refusal or when missing from the mempool, also after a restart; CPFP of the peer's commitment through our anchor (`AnchorCpfpService.Peer.cs`, O8 hand-over or txid lookup, RBF, shared reservation, 16-block sweep); review: persisted peer children kept after a restart, crash-orphaned reservation released, CPFP target floored at `mempoolminfee` | 4219c6c, 8e75a13, 50f005a | NL-380 fixed, NL-381 fixed, NL-388 fixed; new NL-389, NL-390, NL-391, NL-394; NL-384/NL-386 not attempted |
+| Y3 anchors gap Docker proofs | done: `AnchorsPackageRelayTests` (second bitcoind with a full 5 MB mempool, `RelayBitcoind`), `AnchorsPeerCommitmentBumpTests` (LND wallet leased, bump before the fulfillment deadline), `AnchorsReserveGapTests`; shared `AnchorsHarness.PayUntilSentAsync` | 2a086bb, 2b20449 | proofs for NL-379..NL-381; deviation recorded under NL-380 (`-minrelaytxfee` cannot prove package relay on Core 28+) |
+| Integration | O7-T4 flip and fixture changes, O7b record | d4cc3f8, c16d6e1 | NL-067 and NL-314 notes |
+
+Decision: **O7-T4 flipped, `option_anchors` is advertised Optional by default** (`BOLT5_ONCHAIN_PLAN.md` "O7b wave record and O7-T4 decision"). Operators need confirmed on-chain funds of at least 10,000 sat per anchors channel (up to 100,000); without them anchors opens and accepts are refused and the peer sees the error. `Node:Features:OptionAnchors=No` keeps a node on `option_static_remotekey`.
+
+### Carried into the next wave (after O7b)
+
+- **Close BOLT 7 G5 and decide D12 on mainnet** (unchanged): NL-373 (interned node ids, `Gossip:MaxMemoryMb`), NL-376 (24 h soak evaluation, second sync peer), NL-360 remainder, NL-374, NL-366; G5 follow-ups NL-370, NL-371, NL-372, NL-375, NL-377, NL-378; flakes NL-382, NL-394.
+- **Anchors follow-ups (none a fund-safety blocker):** NL-384 (partial: re-create the reservation of a reorged child, reorg proof), NL-386 (double-spend a stale child's inputs back to the wallet; since O7b those inputs also shrink the reserve's backing), NL-389 (package the peer's commitment below our mempool minimum from the hand-over bytes), NL-390 (persist the peer-commitment hand-over), NL-391, NL-392 (temporary channels of failed opens leak), NL-393, NL-387, NL-383; NL-280 (change-address reuse). Daemon template has no `Node:Anchors` section (code defaults apply).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346, NL-357, NL-361..NL-365, NL-367, NL-368, NL-369; B7-CU-01b.
+- **BOLT 5 follow-ups:** NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Tooling:** NL-276, NL-347.
+- **Beyond:** route blinding (NL-079), dual funding (NL-037), the remaining items in `REMAINING_WORK.md`.
 
 ### Wave O7 (BOLT 5 anchors): integrated into `wip/fafo` @ `8364a01` (2026-09-26), gates GREEN, O7-T4 held
 
@@ -25,7 +54,7 @@ Gates at `8364a01`:
 
 Decision: **O7-T4 held, `option_anchors` stays experimental** although its gate (anchors O3-O5 + CPFP green against LND, full regression green) is met: NL-379 (no on-chain wallet reserve for anchors channels, high), NL-380 (no package relay) and NL-381 (the peer's commitment is never bumped through our anchor) are fund-safety gaps no proof covers. Deviation accepted: our offered revoked HTLC on an anchors channel is penalized alone from the first round (stricter than BOLT 5's split at `security_delay`).
 
-### Carried into the next wave (after O7)
+### Carried into the next wave (after O7; superseded by the list after O7b above)
 
 - **Anchors O7-T4:** the per-channel on-chain reserve (NL-379), `submitpackage` for a parent below the mempool minimum (NL-380), CPFP and sweep through our anchor on the peer's commitment (NL-381); then re-run `ONCHAIN_SUITE=anchors` and decide the flip. O7 follow-ups: NL-384, NL-385 (funding coin selection vs pending broadcasts, medium), NL-386, NL-387, NL-383; NL-280 (change-address reuse).
 - **Close BOLT 7 G5 and decide D12 on mainnet** (unchanged from G-D): NL-373 (interned node ids, `Gossip:MaxMemoryMb`), NL-376 (24 h soak evaluation, second sync peer), NL-360 remainder, NL-374, NL-366; G5 follow-ups NL-370, NL-371, NL-372, NL-375, NL-377, NL-378; NL-382 (gossip flood test flake).
