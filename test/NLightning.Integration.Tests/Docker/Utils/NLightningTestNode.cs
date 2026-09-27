@@ -31,6 +31,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Node.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
@@ -344,6 +345,8 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await Task.WhenAll(Services.GetRequiredService<OnionReplayBlockPruner>().StopAsync(),
                                    Services.GetRequiredService<IMempoolReactor>().StopAsync());
                 await Task.WhenAll(BlockchainMonitor.StopAsync(), _feeService!.StopAsync(), PeerManager.StopAsync());
+                // Peer storage writes its delayed blobs once the peers stopped, as the daemon does (NL-010)
+                await (Services.GetService<IPeerStorageService>()?.StopAsync() ?? Task.CompletedTask);
                 // Last, as the daemon does: the ingress writes the pending graph changes once nothing feeds it
                 await StopGossipGraphAsync();
             }
@@ -619,7 +622,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
                 await Services.GetRequiredService<IMempoolReactor>().StopAsync();
             }
             if (peerManagerStarted)
+            {
                 await PeerManager.StopAsync();
+                await (Services.GetService<IPeerStorageService>()?.StopAsync() ?? Task.CompletedTask);
+            }
             if (feeServiceStarted)
                 await _feeService!.StopAsync();
             await StopGossipGraphAsync();

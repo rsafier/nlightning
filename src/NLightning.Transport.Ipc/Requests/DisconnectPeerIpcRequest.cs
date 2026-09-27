@@ -6,7 +6,7 @@ using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// Request for DisconnectPeer (ClientCommand 21).
+/// Request for DisconnectPeer (ClientCommand 24).
 /// </summary>
 [MessagePackObject]
 public sealed class DisconnectPeerIpcRequest

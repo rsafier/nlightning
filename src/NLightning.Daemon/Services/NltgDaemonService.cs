@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -13,7 +14,10 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Client.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
+using Infrastructure.Bitcoin.Managers;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -32,6 +36,8 @@ public class NltgDaemonService : BackgroundService
     private readonly IPeerManager _peerManager;
     private readonly NodeOptions _nodeOptions;
     private readonly IPaymentOutcomeHandler _paymentOutcomeHandler;
+    private readonly IPeerStorageService? _peerStorageService;
+    private readonly IServiceScopeFactory? _scopeFactory;
     private readonly ISecureKeyManager _secureKeyManager;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
@@ -40,8 +46,11 @@ public class NltgDaemonService : BackgroundService
                              ILogger<NltgDaemonService> logger, INamedPipeIpcService namedPipeIpcService,
                              OnionReplayBlockPruner onionReplayBlockPruner, IOptions<NodeOptions> nodeOptions, IPaymentOutcomeHandler paymentOutcomeHandler,
                              IPeerManager peerManager, ISecureKeyManager secureKeyManager,
-                             IMempoolReactor mempoolReactor)
+                             IMempoolReactor mempoolReactor, IServiceScopeFactory? scopeFactory = null,
+                             IPeerStorageService? peerStorageService = null)
     {
+        _scopeFactory = scopeFactory;
+        _peerStorageService = peerStorageService;
         _mempoolReactor = mempoolReactor;
         _blockchainMonitor = blockchainMonitor;
         _channelFailureService = channelFailureService;
@@ -80,6 +89,9 @@ public class NltgDaemonService : BackgroundService
         {
             // Start the fee service
             await _feeService.StartAsync(stoppingToken);
+
+            // Never hand out a channel key index a stored channel already uses (SECURITY_REVIEW SR-19)
+            await ReconcileChannelKeyIndexAsync();
 
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
@@ -128,6 +140,28 @@ public class NltgDaemonService : BackgroundService
         await Task.WhenAll(_blockchainMonitor.StopAsync(), _feeService.StopAsync(), _peerManager.StopAsync(),
                            _namedPipeIpcService.StopAsync(), base.StopAsync(cancellationToken));
 
+        // Peer storage writes its delayed blobs once the peers stopped, before the container is disposed (NL-010)
+        if (_peerStorageService is not null)
+            await _peerStorageService.StopAsync();
+
         _logger.LogInformation("NLTG daemon service stopped");
+    }
+
+    /// <summary>
+    /// Raises the key file's last used channel key index to the highest one stored in the channel tables (every row,
+    /// whatever its state), so a key-file write lost after its channel row was committed cannot make the next open
+    /// reuse that index (SECURITY_REVIEW SR-19).
+    /// </summary>
+    private async Task ReconcileChannelKeyIndexAsync()
+    {
+        if (_scopeFactory is null || _secureKeyManager is not SecureKeyManager fileBacked)
+            return;
+
+        using var scope = _scopeFactory.CreateScope();
+        var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        var highest = await unitOfWork.ChannelDbRepository.GetHighestLocalKeyIndexAsync();
+        if (fileBacked.EnsureLastUsedChannelIndexAtLeast(highest))
+            _logger.LogWarning("The key file's last used channel key index was below the database's highest ({Index}); "
+                             + "raised it", highest);
     }
 }

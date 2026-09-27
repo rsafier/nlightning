@@ -10,7 +10,7 @@ using Handlers;
 using Interfaces;
 
 /// <summary>
-/// The operator IPC commands of wave rf1 (NL-152 remainder): <c>disconnect</c> (ClientCommand 21).
+/// The operator IPC commands of wave rf1 (NL-152 remainder): <c>disconnect</c> (ClientCommand 24).
 /// </summary>
 public static class OperatorIpcServiceExtensions
 {

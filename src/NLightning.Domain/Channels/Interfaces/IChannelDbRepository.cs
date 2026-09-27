@@ -25,4 +25,10 @@ public interface IChannelDbRepository
     /// are not loaded in memory, so new aliases can be kept unique across restarts.
     /// </summary>
     Task<IReadOnlyCollection<(ChannelId ChannelId, ShortChannelId Alias)>> GetLocalAliasesAsync();
+
+    /// <summary>
+    /// Gets the highest channel key index of our key sets over every stored channel row, whatever its state (0 when
+    /// there is none). The daemon raises the key file's last used index to it at startup (SECURITY_REVIEW SR-19).
+    /// </summary>
+    Task<uint> GetHighestLocalKeyIndexAsync();
 }

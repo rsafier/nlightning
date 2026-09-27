@@ -69,7 +69,6 @@ public class FeatureOptionsTests
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
     [InlineData(Feature.OptionAttributionData)]
-    [InlineData(Feature.OptionProvideStorage)]
     [InlineData(Feature.OptionScidAlias)]
     [InlineData(Feature.OptionUpfrontShutdownScript)]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_UnimplementedFeatureIsNotAdvertised(Feature feature)
@@ -232,6 +231,22 @@ public class FeatureOptionsTests
         Assert.DoesNotContain(Feature.OptionRouteBlinding, FeatureOptions.ExperimentalFeatures);
         Assert.True(features.IsFeatureSet(Feature.OptionRouteBlinding, false));
         Assert.False(features.IsFeatureSet(Feature.OptionRouteBlinding, true));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_ProvideStorageIsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (BOLT 1 peer storage, wave rf1: the daemon registers the peer storage service)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.DoesNotContain(Feature.OptionProvideStorage, FeatureOptions.ExperimentalFeatures);
+        Assert.True(features.IsFeatureSet(Feature.OptionProvideStorage, false));
+        Assert.False(features.IsFeatureSet(Feature.OptionProvideStorage, true));
         Assert.Empty(options.GetValidationErrors());
     }
 

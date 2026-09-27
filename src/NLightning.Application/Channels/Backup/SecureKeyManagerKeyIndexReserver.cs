@@ -8,21 +8,15 @@ using Infrastructure.Bitcoin.Managers;
 using Interfaces;
 
 /// <summary>
-/// <see cref="IChannelKeyIndexReserver"/> over <see cref="ISecureKeyManager"/>: the index is advanced with
+/// <see cref="IChannelKeyIndexReserver"/> over <see cref="ISecureKeyManager"/>. The file-backed
+/// <see cref="SecureKeyManager"/> raises its last used index with
+/// <see cref="SecureKeyManager.EnsureLastUsedChannelIndexAtLeast"/> (never lowers it; one serialized, awaited write, and
+/// no index used up when the file is already past the restored channels). Any other key manager is advanced with
 /// <see cref="ISecureKeyManager.GetNextChannelKey"/> (the only way the port offers; one index is always used up, which
-/// is harmless), then the key file is written and awaited when the manager is the file-backed
-/// <see cref="SecureKeyManager"/>.
+/// is harmless) until it passes the highest restored index.
 /// </summary>
-/// <remarks>
-/// <see cref="ISecureKeyManager.GetNextChannelKey"/> also starts its own unawaited key file writes; each writes the
-/// index current when it runs, and the awaited write here starts after a short pause so it lands after them in the
-/// usual case. A key manager API that sets the index and persists it in one serialized write would close that gap
-/// (seam for the key-file owner).
-/// </remarks>
 public sealed class SecureKeyManagerKeyIndexReserver : IChannelKeyIndexReserver
 {
-    private static readonly TimeSpan s_settleDelay = TimeSpan.FromMilliseconds(200);
-
     private readonly ISecureKeyManager _keyManager;
     private readonly ILogger<SecureKeyManagerKeyIndexReserver> _logger;
     private readonly Lock _gate = new();
@@ -35,29 +29,42 @@ public sealed class SecureKeyManagerKeyIndexReserver : IChannelKeyIndexReserver
     }
 
     /// <inheritdoc />
-    public async Task<uint> ReserveThroughAsync(uint highestUsedIndex, CancellationToken cancellationToken)
+    public Task<uint> ReserveThroughAsync(uint highestUsedIndex, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (_keyManager is SecureKeyManager fileBacked)
+        {
+            if (fileBacked.EnsureLastUsedChannelIndexAtLeast(highestUsedIndex))
+                _logger.LogWarning("The key file's last used channel index was below the restored channels' highest "
+                                 + "({Index}); raised it", highestUsedIndex);
+            return Task.FromResult(highestUsedIndex);
+        }
+
         uint index;
         var advanced = 0u;
         lock (_gate)
         {
-            do
+            _keyManager.GetNextChannelKey(out index);
+            advanced++;
+            while (index < highestUsedIndex)
             {
+                var previous = index;
                 _keyManager.GetNextChannelKey(out index);
                 advanced++;
-            } while (index < highestUsedIndex);
+
+                // A key manager that does not advance would loop forever (and hand out a restored channel's index)
+                if (index <= previous)
+                    throw new InvalidOperationException(
+                        $"The key manager's channel index did not advance past {previous} while reserving up to "
+                      + $"{highestUsedIndex}");
+            }
         }
 
         if (advanced > 1)
-            _logger.LogWarning("The key file's last used channel index was below the restored channels' highest ({Index})"
-                             + "; advanced it to {Last}", highestUsedIndex, index);
+            _logger.LogWarning("The key manager's last used channel index was below the restored channels' highest "
+                             + "({Index}); advanced it to {Last}", highestUsedIndex, index);
 
-        if (_keyManager is SecureKeyManager fileBacked)
-        {
-            await Task.Delay(s_settleDelay, cancellationToken);
-            await fileBacked.UpdateLastUsedChannelIndexOnFile();
-        }
-
-        return index;
+        return Task.FromResult(index);
     }
 }

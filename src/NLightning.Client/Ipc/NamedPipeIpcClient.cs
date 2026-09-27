@@ -303,7 +303,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Disconnects a peer (ClientCommand 21); refused while its channels have HTLCs in flight unless forced.
+    /// Disconnects a peer (ClientCommand 24); refused while its channels have HTLCs in flight unless forced.
     /// </summary>
     /// <param name="nodeId">The peer.</param>
     /// <param name="force">Disconnect even with HTLCs in flight.</param>
@@ -331,7 +331,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Exports the static channel backup, encrypted to the node key (ClientCommand 21).
+    /// Exports the static channel backup, encrypted to the node key (ClientCommand 24).
     /// </summary>
     /// <param name="channelId">Only this channel, when set.</param>
     /// <param name="ct">Cancels the call.</param>

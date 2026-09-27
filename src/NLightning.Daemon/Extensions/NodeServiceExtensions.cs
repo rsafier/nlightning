@@ -14,6 +14,7 @@ using Application.Gossip.Graph;
 using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Relay;
 using Application.Gossip.Sync;
+using Application.Node.PeerStorage;
 using Application.Onchain;
 using Application.Onchain.Anchors;
 using Application.Onchain.Mempool;
@@ -73,6 +74,10 @@ public static class NodeServiceExtensions
 
             // Register the main daemon service
             services.AddHostedService<NltgDaemonService>();
+
+            // Static channel backups (wave rf1 R1): <configPath>/channel.backup and its monitor, started after the
+            // daemon service loaded the channels and stopped before it
+            services.AddChannelBackupFile(configPath);
 
             // IPC server pieces that need the config path
             services.AddSingleton<INamedPipeIpcService>(sp =>
@@ -199,6 +204,16 @@ public static class NodeServiceExtensions
         services.AddSingleton<IIpcCommandHandler, ListGraphChannelsIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, GetRouteIpcHandler>();
         services.AddSingleton<IIpcCommandHandler, DescribeGraphIpcHandler>();
+
+        // Static channel backups and restore (wave rf1 R1, ClientCommand 21-23) and the operator commands (wave rf1
+        // R4, disconnect = ClientCommand 24); each registers its client and IPC handlers once
+        services.AddChannelBackupNodeServices(configuration);
+        services.AddOperatorIpcServices();
+
+        // BOLT 1 peer storage (wave rf1 R2, NL-010): after the backup services, so a static-channel-backup blob
+        // provider registered there would win over the default channel list (TryAdd keeps the first)
+        services.Configure<PeerStorageOptions>(configuration.GetSection(PeerStorageOptions.SectionName));
+        services.AddPeerStorageServices();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

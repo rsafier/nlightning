@@ -11,6 +11,7 @@ public interface IChannelKeyIndexReserver
     /// Advances the key manager's last used channel index to at least <paramref name="highestUsedIndex"/> and persists
     /// it before returning.
     /// </summary>
-    /// <returns>The last used index afterwards (at least <paramref name="highestUsedIndex"/>).</returns>
+    /// <returns>The last used index afterwards, or a lower bound of it that is at least
+    /// <paramref name="highestUsedIndex"/>.</returns>
     Task<uint> ReserveThroughAsync(uint highestUsedIndex, CancellationToken cancellationToken);
 }

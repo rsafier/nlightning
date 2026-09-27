@@ -11,7 +11,6 @@ namespace NLightning.Integration.Tests.Docker;
 
 using Abcd;
 using Application.Channels.Backup;
-using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.ValueObjects;
@@ -89,8 +88,7 @@ public class BackupRestoreFlowTests : IAsyncLifetime
                                                   ct,
                                                   o => o.Features.OptionAnchors = anchors
                                                                                      ? FeatureSupport.Optional
-                                                                                     : FeatureSupport.No,
-                                                  n => n.ConfigureServices = AddBackupServices);
+                                                                                     : FeatureSupport.No);
         var channel = await OpenChannelAsync(node, david, anchors, ct);
         await AnchorsHarness.PayLndAsync(node, david, channel.ChannelId, channel.ChannelPoint(), 50_000, ct);
         await AnchorsHarness.PayLndAsync(node, david, channel.ChannelId, channel.ChannelPoint(), 20_000, ct);
@@ -216,9 +214,6 @@ public class BackupRestoreFlowTests : IAsyncLifetime
         Console.WriteLine($"{lnd.LocalAlias} force-closed with {commitment.GetHash()} before the restore");
         return commitment;
     }
-
-    private static void AddBackupServices(IServiceCollection services) =>
-        services.AddChannelBackupNodeServices(new ConfigurationBuilder().Build());
 
     private static async Task<TResponse> HandleAsync<TRequest, TResponse>(NLightningTestNode node, TRequest request,
                                                                           CancellationToken ct)

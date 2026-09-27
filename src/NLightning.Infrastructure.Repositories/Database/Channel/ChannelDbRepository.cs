@@ -169,6 +169,18 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     /// <inheritdoc />
     public Task<bool> ExistsAsync(ChannelId channelId) => DbSet.AsNoTracking().AnyAsync(c => c.ChannelId == channelId);
 
+    /// <inheritdoc />
+    public async Task<uint> GetHighestLocalKeyIndexAsync()
+    {
+        var indexes = await DbSet.AsNoTracking()
+                                 .SelectMany(c => c.KeySets!)
+                                 .Where(k => k.IsLocal)
+                                 .Select(k => k.KeyIndex)
+                                 .ToListAsync();
+
+        return indexes.Count == 0 ? 0 : indexes.Max();
+    }
+
     public async Task<IEnumerable<ChannelModel>> GetAllAsync()
     {
         var channelEntities = await DbSet

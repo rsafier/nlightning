@@ -6,6 +6,7 @@ namespace NLightning.Integration.Tests.Persistence;
 
 using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Protocol.Models;
@@ -329,6 +330,38 @@ public class ChannelDbRepositoryTests
         Assert.Contains((first.ChannelId, new ShortChannelId(16_000_000, 1, 0)), aliases);
         Assert.Contains((second.ChannelId, new ShortChannelId(16_000_000, 2, 0)), aliases);
         Assert.Contains((second.ChannelId, new ShortChannelId(16_000_000, 3, 0)), aliases);
+    }
+
+    [Fact]
+    public async Task Given_NoChannel_When_GettingHighestLocalKeyIndex_Then_ItIsZero()
+    {
+        // Arrange
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        await using var context = db.CreateDbContext();
+
+        // Act
+        var highest = await new ChannelDbRepository(context, db.Sha256).GetHighestLocalKeyIndexAsync();
+
+        // Assert
+        Assert.Equal(0u, highest);
+    }
+
+    [Fact]
+    public async Task Given_ChannelsInAnyState_When_GettingHighestLocalKeyIndex_Then_OurHighestIndexIsReturned()
+    {
+        // Arrange (SR-19: a closed channel's index counts too; the peer's key set never does)
+        await using var db = await SqliteDbTestContext.CreateAsync(TestContext.Current.CancellationToken);
+        var open = SqliteDbTestContext.CreateChannel(true, localKeyIndex: 3, remoteKeyIndex: 500);
+        var closed = SqliteDbTestContext.CreateChannel(false, state: ChannelState.Closed, localKeyIndex: 7);
+        await SaveAndReloadAsync(db, open);
+        await SaveAndReloadAsync(db, closed);
+
+        // Act
+        await using var context = db.CreateDbContext();
+        var highest = await new ChannelDbRepository(context, db.Sha256).GetHighestLocalKeyIndexAsync();
+
+        // Assert
+        Assert.Equal(7u, highest);
     }
 
     [Fact]

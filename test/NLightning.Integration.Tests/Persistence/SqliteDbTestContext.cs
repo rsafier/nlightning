@@ -103,7 +103,8 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                              FeatureSupport useScidAlias = FeatureSupport.No,
                                              ulong localCommitmentNumber = 0, ulong remoteCommitmentNumber = 0,
                                              ulong? localRevocationNumber = null,
-                                             ulong? remoteRevocationNumber = null)
+                                             ulong? remoteRevocationNumber = null, uint localKeyIndex = 0,
+                                             uint remoteKeyIndex = 0)
     {
         var sha256 = new Sha256();
         var config = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Satoshis(253),
@@ -111,9 +112,9 @@ internal sealed class SqliteDbTestContext : IAsyncDisposable
                                        LightningMoney.Satoshis(100_000), 3, false, LightningMoney.Satoshis(546), 144,
                                        useScidAlias);
 
-        var localKeySet = new ChannelKeySetModel(0, LocalFundingPubKey, LocalFundingPubKey, LocalPaymentBasepoint,
+        var localKeySet = new ChannelKeySetModel(localKeyIndex, LocalFundingPubKey, LocalFundingPubKey, LocalPaymentBasepoint,
                                                  LocalFundingPubKey, LocalFundingPubKey, LocalFundingPubKey);
-        var remoteKeySet = new ChannelKeySetModel(0, RemoteFundingPubKey, RemoteFundingPubKey,
+        var remoteKeySet = new ChannelKeySetModel(remoteKeyIndex, RemoteFundingPubKey, RemoteFundingPubKey,
                                                   RemotePaymentBasepoint, RemoteFundingPubKey, RemoteFundingPubKey,
                                                   RemoteFundingPubKey);
 

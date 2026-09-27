@@ -12,7 +12,7 @@ using Domain.Node.Interfaces;
 using Interfaces;
 
 /// <summary>
-/// Disconnects a connected peer (ClientCommand 21, NL-152).
+/// Disconnects a connected peer (ClientCommand 24, NL-152).
 /// </summary>
 /// <remarks>
 /// Refused with <see cref="ErrorCodes.InvalidOperation"/> while the peer's channels have HTLCs in flight, unless the

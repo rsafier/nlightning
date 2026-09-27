@@ -34,9 +34,11 @@ using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
+using Domain.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -257,6 +259,31 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(scope.ServiceProvider
                             .GetRequiredService<IClientCommandHandler<ListPaymentsClientRequest,
                                  ListPaymentsClientResponse>>());
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheWaveRf1CommandsAndPeerStorageAreWiredOnce()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+
+        // Assert: backups (R1), disconnect (R4) and the peer storage service (R2) come from the shared composition
+        Assert.Contains(ClientCommand.ExportChanBackup, commands);
+        Assert.Contains(ClientCommand.VerifyChanBackup, commands);
+        Assert.Contains(ClientCommand.RestoreChanBackup, commands);
+        Assert.Contains(ClientCommand.DisconnectPeer, commands);
+        Assert.Equal(commands.Count, commands.Distinct().Count());
+        Assert.NotNull(provider.GetRequiredService<IIpcRequestRouter>());
+        Assert.NotNull(provider.GetRequiredService<IPeerStorageService>());
+        Assert.Equal(FeatureSupport.Optional,
+                     provider.GetRequiredService<IOptions<NodeOptions>>().Value.Features.OptionProvideStorage);
     }
 
     [Fact]
