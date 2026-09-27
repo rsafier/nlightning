@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Handlers;
 
+using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
@@ -81,13 +82,16 @@ public sealed class SpliceOutClientHandler : IClientCommandHandler<SpliceOutClie
 /// cap); everything else (35 and 63 negotiated, the channel <c>Open</c>, no <c>shutdown</c>, no unlocked splice, the
 /// balance or the wallet) is the service's rule set, SP-S-01/02.</para>
 /// <para>Errors: an unknown channel (<see cref="KeyNotFoundException"/>) is <see cref="ErrorCodes.InvalidChannel"/>; a
-/// refused rule (<see cref="InvalidOperationException"/>) is <see cref="ErrorCodes.InvalidOperation"/> with the
-/// service's reason; a wallet too small for a splice-in or the anchors reserve
-/// (<see cref="InsufficientFundsException"/>) is <see cref="ErrorCodes.NotEnoughBalance"/>; an address the service
-/// refuses (<see cref="ArgumentException"/>) is <see cref="ErrorCodes.InvalidAddress"/>.</para>
+/// refused rule (<see cref="InvalidOperationException"/>) or the service's own <see cref="TimeoutException"/> is
+/// <see cref="ErrorCodes.InvalidOperation"/> with the service's reason; a wallet too small for a splice-in or the
+/// anchors reserve (<see cref="InsufficientFundsException"/>) is <see cref="ErrorCodes.NotEnoughBalance"/>; an address
+/// the service refuses (a plain <see cref="ArgumentException"/> whose <c>ParamName</c> is
+/// <c>nameof(SpliceRequest.SpliceOutAddress)</c>) is <see cref="ErrorCodes.InvalidAddress"/>, any other
+/// <see cref="ArgumentException"/> is <see cref="ErrorCodes.InvalidOperation"/>.</para>
 /// <para>Wait: the call returns when the negotiation is signed or ended, or after the handler's wait (default
-/// <see cref="DefaultMaxWait"/>). The splice is not cancelled then: the response carries the negotiation's state at
-/// that moment, and the splice goes on (it holds one IPC pipe instance, so the wait is bounded as
+/// <see cref="DefaultMaxWait"/>). The splice is not cancelled then: the response carries the state of the negotiation
+/// this call started (<c>AwaitingQuiescence</c> with no txid while the service has not registered it; a previous
+/// splice's negotiation is never reported), the splice goes on and its outcome is logged when it ends (it holds one IPC pipe instance, so the wait is bounded as
 /// <c>closechannel</c>'s is).</para>
 /// </remarks>
 internal sealed class SpliceCommand
@@ -129,22 +133,30 @@ internal sealed class SpliceCommand
                                     + $"{MaxFeeRatePerKw} sat/kw.");
 
         var request = toSpliceRequest();
+        var startedAt = DateTimeOffset.UtcNow;
+        Task<SpliceResult>? startTask = null;
         SpliceResult result;
         try
         {
-            result = await _spliceService.StartAsync(request, ct).WaitAsync(_maxWait, ct);
+            startTask = _spliceService.StartAsync(request, ct);
+            result = await startTask.WaitAsync(_maxWait, ct);
         }
-        catch (TimeoutException)
+        catch (TimeoutException) when (startTask is { IsCompleted: false })
         {
-            // The splice goes on; report how far it got
+            // Our wait expired, the splice goes on: report how far it got, and log how it ends
+            ObserveOutcome(startTask, channelId, request);
             var negotiation = _spliceService.GetNegotiation(channelId);
-            _logger.LogInformation("splice on {ChannelId}: still {State} after {Wait}", channelId,
-                                   negotiation?.State ?? SpliceNegotiationState.AwaitingQuiescence, _maxWait);
-            return new SpliceClientResponse(channelId,
-                                            negotiation?.State ?? SpliceNegotiationState.AwaitingQuiescence)
-            {
-                SpliceTxId = negotiation?.SpliceTxId
-            };
+            if (negotiation is not null && !IsOurs(negotiation, request, startedAt))
+                negotiation = null;
+
+            var state = negotiation?.State ?? SpliceNegotiationState.AwaitingQuiescence;
+            _logger.LogInformation("splice on {ChannelId}: still {State} after {Wait}", channelId, state, _maxWait);
+            return new SpliceClientResponse(channelId, state) { SpliceTxId = negotiation?.SpliceTxId };
+        }
+        catch (TimeoutException e)
+        {
+            // The service's own timeout (a quiescence that never came, say) ended the splice
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message, e);
         }
         catch (KeyNotFoundException e)
         {
@@ -154,9 +166,14 @@ internal sealed class SpliceCommand
         {
             throw new ClientException(ErrorCodes.NotEnoughBalance, e.Message, e);
         }
-        catch (ArgumentException e) when (address is not null)
+        catch (ArgumentException e) when (address is not null && IsAddressRefusal(e))
         {
             throw new ClientException(ErrorCodes.InvalidAddress, e.Message, e);
+        }
+        catch (ArgumentException e)
+        {
+            // Not about the address: a bound the service refused (the amount, the feerate)
+            throw new ClientException(ErrorCodes.InvalidOperation, e.Message, e);
         }
         catch (InvalidOperationException e)
         {
@@ -175,5 +192,42 @@ internal sealed class SpliceCommand
             NewCapacitySat = result.NewCapacitySatoshis,
             FailureReason = result.FailureReason
         };
+    }
+
+    /// <summary>
+    /// The service refused the splice-out address: an <see cref="ArgumentException"/> itself (not a subclass such as
+    /// <see cref="ArgumentNullException"/>) naming <see cref="SpliceRequest.SpliceOutAddress"/>.
+    /// </summary>
+    private static bool IsAddressRefusal(ArgumentException e) =>
+        e.GetType() == typeof(ArgumentException) && e.ParamName == nameof(SpliceRequest.SpliceOutAddress);
+
+    /// <summary>
+    /// The stored negotiation belongs to this call: one we initiated, created after the call started, with a
+    /// contribution in the request's direction. A previous splice's (signed) negotiation is not reported as this one.
+    /// </summary>
+    private static bool IsOurs(SpliceNegotiationModel negotiation, SpliceRequest request, DateTimeOffset startedAt) =>
+        negotiation.IsInitiator
+     && negotiation.CreatedAt >= startedAt
+     && Math.Sign(negotiation.LocalContributionSatoshis) == Math.Sign(request.ContributionSatoshis);
+
+    /// <summary>Logs how a splice the caller stopped waiting for ends, so a late failure is not lost.</summary>
+    private void ObserveOutcome(Task<SpliceResult> startTask, ChannelId channelId, SpliceRequest request)
+    {
+        _ = startTask.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                _logger.LogWarning(t.Exception?.GetBaseException(),
+                                   "splice on {ChannelId} (contribution {Contribution} sat) failed after the IPC wait",
+                                   channelId, request.ContributionSatoshis);
+            else if (t.IsCanceled)
+                _logger.LogWarning("splice on {ChannelId} (contribution {Contribution} sat) was cancelled after the "
+                                 + "IPC wait", channelId, request.ContributionSatoshis);
+            else
+                _logger.LogInformation("splice on {ChannelId} (contribution {Contribution} sat) ended after the IPC "
+                                     + "wait: {State}, txid {TxId}, new capacity {Capacity} sat{Reason}", channelId,
+                                       request.ContributionSatoshis, t.Result.State, t.Result.SpliceTxId,
+                                       t.Result.NewCapacitySatoshis,
+                                       t.Result.FailureReason is null ? string.Empty : $" ({t.Result.FailureReason})");
+        }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }

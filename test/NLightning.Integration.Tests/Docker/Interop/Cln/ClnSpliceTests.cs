@@ -240,7 +240,8 @@ public sealed class ClnSpliceTests : IAsyncLifetime
 
     /// <summary>
     /// Proof SP1 (c): we splice 50,000 sat out to an address of bitcoind's wallet (<c>spliceout --address</c>). The
-    /// transaction pays exactly 50,000 sat to that address; the capacity drops by the amount plus the whole fee (we are
+    /// transaction pays exactly 50,000 sat to that address; our <c>splice_init</c> carries -(50,000 + fee) (BOLT 2: the
+    /// contribution is what leaves our balance, D16), so the capacity drops by the amount plus the whole fee (we are
     /// the initiator and CLN adds nothing); the address has received it once the splice confirms; our balance drops by
     /// the same.
     /// </summary>
@@ -257,20 +258,24 @@ public sealed class ClnSpliceTests : IAsyncLifetime
         // Act
         var response = await SpliceOutAsync(session, 50_000, address.ToString(), ct);
 
-        // Assert: our splice_init carries -50,000 (the fee comes out of our balance on top, IT-S-03)
+        // Assert: the splice was signed
         Assert.Equal(SpliceNegotiationState.Signed, response.State);
         Assert.Null(response.FailureReason);
         Assert.NotNull(response.SpliceTxId);
         var spliceTxId = new uint256((byte[])response.SpliceTxId.Value);
         var init = wire.First(inbound: false, MessageTypes.SpliceInit, from);
-        Assert.Equal(-50_000, init.SpliceContributionSatoshis);
         Assert.Equal(0, wire.First(inbound: true, MessageTypes.SpliceAck, from).SpliceContributionSatoshis);
         var signaturesAt = await AssertSignedSpliceAsync(session, wire, from, spliceTxId, ct);
 
-        // ...the transaction pays the address and funds the channel with the rest, at our feerate (f)
+        // ...our splice_init carries -(50,000 + fee): BOLT 2 sets funding_contribution_satoshis to what leaves our
+        // balance, and the new funding output is the previous capacity plus the contributions (D16, as CLN does in (d))
         var fee = await GetFeeAsync(spliceTxId, ct);
+        Assert.Equal(-(long)(50_000 + fee), init.SpliceContributionSatoshis);
         var expectedCapacity = before.CapacitySat - 50_000 - fee;
+        Assert.Equal(expectedCapacity, (ulong)((long)before.CapacitySat + init.SpliceContributionSatoshis));
         Assert.Equal(expectedCapacity, response.NewCapacitySat);
+
+        // ...the transaction pays the address and funds the channel with the rest, at our feerate (f)
         var tx = await AssertSpliceTransactionAsync(before, spliceTxId, expectedCapacity, OurFeeRatePerKw,
                                                     ct);
         Assert.Single(tx.Outputs, o => o.ScriptPubKey == address.ScriptPubKey

@@ -1,5 +1,6 @@
 using MessagePack;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Daemon.Tests.Ipc.Handlers;
@@ -219,7 +220,8 @@ public class SpliceIpcHandlerTests
     {
         // Arrange
         _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
-                      .ThrowsAsync(new ArgumentException("not a regtest address"));
+                      .ThrowsAsync(new ArgumentException("not a regtest address",
+                                                         nameof(SpliceRequest.SpliceOutAddress)));
         var handler = GetHandler(ClientCommand.SpliceOut);
 
         // Act
@@ -235,7 +237,41 @@ public class SpliceIpcHandlerTests
         // Assert
         var error = AssertError(response);
         Assert.Equal(ErrorCodes.InvalidAddress, error.Code);
-        Assert.Equal("not a regtest address", error.Message);
+        Assert.StartsWith("not a regtest address", error.Message);
+    }
+
+    public static TheoryData<ArgumentException> NotAboutTheAddress => new()
+    {
+        new ArgumentOutOfRangeException(nameof(SpliceRequest.FeeratePerKw), "feerate out of range"),
+        new ArgumentNullException(nameof(SpliceRequest.SpliceOutAddress), "a bug inside the service"),
+        new ArgumentException("contribution too large", nameof(SpliceRequest.ContributionSatoshis)),
+        new ArgumentException("no parameter named")
+    };
+
+    [Theory]
+    [MemberData(nameof(NotAboutTheAddress))]
+    public async Task Given_AnArgumentExceptionNotAboutTheAddress_When_SplicingOut_Then_InvalidOperation(
+        ArgumentException exception)
+    {
+        // Arrange
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .ThrowsAsync(exception);
+        var handler = GetHandler(ClientCommand.SpliceOut);
+
+        // Act
+        var response = await handler.HandleAsync(
+                           CreateEnvelope(ClientCommand.SpliceOut,
+                                          new SpliceOutIpcRequest
+                                          {
+                                              ChannelId = s_channelId,
+                                              AmountSat = 10_000,
+                                              Address = Address
+                                          }), TestContext.Current.CancellationToken);
+
+        // Assert
+        var error = AssertError(response);
+        Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+        Assert.Equal(exception.Message, error.Message);
     }
 
     [Fact]
@@ -318,10 +354,8 @@ public class SpliceIpcHandlerTests
         _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
                       .Returns(pending.Task);
         _spliceService.Setup(s => s.GetNegotiation(s_channelId))
-                      .Returns(new SpliceNegotiationModel(s_channelId, true, 10_000, 0, 2_500, 0,
-                                                          new CompactPubKey([0x02, .. new byte[32]]), 1, null, false, false,
-                                                          null, SpliceNegotiationState.CommitmentSigned, s_txId,
-                                                          DateTimeOffset.UnixEpoch));
+                      .Returns(() => CreateNegotiation(10_000, SpliceNegotiationState.CommitmentSigned,
+                                                       DateTimeOffset.UtcNow));
         var handler = new SpliceInClientHandler(_spliceService.Object, NullLogger<SpliceInClientHandler>.Instance,
                                                 TimeSpan.FromMilliseconds(50));
 
@@ -334,6 +368,102 @@ public class SpliceIpcHandlerTests
         Assert.Equal(s_txId, response.SpliceTxId);
         Assert.Null(response.FailureReason);
         Assert.False(pending.Task.IsCompleted);
+    }
+
+    [Fact]
+    public async Task Given_APreviousSignedSpliceDuringTheWait_When_SplicingIn_Then_AwaitingQuiescenceWithoutItsTxId()
+    {
+        // Arrange: the service has not registered this call's negotiation yet (waiting for quiescence); the stored one
+        // is the previous splice's, signed an hour ago
+        var pending = new TaskCompletionSource<SpliceResult>();
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .Returns(pending.Task);
+        _spliceService.Setup(s => s.GetNegotiation(s_channelId))
+                      .Returns(CreateNegotiation(20_000, SpliceNegotiationState.Signed,
+                                                 DateTimeOffset.UtcNow.AddHours(-1)));
+        var handler = new SpliceInClientHandler(_spliceService.Object, NullLogger<SpliceInClientHandler>.Instance,
+                                                TimeSpan.FromMilliseconds(50));
+
+        // Act
+        var response = await handler.HandleAsync(new SpliceInClientRequest(s_channelId, 10_000),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.AwaitingQuiescence, response.State);
+        Assert.Null(response.SpliceTxId);
+        Assert.Null(response.NewCapacitySat);
+    }
+
+    [Fact]
+    public async Task Given_ASpliceOutNegotiationOfThePeerDuringTheWait_When_SplicingIn_Then_ItIsNotReported()
+    {
+        // Arrange: a fresh negotiation, but in the other direction (not this call's)
+        var pending = new TaskCompletionSource<SpliceResult>();
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .Returns(pending.Task);
+        _spliceService.Setup(s => s.GetNegotiation(s_channelId))
+                      .Returns(() => CreateNegotiation(-10_000, SpliceNegotiationState.CommitmentSigned,
+                                                       DateTimeOffset.UtcNow));
+        var handler = new SpliceInClientHandler(_spliceService.Object, NullLogger<SpliceInClientHandler>.Instance,
+                                                TimeSpan.FromMilliseconds(50));
+
+        // Act
+        var response = await handler.HandleAsync(new SpliceInClientRequest(s_channelId, 10_000),
+                                                 TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(SpliceNegotiationState.AwaitingQuiescence, response.State);
+        Assert.Null(response.SpliceTxId);
+    }
+
+    [Fact]
+    public async Task Given_TheServiceTimesOutItself_When_SplicingIn_Then_InvalidOperationNotStillRunning()
+    {
+        // Arrange: the service ended the splice with its own timeout (quiescence never came)
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .ThrowsAsync(new TimeoutException("quiescence timed out"));
+        _spliceService.Setup(s => s.GetNegotiation(s_channelId))
+                      .Returns(() => CreateNegotiation(10_000, SpliceNegotiationState.AwaitingQuiescence,
+                                                       DateTimeOffset.UtcNow));
+        var handler = GetHandler(ClientCommand.SpliceIn);
+
+        // Act
+        var response = await handler.HandleAsync(
+                           CreateEnvelope(ClientCommand.SpliceIn,
+                                          new SpliceInIpcRequest { ChannelId = s_channelId, AmountSat = 10_000 }),
+                           TestContext.Current.CancellationToken);
+
+        // Assert
+        var error = AssertError(response);
+        Assert.Equal(ErrorCodes.InvalidOperation, error.Code);
+        Assert.Equal("quiescence timed out", error.Message);
+    }
+
+    [Fact]
+    public async Task Given_TheSpliceFailsAfterTheWait_When_ItEnds_Then_TheFailureIsLogged()
+    {
+        // Arrange
+        var pending = new TaskCompletionSource<SpliceResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _spliceService.Setup(s => s.StartAsync(It.IsAny<SpliceRequest>(), It.IsAny<CancellationToken>()))
+                      .Returns(pending.Task);
+        var logger = new Mock<ILogger<SpliceInClientHandler>>();
+        logger.Setup(l => l.IsEnabled(It.IsAny<LogLevel>())).Returns(true);
+        var failure = new InvalidOperationException("the signer refused");
+        var logged = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        logger.Setup(l => l.Log(LogLevel.Warning, It.IsAny<EventId>(), It.IsAny<It.IsAnyType>(),
+                                It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()))
+              .Callback(new InvocationAction(i => logged.TrySetResult((Exception?)i.Arguments[3])));
+        var handler = new SpliceInClientHandler(_spliceService.Object, logger.Object, TimeSpan.FromMilliseconds(50));
+        var response = await handler.HandleAsync(new SpliceInClientRequest(s_channelId, 10_000),
+                                                 TestContext.Current.CancellationToken);
+        Assert.Equal(SpliceNegotiationState.AwaitingQuiescence, response.State);
+
+        // Act
+        pending.SetException(failure);
+
+        // Assert
+        var exception = await logged.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Same(failure, exception);
     }
 
     [Fact]
@@ -395,6 +525,14 @@ public class SpliceIpcHandlerTests
         Assert.Null(read.SpliceTxId);
         Assert.Null(read.NewCapacitySat);
         Assert.Null(read.FailureReason);
+    }
+
+    private static SpliceNegotiationModel CreateNegotiation(long contribution, SpliceNegotiationState state,
+                                                            DateTimeOffset createdAt)
+    {
+        return new SpliceNegotiationModel(s_channelId, true, contribution, 0, 2_500, 0,
+                                          new CompactPubKey([0x02, .. new byte[32]]), 1, null, false, false, null,
+                                          state, s_txId, createdAt);
     }
 
     private static SpliceIpcResponse AssertResponse(IpcEnvelope response)
