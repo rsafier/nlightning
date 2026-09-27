@@ -21,6 +21,13 @@ public sealed class FundingOutputLookupOptions
     /// </summary>
     public int ChainLookupCacheHeights { get; set; } = 256;
 
+    /// <summary>
+    /// How long an "only spent in the mempool" answer is reused for the same short channel id while no new block was
+    /// seen (<c>Gossip:MempoolSpentRecheckInterval</c>, default 10 minutes, about one block; NL-414). A new block ends
+    /// it at once; the interval only bounds it when no block is reported (bitcoind stalled, or no chain monitor).
+    /// </summary>
+    public TimeSpan MempoolSpentRecheckInterval { get; set; } = TimeSpan.FromMinutes(10);
+
     /// <summary>The invalid settings, empty when valid.</summary>
     public IReadOnlyList<string> GetValidationErrors()
     {
@@ -31,6 +38,8 @@ public sealed class FundingOutputLookupOptions
             errors.Add($"{nameof(ChainLookupsPerSecond)} must be at least 1");
         if (ChainLookupCacheHeights < 1)
             errors.Add($"{nameof(ChainLookupCacheHeights)} must be at least 1");
+        if (MempoolSpentRecheckInterval < TimeSpan.Zero)
+            errors.Add($"{nameof(MempoolSpentRecheckInterval)} must not be negative");
         return errors;
     }
 }
