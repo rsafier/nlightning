@@ -16,6 +16,13 @@ using Domain.Crypto.ValueObjects;
 /// most <see cref="TemporaryChannelTimeout"/>: once expired it is no longer found and is dropped, so an open the peer
 /// abandons while it stays connected does not stay in memory (NL-392). A disconnection removes the peer's temporary
 /// channels at once (<see cref="RemoveTemporaryChannels"/>).
+/// <para>
+/// These removals (disconnection, lazy expiry on any lookup or add) run outside the channel lock, which is benign: the
+/// handler that holds the lock (accept_channel as opener, funding_created as fundee) keeps its own reference to the
+/// temporary channel, and <see cref="UpgradeChannel"/> tolerates a missing temporary entry (it only logs). The
+/// opener's failed-open cleanup, which also returns the funding UTXOs, does take the lock
+/// (<c>OpenChannelClientHandler</c>).
+/// </para>
 /// </remarks>
 public class ChannelMemoryRepository : IChannelMemoryRepository
 {

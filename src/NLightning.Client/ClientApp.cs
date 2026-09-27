@@ -413,7 +413,6 @@ internal static class ClientApp
         }
     }
 
-    /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
     /// <summary>
     /// <c>&lt;node_id&gt; [--force]</c> of disconnect, in any order.
     /// </summary>
@@ -456,6 +455,7 @@ internal static class ClientApp
         return (nodeId.Value, force);
     }
 
+    /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
     internal static bool TryParseNodeId(string value, out CompactPubKey nodeId)
     {
         nodeId = default;
