@@ -133,13 +133,15 @@ public class BackupRestoreFlowTests : IAsyncLifetime
         Assert.Equal("Restore", restored.Outcome);
         Assert.Equal(anchors, restored.OptionAnchors);
         Assert.True(node.ChannelMemoryRepository.TryGetChannel(channel.ChannelId, out var recovery));
-        Assert.True(RecoveryChannels.IsRecoveryChannel(recovery!));
         if (peerClosesFirst)
         {
+            // The earlier spend was handed to the on-chain watcher during the restore: already resolving
             Assert.Contains("already closed", restored.Detail);
+            Assert.Equal(ChannelState.OnchainResolving, recovery!.State);
         }
         else
         {
+            Assert.True(RecoveryChannels.IsRecoveryChannel(recovery!));
             Assert.True(Assert.Single(restore.Peers).Connected, restore.Peers[0].Error);
 
             // LND force-closes: its commitment spends the funding output
