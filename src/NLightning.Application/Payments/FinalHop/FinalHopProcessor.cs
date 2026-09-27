@@ -22,7 +22,8 @@ using Domain.Protocol.Onion.Models;
 ///   with the HTLC <c>cltv_expiry</c>.</item>
 ///   <item>Everything about the invoice → <c>incorrect_or_unknown_payment_details</c> (PERM|15) with
 ///   (HTLC <c>amount_msat</c>, current height), so a probe cannot tell the cases apart: no <c>payment_data</c>;
-///   unknown <c>payment_hash</c>; invoice canceled, expired, or already accepted/settled (BOLT 4 lets us treat a paid
+///   unknown <c>payment_hash</c>; an HTLC outside a blinded route for a BOLT 12 invoice (BOLT 12 "Invoices": the
+///   writer SHOULD ignore payments that do not use one of the invoice's paths); invoice canceled, expired, or already accepted/settled (BOLT 4 lets us treat a paid
 ///   hash as unknown; the one exception is below); <c>payment_secret</c> mismatch; <c>total_msat</c> !=
 ///   <c>amt_to_forward</c> when multi-part payments are off (BOLT 4: a node without <c>basic_mpp</c> MUST fail it);
 ///   amount paid (<c>total_msat</c>, BOLT 4 "Basic Multi-Part Payments") below the invoice amount or more than twice
@@ -166,6 +167,11 @@ public sealed class FinalHopProcessor
 
         if (invoice is null || invoice.PaymentHash != paymentHash)
             return Unknown("Unknown payment hash.");
+
+        // BOLT 12 "Invoices" writer: SHOULD ignore any payment which does not use one of the invoice's paths. Our
+        // BOLT 12 invoices are paid only at the end of their blinded paths (B12-INV-02, plan B3-T4)
+        if (!payload.IsBlinded && invoice.Kind == InvoiceKind.Bolt12)
+            return Unknown("A BOLT 12 invoice is paid only through its blinded paths.");
 
         // Only a Settled invoice commits to its set (the settle is the commit point): for any other status a mark
         // skips no check
