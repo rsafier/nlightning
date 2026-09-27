@@ -33,16 +33,21 @@ using Gossip.Graph.Interfaces;
 /// unblinds the <c>encrypted_recipient_data</c>; then it forwards (a non-final hop that carries only
 /// <c>encrypted_recipient_data</c>, no <c>path_id</c>, and names the next node by id or by a SCID of ours) to the next
 /// peer if it is connected, negotiated onion messages and is not the sender, with the next path key
-/// (<c>next_path_key_override</c> or the derived one); or it delivers a final hop with at most one payload field to
+/// (<c>next_path_key_override</c> or the derived one), queued on that peer's capped outbox
+/// (<see cref="IPeerOnionMessageOutbox"/>, never awaited: a peer that stops reading only loses its own onion messages,
+/// counted as <c>outbox_full</c>); or it delivers a final hop with at most one payload field to
 /// the waiting <see cref="SendAndWaitForReplyAsync"/> caller (a <c>path_id</c> of one of our reply paths) or to the
 /// <see cref="IOnionMessageHandler"/> of its payload type, on a second bounded queue. Anything else is ignored and
 /// counted in <see cref="OnionMessageMetrics"/>: onion messages have no error replies.</para>
 /// <para>Send: a node id is reached through a blinded path we create over the unblinded hops to it (a direct peer, or
 /// a graph path); a blinded path through its introduction node, after unblinding our own hops when the introduction
 /// node is us, with the unblinded prefix ending in <c>next_path_key_override = first_path_key</c> (the packet builder
-/// writes it). We only send to connected peers (plan D6).</para>
+/// writes it). We only send to connected peers (plan D6), through the same outbox; a full one is
+/// <see cref="OnionMessageSendStatus.Dropped"/>.</para>
 /// <para>Off (every incoming message dropped, every send <see cref="OnionMessageSendStatus.NotAvailable"/>) unless we
-/// advertise <c>option_onion_messages</c> and a packet builder is registered.</para>
+/// advertise <c>option_onion_messages</c>, a packet builder and an <see cref="IPeerOnionMessageOutbox"/> are
+/// registered and the <see cref="OnionMessageOptions"/> are valid (invalid ones are logged as an error; the constructor
+/// never throws, since the peer services resolve it while they build every connection).</para>
 /// </remarks>
 public sealed class OnionMessageService : IOnionMessageService, IDisposable
 {
@@ -52,6 +57,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private readonly IRouteBlindingService _routeBlindingService;
     private readonly IOnionMessagePacketBuilder? _packetBuilder;
     private readonly IOnionMessageRateLimiter? _rateLimiter;
+    private readonly IPeerOnionMessageOutbox? _outbox;
     private readonly OnionMessageMetrics _metrics;
     private readonly OnionMessageDispatcher _dispatcher;
     private readonly OnionMessagePathFinder _pathFinder;
@@ -75,12 +81,14 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
                                ILogger<OnionMessageService> logger, IOptions<OnionMessageOptions>? options = null,
                                IOnionMessagePacketBuilder? packetBuilder = null,
                                IOnionMessageRateLimiter? rateLimiter = null, IGraphStore? graphStore = null,
-                               TimeProvider? timeProvider = null)
+                               TimeProvider? timeProvider = null, IPeerOnionMessageOutbox? outbox = null)
     {
         var settings = options?.Value ?? new OnionMessageOptions();
+        // Never throw here: the peer services resolve this singleton while they build every connection, so a bad
+        // section of an off-by-default feature must not stop the node from connecting (it only keeps the service off)
         var errors = settings.GetValidationErrors();
         if (errors.Count > 0)
-            throw new InvalidOperationException("Invalid onion message options: " + string.Join(" ", errors));
+            settings = new OnionMessageOptions();
 
         _sphinxService = sphinxService;
         _routeBlindingService = routeBlindingService;
@@ -89,10 +97,12 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         _metrics = metrics;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _outbox = outbox;
+        DefaultReplyTimeout = settings.ReplyTimeout;
         _ourNodeId = secureKeyManager.GetNodePubKey();
         _dispatcher = new OnionMessageDispatcher(handlers);
         _pathFinder = new OnionMessagePathFinder(peerManager, channelMemoryRepository, _ourNodeId,
-                                                 settings.MaxPathHops, graphStore);
+                                                 settings.MaxPathHops, graphStore, outbox);
         _messagePathFactory = new MessagePathFactory(routeBlindingService);
         _replyPathFactory = new ReplyPathFactory(_messagePathFactory, _pathFinder, _ourNodeId);
         _pendingReplies = new PendingReplyRegistry(settings.MaxPendingReplies);
@@ -110,10 +120,16 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             });
 
         var advertised = nodeOptions.Value.Features.GetNodeFeatures().IsFeatureSet(Feature.OptionOnionMessages);
+        if (errors.Count > 0)
+            _logger.LogError("Invalid {Section} configuration, onion messages stay off: {Errors}",
+                             OnionMessageOptions.SectionName, string.Join(" ", errors));
         if (advertised && packetBuilder is null)
             _logger.LogWarning("option_onion_messages is advertised but no onion message packet builder is "
                              + "registered: onion messages stay off");
-        IsAvailable = advertised && packetBuilder is not null;
+        if (advertised && outbox is null)
+            _logger.LogWarning("option_onion_messages is advertised but no onion message outbox "
+                             + "(IPeerOnionMessageOutbox) is registered: onion messages stay off");
+        IsAvailable = advertised && errors.Count == 0 && packetBuilder is not null && outbox is not null;
         if (!IsAvailable)
             return;
 
@@ -123,6 +139,12 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 
     /// <inheritdoc />
     public bool IsAvailable { get; }
+
+    /// <summary>
+    /// The reply wait of the <see cref="SendAndWaitForReplyAsync(OnionMessageDestination, OnionMessageContents,
+    /// IReadOnlyCollection{ulong}, CancellationToken)"/> overload (<see cref="OnionMessageOptions.ReplyTimeout"/>).
+    /// </summary>
+    public TimeSpan DefaultReplyTimeout { get; }
 
     /// <summary>The waits of <see cref="SendAndWaitForReplyAsync"/> in progress.</summary>
     public int PendingReplies => _pendingReplies.Count;
@@ -157,11 +179,12 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(contents);
+        cancellationToken.ThrowIfCancellationRequested();
         if (!IsAvailable)
             return Task.FromResult(new OnionMessageSendResult(OnionMessageSendStatus.NotAvailable));
 
-        return SendCoreAsync(destination, contents,
-                             replyPath is null ? null : WireBlindedPath.FromBlindedPath(replyPath), cancellationToken);
+        return Task.FromResult(SendCore(destination, contents,
+                                        replyPath is null ? null : WireBlindedPath.FromBlindedPath(replyPath)));
     }
 
     /// <inheritdoc />
@@ -186,8 +209,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         }
 
         var replyPath = _replyPathFactory.Create(pending.PathId);
-        var result = await SendCoreAsync(destination, contents, WireBlindedPath.FromBlindedPath(replyPath),
-                                         cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = SendCore(destination, contents, WireBlindedPath.FromBlindedPath(replyPath));
         if (result.Status != OnionMessageSendStatus.Sent)
             return result;
 
@@ -203,10 +226,19 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     }
 
     /// <summary>
+    /// <see cref="SendAndWaitForReplyAsync(OnionMessageDestination, OnionMessageContents, IReadOnlyCollection{ulong},
+    /// TimeSpan, CancellationToken)"/> with <see cref="DefaultReplyTimeout"/>.
+    /// </summary>
+    public Task<OnionMessageSendResult> SendAndWaitForReplyAsync(OnionMessageDestination destination,
+                                                                 OnionMessageContents contents,
+                                                                 IReadOnlyCollection<ulong> expectedReplyTypes,
+                                                                 CancellationToken cancellationToken = default) =>
+        SendAndWaitForReplyAsync(destination, contents, expectedReplyTypes, DefaultReplyTimeout, cancellationToken);
+
+    /// <summary>
     /// Processes one received message (the worker's body; tests call it directly).
     /// </summary>
-    internal async Task ProcessIncomingAsync(CompactPubKey fromPeer, OnionMessageMessage message,
-                                             CancellationToken cancellationToken)
+    internal void ProcessIncoming(CompactPubKey fromPeer, OnionMessageMessage message)
     {
         var packetBytes = message.Payload.OnionMessagePacket;
         PeeledOnion peeled;
@@ -253,7 +285,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         }
 
         if (peeled.NextPacket is { } nextPacket)
-            await ForwardAsync(fromPeer, tlvs, recipientData, unblinding.NextPathKey, nextPacket, cancellationToken);
+            Forward(fromPeer, tlvs, recipientData, unblinding.NextPathKey, nextPacket);
         else
             Deliver(fromPeer, tlvs, recipientData);
     }
@@ -286,9 +318,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private static bool IsValidMessagePathData(BlindedRecipientData data) =>
         !data.HasAnyAllowedFeature && data.PaymentRelay is null && data.PaymentConstraints is null;
 
-    private async Task ForwardAsync(CompactPubKey fromPeer, OnionMessageTlvs tlvs, BlindedRecipientData recipientData,
-                                    CompactPubKey nextPathKey, OnionPacket nextPacket,
-                                    CancellationToken cancellationToken)
+    private void Forward(CompactPubKey fromPeer, OnionMessageTlvs tlvs, BlindedRecipientData recipientData,
+                         CompactPubKey nextPathKey, OnionPacket nextPacket)
     {
         // BOLT 4 reader, non-final hop: only encrypted_recipient_data, and no path_id
         if (tlvs.ReplyPath is not null || tlvs.OtherRecords.Count > 0)
@@ -325,21 +356,18 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return;
         }
 
-        var peer = _pathFinder.GetOnionMessagePeer(next);
-        if (peer is null)
+        if (!_pathFinder.CanSendTo(next))
         {
             Drop(OnionMessageDropReasons.NextPeerUnreachable, fromPeer);
             return;
         }
 
+        // Queue only: a peer that stops reading fills its own capped outbox and loses onion messages, it never stalls
+        // this worker and so every other peer's messages (plan §3.4)
         var forwarded = new OnionMessageMessage(new OnionMessagePayload(nextPathKey, nextPacket.ToBytes()));
-        try
+        if (!_outbox!.TryEnqueueOnionMessage(next, forwarded))
         {
-            await peer.SendOnionMessageAsync(forwarded, cancellationToken);
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            Drop(OnionMessageDropReasons.SendFailed, fromPeer, e);
+            Drop(OnionMessageDropReasons.OutboxFull, fromPeer);
             return;
         }
 
@@ -392,10 +420,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         _metrics.RecordDelivered("handler");
     }
 
-    private async Task<OnionMessageSendResult> SendCoreAsync(OnionMessageDestination destination,
-                                                             OnionMessageContents contents,
-                                                             WireBlindedPath? replyPath,
-                                                             CancellationToken cancellationToken)
+    private OnionMessageSendResult SendCore(OnionMessageDestination destination, OnionMessageContents contents,
+                                            WireBlindedPath? replyPath)
     {
         if (contents.Records.Any(r => r.Type is OnionMessageConstants.ReplyPathType
                                                or OnionMessageConstants.EncryptedRecipientDataType))
@@ -409,8 +435,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return new OnionMessageSendResult(OnionMessageSendStatus.NoPath);
 
         var firstHop = route.Prefix.Count > 0 ? route.Prefix[0] : route.Path.FirstNodeId;
-        var peer = _pathFinder.GetOnionMessagePeer(firstHop);
-        if (peer is null)
+        if (!_pathFinder.CanSendTo(firstHop))
             return new OnionMessageSendResult(OnionMessageSendStatus.NoPath);
 
         OnionMessageMessage message;
@@ -424,17 +449,10 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             return new OnionMessageSendResult(OnionMessageSendStatus.TooLarge);
         }
 
-        try
+        if (!_outbox!.TryEnqueueOnionMessage(firstHop, message))
         {
-            await peer.SendOnionMessageAsync(message, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception e)
-        {
-            _logger.LogDebug(e, "The connection to {Peer} refused an onion message", firstHop);
+            _metrics.RecordDropped(OnionMessageDropReasons.OutboxFull);
+            _logger.LogDebug("The outbox of {Peer} refused an onion message", firstHop);
             return new OnionMessageSendResult(OnionMessageSendStatus.Dropped);
         }
 
@@ -512,7 +530,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             {
                 try
                 {
-                    await ProcessIncomingAsync(item.FromPeer, item.Message, cancellationToken);
+                    ProcessIncoming(item.FromPeer, item.Message);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {

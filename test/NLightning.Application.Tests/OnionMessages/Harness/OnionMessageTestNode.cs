@@ -14,6 +14,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.ValueObjects;
@@ -25,7 +26,7 @@ using Infrastructure.Bitcoin;
 /// blinding (<c>AddBitcoinInfrastructure</c>) with its own node key, the harness packet builder, and a peer manager
 /// that holds <see cref="LinkedPeerService"/> connections.
 /// </summary>
-internal sealed class OnionMessageTestNode : IDisposable
+internal sealed class OnionMessageTestNode : IDisposable, IPeerOnionMessageOutbox
 {
     private readonly ServiceProvider _provider;
     private readonly ConcurrentDictionary<CompactPubKey, PeerModel> _peers = new();
@@ -33,9 +34,10 @@ internal sealed class OnionMessageTestNode : IDisposable
     public OnionMessageTestNode(string name, byte seed, IEnumerable<IOnionMessageHandler>? handlers = null,
                                 IOnionMessageRateLimiter? rateLimiter = null, bool advertiseOnionMessages = true,
                                 IGraphStore? graphStore = null, OnionMessageOptions? options = null,
-                                TimeProvider? timeProvider = null)
+                                TimeProvider? timeProvider = null, bool registerOutbox = true)
     {
         Name = name;
+        Options = options ?? new OnionMessageOptions();
         KeyManager = new TestNodeKeyManager(seed);
         var nodeOptions = new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest };
         nodeOptions.Features.AllowExperimentalFeatures = true;
@@ -57,7 +59,9 @@ internal sealed class OnionMessageTestNode : IDisposable
         services.AddLogging();
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(nodeOptions));
-        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(options ?? new OnionMessageOptions()));
+        services.AddSingleton(Microsoft.Extensions.Options.Options.Create(Options));
+        if (registerOutbox)
+            services.AddSingleton<IPeerOnionMessageOutbox>(this);
         services.AddSingleton(peerManager.Object);
         services.AddSingleton(channels.Object);
         services.AddBitcoinInfrastructure();
@@ -81,6 +85,9 @@ internal sealed class OnionMessageTestNode : IDisposable
     }
 
     public string Name { get; }
+
+    /// <summary>The node's onion message options (the outbox cap of its links comes from them).</summary>
+    public OnionMessageOptions Options { get; }
 
     /// <summary>The channels <see cref="IChannelMemoryRepository"/> holds (none by default).</summary>
     public List<ChannelModel> Channels { get; } = [];
@@ -111,7 +118,11 @@ internal sealed class OnionMessageTestNode : IDisposable
     }
 
     /// <summary>Drops our end of the connection to <paramref name="other"/>.</summary>
-    public void RemovePeer(OnionMessageTestNode other) => _peers.TryRemove(other.NodeId, out _);
+    public void RemovePeer(OnionMessageTestNode other)
+    {
+        if (_peers.TryRemove(other.NodeId, out var peer) && peer.TryGetPeerService(out var service))
+            service.Dispose();
+    }
 
     /// <summary>
     /// Connects two nodes; <paramref name="onionMessages"/> is whether the connection negotiated
@@ -123,13 +134,35 @@ internal sealed class OnionMessageTestNode : IDisposable
         {
             OptionOnionMessages = onionMessages ? FeatureSupport.Optional : FeatureSupport.No
         };
-        var aToB = new LinkedPeerService(b, features);
-        var bToA = new LinkedPeerService(a, features);
+        var aToB = new LinkedPeerService(b, features, a.Options.MaxOutboxPerPeer);
+        var bToA = new LinkedPeerService(a, features, b.Options.MaxOutboxPerPeer);
         aToB.Reverse = bToA;
         bToA.Reverse = aToB;
         a.AddPeer(aToB);
         b.AddPeer(bToA);
     }
 
-    public void Dispose() => _provider.Dispose();
+    /// <summary>The send path, as <c>PeerManager</c> implements it: only a connected peer that negotiated it.</summary>
+    public bool CanSendOnionMessage(CompactPubKey peerNodeId) =>
+        TryGetLink(peerNodeId) is { Features.OptionOnionMessages: not FeatureSupport.No };
+
+    /// <summary>Queues on the link's outbox, never blocking.</summary>
+    public bool TryEnqueueOnionMessage(CompactPubKey peerNodeId, OnionMessageMessage message) =>
+        CanSendOnionMessage(peerNodeId) && TryGetLink(peerNodeId)!.TryEnqueueOnionMessage(message);
+
+    public void Dispose()
+    {
+        foreach (var peer in _peers.Values)
+        {
+            if (peer.TryGetPeerService(out var service))
+                service.Dispose();
+        }
+
+        _provider.Dispose();
+    }
+
+    private LinkedPeerService? TryGetLink(CompactPubKey nodeId) =>
+        _peers.TryGetValue(nodeId, out var peer) && peer.TryGetPeerService(out var service)
+            ? service as LinkedPeerService
+            : null;
 }

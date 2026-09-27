@@ -434,7 +434,8 @@ public sealed class OnionMessageHarnessTests
         Assert.Equal(OnionMessageSendStatus.NotAvailable, bobWaits.Status);
         // The connection says onion messages, so Alice sends; Bob drops it
         Assert.Equal(OnionMessageSendStatus.Sent, aliceSends.Status);
-        Assert.Equal(1, bob.Metrics.GetDropped(OnionMessageDropReasons.NotAvailable));
+        await OnionMessageTestWaits.UntilAsync(
+            () => bob.Metrics.GetDropped(OnionMessageDropReasons.NotAvailable) == 1, ct);
         Assert.Empty(handler.Received);
     }
 
@@ -488,6 +489,62 @@ public sealed class OnionMessageHarnessTests
         // Assert
         Assert.Equal(OnionMessageSendStatus.Dropped, result.Status);
         Assert.Equal(0, alice.Metrics.Sent);
+        Assert.Equal(1, alice.Metrics.GetDropped(OnionMessageDropReasons.OutboxFull));
+    }
+
+    [Fact]
+    public async Task Given_APeerThatStopsReading_When_BobForwardsToIt_Then_OnlyItsMessagesAreDroppedAndOthersFlow()
+    {
+        // Arrange: Bob forwards for Alice to Carol and Dave; Carol stops reading (a full TCP window), so a socket
+        // write to her never completes. Plan §3.4: a slow reader only loses onion messages; Bob's single worker must
+        // never wait on her connection
+        var ct = TestContext.Current.CancellationToken;
+        const int toCarol = 10;
+        const int bobOutboxCap = 2;
+        var carolHandler = new RecordingHandler(RequestType);
+        var daveHandler = new RecordingHandler(RequestType);
+        using var alice = new OnionMessageTestNode("alice", 1);
+        using var bob = new OnionMessageTestNode("bob", 2,
+                                                 options: new OnionMessageOptions { MaxOutboxPerPeer = bobOutboxCap });
+        using var carol = new OnionMessageTestNode("carol", 3, [carolHandler]);
+        using var dave = new OnionMessageTestNode("dave", 4, [daveHandler]);
+        OnionMessageTestNode.Connect(alice, bob);
+        OnionMessageTestNode.Connect(bob, carol);
+        OnionMessageTestNode.Connect(bob, dave);
+        bob.LinkTo(carol).Stalled = true;
+        var carolPath = WireBlindedPath.FromBlindedPath(carol.PathFactory.Create([bob.NodeId, carol.NodeId]));
+        var davePath = WireBlindedPath.FromBlindedPath(dave.PathFactory.Create([bob.NodeId, dave.NodeId]));
+
+        // Act: fill Carol's outbox at Bob and beyond (one message in the stalled write, the cap queued, the rest
+        // refused), then send to Dave through the same Bob
+        for (var i = 0; i < toCarol; i++)
+        {
+            var sent = await alice.Service.SendAsync(OnionMessageDestination.ToBlindedPath(carolPath),
+                                                     OnionMessageContents.Single(RequestType, new[] { (byte)i }), null, ct);
+            Assert.Equal(OnionMessageSendStatus.Sent, sent.Status);
+        }
+
+        await OnionMessageTestWaits.UntilAsync(
+            () => bob.Metrics.Forwarded + bob.Metrics.GetDropped(OnionMessageDropReasons.OutboxFull) == toCarol, ct);
+        var heldForCarol = (int)bob.Metrics.Forwarded;
+        var toDave = await alice.Service.SendAsync(OnionMessageDestination.ToBlindedPath(davePath),
+                                                   OnionMessageContents.Single(RequestType, "dave"u8.ToArray()), null,
+                                                   ct);
+        await daveHandler.WaitForAsync(1, ct);
+
+        // Assert: Dave got his message while Carol's link is still stalled; nothing was lost to Bob's inbound queue
+        Assert.Equal(OnionMessageSendStatus.Sent, toDave.Status);
+        Assert.Equal("dave"u8.ToArray(), Assert.Single(daveHandler.Received).Contents.Records[0].Value.ToArray());
+        Assert.Empty(carolHandler.Received);
+        Assert.Equal(0, bob.Metrics.GetDropped(OnionMessageDropReasons.QueueFull));
+        // At most the cap queued plus the one in the stalled write
+        Assert.InRange(heldForCarol, bobOutboxCap, bobOutboxCap + 1);
+        Assert.Equal(toCarol - heldForCarol, bob.Metrics.GetDropped(OnionMessageDropReasons.OutboxFull));
+
+        // Once Carol reads again, what Bob held for her goes out
+        bob.LinkTo(carol).Stalled = false;
+        await carolHandler.WaitForAsync(heldForCarol, ct);
+        Assert.Equal(heldForCarol, carolHandler.Received.Count);
     }
 
     private static IGraphStore GraphOf(ShortChannelId scid, CompactPubKey a, CompactPubKey b, bool advertise)

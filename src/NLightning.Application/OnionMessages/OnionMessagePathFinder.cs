@@ -32,12 +32,15 @@ public sealed class OnionMessagePathFinder
     private readonly IPeerManager _peerManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IGraphStore? _graphStore;
+    private readonly IPeerOnionMessageOutbox? _outbox;
     private readonly CompactPubKey _ourNodeId;
     private readonly int _maxPathHops;
 
     public OnionMessagePathFinder(IPeerManager peerManager, IChannelMemoryRepository channelMemoryRepository,
-                                  CompactPubKey ourNodeId, int maxPathHops, IGraphStore? graphStore = null)
+                                  CompactPubKey ourNodeId, int maxPathHops, IGraphStore? graphStore = null,
+                                  IPeerOnionMessageOutbox? outbox = null)
     {
+        _outbox = outbox;
         _peerManager = peerManager;
         _channelMemoryRepository = channelMemoryRepository;
         _ourNodeId = ourNodeId;
@@ -46,15 +49,18 @@ public sealed class OnionMessagePathFinder
     }
 
     /// <summary>
-    /// The connection of <paramref name="nodeId"/> when it is connected and negotiated <c>option_onion_messages</c>.
+    /// Whether <paramref name="nodeId"/> is connected and negotiated <c>option_onion_messages</c>: the send path's
+    /// <see cref="IPeerOnionMessageOutbox.CanSendOnionMessage"/> when one is given, otherwise the peer manager's
+    /// connection and its negotiated features.
     /// </summary>
-    public IPeerService? GetOnionMessagePeer(CompactPubKey nodeId)
+    public bool CanSendTo(CompactPubKey nodeId)
     {
-        var peer = _peerManager.GetPeer(nodeId);
-        if (peer is null || !peer.TryGetPeerService(out var service))
-            return null;
+        if (_outbox is not null)
+            return _outbox.CanSendOnionMessage(nodeId);
 
-        return service.Features.OptionOnionMessages == FeatureSupport.No ? null : service;
+        var peer = _peerManager.GetPeer(nodeId);
+        return peer is not null && peer.TryGetPeerService(out var service)
+            && service.Features.OptionOnionMessages != FeatureSupport.No;
     }
 
     /// <summary>
@@ -64,7 +70,7 @@ public sealed class OnionMessagePathFinder
     {
         return _peerManager.ListPeers()
                            .Select(p => p.NodeId)
-                           .Where(id => GetOnionMessagePeer(id) is not null)
+                           .Where(CanSendTo)
                            .OrderByDescending(HasOpenChannelWith)
                            .ToList();
     }
@@ -128,7 +134,7 @@ public sealed class OnionMessagePathFinder
     {
         if (target == _ourNodeId)
             return null;
-        if (GetOnionMessagePeer(target) is not null)
+        if (CanSendTo(target))
             return [];
         if (_maxPathHops == 0 || _graphStore is not { IsLoaded: true })
             return null;

@@ -22,8 +22,9 @@ public static class OnionMessageServiceCollectionExtensions
     /// Registers <see cref="OnionMessageService"/> as the <see cref="IOnionMessageService"/> singleton (the peer
     /// services hand it every <c>onion_message</c>) and <see cref="OnionMessageMetrics"/>. Bind
     /// <see cref="OnionMessageOptions"/> from <see cref="OnionMessageOptions.SectionName"/>; the defaults apply
-    /// otherwise. Optional collaborators are taken when registered: the <see cref="IOnionMessagePacketBuilder"/>
-    /// (without it the service stays off), the <see cref="IOnionMessageRateLimiter"/> (without it nothing is rate
+    /// otherwise (invalid options keep the service off with an error log, they never fail its resolution). Optional
+    /// collaborators are taken when registered: the <see cref="IOnionMessagePacketBuilder"/> and the
+    /// <see cref="IPeerOnionMessageOutbox"/> send path (without either the service stays off), the <see cref="IOnionMessageRateLimiter"/> (without it nothing is rate
     /// limited), the graph (<see cref="IGraphStore"/>, for paths beyond our peers) and every
     /// <see cref="IOnionMessageHandler"/> (register those as singletons).
     /// </summary>
@@ -45,7 +46,8 @@ public static class OnionMessageServiceCollectionExtensions
                                      sp.GetService<IOnionMessagePacketBuilder>(),
                                      sp.GetService<IOnionMessageRateLimiter>(),
                                      sp.GetService<IGraphStore>(),
-                                     sp.GetService<TimeProvider>()));
+                                     sp.GetService<TimeProvider>(),
+                                     sp.GetService<IPeerOnionMessageOutbox>()));
         services.TryAddSingleton<IOnionMessageService>(sp => sp.GetRequiredService<OnionMessageService>());
         return services;
     }

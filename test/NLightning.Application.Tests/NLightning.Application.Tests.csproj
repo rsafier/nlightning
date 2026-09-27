@@ -39,6 +39,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The BOLT 4 onion message vector, shared with the Integration tests (OnionMessageVectorTests) -->
+    <Content Include="..\NLightning.Integration.Tests\BOLT4\Vectors\blinded-onion-message-onion-test.json"
+             Link="OnionMessages\Vectors\blinded-onion-message-onion-test.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\NLightning.Application\NLightning.Application.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Domain\NLightning.Domain.csproj"/>
     <ProjectReference Include="..\..\src\NLightning.Infrastructure.Serialization\NLightning.Infrastructure.Serialization.csproj"/>

@@ -376,7 +376,11 @@ public static class NodeConfigurationExtensions
                    "PeerBytesPerSecond": {{OM_PEER_BPS}},
                    "PeerBurstBytes": {{OM_PEER_BURST}},
                    "PeerMessagesPerSecond": {{OM_PEER_MPS}},
+                   "PeerBurstMessages": {{OM_PEER_BURST_MSGS}},
                    "GlobalBytesPerSecond": {{OM_GLOBAL_BPS}},
+                   "GlobalBurstBytes": {{OM_GLOBAL_BURST}},
+                   "GlobalMessagesPerSecond": {{OM_GLOBAL_MPS}},
+                   "GlobalBurstMessages": {{OM_GLOBAL_BURST_MSGS}},
                    "ConnectToReply": false
                  },
                  "FeeEstimation": {
@@ -431,7 +435,11 @@ public static class NodeConfigurationExtensions
                   .Replace("{{OM_PEER_BPS}}", Invariant(onionMessages.PeerBytesPerSecond))
                   .Replace("{{OM_PEER_BURST}}", Invariant(onionMessages.PeerBurstBytes))
                   .Replace("{{OM_PEER_MPS}}", Invariant(onionMessages.PeerMessagesPerSecond))
+                  .Replace("{{OM_PEER_BURST_MSGS}}", Invariant(onionMessages.PeerBurstMessages))
                   .Replace("{{OM_GLOBAL_BPS}}", Invariant(onionMessages.GlobalBytesPerSecond))
+                  .Replace("{{OM_GLOBAL_BURST}}", Invariant(onionMessages.GlobalBurstBytes))
+                  .Replace("{{OM_GLOBAL_MPS}}", Invariant(onionMessages.GlobalMessagesPerSecond))
+                  .Replace("{{OM_GLOBAL_BURST_MSGS}}", Invariant(onionMessages.GlobalBurstMessages))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
                   .Replace("{{FEE_RATE_UNIT}}", FeeRateConverter.SatPerVByte)
