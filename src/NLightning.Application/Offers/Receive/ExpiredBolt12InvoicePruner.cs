@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application.Offers.Receive;
 
 using Domain.Persistence.Interfaces;
+using Payments.Switch;
 
 /// <summary>
 /// Deletes expired unpaid BOLT 12 invoices (NL-448, plan §3.7 step 6): every answered invoice_request writes an invoice
@@ -13,8 +14,11 @@ using Domain.Persistence.Interfaces;
 /// start) a round calls <see cref="Domain.Payments.Interfaces.IInvoiceDbRepository.PruneExpiredBolt12InvoicesAsync"/>
 /// with <see cref="OfferOptions.ExpiredInvoicePruneBatchSize"/>, one scope and one save per batch, until a batch comes
 /// back short or <see cref="MaxBatchesPerRound"/> batches ran. Only <c>Open</c> rows are deleted (an Accepted invoice
-/// holds an HTLC set; BOLT 11 rows are never pruned), so a late HTLC for a pruned invoice meets an unknown payment hash
-/// and fails with <c>incorrect_or_unknown_payment_details</c>, exactly as it would for the expired invoice.
+/// holds an HTLC set; BOLT 11 rows are never pruned), and only once they are expired by at least
+/// <see cref="EffectiveGrace"/> (<see cref="OfferOptions.ExpiredInvoicePruneGrace"/>, never less than the switch's MPP
+/// timeout): the final hop checks the expiry when each HTLC arrives, not at the settle, so an HTLC set held across the
+/// expiry, or an HTLC between its check and the fulfill's save, must still find its invoice. An HTLC that arrives after
+/// the expiry is refused before and after the prune alike (<c>incorrect_or_unknown_payment_details</c>).
 /// </summary>
 public sealed class ExpiredBolt12InvoicePruner : IAsyncDisposable
 {
@@ -33,13 +37,26 @@ public sealed class ExpiredBolt12InvoicePruner : IAsyncDisposable
     private bool _stopped;
 
     public ExpiredBolt12InvoicePruner(IServiceScopeFactory scopeFactory, ILogger<ExpiredBolt12InvoicePruner> logger,
-                                      IOptions<OfferOptions>? options = null, TimeProvider? timeProvider = null)
+                                      IOptions<OfferOptions>? options = null, TimeProvider? timeProvider = null,
+                                      IOptions<HtlcSwitchOptions>? switchOptions = null)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _options = options?.Value ?? new OfferOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
+
+        var mppTimeout = switchOptions?.Value.MppTimeout ?? HtlcSwitchOptions.DefaultMppTimeout;
+        if (mppTimeout <= TimeSpan.Zero)
+            mppTimeout = HtlcSwitchOptions.DefaultMppTimeout;
+        var grace = _options.ExpiredInvoicePruneGrace < TimeSpan.Zero ? TimeSpan.Zero : _options.ExpiredInvoicePruneGrace;
+        EffectiveGrace = grace > mppTimeout ? grace : mppTimeout;
     }
+
+    /// <summary>
+    /// How long past its expiry an invoice is kept: <see cref="OfferOptions.ExpiredInvoicePruneGrace"/>, at least the
+    /// switch's MPP timeout.
+    /// </summary>
+    public TimeSpan EffectiveGrace { get; }
 
     /// <summary>
     /// Starts the rounds (the first one at once); nothing when the interval is zero. Idempotent.
@@ -101,7 +118,8 @@ public sealed class ExpiredBolt12InvoicePruner : IAsyncDisposable
             {
                 var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
                 pruned = await unitOfWork.InvoiceDbRepository
-                                         .PruneExpiredBolt12InvoicesAsync(_timeProvider.GetUtcNow(), batchSize);
+                                         .PruneExpiredBolt12InvoicesAsync(_timeProvider.GetUtcNow() - EffectiveGrace,
+                                                                          batchSize);
                 if (pruned > 0)
                     await unitOfWork.SaveChangesAsync();
             }

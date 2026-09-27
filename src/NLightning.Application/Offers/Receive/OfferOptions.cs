@@ -54,6 +54,14 @@ public sealed class OfferOptions
     public int ExpiredInvoicePruneBatchSize { get; set; } = 500;
 
     /// <summary>
+    /// How long past its expiry an unpaid BOLT 12 invoice is kept before <see cref="ExpiredBolt12InvoicePruner"/>
+    /// deletes it (NL-448 review). The final hop checks the expiry only when each HTLC arrives, so an HTLC set held
+    /// across the expiry (at most <c>Node:Switch:MppTimeout</c>), or an HTLC between its check and the fulfill's save,
+    /// still settles the invoice; the pruner never uses less than the MPP timeout. Default one hour.
+    /// </summary>
+    public TimeSpan ExpiredInvoicePruneGrace { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
     /// The configuration problems, or none.
     /// </summary>
     public IReadOnlyList<string> GetValidationErrors()
@@ -77,6 +85,8 @@ public sealed class OfferOptions
             errors.Add($"{SectionName}:{nameof(ExpiredInvoicePruneInterval)} must not be negative.");
         if (ExpiredInvoicePruneBatchSize < 1)
             errors.Add($"{SectionName}:{nameof(ExpiredInvoicePruneBatchSize)} must be positive.");
+        if (ExpiredInvoicePruneGrace < TimeSpan.Zero)
+            errors.Add($"{SectionName}:{nameof(ExpiredInvoicePruneGrace)} must not be negative.");
         return errors;
     }
 }
