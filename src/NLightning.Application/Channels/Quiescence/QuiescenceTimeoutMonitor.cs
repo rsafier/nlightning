@@ -17,9 +17,12 @@ using Domain.Node.Options;
 /// so the host starts nothing. A timer on the injected <see cref="TimeProvider"/> runs <see cref="CheckAsync"/> every
 /// tenth of the shorter limit (1 to 5 s). Both limits count from the start of the quiescence
 /// (<see cref="QuiescenceSnapshot.Since"/>: our request, or the first <c>stfu</c>).</para>
-/// <para>An expired channel is ended under its lock (<see cref="IQuiescenceService.Terminate"/> with
+/// <para>An expired channel is marked timed out under its lock (<see cref="IQuiescenceService.Terminate"/> with
 /// <see cref="QuiescenceEndReason.Timeout"/>, re-checked there), then its connection is closed with a
-/// <c>warning</c> through <see cref="IQuiescencePeerDisconnector"/> after the lock.</para>
+/// <c>warning</c> through <see cref="IQuiescencePeerDisconnector"/> after the lock. The mark keeps our updates blocked
+/// and resumes nothing: the peer considers the channel quiescent until the disconnection, which alone ends it
+/// (<see cref="QuiescenceService.Terminate"/>). While the connection stays open the close is tried again every
+/// <see cref="QuiescenceOptions.Timeout"/>.</para>
 /// </remarks>
 public sealed class QuiescenceTimeoutMonitor : IDisposable
 {
@@ -86,16 +89,18 @@ public sealed class QuiescenceTimeoutMonitor : IDisposable
         var expired = new List<QuiescenceSnapshot>();
         foreach (var snapshot in _quiescenceService.GetActive())
         {
-            if (GetLimit(snapshot) is not { } reason)
+            if (GetReason(snapshot) is not { } reason)
                 continue;
 
             using (await _channelLockProvider.AcquireAsync(snapshot.ChannelId, cancellationToken))
             {
                 // Re-checked under the lock: the quiescence may have ended (or a new one started) meanwhile
                 var current = _quiescenceService.GetActive().FirstOrDefault(s => s.ChannelId == snapshot.ChannelId);
-                if (current is null || current.Since != snapshot.Since || GetLimit(current) is null)
+                if (current is null || current.Since != snapshot.Since || GetReason(current) is null)
                     continue;
 
+                // The entry stays (still blocking our updates) until the connection is closed: the peer considers the
+                // channel quiescent until then (Q-S-04, Q-R-04)
                 _quiescenceService.Terminate(snapshot.ChannelId, QuiescenceEndReason.Timeout);
             }
 
@@ -116,6 +121,22 @@ public sealed class QuiescenceTimeoutMonitor : IDisposable
             _timer?.Dispose();
             _timer = null;
         }
+    }
+
+    /// <summary>
+    /// The reason to close the connection now: the quiescence is over its limit, or it timed out at least
+    /// <see cref="QuiescenceOptions.Timeout"/> ago and its connection is still open (the close is tried again). Null
+    /// otherwise.
+    /// </summary>
+    private string? GetReason(QuiescenceSnapshot snapshot)
+    {
+        if (snapshot.TerminatedAt is not { } terminatedAt)
+            return GetLimit(snapshot);
+
+        var since = _timeProvider.GetUtcNow() - terminatedAt;
+        return since >= _options.Timeout
+                   ? $"channel quiescence timed out {since.TotalSeconds:0} s ago and the connection is still open"
+                   : null;
     }
 
     /// <summary>The reason the quiescence is over its limit, or null while it is not.</summary>

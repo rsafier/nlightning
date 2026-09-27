@@ -220,8 +220,61 @@ public class QuiescenceHarnessTests
         Assert.Contains(pair.Disconnects, d => d.Node == "Alice" && d.Peer == pair.Bob.NodeId);
         Assert.Contains(pair.Disconnects, d => d.Node == "Bob" && d.Peer == pair.Alice.NodeId);
         Assert.All(pair.Disconnects, d => Assert.Contains("Q-R-03", d.Reason));
+
+        // Until the connection is closed the channel stays quiescent for the peer, so ours still blocks updates
+        Assert.True(pair.State(pair.Alice).BlocksNewLocalUpdates);
+        Assert.True(pair.State(pair.Bob).BlocksNewLocalUpdates);
+        await pair.DisconnectAsync();
         Assert.Equal(QuiescenceState.None, pair.State(pair.Alice));
         Assert.Equal(QuiescenceState.None, pair.State(pair.Bob));
+    }
+
+    [Fact]
+    public async Task Given_AFulfillRefusedWhileQuiescent_When_TheTimeoutFires_Then_NoUpdateIsSentBeforeTheDisconnect()
+    {
+        // Arrange: Alice's HTLC locked in at Bob, then quiescence; Bob's switch now wants to fulfill and is refused
+        using var pair = new QuiescenceTestPair();
+        var ct = TestContext.Current.CancellationToken;
+        pair.HoldFulfills["Bob"] = true;
+        await pair.OfferAsync(pair.Alice, 30_000_000, 3);
+        await pair.PumpAsync();
+        var lockedIn = Assert.Single(pair.Bob.Events.OfType<IncomingHtlcLockedIn>());
+        var request = pair.Quiescence(pair.Alice).RequestAsync(TwoNodeHarness.ChannelId, QuiescencePurpose.Probe, ct);
+        await pair.PumpAsync();
+        await request.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        pair.HoldFulfills["Bob"] = false;
+        var bobSwitch = (Domain.Channels.Interfaces.IHtlcSwitch)
+            pair.Bob.Services.GetService(typeof(Domain.Channels.Interfaces.IHtlcSwitch))!;
+        await bobSwitch.HandleAsync(lockedIn, ct);
+        Assert.Single(pair.FulfillRefusals);
+        var aliceReceived = pair.Alice.Received.Count;
+        var bobReceived = pair.Bob.Received.Count;
+
+        // Act 1: the 60 s rule fires on both nodes; the connection is not closed yet (the disconnector only records)
+        pair.Clock.Advance(TimeSpan.FromSeconds(60));
+        Assert.Single(await pair.Monitor(pair.Bob).CheckAsync(ct));
+        Assert.Single(await pair.Monitor(pair.Alice).CheckAsync(ct));
+        await pair.PumpAsync();
+        await bobSwitch.HandleAsync(lockedIn, ct);
+        await pair.PumpAsync();
+
+        // Assert 1: nothing resumed before the disconnect (Q-S-04: no update after our stfu while the peer still
+        // considers the channel quiescent); the second attempt was refused too
+        Assert.Equal(aliceReceived, pair.Alice.Received.Count);
+        Assert.Equal(bobReceived, pair.Bob.Received.Count);
+        Assert.Equal(2, pair.FulfillRefusals.Count);
+        Assert.Equal(HtlcState.RcvdAddAckRevocation, Assert.Single(pair.Bob.State.Htlcs.Values).State);
+
+        // Act 2: the connection closes and comes back; the reestablish replays the lock-in
+        await pair.DisconnectAsync();
+        await pair.Harness.ReconnectAsync();
+        await pair.PumpAsync();
+
+        // Assert 2: fulfilled once, after the reestablish
+        Assert.Single(pair.Alice.Received.OfType<UpdateFulfillHtlcMessage>());
+        Assert.Empty(pair.Alice.State.Htlcs);
+        Assert.Empty(pair.Bob.State.Htlcs);
+        AssertAgreement(pair);
     }
 
     [Fact]
@@ -243,6 +296,8 @@ public class QuiescenceHarnessTests
         Assert.Single(expired);
         Assert.Single(pair.Disconnects);
         await Assert.ThrowsAsync<InvalidOperationException>(() => request.WaitAsync(TimeSpan.FromSeconds(10), ct));
+        Assert.True(pair.State(pair.Alice).BlocksNewLocalUpdates);
+        await pair.DisconnectAsync();
         Assert.Equal(QuiescenceState.None, pair.State(pair.Alice));
     }
 
@@ -270,8 +325,20 @@ public class QuiescenceHarnessTests
         Assert.Single(expired);
         var disconnect = Assert.Single(pair.Disconnects);
         Assert.Equal(("Alice", pair.Bob.NodeId), (disconnect.Node, disconnect.Peer));
-        Assert.Equal(QuiescenceState.None, pair.State(pair.Alice));
+        Assert.True(pair.State(pair.Alice).IsQuiescent);
         Assert.True(pair.State(pair.Bob).IsQuiescent);
+
+        // Act 3: the connection is still open one more timeout later: closed again
+        pair.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Empty(await pair.Monitor(pair.Alice).CheckAsync(ct));
+        pair.Clock.Advance(TimeSpan.FromSeconds(1));
+        Assert.Single(await pair.Monitor(pair.Alice).CheckAsync(ct));
+        Assert.Equal(2, pair.Disconnects.Count);
+
+        // Act 4: the disconnection ends it (Q-R-04)
+        await pair.DisconnectAsync();
+        Assert.Equal(QuiescenceState.None, pair.State(pair.Alice));
+        Assert.Empty(await pair.Monitor(pair.Alice).CheckAsync(ct));
     }
 
     [Fact]
