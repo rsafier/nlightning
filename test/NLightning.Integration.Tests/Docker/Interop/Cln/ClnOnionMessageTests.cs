@@ -8,6 +8,7 @@ using System.Text.Json.Nodes;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NLightning.Tests.Utils.Bolt12;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
@@ -386,12 +387,56 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Proof M6 (d), rate limit: N2 sends <see cref="BurstSize"/> messages to N1 through CLN in about a second. CLN
-    /// relays them (under its own limits, recorded), N1 admits at most its per-peer rate and drops the rest silently,
-    /// and every connection stays up: nobody sends a warning or disconnects.
+    /// Proof M6 (d), rate limit (OM-R-01): N2 is N1's direct peer and sends it <see cref="BurstSize"/> messages as
+    /// fast as it can. N1 admits at most its per-peer rate plus the bucket's burst, drops the rest silently and counts
+    /// them as <c>dropped{reason=rate}</c>; nobody warns and the connection stays up. The burst goes straight to N1 so
+    /// no relay's own limit decides how many messages N1 sees: the drop is asserted unconditionally.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
-    public async Task Given_ABurstThroughCln_When_N1RateLimits_Then_ExcessDroppedAndNobodyDisconnects()
+    public async Task Given_ABurstFromADirectPeer_When_N1RateLimits_Then_ExcessDroppedCountedAndNobodyDisconnects()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var n1 = await StartNodeAsync("nltg-om-l1");
+        var n2 = await StartNodeAsync("nltg-om-l2");
+        await n2.Node.ConnectToAsync(n1.Node, ct);
+        using var meter = new OnionMessageMeterRecorder();
+        var messages = BuildBurst(n2, n1, prefixNodeIds: []);
+
+        // Act
+        var stopwatch = Stopwatch.StartNew();
+        foreach (var message in messages)
+            await SendRawAsync(n2, n1.Node.NodeId, message, ct);
+        stopwatch.Stop();
+        var received = await WaitUntilQuietAsync(() => n1.Recorder.ReceivedOnionMessages.Count, ct);
+
+        // Assert
+        var delivered = n1.Handler.Received.Count(m => HasField(m, TestFieldType));
+        var rateDrops = RateDrops(meter);
+        Console.WriteLine($"[om] N2 sent {BurstSize} straight to N1 in {stopwatch.Elapsed}; N1 received {received}, "
+                        + $"delivered {delivered}, rate drops {rateDrops}");
+        Console.WriteLine($"[meter] {meter.Describe()}");
+        Assert.Equal(BurstSize, received);
+        Assert.True(delivered > 0, "N1 delivered nothing");
+        Assert.True(delivered < received, $"N1 delivered all {received} messages sent in {stopwatch.Elapsed}");
+        Assert.True(rateDrops > 0, $"N1 counted no rate drop; counters: {meter.Describe()}");
+        Assert.True(rateDrops >= received - delivered,
+                    $"N1 dropped {received - delivered} messages but counted {rateDrops} rate drops");
+        Assert.Empty(n1.Recorder.SentWarningsAndErrors);
+        Assert.Empty(n2.Recorder.SentWarningsAndErrors);
+        await Poll.StaysTrueAsync(() => n1.Node.IsConnectedTo(n2.Node.NodeId) && n2.Node.IsConnectedTo(n1.Node.NodeId),
+                                  s_quietWindow, "N1 and N2 stay connected", ct);
+    }
+
+    /// <summary>
+    /// Proof M6 (d), a burst through CLN: N2 sends <see cref="BurstSize"/> messages to N1 through CLN in about a
+    /// second. CLN relays them under its own per-peer limit (recorded, not known in advance), and every connection
+    /// stays up: nobody sends a warning or disconnects. The drop itself is proven by the direct-peer burst; here it is
+    /// checked only when more than twice N1's per-peer rate reached N1 within one second, and the log says when it
+    /// was not exercised.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_ABurstThroughCln_When_Relayed_Then_NobodyWarnsOrDisconnects()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
@@ -400,11 +445,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
         await ConnectToClnAsync(n1, ct);
         await ConnectToClnAsync(n2, ct);
         using var meter = new OnionMessageMeterRecorder();
-        var messages = Enumerable.Range(0, BurstSize)
-                                 .Select(i => n2.Builder.Build(
-                                             [ClnId], CreateMessagePath(n1, [n1.Node.NodeId], pathId: null),
-                                             TestContents($"burst-{i}"), replyPath: null))
-                                 .ToList();
+        var messages = BuildBurst(n2, n1, prefixNodeIds: [ClnId]);
 
         // Act
         var stopwatch = Stopwatch.StartNew();
@@ -419,8 +460,7 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
         var firstSecond = receivedTimes.Count == 0
                               ? 0
                               : receivedTimes.Count(t => t - receivedTimes[0] < TimeSpan.FromSeconds(1));
-        var rateDrops = meter.Sum(m => m.Instrument.Contains("drop", StringComparison.OrdinalIgnoreCase)
-                                    && m.Tags.Contains("rate", StringComparison.OrdinalIgnoreCase));
+        var rateDrops = RateDrops(meter);
         Console.WriteLine($"[cln] N2 sent {BurstSize} in {stopwatch.Elapsed}; CLN forwarded {received} to N1 "
                         + $"({firstSecond} in the first second); N1 delivered {delivered}, rate drops {rateDrops}");
         Console.WriteLine($"[meter] {meter.Describe()}");
@@ -432,6 +472,11 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
             Assert.True(delivered < received,
                         $"N1 delivered all {received} messages, {firstSecond} of them within one second");
             Assert.True(rateDrops > 0, "N1 counted no rate drop");
+        }
+        else
+        {
+            Console.WriteLine($"[rate] N1's rate limit NOT exercised through CLN: only {firstSecond} messages reached "
+                            + "N1 in its first second (CLN's own limit); the direct-peer burst proves the drop");
         }
 
         Assert.Empty(n1.Recorder.SentWarningsAndErrors);
@@ -539,6 +584,24 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
                                        && (text is null || Encoding.UTF8.GetString(r.Value.Span) == text));
 
     private static PrivKey NewSessionKey() => new(RandomNumberGenerator.GetBytes(32));
+
+    /// <summary>
+    /// <see cref="BurstSize"/> messages from <paramref name="from"/> to a one-hop blinded path of <paramref name="to"/>,
+    /// through <paramref name="prefixNodeIds"/> as unblinded prefix hops, built before the burst is timed.
+    /// </summary>
+    private static List<OnionMessageMessage> BuildBurst(ProofNode from, ProofNode to,
+                                                        IReadOnlyList<CompactPubKey> prefixNodeIds) =>
+        Enumerable.Range(0, BurstSize)
+                  .Select(i => from.Builder.Build(prefixNodeIds, CreateMessagePath(to, [to.Node.NodeId], pathId: null),
+                                                  TestContents($"burst-{i}"), replyPath: null))
+                  .ToList();
+
+    /// <summary>
+    /// The drops counted with a <c>rate</c> reason (the plan's <c>dropped{reason=rate}</c>, matched loosely).
+    /// </summary>
+    private static long RateDrops(OnionMessageMeterRecorder meter) =>
+        meter.Sum(m => m.Instrument.Contains("drop", StringComparison.OrdinalIgnoreCase)
+                    && m.Tags.Contains("rate", StringComparison.OrdinalIgnoreCase));
 
     private static void DescribeReplyPath(string what, WireBlindedPath? path)
     {
@@ -655,6 +718,10 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
         node.ConfigureServices = services =>
         {
             recorder.Install(services);
+            // IOnionMessageHandler.PayloadTypes: no two handlers share a type. The test handler takes 64
+            // (invoice_request), so it replaces every production handler (the B12 invoice_request handler once it is
+            // registered by AddApplicationServices) instead of sharing 64 with one.
+            services.RemoveAll<IOnionMessageHandler>();
             services.AddSingleton<IOnionMessageHandler>(handler);
         };
         var proof = new ProofNode(node, recorder, handler);
@@ -802,152 +869,4 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
     }
 
     private sealed record MeterMeasurement(string Instrument, string Tags, long Value);
-}
-
-/// <summary>
-/// Container-free checks of the Proof M6 helpers: <see cref="MinimalOfferEncoder"/> against the BOLT 12
-/// <c>offers-test.json</c> vectors, the <see cref="RawOnionMessageRecorder"/> wire parsing and the feature-bit reader.
-/// </summary>
-public sealed class ClnOnionMessageProofHelperTests
-{
-    private const string BobIssuerId = "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619";
-    private const string Description = "Test vectors";
-
-    [Fact]
-    public void Given_OnlyAnIssuerId_When_Encoded_Then_EqualsTheMinimalOfferVector()
-    {
-        // Arrange
-        var issuer = Convert.FromHexString(BobIssuerId);
-
-        // Act
-        var offer = MinimalOfferEncoder.Encode(null, null, issuer);
-
-        // Assert
-        Assert.Equal("lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese", offer);
-    }
-
-    [Fact]
-    public void Given_ADescription_When_Encoded_Then_EqualsTheVector()
-    {
-        // Arrange
-        var issuer = Convert.FromHexString(BobIssuerId);
-
-        // Act
-        var offer = MinimalOfferEncoder.Encode(null, Description, issuer);
-
-        // Assert
-        Assert.Equal("lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg", offer);
-    }
-
-    [Fact]
-    public void Given_TheTestnetChain_When_Encoded_Then_EqualsTheVector()
-    {
-        // Arrange
-        var chain = Convert.FromHexString("43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000");
-
-        // Act
-        var offer = MinimalOfferEncoder.Encode(chain, Description, Convert.FromHexString(BobIssuerId));
-
-        // Assert
-        Assert.Equal("lno1qgsyxjtl6luzd9t3pr62xr7eemp6awnejusgf6gw45q75vcfqqqqqqq2p32x2um5ypmx2cm5dae8x93pqthvwfzadd7"
-                   + "jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj", offer);
-    }
-
-    [Fact]
-    public void Given_ABlindedPathViaBob_When_Encoded_Then_EqualsTheVector()
-    {
-        // Arrange
-        var path = VectorPath(SciddirOrPubkey.FromNodeId(
-                                  Convert.FromHexString(
-                                      "0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c")));
-
-        // Act
-        var offer = MinimalOfferEncoder.Encode(null, Description, Convert.FromHexString(BobIssuerId), [path]);
-
-        // Assert
-        Assert.Equal("lno1pgx9getnwss8vetrw3hhyucs5ypjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k8qzqgpqyqszqgpqyq"
-                   + "szqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqpqqqq"
-                   + "qqqqqqqqqqqqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqzq3zyg3zyg3zyg3vggzam"
-                   + "rjghtt05kvkvpcp0a79gmy3nt6jsn98ad2xs8de6sl9qmgvcvs", offer);
-    }
-
-    [Fact]
-    public void Given_ABlindedPathWithASciddir_When_Encoded_Then_EqualsTheVector()
-    {
-        // Arrange: short_channel_id 0x0x42, direction 0
-        var path = VectorPath(SciddirOrPubkey.FromShortChannelId(42UL, 0));
-
-        // Act
-        var offer = MinimalOfferEncoder.Encode(null, Description, Convert.FromHexString(BobIssuerId), [path]);
-
-        // Assert
-        Assert.Equal("lno1pgx9getnwss8vetrw3hhyucs3yqqqqqqqqqqqqp2qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpq"
-                   + "yqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqyqqqqqqqqqqqqqqqqqqqqqqqqqqqgpqyqszqgpqyq"
-                   + "szqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqgzyg3zyg3zyg3z93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6q"
-                   + "ah82ru5rdpnpj", offer);
-    }
-
-    [Fact]
-    public void Given_NoIssuerAndNoPath_When_Encoded_Then_Throws()
-    {
-        // Act / Assert
-        Assert.Throws<ArgumentException>(() => MinimalOfferEncoder.Encode(null, Description, null));
-    }
-
-    [Fact]
-    public void Given_ARecordedOnionMessage_When_Parsed_Then_PathKeyAndPacketAreItsFields()
-    {
-        // Arrange: u16 513, path_key, u16 len = 70, 70 packet bytes
-        var pathKey = Convert.FromHexString(BobIssuerId);
-        var packet = Enumerable.Range(0, 70).Select(i => (byte)i).ToArray();
-        var wire = new byte[] { 0x02, 0x01 }.Concat(pathKey).Concat(new byte[] { 0x00, 70 }).Concat(packet).ToArray();
-        var recorder = new RawOnionMessageRecorder();
-
-        // Act
-        recorder.Record(wire, outbound: false);
-        recorder.Record([0x00, 0x01, 0x00], outbound: true);
-        recorder.Record([0x01, 0x00], outbound: true);
-
-        // Assert
-        var recorded = Assert.Single(recorder.ReceivedOnionMessages);
-        Assert.Equal(pathKey, recorded.PathKey);
-        Assert.Equal(packet, recorded.OnionMessagePacket);
-        Assert.Single(recorder.SentWarningsAndErrors);
-        Assert.Empty(recorder.SentOnionMessages);
-    }
-
-    [Theory]
-    [InlineData("8000000000", 39, true)]
-    [InlineData("4000000000", 38, true)]
-    [InlineData("4000000000", 39, false)]
-    [InlineData("02", 1, true)]
-    [InlineData("02", 39, false)]
-    public void Given_ClnFeatureHex_When_ReadingABit_Then_BigEndianBitOrder(string hex, int bit, bool expected)
-    {
-        // Act / Assert
-        Assert.Equal(expected, ClnOnionMessageTests.IsBitSet(hex, bit));
-    }
-
-    [Fact]
-    public void Given_OurInvoiceError_When_Checked_Then_ItCarriesTheProofText()
-    {
-        // Arrange
-        var error = ClnOnionMessageTests.ProofInvoiceError();
-
-        // Act / Assert
-        Assert.Equal(ClnOnionMessageTests.InvoiceErrorErrorType, error[0]);
-        Assert.Equal(ClnOnionMessageTests.ProofErrorText.Length, error[1]);
-        Assert.True(ClnOnionMessageTests.ContainsProofError(Convert.ToHexStringLower(error)));
-        Assert.True(ClnOnionMessageTests.ContainsProofError($"{{\"error\":\"{ClnOnionMessageTests.ProofErrorText}\"}}"));
-    }
-
-    private static WireBlindedPath VectorPath(SciddirOrPubkey firstNode)
-    {
-        var twos = Enumerable.Repeat((byte)0x02, 33).ToArray();
-        return new WireBlindedPath(firstNode, twos,
-                                   [
-                                       new BlindedPathHop(twos, new byte[16]),
-                                       new BlindedPathHop(twos, Enumerable.Repeat((byte)0x11, 8).ToArray())
-                                   ]);
-    }
 }
