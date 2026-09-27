@@ -8,9 +8,10 @@ using Domain.Protocol.Messages;
 /// <summary>
 /// Gossip that arrived before what it depends on (plan BOLT7 §3.3 stage 5): a <c>channel_update</c> whose
 /// <c>channel_announcement</c> is not in the graph yet, and a <c>node_announcement</c> whose node has no channel yet.
-/// Peers send a channel's announcement before its updates, but the ingress checks announcements on parallel workers
-/// (the chain lookup takes a while), so an update often overtakes its announcement. The ingress replays what is kept
-/// here once the channel is added.
+/// Peers send a channel's announcement before its updates, and the ingress handles a channel's messages on one worker
+/// in arrival order (NL-408), so an update waits here mostly when its announcement came from another peer later, or
+/// when it does not match the pending announcement (NL-406). The ingress replays what is kept here once the
+/// announcement arrives or the channel is added.
 /// </summary>
 /// <remarks>
 /// Only the newest message per channel direction (per node) is kept; entries expire after the TTL, and the cache

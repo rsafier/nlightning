@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
@@ -27,7 +28,7 @@ using Interfaces;
 using Metrics;
 
 /// <summary>
-/// The incoming graph gossip pipeline (plan BOLT7 §3.3, G2-T4): a bounded queue drained by workers that run, per
+/// The incoming graph gossip pipeline (plan BOLT7 §3.3, G2-T4): bounded queues drained by workers that run, per
 /// message, the pure checks (<see cref="GossipValidator"/>), an exact-duplicate filter
 /// (<see cref="RecentMessageCache"/>), the signatures (<see cref="IGossipSignatureVerifier"/>), for a
 /// <c>channel_announcement</c> the funding output (<see cref="IFundingOutputLookup"/>, 6 confirmations), and apply the
@@ -35,6 +36,20 @@ using Metrics;
 /// applied in order by one loop, so the callers, which may hold a channel lock, never wait).
 /// </summary>
 /// <remarks>
+/// <para>
+/// NL-408: each worker has its own queue, chosen by short channel id (by node id for a <c>node_announcement</c>), so
+/// a channel's announcement and updates are handled in arrival order by one worker; <see cref="GossipGraphOptions.MaxQueued"/>
+/// bounds all queues together and <see cref="GossipGraphOptions.MaxQueuedPerPeer"/> each peer's share.
+/// </para>
+/// <para>
+/// NL-406: a validly signed <c>channel_announcement</c> is not stored on arrival: it waits, without a chain lookup, in
+/// the <see cref="PendingAnnouncementIndex"/> (<see cref="GossipGraphOptions.MaxPendingAnnouncements"/>,
+/// <see cref="GossipGraphOptions.PendingAnnouncementTtl"/>) until its first valid <c>channel_update</c>, which
+/// promotes it: the update is checked against it, the funding output is looked up (a transient answer defers the
+/// update), and the channel enters the graph before the update is applied. BOLT 7 forbids sending an announcement
+/// without an update, and a pending one is never routed over, served or relayed (neither reads anything but the
+/// graph). Our own announcements are stored at once.
+/// </para>
 /// <para>
 /// Outcomes: accepted messages change the graph (relay comes with G3); BOLT 7 "ignore" cases are dropped silently;
 /// a bad signature gets a <c>warning</c> and the connection closed (B7-CA-03, B7-CU-02, B7-NA-03); an invalid key or a
@@ -80,10 +95,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private readonly GossipGraphOptions _options;
     private readonly NodeOptions _nodeOptions;
 
-    private readonly Channel<IngressItem> _queue;
+    private readonly Channel<IngressItem>[] _partitions;
     private readonly ConcurrentDictionary<CompactPubKey, int> _queuedPerPeer = new();
     private readonly RecentMessageCache _recentMessages;
     private readonly OrphanUpdateCache _orphans;
+    private readonly PendingAnnouncementIndex _pending;
     private readonly Lock _orphanGate = new();
     private readonly Lock _startLock = new();
     private readonly CancellationTokenSource _stopCts = new();
@@ -101,6 +117,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     private readonly ConcurrentDictionary<CompactPubKey, IngressItem> _limitedNodes = new();
 
     private Task? _startTask;
+    private int _queuedTotal;
+    private long _pendingEvictedCount;
     private int _pendingRetries;
     private int _flushRequested;
     private int _pendingOwn;
@@ -124,14 +142,16 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         _options = options.Value;
         _nodeOptions = nodeOptions.Value;
 
-        _queue = Channel.CreateBounded<IngressItem>(new BoundedChannelOptions(_options.MaxQueued)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = false,
-            SingleWriter = false
-        });
+        // NL-408: one queue per worker, chosen by short channel id (node id for a node_announcement), so a channel's
+        // announcement and updates are handled one after the other, in arrival order; MaxQueued bounds them together
+        _partitions = new Channel<IngressItem>[_options.GetWorkerCount()];
+        for (var i = 0; i < _partitions.Length; i++)
+            _partitions[i] = Channel.CreateUnbounded<IngressItem>(
+                new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
         _recentMessages = new RecentMessageCache(_options.RecentMessageCacheSize);
         _orphans = new OrphanUpdateCache(_options.MaxOrphans, _options.OrphanTtl, _timeProvider);
+        _pending = new PendingAnnouncementIndex(_options.MaxPendingAnnouncements, _options.PendingAnnouncementTtl,
+                                                _timeProvider);
         _rateLimiter = new GossipRateLimiter(_options.ChannelUpdateRateInterval, _options.ChannelUpdateBurst,
                                              _options.NodeAnnouncementRateInterval, _timeProvider);
         _misbehaviour = new GossipMisbehaviourTracker(_options.MisbehaviourThreshold, _options.MisbehaviourWindow,
@@ -139,8 +159,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         _metrics = metrics;
         if (metrics is not null)
         {
-            metrics.RegisterQueue("ingress", () => _queue.Reader.Count);
+            metrics.RegisterQueue("ingress", () => Volatile.Read(ref _queuedTotal));
             metrics.RegisterQueue("orphans", () => _orphans.Count);
+            metrics.RegisterQueue("pending_announcements", () => _pending.Count);
             metrics.RegisterQueue("retries", () => Volatile.Read(ref _pendingRetries));
             metrics.RegisterQueue("rate_limited", () => _limitedUpdates.Count + _limitedNodes.Count);
         }
@@ -150,7 +171,22 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     public bool IsEnabled => _options.IsEnabledFor(_nodeOptions.BitcoinNetwork);
 
     /// <summary>The number of messages waiting for a worker.</summary>
-    public int QueuedCount => _queue.Reader.Count;
+    public int QueuedCount => Volatile.Read(ref _queuedTotal);
+
+    /// <summary>
+    /// The <c>channel_announcement</c>s kept outside the graph until their first valid <c>channel_update</c> (NL-406;
+    /// expired ones included until the next write-behind round).
+    /// </summary>
+    public int PendingAnnouncementCount => _pending.Count;
+
+    /// <summary>
+    /// True when a signed <c>channel_announcement</c> for <paramref name="shortChannelId"/> waits for its first
+    /// <c>channel_update</c> (NL-406): not in the graph, never served or relayed.
+    /// </summary>
+    public bool IsPendingAnnouncement(ShortChannelId shortChannelId) => _pending.Contains(shortChannelId);
+
+    /// <summary>The number of worker queues (NL-408; one per worker).</summary>
+    internal int PartitionCount => _partitions.Length;
 
     /// <summary>
     /// The messages of <paramref name="peer"/> waiting for a worker (what counts against
@@ -160,6 +196,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
     /// <summary>The orphan cache (for tests and metrics).</summary>
     internal OrphanUpdateCache Orphans => _orphans;
+
+    /// <summary>The announcements without update (for tests).</summary>
+    internal PendingAnnouncementIndex PendingAnnouncements => _pending;
 
     /// <summary>The rate limits (for tests).</summary>
     internal GossipRateLimiter RateLimiter => _rateLimiter;
@@ -205,7 +244,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             return false;
         }
 
-        if (_queue.Writer.TryWrite(new IngressItem(origin, message, 0)))
+        if (TryWriteItem(new IngressItem(origin, message, 0)))
             return true;
 
         ReleasePeerSlot(peer);
@@ -483,7 +522,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                                                            origin, announcement, attempt, cancellationToken),
             NodeAnnouncementMessage announcement => await ProcessNodeAnnouncementAsync(
                                                         origin, announcement, attempt, cancellationToken),
-            ChannelUpdateMessage update => await ProcessChannelUpdateAsync(origin, update, attempt),
+            ChannelUpdateMessage update => await ProcessChannelUpdateAsync(origin, update, attempt,
+                                                                           cancellationToken),
             _ => GossipIngressResult.Ignored($"{message.GetType().Name} is not graph gossip")
         };
 
@@ -491,7 +531,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             _logger.LogTrace("{MessageType} from peer {Peer}: {Outcome} ({Detail})", Enum.GetName(message.Type),
                              origin?.PeerPubKey.ToString() ?? "us", result.Outcome, result.Detail);
 
-        RecordOutcome(message.Type, result);
+        // An announcement counts as accepted where it is promoted into the graph (PromoteAsync), also when a waiting
+        // update promotes it during its own processing
+        if (message is not ChannelAnnouncementMessage || result.Outcome != GossipIngressOutcome.Accepted)
+            RecordOutcome(message.Type, result);
         return result;
     }
 
@@ -525,8 +568,15 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
         }
 
+        // NL-406: the same announcement already waits for its first update (not remembered as a duplicate, so it can
+        // come back once it has left the pending index)
+        if (_pending.TryGet(announcement.ShortChannelId, out var alreadyPending)
+         && alreadyPending.Raw.AsSpan().SequenceEqual(raw))
+            return GossipIngressResult.Ignored("already waiting for its first channel_update",
+                                               GossipRejectReason.AlreadyKnown);
+
         // Plan §3.8: no new channel beyond the limit (before the signatures and the chain lookup it would cost)
-        if (known is null && _store.ChannelCount >= _options.MaxChannels)
+        if (_store.ChannelCount >= _options.MaxChannels)
             return GraphFull($"the graph holds {_options.MaxChannels} channels",
                              announcement.ShortChannelId.ToString());
 
@@ -538,21 +588,134 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                                    closeConnection: true, GossipMetricReasons.InvalidSignature);
         }
 
+        return await KeepPendingAsync(origin, announcement, raw, cancellationToken);
+    }
+
+    /// <summary>
+    /// NL-406: a validly signed announcement enters the graph only with its first valid <c>channel_update</c> (BOLT 7:
+    /// a node MUST NOT send the announcement without one). Until then it waits in the
+    /// <see cref="PendingAnnouncementIndex"/>, without a chain lookup; updates that arrived before it are replayed at
+    /// once (the first valid one promotes it).
+    /// </summary>
+    private async Task<GossipIngressResult> KeepPendingAsync(IPeerService? origin,
+                                                            ChannelAnnouncementPayload announcement, byte[] raw,
+                                                            CancellationToken cancellationToken)
+    {
+        var entry = new PendingAnnouncement(announcement.ShortChannelId, raw, origin?.PeerPubKey,
+                                            _timeProvider.GetUtcNow());
+        IReadOnlyList<OrphanEntry<ChannelUpdateMessage>> waiting;
+        bool evicted;
+        lock (_orphanGate)
+        {
+            // Our own channel may have been added meanwhile
+            if (_store.TryGetChannel(announcement.ShortChannelId, out _))
+                return GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
+
+            evicted = _pending.AddOrReplace(entry);
+            waiting = _orphans.TakeUpdates(announcement.ShortChannelId);
+        }
+
+        if (evicted)
+        {
+            _metrics?.RecordDropped(GossipMetricReasons.PendingFull);
+            var count = Interlocked.Increment(ref _pendingEvictedCount);
+            if (count == 1 || count % 1_000 == 0)
+                _logger.LogWarning("{Max} channel announcements without a channel_update are kept; the oldest made "
+                                 + "room ({Count} so far)", _options.MaxPendingAnnouncements, count);
+        }
+
+        foreach (var orphan in waiting)
+            await ReplayAsync(orphan.Origin, orphan.Message, cancellationToken);
+
+        return _store.TryGetChannel(announcement.ShortChannelId, out _)
+                   ? GossipIngressResult.Accepted("promoted by a waiting channel_update")
+                   : GossipIngressResult.Pending("waiting for its first channel_update");
+    }
+
+    /// <summary>
+    /// NL-406: the first <c>channel_update</c> of a pending announcement. The update is checked against the
+    /// announcement (its fields and its node's signature) before the announcement's funding output is looked up; then
+    /// the channel enters the graph (and what waited for it is replayed) and the update is applied as for any stored
+    /// channel. A signature that does not match the pending announcement's node blames nobody (the announcement was
+    /// never checked on chain, so it may be the forgery): the update waits as an orphan for another announcement.
+    /// </summary>
+    private async Task<GossipIngressResult> PromoteAsync(IPeerService? origin, ChannelUpdateMessage message,
+                                                         PendingAnnouncement pending, int attempt,
+                                                         GossipValidationContext context,
+                                                         CancellationToken cancellationToken)
+    {
+        var update = message.Payload;
+        var announcement = pending.ParseAnnouncement();
+        var candidate = pending.ToUncheckedChannel(announcement);
+        var validation = GossipValidator.ValidateChannelUpdate(update, context, candidate);
+        if (validation.Outcome == GossipValidationOutcome.Ignore)
+            return GossipIngressResult.Ignored(validation.Reason.ToString(), validation.Reason);
+
+        if (validation.Outcome == GossipValidationOutcome.Warn)
+            return await WarnAsync(origin, validation.Reason,
+                                   $"Invalid channel_update for {update.ShortChannelId}: {validation.Reason}",
+                                   validation.CloseConnection);
+
+        var signer = update.Direction ? candidate.NodeId2 : candidate.NodeId1;
+        if (_store.IsBanned(signer))
+            return GossipIngressResult.Ignored("the node is banned", GossipRejectReason.BlacklistedNode);
+
+        if (!_signatureVerifier.Verify(update.GetSignatureHash(), update.Signature, signer))
+        {
+            lock (_orphanGate)
+            {
+                if (!_orphans.AddUpdate(message, origin, out var full) && full)
+                    _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
+            }
+
+            return GossipIngressResult.Orphaned("not signed by the pending announcement's node");
+        }
+
+        if (_store.ChannelCount >= _options.MaxChannels)
+            return GraphFull($"the graph holds {_options.MaxChannels} channels", update.ShortChannelId.ToString());
+
+        var check = await CheckFundingAsync(pending, announcement, origin, cancellationToken);
+        if (check.Failure is { } failure)
+        {
+            if (failure.Outcome != GossipIngressOutcome.Deferred)
+            {
+                // Permanent: the announcement names no unspent 2-of-2 of its keys (BOLT 7 MUST ignore)
+                _pending.Remove(pending);
+                Remember(MessageTypes.ChannelAnnouncement, pending.Raw);
+                _metrics?.RecordRejected(MessageTypes.ChannelAnnouncement, failure.MetricReason);
+            }
+
+            return failure;
+        }
+
+        Remember(MessageTypes.ChannelAnnouncement, pending.Raw);
+        if (await AddChannelAndReplayAsync(check.Channel!, check.FundingTxId, cancellationToken))
+            _metrics?.RecordAccepted(MessageTypes.ChannelAnnouncement);
+
+        // The channel is in the graph now (unless a ban forgot it meanwhile): apply the update as for any channel
+        return await ProcessChannelUpdateAsync(origin, message, attempt, cancellationToken);
+    }
+
+    /// <summary>
+    /// The chain check of a pending announcement (at 6 confirmations), or its channel as <c>Assumed</c> without a
+    /// lookup under <see cref="GossipGraphOptions.AssumeChannelValid"/>.
+    /// </summary>
+    private async Task<FundingCheck> CheckFundingAsync(PendingAnnouncement pending,
+                                                       ChannelAnnouncementPayload announcement,
+                                                       IPeerService? updateOrigin,
+                                                       CancellationToken cancellationToken)
+    {
         if (_options.AssumeChannelValid)
         {
             // Gossip:AssumeChannelValid: the four signatures are all we check (no chain lookup, no capacity, no
             // funding outpoint for the spend detection); the channel is never relayed or served (IsChainChecked)
-            var assumed = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
-                                           announcement.BitcoinKey1, announcement.BitcoinKey2, null,
-                                           announcement.Features, GraphChannelVerification.Assumed)
+            return new FundingCheck(new GraphChannel(announcement.ShortChannelId, announcement.NodeId1,
+                                                     announcement.NodeId2, announcement.BitcoinKey1,
+                                                     announcement.BitcoinKey2, null, announcement.Features,
+                                                     GraphChannelVerification.Assumed)
             {
-                RawAnnouncement = raw
-            };
-
-            Remember(MessageTypes.ChannelAnnouncement, raw);
-            return await AddChannelAndReplayAsync(assumed, null, cancellationToken)
-                       ? GossipIngressResult.Accepted(GraphChannelVerification.Assumed.ToString())
-                       : GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
+                RawAnnouncement = pending.Raw
+            }, null, null);
         }
 
         var lookup = await _fundingOutputLookup.VerifyAsync(announcement.ShortChannelId, announcement.BitcoinKey1,
@@ -567,8 +730,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 capacitySat = (ulong)lookup.Amount!.Satoshi;
                 break;
             case FundingOutputStatus.Found:
-                return GossipIngressResult.Deferred(
-                    $"the funding output has {lookup.Confirmations} confirmations, {AnnouncementDepth} needed");
+                return FundingCheck.Failed(GossipIngressResult.Deferred(
+                    $"the funding output has {lookup.Confirmations} confirmations, {AnnouncementDepth} needed"));
             case FundingOutputStatus.BlockUnavailable
                 when _options.FundingValidation == FundingValidationMode.SkipUnavailable:
                 capacitySat = null;
@@ -576,24 +739,25 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 break;
             default:
                 if (lookup.IsTransient)
-                    return GossipIngressResult.Deferred($"the chain lookup returned {lookup.Status}");
+                    return FundingCheck.Failed(
+                        GossipIngressResult.Deferred($"the chain lookup returned {lookup.Status}"));
 
-                // Permanent: the announcement names no unspent 2-of-2 of its keys (BOLT 7 MUST ignore)
-                Remember(MessageTypes.ChannelAnnouncement, raw);
-                return FundingCheckFailed(origin, announcement.ShortChannelId, lookup.Status);
+                // The announcement's sender answers for it; a connection is closed only when the update came from that
+                // same peer (the announcement may have come long ago, on a connection that is gone)
+                var connection = updateOrigin is not null && updateOrigin.PeerPubKey == pending.OriginNodeId
+                                     ? updateOrigin
+                                     : null;
+                return FundingCheck.Failed(FundingCheckFailed(pending.OriginNodeId, connection,
+                                                              announcement.ShortChannelId, lookup.Status));
         }
 
-        var channel = new GraphChannel(announcement.ShortChannelId, announcement.NodeId1, announcement.NodeId2,
-                                       announcement.BitcoinKey1, announcement.BitcoinKey2, capacitySat,
-                                       announcement.Features, verification)
+        return new FundingCheck(new GraphChannel(announcement.ShortChannelId, announcement.NodeId1,
+                                                 announcement.NodeId2, announcement.BitcoinKey1,
+                                                 announcement.BitcoinKey2, capacitySat, announcement.Features,
+                                                 verification)
         {
-            RawAnnouncement = raw
-        };
-
-        Remember(MessageTypes.ChannelAnnouncement, raw);
-        return await AddChannelAndReplayAsync(channel, lookup.TransactionId, cancellationToken)
-                   ? GossipIngressResult.Accepted(verification.ToString())
-                   : GossipIngressResult.Ignored("already known", GossipRejectReason.AlreadyKnown);
+            RawAnnouncement = pending.Raw
+        }, lookup.TransactionId, null);
     }
 
     private async Task<GossipIngressResult> ProcessNodeAnnouncementAsync(
@@ -674,7 +838,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     }
 
     private async Task<GossipIngressResult> ProcessChannelUpdateAsync(
-        IPeerService? origin, ChannelUpdateMessage message, int attempt)
+        IPeerService? origin, ChannelUpdateMessage message, int attempt, CancellationToken cancellationToken)
     {
         var update = message.Payload;
         var raw = update.GetBytes();
@@ -692,15 +856,21 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 return GossipIngressResult.Ignored("dont_forward for a channel without announcement",
                                                    GossipRejectReason.UnknownChannel);
 
+            PendingAnnouncement? pending = null;
             lock (_orphanGate)
             {
-                if (!_store.TryGetChannel(update.ShortChannelId, out channel))
+                if (!_store.TryGetChannel(update.ShortChannelId, out channel)
+                 && !_pending.TryGet(update.ShortChannelId, out pending))
                 {
                     if (!_orphans.AddUpdate(message, origin, out var full) && full)
                         _metrics?.RecordDropped(GossipMetricReasons.OrphanCacheFull);
                     return GossipIngressResult.Orphaned("the channel is not in the graph yet");
                 }
             }
+
+            // NL-406: the first update of an announcement that waits for one
+            if (channel is null)
+                return await PromoteAsync(origin, message, pending!, attempt, context, cancellationToken);
         }
 
         var validation = GossipValidator.ValidateChannelUpdate(update, context, channel);
@@ -770,6 +940,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             if (!_store.TryAddChannel(channel, fundingTxId))
                 return false;
 
+            _pending.Remove(channel.ShortChannelId);
             _missed.TryRemove(channel.ShortChannelId, out _);
 
             updates = _orphans.TakeUpdates(channel.ShortChannelId);
@@ -792,7 +963,10 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     {
         try
         {
-            await ProcessAsync(origin, message, 0, cancellationToken);
+            // A waiting update may promote a pending announcement, whose chain check can be deferred: retry it later
+            var result = await ProcessAsync(origin, message, 0, cancellationToken);
+            if (result.Outcome == GossipIngressOutcome.Deferred)
+                ScheduleRetry(new IngressItem(origin, message, 0), result.Detail, cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -902,8 +1076,8 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// index) is the announcer's lie that the relaying peer should have caught, so it counts against the peer; a spent
     /// output (a closed channel) or an unreadable block never does.
     /// </summary>
-    private GossipIngressResult FundingCheckFailed(IPeerService? origin, ShortChannelId shortChannelId,
-                                                   FundingOutputStatus status)
+    private GossipIngressResult FundingCheckFailed(CompactPubKey? origin, IPeerService? connection,
+                                                   ShortChannelId shortChannelId, FundingOutputStatus status)
     {
         var detail = $"funding output check: {status}";
         switch (status)
@@ -911,9 +1085,9 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             case FundingOutputStatus.ScriptMismatch or FundingOutputStatus.AmountMismatch
                                                     or FundingOutputStatus.TransactionIndexOutOfRange:
                 _logger.LogDebug("The funding output of channel_announcement {ShortChannelId} from peer {Peer} "
-                               + "contradicts it: {Status}", shortChannelId, origin?.PeerPubKey.ToString() ?? "us",
-                                 status);
-                ScoreMisbehaviour(origin, $"channel_announcement for {shortChannelId} contradicted by the chain",
+                               + "contradicts it: {Status}", shortChannelId, origin?.ToString() ?? "us", status);
+                ScoreMisbehaviour(origin, connection,
+                                  $"channel_announcement for {shortChannelId} contradicted by the chain",
                                   disconnect: true);
                 return GossipIngressResult.Limited(detail, GossipMetricReasons.ChainMismatch);
             case FundingOutputStatus.OutputSpentOrMissing:
@@ -947,12 +1121,19 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     /// is a node of the graph: a throwaway node id costs a flooder one handshake, and must cost us neither a
     /// database row nor memory that is never given back.
     /// </remarks>
-    private bool ScoreMisbehaviour(IPeerService? origin, string why, bool disconnect)
+    private bool ScoreMisbehaviour(IPeerService? origin, string why, bool disconnect) =>
+        ScoreMisbehaviour(origin?.PeerPubKey, origin, why, disconnect);
+
+    /// <summary>
+    /// Counts one misbehaviour of <paramref name="peerId"/>; <paramref name="connection"/> (when known) is the one
+    /// disconnected at the threshold. A pending announcement's sender (NL-406) is scored by node id only: the
+    /// connection it came on may be gone, so the ban then only drops its later gossip.
+    /// </summary>
+    private bool ScoreMisbehaviour(CompactPubKey? peerId, IPeerService? connection, string why, bool disconnect)
     {
-        if (origin is null || origin.PeerPubKey == _ourNodeId || !_misbehaviour.Record(origin.PeerPubKey))
+        if (peerId is not { } peer || peer == _ourNodeId || !_misbehaviour.Record(peer))
             return false;
 
-        var peer = origin.PeerPubKey;
         var until = _timeProvider.GetUtcNow() + _options.MisbehaviourBanDuration;
         var persisted = _store.TryGetNode(peer, out _) || _store.NodeHasChannels(peer);
         if (persisted)
@@ -964,12 +1145,12 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                          + "until {Until}{Persisted} and disconnecting it (last: {Why})", peer,
                            _options.MisbehaviourThreshold, _options.MisbehaviourWindow, until,
                            persisted ? " (a graph node: its own gossip too)" : "", why);
-        if (!disconnect)
+        if (!disconnect || connection is null)
             return true;
 
         try
         {
-            origin.Disconnect(new WarningException(BanWarning));
+            connection.Disconnect(new WarningException(BanWarning));
         }
         catch (Exception e)
         {
@@ -992,6 +1173,18 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
 
             _bannedPeers[peer] = until;
         }
+    }
+
+    /// <summary>
+    /// Drops the announcements without update older than <see cref=GossipGraphOptions.PendingAnnouncementTtl/>
+    /// (NL-406; the write-behind loop, and tests), counted as dropped <c>pending_expired</c>. Returns how many.
+    /// </summary>
+    internal int PrunePendingAnnouncements()
+    {
+        var expired = _pending.PruneExpired();
+        if (expired > 0)
+            _metrics?.RecordDropped(GossipMetricReasons.PendingExpired, expired);
+        return expired;
     }
 
     /// <summary>Forgets the ended misbehaviour bans; returns how many.</summary>
@@ -1069,7 +1262,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
     {
         if (item.Origin is not null && IsPeerBanned(item.Origin.PeerPubKey))
             return false;
-        if (_queue.Writer.TryWrite(item))
+        if (TryWriteItem(item))
             return true;
 
         RecordMissed(item.Message, GossipMetricReasons.QueueFull);
@@ -1137,11 +1330,11 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             _logger.LogError(e, "Failed to load the graph; starting from what gossip brings");
         }
 
-        var workers = _options.GetWorkerCount();
+        var workers = _partitions.Length;
         lock (_startLock)
         {
-            for (var i = 0; i < workers; i++)
-                _loops.Add(Task.Run(() => WorkerLoopAsync(cancellationToken), CancellationToken.None));
+            foreach (var partition in _partitions)
+                _loops.Add(Task.Run(() => WorkerLoopAsync(partition.Reader, cancellationToken), CancellationToken.None));
             _loops.Add(Task.Run(() => FlushLoopAsync(cancellationToken), CancellationToken.None));
             _loops.Add(Task.Run(() => OwnLoopAsync(cancellationToken), CancellationToken.None));
         }
@@ -1155,12 +1348,13 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                              + "routes no payments of value");
     }
 
-    private async Task WorkerLoopAsync(CancellationToken cancellationToken)
+    private async Task WorkerLoopAsync(ChannelReader<IngressItem> reader, CancellationToken cancellationToken)
     {
         try
         {
-            await foreach (var item in _queue.Reader.ReadAllAsync(cancellationToken))
+            await foreach (var item in reader.ReadAllAsync(cancellationToken))
             {
+                Interlocked.Decrement(ref _queuedTotal);
                 if (item.Attempt == 0 && item.Origin is not null)
                 {
                     ReleasePeerSlot(item.Origin.PeerPubKey);
@@ -1233,7 +1427,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
             try
             {
                 await Task.Delay(_options.RetryDelay, _timeProvider, cancellationToken);
-                if (!_queue.Writer.TryWrite(item with { Attempt = item.Attempt + 1 }))
+                if (!TryWriteItem(item with { Attempt = item.Attempt + 1 }))
                 {
                     _logger.LogDebug("Dropping deferred {MessageType}: the gossip queue is full",
                                      Enum.GetName(item.Message.Type));
@@ -1260,6 +1454,7 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
                 await Task.Delay(_options.FlushInterval, _timeProvider, cancellationToken);
                 await _store.FlushAsync(cancellationToken);
                 _orphans.PruneExpired();
+                PrunePendingAnnouncements();
                 ReplayRateLimited();
                 _rateLimiter.Prune();
                 _misbehaviour.Prune();
@@ -1276,9 +1471,65 @@ public sealed class GossipIngress : IGossipIngress, IOwnGossipSink, IAsyncDispos
         }
     }
 
+    /// <summary>
+    /// Queues <paramref name="item"/> on its worker's queue (NL-408: <see cref="PartitionOf"/>) while fewer than
+    /// <see cref="GossipGraphOptions.MaxQueued"/> messages wait in all of them.
+    /// </summary>
+    private bool TryWriteItem(IngressItem item)
+    {
+        if (Interlocked.Increment(ref _queuedTotal) > _options.MaxQueued)
+        {
+            Interlocked.Decrement(ref _queuedTotal);
+            return false;
+        }
+
+        if (_partitions[PartitionOf(item.Message, _partitions.Length)].Writer.TryWrite(item))
+            return true;
+
+        Interlocked.Decrement(ref _queuedTotal);
+        return false;
+    }
+
+    /// <summary>
+    /// NL-408: the worker queue of <paramref name="message"/>: by short channel id for a <c>channel_announcement</c>
+    /// and a <c>channel_update</c> (so one worker handles a channel's messages in arrival order, and an update no
+    /// longer overtakes its announcement), by node id for a <c>node_announcement</c>.
+    /// </summary>
+    internal static int PartitionOf(IMessage message, int partitions)
+    {
+        if (partitions <= 1)
+            return 0;
+
+        var key = message switch
+        {
+            ChannelAnnouncementMessage announcement => ScidKey(announcement.Payload.ShortChannelId),
+            ChannelUpdateMessage update => ScidKey(update.Payload.ShortChannelId),
+            NodeAnnouncementMessage announcement => BinaryPrimitives.ReadUInt64BigEndian(
+                ((ReadOnlySpan<byte>)(byte[])announcement.Payload.NodeId)[1..9]),
+            _ => 0UL
+        };
+
+        // splitmix64's finalizer: neighbouring short channel ids (one block's channels) spread over the workers
+        key ^= key >> 30;
+        key *= 0xBF58476D1CE4E5B9UL;
+        key ^= key >> 27;
+        key *= 0x94D049BB133111EBUL;
+        key ^= key >> 31;
+        return (int)(key % (ulong)partitions);
+
+        static ulong ScidKey(ShortChannelId shortChannelId) =>
+            BinaryPrimitives.ReadUInt64BigEndian((byte[])shortChannelId);
+    }
+
     private const string BanWarning = "Too much invalid gossip: your gossip is ignored for a while";
 
     private sealed record IngressItem(IPeerService? Origin, IMessage Message, int Attempt);
 
     private sealed record OwnGossipItem(IMessage Message, LightningMoney? Capacity);
+
+    /// <summary>The chain check of a pending announcement: the channel to store, or why not (maybe later).</summary>
+    private sealed record FundingCheck(GraphChannel? Channel, TxId? FundingTxId, GossipIngressResult? Failure)
+    {
+        public static FundingCheck Failed(GossipIngressResult failure) => new(null, null, failure);
+    }
 }

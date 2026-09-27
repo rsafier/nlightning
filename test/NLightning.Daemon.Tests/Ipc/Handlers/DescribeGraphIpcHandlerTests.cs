@@ -76,6 +76,7 @@ public class DescribeGraphIpcHandlerTests
         Assert.Equal(0, payload.IngressQueued);
         Assert.Equal(0L, payload.IngressDropped);
         Assert.Equal(0, payload.Orphans);
+        Assert.Equal(0, payload.PendingAnnouncements);
         Assert.False(payload.HasCompletedInitialSync);
         Assert.Empty(payload.Peers);
         Assert.Empty(payload.ChannelPage);
@@ -230,6 +231,7 @@ public class DescribeGraphIpcHandlerTests
             IngressQueued = 9,
             IngressDropped = 10,
             Orphans = 11,
+            PendingAnnouncements = 12,
             HasCompletedInitialSync = true,
             Peers =
             [
@@ -260,6 +262,7 @@ public class DescribeGraphIpcHandlerTests
                                                       payload.EstimatedSnapshotBytes));
         Assert.Equal((9, 10L, 11, true), (payload.IngressQueued, payload.IngressDropped, payload.Orphans,
                                           payload.HasCompletedInitialSync));
+        Assert.Equal(12, payload.PendingAnnouncements);
         Assert.Equal(2, payload.Peers.Count);
         var bob = payload.Peers[0];
         Assert.Equal(s_bob, bob.PeerId);

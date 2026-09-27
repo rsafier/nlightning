@@ -23,14 +23,21 @@ public class GossipGraphDescriberTests
     private static readonly uint s_now = (uint)GraphTestKit.DefaultNow.ToUnixTimeSeconds();
 
     [Fact]
-    public async Task Given_AGraphWithAnOrphan_When_Described_Then_CountsMemoryAndIngressAreReported()
+    public async Task Given_AGraphWithAnOrphanAndAPendingAnnouncement_When_Described_Then_CountsMemoryAndIngressAreReported()
     {
-        // Arrange: the store's graph (2 channels, 3 policies, 2 announced nodes) and an update for an unknown channel
+        // Arrange: the store's graph (2 channels, 3 policies, 2 announced nodes), an update for an unknown channel and
+        // an announcement without update (NL-406: pending, not in the graph)
         var kit = await GraphStoreTests.CreateGraphAsync();
         var orphan = GraphTestKit.SignedChannelUpdate(new ShortChannelId(999, 1, 0), new TestGossipKey(1), 0, s_now);
         var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, orphan, 0,
                                                     TestContext.Current.CancellationToken);
         Assert.Equal(GossipIngressOutcome.Orphaned, result.Outcome);
+        var pending = GraphTestKit.SignedChannelAnnouncement(new ShortChannelId(998, 1, 0), new TestGossipKey(41),
+                                                             new TestGossipKey(42), new TestGossipKey(43),
+                                                             new TestGossipKey(44));
+        Assert.Equal(GossipIngressOutcome.Pending,
+                     (await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, pending, 0,
+                                                     TestContext.Current.CancellationToken)).Outcome);
         Assert.True(kit.Store.MarkSpent(new ShortChannelId(115, 1, 0), 300));
         var describer = new GossipGraphDescriber(kit.Store, kit.Ingress);
 
@@ -47,7 +54,7 @@ public class GossipGraphDescriberTests
         Assert.Equal(1_000_000UL, description.CapacitySat); // bc is spent: only ab counts
         Assert.Equal(kit.Store.PendingChanges, description.PendingWrites);
         Assert.Equal(kit.Store.GetMemoryEstimate(), description.Memory);
-        Assert.Equal(new GossipIngressState(0, 0, 1), description.Ingress);
+        Assert.Equal(new GossipIngressState(0, 0, 1, 1), description.Ingress);
         Assert.Null(description.Sync);
     }
 

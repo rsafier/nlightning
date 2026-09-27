@@ -34,18 +34,25 @@ public class GossipIngressVectorTests
                          await kit.Ingress.ProcessAsync(peer.Object, message, 0,
                                                         TestContext.Current.CancellationToken)));
 
-        // Assert
+        // Assert: NL-406, each announcement waits for its first update, which promotes it
         Assert.All(results.Where(r => r.Message is ChannelAnnouncementMessage),
-                   r => Assert.Equal(GossipIngressOutcome.Accepted, r.Result.Outcome));
+                   r => Assert.Equal(GossipIngressOutcome.Pending, r.Result.Outcome));
         var updates = results.Where(r => r.Message is ChannelUpdateMessage).ToList();
         Assert.Equal(6, updates.Count(r => r.Result.Outcome == GossipIngressOutcome.Accepted));
         Assert.Equal(GossipIngressOutcome.Orphaned,
                      Assert.Single(updates, r => r.Result.Outcome != GossipIngressOutcome.Accepted).Result.Outcome);
+        // (LND sends its node_announcements before the updates: they wait for the promoted channels, NL-406, and
+        // are replayed then, so only the newest of each node is applied)
         var nodes = results.Where(r => r.Message is NodeAnnouncementMessage).ToList();
-        Assert.Equal(2, nodes.Count(r => r.Result.Outcome == GossipIngressOutcome.Accepted));
-        Assert.Equal(Domain.Gossip.Validation.GossipRejectReason.NotNewer,
-                     Assert.Single(nodes, r => r.Result.Outcome != GossipIngressOutcome.Accepted).Result
-                                                                                                   .RejectReason);
+        Assert.All(nodes, r => Assert.Equal(GossipIngressOutcome.Orphaned, r.Result.Outcome));
+        Assert.Equal(1, kit.Ingress.Orphans.Count); // only the unannounced channel's update still waits
+        var newest = s_lnd.OfType<NodeAnnouncementMessage>().GroupBy(n => n.Payload.NodeId)
+                          .Select(g => g.MaxBy(n => n.Payload.Timestamp)!).ToList();
+        Assert.All(newest, n =>
+        {
+            Assert.True(kit.Store.TryGetNode(n.Payload.NodeId, out var stored));
+            Assert.Equal(n.Payload.Timestamp, stored.Timestamp);
+        });
 
         Assert.Equal(3, kit.Store.ChannelCount);
         Assert.Equal(2, kit.Store.NodeCount);
@@ -71,6 +78,7 @@ public class GossipIngressVectorTests
         foreach (var message in early)
             earlyResults.Add(await kit.Ingress.ProcessAsync(peer.Object, message, 0,
                                                             TestContext.Current.CancellationToken));
+        // (NL-406: an announcement is promoted at once by the updates that waited for it)
         foreach (var message in announcements)
             Assert.Equal(GossipIngressOutcome.Accepted,
                          (await kit.Ingress.ProcessAsync(peer.Object, message, 0,
@@ -107,11 +115,14 @@ public class GossipIngressVectorTests
                                                         TestContext.Current.CancellationToken)));
 
         // Assert: the announced channel's update is applied; the update of CLN's private channel to us is not graph
-        // data (dont_forward, or no announcement) and waits or is ignored, never warned
-        Assert.Equal(GossipIngressOutcome.Accepted,
+        // data (dont_forward, or no announcement) and waits or is ignored, never warned. NL-406: the announcement
+        // waits for that update, and the node_announcement (applied at once, or replayed when the channel is promoted)
+        // ends in the graph
+        Assert.Equal(GossipIngressOutcome.Pending,
                      results.Single(r => r.Message is ChannelAnnouncementMessage).Result.Outcome);
-        Assert.Equal(GossipIngressOutcome.Accepted,
-                     results.Single(r => r.Message is NodeAnnouncementMessage).Result.Outcome);
+        var (node, nodeResult) = results.Single(r => r.Message is NodeAnnouncementMessage);
+        Assert.Contains(nodeResult.Outcome, new[] { GossipIngressOutcome.Accepted, GossipIngressOutcome.Orphaned });
+        Assert.True(kit.Store.TryGetNode(((NodeAnnouncementMessage)node).Payload.NodeId, out _));
         Assert.Equal(GossipIngressOutcome.Accepted,
                      results.Single(r => r.Message is ChannelUpdateMessage { Payload: var u }
                                       && u.ShortChannelId == announced).Result.Outcome);
@@ -144,12 +155,17 @@ public class GossipIngressVectorTests
     [Fact]
     public async Task Given_CapturedUpdateWithTamperedField_When_ItsChannelIsKnown_Then_WarnedAndDisconnected()
     {
-        // Arrange
+        // Arrange: the channels in the graph (NL-406: promoted by every update but the first, which is tampered)
         var kit = CreateKit(s_lnd);
         var peer = GraphTestKit.CreatePeer();
-        foreach (var announcement in s_lnd.OfType<ChannelAnnouncementMessage>())
-            await kit.Ingress.ProcessAsync(peer.Object, announcement, 0, TestContext.Current.CancellationToken);
-        var payload = s_lnd.OfType<ChannelUpdateMessage>().First().Payload.GetBytes();
+        var first = s_lnd.OfType<ChannelUpdateMessage>().First();
+        foreach (var message in s_lnd.Where(m => m is ChannelAnnouncementMessage
+                                                   || (m is ChannelUpdateMessage && !ReferenceEquals(m, first))))
+            await kit.Ingress.ProcessAsync(peer.Object, message, 0, TestContext.Current.CancellationToken);
+        Assert.True(kit.Store.TryGetChannel(first.Payload.ShortChannelId, out var before));
+        var direction = first.Payload.Direction ? (byte)1 : (byte)0;
+        Assert.Null(before.GetPolicy(direction));
+        var payload = first.Payload.GetBytes();
         payload[^1] ^= 0x01; // htlc_maximum_msat, covered by the signature
         var tampered = new ChannelUpdateMessage(ChannelUpdatePayload.Parse(payload));
 
@@ -159,7 +175,8 @@ public class GossipIngressVectorTests
         // Assert
         Assert.Equal(GossipIngressOutcome.Warned, result.Outcome);
         peer.Verify(p => p.Disconnect(It.IsAny<Domain.Exceptions.WarningException>()), Times.Once);
-        Assert.All(kit.Store.GetSnapshot().Channels, c => Assert.True(c.Policy1 is null && c.Policy2 is null));
+        Assert.True(kit.Store.TryGetChannel(first.Payload.ShortChannelId, out var channel));
+        Assert.Null(channel.GetPolicy(direction));
     }
 
     [Fact]
@@ -175,13 +192,11 @@ public class GossipIngressVectorTests
         var result = await kit.Ingress.ProcessAsync(peer.Object, announcement, 0,
                                                     TestContext.Current.CancellationToken);
 
-        // Assert
+        // Assert: NL-406, the chain is asked only when an update promotes the announcement
         Assert.Equal(GossipIngressOutcome.Ignored, result.Outcome);
-        kit.FundingLookup.Verify(l => l.VerifyAsync(It.IsAny<Domain.Channels.ValueObjects.ShortChannelId>(),
-                                                    It.IsAny<Domain.Crypto.ValueObjects.CompactPubKey>(),
-                                                    It.IsAny<Domain.Crypto.ValueObjects.CompactPubKey>(),
-                                                    It.IsAny<Domain.Money.LightningMoney?>(),
-                                                    It.IsAny<CancellationToken>()), Times.Once);
+        Assert.Equal(Domain.Gossip.Validation.GossipRejectReason.AlreadyKnown, result.RejectReason);
+        Assert.True(kit.Ingress.IsPendingAnnouncement(announcement.Payload.ShortChannelId));
+        kit.FundingLookup.VerifyNoOtherCalls();
     }
 
     [Theory]
@@ -201,12 +216,19 @@ public class GossipIngressVectorTests
         kit.FundingFails(status);
         var peer = GraphTestKit.CreatePeer();
 
-        // Act
-        var result = await kit.Ingress.ProcessAsync(peer.Object, s_lnd.OfType<ChannelAnnouncementMessage>().First(),
-                                                    0, TestContext.Current.CancellationToken);
+        var announcement = s_lnd.OfType<ChannelAnnouncementMessage>().First();
+
+        // Act: NL-406, its first update promotes it and runs the chain check
+        var result = await kit.Ingress.ProcessAsync(peer.Object, announcement, 0,
+                                                    TestContext.Current.CancellationToken);
+        Assert.Equal(GossipIngressOutcome.Pending, result.Outcome);
+        result = await kit.Ingress.ProcessAsync(peer.Object, FirstUpdateOf(announcement), 0,
+                                                TestContext.Current.CancellationToken);
 
         // Assert: never a warning (a chain answer is no proof against the peer)
         Assert.Equal(expected, result.Outcome);
+        Assert.Equal(expected == GossipIngressOutcome.Deferred,
+                     kit.Ingress.IsPendingAnnouncement(announcement.Payload.ShortChannelId));
         Assert.Equal(0, kit.Store.ChannelCount);
         peer.Verify(p => p.SendWarningAsync(It.IsAny<Domain.Exceptions.WarningException>()), Times.Never);
         peer.Verify(p => p.Disconnect(It.IsAny<Exception>()), Times.Never);
@@ -221,12 +243,13 @@ public class GossipIngressVectorTests
         var peer = GraphTestKit.CreatePeer();
         var announcement = s_lnd.OfType<ChannelAnnouncementMessage>().First();
 
-        // Act
-        var early = await kit.Ingress.ProcessAsync(peer.Object, announcement, 0,
-                                                   TestContext.Current.CancellationToken);
+        await kit.Ingress.ProcessAsync(peer.Object, announcement, 0, TestContext.Current.CancellationToken);
+        var update = FirstUpdateOf(announcement);
+
+        // Act: NL-406, the update that promotes the announcement is deferred and retried
+        var early = await kit.Ingress.ProcessAsync(peer.Object, update, 0, TestContext.Current.CancellationToken);
         kit.FundingFound(confirmations: 6);
-        var retried = await kit.Ingress.ProcessAsync(peer.Object, announcement, 1,
-                                                     TestContext.Current.CancellationToken);
+        var retried = await kit.Ingress.ProcessAsync(peer.Object, update, 1, TestContext.Current.CancellationToken);
 
         // Assert
         Assert.Equal(GossipIngressOutcome.Deferred, early.Outcome);
@@ -243,7 +266,9 @@ public class GossipIngressVectorTests
         var announcement = s_lnd.OfType<ChannelAnnouncementMessage>().First();
 
         // Act
-        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, announcement, 0,
+        await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, announcement, 0,
+                                       TestContext.Current.CancellationToken);
+        var result = await kit.Ingress.ProcessAsync(GraphTestKit.CreatePeer().Object, FirstUpdateOf(announcement), 0,
                                                     TestContext.Current.CancellationToken);
 
         // Assert
@@ -252,6 +277,11 @@ public class GossipIngressVectorTests
         Assert.Equal(Domain.Gossip.Graph.GraphChannelVerification.Unverified, channel.Verification);
         Assert.Null(channel.CapacitySat);
     }
+
+    /// <summary>The first captured update of <paramref name="announcement"/>'s channel.</summary>
+    private static ChannelUpdateMessage FirstUpdateOf(ChannelAnnouncementMessage announcement) =>
+        s_lnd.OfType<ChannelUpdateMessage>()
+             .First(u => u.Payload.ShortChannelId == announcement.Payload.ShortChannelId);
 
     internal static GraphTestKit CreateKit(IReadOnlyList<IMessage> messages)
     {

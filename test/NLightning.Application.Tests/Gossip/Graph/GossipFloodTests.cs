@@ -34,12 +34,15 @@ public class GossipFloodTests
         using var recorder = new GossipMetricsRecorder(metrics);
         var kit = new GraphTestKit(configure: o => o.Workers = 2, metrics: metrics);
         kit.FundingFound();
-        var bystander = GraphTestKit.CreatePeer(0x70);
-        await kit.Ingress.ProcessAsync(bystander.Object,
-                                       GraphTestKit.SignedChannelAnnouncement(s_known, s_alice, s_bob,
-                                                                              new TestGossipKey(11),
-                                                                              new TestGossipKey(12)), 0,
-                                       TestContext.Current.CancellationToken);
+        // (stored without a policy directly: NL-406 lets the ingress store it only with its first update)
+        var stored = GraphTestKit.SignedChannelAnnouncement(s_known, s_alice, s_bob, new TestGossipKey(11),
+                                                            new TestGossipKey(12)).Payload;
+        Assert.True(kit.Store.TryAddChannel(new Domain.Gossip.Graph.GraphChannel(
+                                                s_known, stored.NodeId1, stored.NodeId2, stored.BitcoinKey1,
+                                                stored.BitcoinKey2, 1_000_000)
+        {
+            RawAnnouncement = stored.GetBytes()
+        }));
 
         var flooder = GraphTestKit.CreatePeer(0x66);
         var flooderDisconnects = 0;

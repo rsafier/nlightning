@@ -53,6 +53,9 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>The offset of the next node page; null when the page was the last (or not requested).</summary>
     [Key(22)] public int? NextNodeOffset { get; init; }
 
+    /// <summary>Channel announcements waiting for their first channel_update (NL-406); null without an ingress.</summary>
+    [Key(23)] public int? PendingAnnouncements { get; init; }
+
     public static DescribeGraphIpcResponse FromClientResponse(DescribeGraphClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -75,6 +78,7 @@ public sealed class DescribeGraphIpcResponse
             IngressQueued = clientResponse.IngressQueued,
             IngressDropped = clientResponse.IngressDropped,
             Orphans = clientResponse.Orphans,
+            PendingAnnouncements = clientResponse.PendingAnnouncements,
             HasCompletedInitialSync = clientResponse.HasCompletedInitialSync,
             Peers = clientResponse.Peers.Select(p => new GraphPeerSyncIpcInfo
             {

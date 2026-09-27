@@ -468,6 +468,7 @@ public class PrinterSnapshotTests
             IngressQueued = 7,
             IngressDropped = 0,
             Orphans = 2,
+            PendingAnnouncements = 3,
             HasCompletedInitialSync = true,
             Peers =
             [
@@ -514,7 +515,7 @@ public class PrinterSnapshotTests
                          "  Capacity (sat):     3000000",
                          "  Memory (estimate):  5.0 MiB store + 0.5 MiB per snapshot",
                          "  Pending writes:     4",
-                         "  Ingress:            7 queued, 0 dropped, 2 orphans",
+                         "  Ingress:            7 queued, 0 dropped, 2 orphans, 3 announcements without update",
                          "  Initial sync:       complete",
                          "  Peers:              2",
                          $"    02{Hex(0x11)}: sync peer, gossip_queries_ex, last range sync 2026-09-21 14:13:20 UTC, their filter 1789000000+4294967295, ours 1788000000+4294967295, 1 queued",

@@ -27,7 +27,7 @@ public sealed class DescribeGraphPrinter : IPrinter<DescribeGraphIpcResponse>
         Line($"  Capacity (sat):     {item.CapacitySat}");
         Line($"  Memory (estimate):  {ToMegabytes(item.EstimatedStoreBytes)} MiB store + {ToMegabytes(item.EstimatedSnapshotBytes)} MiB per snapshot");
         Line($"  Pending writes:     {item.PendingWrites}");
-        Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans");
+        Line($"  Ingress:            {Optional(item.IngressQueued)} queued, {Optional(item.IngressDropped)} dropped, {Optional(item.Orphans)} orphans, {Optional(item.PendingAnnouncements)} announcements without update");
         Line($"  Initial sync:       {item.HasCompletedInitialSync switch { true => "complete", false => "not complete", null => "-" }}");
         Line($"  Peers:              {item.Peers.Count}");
         foreach (var peer in item.Peers)

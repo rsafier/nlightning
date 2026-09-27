@@ -54,6 +54,20 @@ public sealed class GossipGraphOptions
     public TimeSpan OrphanTtl { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
+    /// Signed <c>channel_announcement</c>s kept outside the graph while no valid <c>channel_update</c> has followed
+    /// them (NL-406: BOLT 7 forbids sending one without an update, Core Lightning does it for about a quarter of the
+    /// mainnet graph); the oldest makes room beyond it. They are promoted into the graph, with their chain check, by
+    /// their first valid update. <c>Gossip:MaxPendingAnnouncements</c>, default 50,000.
+    /// </summary>
+    public int MaxPendingAnnouncements { get; set; } = 50_000;
+
+    /// <summary>
+    /// How long an announcement without update is kept (<see cref="MaxPendingAnnouncements"/>; default 14 days, the
+    /// stale rule's two weeks). <c>Gossip:PendingAnnouncementTtl</c>.
+    /// </summary>
+    public TimeSpan PendingAnnouncementTtl { get; set; } = TimeSpan.FromDays(14);
+
+    /// <summary>
     /// The graph's channel limit (plan §3.8: 200,000): a new channel beyond it is refused (logged, metric). Our own
     /// channels are always stored. <c>Gossip:MaxChannels</c>.
     /// </summary>
@@ -241,6 +255,10 @@ public sealed class GossipGraphOptions
             errors.Add($"{nameof(Workers)} must not be negative");
         if (MaxOrphans < 0)
             errors.Add($"{nameof(MaxOrphans)} must not be negative");
+        if (MaxPendingAnnouncements < 1)
+            errors.Add($"{nameof(MaxPendingAnnouncements)} must be at least 1");
+        if (PendingAnnouncementTtl <= TimeSpan.Zero)
+            errors.Add($"{nameof(PendingAnnouncementTtl)} must be positive");
         if (MaxChannels < 1)
             errors.Add($"{nameof(MaxChannels)} must be at least 1");
         if (MaxNodes < 1)

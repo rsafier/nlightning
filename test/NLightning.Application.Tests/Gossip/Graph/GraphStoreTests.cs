@@ -253,8 +253,11 @@ public class GraphStoreTests
             GraphTestKit.SignedNodeAnnouncement(s_alice, s_now, "alice"),
             GraphTestKit.SignedNodeAnnouncement(s_carol, s_now, "carol")
         };
+        // NL-406: each announcement waits until its first update, which follows in the list
         foreach (var message in messages)
-            Assert.Equal(GossipIngressOutcome.Accepted,
+            Assert.Equal(message is Domain.Protocol.Messages.ChannelAnnouncementMessage
+                             ? GossipIngressOutcome.Pending
+                             : GossipIngressOutcome.Accepted,
                          (await kit.Ingress.ProcessAsync(peer, message, 0, ct)).Outcome);
 
         return kit;

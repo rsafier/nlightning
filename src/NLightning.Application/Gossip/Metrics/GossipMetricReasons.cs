@@ -54,6 +54,15 @@ public static class GossipMetricReasons
     /// <summary>A peer's relay backlog is full: its oldest pending message was dropped.</summary>
     public const string RelayBacklogFull = "relay_backlog_full";
 
+    /// <summary>
+    /// An announcement without update (NL-406) left the pending index unpromoted: it outlived
+    /// <c>PendingAnnouncementTtl</c>.
+    /// </summary>
+    public const string PendingExpired = "pending_expired";
+
+    /// <summary>An announcement without update made room in the full pending index (the oldest goes).</summary>
+    public const string PendingFull = "pending_full";
+
     /// <summary>A reason that is none of the above.</summary>
     public const string Other = "other";
 }

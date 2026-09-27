@@ -72,6 +72,7 @@ public sealed class DescribeGraphClientHandler
             IngressQueued = description.Ingress?.QueuedMessages,
             IngressDropped = description.Ingress?.DroppedMessages,
             Orphans = description.Ingress?.Orphans,
+            PendingAnnouncements = description.Ingress?.PendingAnnouncements,
             HasCompletedInitialSync = description.Sync?.HasCompletedInitialSync,
             Peers = description.Sync?.Peers
                                .OrderBy(p => p.PeerId, GraphClientGuards.NodeIdComparer)

@@ -60,7 +60,7 @@ public sealed class GossipGraphDescriber
         var ingress = _ingress is null
                           ? null
                           : new GossipIngressState(_ingress.QueuedCount, _ingress.DroppedCount,
-                                                   _ingress.Orphans.Count);
+                                                   _ingress.Orphans.Count, _ingress.PendingAnnouncementCount);
         var sync = _syncManager is null
                        ? null
                        : new GossipSyncState(_syncManager.HasCompletedInitialSync, _syncManager.GetPeerStates());
@@ -113,7 +113,11 @@ public sealed record GraphDescription(
 /// <param name="QueuedMessages">Messages waiting for a worker.</param>
 /// <param name="DroppedMessages">Messages dropped because a queue was full, since the start.</param>
 /// <param name="Orphans"><c>channel_update</c>s and <c>node_announcement</c>s waiting for their channel.</param>
-public sealed record GossipIngressState(int QueuedMessages, long DroppedMessages, int Orphans);
+/// <param name="PendingAnnouncements">
+/// Signed <c>channel_announcement</c>s kept outside the graph until their first <c>channel_update</c> (NL-406).
+/// </param>
+public sealed record GossipIngressState(int QueuedMessages, long DroppedMessages, int Orphans,
+                                        int PendingAnnouncements);
 
 /// <summary>The gossip sync's state.</summary>
 /// <param name="HasCompletedInitialSync">A range sync with at least one peer completed.</param>
