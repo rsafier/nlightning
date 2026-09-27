@@ -247,7 +247,7 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
         var paymentSecret = new Secret(RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen));
         try
         {
-            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description, null,
+            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description, null!,
                                     createdAt, expirySeconds, minFinalCltvExpiry, bolt12: details);
         }
         catch (ArgumentException)

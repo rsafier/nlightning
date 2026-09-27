@@ -37,7 +37,7 @@ public class Bolt12FinalHopTests
         try
         {
             return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret,
-                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", null, DateTimeOffset.UtcNow,
+                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", null!, DateTimeOffset.UtcNow,
                                     7_200, MinFinalCltv, bolt12: details);
         }
         catch (ArgumentException)
