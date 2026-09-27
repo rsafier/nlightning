@@ -188,7 +188,8 @@ public class HopPayloadSerializer : IHopPayloadSerializer
         if (!_converters.TryGetValue(record.Type, out var converter))
         {
             // BOLT 1: an unknown even type MUST fail; unknown odd types are kept verbatim. Custom records (65536 and
-            // up: keysend, application records) are kept whatever their parity, as LND does
+            // up: keysend, application records) are kept whatever their parity, as LND does; HopPayloadValidator
+            // then refuses an even one unless this is the final hop (the parser cannot tell)
             if (record.Type.Value % 2 == 0 && record.Type < OnionPayloadTlvTypes.CustomRecordTypeStart)
                 throw InvalidOnionPayloadFailureFactory.Create(record.Type, offset,
                                                                $"Unknown even TLV type {record.Type.Value}.");

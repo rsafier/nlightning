@@ -151,10 +151,13 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
 
     private static KeysendDetails? MapKeysend(PaymentEntity entity)
     {
-        if (entity.Bolt11 is not null || entity.OfferBolt12 is not null || entity.Bolt12InvoiceBytes is not { } records)
+        if (entity.Bolt11 is not null || entity.OfferBolt12 is not null || entity.Bolt12InvoiceBytes is not { } bytes)
             return null;
 
-        return new KeysendDetails(CustomRecordCodec.Decode(records));
+        // The kind is inferred from the overloaded column (no Kind column on Payments yet): bytes that are not a custom
+        // record stream read as a keysend without records instead of breaking the hash lookup (lane lh1-l3 review)
+        CustomRecordCodec.TryDecode(bytes, out var records);
+        return new KeysendDetails(records);
     }
 
     private static Bolt12PaymentDetails? MapBolt12(PaymentEntity entity)

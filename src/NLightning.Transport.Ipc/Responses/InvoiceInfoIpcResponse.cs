@@ -47,10 +47,12 @@ public sealed class InvoiceInfoIpcResponse
     /// </summary>
     [Key(10)] public InvoiceKind Kind { get; init; }
 
+    // Key 11 is reserved for the BOLT 12 offer id (lane lh1-l2, NL-454): never reuse it with another type
+
     /// <summary>
     /// The custom records a keysend payer attached, by type (null or empty for invoices we issued).
     /// </summary>
-    [Key(11)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
+    [Key(12)] public Dictionary<ulong, byte[]>? CustomRecords { get; init; }
 
     public static InvoiceInfoIpcResponse FromClientResponse(InvoiceInfoClientResponse invoice)
     {

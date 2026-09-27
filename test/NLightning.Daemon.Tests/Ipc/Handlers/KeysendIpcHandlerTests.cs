@@ -157,6 +157,37 @@ public class KeysendIpcHandlerTests
         Assert.Equal(new byte[] { 0x01 }, read.CustomRecords![7629169]);
     }
 
+    [Fact]
+    public void Given_AKeysendInvoiceRecord_When_Serialized_Then_CustomRecordsUseKey12AndKey11StaysFree()
+    {
+        // Arrange: key 11 belongs to lane lh1-l2's BOLT 12 offer id (NL-454); a second type on one key would break
+        // listinvoices once both lanes are merged
+        var ipc = new InvoiceInfoIpcResponse
+        {
+            PaymentHash = s_hash,
+            Status = InvoiceStatus.Settled,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+            ExpiresAt = DateTimeOffset.UnixEpoch,
+            Kind = InvoiceKind.Keysend,
+            CustomRecords = new Dictionary<ulong, byte[]> { [7629169] = [0x01] }
+        };
+
+        // Act
+        var bytes = MessagePackSerializer.Serialize(ipc, s_options.WithCompression(MessagePackCompression.None),
+                                                    TestContext.Current.CancellationToken);
+        var reader = new MessagePackReader(bytes);
+        var count = reader.ReadArrayHeader();
+        for (var i = 0; i < 11; i++)
+            reader.Skip();
+        var key11IsNil = reader.TryReadNil();
+        var key12Entries = reader.ReadMapHeader();
+
+        // Assert
+        Assert.Equal(13, count);
+        Assert.True(key11IsNil);
+        Assert.Equal(1, key12Entries);
+    }
+
     private static PaymentModel Payment()
     {
         var payment = new PaymentModel(s_hash, null, s_node, LightningMoney.Satoshis(21), LightningMoney.Zero,

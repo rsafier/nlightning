@@ -3,14 +3,17 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Application.Tests.Payments.Keysend;
 
+using Application.Payments.Keysend;
 using Application.Payments.Send;
 using Channels.Harness;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Keysend;
 using Domain.Payments.Models;
+using Domain.Payments.ValueObjects;
 using Domain.Protocol.Onion.Enums;
 
 /// <summary>
@@ -110,6 +113,109 @@ public class KeysendHarnessTests
                                            new PayInvoiceOptions { Timeout = s_timeout },
                                            TestContext.Current.CancellationToken));
         Assert.Empty(await payments.ListPaymentsAsync(0, 10, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Given_AKeysendThroughBob_When_CarolReceivesIt_Then_BobForwardsAndOnlyCarolSeesTheRecords()
+    {
+        // Arrange (lane lh1-l3 review): Alice -> Bob -> Carol with an even custom record; Bob's layer carries a
+        // short_channel_id and nothing of the keysend, Carol's the preimage and the records
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var amount = LightningMoney.MilliSatoshis(3_000_000);
+        var keysend = CreateKeysend(0x61, [new CustomRecord(133773310, [0x0a, 0x0b]), new CustomRecord(7629169, "hi"u8)]);
+        var route = harness.RouteToCarol(amount, HashOf(keysend), new Secret(new byte[32]));
+
+        // Act
+        await OfferAsync(harness, route, keysend);
+        await harness.PumpAsync();
+
+        // Assert: Alice learnt her own preimage back, Bob forwarded (a circuit, no record), Carol settled a record
+        var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
+        Assert.Equal(keysend.Preimage, fulfilled.PaymentPreimage);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.Null(await harness.Bob.InScopeAsync(u => u.InvoiceDbRepository.GetByPaymentHashAsync(route.PaymentHash)));
+        var circuit = await harness.Bob.InScopeAsync(u => u.ForwardCircuitDbRepository
+                                                            .GetByIncomingAsync(ThreeNodeHarness.AliceBobChannelId, 0));
+        Assert.Equal(ForwardCircuitStatus.Fulfilled, circuit!.Status);
+        var carolRecord = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository
+                                                                 .GetByPaymentHashAsync(route.PaymentHash));
+        Assert.Equal((InvoiceKind.Keysend, InvoiceStatus.Settled), (carolRecord!.Kind, carolRecord.Status));
+        Assert.Equal(amount, carolRecord.AmountReceived);
+        Assert.Equal(keysend.CustomRecords, carolRecord.Keysend!.CustomRecords);
+    }
+
+    [Fact]
+    public async Task Given_CarolStopsAfterSavingTheKeysendRecord_When_Restarted_Then_TheReplayedHtlcSettlesItOnce()
+    {
+        // Arrange: the HTLC is locked in at Carol and her switch stops right after SaveKeysendRecordAsync (the Open
+        // record saved, the set not fulfilled yet)
+        await using var harness = await ThreeNodeHarness.CreateAsync();
+        var amount = LightningMoney.MilliSatoshis(2_500_000);
+        var keysend = CreateKeysend(0x62, [new CustomRecord(65537, [0x01])]);
+        var route = harness.RouteToCarol(amount, HashOf(keysend), new Secret(new byte[32]));
+        harness.Carol.SwitchSuspended = true;
+        await OfferAsync(harness, route, keysend);
+        await harness.PumpAsync();
+        var finalPayload = Application.Payments.Routing.PaymentOnionFactory.CreatePayload(route.Hops[^1], route,
+                                                                                            keysend);
+        var record = new KeysendReceiver(new KeysendOptions()).TryCreateInvoice(route.PaymentHash, finalPayload,
+                                                                                out var refusal);
+        Assert.Null(refusal);
+        await harness.Carol.InScopeAsync(async u =>
+        {
+            await u.InvoiceDbRepository.AddAsync(record!);
+            await u.SaveChangesAsync();
+            return 0;
+        });
+
+        // Act
+        harness.Carol.SwitchSuspended = false;
+        await harness.RestartAsync(harness.Carol);
+        await harness.ReconnectAsync(harness.Carol);
+        await harness.PumpAsync();
+
+        // Assert: fulfilled once, one record, Settled with the amount
+        Assert.Equal(keysend.Preimage, Assert.Single(harness.Alice.PaymentHandler.Fulfilled).PaymentPreimage);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        var records = await harness.Carol.InScopeAsync(u => u.InvoiceDbRepository.ListAsync(0, 10));
+        var stored = Assert.Single(records);
+        Assert.Equal((InvoiceKind.Keysend, InvoiceStatus.Settled), (stored.Kind, stored.Status));
+        Assert.Equal(amount, stored.AmountReceived);
+    }
+
+    [Fact]
+    public async Task Given_CustomRecordsLargerThanTheOnion_When_Keysending_Then_RefusedUpFrontAndNothingStored()
+    {
+        // Arrange: 1,300 bytes of records cannot fit even a direct payee's layer
+        await using var harness = await CreateAsync();
+        var payments = PaymentsOf(harness.Alice);
+
+        // Act
+        var error = await Assert.ThrowsAsync<ArgumentException>(
+            () => payments.PayKeysendAsync(new PayKeysendRequest(harness.Bob.NodeId, LightningMoney.Satoshis(1))
+            {
+                CustomRecords = [new CustomRecord(65537, new byte[1_300])]
+            }, new PayInvoiceOptions { Timeout = s_timeout }, TestContext.Current.CancellationToken));
+
+        // Assert
+        Assert.Contains("do not fit the onion", error.Message);
+        Assert.Empty(await payments.ListPaymentsAsync(0, 10, TestContext.Current.CancellationToken));
+        Assert.Empty(harness.Alice.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!.Htlcs);
+    }
+
+    private static KeysendFinalRecords CreateKeysend(byte seed, IReadOnlyList<CustomRecord> records) =>
+        new(new Secret(Enumerable.Repeat(seed, 32).ToArray()), CustomRecordCodec.Validate(records));
+
+    private static Hash HashOf(KeysendFinalRecords keysend) => new(SHA256.HashData(keysend.Preimage));
+
+    private static async Task OfferAsync(ThreeNodeHarness harness, Application.Payments.Routing.PaymentRoute route,
+                                         KeysendFinalRecords keysend)
+    {
+        var onion = await harness.Alice.Services.GetRequiredService<Application.Payments.Routing.PaymentOnionFactory>()
+                                 .CreateAsync(route, keysend);
+        await harness.Alice.Operations.OfferHtlcAsync(ThreeNodeHarness.AliceBobChannelId, route.FirstHopAmount,
+                                                      route.PaymentHash, route.FirstHopCltvExpiry, onion.Packet, null,
+                                                      HtlcOrigin.Local(route.PaymentHash));
     }
 
     private static IPaymentService PaymentsOf(SwitchNode node) => node.Services.GetRequiredService<IPaymentService>();
