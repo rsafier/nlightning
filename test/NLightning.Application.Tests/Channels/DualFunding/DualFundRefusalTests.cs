@@ -62,6 +62,16 @@ public class DualFundRefusalTests
         Assert.Equal(s_aliceShare, harness.Bob.Channel(result.ChannelId).FundingOutput!.Amount);
         Assert.True(harness.Bob.Channel(result.ChannelId).LocalBalance.IsZero);
 
+        // BOLT 2: the reserve is 1% of the funding_satoshis both sent (600,000 sat), not of the 1,000,000 sat Bob
+        // intended, and both sides agree on it
+        var expectedReserve = LightningMoney.Satoshis(6_000);
+        foreach (var node in harness.Nodes)
+        {
+            var channelParams = node.Channel(result.ChannelId).ChannelParams;
+            Assert.Equal(expectedReserve, channelParams.Local.ChannelReserveAmount);
+            Assert.Equal(expectedReserve, channelParams.Remote.ChannelReserveAmount);
+        }
+
         // Act: confirmed, then Alice pays Bob
         await harness.ConfirmFundingAsync(result.ChannelId, result.FundingTxId!.Value);
         await harness.Alice.PayAsync(harness.Bob, result.ChannelId, LightningMoney.Satoshis(25_000));
@@ -138,7 +148,7 @@ public class DualFundRefusalTests
     public async Task Given_AnRbfThatChangesTheOpenersContribution_When_Received_Then_TxAbortAndTheOpenStands()
     {
         // Arrange
-        await using var harness = await DualFundHarness.CreateAsync(400_000);
+        await using var harness = await DualFundHarness.CreateAsync(400_000, allowRbf: true);
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
         var result = await harness.RunAsync(harness.Alice.DualFund.OpenAsync(

@@ -63,12 +63,12 @@ using Interfaces;
 /// memory only. Its <see cref="ChannelModel.Version"/> is <see cref="ChannelVersion.V2"/>.</para>
 /// <para>Singleton; every member that changes a negotiation runs under the channel's lock (the handlers under the one
 /// <c>ChannelManager</c> holds, <see cref="OpenAsync"/>/<see cref="BumpAsync"/> take it themselves).</para>
-/// <para>Known limits (ledger follow-ups): an RBF keeps both contributions (a different
-/// <c>funding_output_contribution</c> is refused), and the channel keeps the signatures of the latest attempt only,
-/// so a replaced attempt that confirms instead leaves the channel on the wrong outpoint (the per-funding commitments
-/// come with splicing's <c>FundingSet</c>).</para>
+/// <para>Known limits (ledger follow-ups): RBF is off unless <see cref="DualFundingOptions.AllowRbf"/>; an RBF keeps
+/// both contributions (a different <c>funding_output_contribution</c> is refused), and the channel keeps the
+/// signatures of the latest signed attempt only, so a replaced attempt that confirms instead leaves the channel on the
+/// wrong outpoint (the per-funding commitments come with splicing's <c>FundingSet</c>).</para>
 /// </remarks>
-public sealed class DualFundedOpenService : IDualFundedOpenService
+public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
 {
     private const string OpenTimedOut = "the dual-funded open timed out";
 
@@ -88,6 +88,9 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
     private readonly DualFundingOptions _options;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
+    private readonly TimeProvider _timeProvider;
+    private readonly CancellationTokenSource _stopping = new();
+    private int _disposed;
 
     public DualFundedOpenService(IChannelLockProvider channelLockProvider,
                                  IChannelMemoryRepository channelMemoryRepository,
@@ -99,7 +102,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
                                  IServiceProvider serviceProvider, ISha256 sha256,
                                  IOptions<NodeOptions>? nodeOptions = null,
                                  IOptions<GossipOptions>? gossipOptions = null,
-                                 IOptions<DualFundingOptions>? options = null)
+                                 IOptions<DualFundingOptions>? options = null, TimeProvider? timeProvider = null)
     {
         _channelLockProvider = channelLockProvider;
         _channelMemoryRepository = channelMemoryRepository;
@@ -115,6 +118,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _options = options?.Value ?? new DualFundingOptions();
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <summary>The accepter policy (our contribution to a peer's open), from <c>Node:DualFund</c>.</summary>
@@ -206,7 +210,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
             new ChannelFlags(request.IsPublic ? ChannelFlag.AnnounceChannel : ChannelFlag.None),
             new ChannelTypeTlv(channelType), new UpfrontShutdownScriptTlv(Array.Empty<byte>()), request.RequireConfirmedInputs);
 
-        // The peer's error for the open (on the temporary or the v2 id) ends it
+        // The peer's error for the open (on the temporary or the v2 id) ends it. Warnings arrive through the same event
+        // and cannot be told apart: both only end an open we have not signed yet (EndFailedOpenAsync)
         var peerService = peer is not null && peer.TryGetPeerService(out var service) ? service : null;
         void OnAttention(object? _, AttentionMessageEventArgs args)
         {
@@ -225,14 +230,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
                                    temporaryId, request.PeerNodeId, request.LocalFundingAmount, fundingFeerate);
 
             var result = await WaitAsync(negotiation.OpenCompletion.Task, cancellationToken);
-            if (result.FailureReason is not null)
-                await ForgetUnfundedAsync(negotiation, result.FailureReason);
-            return result;
+            return result.FailureReason is null ? result : await EndFailedOpenAsync(negotiation, result);
         }
         catch (TimeoutException)
         {
-            await ForgetUnfundedAsync(negotiation, OpenTimedOut);
-            return new DualFundedOpenResult(negotiation.ChannelId, null, OpenTimedOut);
+            return await EndFailedOpenAsync(negotiation,
+                                            new DualFundedOpenResult(negotiation.ChannelId, null, OpenTimedOut));
         }
         finally
         {
@@ -355,6 +358,8 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
                     $"Channel {channelId} is not waiting for its funding (channel_ready sent or received)");
             if (negotiation.CompletedTxIds.Count == 0 || negotiation.LastContribution is not { } previous)
                 throw new InvalidOperationException($"Channel {channelId} has no signed funding transaction to replace");
+            if (await GetRbfRefusalAsync(negotiation) is { } refusal)
+                throw new InvalidOperationException($"Channel {channelId}: {refusal}");
 
             var minimum = InteractiveTxDriver.GetMinimumRbfFeeratePerKw(negotiation.LastFeeratePerKw);
             if (feeratePerKw < minimum)
@@ -541,15 +546,32 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
             throw;
         }
 
-        // The share may have dropped to zero (the wallet could not fund it): the channel's balances follow it
+        // The share may have dropped to zero (the wallet could not fund it): the channel's balances follow it, and so
+        // do the reserve and our in-flight limit (BOLT 2: 1% of open_channel2.funding_satoshis +
+        // accept_channel2.funding_satoshis, the amount we announce, not the one we intended)
         if (negotiation.LocalShare != localContribution)
         {
+            total = LightningMoney.MilliSatoshis(payload.FundingAmount.MilliSatoshi
+                                               + negotiation.LocalShare.MilliSatoshi);
+            reserve = DualFundingRules.GetChannelReserve(total, Max(payload.DustLimitAmount,
+                                                                    _nodeOptions.DustLimitAmount));
+            localParams = CreateLocalParams(reserve, total);
+            remoteParams = new ChannelParty(payload.DustLimitAmount, reserve, payload.HtlcMinimumAmount,
+                                            payload.MaxAcceptedHtlcs, payload.MaxHtlcValueInFlightAmount,
+                                            payload.ToSelfDelay, NonEmpty(message.UpfrontShutdownScriptTlv));
+            channelParams = new ChannelParams(localParams, remoteParams,
+                                              LightningMoney.Satoshis(payload.CommitmentFeeRatePerKw), minimumDepth,
+                                              optionAnchors, useScidAlias)
+            {
+                AnnounceChannel = payload.ChannelFlags.AnnounceChannel
+            };
             channel = CreateChannel(channelParams, channelId, CreateLocalKeySet(keyIndex, basepoints, firstPoint),
                                     remoteKeySet, peerPubKey, false, negotiation.LocalShare, payload.FundingAmount);
             negotiation.Channel = channel;
         }
 
         _channelMemoryRepository.AddChannel(channel);
+        ScheduleAccepterTimeout(negotiation);
         _logger.LogInformation(
             "Accepting open_channel2 {TemporaryChannelId} from {Peer} as channel {ChannelId}: {Remote} + our {Local}",
             temporaryId, peerPubKey, channelId, negotiation.RemoteShare, negotiation.LocalShare);
@@ -563,6 +585,48 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
                                                         basepoints.HtlcBasepoint, firstPoint, secondPoint,
                                                         message.ChannelTypeTlv, new UpfrontShutdownScriptTlv(Array.Empty<byte>()))
         ];
+    }
+
+    /// <summary>
+    /// The accepter's negotiation must reach our <c>commitment_signed</c> within
+    /// <see cref="DualFundingOptions.OpenTimeout"/>: a peer that stays connected and silent after
+    /// <c>accept_channel2</c> would otherwise hold the anchors reserve and the channel in memory for as long as it likes.
+    /// On expiry the negotiation is aborted with our <c>tx_abort</c> (the reservation released) and the open forgotten;
+    /// an open that reached our <c>commitment_signed</c> is left to the driver (stored, resumed on reconnection).
+    /// </summary>
+    private void ScheduleAccepterTimeout(DualFundNegotiation negotiation)
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+
+        var stopping = _stopping.Token;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(_options.OpenTimeout, _timeProvider, stopping);
+                using (await _channelLockProvider.AcquireAsync(negotiation.ChannelId, stopping))
+                {
+                    if (!_negotiations.TryGetValue(negotiation.ChannelId, out var current) || current != negotiation
+                     || negotiation.Channel is not { State: ChannelState.V1Opening })
+                        return;
+
+                    _logger.LogInformation("The dual-funded open {ChannelId} of {Peer} did not reach commitment_signed "
+                                         + "in {Timeout}; aborting it", negotiation.ChannelId, negotiation.Peer,
+                                           _options.OpenTimeout);
+                    if (await AbortNegotiationLockedAsync(negotiation, OpenTimedOut))
+                        await ForgetUnfundedLockedAsync(negotiation);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // The service is stopping
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "The open timeout of channel {ChannelId} failed", negotiation.ChannelId);
+            }
+        }, CancellationToken.None);
     }
 
     /// <summary>
@@ -626,6 +690,14 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
             throw new InvalidOperationException("The funding output is not the channel's");
 
         var isFirstAttempt = channel.State == ChannelState.V1Opening;
+        if (!isFirstAttempt && negotiation.LastSignedFunding is null
+                            && channel.FundingOutput is { TransactionId: { } signedTxId, Index: { } signedIndex })
+        {
+            // An RBF attempt: the last fully signed attempt stays restorable until this one is signed (OnAbortedAsync)
+            negotiation.LastSignedFunding = new DualFundNegotiation.SignedFunding(
+                signedTxId, signedIndex, channel.LastSentSignature, channel.LastReceivedSignature);
+        }
+
         channel.FundingOutput!.TransactionId = transaction.TxId;
         channel.FundingOutput.Index = checked((ushort)index);
         RegisterWithSigner(channel, isFirstAttempt);
@@ -647,6 +719,10 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         {
             await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
         }
+
+        // The funding is watched from our commitment_signed on: once our tx_signatures go out the peer can broadcast
+        // it, whether or not its own tx_signatures ever reach us (BOLT 2: "MUST remember the channel")
+        await StageFundingWatchesAsync(negotiation, channel, transaction.TxId, index, unitOfWork);
 
         negotiation.PendingTxId = transaction.TxId;
         negotiation.CommitmentSignedReceived = false;
@@ -674,14 +750,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         var index = completion.Transaction.SharedOutputIndex!.Value;
         var height = GetMonitor()?.LastProcessedBlockHeight ?? 0;
 
-        var fundingWatch = new WatchedTransactionModel(channel.ChannelId, txId, channel.ChannelParams.MinimumDepth);
         var broadcast = new BroadcastTransactionModel(completion.SignedTransaction, BroadcastPurpose.Funding,
                                                       channel.ChannelId, height);
-        var outpointWatch = new WatchedOutpointModel(txId, index, channel.ChannelId,
-                                                     WatchedOutpointPurpose.FundingOutput);
-        unitOfWork.WatchedTransactionDbRepository.Add(fundingWatch);
         unitOfWork.BroadcastTransactionDbRepository.Add(broadcast);
-        unitOfWork.WatchedOutpointDbRepository.Add(outpointWatch);
+
+        // The watches were stored with our commitment_signed; a negotiation stored by an older build has none
+        var (fundingWatch, outpointWatch) =
+            await AddMissingFundingWatchesAsync(channel, txId, index, unitOfWork);
 
         // An RBF replaced the earlier attempts: they are no longer sent after every block
         foreach (var replaced in negotiation.CompletedTxIds)
@@ -689,6 +764,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
 
         negotiation.CompletedTxIds.Add(txId);
         negotiation.PendingTxId = null;
+        negotiation.LastSignedFunding = null;
         TrackAfterSave(negotiation, txId, () => PublishAsync(negotiation, txId, fundingWatch, outpointWatch,
                                                               broadcast));
         return [];
@@ -704,6 +780,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         negotiation.PendingTxId = null;
         if (negotiation.CompletedTxIds.Count > 0)
         {
+            await RestoreLastSignedFundingAsync(negotiation, reason);
             negotiation.BumpCompletion?.TrySetResult(new DualFundedOpenResult(negotiation.ChannelId, null, reason));
             negotiation.BumpCompletion = null;
             return;
@@ -716,13 +793,77 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
     }
 
     /// <summary>
-    /// A peer's <c>tx_init_rbf</c> for the open (the driver checked the IT-RBF-01 feerate floor): accepted with the
-    /// same shares, our inputs re-added and our change lowered for the new feerate.
+    /// An RBF attempt ended before both <c>tx_signatures</c> (<c>tx_abort</c>, a refused <c>commitment_signed</c>, a
+    /// disconnection): the channel goes back to the last fully signed attempt's outpoint and signatures, persisted.
     /// </summary>
-    internal InteractiveTxRbfDecision DecideRbf(DualFundNegotiation negotiation, TxInitRbfMessage message)
+    private async Task RestoreLastSignedFundingAsync(DualFundNegotiation negotiation, string reason)
     {
-        if (negotiation.Channel is not { State: ChannelState.V1FundingSigned })
-            return InteractiveTxRbfDecision.Reject("channel_ready was already sent or received");
+        if (negotiation.LastSignedFunding is not { } signed
+         || negotiation.Channel is not { FundingOutput: { } funding } channel)
+            return;
+
+        negotiation.LastSignedFunding = null;
+        funding.TransactionId = signed.TransactionId;
+        funding.Index = signed.Index;
+        if (signed.LastSentSignature is not null)
+            channel.UpdateLastSentSignature(signed.LastSentSignature);
+        if (signed.LastReceivedSignature is not null)
+            channel.UpdateLastReceivedSignature(signed.LastReceivedSignature);
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+            await unitOfWork.SaveChangesAsync();
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not persist the funding {TxId} of channel {ChannelId} back after the RBF "
+                              + "attempt ended", signed.TransactionId, channel.ChannelId);
+        }
+
+        _channelMemoryRepository.UpdateChannel(channel);
+        _logger.LogInformation("RBF attempt of channel {ChannelId} ended ({Reason}); back on funding {TxId}",
+                               channel.ChannelId, reason, signed.TransactionId);
+    }
+
+    /// <summary>
+    /// Why an RBF of the open is refused now, or null: RBF not allowed (<see cref="DualFundingOptions.AllowRbf"/>),
+    /// channel_ready exchanged, a public channel (the signer keeps the first attempt's outpoint, so the announcement
+    /// could never be signed), or an attempt already confirmed (BOLT 2: "If the previous transaction confirms in the
+    /// middle of an RBF attempt, the attempt MUST be abandoned").
+    /// </summary>
+    private async Task<string?> GetRbfRefusalAsync(DualFundNegotiation negotiation)
+    {
+        if (!_options.AllowRbf)
+            return "RBF of a dual-funded open is not enabled";
+        if (negotiation.Channel is not { State: ChannelState.V1FundingSigned } channel)
+            return "channel_ready was already sent or received";
+        if (channel.ChannelParams.AnnounceChannel)
+            return "RBF of a public dual-funded open is not supported";
+
+        using var scope = _serviceProvider.CreateScope();
+        var watches = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedTransactionDbRepository;
+        foreach (var txId in negotiation.CompletedTxIds)
+        {
+            if (await watches.GetByTransactionIdAsync(txId) is { FirstSeenAtHeight: not null })
+                return $"the funding transaction {txId} already has a confirmation";
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A peer's <c>tx_init_rbf</c> for the open (the driver checked the IT-RBF-01 feerate floor): accepted with the
+    /// same shares, our inputs re-added and our change lowered for the new feerate, unless
+    /// <see cref="GetRbfRefusalAsync"/> refuses it.
+    /// </summary>
+    internal async Task<InteractiveTxRbfDecision> DecideRbfAsync(DualFundNegotiation negotiation,
+                                                                 TxInitRbfMessage message)
+    {
+        if (await GetRbfRefusalAsync(negotiation) is { } refusal)
+            return InteractiveTxRbfDecision.Reject(refusal);
 
         var theirs = message.FundingOutputContributionTlv?.Amount ?? LightningMoney.Zero;
         if (theirs.MilliSatoshi != negotiation.RemoteShare.MilliSatoshi)
@@ -926,6 +1067,16 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
     public IReadOnlyList<TxId> GetSignedFundingTxIds(ChannelId channelId) =>
         _negotiations.TryGetValue(channelId, out var negotiation) ? negotiation.CompletedTxIds.ToList() : [];
 
+    /// <summary>Stops the accepter timeouts (idempotent: the container disposes the service under both registrations).</summary>
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        _stopping.Cancel();
+        _stopping.Dispose();
+    }
+
     /// <summary>Waits for the background work (the publish after a save) to finish (tests).</summary>
     public async Task WhenIdleAsync()
     {
@@ -1001,9 +1152,12 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
     }
 
     /// <summary>
-    /// Registers the channel with the signer for the first attempt. An RBF attempt keeps the first registration: the
-    /// commitment signature only commits to the funding amount, which an RBF does not change (the signer refuses
-    /// another outpoint; its per-funding API comes with splicing).
+    /// Registers the channel with the signer for the first attempt. An RBF attempt keeps the first registration (the
+    /// signer refuses another outpoint; its per-funding API comes with splicing): the BIP 143 sighash does commit to
+    /// the funding outpoint, so the commitment signatures are right only because the signer takes the prevout from the
+    /// transaction it is given, built on the new outpoint. The registration's outpoint stays the first attempt's, so
+    /// the signer cannot sign a channel announcement after an RBF: an RBF of a public channel is refused
+    /// (<see cref="GetRbfRefusalAsync"/>).
     /// </summary>
     private void RegisterWithSigner(ChannelModel channel, bool isFirstAttempt)
     {
@@ -1041,31 +1195,89 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         _serviceProvider.GetService<IAnchorReserveService>()?.ReleasePendingChannel(negotiation.ChannelId);
     }
 
-    /// <summary>Forgets an open that never got a signed funding transaction, taking the channel's lock.</summary>
-    private async Task ForgetUnfundedAsync(DualFundNegotiation negotiation, string reason)
+    /// <summary>
+    /// A failed open (the peer's error or warning, or the timeout): forgotten while the peer cannot hold a signed
+    /// funding transaction, kept once our <c>tx_signatures</c> went out (the peer may broadcast it; BOLT 2 "MUST
+    /// remember the channel"), with its funding watched since our <c>commitment_signed</c>.
+    /// </summary>
+    private async Task<DualFundedOpenResult> EndFailedOpenAsync(DualFundNegotiation negotiation,
+                                                                DualFundedOpenResult result)
+    {
+        if (await ForgetUnfundedAsync(negotiation, result.FailureReason!))
+            return result;
+
+        return result with
+        {
+            FailureReason = $"{result.FailureReason} (the channel is kept: our tx_signatures were sent, so the peer can "
+                          + "broadcast the funding transaction)"
+        };
+    }
+
+    /// <summary>
+    /// Forgets an open that never got a signed funding transaction, taking the channel's lock: a negotiation in
+    /// progress (also after our <c>commitment_signed</c>) is aborted through the driver first (<c>tx_abort</c>, which
+    /// releases our reservation). False, and nothing changed, once any attempt is fully signed or our
+    /// <c>tx_signatures</c> were sent (IT-ABT-01: the peer holds our witnesses).
+    /// </summary>
+    private async Task<bool> ForgetUnfundedAsync(DualFundNegotiation negotiation, string reason)
     {
         var channelId = negotiation.ChannelId;
         using (await _channelLockProvider.AcquireAsync(channelId))
         {
-            if (negotiation.CompletedTxIds.Count > 0)
-                return;
-
-            var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
-            if (driver?.IsNegotiating(channelId) == true && negotiation.Channel is { State: ChannelState.V1Opening })
+            if (!CanForget(negotiation))
             {
-                using var scope = _serviceProvider.CreateScope();
-                var messages = await driver.AbortAsync(channelId, reason,
-                                                       scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
-                _serviceProvider.GetService<IChannelMessagePublisher>()?.Publish(negotiation.Peer, messages);
+                _logger.LogWarning("Dual-funded open of {ChannelId} failed ({Reason}) after our tx_signatures; the "
+                                 + "channel is kept and its funding watched", channelId, reason);
+                return false;
             }
 
+            if (!await AbortNegotiationLockedAsync(negotiation, reason))
+                return false;
+
             await ForgetUnfundedLockedAsync(negotiation);
+            return true;
         }
+    }
+
+    /// <summary>
+    /// Aborts the channel's negotiation in progress with our <c>tx_abort</c> (published), under the channel's lock.
+    /// False when the driver refused because our <c>tx_signatures</c> went out (IT-ABT-01).
+    /// </summary>
+    private async Task<bool> AbortNegotiationLockedAsync(DualFundNegotiation negotiation, string reason)
+    {
+        var driver = _serviceProvider.GetService<IInteractiveTxDriver>();
+        if (driver?.IsNegotiating(negotiation.ChannelId) != true)
+            return true;
+
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var messages = await driver.AbortAsync(negotiation.ChannelId, reason,
+                                                   scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
+            _serviceProvider.GetService<IChannelMessagePublisher>()?.Publish(negotiation.Peer, messages);
+            return true;
+        }
+        catch (InvalidOperationException e)
+        {
+            _logger.LogWarning(e, "Could not abort the dual-funded open of {ChannelId}; the channel is kept",
+                               negotiation.ChannelId);
+            return false;
+        }
+    }
+
+    /// <summary>Whether no attempt of the open is fully signed and our <c>tx_signatures</c> were not sent.</summary>
+    private bool CanForget(DualFundNegotiation negotiation)
+    {
+        if (negotiation.CompletedTxIds.Count > 0)
+            return false;
+
+        var state = _serviceProvider.GetService<IInteractiveTxDriver>()?.GetInfo(negotiation.ChannelId)?.State;
+        return state is not (InteractiveTxSessionState.TxSignaturesSent or InteractiveTxSessionState.Signed);
     }
 
     private async Task ForgetUnfundedLockedAsync(DualFundNegotiation negotiation)
     {
-        if (negotiation.CompletedTxIds.Count > 0)
+        if (!CanForget(negotiation))
             return;
 
         _negotiations.TryRemove(negotiation.ChannelId, out _);
@@ -1133,15 +1345,88 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
         _ = task.ContinueWith(t => _pending.TryRemove(t, out _), TaskScheduler.Default);
     }
 
-    private async Task PublishAsync(DualFundNegotiation negotiation, TxId txId, WatchedTransactionModel fundingWatch,
-                                    WatchedOutpointModel outpointWatch, BroadcastTransactionModel broadcast)
+    /// <summary>
+    /// Stages the funding transaction's watch and its funding output's watch with our <c>commitment_signed</c> (the
+    /// driver's save), and tracks them in the chain monitor once that save is done.
+    /// </summary>
+    private async Task StageFundingWatchesAsync(DualFundNegotiation negotiation, ChannelModel channel, TxId txId,
+                                                uint index, IUnitOfWork unitOfWork)
+    {
+        var (fundingWatch, outpointWatch) = await AddMissingFundingWatchesAsync(channel, txId, index, unitOfWork);
+        if (fundingWatch is null && outpointWatch is null)
+            return;
+
+        RunAfterLock(negotiation.ChannelId, async () =>
+        {
+            // Only watches the driver's save stored are tracked
+            using var scope = _serviceProvider.CreateScope();
+            var stored = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            if (await stored.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId) is null
+             || GetMonitor() is not { } monitor)
+                return;
+
+            if (fundingWatch is not null)
+                monitor.TrackWatchedTransaction(fundingWatch);
+            if (outpointWatch is not null)
+                monitor.TrackWatchedOutpoint(outpointWatch);
+        });
+    }
+
+    /// <summary>
+    /// Stages the funding watch and the funding output watch of <paramref name="txId"/> unless stored already; returns
+    /// the staged ones (null for a stored one).
+    /// </summary>
+    private static async Task<(WatchedTransactionModel? FundingWatch, WatchedOutpointModel? OutpointWatch)>
+        AddMissingFundingWatchesAsync(ChannelModel channel, TxId txId, uint index, IUnitOfWork unitOfWork)
+    {
+        WatchedTransactionModel? fundingWatch = null;
+        if (await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(txId) is null)
+        {
+            fundingWatch = new WatchedTransactionModel(channel.ChannelId, txId, channel.ChannelParams.MinimumDepth);
+            unitOfWork.WatchedTransactionDbRepository.Add(fundingWatch);
+        }
+
+        WatchedOutpointModel? outpointWatch = null;
+        if (await unitOfWork.WatchedOutpointDbRepository.GetAsync(txId, index) is null)
+        {
+            outpointWatch = new WatchedOutpointModel(txId, index, channel.ChannelId,
+                                                     WatchedOutpointPurpose.FundingOutput);
+            unitOfWork.WatchedOutpointDbRepository.Add(outpointWatch);
+        }
+
+        return (fundingWatch, outpointWatch);
+    }
+
+    /// <summary>Runs <paramref name="work"/> under the channel's lock once the caller released it (background).</summary>
+    private void RunAfterLock(ChannelId channelId, Func<Task> work)
+    {
+        var task = Task.Run(async () =>
+        {
+            try
+            {
+                using (await _channelLockProvider.AcquireAsync(channelId))
+                    await work();
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "After-save work of channel {ChannelId} failed", channelId);
+            }
+        });
+        _pending[task] = 0;
+        _ = task.ContinueWith(t => _pending.TryRemove(t, out _), TaskScheduler.Default);
+    }
+
+    private async Task PublishAsync(DualFundNegotiation negotiation, TxId txId, WatchedTransactionModel? fundingWatch,
+                                    WatchedOutpointModel? outpointWatch, BroadcastTransactionModel broadcast)
     {
         var channel = negotiation.Channel!;
         ReleaseAnchorReserve(negotiation);
         if (GetMonitor() is { } monitor)
         {
-            monitor.TrackWatchedTransaction(fundingWatch);
-            monitor.TrackWatchedOutpoint(outpointWatch);
+            if (fundingWatch is not null)
+                monitor.TrackWatchedTransaction(fundingWatch);
+            if (outpointWatch is not null)
+                monitor.TrackWatchedOutpoint(outpointWatch);
             if (!await monitor.PublishAsync(broadcast))
                 _logger.LogWarning("The funding transaction {TxId} of channel {ChannelId} was not accepted yet; it is "
                                  + "sent again after every block", txId, channel.ChannelId);
