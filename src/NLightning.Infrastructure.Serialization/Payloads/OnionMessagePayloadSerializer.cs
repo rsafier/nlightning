@@ -18,7 +18,8 @@ using Exceptions;
 /// <remarks>
 /// Any <c>len</c> from <see cref="OnionConstants.PacketOverheadLength"/> (66) up is read: only the writer SHOULD use
 /// 1366 or 32834. A shorter <c>len</c>, a key without a 02/03 prefix or a truncated packet throws
-/// <see cref="PayloadSerializationException"/> (the peer gets a warning and the connection is closed, NL-207).
+/// <see cref="PayloadSerializationException"/>; the message service ignores such a 513 and keeps the connection,
+/// without a warning (NL-444).
 /// </remarks>
 public class OnionMessagePayloadSerializer : IPayloadSerializer<OnionMessagePayload>
 {
