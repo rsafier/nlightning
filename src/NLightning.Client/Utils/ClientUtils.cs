@@ -24,6 +24,11 @@ public static class ClientUtils
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");
+        Console.WriteLine("  withdraw <address> <amount_sat|all> [--sat-per-vb <n>]");
+        Console.WriteLine("                               Send on-chain funds from the wallet (aliases: sendcoins,");
+        Console.WriteLine("                               send-coins); all sends every confirmed output minus the");
+        Console.WriteLine("                               fee and keeps the anchors reserve as change; fee rate");
+        Console.WriteLine("                               1-1000 sat/vB [default: the node's estimate]");
         Console.WriteLine("  openchannel <node> <sats> [push_sats] [--public]");
         Console.WriteLine("                               Open a channel to peer, optionally giving it push_sats;");
         Console.WriteLine("                               --public announces it once 6 blocks deep [default: private]");

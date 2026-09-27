@@ -317,6 +317,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Pays an external address from the on-chain wallet (ClientCommand 25).
+    /// </summary>
+    /// <param name="address">The destination address.</param>
+    /// <param name="amountSat">The amount in sats; null sends everything the wallet may spend ("all").</param>
+    /// <param name="satPerVbyte">The fee rate in sat/vB; null for the node's estimate.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<WithdrawIpcResponse> WithdrawAsync(string address, ulong? amountSat, ulong? satPerVbyte,
+                                                   CancellationToken ct = default)
+    {
+        var req = new WithdrawIpcRequest { Address = address, AmountSat = amountSat, SatPerVbyte = satPerVbyte };
+        return SendRequestAsync<WithdrawIpcRequest, WithdrawIpcResponse>(ClientCommand.Withdraw, req, ct);
+    }
+
+    /// <summary>
     /// Lists the on-chain resolution of closed channels (ClientCommand 15).
     /// </summary>
     /// <param name="channelId">Only this channel, when set.</param>

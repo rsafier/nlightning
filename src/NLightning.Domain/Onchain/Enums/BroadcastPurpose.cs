@@ -33,5 +33,11 @@ public enum BroadcastPurpose : byte
     /// A CPFP child spending our anchor of a commitment plus wallet inputs (BOLT 5 plan O7-T2, B5-FAIL-06): it pays for
     /// the commitment's package, and is replaced (RBF) until the commitment confirms.
     /// </summary>
-    AnchorCpfp = 8
+    AnchorCpfp = 8,
+
+    /// <summary>
+    /// A payment from the on-chain wallet to an external address (<c>withdraw</c>, ClientCommand 25): no channel, and
+    /// never bumped; rebroadcast until it confirms.
+    /// </summary>
+    WalletSend = 9
 }
