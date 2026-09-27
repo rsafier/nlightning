@@ -10,6 +10,7 @@ namespace NLightning.Application.Onchain.Mempool;
 
 using Anchors;
 using Domain.Bitcoin.Events;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
@@ -381,7 +382,9 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                 return (null, []);
             }
 
-            classification = await _watcher.ClassifyAsync(channel, spend, unitOfWork);
+            classification = await _watcher.ClassifyAsync(
+                                 channel, spend, unitOfWork,
+                                 scope.ServiceProvider.GetService<ICommitmentTransactionModelFactory>());
             if (classification is null)
                 return (null, []);
 

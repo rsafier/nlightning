@@ -419,9 +419,10 @@ public class SpliceEngineHarnessTests
     #region The locked funding's outpoint, the depth catch-up
 
     /// <summary>
-    /// The lock moves the channel's funding output to the splice's: that outpoint is watched for a spend from the lock's
-    /// save on (a commitment on the new funding, revoked or not, must reach the on-chain watcher), stored in the same
-    /// save and tracked by the chain monitor after it. Before, nothing watched it until a restart.
+    /// The splice's funding outpoint is watched for a spend from the save that precedes our splice
+    /// <c>commitment_signed</c> on (wave sp2, lane SP2-C: a commitment on the pending funding, revoked or not, must reach
+    /// the on-chain watcher before the lock), stored in that save and tracked by the chain monitor after it; the lock
+    /// keeps that watch (one row, tracked once). Before wave sp2 it was watched only from the lock on.
     /// </summary>
     [Fact]
     public async Task Given_ASpliceLocks_When_TheLockIsSaved_Then_TheNewFundingOutpointIsWatched()
@@ -431,7 +432,8 @@ public class SpliceEngineHarnessTests
         harness.Alice.Fund(500_000);
         var result = await harness.SpliceAsync(harness.Alice, 100_000);
         var fundingTx2 = result.SpliceTxId!.Value;
-        Assert.All(new[] { harness.Alice, harness.Bob }, node => Assert.Empty(node.WatchedOutpoints));
+        Assert.All(new[] { harness.Alice, harness.Bob },
+                   node => Assert.Equal(fundingTx2, Assert.Single(node.WatchedOutpoints).TransactionId));
 
         // Act
         await harness.ConfirmAsync(fundingTx2, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);

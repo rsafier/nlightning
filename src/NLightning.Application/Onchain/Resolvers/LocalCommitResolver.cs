@@ -8,6 +8,7 @@ namespace NLightning.Application.Onchain.Resolvers;
 
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
@@ -95,6 +96,7 @@ public sealed class LocalCommitResolver : IOutputResolver
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<LocalCommitResolver> _logger;
     private readonly ICommitmentOutputMapper _outputMapper;
+    private readonly ICommitmentTransactionModelFactory? _modelFactory;
     private readonly LocalCommitResolverOptions _options;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly ISweepTransactionBuilder _sweepTransactionBuilder;
@@ -106,8 +108,10 @@ public sealed class LocalCommitResolver : IOutputResolver
                                IOptions<LocalCommitResolverOptions>? options = null, SweepFeePolicy? feePolicy = null,
                                IChannelMemoryRepository? channelMemoryRepository = null,
                                IBitcoinChainService? chainService = null,
-                               IAnchorFeeInputProvider? feeInputProvider = null)
+                               IAnchorFeeInputProvider? feeInputProvider = null,
+                               ICommitmentTransactionModelFactory? modelFactory = null)
     {
+        _modelFactory = modelFactory;
         _chainService = chainService;
         _feeInputProvider = feeInputProvider;
         _outputMapper = outputMapper;
@@ -257,15 +261,73 @@ public sealed class LocalCommitResolver : IOutputResolver
         }
 
         var map = _outputMapper.Map(channel, spec, CommitmentCase.Local, number, null);
+        LocalCommit? onOtherFunding = null;
         if (map.ExpectedTxId != close.CommitmentTransactionId)
         {
-            _logger.LogError("Cannot resolve channel {ChannelId}: its closing transaction {TxId} is not our rebuilt "
-                           + "commitment {Expected}", close.ChannelId, Display(close.CommitmentTransactionId),
-                             Display(map.ExpectedTxId));
-            return null;
+            // Our commitment on another funding: a pending splice that confirmed instead of the funding we first
+            // broadcast on (splicing plan §3.6, SP2-C-T2), rebuilt from its stored slot (SP-I2)
+            if (await FindOnOtherFundingAsync(unitOfWork, channel, close, number) is not var (otherMap, otherLocal))
+            {
+                _logger.LogError("Cannot resolve channel {ChannelId}: its closing transaction {TxId} is not our "
+                               + "rebuilt commitment {Expected} on any of its fundings", close.ChannelId,
+                                 Display(close.CommitmentTransactionId), Display(map.ExpectedTxId));
+                return null;
+            }
+
+            (map, onOtherFunding) = (otherMap, otherLocal);
         }
 
-        return new LocalCommitContext(unitOfWork, channel, commitments, close, map, outputs.ToList(), height);
+        return new LocalCommitContext(unitOfWork, channel, commitments, close, map, outputs.ToList(), height)
+        {
+            OtherFundingLocalCommit = onOtherFunding
+        };
+    }
+
+    /// <summary>
+    /// Our local commitment <paramref name="number"/> on a funding other than the channel's current one whose rebuilt
+    /// txid is the close's, from that funding's stored slot, or null.
+    /// </summary>
+    private async Task<(CommitmentOutputMap Map, LocalCommit Local)?> FindOnOtherFundingAsync(
+        IUnitOfWork unitOfWork, ChannelModel channel, ChannelCloseModel close, ulong number)
+    {
+        if (_modelFactory is null)
+            return null;
+
+        foreach (var funding in await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger))
+        {
+            if (OnchainFundings.IsCurrent(channel, funding))
+                continue;
+
+            LocalCommit? local;
+            try
+            {
+                local = await unitOfWork.ChannelFundingDbRepository.GetLocalCommitmentAsync(channel.ChannelId,
+                                                                                           funding.FundingTxId);
+            }
+            catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+            {
+                return null;
+            }
+
+            if (local is not { RemoteSignatures: not null } || local.Number != number)
+                continue;
+
+            try
+            {
+                var map = OnchainFundings.Map(_outputMapper, _modelFactory, channel, funding,
+                                              CommitmentTxSpec.FromCommitmentSpec(local.Spec), CommitmentCase.Local,
+                                              number, null);
+                if (map.ExpectedTxId == close.CommitmentTransactionId)
+                    return (map, local);
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException)
+            {
+                _logger.LogWarning(e, "Cannot rebuild our commitment {Number} of channel {ChannelId} on funding {TxId}",
+                                   number, channel.ChannelId, Display(funding.FundingTxId));
+            }
+        }
+
+        return null;
     }
 
     private static bool IsResolvedHere(CommitmentOutputDescriptor descriptor) =>
@@ -609,7 +671,8 @@ public sealed class LocalCommitResolver : IOutputResolver
                                                                       PendingAnchorHtlcTransaction? replacing = null)
     {
         var model = descriptor.SecondLevel;
-        var signatures = context.Commitments?.LocalCommit.RemoteSignatures;
+        var signatures = context.OtherFundingLocalCommit?.RemoteSignatures
+                      ?? context.Commitments?.LocalCommit.RemoteSignatures;
         var index = context.Map.Outputs.Where(o => o.Htlc is not null).OrderBy(o => o.Vout).ToList()
                            .IndexOf(descriptor);
         if (model is null || signatures is null || index < 0 || index >= signatures.HtlcSignatures.Count)
@@ -639,7 +702,8 @@ public sealed class LocalCommitResolver : IOutputResolver
                 context.Channel.ChannelId, new HtlcSigningContext(built, context.Map.PerCommitmentPoint, false));
             signed = _htlcTransactionBuilder.AddWitness(model, built, signatures.HtlcSignatures[index], localSignature,
                                                         preimage);
-            feeratePerKw = (uint)context.Commitments!.LocalCommit.Spec.FeeratePerKw;
+            feeratePerKw = (uint)(context.OtherFundingLocalCommit?.Spec ?? context.Commitments!.LocalCommit.Spec)
+                                    .FeeratePerKw;
         }
 
         if (replacing is { } old)
@@ -1279,6 +1343,12 @@ public sealed class LocalCommitResolver : IOutputResolver
         uint Height)
     {
         public TxId CommitmentTxId => Close.CommitmentTransactionId;
+
+        /// <summary>
+        /// Our commitment on the pending splice funding the close spends (its spec and the peer's signatures), when the
+        /// close is not on the channel's current funding (splicing plan §3.6, SP2-C-T3).
+        /// </summary>
+        public LocalCommit? OtherFundingLocalCommit { get; init; }
 
         public OutputResolutionModel? GetRow(TxId txId, uint vout) =>
             Rows.FirstOrDefault(r => r.TransactionId == txId && r.OutputIndex == vout);

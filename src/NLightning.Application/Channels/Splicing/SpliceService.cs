@@ -463,6 +463,11 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         var commitmentSigned = await _statePort.SignSpliceCommitmentAsync(channel, funding, unitOfWork,
                                                                           cancellationToken);
         negotiation.NewFunding = funding;
+
+        // SP2-C (splicing plan §3.6): the new funding output is watched from this save on (our tx_signatures follow)
+        if (await Onchain.SpliceFundingWatch.StageAsync(unitOfWork, channel.ChannelId, funding) is { } fundingWatch)
+            TrackBackground(Onchain.SpliceFundingWatch.TrackAfterSaveAsync(_serviceProvider, _channelLockProvider,
+                                                                           fundingWatch, _logger));
         negotiation.Model = model with
         {
             State = SpliceNegotiationState.CommitmentSigned,

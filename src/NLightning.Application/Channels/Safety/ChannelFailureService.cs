@@ -7,10 +7,15 @@ namespace NLightning.Application.Channels.Safety;
 
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Enums;
+using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 using Domain.Onchain.Enums;
@@ -19,9 +24,14 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
+using Infrastructure.Bitcoin.Builders.Interfaces;
+using Infrastructure.Bitcoin.Onchain;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
+using Onchain;
 using Onchain.Anchors;
+using Onchain.Interfaces;
+using Services;
 
 /// <summary>
 /// The fail-the-channel service (BOLT2 plan N9-T4, D10; BOLT 5 plan O2-T2): persist <see cref="ChannelState.Failed"/>,
@@ -47,7 +57,7 @@ using Onchain.Anchors;
 /// <c>Closed</c> once its outputs are resolved. A Failed channel of an older build (commitment watch, no broadcast
 /// row) is resumed at <see cref="Start"/>, which writes the row.</para>
 /// </remarks>
-public sealed class ChannelFailureService : IChannelFailureService, IDisposable
+public sealed class ChannelFailureService : IChannelFailureService, ISpliceCommitmentBroadcaster, IDisposable
 {
     private readonly IAnchorCpfpService? _anchorCpfpService;
     private readonly IBlockchainMonitor _blockchainMonitor;
@@ -55,6 +65,8 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     private readonly IChannelLockProvider _channelLockProvider;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly LocalCommitmentBroadcastBuilder _commitmentBuilder;
+    private readonly ICommitmentTransactionBuilder? _commitmentTransactionBuilder;
+    private readonly ICommitmentTransactionModelFactory? _commitmentTransactionModelFactory;
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<ChannelFailureService> _logger;
     private readonly IServiceScopeFactory _serviceScopeFactory;
@@ -65,9 +77,13 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
     // Failures whose publish failed: retried on every new block until the publish succeeds
     private readonly ConcurrentDictionary<ChannelId, ChannelFailureRequest> _pendingPublishes = new();
 
+    // Splice fundings our commitment was broadcast on after the splice confirmed (SP2-C-T2), per channel
+    private readonly ConcurrentDictionary<(ChannelId, TxId), byte> _spliceBroadcasts = new();
+
     private CancellationTokenSource _stopping = new();
     private Task _resumeTask = Task.CompletedTask;
     private int _retryRunning;
+    private int _spliceCheckRunning;
     private int _started;
 
     public ChannelFailureService(IBlockchainMonitor blockchainMonitor, IChannelErrorSender channelErrorSender,
@@ -75,9 +91,13 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
                                  IChannelMemoryRepository channelMemoryRepository,
                                  LocalCommitmentBroadcastBuilder commitmentBuilder, ILightningSigner lightningSigner,
                                  ILogger<ChannelFailureService> logger, IServiceScopeFactory serviceScopeFactory,
-                                 IAnchorCpfpService? anchorCpfpService = null)
+                                 IAnchorCpfpService? anchorCpfpService = null,
+                                 ICommitmentTransactionModelFactory? commitmentTransactionModelFactory = null,
+                                 ICommitmentTransactionBuilder? commitmentTransactionBuilder = null)
     {
         _anchorCpfpService = anchorCpfpService;
+        _commitmentTransactionModelFactory = commitmentTransactionModelFactory;
+        _commitmentTransactionBuilder = commitmentTransactionBuilder;
         _blockchainMonitor = blockchainMonitor;
         _channelErrorSender = channelErrorSender;
         _channelLockProvider = channelLockProvider;
@@ -505,10 +525,27 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
 
     private void HandleNewBlockDetected(object? sender, NewBlockEventArgs args)
     {
+        var token = _stopping.Token;
+        if (Interlocked.Exchange(ref _spliceCheckRunning, 1) == 0)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await CheckConfirmedSplicesAsync(token);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Stopping
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _spliceCheckRunning, 0);
+                }
+            }, CancellationToken.None);
+
         if (_pendingPublishes.IsEmpty || Interlocked.Exchange(ref _retryRunning, 1) == 1)
             return;
 
-        var token = _stopping.Token;
         _ = Task.Run(async () =>
         {
             try
@@ -525,6 +562,191 @@ public sealed class ChannelFailureService : IChannelFailureService, IDisposable
             }
         }, CancellationToken.None);
     }
+
+    #region Force close with a pending splice (splicing plan §3.6, SP2-C-T2)
+
+    /// <summary>
+    /// Every block: a failed channel whose pending splice confirmed (its <c>WatchedTransactions</c> row has a block)
+    /// gets our commitment on that splice's funding (the one on the funding the splice spent can never confirm), once
+    /// per process and funding. The on-chain watcher asks for it as soon as it sees the splice; this covers the splice
+    /// spends the channel manager keeps from it and a restart.
+    /// </summary>
+    public async Task CheckConfirmedSplicesAsync(CancellationToken cancellationToken = default)
+    {
+        var failed = _channelMemoryRepository.FindChannels(
+            c => c is { State: ChannelState.Failed, DataLossDetected: false });
+        foreach (var channel in failed)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var confirmed = new List<TxId>();
+                using (var scope = _serviceScopeFactory.CreateScope())
+                {
+                    var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                    var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+                    foreach (var funding in fundings.Where(f => f.Status == ChannelFundingStatus.Pending
+                                                             && !OnchainFundings.IsCurrent(channel, f)
+                                                             && !_spliceBroadcasts.ContainsKey(
+                                                                    (channel.ChannelId, f.FundingTxId))))
+                    {
+                        var watch = await unitOfWork.WatchedTransactionDbRepository.GetByTransactionIdAsync(
+                                        funding.FundingTxId);
+                        if (watch?.FirstSeenAtHeight is not null)
+                            confirmed.Add(funding.FundingTxId);
+                    }
+                }
+
+                foreach (var spliceTxId in confirmed)
+                {
+                    var outcome = await BroadcastOnSpliceAsync(channel.ChannelId, spliceTxId, cancellationToken);
+                    _logger.LogWarning("Failed channel {ChannelId}: splice {SpliceTxId} confirmed; our commitment on it "
+                                     + "{Status} {TxId}", channel.ChannelId, Display(spliceTxId), outcome.Status,
+                                       Display(outcome.CommitmentTxId));
+                }
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                _logger.LogError(e, "Checking the splices of failed channel {ChannelId} failed", channel.ChannelId);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<ChannelFailureOutcome> BroadcastOnSpliceAsync(ChannelId channelId, TxId spliceFundingTxId,
+                                                                    CancellationToken cancellationToken = default)
+    {
+        SignedLocalCommitment commitment;
+        BroadcastTransactionModel row;
+        bool staged;
+        using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
+        {
+            if (!_channelMemoryRepository.TryGetChannel(channelId, out var channel)
+             || channel.State is not (ChannelState.Failed or ChannelState.OnchainResolving))
+                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+
+            if (channel.DataLossDetected)
+                return new ChannelFailureOutcome(ChannelFailureStatus.RefusedDataLoss, null);
+
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var fundings = await OnchainFundings.GetAllAsync(unitOfWork, channel, _logger);
+            var funding = fundings.FirstOrDefault(f => f.FundingTxId == spliceFundingTxId
+                                                    && f.Status == ChannelFundingStatus.Pending
+                                                    && !OnchainFundings.IsCurrent(channel, f));
+            if (funding is null)
+                return new ChannelFailureOutcome(ChannelFailureStatus.NotApplicable, null);
+
+            try
+            {
+                commitment = await BuildOnFundingAsync(unitOfWork, channel, funding);
+            }
+            catch (Exception e) when (e is InvalidOperationException or SignerException or ArgumentException
+                                          or NotSupportedException)
+            {
+                _logger.LogCritical(e, "Cannot build our commitment on splice {TxId} of failed channel {ChannelId}",
+                                    Display(spliceFundingTxId), channelId);
+                return new ChannelFailureOutcome(ChannelFailureStatus.NoBroadcastableCommitment, null);
+            }
+
+            var existing = await unitOfWork.BroadcastTransactionDbRepository.GetByTransactionIdAsync(
+                               commitment.Transaction.TxId);
+            staged = existing is null;
+            row = existing ?? new BroadcastTransactionModel(commitment.Transaction, BroadcastPurpose.LocalCommitment,
+                                                            channelId, _blockchainMonitor.LastProcessedBlockHeight,
+                                                            commitmentNumber: commitment.CommitmentNumber);
+            if (staged)
+                unitOfWork.BroadcastTransactionDbRepository.Add(row);
+
+            // Our commitment on the funding the splice spent can never confirm now
+            if (fundings.FirstOrDefault(f => OnchainFundings.IsCurrent(channel, f)) is { } spent)
+            {
+                var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
+                var stales = (broadcasts ?? []).Where(b => b.Purpose == BroadcastPurpose.LocalCommitment
+                                                        && b.State == BroadcastState.Pending
+                                                        && b.TransactionId != commitment.Transaction.TxId
+                                                        && SpendsOutpoint(b, spent))
+                                               .ToList();
+                foreach (var stale in stales)
+                    await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(stale.TransactionId);
+            }
+
+            await unitOfWork.SaveChangesAsync();
+            _spliceBroadcasts[(channelId, spliceFundingTxId)] = 0;
+        }
+
+        _logger.LogCritical("Failed channel {ChannelId}: splice {SpliceTxId} confirmed instead of our commitment; "
+                          + "broadcasting our commitment {Number} on the splice funding ({TxId})", channelId,
+                            Display(spliceFundingTxId), commitment.CommitmentNumber,
+                            Display(commitment.Transaction.TxId));
+        _published.TryRemove(channelId, out _);
+        var outcome = await PublishAsync(channelId, commitment, row, staged);
+        if (_anchorCpfpService is not null && _channelMemoryRepository.TryGetChannel(channelId, out var loaded)
+                                           && loaded.ChannelParams.OptionAnchorOutputs)
+        {
+            try
+            {
+                _anchorCpfpService.ScheduleCommitmentRound(channelId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "The anchor CPFP of failed channel {ChannelId} could not be scheduled", channelId);
+            }
+        }
+
+        return outcome;
+    }
+
+    /// <summary>
+    /// Our latest local commitment on the pending splice funding <paramref name="funding"/>, signed for broadcast
+    /// (SP-I4: the same number as the one signed on the current funding): its spec and the peer's signature from the
+    /// engine (in memory), else from the funding's stored slot (SP-I2), built as it was verified
+    /// (<c>CommitmentSigningService</c>).
+    /// </summary>
+    private async Task<SignedLocalCommitment> BuildOnFundingAsync(IUnitOfWork unitOfWork, ChannelModel channel,
+                                                                  ChannelFunding funding)
+    {
+        if (_commitmentTransactionModelFactory is null || _commitmentTransactionBuilder is null)
+            throw new InvalidOperationException("No commitment model factory or builder is registered");
+
+        var commitments = channel.Commitments
+                       ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no snapshot");
+        CommitmentSpec spec;
+        CommitmentSignatures signatures;
+        if (commitments.PendingFundings.FirstOrDefault(f => f.FundingTxId == funding.FundingTxId) is { } pending
+         && commitments.LocalCommit.SignaturesFor(funding.FundingTxId) is { } inMemory)
+        {
+            spec = ChannelCommitments.SpecFor(commitments.LocalCommit.Spec, pending);
+            signatures = inMemory;
+        }
+        else
+        {
+            var stored = await unitOfWork.ChannelFundingDbRepository.GetLocalCommitmentAsync(channel.ChannelId,
+                                                                                            funding.FundingTxId);
+            if (stored is not { RemoteSignatures: { } storedSignatures }
+             || stored.Number != commitments.LocalCommit.Number)
+                throw new InvalidOperationException(
+                    $"No signed local commitment {commitments.LocalCommit.Number} on splice {funding.FundingTxId}");
+
+            spec = stored.Spec;
+            signatures = storedSignatures;
+        }
+
+        var number = commitments.LocalCommit.Number;
+        var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
+            channel, CommitmentTxSpec.FromCommitmentSpec(spec), CommitmentSide.Local, number);
+        model = CommitmentSigningService.WithFunding(model, funding, CommitmentSide.Local);
+        var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
+        var signed = _lightningSigner.SignLocalCommitmentForBroadcast(channel.ChannelId, funding.FundingTxId, number,
+                                                                      built.Transaction, signatures.Signature);
+        return new SignedLocalCommitment(number, signed, built.HtlcOutputsInTxOrder.Count);
+    }
+
+    private static bool SpendsOutpoint(BroadcastTransactionModel broadcast, ChannelFunding funding) =>
+        ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction) && transaction is not null
+     && transaction.IndexOfInputSpending(funding.FundingTxId, funding.OutputIndex) >= 0;
+
+    #endregion
 
     /// <summary>A txid in the display (RPC, block explorer) byte order, for logs (NL-275).</summary>
     private static string? Display(TxId? txId) => txId is { } id ? new uint256(id).ToString() : null;
