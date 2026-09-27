@@ -66,7 +66,6 @@ public class FeatureOptionsTests
     }
 
     [Theory]
-    [InlineData(Feature.OptionRouteBlinding)]
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
     [InlineData(Feature.OptionAttributionData)]
@@ -201,7 +200,7 @@ public class FeatureOptionsTests
 
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
-        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionRouteBlinding, Feature.OptionAttributionData
+        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionAttributionData
     ];
 
     [Fact]
@@ -217,6 +216,22 @@ public class FeatureOptionsTests
         Assert.DoesNotContain(Feature.BasicMpp, FeatureOptions.ExperimentalFeatures);
         Assert.True(features.IsFeatureSet(Feature.BasicMpp, false));
         Assert.False(features.IsFeatureSet(Feature.BasicMpp, true));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_RouteBlindingIsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (ONION M5: blinded forward and receive proven against the BOLT 4 vectors and LND 0.20)
+        var options = new FeatureOptions();
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.DoesNotContain(Feature.OptionRouteBlinding, FeatureOptions.ExperimentalFeatures);
+        Assert.True(features.IsFeatureSet(Feature.OptionRouteBlinding, false));
+        Assert.False(features.IsFeatureSet(Feature.OptionRouteBlinding, true));
         Assert.Empty(options.GetValidationErrors());
     }
 

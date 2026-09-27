@@ -16,7 +16,7 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
+    /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers,
     /// attribution_data error attribution (onion M3b), onion_messages the onion_message handler and provide_storage
     /// peer_storage.
     /// Remove a feature from this set when it is implemented.
@@ -25,7 +25,6 @@ public class FeatureOptions
     {
         Feature.OptionQuiesce,
         Feature.OptionDualFund,
-        Feature.OptionRouteBlinding,
         Feature.OptionAttributionData,
         Feature.OptionOnionMessages,
         Feature.OptionProvideStorage
@@ -117,9 +116,10 @@ public class FeatureOptions
     /// Enable route blinding.
     /// </summary>
     /// <remarks>
-    /// Defaults to No until blinded payloads are handled (onion M5).
+    /// Optional by default since onion M5 (lane rf1-m5): blinded payloads are forwarded as introduction or intermediate
+    /// node and received as the final node, proven against the BOLT 4 vectors and LND 0.20.
     /// </remarks>
-    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionRouteBlinding { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable beyond segwit shutdown.

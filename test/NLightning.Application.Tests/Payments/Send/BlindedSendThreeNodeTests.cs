@@ -126,7 +126,6 @@ public class BlindedSendThreeNodeTests
         {
             foreach (var node in h.Nodes)
             {
-                node.Options.Features.AllowExperimentalFeatures = true;
                 node.Options.Features.OptionRouteBlinding = FeatureSupport.Optional;
             }
 
