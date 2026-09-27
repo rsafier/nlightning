@@ -128,9 +128,13 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var peer = _serviceProvider.GetService<IPeerManager>()?.GetPeer(request.PeerNodeId)
-                ?? throw new InvalidOperationException($"Peer {request.PeerNodeId} is not connected");
-        var features = peer.NegotiatedFeatures;
+        // Without a peer manager (in-process harnesses) our own features stand for the negotiated ones
+        var peerManager = _serviceProvider.GetService<IPeerManager>();
+        var peer = peerManager is null
+                       ? null
+                       : peerManager.GetPeer(request.PeerNodeId)
+                      ?? throw new InvalidOperationException($"Peer {request.PeerNodeId} is not connected");
+        var features = peer?.NegotiatedFeatures ?? _nodeOptions.Features;
         if (features.DualFund == FeatureSupport.No)
             throw new InvalidOperationException($"option_dual_fund is not negotiated with {request.PeerNodeId}");
         if (GetMonitor() is { IsChainProcessingHalted: true })
@@ -203,7 +207,7 @@ public sealed class DualFundedOpenService : IDualFundedOpenService
             new ChannelTypeTlv(channelType), new UpfrontShutdownScriptTlv(Array.Empty<byte>()), request.RequireConfirmedInputs);
 
         // The peer's error for the open (on the temporary or the v2 id) ends it
-        var peerService = peer.TryGetPeerService(out var service) ? service : null;
+        var peerService = peer is not null && peer.TryGetPeerService(out var service) ? service : null;
         void OnAttention(object? _, AttentionMessageEventArgs args)
         {
             if (args.ChannelId is { } id && (id == temporaryId || id == negotiation.ChannelId))
