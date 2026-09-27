@@ -64,6 +64,8 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IGraphDbRepository GraphDbRepository => inner.GraphDbRepository;
     public IPeerDbRepository PeerDbRepository => inner.PeerDbRepository;
     public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
+    public IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
+        inner.PeerStorageRetrievalDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => inner.InvoiceDbRepository;
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;

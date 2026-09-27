@@ -52,6 +52,11 @@ public interface IUnitOfWork : IDisposable
     // BOLT 1 peer storage (migration AddPeerStorage)
     IPeerStorageDbRepository PeerStorageDbRepository { get; }
 
+    // The peer_storage_retrievals our peers sent us (NL-432, migration AddPeerStorageRetrievals); the default is for
+    // test doubles that keep none
+    IPeerStorageRetrievalDbRepository PeerStorageRetrievalDbRepository =>
+        throw new NotSupportedException("This unit of work does not store peer storage retrievals.");
+
     // Payment repositories
     IInvoiceDbRepository InvoiceDbRepository { get; }
     IPaymentDbRepository PaymentDbRepository { get; }

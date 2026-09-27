@@ -331,6 +331,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Lists the latest peer_storage_retrieval of each peer and the blobs we keep for our peers (ClientCommand 32).
+    /// </summary>
+    /// <param name="peerNodeId">Only this peer; null for every peer.</param>
+    /// <param name="includeBlob">Also return each retrieved blob's bytes.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<ListPeerStorageIpcResponse> ListPeerStorageAsync(CompactPubKey? peerNodeId, bool includeBlob,
+                                                                 CancellationToken ct = default)
+    {
+        var req = new ListPeerStorageIpcRequest { PeerNodeId = peerNodeId, IncludeBlob = includeBlob };
+        return SendRequestAsync<ListPeerStorageIpcRequest, ListPeerStorageIpcResponse>(ClientCommand.ListPeerStorage,
+                                                                                       req, ct);
+    }
+
+    /// <summary>
     /// Creates one of our BOLT 12 offers (ClientCommand 26).
     /// </summary>
     public Task<CreateOfferIpcResponse> CreateOfferAsync(CreateOfferIpcRequest request, CancellationToken ct = default)

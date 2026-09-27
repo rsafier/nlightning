@@ -40,6 +40,19 @@ public interface IPeerStorageService
     Task<StoredPeerBlob?> GetStoredBlobAsync(CompactPubKey peerNodeId);
 
     /// <summary>
+    /// The latest <c>peer_storage_retrieval</c> of every peer, kept across restarts (table
+    /// <c>PeerStorageRetrievals</c>, NL-432), read again with the blob provider, each channel checked against the
+    /// database now; ordered by arrival. A retrieval whose write failed is included from memory.
+    /// </summary>
+    Task<IReadOnlyList<PeerStorageRetrievalReport>> ListRetrievalsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The blobs we keep for our peers (as a provider), the latest of each, including writes still delayed; ordered
+    /// by peer.
+    /// </summary>
+    Task<IReadOnlyList<StoredPeerBlob>> ListStoredBlobsAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// True once a peer handed back a backup of ours naming channels we have no record of: from then on (until the
     /// restart) our backup is sent to no peer, so the copies that prove the data loss are not overwritten.
     /// </summary>

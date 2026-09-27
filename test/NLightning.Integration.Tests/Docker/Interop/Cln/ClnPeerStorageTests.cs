@@ -111,6 +111,18 @@ public sealed class ClnPeerStorageTests : IAsyncLifetime
         Assert.Equal(PeerStorageConstants.MaxBlobLength, retrieval.BlobLength);
         Assert.Equal(keptContents.CreatedAt, retrieval.Contents.CreatedAt);
 
+        // ...and it is kept in the database for the operator (NL-432, listpeerstorage)
+        var persisted = await Poll.ForAsync(
+                            async () => (await storage.ListRetrievalsAsync(ct))
+                               .FirstOrDefault(r => r.PeerNodeId == clnPubKey && r.Persisted),
+                            s_storageTimeout, "CLN's retrieval written to PeerStorageRetrievals", ct);
+        Assert.Equal(retrieval.ReceivedAt, persisted.ReceivedAt);
+        Assert.Equal(PeerStorageConstants.MaxBlobLength, persisted.Blob.Length);
+        Assert.True(persisted.MatchesLastSent);
+        Assert.Contains(persisted.Channels, c => c.ChannelId == _session.ChannelId && c.KnownNow
+                                              && !c.UnknownWhenReceived);
+        Assert.Empty(persisted.StillUnknown);
+
         // ...and CLN got its own blob back from us
         await Poll.UntilAsync(async () => CountLines(await _session.Cln.GetLogLinesAsync(
                                                          "peer_in WIRE_PEER_STORAGE_RETRIEVAL", ct, 500))
@@ -126,6 +138,14 @@ public sealed class ClnPeerStorageTests : IAsyncLifetime
         // Assert: both sides hand the other's blob back again
         var restarted = node.Services.GetRequiredService<PeerStorageService>();
         Assert.NotSame(storage, restarted);
+        // The new process lists the row from the database (the one written before the restart, or the newer
+        // retrieval once it is written)
+        var listedAfterRestart = await Poll.ForAsync(
+                                     async () => (await restarted.ListRetrievalsAsync(ct))
+                                        .FirstOrDefault(r => r.PeerNodeId == clnPubKey && r.Persisted),
+                                     s_storageTimeout, "CLN's retrieval listed after our restart", ct);
+        Assert.True(listedAfterRestart.ReceivedAt >= persisted.ReceivedAt);
+        Assert.Contains(listedAfterRestart.Channels, c => c.ChannelId == _session.ChannelId && c.KnownNow);
         var afterRestart = await Poll.ForAsync(
                                () => restarted.GetRetrievals().FirstOrDefault(r => r.PeerNodeId == clnPubKey),
                                s_storageTimeout, "CLN's peer_storage_retrieval after our restart", ct);

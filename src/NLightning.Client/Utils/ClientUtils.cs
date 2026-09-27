@@ -86,6 +86,11 @@ public static class ClientUtils
         Console.WriteLine("                               After losing the channel database: ask each backed-up");
         Console.WriteLine("                               channel's peer to force close and sweep our funds");
         Console.WriteLine("                               (alias: restore-chan-backup); exit code 1 on a failure");
+        Console.WriteLine("  listpeerstorage [node_id] [--blob]");
+        Console.WriteLine("                               Show the backups our peers handed back (peer storage),");
+        Console.WriteLine("                               with the channels they name that this node does not know,");
+        Console.WriteLine("                               and the blobs we keep for peers (alias: list-peer-storage);");
+        Console.WriteLine("                               --blob prints each handed-back blob as hex");
         Console.WriteLine("  createoffer <msat|any> [description] [--issuer <text>] [--quantity-max <n>]");
         Console.WriteLine("              [--absolute-expiry <unix_seconds>] [--paths]");
         Console.WriteLine("                               Create a BOLT 12 offer (alias: create-offer); an amount");

@@ -933,6 +933,30 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("PeerStorageBlobs");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Node.PeerStorageRetrievalEntity", b =>
+                {
+                    b.Property<byte[]>("NodeId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("Blob")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool?>("MatchesLastSent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long>("ReceivedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("UnknownChannelIds")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.HasKey("NodeId");
+
+                    b.ToTable("PeerStorageRetrievals");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Onchain.ChannelCloseEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")
