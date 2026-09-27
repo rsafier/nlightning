@@ -165,15 +165,17 @@ public class InvoiceRequestReaderTests
         var offerA = new Hash(Enumerable.Repeat((byte)1, 32).ToArray());
         var offerB = new Hash(Enumerable.Repeat((byte)2, 32).ToArray());
 
-        // Act / Assert: per offer 2, globally 3
+        // Act / Assert: per offer 2, globally 3 (taken by every request, before the offer is known)
         Assert.True(limiter.TryAdmit(offerA));
         Assert.True(limiter.TryAdmit(offerA));
         Assert.False(limiter.TryAdmit(offerA));
         Assert.True(limiter.TryAdmit(offerB));
-        Assert.False(limiter.HasGlobalCapacity());
-        Assert.False(limiter.TryAdmit(offerB));
+        Assert.True(limiter.TryTakeGlobal());
+        Assert.True(limiter.TryTakeGlobal());
+        Assert.True(limiter.TryTakeGlobal());
+        Assert.False(limiter.TryTakeGlobal());
         clock.Advance(TimeSpan.FromSeconds(1));
-        Assert.True(limiter.HasGlobalCapacity());
+        Assert.True(limiter.TryTakeGlobal());
         Assert.True(limiter.TryAdmit(offerB));
         clock.Advance(TimeSpan.FromSeconds(10));
         for (var i = 0; i < InvoiceRequestRateLimiter.SweepInterval; i++)

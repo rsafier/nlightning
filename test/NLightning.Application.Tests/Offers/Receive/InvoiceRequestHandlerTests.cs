@@ -235,22 +235,47 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         Assert.Empty(_onionMessages.Sent);
     }
 
-    [Fact]
-    public async Task Given_AnUnknownOffer_When_Processed_Then_InvoiceError()
+    [Theory]
+    [InlineData("direct")]
+    [InlineData("through another offer's path")]
+    public async Task Given_AnUnknownOffer_When_Processed_Then_IgnoredWithoutAnyReply(string variant)
     {
-        // Arrange
-        var offer = await AddOfferAsync();
-        var request = RequestFor(offer).Set(Bolt12TlvTypes.OfferDescription, "tea"u8.ToArray()).Build();
+        // Arrange: BOLT 12 rationale: an answer for an offer that is not ours would tell a prober, by the silence it
+        // gets for ours, which offers belong to this node (an offer's paths linked to our node id, or two offers)
+        var ours = await AddOfferAsync(withPaths: true);
+        var request = RequestFor(ours).Set(Bolt12TlvTypes.OfferDescription, "tea"u8.ToArray()).Build();
+        ReadOnlyMemory<byte>? pathId = variant == "direct" ? null : _pathIds.Compute(ours.Metadata.Span);
 
         // Act
-        var outcome = await ProcessAsync(request);
+        var outcome = await ProcessAsync(request, pathId);
 
         // Assert
-        Assert.Equal(InvoiceRequestOutcome.InvoiceError, outcome);
-        var (type, error) = SingleReply();
-        Assert.Equal(InvoiceRequestHandler.InvoiceErrorType, type);
-        Assert.Equal("Unknown offer", Encoding.UTF8.GetString(error.Get(Bolt12TlvTypes.Error)));
+        Assert.Equal(InvoiceRequestOutcome.Ignored, outcome);
+        Assert.Empty(_onionMessages.Sent);
         Assert.Empty(_store.Invoices.Invoices);
+    }
+
+    [Fact]
+    public async Task Given_ABurstOfBadSignaturesAndUnknownOffers_When_OverTheNodeRate_Then_LaterRequestsAreDropped()
+    {
+        // Arrange: node-wide 20 per second; every request costs a token before its signature is checked
+        var offer = await AddOfferAsync();
+        var handler = CreateHandler();
+        var badSignature = RequestFor(offer).Build(Enumerable.Repeat((byte)0x43, 32).ToArray());
+        var unknownOffer = RequestFor(offer).Set(Bolt12TlvTypes.OfferDescription, "tea"u8.ToArray()).Build();
+        for (var i = 0; i < 20; i++)
+            Assert.Equal(InvoiceRequestOutcome.Ignored,
+                         await ProcessAsync(i % 2 == 0 ? badSignature : unknownOffer, handler: handler));
+
+        // Act
+        var dropped = await ProcessAsync(RequestFor(offer).Build(), handler: handler);
+        _clock.Advance(TimeSpan.FromSeconds(1));
+        var answered = await ProcessAsync(RequestFor(offer).Build(), handler: handler);
+
+        // Assert
+        Assert.Equal(InvoiceRequestOutcome.Ignored, dropped);
+        Assert.Equal(InvoiceRequestOutcome.Invoice, answered);
+        Assert.Single(_onionMessages.Sent);
     }
 
     [Fact]

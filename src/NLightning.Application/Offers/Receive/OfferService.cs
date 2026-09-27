@@ -35,8 +35,9 @@ using OnionMessages;
 /// or signet chain hash), 16 random bytes of <c>offer_metadata</c>, <c>offer_amount</c> in msat (never a currency),
 /// <c>offer_description</c>, <c>offer_absolute_expiry</c>, <c>offer_issuer</c>, <c>offer_quantity_max</c>,
 /// <c>offer_issuer_id</c> = our node id (plan D2), and <c>offer_paths</c> when we have no announced open channel or
-/// the request forces them: one two-hop message path per connected onion-message peer (those with an open channel
-/// first; <see cref="OfferOptions.MaxOfferPaths"/>), the peer as introduction node and our hop's <c>path_id</c> from
+/// the request forces them: one two-hop message path per connected onion-message peer with an open channel (only when
+/// none has one, other connected peers, with a warning; <see cref="SelectIntroductionNodes"/>,
+/// <see cref="OfferOptions.MaxOfferPaths"/>), the peer as introduction node and our hop's <c>path_id</c> from
 /// <see cref="OfferPathIds"/>. Our <c>offer_id</c> is SHA256 of the offer bytes; the string is <c>lno1...</c>.</para>
 /// <para>The offer is saved (<see cref="IUnitOfWork.OfferDbRepository"/>, one save in its own scope) before it is
 /// returned. Invoice_requests for it are answered by <see cref="InvoiceRequestHandler"/>.</para>
@@ -237,7 +238,7 @@ public sealed class OfferService : IOfferService
                                 .Any(ChannelAnnouncementService.IsAnnounced);
 
     /// <summary>
-    /// Two-hop message paths to us, introduced by connected onion-message peers (those with an open channel first).
+    /// Two-hop message paths to us, introduced by connected onion-message peers (<see cref="SelectIntroductionNodes"/>).
     /// </summary>
     private List<WireBlindedPath> CreateOfferPaths(byte[] metadata)
     {
@@ -249,10 +250,37 @@ public sealed class OfferService : IOfferService
             throw new InvalidOperationException("The offer needs offer_paths (no announced channel), and no connected "
                                               + "peer supports onion messages to introduce one.");
 
+        var introductionNodes = SelectIntroductionNodes(peers, pathFinder.HasOpenChannelWith,
+                                                        _offerOptions.MaxOfferPaths, out var withoutChannel);
+        if (withoutChannel && _logger.IsEnabled(LogLevel.Warning))
+            _logger.LogWarning("No connected onion-message peer has an open channel with us: the offer's paths are "
+                             + "introduced by {Count} peer(s) without one, and they stop working for good once those "
+                             + "peers disconnect (we do not reconnect to peers without channels)",
+                               introductionNodes.Count);
+
         var pathId = _pathIds.Compute(metadata);
-        return peers.Take(_offerOptions.MaxOfferPaths)
-                    .Select(peer => WireBlindedPath.FromBlindedPath(
-                                _messagePathFactory.Create([peer, ourNodeId], pathId)))
-                    .ToList();
+        return introductionNodes.Select(peer => WireBlindedPath.FromBlindedPath(
+                                            _messagePathFactory.Create([peer, ourNodeId], pathId)))
+                                .ToList();
+    }
+
+    /// <summary>
+    /// The introduction nodes of an offer's paths: up to <paramref name="max"/> of the <paramref name="peers"/> with an
+    /// open channel with us, in order; only when none has one, up to <paramref name="max"/> of the others
+    /// (<paramref name="withoutChannel"/> true).
+    /// </summary>
+    /// <remarks>
+    /// <c>offer_paths</c> are fixed in the offer, and we reconnect only to peers we have channels with, so a path
+    /// through a peer without a channel dies with its connection.
+    /// </remarks>
+    internal static IReadOnlyList<CompactPubKey> SelectIntroductionNodes(IReadOnlyList<CompactPubKey> peers,
+                                                                        Func<CompactPubKey, bool> hasOpenChannel,
+                                                                        int max, out bool withoutChannel)
+    {
+        ArgumentNullException.ThrowIfNull(peers);
+        ArgumentNullException.ThrowIfNull(hasOpenChannel);
+        var channelPeers = peers.Where(hasOpenChannel).Take(max).ToList();
+        withoutChannel = channelPeers.Count == 0 && peers.Count > 0 && max > 0;
+        return withoutChannel ? peers.Take(max).ToList() : channelPeers;
     }
 }

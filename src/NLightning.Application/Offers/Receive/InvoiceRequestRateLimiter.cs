@@ -4,7 +4,8 @@ using Domain.Crypto.ValueObjects;
 
 /// <summary>
 /// Token buckets for the invoice_requests we answer (BOLT 12 plan §3.4, D11): one per offer and one for the node, each
-/// with a burst of one second's rate. A request is admitted only when both hold a token, then takes from both.
+/// with a burst of one second's rate. Every request takes a node-wide token first (<see cref="TryTakeGlobal"/>, before
+/// it is parsed or its signature checked); one for an offer of ours then also takes one from that offer's bucket.
 /// </summary>
 /// <remarks>
 /// Every answered request signs an invoice and stores a row, so a flood is dropped here rather than answered. Buckets
@@ -43,21 +44,27 @@ public sealed class InvoiceRequestRateLimiter
     }
 
     /// <summary>
-    /// Whether the node-wide bucket holds a token, without taking it (a cheap check before any parsing).
+    /// Takes one token from the node-wide bucket: every invoice_request we look at costs one, before any parsing, so
+    /// requests with bad signatures, unknown offers or the wrong path count against the node-wide rate too.
     /// </summary>
-    public bool HasGlobalCapacity()
+    /// <returns>False (nothing taken) when it is empty.</returns>
+    public bool TryTakeGlobal()
     {
         lock (_lock)
         {
             _global.Refill(_timeProvider.GetTimestamp(), _timeProvider.TimestampFrequency);
-            return _global.Tokens >= 1;
+            if (_global.Tokens < 1)
+                return false;
+
+            _global.Tokens--;
+            return true;
         }
     }
 
     /// <summary>
-    /// Takes one token from the offer's bucket and the node's.
+    /// Takes one token from the offer's bucket (the node-wide one was taken by <see cref="TryTakeGlobal"/>).
     /// </summary>
-    /// <returns>False (nothing taken) when either is empty.</returns>
+    /// <returns>False (nothing taken) when it is empty.</returns>
     public bool TryAdmit(Hash offerId)
     {
         lock (_lock)
@@ -74,12 +81,10 @@ public sealed class InvoiceRequestRateLimiter
             }
 
             offer.Refill(now, frequency);
-            _global.Refill(now, frequency);
-            if (offer.Tokens < 1 || _global.Tokens < 1)
+            if (offer.Tokens < 1)
                 return false;
 
             offer.Tokens--;
-            _global.Tokens--;
             return true;
         }
     }
