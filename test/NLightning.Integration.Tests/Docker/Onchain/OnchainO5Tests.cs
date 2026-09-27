@@ -472,7 +472,7 @@ public class OnchainO5Tests : IAsyncLifetime
                                        long amountSat, CancellationToken ct)
     {
         var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(amountSat), "o5 payment", ct);
-        var payment = await payer.PayInvoiceAsync(invoice.Bolt11, ct);
+        var payment = await payer.PayInvoiceAsync(invoice.Bolt11!, ct);
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
         await Poll.UntilAsync(async () =>
         {
@@ -508,7 +508,7 @@ public class OnchainO5Tests : IAsyncLifetime
             // Right after a restart or a settled payment LND may not route to us yet (no route); try again
             await LndTestHelpers.ResetMissionControlAsync(david, ct);
             payment = await LndTestHelpers.SendPaymentV2Async(
-                          david, LndTestHelpers.PinnedPayment(invoice.Bolt11, [chanId]), ct);
+                          david, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [chanId]), ct);
             if (payment.Status == Lnrpc.Payment.Types.PaymentStatus.Succeeded)
                 break;
 

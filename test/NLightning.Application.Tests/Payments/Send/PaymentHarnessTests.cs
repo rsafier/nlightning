@@ -46,7 +46,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
@@ -80,7 +80,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: David's invoice carries the hint through Carol with Carol's own policy (NL-245)
         var hint = Assert.Single(Assert.Single(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints));
@@ -125,7 +125,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: David's 0x400F travelled back through Carol (wrapped) and Bob attributed it to hop 1
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -150,7 +150,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -166,11 +166,11 @@ public class PaymentHarnessTests : IDisposable
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "twice", null, ct);
-        await _harness.RunAsync(_harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+        await _harness.RunAsync(_harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Act
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(
-                            () => _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                            () => _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
         var payments = await _harness.Bob.PaymentService.ListPaymentsAsync(0, 10, ct);
 
         // Assert
@@ -188,12 +188,12 @@ public class PaymentHarnessTests : IDisposable
         var invoice = await _harness.David.InvoiceService.CreateInvoiceAsync(s_amount, "retry", null, ct);
         _harness.Carol.Switch.FailEveryForward = true;
         var first = await _harness.RunAsync(
-                        _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                        _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
         _harness.Carol.Switch.FailEveryForward = false;
 
         // Act
         var second = await _harness.RunAsync(
-                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, first.Status);
@@ -215,7 +215,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -235,7 +235,7 @@ public class PaymentHarnessTests : IDisposable
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "late", null, ct);
 
         // Act: nothing is delivered while Bob waits
-        var payment = await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null,
+        var payment = await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null,
                                                                           TimeSpan.FromMilliseconds(50), ct);
         await _harness.PumpAsync();
 
@@ -263,7 +263,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -283,7 +283,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: the fulfill matched through the HTLC's record in channel memory
         Assert.Empty(_harness.Bob.Store.Origins);
@@ -305,7 +305,7 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Empty(_harness.Bob.Store.Origins);
@@ -325,9 +325,9 @@ public class PaymentHarnessTests : IDisposable
 
         // Act
         var first = await _harness.RunAsync(
-                        _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                        _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
         var second = await _harness.RunAsync(
-                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                         _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, first.Status);
@@ -344,7 +344,7 @@ public class PaymentHarnessTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "reconcile", null, ct);
         _harness.Bob.Payments.FailNextUpdates = 1;
-        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, TimeSpan.FromMilliseconds(50), ct);
+        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct);
         Assert.Null((await _harness.Bob.PaymentService.GetPaymentAsync(invoice.PaymentHash, ct))!.OutgoingHtlcId);
 
         // Act
@@ -368,7 +368,7 @@ public class PaymentHarnessTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         var invoice = await _harness.Carol.InvoiceService.CreateInvoiceAsync(s_amount, "replay", null, ct);
         _harness.Bob.Payments.FailNextUpdates = 1;
-        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, TimeSpan.FromMilliseconds(50), ct);
+        await _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, TimeSpan.FromMilliseconds(50), ct);
 
         // Act: an archived failure of another HTLC with the same hash (an earlier attempt) is replayed
         var handled = await OutcomeHandler(_harness.Bob).HandleOutgoingHtlcFailedAsync(

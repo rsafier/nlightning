@@ -1092,8 +1092,10 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasColumnType("bigint");
 
                     b.Property<string>("Bolt11")
-                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte[]>("Bolt12InvoiceBytes")
+                        .HasColumnType("varbinary(max)");
 
                     b.Property<long>("CreatedAt")
                         .HasColumnType("bigint");
@@ -1104,8 +1106,20 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("ExpirySeconds")
                         .HasColumnType("bigint");
 
+                    b.Property<byte[]>("InvoiceRequestPayerId")
+                        .HasColumnType("varbinary(33)");
+
+                    b.Property<byte>("Kind")
+                        .HasColumnType("tinyint");
+
                     b.Property<int>("MinFinalCltvExpiry")
                         .HasColumnType("int");
+
+                    b.Property<byte[]>("OfferId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<string>("PayerNote")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("PaymentSecret")
                         .IsRequired()
@@ -1114,6 +1128,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("Preimage")
                         .IsRequired()
                         .HasColumnType("varbinary(32)");
+
+                    b.Property<decimal?>("Quantity")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long?>("SettledAt")
                         .HasColumnType("bigint");
@@ -1125,7 +1142,68 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.HasIndex("CreatedAt");
 
+                    b.HasIndex("OfferId", "Status");
+
                     b.ToTable("Invoices");
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity", b =>
+                {
+                    b.Property<byte[]>("OfferId")
+                        .HasColumnType("varbinary(32)");
+
+                    b.Property<long?>("AbsoluteExpiry")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("AmountMsat")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Bolt12")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Currency")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long?>("DisabledAt")
+                        .HasColumnType("bigint");
+
+                    b.Property<bool>("HasPaths")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("Issuer")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<byte>("IssuerKind")
+                        .HasColumnType("tinyint");
+
+                    b.Property<byte[]>("Metadata")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<byte[]>("OfferBytes")
+                        .IsRequired()
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal?>("QuantityMax")
+                        .HasColumnType("decimal(20,0)");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint");
+
+                    b.HasKey("OfferId");
+
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("Offers");
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.OnionReplayEntryEntity", b =>
@@ -1161,6 +1239,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<string>("Bolt11")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<byte[]>("Bolt12InvoiceBytes")
+                        .HasColumnType("varbinary(max)");
+
                     b.Property<long?>("CompletedAt")
                         .HasColumnType("bigint");
 
@@ -1179,6 +1260,12 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<long>("FeeMsat")
                         .HasColumnType("bigint");
 
+                    b.Property<byte[]>("InvoiceRequestMetadata")
+                        .HasColumnType("varbinary(max)");
+
+                    b.Property<string>("OfferBolt12")
+                        .HasColumnType("nvarchar(max)");
+
                     b.Property<byte[]>("OutgoingChannelId")
                         .HasColumnType("varbinary(32)");
 
@@ -1188,6 +1275,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                     b.Property<byte[]>("PayeeNodeId")
                         .IsRequired()
                         .HasColumnType("varbinary(33)");
+
+                    b.Property<string>("PayerNote")
+                        .HasColumnType("nvarchar(max)");
 
                     b.Property<byte[]>("Preimage")
                         .HasColumnType("varbinary(32)");
@@ -1377,6 +1467,14 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .HasForeignKey("ChannelId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.InvoiceEntity", b =>
+                {
+                    b.HasOne("NLightning.Infrastructure.Persistence.Entities.Payment.OfferEntity", null)
+                        .WithMany()
+                        .HasForeignKey("OfferId")
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Payment.PaymentHopEntity", b =>

@@ -57,7 +57,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: the legacy failure is still read (0x400F from hop 1), and the attribution verified every hop
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -88,7 +88,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
@@ -114,7 +114,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: no hop authenticates the return packet, and Carol's own HMAC (over the packet she forwarded) fails
         Assert.Equal(PaymentStatus.Failed, payment.Status);
@@ -135,7 +135,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert: the erring hop still comes from the return packet; attribution stops at David, who added none
         Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, payment.FailureCode);
@@ -155,7 +155,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(FailureCode.IncorrectOrUnknownPaymentDetails, payment.FailureCode);
@@ -175,7 +175,7 @@ public class AttributionHarnessTests : IDisposable
 
         // Act
         var payment = await _harness.RunAsync(
-                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11, null, s_timeout, ct));
+                          _harness.Bob.PaymentService.PayInvoiceAsync(invoice.Bolt11!, null, s_timeout, ct));
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, payment.Status);

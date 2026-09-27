@@ -60,7 +60,7 @@ public interface IUnitOfWork : IDisposable
     // Onion replay set (NL-078)
     IOnionReplayDbRepository OnionReplayDbRepository { get; }
 
-    // BOLT 12 offers (NL-447; implemented with the migration AddBolt12Offers, lane B12-C)
+    // BOLT 12 offers (NL-447, migration AddBolt12Offers); the default is for test doubles that store no offers
     IOfferDbRepository OfferDbRepository =>
         throw new NotSupportedException("This unit of work does not store BOLT 12 offers.");
 

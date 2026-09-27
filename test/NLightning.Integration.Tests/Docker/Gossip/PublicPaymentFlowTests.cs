@@ -123,7 +123,7 @@ public class PublicPaymentFlowTests
             Console.WriteLine($"Our invoice {created.Bolt11}: {decoded.RouteHints.Count} route hints");
             return decoded.RouteHints.Count == 0 ? created : null;
         }, s_routeTimeout, "our invoice without route hints", ct, TimeSpan.FromSeconds(2));
-        await LndRoutingProbe.AssertNoRouteHintsAsync(carol, invoice.Bolt11, ct);
+        await LndRoutingProbe.AssertNoRouteHintsAsync(carol, invoice.Bolt11!, ct);
         await LndRoutingProbe.AssertNoChannelWithAsync(carol, node.NodeIdHex, ct);
         var before = await PublicTopology.WaitSettledAsync(node, channel.ChannelId, ct);
 
@@ -131,7 +131,7 @@ public class PublicPaymentFlowTests
         var payment = await Poll.ForAsync(async () =>
         {
             var result = await LndTestHelpers.SendPaymentV2Async(
-                             carol, LndTestHelpers.PinnedPayment(invoice.Bolt11, []), ct);
+                             carol, LndTestHelpers.PinnedPayment(invoice.Bolt11!, []), ct);
             Console.WriteLine($"carol's payment: {result.Status} {result.FailureReason}");
             return result.Status == Payment.Types.PaymentStatus.Succeeded
                    || result.FailureReason != PaymentFailureReason.FailureReasonNoRoute

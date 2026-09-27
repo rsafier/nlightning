@@ -6,6 +6,7 @@ using NLightning.Domain.Gossip.Interfaces;
 using NLightning.Domain.Node.Interfaces;
 using NLightning.Domain.Node.Models;
 using NLightning.Domain.Node.PeerStorage;
+using NLightning.Domain.Offers.Interfaces;
 using NLightning.Domain.Onchain.Interfaces;
 using NLightning.Domain.Payments.Interfaces;
 using NLightning.Domain.Persistence.Interfaces;
@@ -67,6 +68,7 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
+    public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 

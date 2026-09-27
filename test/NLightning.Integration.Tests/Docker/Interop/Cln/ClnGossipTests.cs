@@ -208,7 +208,7 @@ public sealed class ClnGossipTests : IAsyncLifetime
         Assert.False(n1.IsConnectedTo(n2.NodeId), "N1 and N2 must know each other only through CLN's gossip");
         var amountMsat = PublicTopology.UniqueAmountMsat(20_000_000);
         var invoice = await CreateHintFreeInvoiceAsync(n2, amountMsat, "goal (e) N1 -> N2", ct);
-        await AssertNoRoutesAsync(invoice.Bolt11, ct);
+        await AssertNoRoutesAsync(invoice.Bolt11!, ct);
         var clnPolicy = await GetClnPolicyAsync(topology.N2Scid, ct);
         var expectedFee = LndRoutingProbe.FeeFor(clnPolicy["base_fee_millisatoshi"]!.GetValue<ulong>(),
                                                  clnPolicy["fee_per_millionth"]!.GetValue<ulong>(), amountMsat);
@@ -216,7 +216,7 @@ public sealed class ClnGossipTests : IAsyncLifetime
         var n2Before = await PublicTopology.WaitSettledAsync(n2, topology.N2ChannelId, ct);
 
         // Act
-        var payment = await PublicTopology.PayInOnePartAsync(n1, invoice.Bolt11, ct);
+        var payment = await PublicTopology.PayInOnePartAsync(n1, invoice.Bolt11!, ct);
 
         // Assert: paid through CLN at exactly its announced fee
         Console.WriteLine($"N1's payment: {payment.Status}, fee {payment.Fee.MilliSatoshi} (CLN's policy gives "
@@ -260,14 +260,14 @@ public sealed class ClnGossipTests : IAsyncLifetime
         var n2 = topology.N2;
         var amountMsat = PublicTopology.UniqueAmountMsat(15_000_000);
         var invoice = await CreateHintFreeInvoiceAsync(n2, amountMsat, "goal (e) CLN -> N2", ct);
-        await AssertNoRoutesAsync(invoice.Bolt11, ct);
+        await AssertNoRoutesAsync(invoice.Bolt11!, ct);
         var before = await PublicTopology.WaitSettledAsync(n2, topology.N2ChannelId, ct);
 
         // Act
         JsonNode result;
         try
         {
-            result = await Cln.CallAsync("xpay", ct, ("invstring", invoice.Bolt11), ("retry_for", 30));
+            result = await Cln.CallAsync("xpay", ct, ("invstring", invoice.Bolt11!), ("retry_for", 30));
         }
         catch (ClnRpcException e)
         {
@@ -325,7 +325,7 @@ public sealed class ClnGossipTests : IAsyncLifetime
         await Poll.ForAsync(async () =>
         {
             var invoice = await node.CreateInvoiceAsync(LightningMoney.MilliSatoshis(amountMsat), description, ct);
-            var decoded = await Cln.CallAsync("decode", ct, ("string", invoice.Bolt11));
+            var decoded = await Cln.CallAsync("decode", ct, ("string", invoice.Bolt11!));
             return decoded["routes"] is null || decoded["routes"]!.AsArray().Count == 0 ? invoice : null;
         }, s_gossipTimeout, $"{node.Name}'s invoice without route hints", ct, TimeSpan.FromSeconds(2));
 

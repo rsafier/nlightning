@@ -307,7 +307,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
 
         // Act
         var inbound = ourInvoices.Select(invoice => LndTestHelpers.SendPaymentV2Async(
-                                             alice, LndTestHelpers.PinnedPayment(invoice.Bolt11, [lndChannel.ChanId]),
+                                             alice, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [lndChannel.ChanId]),
                                              ct))
                                  .ToList();
         var outbound = lndInvoices.Select(invoice => _node.PayInvoiceAsync(invoice.PaymentRequest, ct,
@@ -534,7 +534,7 @@ public class NormalOperationFlowTests : IAsyncLifetime
 
         // Act
         var payment = await LndTestHelpers.SendPaymentV2Async(
-                          alice, LndTestHelpers.PinnedPayment(invoice.Bolt11, [lndChannel.ChanId]), ct);
+                          alice, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [lndChannel.ChanId]), ct);
 
         // Assert: LND has our preimage and paid no fee over its own channel
         Console.WriteLine($"LND's payment: {payment.Status}, fee {payment.FeeMsat} msat, reason {payment.FailureReason}");

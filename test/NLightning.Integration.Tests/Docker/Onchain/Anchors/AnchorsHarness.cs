@@ -591,7 +591,7 @@ internal sealed class AnchorsHarness
         {
             // Right after an open or a settled payment LND may not route to us yet (no route); try again
             await LndTestHelpers.ResetMissionControlAsync(lnd, ct);
-            payment = await LndTestHelpers.SendPaymentV2Async(lnd, LndTestHelpers.PinnedPayment(invoice.Bolt11,
+            payment = await LndTestHelpers.SendPaymentV2Async(lnd, LndTestHelpers.PinnedPayment(invoice.Bolt11!,
                                                                   [chanId]), ct);
             if (payment.Status == Payment.Types.PaymentStatus.Succeeded)
                 break;

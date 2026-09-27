@@ -162,6 +162,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddBolt12Offers_When_Migrated_Then_Bolt11RowsKeptAndBolt12RowsRoundTrip()
+    {
+        // Arrange (NL-447, BOLT 12 plan B2: BOLT 11 rows keep Kind 0 and their string; offers, BOLT 12 invoices and
+        // payments round-trip, and the invoice counts work, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_bolt12_offers");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await Bolt12SchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                DatabaseType.PostgreSql, TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddPeerStorage_When_Migrated_Then_BlobsRoundTrip()
     {
         // Arrange (BOLT 1 option_provide_storage: a 65531-byte blob round-trips, replaced and deleted, on a real

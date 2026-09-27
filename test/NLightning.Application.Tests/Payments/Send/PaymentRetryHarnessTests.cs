@@ -74,7 +74,7 @@ public class PaymentRetryHarnessTests
                 : null;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: two HTLCs; the second carries Carol's new fee on top of the amount
         var newFee = 3_000 + s_amount.MilliSatoshi * 1_000 / 1_000_000;
@@ -101,7 +101,7 @@ public class PaymentRetryHarnessTests
             FailureMessage.FeeInsufficient(LightningMoney.MilliSatoshis(htlc.AmountMsat), field);
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11, new PayInvoiceOptions
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
         {
             Timeout = s_timeout,
             MaxFee = LightningMoney.MilliSatoshis(30_000)
@@ -133,8 +133,8 @@ public class PaymentRetryHarnessTests
         var paidInvoice = await harness.David.InvoiceService.CreateInvoiceAsync(s_amount, "raised", null, ct);
 
         // Act
-        var refused = await PayAsync(harness, refusedInvoice.Bolt11);
-        var paid = await PayAsync(harness, paidInvoice.Bolt11, new PayInvoiceOptions
+        var refused = await PayAsync(harness, refusedInvoice.Bolt11!);
+        var paid = await PayAsync(harness, paidInvoice.Bolt11!, new PayInvoiceOptions
         {
             Timeout = s_timeout,
             MaxFee = LightningMoney.MilliSatoshis(10_100_000)
@@ -165,7 +165,7 @@ public class PaymentRetryHarnessTests
         };
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
@@ -189,7 +189,7 @@ public class PaymentRetryHarnessTests
             Interlocked.Increment(ref refused) == 1 ? FailureMessage.ExpiryTooSoon() : null;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: the second onion asks David for ExpiryTooSoonExtraBlocks more blocks
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
@@ -210,7 +210,7 @@ public class PaymentRetryHarnessTests
         Assert.True(await harness.David.InvoiceService.CancelInvoiceAsync(invoice.PaymentHash, ct));
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
@@ -231,7 +231,7 @@ public class PaymentRetryHarnessTests
         harness.Carol.Switch.ForwardInterceptor = (_, _) => FailureMessage.TemporaryNodeFailure();
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert
         Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
@@ -253,7 +253,7 @@ public class PaymentRetryHarnessTests
         var before2 = harness.Bob.Channel(harness.BobCarol2).LocalBalance.MilliSatoshi;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: two HTLCs, each telling Carol total_msat = the amount, together the amount
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
@@ -280,7 +280,7 @@ public class PaymentRetryHarnessTests
         var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(700_000), []);
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11, new PayInvoiceOptions
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
         {
             Timeout = s_timeout,
             MaxParts = 1
@@ -313,7 +313,7 @@ public class PaymentRetryHarnessTests
                 : null;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: two parts, then the refused one's amount sent again at Carol's new fee (it no longer fits its channel
         // alone, so it may be split again); every HTLC but the refused one reached David, together the amount
@@ -348,7 +348,7 @@ public class PaymentRetryHarnessTests
         harness.Bob.Options.EnableHtlcs = false;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: one offer per channel, not a search down to smaller amounts or parts until the attempt budget is used
         Assert.Equal(PaymentStatus.Failed, result.Payment.Status);
@@ -366,7 +366,7 @@ public class PaymentRetryHarnessTests
         using var harness = Harness(new PaymentHarnessTopology(SecondBobCarol: true, BobCarolFundingSatoshis: 1_000_000,
                                                                BobCarolPushSatoshis: 500_000));
         var first = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(50_000), []);
-        Assert.Equal(PaymentStatus.Succeeded, (await PayAsync(harness, first.Bolt11)).Payment.Status);
+        Assert.Equal(PaymentStatus.Succeeded, (await PayAsync(harness, first.Bolt11!)).Payment.Status);
         var fuller = harness.Bob.Channel(harness.BobCarol).LocalBalance > harness.Bob.Channel(harness.BobCarol2)
                                                                                  .LocalBalance
                          ? harness.BobCarol
@@ -376,7 +376,7 @@ public class PaymentRetryHarnessTests
         var invoice = await harness.Carol.CreateMppInvoiceAsync(LightningMoney.Satoshis(700_000), []);
 
         // Act: the part on the other channel is held by Carol (the rest cannot be sent), so the call times out
-        var result = await PayAsync(harness, invoice.Bolt11, new PayInvoiceOptions
+        var result = await PayAsync(harness, invoice.Bolt11!, new PayInvoiceOptions
         {
             Timeout = TimeSpan.FromSeconds(2)
         });

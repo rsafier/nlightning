@@ -16,7 +16,8 @@ internal static class PaymentsPrintFormat
 
     internal static void WriteInvoice(TextWriter output, InvoiceInfoIpcResponse invoice)
     {
-        output.WriteLine("  Bolt11:             {0}", invoice.Bolt11);
+        output.WriteLine("  Bolt11:             {0}",
+                         string.IsNullOrEmpty(invoice.Bolt11) ? "- (BOLT 12)" : invoice.Bolt11);
         output.WriteLine("  Payment Hash:       {0}", invoice.PaymentHash);
         output.WriteLine("  Amount (msat):      {0}",
                          invoice.Amount is null ? "any" : Invariant(invoice.Amount.MilliSatoshi));
