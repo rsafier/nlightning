@@ -8,10 +8,11 @@ namespace NLightning.Domain.Exceptions;
 /// <remarks>
 /// Nothing is sent to the peer and the commitment state is unchanged. <see cref="RequirementId"/> is the <c>B2-*</c> row
 /// of the BOLT 2 plan's traceability matrix. Callers (payments, forwarding) turn it into a local failure; it must never
-/// reach the peer as an <c>error</c>.
+/// reach the peer as an <c>error</c>. It is not sealed only so that <see cref="ChannelQuiescentException"/> (a
+/// retryable refusal while the channel is quiescing or quiescent) is caught by every existing handler unchanged.
 /// </remarks>
 [ExcludeFromCodeCoverage]
-public sealed class CommitmentRefusedException : InvalidOperationException
+public class CommitmentRefusedException : InvalidOperationException
 {
     public string RequirementId { get; }
 
