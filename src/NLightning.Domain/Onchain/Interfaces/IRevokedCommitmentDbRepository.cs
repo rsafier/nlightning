@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Onchain.Interfaces;
 
+using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Models;
 
@@ -14,9 +15,17 @@ public interface IRevokedCommitmentDbRepository
     /// <summary>The revoked commitment <paramref name="number"/> of the channel, or null when the log has no entry for
     /// it (it had no HTLC, it is not revoked, or it was revoked before the log existed: see
     /// <see cref="GetLogStartAsync"/>).</summary>
+    /// <remarks>Since splicing a number can be logged once per funding (SP-I5): this returns the current funding's
+    /// entry, else the one of the funding created first. A caller that knows which funding the revoked commitment spends
+    /// uses <see cref="GetAsync(ChannelId, TxId, ulong)"/>.</remarks>
     Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, ulong number);
 
-    /// <summary>Every entry of the channel, by number.</summary>
+    /// <summary>The revoked commitment <paramref name="number"/> logged for the funding <paramref name="fundingTxId"/>
+    /// (the outpoint the breach spends), or null when that funding has no entry for it.</summary>
+    Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, TxId fundingTxId, ulong number);
+
+    /// <summary>Every entry of the channel, by number (then funding txid): a number logged on several fundings appears
+    /// once per funding.</summary>
     Task<IReadOnlyList<RevokedCommitmentModel>> GetByChannelIdAsync(ChannelId channelId);
 
     /// <summary>

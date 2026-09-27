@@ -128,6 +128,15 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // ---- Hand-written guard: refuse while a channel runs on a locked splice. Its rotated funding keys live
+            // only in the ChannelFundings row (the key sets keep the initial keys), so a build without that table would
+            // rebuild the funding script and sign with the wrong key ----
+            migrationBuilder.Sql("DROP TABLE IF EXISTS temp.\"AddSpliceFundingsDownGuard\";");
+            migrationBuilder.Sql("CREATE TEMP TABLE \"AddSpliceFundingsDownGuard\" (\"LockedSplices\" INTEGER NOT NULL CONSTRAINT \"AddSpliceFundings_Down_refused_a_channel_runs_on_a_locked_splice_whose_funding_keys_only_ChannelFundings_holds\" CHECK (\"LockedSplices\" = 0));");
+            migrationBuilder.Sql("INSERT INTO \"AddSpliceFundingsDownGuard\" (\"LockedSplices\") SELECT COUNT(*) FROM \"ChannelFundings\" WHERE \"Status\" = 1 AND \"Kind\" <> 0;");
+            migrationBuilder.Sql("DROP TABLE temp.\"AddSpliceFundingsDownGuard\";");
+            // ---- End of the hand-written guard ----
+
             // ---- Hand-written data step: before the old keys come back, keep only the rows of the current funding ----
             migrationBuilder.Sql("DELETE FROM \"Commitments\" WHERE \"FundingTxId\" <> (SELECT c.\"FundingTxId\" FROM \"Channels\" AS c WHERE c.\"ChannelId\" = \"Commitments\".\"ChannelId\");");
             migrationBuilder.Sql("DELETE FROM \"RevokedCommitments\" WHERE \"FundingTxId\" <> (SELECT c.\"FundingTxId\" FROM \"Channels\" AS c WHERE c.\"ChannelId\" = \"RevokedCommitments\".\"ChannelId\");");

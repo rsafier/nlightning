@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Microsoft.Extensions.Logging.Abstractions;
 using NBitcoin;
 using NBitcoin.Crypto;
@@ -35,6 +36,9 @@ public class LocalLightningSignerSplicingTests
         new(Convert.FromHexString("1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13"));
 
     private static readonly ChannelId s_channelId = ChannelId.Zero;
+    private static readonly byte[] s_nodePrivateKey =
+        Convert.FromHexString("1111111111111111111111111111111111111111111111111111111111111111");
+    private static readonly Key s_peerNodeKey = new();
     private static readonly byte[] s_seed = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
     private const ulong CurrentCapacitySat = 10_000_000;
     private const ulong SpliceCapacitySat = 12_000_000;
@@ -528,6 +532,50 @@ public class LocalLightningSignerSplicingTests
     }
 
     [Fact]
+    public void Given_ASpliceLockedWithItsShortChannelId_When_SigningItsAnnouncement_Then_ItIsSignedWithTheRotatedKey()
+    {
+        // Arrange (regression: the pending funding was registered before it confirmed, so the lock left the channel
+        // without a short channel id and its announcement was refused)
+        var signer = new SplicingSigner();
+        signer.RegisterChannel(s_channelId, SigningInfo() with { AnnounceChannel = true });
+        var (_, funding) = BuildSplice(signer);
+        signer.RegisterFunding(s_channelId, funding);
+        var scid = new ShortChannelId(900_000, 4, funding.OutputIndex);
+        var announcement = UnsignedAnnouncement(funding, scid);
+
+        // Act
+        signer.LockFunding(s_channelId, funding.FundingTxId, scid);
+        var signatures = signer.SignChannelAnnouncement(s_channelId, announcement, scid);
+
+        // Assert
+        var hash = new uint256(SHA256.HashData(SHA256.HashData(announcement)));
+        Assert.True(ExpectedRotatedKey(1).Verify(hash, ToEcdsa(signatures.BitcoinSignature)));
+    }
+
+    [Fact]
+    public void Given_APendingSpliceRegisteredAgainOnceConfirmed_When_Locked_Then_ItsAnnouncementIsSigned()
+    {
+        // Arrange
+        var signer = new SplicingSigner();
+        signer.RegisterChannel(s_channelId, SigningInfo() with { AnnounceChannel = true });
+        var (_, funding) = BuildSplice(signer);
+        var scid = new ShortChannelId(900_001, 2, funding.OutputIndex);
+        signer.RegisterFunding(s_channelId, funding);
+        Assert.Throws<SignerException>(() => signer.RegisterFunding(
+                                           s_channelId, funding with { LocalFundingKeyIndex = 2 }));
+
+        // Act
+        signer.RegisterFunding(s_channelId, funding with { ShortChannelId = scid, ConfirmedHeight = 900_001 });
+        signer.LockFunding(s_channelId, funding.FundingTxId);
+        var announcement = UnsignedAnnouncement(funding, scid);
+        var signatures = signer.SignChannelAnnouncement(s_channelId, announcement, scid);
+
+        // Assert
+        var hash = new uint256(SHA256.HashData(SHA256.HashData(announcement)));
+        Assert.True(ExpectedRotatedKey(1).Verify(hash, ToEcdsa(signatures.BitcoinSignature)));
+    }
+
+    [Fact]
     public void Given_LockedSplice_When_RegisteredAgainFromTheChannelModel_Then_TheLockedFundingStays()
     {
         // Arrange: the model still names the original funding keys but the locked txid (predating the lock's keys)
@@ -662,9 +710,39 @@ public class LocalLightningSignerSplicingTests
                 Bolt3AppendixCVectors.NodeBSignature0.ToCompact());
     }
 
+    /// <summary>
+    /// The unsigned <c>channel_announcement</c> of <paramref name="funding"/> at <paramref name="scid"/> on the signer's
+    /// default chain (mainnet), between our node (<see cref="s_nodePrivateKey"/>) and a peer.
+    /// </summary>
+    private static byte[] UnsignedAnnouncement(ChannelFunding funding, ShortChannelId scid)
+    {
+        using var nodeKey = new Key(s_nodePrivateKey);
+        var us = nodeKey.PubKey.ToBytes();
+        var peer = s_peerNodeKey.PubKey.ToBytes();
+        var weAreNode1 = ((ReadOnlySpan<byte>)us).SequenceCompareTo(peer) < 0;
+        byte[] ourBitcoinKey = funding.LocalFundingPubKey;
+        byte[] peerBitcoinKey = funding.RemoteFundingPubKey;
+        return
+        [
+            0x00, 0x00,
+            .. (byte[])new NodeOptions().BitcoinNetwork.ChainHash,
+            .. (byte[])scid,
+            .. weAreNode1 ? us : peer,
+            .. weAreNode1 ? peer : us,
+            .. weAreNode1 ? ourBitcoinKey : peerBitcoinKey,
+            .. weAreNode1 ? peerBitcoinKey : ourBitcoinKey
+        ];
+    }
+
     private static ISecureKeyManager KeyManager(bool withChannelKey)
     {
         var keyManager = new Mock<ISecureKeyManager>();
+        keyManager.Setup(k => k.GetNodeKeyPair())
+                  .Returns(() =>
+                  {
+                      using var nodeKey = new Key(s_nodePrivateKey);
+                      return new CryptoKeyPair(s_nodePrivateKey.ToArray(), nodeKey.PubKey.ToBytes());
+                  });
         if (withChannelKey)
             keyManager.Setup(k => k.GetChannelKeyAtIndex(0)).Returns(() => ExtKey.CreateFromSeed(s_seed).ToBytes());
         return keyManager.Object;

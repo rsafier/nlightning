@@ -421,6 +421,14 @@ public interface ILightningSigner
     void LockFunding(ChannelId channelId, TxId fundingTxId) =>
         throw new NotImplementedException("Lane SP1-C");
 
+    /// <summary>
+    /// <see cref="LockFunding(ChannelId, TxId)"/> with the locked splice's confirmed short channel id: the pending
+    /// funding was usually registered before it confirmed, so without it the channel's signing data has no short channel
+    /// id until the channel is registered again, and <see cref="SignChannelAnnouncement"/> is refused meanwhile.
+    /// </summary>
+    void LockFunding(ChannelId channelId, TxId fundingTxId, ShortChannelId? shortChannelId) =>
+        throw new NotImplementedException("Lane SP1-C");
+
     #endregion
 
     /// <summary>

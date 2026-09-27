@@ -70,6 +70,21 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresChannelsFromBeforeAddSpliceFundings_When_Migrated_Then_RowsMoveUnderTheirFundingTxIdAndDownRefusesALockedSplice()
+    {
+        // Arrange (splicing plan SP1-C-T4: the provider's own hand-written data step and Down guard run on a real
+        // server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_splice_fundings");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await SpliceFundingsSchemaRoundTrip.AssertMigrationAsync(() => new NLightningDbContext(options,
+                                                                                               databaseTypeProvider),
+                                                                 DatabaseType.PostgreSql,
+                                                                 TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresChannelsFromBeforeAddChainWatchAndBroadcasts_When_Migrated_Then_FundingOutputsAreWatchedAndTheNewTablesRoundTrip()
     {
         // Arrange (BOLT 5 plan O0-T4: the funding-outpoint backfill runs on real rows; watched outpoints, broadcasts

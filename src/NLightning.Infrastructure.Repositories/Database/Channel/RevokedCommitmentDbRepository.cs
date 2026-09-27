@@ -27,7 +27,9 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
 
     /// <inheritdoc />
     /// <remarks>Since migration <c>AddSpliceFundings</c> a number may be logged once per funding (SP-I5): this returns
-    /// the row of the channel's current funding when there is one, else the one of the funding created first.</remarks>
+    /// the row of the channel's current funding when there is one, else the one of the funding created first (lowest
+    /// <c>ChannelFundings.Sequence</c>; rows of a funding without a <c>ChannelFundings</c> row come last, by txid). Use
+    /// <see cref="GetAsync(ChannelId, TxId, ulong)"/> when the funding the commitment spends is known.</remarks>
     public async Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, ulong number)
     {
         var channel = await _context.Channels.FindAsync(channelId);
@@ -38,9 +40,30 @@ public class RevokedCommitmentDbRepository : BaseDbRepository<RevokedCommitmentE
                 return MapEntityToDomain(current);
         }
 
-        var others = await DbSet.Where(r => r.ChannelId == channelId && r.Number == number).ToListAsync();
-        var other = others.FirstOrDefault(r => _context.Entry(r).State != EntityState.Deleted);
-        return other is null ? null : MapEntityToDomain(other);
+        var others = (await DbSet.Where(r => r.ChannelId == channelId && r.Number == number).ToListAsync())
+                     .Where(r => _context.Entry(r).State != EntityState.Deleted)
+                     .ToList();
+        if (others.Count <= 1)
+            return others.Count == 0 ? null : MapEntityToDomain(others[0]);
+
+        var sequences = await _context.ChannelFundings.AsNoTracking()
+                                      .Where(f => f.ChannelId == channelId)
+                                      .Select(f => new { f.FundingTxId, f.Sequence })
+                                      .ToListAsync();
+        var first = others.OrderBy(r => sequences.FirstOrDefault(f => f.FundingTxId == r.FundingTxId)?.Sequence
+                                     ?? int.MaxValue)
+                          .ThenBy(r => r.FundingTxId.ToString(), StringComparer.Ordinal)
+                          .First();
+        return MapEntityToDomain(first);
+    }
+
+    /// <inheritdoc />
+    public async Task<RevokedCommitmentModel?> GetAsync(ChannelId channelId, TxId fundingTxId, ulong number)
+    {
+        var entity = await DbSet.FindAsync(channelId, number, fundingTxId);
+        return entity is null || _context.Entry(entity).State == EntityState.Deleted
+                   ? null
+                   : MapEntityToDomain(entity);
     }
 
     /// <inheritdoc />

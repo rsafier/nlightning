@@ -128,6 +128,12 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // ---- Hand-written guard: refuse while a channel runs on a locked splice. Its rotated funding keys live
+            // only in the ChannelFundings row (the key sets keep the initial keys), so a build without that table would
+            // rebuild the funding script and sign with the wrong key ----
+            migrationBuilder.Sql("DO $$ BEGIN IF EXISTS (SELECT 1 FROM channel_fundings WHERE status = 1 AND kind <> 0) THEN RAISE EXCEPTION 'AddSpliceFundings Down refused: a channel runs on a locked splice whose funding keys only channel_fundings holds'; END IF; END $$;");
+            // ---- End of the hand-written guard ----
+
             // ---- Hand-written data step: before the old keys come back, keep only the rows of the current funding ----
             migrationBuilder.Sql("DELETE FROM commitments AS m USING channels AS c WHERE c.channel_id = m.channel_id AND m.funding_tx_id <> c.funding_tx_id;");
             migrationBuilder.Sql("DELETE FROM revoked_commitments AS m USING channels AS c WHERE c.channel_id = m.channel_id AND m.funding_tx_id <> c.funding_tx_id;");
