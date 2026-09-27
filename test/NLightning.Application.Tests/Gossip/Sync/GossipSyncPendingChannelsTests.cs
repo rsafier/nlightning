@@ -200,6 +200,69 @@ public class GossipSyncPendingChannelsTests : IDisposable
         Assert.Equal([ids[0]], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
     }
 
+    [Fact]
+    public async Task Given_APeerAnsweringWithoutFullInformation_When_AnotherPeerSyncs_Then_ItAsksForThoseChannels()
+    {
+        // Arrange: A is asked for ids[0..2], answers the end with full_information = 0 and sends no announcement
+        var manager = CreateManager(o =>
+        {
+            o.MaxScidsPerQuery = 2;
+            o.SyncPeers = 2;
+        });
+        var ids = Scids(4);
+        var peerA = new FakeGossipPeer(1);
+        var peerB = new FakeGossipPeer(2);
+        manager.OnPeerInitialized(peerA);
+        manager.OnPeerInitialized(peerB);
+        await peerA.NextAsync<QueryChannelRangeMessage>();
+        await peerB.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peerA, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        Assert.Equal(ids[..2], Ids(await peerA.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peerA, End(fullInformation: false));
+        Assert.Equal(ids[2..], Ids(await peerA.NextAsync<QueryShortChannelIdsMessage>()));
+
+        // Act: B diffs during the same sync
+        manager.HandleMessage(peerB, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        var b1 = Ids(await peerB.NextAsync<QueryShortChannelIdsMessage>());
+
+        // Assert: A's unanswered channels are free again (NL-415), its outstanding batch is still claimed
+        Assert.Equal(ids[..2], b1);
+        manager.HandleMessage(peerB, End());
+        await peerB.NextAsync<GossipTimestampFilterMessage>();
+    }
+
+    [Fact]
+    public async Task Given_AnAnsweredQueryWhoseAnnouncementsNeverCame_When_TheClaimsEnd_Then_TheyAreAskedForOnceMore()
+    {
+        // Arrange: A answers the query for 3 channels with full_information = 1 but delivers only ids[1]
+        var manager = CreateManager(o => o.MaxScidsPerQuery = 8);
+        var ids = Scids(3);
+        var peer = new FakeGossipPeer(1);
+        manager.OnPeerInitialized(peer);
+        await peer.NextAsync<QueryChannelRangeMessage>();
+        manager.HandleMessage(peer, RangeReplyCollectorTests.Reply(0, Tip + 1, true, ids));
+        Assert.Equal(ids, Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        _graph.AddUnsignedChannel(ids[1]);
+        manager.HandleMessage(peer, End());
+        await peer.NextAsync<GossipTimestampFilterMessage>();
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+
+        // Act / Assert: nothing while the claims hold
+        Assert.Equal(0, manager.RetryMissedShortChannelIds());
+
+        // The claims end: the undelivered channels go to the missed-channel retry (NL-415)
+        _graph.Kit.Clock.Now += TimeSpan.FromMinutes(11);
+        Assert.Equal(2, manager.RetryMissedShortChannelIds());
+        Assert.Equal([ids[0], ids[2]], Ids(await peer.NextAsync<QueryShortChannelIdsMessage>()));
+        manager.HandleMessage(peer, End());
+        await manager.WhenIdleAsync(peer, TestContext.Current.CancellationToken);
+
+        // Once only: the retry's own claims are not recycled
+        _graph.Kit.Clock.Now += TimeSpan.FromMinutes(11);
+        Assert.Equal(0, manager.RetryMissedShortChannelIds());
+        Assert.Equal(0, manager.QueriedChannels.Count);
+    }
+
     public void Dispose()
     {
         foreach (var manager in _managers)
@@ -228,7 +291,8 @@ public class GossipSyncPendingChannelsTests : IDisposable
         return manager;
     }
 
-    private static ReplyShortChannelIdsEndMessage End() => new(new ReplyShortChannelIdsEndPayload(s_chain, true));
+    private static ReplyShortChannelIdsEndMessage End(bool fullInformation = true) =>
+        new(new ReplyShortChannelIdsEndPayload(s_chain, fullInformation));
 
     private static ShortChannelId[] Ids(QueryShortChannelIdsMessage query) =>
         GossipQueryCodec.DecodeShortChannelIds(query.Payload.EncodedShortIds.Span, "test");

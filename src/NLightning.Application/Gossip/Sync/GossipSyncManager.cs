@@ -309,8 +309,17 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 foreach (var shortChannelId in _takeMissedShortChannelIds())
                     _missedBacklog.Add(shortChannelId);
 
+            // NL-415: a batch's channel whose claim ended without its announcement reaching the graph (the peer
+            // answered the query without sending it) is asked from another peer once
+            var recycled = new List<ShortChannelId>();
+            _queriedChannels.Prune(recycled);
+            foreach (var shortChannelId in recycled)
+            {
+                if (!_graphStore.TryGetChannel(shortChannelId, out _))
+                    _missedBacklog.Add(shortChannelId);
+            }
+
             _missedBacklog.RemoveWhere(IsCompleteInGraph);
-            _queriedChannels.Prune();
             if (_missedBacklog.Count == 0)
                 return 0;
 
@@ -554,8 +563,8 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                             await RunRangeSyncAsync(session, cancellationToken);
                             break;
                         case ScidQueryWork scidQuery:
-                            var answered = await RunScidQueryAsync(session, scidQuery.Entries, cancellationToken);
-                            scidQuery.Completion?.TrySetResult(answered);
+                            var outcome = await RunScidQueryAsync(session, scidQuery.Entries, cancellationToken);
+                            scidQuery.Completion?.TrySetResult(outcome != ScidQueryOutcome.Failed);
                             break;
                     }
                 }
@@ -684,7 +693,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     // An unknown channel is claimed for this peer, so another session's re-diff skips it
                     if (!_graphStore.TryGetChannel(shortChannelId, out _))
                     {
-                        if (!_queriedChannels.TryClaim(shortChannelId, session))
+                        if (!_queriedChannels.TryClaim(shortChannelId, session, recycle: true))
                             continue;
                         claimed.Add(shortChannelId);
                     }
@@ -696,21 +705,32 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                     break;
 
                 asked += batch.Count;
-                var answered = false;
+                var outcome = ScidQueryOutcome.Failed;
                 try
                 {
-                    answered = await RunScidQueryAsync(session, batch, cancellationToken);
+                    outcome = await RunScidQueryAsync(session, batch, cancellationToken);
                 }
                 finally
                 {
-                    // Answered: the claims count from now; not answered (or failed): another peer may be asked at once
-                    if (answered)
-                        _queriedChannels.Renew(claimed, session);
-                    else
-                        _queriedChannels.Release(claimed, session);
+                    // Answered: the claims count from now (and a channel whose announcement never came is recycled into
+                    // the missed-channel retry when its claim ends); answered without full information: ended now, so
+                    // other sessions ask for them and the missed-channel retry asks again for what did not arrive;
+                    // not answered (or failed): another peer may be asked at once
+                    switch (outcome)
+                    {
+                        case ScidQueryOutcome.Answered:
+                            _queriedChannels.Renew(claimed, session);
+                            break;
+                        case ScidQueryOutcome.AnsweredWithoutFullInformation:
+                            _queriedChannels.Expire(claimed, session);
+                            break;
+                        default:
+                            _queriedChannels.Release(claimed, session);
+                            break;
+                    }
                 }
 
-                if (!answered)
+                if (outcome == ScidQueryOutcome.Failed)
                     return;
             }
 
@@ -871,15 +891,32 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
         return (ulong)newest + (ulong)_options.SkipChannelsStaleFor.TotalSeconds < NowSeconds();
     }
 
-    private async Task<bool> RunScidQueryAsync(PeerSession session, IReadOnlyList<(ShortChannelId Id, ulong? Flag)> entries,
-                                               CancellationToken cancellationToken)
+    /// <summary>How a <c>query_short_channel_ids</c> ended.</summary>
+    private enum ScidQueryOutcome
+    {
+        /// <summary>Not answered, or the connection or the wait ended.</summary>
+        Failed,
+
+        /// <summary>Answered with <c>full_information</c> = 1 (or nothing needed asking).</summary>
+        Answered,
+
+        /// <summary>
+        /// Answered with <c>full_information</c> = 0: BOLT 7, the peer "does not maintain up-to-date channel
+        /// information", so some announcements may be missing.
+        /// </summary>
+        AnsweredWithoutFullInformation
+    }
+
+    private async Task<ScidQueryOutcome> RunScidQueryAsync(PeerSession session,
+                                                           IReadOnlyList<(ShortChannelId Id, ulong? Flag)> entries,
+                                                           CancellationToken cancellationToken)
     {
         // B7-Q-01: SHOULD NOT query spent channels
         var ids = entries.Where(e => !_graphStore.TryGetChannel(e.Id, out var c) || c.SpentAtHeight is null)
                          .OrderBy(e => QueryResponder.ToUInt64(e.Id))
                          .ToList();
         if (ids.Count == 0)
-            return true;
+            return ScidQueryOutcome.Answered;
 
         BaseTlv? flags = null;
         if (session.SupportsQueriesEx && ids.All(e => e.Flag is not null))
@@ -904,7 +941,7 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
                 session.PoisonQuerySlot();
                 _logger.LogInformation("Peer {Peer} did not answer our query_short_channel_ids in {Timeout}",
                                        session.Peer.PeerPubKey, _options.SyncReplyTimeout);
-                return false;
+                return ScidQueryOutcome.Failed;
             }
 
             var end = (ReplyShortChannelIdsEndMessage)reply;
@@ -914,7 +951,9 @@ public sealed class GossipSyncManager : IGossipSyncManager, IDisposable
 
             _logger.LogDebug("Peer {Peer} answered our query for {Count} channels (full_information={Full})",
                              session.Peer.PeerPubKey, ids.Count, end.Payload.FullInformation);
-            return true;
+            return end.Payload.FullInformation
+                       ? ScidQueryOutcome.Answered
+                       : ScidQueryOutcome.AnsweredWithoutFullInformation;
         }
         finally
         {

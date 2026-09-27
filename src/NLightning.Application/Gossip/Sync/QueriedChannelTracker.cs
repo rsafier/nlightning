@@ -16,7 +16,10 @@ using Domain.Channels.ValueObjects;
 /// answer, not from the wait for ingress room before the query), dropped when the query failed
 /// (<see cref="Release"/>: the peer may never answer it, so another peer may be asked at once) and ends by itself after
 /// the time to live. What the ingress drops or gives up on comes back through the missed-channel retry, which asks
-/// again regardless of claims. Thread-safe.
+/// again regardless of claims. A peer may also answer with <c>reply_short_channel_ids_end</c> without sending some of
+/// the announcements (<c>full_information</c> = 0, a pruned or lazy peer): a claim taken with <c>recycle</c> hands its
+/// channel to <see cref="Prune"/>'s caller when it ends, so the missed-channel retry asks another peer once
+/// (<see cref="Expire"/> ends a batch's claims at once when the peer said it lacks full information). Thread-safe.
 /// </remarks>
 internal sealed class QueriedChannelTracker
 {
@@ -47,13 +50,19 @@ internal sealed class QueriedChannelTracker
     /// Claims the channel for <paramref name="owner"/>: true when it was free, ended, or already the owner's; false
     /// while another owner holds it. Always true (nothing recorded) when claims are off or the tracker is full.
     /// </summary>
-    public bool TryClaim(ShortChannelId shortChannelId, object owner)
+    /// <param name="shortChannelId">The channel.</param>
+    /// <param name="owner">The sync session.</param>
+    /// <param name="recycle">
+    /// Hand the channel to <see cref="Prune"/>'s caller when the claim ends (a range sync batch; the missed-channel
+    /// retry's own claims are not recycled, so a channel no peer delivers is asked for again once, not forever).
+    /// </param>
+    public bool TryClaim(ShortChannelId shortChannelId, object owner, bool recycle = false)
     {
         if (_timeToLive <= TimeSpan.Zero)
             return true;
 
         var now = Now;
-        var mine = new Claim(owner, now + _timeToLive);
+        var mine = new Claim(owner, now + _timeToLive, recycle);
         while (true)
         {
             if (_claims.TryGetValue(shortChannelId, out var existing))
@@ -78,11 +87,26 @@ internal sealed class QueriedChannelTracker
         if (_timeToLive <= TimeSpan.Zero)
             return;
 
-        var renewed = new Claim(owner, Now + _timeToLive);
+        var expiresAt = Now + _timeToLive;
         foreach (var shortChannelId in shortChannelIds)
         {
             if (_claims.TryGetValue(shortChannelId, out var existing) && ReferenceEquals(existing.Owner, owner))
-                _claims.TryUpdate(shortChannelId, renewed, existing);
+                _claims.TryUpdate(shortChannelId, existing with { ExpiresAt = expiresAt }, existing);
+        }
+    }
+
+    /// <summary>
+    /// Ends <paramref name="owner"/>'s claims on these channels now but keeps them for <see cref="Prune"/>, which
+    /// recycles the recyclable ones (the peer answered without full information: another peer may be asked at once,
+    /// and what it did not send comes back through the missed-channel retry).
+    /// </summary>
+    public void Expire(IEnumerable<ShortChannelId> shortChannelIds, object owner)
+    {
+        var now = Now;
+        foreach (var shortChannelId in shortChannelIds)
+        {
+            if (_claims.TryGetValue(shortChannelId, out var existing) && ReferenceEquals(existing.Owner, owner))
+                _claims.TryUpdate(shortChannelId, existing with { ExpiresAt = now }, existing);
         }
     }
 
@@ -96,16 +120,23 @@ internal sealed class QueriedChannelTracker
         }
     }
 
-    /// <summary>Drops the ended claims; returns how many.</summary>
-    public int Prune()
+    /// <summary>
+    /// Drops the ended claims; returns how many. The channels of the ended recyclable claims are added to
+    /// <paramref name="recycled"/> when given (the caller asks again for those still not in the graph).
+    /// </summary>
+    public int Prune(ICollection<ShortChannelId>? recycled = null)
     {
         var now = Now;
         var pruned = 0;
         foreach (var (shortChannelId, claim) in _claims)
         {
-            if (claim.ExpiresAt <= now
-             && _claims.TryRemove(new KeyValuePair<ShortChannelId, Claim>(shortChannelId, claim)))
-                pruned++;
+            if (claim.ExpiresAt > now
+             || !_claims.TryRemove(new KeyValuePair<ShortChannelId, Claim>(shortChannelId, claim)))
+                continue;
+
+            pruned++;
+            if (claim.Recycle)
+                recycled?.Add(shortChannelId);
         }
 
         return pruned;
@@ -113,5 +144,5 @@ internal sealed class QueriedChannelTracker
 
     private DateTimeOffset Now => _timeProvider.GetUtcNow();
 
-    private sealed record Claim(object Owner, DateTimeOffset ExpiresAt);
+    private sealed record Claim(object Owner, DateTimeOffset ExpiresAt, bool Recycle = false);
 }
