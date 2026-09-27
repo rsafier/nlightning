@@ -1,0 +1,77 @@
+namespace NLightning.Application.InteractiveTx.Interfaces;
+
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Models;
+using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
+using Models;
+
+/// <summary>
+/// The protocol an interactive-tx negotiation serves (splicing plan §3.9): <c>ISpliceNegotiationHost</c> (wave SP1),
+/// <c>IDualFundOpenHost</c> (wave DF) or a test host. The <see cref="IInteractiveTxDriver"/> calls it under the
+/// channel's lock for everything that is not the negotiation itself: the shared funding spec, the commitment step,
+/// the shared input's signature, the completion and the abort.
+/// </summary>
+/// <remarks>
+/// Every callback runs under the channel's lock (never take it again, never await a send). Writes are staged on the
+/// given <see cref="IUnitOfWork"/>; the driver commits them in the same save as the negotiation's row, before the
+/// messages go out (persist before send).
+/// </remarks>
+public interface IInteractiveTxHost
+{
+    /// <summary>The protocol served (stored with the negotiation).</summary>
+    InteractiveTxPurpose Purpose { get; }
+
+    /// <summary>
+    /// The shared input and output of the negotiation described by <paramref name="terms"/> (at its feerate), or null
+    /// when there is none. Called once per attempt (a new attempt of an RBF may change the shares).
+    /// </summary>
+    Task<SharedFundingSpec?> GetSharedFundingAsync(InteractiveTxTerms terms, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The commitment step: the negotiation is complete and the transaction constructed
+    /// (<see cref="InteractiveTxSessionModel.ConstructedTx"/>). Stage whatever the new funding needs and return our
+    /// <c>commitment_signed</c> for it (BOLT 2: sent after the second <c>tx_complete</c>). The driver stores
+    /// <paramref name="session"/> in the same save, then sends. Throwing aborts the negotiation with <c>tx_abort</c>.
+    /// </summary>
+    Task<IReadOnlyList<IChannelMessage>> CreateCommitmentSignedAsync(InteractiveTxSessionModel session,
+                                                                     IUnitOfWork unitOfWork,
+                                                                     CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Our signature of the shared input for <c>shared_input_signature</c> (a splice), or null when the transaction
+    /// spends no shared input.
+    /// </summary>
+    Task<CompactSignature?> SignSharedInputAsync(ConstructedInteractiveTx transaction,
+                                                 CancellationToken cancellationToken);
+
+    /// <summary>The shared input's full witness from both signatures (the 2-of-2 funding script spend).</summary>
+    Witness BuildSharedInputWitness(ConstructedInteractiveTx transaction, CompactSignature localSignature,
+                                    CompactSignature remoteSignature);
+
+    /// <summary>
+    /// Both <c>tx_signatures</c> were exchanged: the transaction is fully signed. Stage its broadcast and the protocol's
+    /// next state; the returned messages are sent after the save.
+    /// </summary>
+    Task<IReadOnlyList<IChannelMessage>> OnCompletedAsync(InteractiveTxCompletion completion, IUnitOfWork unitOfWork,
+                                                          CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The negotiation ended with <c>tx_abort</c> (sent or received) or a disconnection before our
+    /// <c>tx_signatures</c>: forget it. Earlier completed attempts (RBF) stay valid.
+    /// </summary>
+    Task OnAbortedAsync(ChannelId channelId, string reason, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The peer sent <c>tx_init_rbf</c> for the completed attempt(s) of this host, at a feerate that satisfies
+    /// IT-RBF-01. Accept with the new attempt's terms, or reject.
+    /// </summary>
+    Task<InteractiveTxRbfDecision> OnRbfRequestedAsync(TxInitRbfMessage message,
+                                                       IReadOnlyList<ConstructedInteractiveTx> previousAttempts,
+                                                       CancellationToken cancellationToken);
+}

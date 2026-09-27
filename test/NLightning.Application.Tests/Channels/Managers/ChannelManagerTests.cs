@@ -302,13 +302,13 @@ public class ChannelManagerTests
     }
 
     [Theory]
-    [InlineData(MessageTypes.TxAddInput)]
-    [InlineData(MessageTypes.TxComplete)]
+    [InlineData(MessageTypes.OpenChannel2)]
+    [InlineData(MessageTypes.AcceptChannel2)]
     public async Task Given_NotImplementedChannelMessage_When_Handled_Then_ChannelScopedWarningIsRaised(
         MessageTypes messageType)
     {
-        // Arrange (interim for the dual-funding messages: never fail a known channel, or all channels, for these;
-        // shutdown and closing_signed have handlers since N10)
+        // Arrange (interim for the dual-funding opens: never fail a known channel, or all channels, for these;
+        // shutdown and closing_signed have handlers since N10, the interactive-tx messages since IT4-T2)
         var channelManager = CreateChannelManager();
         var channelId = CreateChannelId(0x44);
         MarkChannelKnownInMemory(channelId);
@@ -359,7 +359,7 @@ public class ChannelManagerTests
         var channel = CreateChannel(ChannelState.Stale, false, 0x48, 100);
         _channels.Add(channel);
         var channelManager = CreateChannelManager();
-        var messageMock = CreateChannelMessageMock(MessageTypes.TxAddInput, channel.ChannelId);
+        var messageMock = CreateChannelMessageMock(MessageTypes.OpenChannel2, channel.ChannelId);
 
         // Act
         var exception = await Assert.ThrowsAsync<ChannelWarningException>(
@@ -380,7 +380,7 @@ public class ChannelManagerTests
            .Setup(r => r.TryGetTemporaryChannelState(s_emptyPubKey, temporaryChannelId,
                                                      out It.Ref<ChannelState>.IsAny))
            .Returns(true);
-        var messageMock = CreateChannelMessageMock(MessageTypes.TxAddInput, temporaryChannelId);
+        var messageMock = CreateChannelMessageMock(MessageTypes.OpenChannel2, temporaryChannelId);
 
         // Act
         var exception = await Assert.ThrowsAsync<ChannelWarningException>(
