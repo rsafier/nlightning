@@ -1308,10 +1308,62 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return await GetChannelMessageHandler<StfuMessage>(scope)
                           .HandleAsync(Cast<StfuMessage>(message), currentState, negotiatedFeatures, peerPubKey);
 
+            // BOLT 2 interactive transaction construction (splicing plan IT4-T2): the driver answers tx_abort when no
+            // negotiation is in progress, and a failed negotiation ends with tx_abort, never with a channel failure
+            case MessageTypes.TxAddInput:
+                return await DispatchInteractiveTxMessageAsync<TxAddInputMessage>(scope, message, channelId,
+                                                                                  currentState, negotiatedFeatures,
+                                                                                  peerPubKey);
+            case MessageTypes.TxAddOutput:
+                return await DispatchInteractiveTxMessageAsync<TxAddOutputMessage>(scope, message, channelId,
+                                                                                   currentState, negotiatedFeatures,
+                                                                                   peerPubKey);
+            case MessageTypes.TxRemoveInput:
+                return await DispatchInteractiveTxMessageAsync<TxRemoveInputMessage>(scope, message, channelId,
+                                                                                     currentState, negotiatedFeatures,
+                                                                                     peerPubKey);
+            case MessageTypes.TxRemoveOutput:
+                return await DispatchInteractiveTxMessageAsync<TxRemoveOutputMessage>(scope, message, channelId,
+                                                                                      currentState, negotiatedFeatures,
+                                                                                      peerPubKey);
+            case MessageTypes.TxComplete:
+                return await DispatchInteractiveTxMessageAsync<TxCompleteMessage>(scope, message, channelId,
+                                                                                  currentState, negotiatedFeatures,
+                                                                                  peerPubKey);
+            case MessageTypes.TxSignatures:
+                return await DispatchInteractiveTxMessageAsync<TxSignaturesMessage>(scope, message, channelId,
+                                                                                    currentState, negotiatedFeatures,
+                                                                                    peerPubKey);
+            case MessageTypes.TxInitRbf:
+                return await DispatchInteractiveTxMessageAsync<TxInitRbfMessage>(scope, message, channelId,
+                                                                                 currentState, negotiatedFeatures,
+                                                                                 peerPubKey);
+            case MessageTypes.TxAckRbf:
+                return await DispatchInteractiveTxMessageAsync<TxAckRbfMessage>(scope, message, channelId,
+                                                                                currentState, negotiatedFeatures,
+                                                                                peerPubKey);
+            case MessageTypes.TxAbort:
+                return await DispatchInteractiveTxMessageAsync<TxAbortMessage>(scope, message, channelId,
+                                                                               currentState, negotiatedFeatures,
+                                                                               peerPubKey);
+
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
                 throw CreateNotImplementedWarning(message.Type, channelId);
         }
+    }
+
+    /// <summary>
+    /// An interactive-tx message (types 66-74) of a known channel goes to its handler under the channel's lock; an
+    /// unknown channel gets an `error` like every other channel message (BOLT 1).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> DispatchInteractiveTxMessageAsync<T>(
+        IServiceScope scope, IChannelMessage message, ChannelId channelId, ChannelState currentState,
+        FeatureOptions negotiatedFeatures, CompactPubKey peerPubKey) where T : class, IChannelMessage
+    {
+        await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+        return await GetChannelMessageHandler<T>(scope)
+                  .HandleAsync(Cast<T>(message), currentState, negotiatedFeatures, peerPubKey);
     }
 
     private static bool IsCloseMessage(MessageTypes messageType) =>
@@ -1369,9 +1421,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: the dual-funding messages and
-    /// <c>closing_complete</c>/<c>closing_sig</c> (option_simple_close, N11). The HTLC and fee updates,
-    /// commitment_signed and revoke_and_ack have handlers since N6-T1, shutdown and closing_signed since N10. Only for channels we know: an unknown channel gets an `error` (see
+    /// Interim behavior for channel messages we can't process yet: the dual-funding opens (<c>open_channel2</c>,
+    /// <c>accept_channel2</c>). The HTLC and fee updates, commitment_signed and revoke_and_ack have handlers since
+    /// N6-T1, shutdown and closing_signed since N10, closing_complete/closing_sig since N11 and the interactive-tx
+    /// messages 66-74 since IT4-T2. Only for channels we know: an unknown channel gets an `error` (see
     /// <see cref="ThrowIfUnknownChannelAsync"/>).
     /// </summary>
     /// <remarks>
