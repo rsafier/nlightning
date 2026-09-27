@@ -39,7 +39,9 @@ using Utils;
 /// <c>scripts/run-gossip.sh 1 Release -namespace NLightning.Integration.Tests.Docker.Day0</c>.</para>
 /// <para>Both nodes run the runbook's feature set (<see cref="Day0Harness.EnableDay0Features"/>) and flush their own
 /// gossip every 5 s instead of 60 s (<c>Gossip:OwnGossipFlushInterval</c>), so alice sees each announcement sooner;
-/// A also has a public channel to alice (alice gets a push), the only way alice reaches B.</para>
+/// A also has a public channel to alice (alice gets a push), the only way alice reaches B. B is connected to alice
+/// without a channel, as each day-0 node has other peers: alice learns B's direction of the channel from B's own
+/// gossip (through A alone she did not, see the connect in the test).</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class Day0FlowTests : IAsyncLifetime
@@ -101,6 +103,10 @@ public sealed class Day0FlowTests : IAsyncLifetime
         await a.FundWalletAsync(LightningMoney.Satoshis(1_500_000), Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
         await b.FundWalletAsync(LightningMoney.Satoshis(1_000_000), Domain.Bitcoin.Enums.AddressType.P2Wpkh, ct);
         await Day0Harness.ConnectBothWaysAsync(a, b, ct);
+        // B is alice's peer too (no channel): each node's own announcements and channel_update reach alice directly.
+        // Through A alone alice never got B's direction: A relays others' gossip only to a peer that sent a
+        // gossip_timestamp_filter, and LND sends one only to its active sync peers
+        await b.ConnectToAsync(alice, ct);
 
         // ---- Step 1: a dual-funded public channel, both contribute, announced at 6 confirmations ----
         var opened = await Day0Harness.HandleAsync<OpenChannelClientRequest, OpenChannelClientResponse>(
