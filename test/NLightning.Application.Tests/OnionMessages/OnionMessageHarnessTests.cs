@@ -173,6 +173,10 @@ public sealed class OnionMessageHarnessTests
         }
 
         await handler.WaitForAsync(20, ct);
+        // Carol holding 20 does not mean Bob has seen the last 5 yet: advance the clock only once they were dropped,
+        // or a late one would be admitted with the new second's tokens
+        await OnionMessageTestWaits.UntilAsync(
+            () => bob.Metrics.GetDropped(OnionMessageDropReasons.RateLimited) == 5, ct);
         clock.Advance(TimeSpan.FromSeconds(1));
         await alice.Service.SendAsync(destination, OnionMessageContents.Single(RequestType, new byte[] { 99 }), null, ct);
         await handler.WaitForAsync(21, ct);
