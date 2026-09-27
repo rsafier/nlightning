@@ -20,9 +20,19 @@ public interface IPrevTxInspector
     PrevTxInspection Inspect(ReadOnlyMemory<byte> prevTx, uint prevTxVout);
 
     /// <summary>
-    /// Whether <paramref name="txId"/> is confirmed on our chain: the <c>require_confirmed_inputs</c> check the driver
-    /// runs on each input the peer adds before it hands the message to the session (BOLT 2: fail the negotiation on an
-    /// unconfirmed input when we required confirmed ones).
+    /// Whether <paramref name="txId"/> is confirmed on our chain. Needs a transaction index on bitcoind for a confirmed
+    /// transaction that is not in its wallet: without <c>-txindex</c> it reads as unconfirmed. The driver's
+    /// <c>require_confirmed_inputs</c> check uses <see cref="IsOutputConfirmedAsync"/> instead.
     /// </summary>
     Task<bool> IsConfirmedAsync(TxId txId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether output <paramref name="prevTxVout"/> of <paramref name="txId"/> is confirmed on our chain: the
+    /// <c>require_confirmed_inputs</c> check the driver runs on each input the peer adds before it hands the message to
+    /// the session (BOLT 2: fail the negotiation on an unconfirmed input when we required confirmed ones). Unlike
+    /// <see cref="IsConfirmedAsync"/> it works on a node without a transaction index (<c>gettxout</c>). The default
+    /// (for test doubles) is <see cref="IsConfirmedAsync"/>.
+    /// </summary>
+    Task<bool> IsOutputConfirmedAsync(TxId txId, uint prevTxVout, CancellationToken cancellationToken = default) =>
+        IsConfirmedAsync(txId, cancellationToken);
 }

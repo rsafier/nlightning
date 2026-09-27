@@ -99,7 +99,7 @@ public class InteractiveTxBuilderTests
     }
 
     [Fact]
-    public void Given_InputTypes_When_Building_Then_TheWeightEstimateCountsTheirWitnesses()
+    public void Given_InputTypes_When_Building_Then_TheWeightEstimateCountsTheirWitnessesAtLeastTheMinimum()
     {
         // Arrange
         var builder = new InteractiveTxBuilder();
@@ -113,8 +113,8 @@ public class InteractiveTxBuilderTests
         var constructed = builder.Build(0, inputs, [Output(8, 1_000)]);
         var tx = Transaction.Load(constructed.UnsignedTx, Network.RegTest);
 
-        // Assert: size x 4 + marker/flag + 108 + 67 + 107 + 222
-        Assert.Equal(tx.GetSerializedSize(TransactionOptions.None) * 4 + 2 + 108 + 67 + 107 + 222,
+        // Assert: size x 4 + marker/flag + 108 + 107 (a P2TR key path witness weighs 67, the minimum is 107) + 107 + 222
+        Assert.Equal(tx.GetSerializedSize(TransactionOptions.None) * 4 + 2 + 108 + 107 + 107 + 222,
                      constructed.EstimatedWeight);
     }
 

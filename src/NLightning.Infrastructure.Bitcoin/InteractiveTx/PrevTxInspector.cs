@@ -21,11 +21,12 @@ using Wallet.Interfaces;
 /// (so P2WPKH, P2WSH, P2TR and future witness versions pass; P2PKH, P2SH, P2SH-wrapped segwit, bare multisig and
 /// <c>OP_RETURN</c> do not). A non-witness script is reported as invalid too (with the txid, amount and script filled
 /// in), so a caller that only reads <see cref="PrevTxInspection.IsValid"/> still fails the negotiation.</para>
-/// <para><see cref="IsConfirmedAsync"/> asks bitcoind for the transaction's confirmations
-/// (<c>getrawtransaction</c> verbose). Without <c>-txindex</c> bitcoind only knows mempool transactions and those of
-/// its own wallet, so a confirmed foreign transaction reads as unconfirmed and the negotiation fails (never the unsafe
-/// way). <see cref="IsOutputConfirmedAsync"/> also accepts an output that <c>gettxout</c> (without the mempool)
-/// reports confirmed and unspent, which works without an index.</para>
+/// <para><see cref="IsOutputConfirmedAsync"/> (the <c>require_confirmed_inputs</c> check) asks <c>gettxout</c> without
+/// the mempool first: a confirmed unspent output is confirmed, which works on a node without a transaction index. Only
+/// when that finds nothing does it fall back to <see cref="IsConfirmedAsync"/>, which asks for the transaction's
+/// confirmations (<c>getrawtransaction</c> verbose): without <c>-txindex</c> bitcoind only knows mempool transactions
+/// and those of its own wallet, so a confirmed foreign transaction reads as unconfirmed there. Every failure reads as
+/// unconfirmed, which fails the negotiation (never the unsafe way).</para>
 /// </remarks>
 public sealed class PrevTxInspector : IPrevTxInspector
 {
@@ -81,32 +82,29 @@ public sealed class PrevTxInspector : IPrevTxInspector
         }
     }
 
-    /// <summary>
-    /// Whether output <paramref name="vout"/> of <paramref name="txId"/> is confirmed: the transaction has
-    /// confirmations (<see cref="IsConfirmedAsync"/>), or bitcoind reports the output confirmed and unspent in the
-    /// active chain (<c>gettxout</c> without the mempool; needs no transaction index).
-    /// </summary>
-    public async Task<bool> IsOutputConfirmedAsync(TxId txId, uint vout, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task<bool> IsOutputConfirmedAsync(TxId txId, uint prevTxVout,
+                                                   CancellationToken cancellationToken = default)
     {
-        if (await IsConfirmedAsync(txId, cancellationToken))
-            return true;
-
+        cancellationToken.ThrowIfCancellationRequested();
         if (_bitcoinChainService is null)
             return false;
 
         try
         {
             var unspent = await _bitcoinChainService.GetConfirmedUnspentOutputAsync(
-                              new OutPoint(new uint256((byte[])txId), vout));
-            return unspent is { Height: > 0 };
+                              new OutPoint(new uint256((byte[])txId), prevTxVout));
+            if (unspent is { Height: > 0 })
+                return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             if (_logger.IsEnabled(LogLevel.Warning))
-                _logger.LogWarning(e, "Could not read output {TxId}:{Vout}; treated as unconfirmed", txId, vout);
-
-            return false;
+                _logger.LogWarning(e, "Could not read output {TxId}:{Vout}; asking for its transaction", txId,
+                                   prevTxVout);
         }
+
+        return await IsConfirmedAsync(txId, cancellationToken);
     }
 
     /// <summary>

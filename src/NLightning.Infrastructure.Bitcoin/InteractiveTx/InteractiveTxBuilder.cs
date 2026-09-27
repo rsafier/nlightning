@@ -16,8 +16,12 @@ using Domain.Protocol.InteractiveTx.Models;
 /// outputs), each input with its own <c>nSequence</c>; a <c>serial_id</c> used twice (inputs and outputs together, as
 /// the receiving rules count them), no input, no output or more than one shared output is an
 /// <see cref="ArgumentException"/>. The estimated weight is the exact size without witnesses x 4, the segwit marker and
-/// flag, and per input a witness estimate from its spent script: P2WPKH 108, P2TR key path 67 (explicit sighash byte),
-/// the shared 2-of-2 funding input 222 (BOLT 3), anything else BOLT 3's minimum witness weight of 107.</para>
+/// flag, and per input its witness weight: the estimate from its spent script (P2WPKH 108, P2TR key path 67, the shared
+/// 2-of-2 funding input 222 (BOLT 3), anything else 107), but never below the minimum witness weight of 107 that the
+/// collaborative fee calculation charges per input (BOLT 3 Appendix G, "Expected Fee Calculation":
+/// <c>max(number of inputs * minimum witness weight, actual witness weight)</c>). So a P2TR input counts 107, not 67:
+/// the weight is never below the minimum-fee weight of the transaction (the <c>tx_complete</c> feerate check) and stays
+/// an upper bound of the signed weight for the 400,000 limit (IT-R-04).</para>
 /// <para><see cref="Finalize"/> takes one BIP 141 witness stack serialization per input, keyed by <c>serial_id</c>
 /// (as <c>tx_signatures</c> carries them), refuses a missing, unknown or unparsable one, and checks the txid did not
 /// change. It checks no signature: the driver verifies the peer's witnesses against the spent outputs.</para>
@@ -40,8 +44,9 @@ public sealed class InteractiveTxBuilder : IInteractiveTxBuilder
     /// <summary>The 2-of-2 funding input's witness (BOLT 3 "Expected Weight of the Commitment Transaction").</summary>
     internal const int FundingWitnessWeight = 222;
 
-    /// <summary>BOLT 3's minimum witness weight of an input ("Calculating Fees for Collaborative Transaction
-    /// Construction").</summary>
+    /// <summary>The minimum witness weight of an input in the collaborative fee calculation (BOLT 3 Appendix G, "Expected
+    /// Fee Calculation": <c>max(1 * 107, 71)</c>; the "Calculating Fees for Collaborative Transactions" section names no
+    /// number).</summary>
     internal const int MinimumWitnessWeight = 107;
 
     /// <inheritdoc />
@@ -107,7 +112,7 @@ public sealed class InteractiveTxBuilder : IInteractiveTxBuilder
 
         var unsigned = tx.ToBytes();
         var weight = (long)tx.GetSerializedSize(TransactionOptions.None) * 4 + SegwitMarkerAndFlagWeight
-                   + sortedInputs.Sum(i => (long)EstimateWitnessWeight(i));
+                   + sortedInputs.Sum(i => (long)GetFeeWitnessWeight(i));
 
         return new ConstructedInteractiveTx(new TxId(tx.GetHash().ToBytes()), unsigned, locktime, sortedInputs,
                                             sortedOutputs, weight, sharedOutputIndex);
@@ -153,6 +158,13 @@ public sealed class InteractiveTxBuilder : IInteractiveTxBuilder
 
         return new SignedTransaction(new TxId(txId), tx.ToBytes());
     }
+
+    /// <summary>
+    /// The witness weight <see cref="ConstructedInteractiveTx.EstimatedWeight"/> counts for <paramref name="input"/>: its
+    /// estimate, at least the minimum witness weight of the collaborative fee calculation (107).
+    /// </summary>
+    internal static int GetFeeWitnessWeight(InteractiveTxInput input) =>
+        Math.Max(MinimumWitnessWeight, EstimateWitnessWeight(input));
 
     /// <summary>The estimated witness weight of <paramref name="input"/> once signed.</summary>
     internal static int EstimateWitnessWeight(InteractiveTxInput input)
