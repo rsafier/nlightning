@@ -44,6 +44,7 @@ internal sealed class PaymentsTestNode : IDisposable
     public ISphinxService Sphinx => _provider.GetRequiredService<ISphinxService>();
     public IFailureOnionService FailureOnion => _provider.GetRequiredService<IFailureOnionService>();
     public IHopPayloadSerializer HopPayloadSerializer => _provider.GetRequiredService<IHopPayloadSerializer>();
+    public IRouteBlindingService RouteBlinding => _provider.GetRequiredService<IRouteBlindingService>();
 
     public PaymentsTestNode(string name, byte seed, RoutingOptions? routing = null)
     {
