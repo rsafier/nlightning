@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Bitcoin.Tests.InteractiveTx;
 
 using Domain.Bitcoin.ValueObjects;
 using Domain.Money;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Infrastructure.Bitcoin.InteractiveTx;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -226,6 +227,47 @@ public class PrevTxInspectorTests
         // Assert
         Assert.True(confirmed);
         Assert.False(otherConfirmed);
+    }
+
+    [Fact]
+    public async Task Given_AConfirmedUnspentOutput_When_CheckingThroughThePort_Then_NoTransactionIndexIsNeeded()
+    {
+        // Arrange: a node without txindex, where getrawtransaction of a confirmed foreign transaction fails
+        var chain = new Mock<IBitcoinChainService>();
+        chain.Setup(c => c.GetTransactionConfirmationsAsync(It.IsAny<uint256>()))
+             .ThrowsAsync(new InvalidOperationException("No such mempool or blockchain transaction"));
+        chain.Setup(c => c.GetConfirmedUnspentOutputAsync(It.Is<OutPoint>(o => o.N == 2)))
+             .ReturnsAsync((new TxOut(Money.Satoshis(1_000), s_key.PubKey.WitHash.ScriptPubKey), 100u));
+        IPrevTxInspector inspector = new PrevTxInspector(null, chain.Object);
+
+        // Act
+        var confirmed = await inspector.IsOutputConfirmedAsync(TxId.One, 2, TestContext.Current.CancellationToken);
+        var txConfirmed = await inspector.IsConfirmedAsync(TxId.One, TestContext.Current.CancellationToken);
+
+        // Assert: the outpoint check answers from gettxout alone; the txid-only check cannot
+        Assert.True(confirmed);
+        Assert.False(txConfirmed);
+        chain.Verify(c => c.GetTransactionConfirmationsAsync(It.IsAny<uint256>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_AnUnconfirmedOutputKnownToTheWallet_When_CheckingTheOutput_Then_TheTransactionDecides()
+    {
+        // Arrange: gettxout without the mempool finds nothing, getrawtransaction reports 0 then 2 confirmations
+        var chain = new Mock<IBitcoinChainService>();
+        chain.Setup(c => c.GetConfirmedUnspentOutputAsync(It.IsAny<OutPoint>()))
+             .ReturnsAsync(((TxOut, uint)?)null);
+        chain.SetupSequence(c => c.GetTransactionConfirmationsAsync(It.IsAny<uint256>()))
+             .ReturnsAsync(0u).ReturnsAsync(2u);
+        var inspector = new PrevTxInspector(null, chain.Object);
+
+        // Act
+        var unconfirmed = await inspector.IsOutputConfirmedAsync(TxId.One, 0, TestContext.Current.CancellationToken);
+        var confirmed = await inspector.IsOutputConfirmedAsync(TxId.One, 0, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.False(unconfirmed);
+        Assert.True(confirmed);
     }
 
     [Fact]

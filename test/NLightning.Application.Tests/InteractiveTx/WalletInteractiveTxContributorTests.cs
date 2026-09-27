@@ -19,6 +19,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.InteractiveTx;
 using Domain.Protocol.InteractiveTx.Enums;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Infrastructure.Bitcoin.Builders;
@@ -30,8 +31,9 @@ using Infrastructure.Repositories.Memory;
 /// <summary>
 /// <see cref="WalletInteractiveTxContributor"/> (splicing plan IT2-T3, IT-ABT-01) over the real
 /// <c>FeeInputSelector</c>, <see cref="LocalLightningSigner"/>, <see cref="UtxoMemoryRepository"/>,
-/// <see cref="PrevTxInspector"/> and <see cref="InteractiveTxBuilder"/>, with a mocked unit of work and an in-memory
-/// source of the wallet's previous transactions. Every signature is checked with NBitcoin's script interpreter.
+/// <see cref="PrevTxInspector"/>, <see cref="InteractiveTxTransactionParser"/> and <see cref="InteractiveTxBuilder"/>,
+/// with a mocked unit of work (reservations and stored negotiations) and an in-memory source of the wallet's previous
+/// transactions. Every signature is checked with NBitcoin's script interpreter.
 /// </summary>
 public class WalletInteractiveTxContributorTests
 {
@@ -55,10 +57,14 @@ public class WalletInteractiveTxContributorTests
     private readonly Mock<IBitcoinWalletService> _walletService = new();
     private readonly Mock<IAnchorReserveService> _anchorReserve = new();
     private readonly Mock<ISecureKeyManager> _keyManager = new();
+    private readonly Mock<IInteractiveTxSessionDbRepository> _sessions = new();
+    private readonly List<InteractiveTxSessionModel> _storedSessions = [];
     private readonly FakePrevTxSource _prevTxSource = new();
     private readonly List<FeeInputReservation> _stored = [];
     private readonly BitcoinAddress _changeAddress;
     private readonly IFeeInputSelector _selector;
+    private readonly LocalLightningSigner _signer;
+    private readonly IServiceScopeFactory _scopeFactory;
     private readonly WalletInteractiveTxContributor _contributor;
     private long _reserveSat;
 
@@ -69,6 +75,8 @@ public class WalletInteractiveTxContributorTests
         _unitOfWork.Setup(u => u.FeeInputReservationDbRepository).Returns(_reservations.Object);
         _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(_broadcasts.Object);
         _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
+        _unitOfWork.Setup(u => u.InteractiveTxSessionDbRepository).Returns(_sessions.Object);
+        _sessions.Setup(r => r.GetUnresolvedAsync()).ReturnsAsync(() => _storedSessions.ToList());
         _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync([]);
         _reservations.Setup(r => r.Add(It.IsAny<FeeInputReservation>(), It.IsAny<DateTimeOffset>()))
                      .Callback<FeeInputReservation, DateTimeOffset>((r, _) => _stored.Add(r));
@@ -97,17 +105,21 @@ public class WalletInteractiveTxContributorTests
         services.AddScoped(_ => _unitOfWork.Object);
         services.AddScoped(_ => _walletService.Object);
         var provider = services.BuildServiceProvider();
+        _scopeFactory = provider.GetRequiredService<IServiceScopeFactory>();
         var nodeOptions = new NodeOptions { BitcoinNetwork = NetworkConstants.Regtest };
 
         _selector = new Infrastructure.Bitcoin.Wallet.FeeInputSelector(
             _utxos, provider.GetRequiredService<IServiceScopeFactory>(),
             Microsoft.Extensions.Options.Options.Create(nodeOptions),
             NullLogger<Infrastructure.Bitcoin.Wallet.FeeInputSelector>.Instance);
-        var signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
-                                              NullLogger<LocalLightningSigner>.Instance, nodeOptions,
-                                              _keyManager.Object, _utxos);
-        _contributor = new WalletInteractiveTxContributor(_selector, signer, _utxos, _prevTxSource,
-                                                          new PrevTxInspector(), _anchorReserve.Object);
+        _signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
+                                           NullLogger<LocalLightningSigner>.Instance, nodeOptions, _keyManager.Object,
+                                           _utxos);
+
+        // Without a session store: the in-process guard only (a durable one is made by CreateDurableContributor)
+        _contributor = new WalletInteractiveTxContributor(_selector, _signer, _utxos, _prevTxSource,
+                                                          new PrevTxInspector(), new InteractiveTxTransactionParser(),
+                                                          anchorReserveService: _anchorReserve.Object);
     }
 
     [Fact]
@@ -380,6 +392,228 @@ public class WalletInteractiveTxContributorTests
                                          TestContext.Current.CancellationToken));
     }
 
+    [Fact]
+    public void Given_TheServiceCollection_When_AddingTheContributor_Then_ItIsOneSingleton()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddSingleton(_selector);
+        services.AddSingleton<ILightningSigner>(_signer);
+        services.AddSingleton<IUtxoMemoryRepository>(_utxos);
+        services.AddSingleton<IWalletPrevTxSource>(_prevTxSource);
+        services.AddSingleton<IPrevTxInspector>(new PrevTxInspector());
+        services.AddSingleton<IInteractiveTxTransactionParser>(new InteractiveTxTransactionParser());
+
+        // Act
+        services.AddInteractiveTxContributorServices();
+        services.AddInteractiveTxContributorServices();
+        using var provider = services.BuildServiceProvider();
+
+        // Assert
+        Assert.Same(provider.GetRequiredService<WalletInteractiveTxContributor>(),
+                    provider.GetRequiredService<IInteractiveTxContributor>());
+        Assert.Same(provider.GetRequiredService<IInteractiveTxContributor>(),
+                    provider.GetRequiredService<IInteractiveTxContributor>());
+    }
+
+    [Fact]
+    public async Task Given_AWalletOutputWhosePrevTxIsTooLarge_When_Contributing_Then_AnotherIsUsedAndItIsReleased()
+    {
+        // Arrange: the largest output (picked first) was paid by a transaction larger than a tx_add_input can carry
+        var oversized = AddWalletUtxo(AddressType.P2Wpkh, 0, 900_000,
+                                      prevTxSize: WalletInteractiveTxContributor.MaxPrevTxLength + 1);
+        var usable = AddWalletUtxo(AddressType.P2Wpkh, 1, 400_000);
+
+        // Act
+        var contribution = await _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+
+        // Assert
+        var input = Assert.Single(contribution.Inputs);
+        Assert.Equal(usable.Model.TxId, input.PrevTxId);
+        Assert.True(input.PrevTx.Length <= WalletInteractiveTxContributor.MaxPrevTxLength);
+        Assert.Equal(contribution.ReservationId, Assert.Single(_stored).Id);
+        Assert.False(_utxos.TryGetFeeReservation(oversized.Model.TxId, oversized.Model.Index, out _));
+    }
+
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    public async Task Given_APrevTxAtTheTxAddInputLimit_When_Contributing_Then_OnlyUpToTheLimitIsContributed(
+        int bytesOverTheLimit, bool contributed)
+    {
+        // Arrange: 65,535 - 52 = 65,483 bytes fit in a tx_add_input; the u16 prevtx_len must never wrap
+        Assert.Equal(65_483, WalletInteractiveTxContributor.MaxPrevTxLength);
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000,
+                                 prevTxSize: WalletInteractiveTxContributor.MaxPrevTxLength + bytesOverTheLimit);
+
+        // Act
+        var contribute = () => _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+
+        // Assert
+        if (contributed)
+        {
+            var input = Assert.Single((await contribute()).Inputs);
+            Assert.Equal(WalletInteractiveTxContributor.MaxPrevTxLength, input.PrevTx.Length);
+        }
+        else
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(contribute);
+            Assert.Empty(_stored);
+            Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+        }
+    }
+
+    [Fact]
+    public async Task Given_ASessionStoreWithoutTheNegotiation_When_Signing_Then_NothingIsSignedAndReleaseWorks()
+    {
+        // Arrange: the driver did not store the negotiation (with our commitment_signed) before asking to sign
+        var contributor = CreateDurableContributor();
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, peerSpent) = Construct(contribution);
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => contributor.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken));
+        await contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        Assert.Empty(_stored);
+        Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_OurSignaturesAndAStoredNegotiation_When_ReleasingAfterARestart_Then_TheReservationIsKept()
+    {
+        // Arrange: the negotiation is stored, we sign, then the process restarts (a new contributor, no memory)
+        var contributor = CreateDurableContributor();
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, peerSpent) = Construct(contribution);
+        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.AwaitingTxSignatures));
+        await contributor.SignAsync(constructed, contribution, [peerSpent], TestContext.Current.CancellationToken);
+        _storedSessions[0] = _storedSessions[0] with { State = InteractiveTxSessionState.TxSignaturesSent };
+        var restarted = CreateDurableContributor();
+
+        // Act
+        await restarted.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        var released = await restarted.ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert (IT-ABT-01)
+        Assert.Equal(0, released);
+        Assert.Single(_stored);
+        Assert.True(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_AStoredNegotiationMarkedAborted_When_Releasing_Then_TheOutputsReturnToTheWallet()
+    {
+        // Arrange: stored at our commitment_signed, then tx_abort before our tx_signatures
+        var contributor = CreateDurableContributor();
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        _storedSessions.Add(StoredSession(contribution, InteractiveTxSessionState.AwaitingTxSignatures));
+
+        // Act: refused while stored and not aborted, done once aborted
+        await contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        var keptWhileStored = _stored.Count;
+        _storedSessions[0] = _storedSessions[0] with { State = InteractiveTxSessionState.Aborted };
+        await contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, keptWhileStored);
+        Assert.Empty(_stored);
+        Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_ReservationsLeftByACrash_When_SweepingAtStartup_Then_OnlyOrphanedNegotiationsAreReleased()
+    {
+        // Arrange: two negotiations reserved, one of them stored; a withdraw reservation of another purpose
+        var contributor = CreateDurableContributor();
+        var orphanUtxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var storedUtxo = AddWalletUtxo(AddressType.P2Wpkh, 1, 400_000);
+        AddWalletUtxo(AddressType.P2Wpkh, 2, 300_000);
+        var orphan = await contributor.ContributeAsync(Request(300_000), TestContext.Current.CancellationToken);
+        var kept = await contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        _storedSessions.Add(StoredSession(kept, InteractiveTxSessionState.AwaitingCommitmentSigned));
+        var withdraw = await _selector.ReserveAsync(LightningMoney.Satoshis(100_000), LightningMoney.Satoshis(253), 0,
+                                                    "withdraw", TestContext.Current.CancellationToken);
+        var restarted = CreateDurableContributor();
+
+        // Act
+        var released = await restarted.ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(1, released);
+        Assert.Equal(orphanUtxo.Model.TxId, Assert.Single(orphan.Inputs).PrevTxId);
+        Assert.False(_utxos.TryGetFeeReservation(orphanUtxo.Model.TxId, orphanUtxo.Model.Index, out _));
+        Assert.True(_utxos.TryGetFeeReservation(storedUtxo.Model.TxId, storedUtxo.Model.Index, out _));
+        Assert.Equal(2, _stored.Count);
+        Assert.Contains(_stored, r => r.Id == kept.ReservationId);
+        Assert.Contains(_stored, r => r.Id == withdraw.Id);
+    }
+
+    [Fact]
+    public async Task Given_ReleaseAndSignAtOnce_When_BothRun_Then_TheReservationOutlivesEverySignature()
+    {
+        for (uint i = 0; i < 8; i++)
+        {
+            // Arrange
+            AddWalletUtxo(AddressType.P2Wpkh, i, 500_000 + i);
+            var contribution = await _contributor.ContributeAsync(Request(200_000),
+                                                                  TestContext.Current.CancellationToken);
+            var (constructed, peerSpent) = Construct(contribution);
+
+            // Act
+            var sign = Task.Run(() => _contributor.SignAsync(constructed, contribution, [peerSpent],
+                                                             TestContext.Current.CancellationToken),
+                                TestContext.Current.CancellationToken);
+            var release = Task.Run(() => _contributor.ReleaseAsync(contribution,
+                                                                   TestContext.Current.CancellationToken),
+                                   TestContext.Current.CancellationToken);
+            await release;
+            var signed = true;
+            try
+            {
+                await sign;
+            }
+            catch (Exception e) when (e is InvalidOperationException or SignerException)
+            {
+                // Released first: the signer no longer holds the reservation
+                signed = false;
+            }
+
+            // Assert: signed exactly when the reservation is still held
+            Assert.Equal(signed, _stored.Any(r => r.Id == contribution.ReservationId));
+        }
+    }
+
+    [Theory]
+    [InlineData("txid")]
+    [InlineData("locktime")]
+    [InlineData("sequence")]
+    public async Task Given_BytesThatAreNotTheDescribedTransaction_When_Signing_Then_NothingIsSigned(string tampered)
+    {
+        // Arrange: the metadata is right, the bytes (and maybe their txid) are another transaction's
+        AddWalletUtxo(AddressType.P2Wpkh, 0, 500_000);
+        var contribution = await _contributor.ContributeAsync(Request(200_000), TestContext.Current.CancellationToken);
+        var (constructed, peerSpent) = Construct(contribution);
+        var builder = new InteractiveTxBuilder();
+        var other = tampered == "sequence"
+                        ? builder.Build(constructed.Locktime,
+                                        constructed.Inputs.Select(i => i with { Sequence = 0xFFFFFFFE }).ToList(),
+                                        constructed.Outputs)
+                        : builder.Build(constructed.Locktime + 1, constructed.Inputs, constructed.Outputs);
+        var described = tampered == "txid"
+                            ? constructed with { UnsignedTx = other.UnsignedTx }
+                            : constructed with { UnsignedTx = other.UnsignedTx, TxId = other.TxId };
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _contributor.SignAsync(described, contribution, [peerSpent], TestContext.Current.CancellationToken));
+        await _contributor.ReleaseAsync(contribution, TestContext.Current.CancellationToken);
+        Assert.Empty(_stored);
+    }
+
     /// <summary>
     /// The negotiated transaction as the session would build it: we are the initiator (even serial ids), the peer adds
     /// one P2WPKH input and the shared funding output takes our wallet amount and the peer's input.
@@ -415,6 +649,28 @@ public class WalletInteractiveTxContributorTests
         return (new InteractiveTxBuilder().Build(0, inputs, outputs), peerSpent);
     }
 
+    private static InteractiveTxSessionModel StoredSession(InteractiveTxContribution contribution,
+                                                           InteractiveTxSessionState state) =>
+        new()
+        {
+            ChannelId = s_channelId,
+            SessionId = Guid.NewGuid(),
+            Purpose = InteractiveTxPurpose.Splice,
+            IsInitiator = true,
+            FeeratePerKw = FeeratePerKw,
+            Locktime = 0,
+            Inputs = [],
+            Outputs = [],
+            LocalContribution = contribution,
+            State = state,
+            CreatedAt = DateTimeOffset.UnixEpoch
+        };
+
+    /// <summary>A contributor with the session store, as the production registration builds it.</summary>
+    private WalletInteractiveTxContributor CreateDurableContributor() =>
+        new(_selector, _signer, _utxos, _prevTxSource, new PrevTxInspector(), new InteractiveTxTransactionParser(),
+            _scopeFactory, _anchorReserve.Object);
+
     private static InteractiveTxContributionRequest Request(long walletSat, IReadOnlyList<ContributedOutput>? outputs = null,
                                                             int extraWeight = 0, bool requireConfirmed = false) =>
         new(s_channelId, InteractiveTxPurpose.Splice, LightningMoney.Satoshis(walletSat), outputs ?? [], FeeratePerKw,
@@ -427,7 +683,7 @@ public class WalletInteractiveTxContributorTests
         s_masterKey.Derive(isChange ? 3u : 2u).Derive(index);
 
     private (UtxoModel Model, TxOut TxOut) AddWalletUtxo(AddressType type, uint index, long amountSat,
-                                                         uint blockHeight = 100)
+                                                         uint blockHeight = 100, int? prevTxSize = null)
     {
         var pubKey = type == AddressType.P2Wpkh
                          ? GetP2WpkhExtKey(index, false).Neuter().PubKey
@@ -441,6 +697,16 @@ public class WalletInteractiveTxContributorTests
         prevTx.Inputs.Add(new TxIn(new OutPoint(RandomUtils.GetUInt256(), 0)));
         prevTx.Outputs.Add(new TxOut(Money.Satoshis(12_345), s_peerScript));
         prevTx.Outputs.Add(new TxOut(Money.Satoshis(amountSat), address.ScriptPubKey));
+        if (prevTxSize is { } size)
+        {
+            // A third output whose script pads the transaction to exactly that size (a 3-byte script length)
+            prevTx.Outputs.Add(new TxOut(Money.Zero, Script.Empty));
+            var scriptLength = size - prevTx.ToBytes().Length - 2;
+            Assert.InRange(scriptLength, 0xFD, 0xFFFF);
+            prevTx.Outputs[2].ScriptPubKey = new Script(new byte[scriptLength]);
+            Assert.Equal(size, prevTx.ToBytes().Length);
+        }
+
         var txId = new TxId(prevTx.GetHash().ToBytes());
         _prevTxSource.Transactions[txId] = prevTx.ToBytes();
 

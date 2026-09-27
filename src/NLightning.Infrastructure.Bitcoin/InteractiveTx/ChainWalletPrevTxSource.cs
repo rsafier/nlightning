@@ -5,6 +5,7 @@ using NBitcoin;
 namespace NLightning.Infrastructure.Bitcoin.InteractiveTx;
 
 using Domain.Bitcoin.ValueObjects;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Wallet.Interfaces;
 
 /// <summary>

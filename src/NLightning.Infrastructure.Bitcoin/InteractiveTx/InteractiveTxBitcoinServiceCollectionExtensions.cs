@@ -14,9 +14,10 @@ using Wallet.Interfaces;
 public static class InteractiveTxBitcoinServiceCollectionExtensions
 {
     /// <summary>
-    /// Adds <see cref="IPrevTxInspector"/>, <see cref="IInteractiveTxBuilder"/> and <see cref="IWalletPrevTxSource"/>
-    /// as singletons (TryAdd). The inspector's confirmation check and the prevtx source use
-    /// <see cref="IBitcoinChainService"/>; the inspector works without it (every input then reads as unconfirmed).
+    /// Adds <see cref="IPrevTxInspector"/>, <see cref="IInteractiveTxBuilder"/>, <see cref="IWalletPrevTxSource"/> and
+    /// <see cref="IInteractiveTxTransactionParser"/> as singletons (TryAdd). The inspector's confirmation checks and the
+    /// prevtx source use <see cref="IBitcoinChainService"/>; the inspector works without it (every input then reads as
+    /// unconfirmed).
     /// </summary>
     public static IServiceCollection AddInteractiveTxBitcoinServices(this IServiceCollection services)
     {
@@ -24,6 +25,7 @@ public static class InteractiveTxBitcoinServiceCollectionExtensions
             new PrevTxInspector(sp.GetService<ILogger<PrevTxInspector>>(), sp.GetService<IBitcoinChainService>()));
         services.TryAddSingleton<IInteractiveTxBuilder, InteractiveTxBuilder>();
         services.TryAddSingleton<IWalletPrevTxSource, ChainWalletPrevTxSource>();
+        services.TryAddSingleton<IInteractiveTxTransactionParser, InteractiveTxTransactionParser>();
 
         return services;
     }

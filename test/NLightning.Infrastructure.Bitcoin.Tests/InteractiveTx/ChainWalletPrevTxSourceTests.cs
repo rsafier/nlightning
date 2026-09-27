@@ -85,6 +85,7 @@ public class ChainWalletPrevTxSourceTests
         Assert.IsType<PrevTxInspector>(provider.GetRequiredService<IPrevTxInspector>());
         Assert.IsType<InteractiveTxBuilder>(provider.GetRequiredService<IInteractiveTxBuilder>());
         Assert.IsType<ChainWalletPrevTxSource>(provider.GetRequiredService<IWalletPrevTxSource>());
+        Assert.IsType<InteractiveTxTransactionParser>(provider.GetRequiredService<IInteractiveTxTransactionParser>());
     }
 
     private static Transaction CreateTx(byte marker = 3)
