@@ -25,7 +25,8 @@ and invoice signatures), channel key indexes (reuse = two channels share keys), 
 ## Findings
 
 Severity is for this node's goal (real funds on mainnet). "Fixed" SHAs are this lane's commits on
-`wip/fafo-rf1-r3-security-review-s1` (the integrator's merge may change them).
+`wip/fafo-rf1-r3-security-review-s1` (step 1) and `-s2` (step 2: SR-11, SR-12, SR-13, SR-18); the integrator's merge may
+change them. Every High/Medium finding is fixed; step 2 fixed the Low/Info ones inside this lane.
 
 | ID | Sev. | Finding | Status |
 | --- | --- | --- | --- |
@@ -39,14 +40,14 @@ Severity is for this node's goal (real funds on mainnet). "Fixed" SHAs are this 
 | SR-08 | Medium | NL-159: the node key **is** the master private key, whose chain code is replaced by the genesis hash; a mnemonic's real chain code was dropped (`FromMnemonic`), so seeds did not restore in BIP32 wallets, and any leak of the node key (used online for every BOLT 8 handshake and onion peel) is a leak of every wallet and channel key | fixed for new nodes (974d046): see "Key derivation" below; existing key files keep their derivation and node id by design |
 | SR-09 | Low | Plaintext key copies in managed memory: NBitcoin `Key`/`ExtKey` objects built for every derivation, the xprv string in `SaveToFile`/`FromFilePath`, the password string, and `GetNodeKeyPair()` copies handed to callers | partial (974d046): the temporary arrays in `GetMasterKey` and the constructor are zeroed and the node key has its own locked buffer; strings and NBitcoin objects cannot be wiped |
 | SR-10 | Info | Key-file crypto: Argon2id m = 64 MiB, t = 3, p = 1, 16-byte random salt and 24-byte random XChaCha20 nonce per save (a new salt and nonce on every write), parameters bounded on load (`MaxMemLimit`/`MaxOpsLimit`, so a crafted file cannot exhaust memory); v2/v3 files are tried with the full UTF-8 password only (the legacy retries now run for v1 files only, so a wrong password costs one Argon2id run) | ok |
-| SR-11 | Low | NL-148 remainder: `--daemon` hands the password to the child in `NLTG_PASSWORD`. The child clears it with `Environment.SetEnvironmentVariable`, but on Linux `/proc/<pid>/environ` shows the initial environment block for the process's life (readable by the same user and root only) | open: hand it over a pipe (stdin of the child) instead |
-| SR-12 | Info | `Database:EnableSensitiveQueryLogging=true` (opt-in) makes EF log parameter values: preimages, per-commitment secrets | open, persistence seam: warn at start when it is set |
-| SR-13 | Low | The output descriptors built from the master xpub (`tr([fp/86'/0'/0']<master xpub>/0/*)`) name a key origin the xpub is not at, so they do not describe our addresses if exported; they are stored in plaintext in the key file | open (functional; the master xpub is not secret-critical because every path from it is hardened) |
+| SR-11 | Low | NL-148 remainder: `--daemon` hands the password to the child in `NLTG_PASSWORD`. The child clears it with `Environment.SetEnvironmentVariable`, but on Linux `/proc/<pid>/environ` shows the initial environment block for the process's life (readable by the same user and root only) | fixed (bd8d9e6): the parent writes the password as one UTF-8 line into the child's stdin (`DaemonUtils.WritePasswordToChild`), the child reads it with the `--password-stdin` that `BuildDaemonChildArgs` appends, and `NLTG_PASSWORD` is removed from the child's environment. The Unix launcher hands its stdin to the background job through fd 3 (a non-interactive shell gives a `&` job /dev/null otherwise) |
+| SR-12 | Info | `Database:EnableSensitiveQueryLogging=true` (opt-in) makes EF log parameter values: preimages, per-commitment secrets | fixed (bd8d9e6): `SensitiveLoggingUtils` warns at start (the setting itself stays the operator's choice) |
+| SR-13 | Low | The output descriptors built from the master xpub (`tr([fp/86'/0'/0']<master xpub>/0/*)`) name a key origin the xpub is not at, so they do not describe our addresses if exported; they are stored in plaintext in the key file | fixed (cf8c8ae): each descriptor names the xpub at its own origin (the channel one `wpkh([fp/6425'/0'/0'/0]<xpub>/*)`), computed from the key on every load instead of read from the file; checked against the BIP84 vector's account xpub |
 | SR-14 | Low | NL-224: atomic key-file writes create the temp file as the running user (owner/group change if another user, e.g. root, rewrites it) and do not copy a Windows ACL (the new file inherits the directory's) | open (NL-224) |
 | SR-15 | Info | Cookie: 32 random bytes (hex), written 0600 with `CreateNew` after deleting the old one (no symlink follow), rotated on every start, deleted on stop, re-read per request, compared with `CryptographicOperations.FixedTimeEquals` (only the non-secret length returns early) | ok |
 | SR-16 | Info | Logs: no log call passes a key, preimage, secret, password, cookie or connection string as an argument (reviewed every `Log*`/Serilog call whose arguments mention them); messages only say that a preimage or secret exists | ok |
 | SR-17 | Low | `PeerServiceFactory` takes a copy of the node private key per connection (`GetNodeKeyPair()`) for the BOLT 8 handshake and never wipes it; the handshake should do its ECDH through `ISecureKeyManager` like the onion peel | open, transport seam |
-| SR-18 | Low | The `.v1.bak` kept after a v1 upgrade (NL-211, for downgrades) is the same key under the weak v1 KDF (fixed salt, 64 KiB): whoever gets the directory attacks that copy, not the v2 file | open: advise deleting it once the upgrade is trusted (stderr notice or a CLI command) |
+| SR-18 | Low | The `.v1.bak` kept after a v1 upgrade (NL-211, for downgrades) is the same key under the weak v1 KDF (fixed salt, 64 KiB): whoever gets the directory attacks that copy, not the v2 file | fixed (cf8c8ae): a stderr notice on every load while the `.v1.bak` exists (`SecureKeyManager.GetWeakBackupWarning`) tells the operator to delete it once a downgrade is no longer needed; the file is never deleted automatically (NL-211 keeps it for downgrades) |
 
 ## Key derivation (NL-159)
 
@@ -78,19 +79,26 @@ wallet key: that needs a new node (close channels, sweep, start fresh), not a fi
 - `Daemon.Tests/Services/Ipc/NamedPipeIpcServiceTests`: a silent client is disconnected after the read timeout (with a
   `CurrentUserOnly` client, as the CLI connects); an unreadable request's error does not carry the exception message;
   the Unix socket has no group/other bits; the framing round-trips under `UntrustedData`.
+- Step 2: `Daemon.Tests/Utilities/DaemonLaunchTests` (the launcher hands the password written to its stdin to the
+  detached program, non-ASCII and shell metacharacters intact; the child's start info has no `NLTG_PASSWORD` and
+  redirects stdin; the password goes as one UTF-8 line and the stream is closed; a line break is refused; the child
+  args end with `--password-stdin`, which `ResolvePassword` reads), `SensitiveLoggingUtilsTests` (warning only for
+  `true`), and in `SecureKeyManagerTests` the BIP84 descriptor test (the vector's account xpub, and every descriptor's
+  xpub derives the wallet's and the channel keys) and the `.v1.bak` notice (present after an upgrade, gone after the
+  backup is deleted).
 - `Daemon.Tests/Utilities/FilePermissionUtilsTests`, `PasswordUtilsTests`, `DaemonArgsTests`: 0700 directories
   (parents too), 0600 new files, `CreateNew` never overwrites, warnings only for group/other bits, password-file
   warning, and a fresh `~/.nltg/<network>` is 0700 with a 0600 `appsettings.json`.
 
 ## What remains
 
-1. SR-11: pass the password to the daemon child over its stdin (`--password-stdin`) instead of the environment.
-2. SR-17: BOLT 8 handshake ECDH through `ISecureKeyManager` (transport lane), then drop `GetNodeKeyPair()`'s private
+1. SR-17: BOLT 8 handshake ECDH through `ISecureKeyManager` (transport lane), then drop `GetNodeKeyPair()`'s private
    key from every caller except the signer.
-3. SR-18: a way to delete the weak `.v1.bak` (and say so in the upgrade notice).
-4. SR-12: warn at startup when `Database:EnableSensitiveQueryLogging` is on (persistence lane).
-5. SR-13: fix the descriptors (derive the account xpub for each path) before anything exports them.
-6. SR-14 / NL-224: Windows ACL on rewrites; on Unix, keep the file's owner when root rewrites it.
-7. Not reviewed here: Windows named-pipe ACL behaviour end to end (only `CurrentUserOnly` is set), the database file's
+2. SR-14 / NL-224: Windows ACL on rewrites; on Unix, keep the file's owner when root rewrites it.
+3. SR-09: strings (xprv, password) and NBitcoin key objects cannot be wiped; a signer that never builds them is the
+   only full fix.
+4. `tools/NLightning.GossipProbe/ProbeNode.cs` still creates keys with the legacy constructor (v2 files); fine for a
+   probe, but new product code must use `CreateNew`/`FromMnemonic`.
+5. Not reviewed here: Windows named-pipe ACL behaviour end to end (only `CurrentUserOnly` is set), the database file's
    own mode when its path is outside the config directory (`Database:ConnectionString` can point anywhere), and
    Serilog sinks configured by the operator outside the config directory.
