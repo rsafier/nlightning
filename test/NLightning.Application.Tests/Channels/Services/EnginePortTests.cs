@@ -95,7 +95,7 @@ public class EnginePortTests
         var port = new EngineCommitmentSignerPort(CreateService(), _channels.Object);
 
         // Act
-        var signatures = port.SignRemoteCommitment(s_channelId, 7, spec, s_pubKey);
+        var signatures = port.SignRemoteCommitment(s_channelId, null, 7, spec, s_pubKey);
 
         // Assert
         Assert.Equal(_signature, signatures.Signature);
@@ -127,7 +127,7 @@ public class EnginePortTests
         var spec = new CommitmentSpec(CommitmentSide.Local, 253, 1, 1, []);
 
         // Act / Assert
-        Assert.Throws<ArgumentException>(() => port.SignRemoteCommitment(s_channelId, 1, spec, s_pubKey));
+        Assert.Throws<ArgumentException>(() => port.SignRemoteCommitment(s_channelId, null, 1, spec, s_pubKey));
     }
 
     [Fact]
@@ -138,7 +138,7 @@ public class EnginePortTests
         var spec = new CommitmentSpec(CommitmentSide.Remote, 253, 1, 1, []);
 
         // Act / Assert
-        Assert.Throws<InvalidOperationException>(() => port.SignRemoteCommitment(ChannelId.Zero, 1, spec, s_pubKey));
+        Assert.Throws<InvalidOperationException>(() => port.SignRemoteCommitment(ChannelId.Zero, null, 1, spec, s_pubKey));
     }
 
     [Fact]
@@ -152,7 +152,7 @@ public class EnginePortTests
         var port = CreateVerifierPort();
 
         // Act
-        var valid = port.VerifyLocalCommitment(s_channelId, 7, spec, new CommitmentSignatures(_signature, []));
+        var valid = port.VerifyLocalCommitment(s_channelId, null, 7, spec, new CommitmentSignatures(_signature, []));
 
         // Assert
         Assert.True(valid);
@@ -172,7 +172,7 @@ public class EnginePortTests
         var port = CreateVerifierPort();
 
         // Act
-        var valid = port.VerifyLocalCommitment(s_channelId, 7, spec, new CommitmentSignatures(_signature, []));
+        var valid = port.VerifyLocalCommitment(s_channelId, null, 7, spec, new CommitmentSignatures(_signature, []));
 
         // Assert
         Assert.False(valid);
@@ -186,7 +186,7 @@ public class EnginePortTests
         var port = CreateVerifierPort();
 
         // Act / Assert
-        Assert.Throws<ArgumentException>(() => port.VerifyLocalCommitment(s_channelId, 1, spec,
+        Assert.Throws<ArgumentException>(() => port.VerifyLocalCommitment(s_channelId, null, 1, spec,
                                                                            new CommitmentSignatures(_signature, [])));
     }
 

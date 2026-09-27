@@ -8,6 +8,7 @@ using Domain.Bitcoin.Transactions.Factories;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -328,15 +329,15 @@ internal sealed class CommitmentDanceDriver
 
     private sealed class FakeCommitmentSigner(ulong remoteDustSat, bool anchors) : ICommitmentSigner
     {
-        public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                         CompactPubKey remotePerCommitmentPoint) =>
+        public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                         CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint) =>
             Signatures((byte)number, CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors));
     }
 
     private sealed class FakeCommitmentVerifier : ICommitmentVerifier
     {
-        public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                          CommitmentSignatures signatures) => true;
+        public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                          CommitmentSpec spec, CommitmentSignatures signatures) => true;
     }
 
     /// <summary>A secret is valid for a point when both encode the same (node, number).</summary>

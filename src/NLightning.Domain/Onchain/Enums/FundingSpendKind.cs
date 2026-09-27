@@ -30,5 +30,11 @@ public enum FundingSpendKind : byte
     FutureRemote = 6,
 
     /// <summary>The transaction does not spend the funding output at all (a caller error, never a close).</summary>
-    NotFundingSpend = 7
+    NotFundingSpend = 7,
+
+    /// <summary>
+    /// One of the channel's pending splice transactions (splicing plan §3.6, SP2-C-T1): not a close. The channel stays
+    /// <c>Open</c> on the splice funding; no resolution starts.
+    /// </summary>
+    Splice = 8
 }

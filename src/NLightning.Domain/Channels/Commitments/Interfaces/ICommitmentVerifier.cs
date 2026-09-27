@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Commitments.Interfaces;
 
+using Splicing;
 using ValueObjects;
 
 /// <summary>
@@ -15,9 +16,12 @@ public interface ICommitmentVerifier
     /// and every HTLC signature (valid and low-S, in output order).
     /// </summary>
     /// <param name="channelId">The channel (the implementation supplies its static data).</param>
+    /// <param name="funding">The funding the commitment spends (see <see cref="ICommitmentSigner.SignRemoteCommitment"/>;
+    /// null means the channel's only funding).</param>
     /// <param name="number">Our new local commitment number.</param>
     /// <param name="spec">The commitment content; its <see cref="CommitmentSpec.Holder"/> is the local side.</param>
     /// <param name="signatures">The peer's signatures from <c>commitment_signed</c>.</param>
     /// <returns>False when any signature is invalid; the engine then rejects the <c>commitment_signed</c>.</returns>
-    bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec, CommitmentSignatures signatures);
+    bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
+                               CommitmentSignatures signatures);
 }

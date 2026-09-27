@@ -841,4 +841,45 @@ public class MessageFactory : IMessageFactory
     }
 
     #endregion
+
+    #region Splicing
+
+    /// <inheritdoc />
+    public SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                                     uint fundingFeeratePerKw, uint locktime,
+                                                     CompactPubKey fundingPubKey, bool requireConfirmedInputs = false)
+    {
+        var payload = new SpliceInitPayload(channelId, fundingContributionSatoshis, fundingFeeratePerKw, locktime,
+                                            fundingPubKey);
+
+        return new SpliceInitMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+    }
+
+    /// <inheritdoc />
+    public SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                                   CompactPubKey fundingPubKey, bool requireConfirmedInputs = false)
+    {
+        var payload = new SpliceAckPayload(channelId, fundingContributionSatoshis, fundingPubKey);
+
+        return new SpliceAckMessage(payload, requireConfirmedInputs ? new RequireConfirmedInputsTlv() : null);
+    }
+
+    /// <inheritdoc />
+    public SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId)
+    {
+        return new SpliceLockedMessage(new SpliceLockedPayload(channelId, spliceTxId));
+    }
+
+    /// <inheritdoc />
+    public StartBatchMessage CreateStartBatchMessage(ChannelId channelId, ushort batchSize)
+    {
+        // BOLT 2 "Batching channel messages": a sender sets 1 < batch_size <= 20
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, (ushort)2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(batchSize, (ushort)20);
+
+        return new StartBatchMessage(new StartBatchPayload(channelId, batchSize),
+                                     StartBatchMessageTypeTlv.CommitmentSigned());
+    }
+
+    #endregion
 }

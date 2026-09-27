@@ -146,4 +146,29 @@ public interface IMessageFactory
                                                                       ShortChannelId shortChannelId,
                                                                       CompactSignature nodeSignature,
                                                                       CompactSignature bitcoinSignature);
+
+    /// <summary>A <c>splice_init</c> (BOLT 2, type 80, SP-W-01).</summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="fundingContributionSatoshis">Our signed contribution (negative for a splice-out).</param>
+    /// <param name="fundingFeeratePerKw">The splice transaction's feerate.</param>
+    /// <param name="locktime">The splice transaction's <c>nLockTime</c>.</param>
+    /// <param name="fundingPubKey">Our funding key for the new funding.</param>
+    /// <param name="requireConfirmedInputs">Set <c>require_confirmed_inputs</c> (TLV 2).</param>
+    SpliceInitMessage CreateSpliceInitMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                              uint fundingFeeratePerKw, uint locktime, CompactPubKey fundingPubKey,
+                                              bool requireConfirmedInputs = false);
+
+    /// <summary>A <c>splice_ack</c> (BOLT 2, type 81, SP-W-02).</summary>
+    SpliceAckMessage CreateSpliceAckMessage(ChannelId channelId, long fundingContributionSatoshis,
+                                            CompactPubKey fundingPubKey, bool requireConfirmedInputs = false);
+
+    /// <summary>A <c>splice_locked</c> (BOLT 2, type 77, SP-LK-01).</summary>
+    SpliceLockedMessage CreateSpliceLockedMessage(ChannelId channelId, TxId spliceTxId);
+
+    /// <summary>
+    /// A <c>start_batch</c> (BOLT 2, type 127) announcing <paramref name="batchSize"/> <c>commitment_signed</c>
+    /// messages (<c>message_type</c> = 132, SP-OP-03).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="batchSize"/> is not in 2..20.</exception>
+    StartBatchMessage CreateStartBatchMessage(ChannelId channelId, ushort batchSize);
 }

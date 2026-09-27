@@ -2,6 +2,7 @@ namespace NLightning.Domain.Channels.Commitments;
 
 using Bitcoin.Transactions.Enums;
 using Models;
+using Splicing;
 using ValueObjects;
 
 /// <summary>
@@ -20,6 +21,9 @@ using ValueObjects;
 /// reserve part of B2-ADD-R02) are skipped. Rules that do not depend on the announced limits (amount 0, cltv, fee
 /// affordability) still apply, and our own offers are still checked against the (possibly guessed) peer limits, which
 /// can only refuse a send, never fail the channel.</param>
+/// <param name="Funding">The channel's current funding (splicing plan SP1-0), handed to the signer and verifier ports;
+/// null when unknown (an engine built by hand in tests). Lane SP1-B moves the funding data into the engine's
+/// <see cref="FundingSet"/>; <see cref="FundingSatoshis"/> stays the current capacity.</param>
 public sealed record CommitmentParams(
     bool LocalIsFunder,
     ulong FundingSatoshis,
@@ -27,7 +31,8 @@ public sealed record CommitmentParams(
     CommitmentParty Local,
     CommitmentParty Remote,
     ulong? MaxDustHtlcExposureMsat = null,
-    bool HasInferredLimits = false)
+    bool HasInferredLimits = false,
+    ChannelFunding? Funding = null)
 {
     public ulong FundingMsat => checked(FundingSatoshis * 1_000);
 
@@ -57,7 +62,8 @@ public sealed record CommitmentParams(
         return new CommitmentParams(channel.IsInitiator, (ulong)fundingOutput.Amount.Satoshi,
                                     channel.ChannelParams.OptionAnchorOutputs, ToParty(channel.ChannelParams.Local),
                                     ToParty(channel.ChannelParams.Remote), maxDustHtlcExposureMsat,
-                                    channel.ChannelParams.HasInferredParams);
+                                    channel.ChannelParams.HasInferredParams,
+                                    ChannelFunding.FromFundingOutput(fundingOutput));
     }
 
     private static CommitmentParty ToParty(ChannelParty party) =>

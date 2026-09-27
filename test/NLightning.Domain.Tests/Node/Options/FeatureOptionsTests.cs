@@ -199,7 +199,7 @@ public class FeatureOptionsTests
 
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
-        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionAttributionData
+        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionAttributionData, Feature.OptionSplice
     ];
 
     [Fact]
@@ -457,6 +457,9 @@ public class FeatureOptionsTests
                 break;
             case Feature.OptionDualFund:
                 options.DualFund = support;
+                break;
+            case Feature.OptionSplice:
+                options.OptionSplice = support;
                 break;
             case Feature.OptionRouteBlinding:
                 options.OptionRouteBlinding = support;

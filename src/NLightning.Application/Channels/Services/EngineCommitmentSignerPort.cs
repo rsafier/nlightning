@@ -4,6 +4,7 @@ using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 
@@ -28,8 +29,10 @@ public sealed class EngineCommitmentSignerPort : ICommitmentSigner
     /// <inheritdoc />
     /// <exception cref="ArgumentException"><paramref name="spec"/> is not a remote commitment.</exception>
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
-    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                     CompactPubKey remotePerCommitmentPoint)
+    /// <remarks>Signs against the channel's registered funding: <paramref name="funding"/> is not used until lane
+    /// SP1-C signs per funding.</remarks>
+    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
     {
         ArgumentNullException.ThrowIfNull(spec);
         if (spec.Holder != CommitmentSide.Remote)

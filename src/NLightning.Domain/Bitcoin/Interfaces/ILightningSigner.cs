@@ -337,6 +337,92 @@ public interface ILightningSigner
     CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
                                      LightningMoney amount);
 
+    #region Splicing (splicing plan SP1-0; implemented by lane SP1-C in LocalLightningSigner.Splicing.cs)
+
+    /// <summary>
+    /// Our funding public key number <paramref name="fundingKeyIndex"/> of the channel (splicing plan D5): index 0 is
+    /// the channel's original funding key; each splice rotates to a new index, derived deterministically from the
+    /// channel's keys so a static channel backup restores it.
+    /// </summary>
+    CompactPubKey GetFundingPubKey(ChannelId channelId, uint fundingKeyIndex) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T1)");
+
+    /// <summary>
+    /// Registers a pending splice funding of a registered channel (its outpoint, capacity, both funding keys and our
+    /// key index), so commitments can be signed and verified for it (SP-OP-01). Registering the same funding again is
+    /// a no-op; other keys for a registered funding txid throw a <see cref="Exceptions.SignerException"/>.
+    /// </summary>
+    void RegisterFunding(ChannelId channelId, Channels.Splicing.ChannelFunding funding) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T1)");
+
+    /// <summary>
+    /// Invariant SP-I1: records that our local commitment <paramref name="localCommitmentNumber"/> spending the pending
+    /// funding <paramref name="fundingTxId"/>, with the peer's verified commitment and HTLC signatures, is persisted.
+    /// Call it only after the save succeeded. <see cref="SignSpliceSharedInput"/> refuses until it was called.
+    /// </summary>
+    void MarkSpliceCommitmentPersisted(ChannelId channelId, TxId fundingTxId, ulong localCommitmentNumber) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T2)");
+
+    /// <summary>
+    /// Our <c>shared_input_signature</c> (SP-SIG-01): the ECDSA signature (<c>SIGHASH_ALL</c>, BIP 143, low-S, RFC
+    /// 6979) of the input <paramref name="sharedInputIndex"/> of <paramref name="unsignedSpliceTransaction"/> that spends
+    /// the channel's current funding output, with the current funding key.
+    /// </summary>
+    /// <remarks>
+    /// SP-I1: refused (<see cref="Exceptions.SignerException"/>) unless <see cref="MarkSpliceCommitmentPersisted"/>
+    /// recorded a persisted commitment for <paramref name="newFundingTxId"/> at the current local commitment number,
+    /// unless the transaction's output <paramref name="newFundingTxId"/> is the registered pending funding, and after
+    /// data loss or a broadcast mark (S1).
+    /// </remarks>
+    CompactSignature SignSpliceSharedInput(ChannelId channelId, TxId newFundingTxId,
+                                           SignedTransaction unsignedSpliceTransaction, int sharedInputIndex) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T2)");
+
+    /// <summary>
+    /// Verifies the peer's <c>shared_input_signature</c> for the shared input of a splice transaction (SP-SIG-01:
+    /// missing, invalid or high-S means the channel fails).
+    /// </summary>
+    /// <exception cref="Exceptions.SignerException">The signature does not parse, is high-S or does not
+    /// verify.</exception>
+    void ValidateSpliceSharedInputSignature(ChannelId channelId, SignedTransaction unsignedSpliceTransaction,
+                                            int sharedInputIndex, CompactSignature remoteSignature) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T2)");
+
+    /// <summary>
+    /// <see cref="SignChannelTransaction"/> for the commitment of a given active funding (the current one or a pending
+    /// splice): signs input 0 against that funding's output and keys.
+    /// </summary>
+    CompactSignature SignChannelTransaction(ChannelId channelId, TxId fundingTxId,
+                                            SignedTransaction unsignedTransaction) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T1)");
+
+    /// <summary>
+    /// <see cref="ValidateSignature"/> for the commitment of a given active funding.
+    /// </summary>
+    void ValidateSignature(ChannelId channelId, TxId fundingTxId, CompactSignature signature,
+                           SignedTransaction unsignedTransaction) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T1)");
+
+    /// <summary>
+    /// <see cref="SignLocalCommitmentForBroadcast"/> for the commitment of a given active funding. Invariant SP-I4:
+    /// once commitment <c>n</c> is signed for broadcast on any funding, the same <c>n</c> may be signed on another
+    /// active funding (the one that confirmed), never another number.
+    /// </summary>
+    SignedTransaction SignLocalCommitmentForBroadcast(ChannelId channelId, TxId fundingTxId, ulong commitmentNumber,
+                                                      SignedTransaction unsignedCommitment,
+                                                      CompactSignature remoteSignature) =>
+        throw new NotImplementedException("Lane SP1-C (SP1-C-T3)");
+
+    /// <summary>
+    /// The splice <paramref name="fundingTxId"/> was locked both ways (<c>splice_locked</c> sent and received): it
+    /// becomes the channel's current funding for signing; the other pending fundings stop being signed for. Keys of
+    /// retired fundings stay known for their on-chain resolution (SP-I5).
+    /// </summary>
+    void LockFunding(ChannelId channelId, TxId fundingTxId) =>
+        throw new NotImplementedException("Lane SP1-C");
+
+    #endregion
+
     /// <summary>
     /// The public key of the transient BOLT 12 payer key of an invoice_request with
     /// <paramref name="invoiceRequestMetadata"/> (its <c>invreq_payer_id</c>; BOLT 12 plan §3.6, D3).

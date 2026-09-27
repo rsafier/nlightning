@@ -598,7 +598,7 @@ public sealed record ChannelCommitments
         var advanced = Advance(HtlcEvent.SendCommit, out var settled);
         var spec = advanced.BuildSpec(CommitmentSide.Remote);
         var number = checked(RemoteCommit.Number + 1);
-        var signatures = signer.SignRemoteCommitment(ChannelId, number, spec, point);
+        var signatures = signer.SignRemoteCommitment(ChannelId, Params.Funding, number, spec, point);
         var expected =
             CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
@@ -636,7 +636,7 @@ public sealed record ChannelCommitments
             CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
             throw Violation("B2-CS-R02", $"num_htlcs {signatures.HtlcSignatures.Count}, expected {expected}");
-        if (!verifier.VerifyLocalCommitment(ChannelId, number, spec, signatures))
+        if (!verifier.VerifyLocalCommitment(ChannelId, Params.Funding, number, spec, signatures))
             throw Violation("B2-CS-R01", $"Invalid signature for local commitment {number}");
 
         var revoked = (committed with { LocalCommit = new LocalCommit(number, spec, signatures) })

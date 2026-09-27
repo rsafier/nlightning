@@ -10,6 +10,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 
@@ -93,8 +94,8 @@ internal sealed class FakeCommitmentSigner(ulong remoteDustSat, bool anchors) : 
 {
     public List<(ulong Number, CommitmentSpec Spec, CompactPubKey Point)> Calls { get; } = [];
 
-    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                     CompactPubKey remotePerCommitmentPoint)
+    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
     {
         Calls.Add((number, spec, remotePerCommitmentPoint));
         var count = CommitmentFeeCalculator.UntrimmedHtlcCount(spec, remoteDustSat, anchors);
@@ -110,7 +111,7 @@ internal sealed class FakeCommitmentVerifier(bool valid = true) : ICommitmentVer
 {
     public List<(ulong Number, CommitmentSpec Spec)> Calls { get; } = [];
 
-    public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
+    public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures)
     {
         Calls.Add((number, spec));

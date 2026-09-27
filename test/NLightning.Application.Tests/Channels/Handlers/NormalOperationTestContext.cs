@@ -15,6 +15,7 @@ using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -225,13 +226,13 @@ internal sealed class FakeCommitmentPorts : ICommitmentSigner, ICommitmentVerifi
     public bool CommitmentSignaturesValid { get; set; } = true;
     public bool SecretsValid { get; set; } = true;
 
-    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                                     CompactPubKey remotePerCommitmentPoint) =>
+    public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                                     CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint) =>
         new(NormalOperationTestContext.Signature(0x51),
             Enumerable.Repeat(NormalOperationTestContext.Signature(0x52),
                               CommitmentFeeCalculator.UntrimmedHtlcCount(spec, 546, false)).ToList());
 
-    public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
+    public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures) => CommitmentSignaturesValid;
 
     public bool IsValidSecret(Secret perCommitmentSecret, CompactPubKey expectedPerCommitmentPoint) => SecretsValid;
@@ -263,7 +264,7 @@ internal sealed class FakeCommitmentPorts : ICommitmentSigner, ICommitmentVerifi
 
     private sealed class AcceptingVerifier : ICommitmentVerifier
     {
-        public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
-                                          CommitmentSignatures signatures) => true;
+        public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
+                                          CommitmentSpec spec, CommitmentSignatures signatures) => true;
     }
 }

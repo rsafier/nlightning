@@ -6,6 +6,7 @@ using Domain.Bitcoin.Transactions.Enums;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
 
@@ -36,7 +37,9 @@ public sealed class EngineCommitmentVerifierPort : ICommitmentVerifier
     /// <inheritdoc />
     /// <exception cref="ArgumentException"><paramref name="spec"/> is not a local commitment.</exception>
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
-    public bool VerifyLocalCommitment(ChannelId channelId, ulong number, CommitmentSpec spec,
+    /// <remarks>Verifies against the channel's registered funding: <paramref name="funding"/> is not used until lane
+    /// SP1-C verifies per funding.</remarks>
+    public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures)
     {
         ArgumentNullException.ThrowIfNull(spec);

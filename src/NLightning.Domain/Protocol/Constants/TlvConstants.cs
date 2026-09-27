@@ -110,6 +110,24 @@ public static class TlvConstants
     public static readonly BigSize NextFunding = 1;
 
     /// <summary>
+    /// My Current Funding Locked TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>channel_reestablish_tlvs</c> type 5 (<c>my_current_funding_locked</c>):
+    /// [<c>sha256</c>:<c>my_current_funding_locked_txid</c>] [<c>byte</c>:<c>retransmit_flags</c>] (SP-RE-02).
+    /// </remarks>
+    public static readonly BigSize MyCurrentFundingLocked = 5;
+
+    /// <summary>
+    /// Start Batch Message Type TLV Type
+    /// </summary>
+    /// <remarks>
+    /// BOLT 2 <c>start_batch_tlvs</c> type 1 (<c>message_type</c>): [<c>u16</c>:<c>message_type</c>], 132
+    /// (<c>commitment_signed</c>) for a splice batch (SP-OP-03/04).
+    /// </remarks>
+    public static readonly BigSize StartBatchMessageType = 1;
+
+    /// <summary>
     /// Funding TxId TLV Type
     /// </summary>
     /// <remarks>

@@ -117,7 +117,7 @@ public class OpenChannelIpcHandlerTests
     [Fact]
     public void Given_ARequestWithoutKey4_When_Deserialized_Then_ItIsPrivate()
     {
-        // Arrange (an older client: keys 0, 2 and 3 only): the same request without its last array element
+        // Arrange (an older client: keys 0, 2 and 3 only): the same request without its last two array elements
         var current = MessagePackSerializer.Serialize(
             new OpenChannelIpcRequest
             {
@@ -125,9 +125,10 @@ public class OpenChannelIpcHandlerTests
                 Amount = LightningMoney.Satoshis(1_000),
                 PushAmount = LightningMoney.Satoshis(10)
             }, s_options, TestContext.Current.CancellationToken);
-        Assert.Equal(0x95, current[0]); // fixarray of 5 (keys 0-4)
-        Assert.Equal(0xC2, current[^1]); // key 4: false
-        byte[] older = [0x94, .. current[1..^1]];
+        Assert.Equal(0x96, current[0]); // fixarray of 6 (keys 0-5)
+        Assert.Equal(0xC2, current[^2]); // key 4: false
+        Assert.Equal(0xC2, current[^1]); // key 5: false
+        byte[] older = [0x94, .. current[1..^2]];
 
         // Act
         var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
@@ -135,8 +136,52 @@ public class OpenChannelIpcHandlerTests
 
         // Assert
         Assert.False(request.IsPublic);
+        Assert.False(request.IsDualFunded);
         Assert.Equal("02abc@127.0.0.1:9735", request.NodeInfo);
         Assert.Equal(LightningMoney.Satoshis(10), request.PushAmount);
+    }
+
+    [Fact]
+    public void Given_ARequestWithoutKey5_When_Deserialized_Then_ItIsNotDualFunded()
+    {
+        // Arrange (a client before wave sp1: keys 0, 2, 3 and 4): the same request without its last array element
+        var current = MessagePackSerializer.Serialize(
+            new OpenChannelIpcRequest
+            {
+                NodeInfo = "02abc@127.0.0.1:9735",
+                Amount = LightningMoney.Satoshis(1_000),
+                IsPublic = true,
+                IsDualFunded = true
+            }, s_options, TestContext.Current.CancellationToken);
+        Assert.Equal(0xC3, current[^1]); // key 5: true
+        byte[] older = [0x95, .. current[1..^1]];
+
+        // Act
+        var request = MessagePackSerializer.Deserialize<OpenChannelIpcRequest>(
+            older, s_options, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(request.IsPublic);
+        Assert.False(request.IsDualFunded);
+    }
+
+    [Fact]
+    public void Given_ADualFundedRequest_When_MappedToTheClientRequest_Then_TheFlagIsKept()
+    {
+        // Arrange
+        var request = new OpenChannelIpcRequest
+        {
+            NodeInfo = "02abc@127.0.0.1:9735",
+            Amount = LightningMoney.Satoshis(1_000),
+            IsDualFunded = true
+        };
+
+        // Act
+        var clientRequest = request.ToClientRequest();
+
+        // Assert
+        Assert.True(clientRequest.IsDualFunded);
+        Assert.False(clientRequest.IsPublic);
     }
 
     [Fact]

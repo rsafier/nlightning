@@ -17,7 +17,8 @@ public class FeatureOptions
     /// </summary>
     /// <remarks>
     /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers,
-    /// and attribution_data error attribution (onion M3b) (provide_storage left the set with the peer_storage handlers
+    /// attribution_data error attribution (onion M3b) and splice the splicing protocol (splicing plan D13: it leaves
+    /// the set together with quiesce after Proof SP2) (provide_storage left the set with the peer_storage handlers
     /// and route_blinding with the blinded payloads (onion M5), wave rf1; onion_messages with the onion message service
     /// after Proof M6, wave M6, plan D9).
     /// Remove a feature from this set when it is implemented.
@@ -26,7 +27,8 @@ public class FeatureOptions
     {
         Feature.OptionQuiesce,
         Feature.OptionDualFund,
-        Feature.OptionAttributionData
+        Feature.OptionAttributionData,
+        Feature.OptionSplice
     };
 
     /// <summary>
@@ -129,7 +131,8 @@ public class FeatureOptions
     /// Enable dual fund.
     /// </summary>
     /// <remarks>
-    /// Defaults to No: the interactive-tx / v2 open handlers are not implemented.
+    /// Defaults to No and experimental: the v2 open (<c>open_channel2</c>/<c>accept_channel2</c>,
+    /// <c>IDualFundedOpenService</c>) lands in wave DF (lane SP1-F) and leaves the experimental set after Proof DF.
     /// </remarks>
     public FeatureSupport DualFund { get; set; } = FeatureSupport.No;
 
@@ -140,6 +143,17 @@ public class FeatureOptions
     /// Defaults to No: stfu is not handled.
     /// </remarks>
     public FeatureSupport OptionQuiesce { get; set; } = FeatureSupport.No;
+
+    /// <summary>
+    /// Enable splicing (BOLT 2 "Channel Splicing", BOLT 9 <c>option_splice</c> 62/63).
+    /// </summary>
+    /// <remarks>
+    /// Defaults to No and experimental (splicing plan SP1-0): the splice handlers land in wave SP1 and the reestablish,
+    /// lock and on-chain handling in wave SP2; it leaves <see cref="ExperimentalFeatures"/> together with
+    /// <see cref="OptionQuiesce"/> after Proof SP2 (D13). BOLT 9 lists no dependency, but a splice needs quiescence too:
+    /// splicing checks that both 35 and 63 were negotiated at use (D14). Pre-standard bits (154/155) are never used.
+    /// </remarks>
+    public FeatureSupport OptionSplice { get; set; } = FeatureSupport.No;
 
     /// <summary>
     /// Enable attribution data.
@@ -290,6 +304,7 @@ public class FeatureOptions
         { Feature.OptionPaymentMetadata, PaymentMetadata },
         { Feature.OptionZeroconf, ZeroConf },
         { Feature.OptionSimpleClose, OptionSimpleClose },
+        { Feature.OptionSplice, OptionSplice },
     };
 
     /// <summary>
@@ -402,6 +417,11 @@ public class FeatureOptions
         if (IsAdvertised(Feature.OptionSimpleClose, OptionSimpleClose))
         {
             features.SetFeature(Feature.OptionSimpleClose, OptionSimpleClose == FeatureSupport.Compulsory);
+        }
+
+        if (IsAdvertised(Feature.OptionSplice, OptionSplice))
+        {
+            features.SetFeature(Feature.OptionSplice, OptionSplice == FeatureSupport.Compulsory);
         }
 
         return features;
@@ -554,6 +574,11 @@ public class FeatureOptions
                                     : featureSet.IsFeatureSet(Feature.OptionSimpleClose, false)
                                         ? FeatureSupport.Optional
                                         : FeatureSupport.No,
+            OptionSplice = featureSet.IsFeatureSet(Feature.OptionSplice, true)
+                               ? FeatureSupport.Compulsory
+                               : featureSet.IsFeatureSet(Feature.OptionSplice, false)
+                                   ? FeatureSupport.Optional
+                                   : FeatureSupport.No,
         };
 
         if (extension?.TryGetTlv(new BigSize(1), out var chainHashes) ?? false)
