@@ -97,13 +97,85 @@ public class ChannelStateDbRepository : IChannelStateDbRepository
             await SyncRemoteNextAsync(channelId, fundingTxId, next.RemoteNextCommit);
         }
 
+        // SP-I2: every pending funding's commitments follow the state machine's in the same save, so our latest
+        // commitment on a splice that confirms (and the peer's) can be rebuilt and broadcast after a restart
+        if (!next.PendingFundings.IsEmpty)
+            await SyncPendingFundingSlotsAsync(channelId, next, transition);
+
         // The revocation log (BOLT 5 plan O1-T1): the commitment the peer just revoked, in the same save as the
         // revoke_and_ack and its shachain entry, so a breach of it can be rebuilt output by output
         if (transition.RevokedRemoteCommit is { } revoked)
+        {
             await _revokedCommitmentDbRepository.StageAsync(channelId, revoked, fundingTxId);
+
+            // NL-479 (SP-I3, SP-I5): the one secret revokes the number on every funding it was signed on (pending,
+            // and discarded or replaced since), each logged with that funding's balances
+            foreach (var funding in transition.RevokedRemoteCommitFundings ?? [])
+            {
+                if (funding.FundingTxId == fundingTxId)
+                    continue;
+
+                await _revokedCommitmentDbRepository.StageAsync(
+                    channelId, revoked with { Spec = ChannelCommitments.SpecFor(revoked.Spec, funding) },
+                    funding.FundingTxId);
+            }
+        }
 
         if (extras?.RemoteShachain is { } shachain)
             await _remoteShachainDbRepository.SaveAsync(channelId, shachain);
+    }
+
+    /// <summary>
+    /// Writes the commitment slots of each pending funding (a splice not locked yet) that the transition changed: our
+    /// local commitment with the peer's signatures of it on that funding, the peer's current commitment on it, and the
+    /// unacked one with the signatures we sent for it (removed when there is none). Balances are the state machine's
+    /// moved by the funding's deltas (<see cref="ChannelCommitments.SpecFor"/>). A funding without a
+    /// <c>ChannelFundings</c> row (none staged yet) is skipped; the splice step writes its first slots itself.
+    /// </summary>
+    private async Task SyncPendingFundingSlotsAsync(ChannelId channelId, ChannelCommitments next,
+                                                    ChannelTransition transition)
+    {
+        if (!transition.LocalCommitChanged && !transition.RemoteCommitChanged)
+            return;
+
+        var stored = (await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelId))
+                     .Select(f => f.FundingTxId)
+                     .ToHashSet();
+        foreach (var funding in next.PendingFundings)
+        {
+            var fundingTxId = funding.FundingTxId;
+            if (!stored.Contains(fundingTxId))
+                continue;
+
+            if (transition.LocalCommitChanged && next.LocalCommit.SignaturesFor(fundingTxId) is { } localSignatures)
+            {
+                var local = next.LocalCommit;
+                await UpsertCommitmentAsync(channelId, CommitmentEntity.LocalCurrentSlot, fundingTxId, local.Number,
+                                            ChannelCommitments.SpecFor(local.Spec, funding), null, localSignatures);
+            }
+
+            if (!transition.RemoteCommitChanged)
+                continue;
+
+            var remote = next.RemoteCommit;
+            if (remote.SignedOnFundings is null || remote.SignedOnFundings.Any(f => f.FundingTxId == fundingTxId))
+            {
+                // The signatures we sent for the peer's current commitment on this funding are kept while the number
+                // is the same (the splice step's commitment_signed, retransmitted by the reestablish)
+                var existing = await FindCommitmentAsync(channelId, CommitmentEntity.RemoteCurrentSlot, fundingTxId);
+                var sent = existing is not null && existing.Number == remote.Number ? MapSignatures(existing) : null;
+                await UpsertCommitmentAsync(channelId, CommitmentEntity.RemoteCurrentSlot, fundingTxId, remote.Number,
+                                            ChannelCommitments.SpecFor(remote.Spec, funding), remote.PerCommitmentPoint,
+                                            sent);
+            }
+
+            RemoteNextCommit? unacked = null;
+            if (next.RemoteNextCommit is { } remoteNext && remoteNext.SignaturesFor(fundingTxId) is { } sentSignatures)
+                unacked = new RemoteNextCommit(
+                    remoteNext.Commit with { Spec = ChannelCommitments.SpecFor(remoteNext.Commit.Spec, funding) },
+                    sentSignatures);
+            await SyncRemoteNextAsync(channelId, fundingTxId, unacked);
+        }
     }
 
     /// <inheritdoc />
