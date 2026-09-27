@@ -1,11 +1,14 @@
 namespace NLightning.Application.InteractiveTx.Interfaces;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx;
+using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.Messages;
 using Models;
 
 /// <summary>
@@ -27,7 +30,9 @@ public interface IInteractiveTxDriver
     /// Starts a negotiation for <paramref name="host"/> on <see cref="InteractiveTxTerms.ChannelId"/>. As initiator the
     /// result holds our first message; otherwise it is empty and the peer's first <c>tx_add_*</c> is awaited.
     /// </summary>
-    /// <exception cref="InvalidOperationException">A negotiation is already in progress on the channel.</exception>
+    /// <exception cref="InvalidOperationException">A negotiation is already in progress on the channel, or our
+    /// <c>tx_abort</c> still waits for its echo (at most <c>InteractiveTxDriver.AbortEchoTimeout</c>): a new attempt
+    /// before it would take the echo and the peer's stale messages as its own.</exception>
     Task<IReadOnlyList<IChannelMessage>> StartAsync(InteractiveTxTerms terms, IInteractiveTxHost host,
                                                     CancellationToken cancellationToken = default);
 
@@ -57,8 +62,8 @@ public interface IInteractiveTxDriver
     /// contribution must re-add an input of every previous attempt we contributed to).</param>
     /// <param name="fundingOutputContribution">Our <c>funding_output_contribution</c>, zero for none.</param>
     /// <param name="cancellationToken">Cancels the call.</param>
-    /// <exception cref="InvalidOperationException">No completed attempt, one in progress, or a feerate below the
-    /// IT-RBF-01 minimum.</exception>
+    /// <exception cref="InvalidOperationException">No completed attempt, one in progress, our <c>tx_abort</c> still
+    /// waiting for its echo, or a feerate below the IT-RBF-01 minimum.</exception>
     Task<IReadOnlyList<IChannelMessage>> RequestRbfAsync(InteractiveTxTerms terms,
                                                          LightningMoney fundingOutputContribution,
                                                          CancellationToken cancellationToken = default);
@@ -72,17 +77,39 @@ public interface IInteractiveTxDriver
 
     /// <summary>
     /// The channel's peer disconnected: a negotiation that is not stored yet is forgotten (its reservation released,
-    /// its host told); a stored one stays for the reconnection (<c>next_funding</c>).
+    /// its host told); a stored one stays for the reconnection (<c>next_funding</c>). A <c>tx_abort</c> waiting for
+    /// its echo is no longer waited for. Call it under the channel's lock for every channel
+    /// <see cref="GetChannels"/> lists for the peer, when the peer's connection closes.
     /// </summary>
     Task OnDisconnectedAsync(ChannelId channelId, CancellationToken cancellationToken = default);
 
+    /// <summary>The channels of <paramref name="peerPubKey"/> the driver holds state for.</summary>
+    IReadOnlyList<ChannelId> GetChannels(CompactPubKey peerPubKey);
+
     /// <summary>
     /// Resumes a stored negotiation (after a restart, or on <c>channel_reestablish</c> with <c>next_funding</c>) so the
-    /// signature exchange can finish.
+    /// signature exchange can finish. A <see cref="InteractiveTxSessionState.Signed"/> row is only remembered as a
+    /// completed attempt.
     /// </summary>
+    /// <param name="model">The stored negotiation.</param>
+    /// <param name="terms">Its terms.</param>
+    /// <param name="host">The dependent protocol.</param>
+    /// <param name="cancellationToken">Cancels the call.</param>
+    /// <param name="completedAttempts">The channel's other stored rows: the <see cref="InteractiveTxSessionState.Signed"/>
+    /// ones become completed attempts (the RBF feerate floor and the IT-RBF-01 double-spend rule need them).</param>
     /// <exception cref="InvalidOperationException">A negotiation is already in progress on the channel.</exception>
     Task ResumeAsync(InteractiveTxSessionModel model, InteractiveTxTerms terms, IInteractiveTxHost host,
-                     CancellationToken cancellationToken = default);
+                     CancellationToken cancellationToken = default,
+                     IReadOnlyList<InteractiveTxSessionModel>? completedAttempts = null);
+
+    /// <summary>
+    /// For <c>channel_reestablish</c> with <c>next_funding</c> naming <paramref name="fundingTxId"/> (BOLT 2): our
+    /// <c>tx_signatures</c> for that funding transaction, rebuilt from its stored row, when we already sent it (we
+    /// send it only once the peer's <c>commitment_signed</c> arrived and either we sign first or the peer's
+    /// <c>tx_signatures</c> arrived, which are the cases where the reestablish MUST send it); null otherwise. The
+    /// <c>commitment_signed</c> retransmission (<c>retransmit_flags</c>) is the host's.
+    /// </summary>
+    TxSignaturesMessage? CreateTxSignaturesRetransmission(ChannelId channelId, TxId fundingTxId);
 
     /// <summary>Whether an attempt is in progress on the channel (not aborted, not fully signed).</summary>
     bool IsNegotiating(ChannelId channelId);

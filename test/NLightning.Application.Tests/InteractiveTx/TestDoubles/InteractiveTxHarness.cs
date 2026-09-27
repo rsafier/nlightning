@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.InteractiveTx.TestDoubles;
 using Application.InteractiveTx;
 using Application.InteractiveTx.Interfaces;
 using Application.InteractiveTx.Models;
+using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -39,7 +40,16 @@ public static class InteractiveTxEngines
     internal static IInteractiveTxEngine Get(string name) =>
         name == Domain ? new DomainInteractiveTxEngine() : new ReferenceInteractiveTxEngine();
 
-    private static bool IsDomainEngineImplemented()
+    /// <summary>The message of the wave contract's <see cref="InteractiveTxSession"/> stub (lane IT-A replaces it).</summary>
+    internal const string ContractStubMessage = "Interactive-tx engine: lane IT-A (IT1-T1..T4)";
+
+    /// <summary>
+    /// False only while <see cref="InteractiveTxSession"/> is still the wave contract's stub (its exact
+    /// <see cref="NotImplementedException"/>). Anything else, including a <see cref="NotImplementedException"/> with
+    /// another message (a partly implemented engine), adds the domain variant, so its failures show instead of the
+    /// variant silently disappearing.
+    /// </summary>
+    internal static bool IsDomainEngineImplemented()
     {
         var key = new Key().PubKey.ToBytes();
         var parameters = new InteractiveTxSessionParameters(new ChannelId(new byte[32]), true, 253, 0,
@@ -50,13 +60,13 @@ public static class InteractiveTxEngines
             InteractiveTxSession.Create(parameters).Start();
             return true;
         }
-        catch (NotImplementedException)
+        catch (NotImplementedException e) when (e.Message == ContractStubMessage)
         {
             return false;
         }
         catch (Exception)
         {
-            // Implemented, it just refuses this dummy negotiation
+            // Implemented (it may refuse this dummy negotiation), or partly: either way the scenarios must run on it
             return true;
         }
     }
@@ -78,6 +88,12 @@ internal sealed class InteractiveTxTestNode
     public int Saves { get; private set; }
     public InteractiveTxDriver Driver { get; private set; }
 
+    /// <summary>The next save throws (its staged writes are discarded), as a database failure would.</summary>
+    public bool FailNextSave { get; set; }
+
+    public IQuiescenceService? Quiescence { get; private set; }
+    public TimeProvider? Clock { get; private set; }
+
     public InteractiveTxTestNode(IInteractiveTxEngine engine)
     {
         _engine = engine;
@@ -85,6 +101,13 @@ internal sealed class InteractiveTxTestNode
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(Repository);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
+            if (FailNextSave)
+            {
+                FailNextSave = false;
+                Repository.DiscardStaged();
+                throw new InvalidOperationException("Simulated save failure");
+            }
+
             Repository.Commit();
             Saves++;
             return Task.CompletedTask;
@@ -110,6 +133,14 @@ internal sealed class InteractiveTxTestNode
 
     /// <summary>Replaces the driver (for example one built with other optional services).</summary>
     public void ReplaceDriver(InteractiveTxDriver driver) => Driver = driver;
+
+    /// <summary>Rebuilds the driver with a quiescence service and/or a clock (the memory is lost).</summary>
+    public void Configure(IQuiescenceService? quiescence = null, TimeProvider? clock = null)
+    {
+        Quiescence = quiescence;
+        Clock = clock;
+        Driver = CreateDriver();
+    }
 
     /// <summary>A restart: a new driver (empty memory) over the same database and wallet.</summary>
     public void Restart() => Driver = CreateDriver();
@@ -138,7 +169,7 @@ internal sealed class InteractiveTxTestNode
         Repository.Committed.Values.Where(s => s.ChannelId == channelId).MaxBy(s => s.CreatedAt);
 
     private InteractiveTxDriver CreateDriver() =>
-        new(_engine, Builder, Contributor, Inspector, NullLogger<InteractiveTxDriver>.Instance);
+        new(_engine, Builder, Contributor, Inspector, NullLogger<InteractiveTxDriver>.Instance, Quiescence, Clock);
 }
 
 /// <summary>
@@ -154,8 +185,12 @@ internal sealed class InteractiveTxHarness
     public List<(string From, IChannelMessage Message)> Transcript { get; } = [];
 
     public InteractiveTxHarness(string engine, long aliceShareSat, long bobShareSat)
+        : this(InteractiveTxEngines.Get(engine), aliceShareSat, bobShareSat)
     {
-        var implementation = InteractiveTxEngines.Get(engine);
+    }
+
+    public InteractiveTxHarness(IInteractiveTxEngine implementation, long aliceShareSat, long bobShareSat)
+    {
         Alice = InteractiveTxTestNode.Create("alice", 0x11, implementation, aliceShareSat, bobShareSat);
         Bob = InteractiveTxTestNode.Create("bob", 0x22, implementation, bobShareSat, aliceShareSat);
     }
@@ -179,23 +214,29 @@ internal sealed class InteractiveTxHarness
     /// </summary>
     public Task<List<(InteractiveTxTestNode From, IChannelMessage Message)>> PumpAsync(
         InteractiveTxTestNode from, IReadOnlyList<IChannelMessage> messages, CancellationToken cancellationToken,
-        Func<InteractiveTxTestNode, IChannelMessage, bool>? stopBefore = null) =>
-        PumpAsync(messages.Select(m => (from, m)), cancellationToken, stopBefore);
+        Func<InteractiveTxTestNode, IChannelMessage, bool>? stopBefore = null, int maxMessages = 1_000) =>
+        PumpAsync(messages.Select(m => (from, m)), cancellationToken, stopBefore, maxMessages);
 
     /// <summary>
     /// Delivers <paramref name="items"/> in order (one FIFO for both directions) and every reply, until nothing is
     /// left or <paramref name="stopBefore"/> holds for the next message; returns what was not delivered. A
-    /// commitment_signed for a node that no longer negotiates is dropped (its host would ignore it).
+    /// commitment_signed for a node that no longer negotiates is dropped (its host would ignore it). More than
+    /// <paramref name="maxMessages"/> deliveries fail the test (two drivers bouncing messages forever).
     /// </summary>
     public async Task<List<(InteractiveTxTestNode From, IChannelMessage Message)>> PumpAsync(
         IEnumerable<(InteractiveTxTestNode From, IChannelMessage Message)> items, CancellationToken cancellationToken,
-        Func<InteractiveTxTestNode, IChannelMessage, bool>? stopBefore = null)
+        Func<InteractiveTxTestNode, IChannelMessage, bool>? stopBefore = null, int maxMessages = 1_000)
     {
         var queue = new Queue<(InteractiveTxTestNode From, IChannelMessage Message)>(items);
+        var delivered = 0;
         while (queue.TryPeek(out var next))
         {
             if (stopBefore?.Invoke(next.From, next.Message) == true)
                 return [.. queue];
+            if (++delivered > maxMessages)
+                throw new InvalidOperationException(
+                    $"More than {maxMessages} messages pumped; the last ones: "
+                  + string.Join(", ", Transcript.TakeLast(6).Select(t => $"{t.From} {t.Message.Type}")));
 
             queue.Dequeue();
             Transcript.Add((next.From.Name, next.Message));
