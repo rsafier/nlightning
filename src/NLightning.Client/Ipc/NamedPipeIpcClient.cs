@@ -303,6 +303,20 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Disconnects a peer (ClientCommand 21); refused while its channels have HTLCs in flight unless forced.
+    /// </summary>
+    /// <param name="nodeId">The peer.</param>
+    /// <param name="force">Disconnect even with HTLCs in flight.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<DisconnectPeerIpcResponse> DisconnectPeerAsync(CompactPubKey nodeId, bool force,
+                                                               CancellationToken ct = default)
+    {
+        var req = new DisconnectPeerIpcRequest { NodeId = nodeId, Force = force };
+        return SendRequestAsync<DisconnectPeerIpcRequest, DisconnectPeerIpcResponse>(ClientCommand.DisconnectPeer,
+                                                                                     req, ct);
+    }
+
+    /// <summary>
     /// Lists the on-chain resolution of closed channels (ClientCommand 15).
     /// </summary>
     /// <param name="channelId">Only this channel, when set.</param>

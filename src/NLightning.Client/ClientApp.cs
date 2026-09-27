@@ -100,6 +100,12 @@ internal static class ClientApp
                     var listPeers = await client.ListPeersAsync(cancellationToken);
                     new ListPeersPrinter().Print(listPeers);
                     break;
+                case "disconnect":
+                case "disconnect-peer":
+                    var (disconnectId, force) = ParseDisconnectOptions(commandArgs, out _)!.Value;
+                    var disconnected = await client.DisconnectPeerAsync(disconnectId, force, cancellationToken);
+                    new DisconnectPeerPrinter().Print(disconnected);
+                    break;
                 case "listchannels":
                 case "list-channels":
                     var listChannels =
@@ -271,6 +277,11 @@ internal static class ClientApp
             case "connect":
             case "connect-peer":
                 return commandArgs.Length < 1 ? $"Missing argument. Usage: {cmd} <node>" : null;
+            case "disconnect":
+            case "disconnect-peer":
+                return ParseDisconnectOptions(commandArgs, out var disconnectError) is null
+                           ? $"{disconnectError} Usage: {cmd} <node_id> [--force]"
+                           : null;
             case "openchannel":
             case "open-channel":
                 var openArgs = OpenChannelMessageHandler.ParseArguments(commandArgs, out _, out var openError);
@@ -441,6 +452,48 @@ internal static class ClientApp
     }
 
     /// <summary>A node id: 66 hex characters of a compressed public key (02 or 03 first).</summary>
+    /// <summary>
+    /// <c>&lt;node_id&gt; [--force]</c> of disconnect, in any order.
+    /// </summary>
+    /// <returns>The peer and whether to force, or null with <paramref name="error"/> set.</returns>
+    internal static (CompactPubKey NodeId, bool Force)? ParseDisconnectOptions(string[] commandArgs,
+                                                                               out string? error)
+    {
+        error = null;
+        CompactPubKey? nodeId = null;
+        var force = false;
+        foreach (var argument in commandArgs)
+        {
+            if (string.Equals(argument, "--force", StringComparison.OrdinalIgnoreCase))
+            {
+                force = true;
+                continue;
+            }
+
+            if (nodeId is not null)
+            {
+                error = $"Unexpected argument '{argument}'.";
+                return null;
+            }
+
+            if (!TryParseNodeId(argument, out var parsed))
+            {
+                error = $"Invalid node id '{argument}': expected 66 hex characters.";
+                return null;
+            }
+
+            nodeId = parsed;
+        }
+
+        if (nodeId is null)
+        {
+            error = "Missing argument.";
+            return null;
+        }
+
+        return (nodeId.Value, force);
+    }
+
     internal static bool TryParseNodeId(string value, out CompactPubKey nodeId)
     {
         nodeId = default;

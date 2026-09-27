@@ -16,6 +16,7 @@ public class ClientCommandTests
         Assert.Equal(21, (int)ClientCommand.ExportChanBackup);
         Assert.Equal(22, (int)ClientCommand.VerifyChanBackup);
         Assert.Equal(23, (int)ClientCommand.RestoreChanBackup);
+        Assert.Equal(24, (int)ClientCommand.DisconnectPeer);
         Assert.Equal(Enum.GetValues<ClientCommand>().Length, Enum.GetValues<ClientCommand>().Distinct().Count());
     }
 }

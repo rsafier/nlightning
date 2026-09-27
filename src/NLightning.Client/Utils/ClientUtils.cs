@@ -17,6 +17,10 @@ public static class ClientUtils
         Console.WriteLine("  info                         Get node information via IPC");
         Console.WriteLine("  connect <node>               Connect to a peer node");
         Console.WriteLine("  listpeers                    List all connected peers");
+        Console.WriteLine("  disconnect <node_id> [--force]");
+        Console.WriteLine("                               Disconnect a peer (alias: disconnect-peer); refused while");
+        Console.WriteLine("                               its channels have HTLCs in flight unless --force; the node");
+        Console.WriteLine("                               does not reconnect it until the next connect or restart");
         Console.WriteLine("  listchannels [peer_id]       List channels, optionally only those with one peer");
         Console.WriteLine("  getaddress [p2tr|p2wpkh|all] Gets an unused address of the requested type [default: p2tr]");
         Console.WriteLine("  walletbalance                Gets the wallet balance");

@@ -16,4 +16,7 @@ public sealed class PeerInfoIpcResponse
     [Key(2)] public uint ChannelQty { get; init; }
     [Key(3)] public required string Address { get; init; }
     [Key(4)] public required FeatureSet Features { get; init; }
+
+    /// <summary>HTLCs in flight on the peer's channels (<c>disconnect</c> refuses them without --force).</summary>
+    [Key(5)] public uint HtlcsInFlight { get; init; }
 }

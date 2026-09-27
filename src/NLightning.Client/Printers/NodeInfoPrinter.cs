@@ -21,6 +21,12 @@ public sealed class NodeInfoPrinter : IPrinter<NodeInfoIpcResponse>
             _output.WriteLine("                     {0}", t);
         }
 
+        if (item.PeerCount is not null)
+            _output.WriteLine("  Peers:             {0}", item.PeerCount);
+        if (item.ActiveChannelCount is not null)
+            _output.WriteLine("  Channels:          {0} active, {1} pending, {2} closing", item.ActiveChannelCount,
+                              item.PendingChannelCount ?? 0, item.ClosingChannelCount ?? 0);
+
         _output.WriteLine();
         _output.WriteLine("Network Information:");
         _output.WriteLine("  Network:           {0}", item.Network);
