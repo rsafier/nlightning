@@ -172,7 +172,7 @@ public class AnchorsMempoolPenaltyTests : IAsyncLifetime
                                        long amountSat, CancellationToken ct)
     {
         var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(amountSat), "o7 o8 payment", ct);
-        var payment = await payer.PayInvoiceAsync(invoice.Bolt11, ct);
+        var payment = await payer.PayInvoiceAsync(invoice.Bolt11!, ct);
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
         await Poll.UntilAsync(async () =>
         {

@@ -11,7 +11,10 @@ using Payments.Models;
 /// </summary>
 public sealed class InvoiceInfoClientResponse
 {
-    public required string Bolt11 { get; init; }
+    /// <summary>
+    /// The BOLT 11 string, or null for a BOLT 12 invoice (issued for one of our offers; it has no string form).
+    /// </summary>
+    public string? Bolt11 { get; init; }
     public required Hash PaymentHash { get; init; }
 
     /// <summary>

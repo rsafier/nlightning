@@ -71,7 +71,7 @@ public class MppFlowTests : IAsyncLifetime
         Assert.DoesNotContain(decoded.Features, f => f.Key == 16);
 
         // Act: LND splits over both channels (max_parts 4)
-        var payment = await PayUntilDoneAsync(alice, invoice.Bolt11, [firstLnd.ChanId, secondLnd.ChanId], ct);
+        var payment = await PayUntilDoneAsync(alice, invoice.Bolt11!, [firstLnd.ChanId, secondLnd.ChanId], ct);
 
         // Assert: LND succeeded with at least two parts, over both channels
         Console.WriteLine($"LND's payment: {payment.Status} {payment.FailureReason}, fee {payment.FeeMsat} msat, "

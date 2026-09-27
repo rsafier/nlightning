@@ -190,7 +190,7 @@ public class AnchorsO4Tests : IAsyncLifetime
             crashed.TrySetResult();
         };
         var invoice = await Node.CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "o7 o4 c claim with preimage", ct);
-        await AnchorsHarness.PayUntilSentAsync(david, invoice.Bolt11, lndChannel.ChanId, crashed.Task, ct);
+        await AnchorsHarness.PayUntilSentAsync(david, invoice.Bolt11!, lndChannel.ChanId, crashed.Task, ct);
         var htlc = Assert.Single(AnchorsHarness.GetHtlcs(Node, channel.ChannelId),
                                  h => h.Direction == HtlcDirection.Incoming);
         Assert.NotNull(htlc.Removal);

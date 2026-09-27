@@ -63,6 +63,7 @@ public class NLightningDbContext : DbContext
     public DbSet<PaymentHopEntity> PaymentHops { get; set; }
     public DbSet<ForwardCircuitEntity> ForwardCircuits { get; set; }
     public DbSet<OnionReplayEntryEntity> OnionReplayEntries { get; set; }
+    public DbSet<OfferEntity> Offers { get; set; }
 
     // Gossip graph DbSets (BOLT 7 plan G2-T3)
     public DbSet<GraphNodeEntity> GraphNodes { get; set; }
@@ -108,6 +109,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigurePaymentEntity(_databaseType);
         modelBuilder.ConfigureForwardCircuitEntity(_databaseType);
         modelBuilder.ConfigureOnionReplayEntryEntity(_databaseType);
+        modelBuilder.ConfigureOfferEntity(_databaseType);
 
         // Gossip graph entities
         modelBuilder.ConfigureGraphNodeEntity(_databaseType);

@@ -19,6 +19,7 @@ using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.PeerStorage;
+using Domain.Offers.Interfaces;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -70,6 +71,9 @@ public class UnitOfWork : IUnitOfWork
 
     // Onion replay set
     private OnionReplayDbRepository? _onionReplayDbRepository;
+
+    // BOLT 12 offers
+    private OfferDbRepository? _offerDbRepository;
 
     public IBlockchainStateDbRepository BlockchainStateDbRepository =>
         _blockchainStateDbRepository ??= new BlockchainStateDbRepository(_context);
@@ -135,6 +139,8 @@ public class UnitOfWork : IUnitOfWork
 
     public IOnionReplayDbRepository OnionReplayDbRepository =>
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
+
+    public IOfferDbRepository OfferDbRepository => _offerDbRepository ??= new OfferDbRepository(_context);
 
     /// <param name="context">The scope's database context.</param>
     /// <param name="logger">The logger.</param>

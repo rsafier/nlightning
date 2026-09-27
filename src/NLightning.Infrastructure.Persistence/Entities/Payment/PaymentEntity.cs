@@ -22,6 +22,26 @@ public class PaymentEntity
     public string? Bolt11 { get; set; }
 
     /// <summary>
+    /// The BOLT 12 offer (<c>lno1...</c> string) paid, if any (migration <c>AddBolt12Offers</c>).
+    /// </summary>
+    public string? OfferBolt12 { get; set; }
+
+    /// <summary>
+    /// The TLV stream of the BOLT 12 invoice paid, if any.
+    /// </summary>
+    public byte[]? Bolt12InvoiceBytes { get; set; }
+
+    /// <summary>
+    /// Our <c>invreq_metadata</c> for a BOLT 12 payment.
+    /// </summary>
+    public byte[]? InvoiceRequestMetadata { get; set; }
+
+    /// <summary>
+    /// Our <c>invreq_payer_note</c> for a BOLT 12 payment, if any.
+    /// </summary>
+    public string? PayerNote { get; set; }
+
+    /// <summary>
     /// The payee's node id.
     /// </summary>
     public required CompactPubKey PayeeNodeId { get; set; }

@@ -215,9 +215,9 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         // Act 2 - payments both ways
         var funderBefore = await funder.GetChannelAsync(channelId, ct);
         var toFundee = await fundee.CreateInvoiceAsync(LightningMoney.Satoshis(30_000), "fee flow a->b", ct);
-        var paid = await funder.PayInvoiceAsync(toFundee.Bolt11, ct);
+        var paid = await funder.PayInvoiceAsync(toFundee.Bolt11!, ct);
         var toFunder = await funder.CreateInvoiceAsync(LightningMoney.Satoshis(12_000), "fee flow b->a", ct);
-        var paidBack = await fundee.PayInvoiceAsync(toFunder.Bolt11, ct);
+        var paidBack = await fundee.PayInvoiceAsync(toFunder.Bolt11!, ct);
 
         // Assert 2
         Assert.Equal(PaymentStatus.Succeeded, paid.Status);
@@ -360,7 +360,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         await LndTestHelpers.ResetMissionControlAsync(lnd, ct);
 
         var payment = await LndTestHelpers.SendPaymentV2Async(
-                          lnd, LndTestHelpers.PinnedPayment(invoice.Bolt11, [lndChannel.ChanId]), ct);
+                          lnd, LndTestHelpers.PinnedPayment(invoice.Bolt11!, [lndChannel.ChanId]), ct);
 
         Console.WriteLine($"LND's payment: {payment.Status}, reason {payment.FailureReason}");
         Assert.Equal(Payment.Types.PaymentStatus.Succeeded, payment.Status);

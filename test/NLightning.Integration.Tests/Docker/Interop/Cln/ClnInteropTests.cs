@@ -368,7 +368,7 @@ public sealed class ClnInteropTests : IAsyncLifetime
         JsonNode result;
         try
         {
-            result = await session.Cln.CallAsync("pay", ct, ("bolt11", invoice.Bolt11), ("retry_for", 30));
+            result = await session.Cln.CallAsync("pay", ct, ("bolt11", invoice.Bolt11!), ("retry_for", 30));
         }
         catch (ClnRpcException e)
         {

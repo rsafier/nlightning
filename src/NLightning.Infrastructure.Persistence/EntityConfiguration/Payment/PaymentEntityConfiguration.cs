@@ -22,6 +22,10 @@ public static class PaymentEntityConfiguration
                   .HasConversion<HashConverter>()
                   .IsRequired();
             entity.Property(e => e.Bolt11).IsRequired(false);
+            entity.Property(e => e.OfferBolt12).IsRequired(false);
+            entity.Property(e => e.Bolt12InvoiceBytes).IsRequired(false);
+            entity.Property(e => e.InvoiceRequestMetadata).IsRequired(false);
+            entity.Property(e => e.PayerNote).IsRequired(false);
             entity.Property(e => e.PayeeNodeId)
                   .HasConversion<CompactPubKeyConverter>()
                   .IsRequired();
