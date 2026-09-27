@@ -10,7 +10,7 @@ using Crypto.ValueObjects;
 /// <remarks>
 /// BOLT 2 <c>tx_signatures_tlvs</c> type 0: [<c>signature</c>:<c>signature</c>] (IT-W-03), the sender's 64-byte
 /// compact ECDSA signature (SIGHASH_ALL) of the shared 2-of-2 funding input of a splice. It is not part of the
-/// <c>witnesses</c> list, which only covers the inputs the sender added itself. The converter is lane IT-C's (IT3-T1).
+/// <c>witnesses</c> list, which only covers the inputs the sender added itself. Converted by <c>SharedInputSignatureTlvConverter</c> (IT3-T1).
 /// </remarks>
 public sealed class SharedInputSignatureTlv : BaseTlv
 {

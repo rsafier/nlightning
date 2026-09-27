@@ -48,6 +48,7 @@ public class NLightningDbContext : DbContext
     public DbSet<CommitmentEntity> Commitments { get; set; }
     public DbSet<FeeUpdateEntity> FeeUpdates { get; set; }
     public DbSet<RevokedCommitmentEntity> RevokedCommitments { get; set; }
+    public DbSet<InteractiveTxSessionEntity> InteractiveTxSessions { get; set; }
 
     // On-chain resolution DbSets
     public DbSet<ChannelCloseEntity> ChannelCloses { get; set; }
@@ -96,6 +97,7 @@ public class NLightningDbContext : DbContext
         modelBuilder.ConfigureCommitmentEntity(_databaseType);
         modelBuilder.ConfigureFeeUpdateEntity(_databaseType);
         modelBuilder.ConfigureRevokedCommitmentEntity(_databaseType);
+        modelBuilder.ConfigureInteractiveTxSessionEntity(_databaseType);
 
         // On-chain resolution entities
         modelBuilder.ConfigureChannelCloseEntity(_databaseType);

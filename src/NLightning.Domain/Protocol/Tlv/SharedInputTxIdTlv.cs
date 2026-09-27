@@ -11,7 +11,7 @@ using Crypto.Constants;
 /// BOLT 2 <c>tx_add_input_tlvs</c> type 0: [<c>sha256</c>:<c>funding_txid</c>] (IT-W-01). It marks the input as the
 /// channel's shared funding output being spent by a splice: such a <c>tx_add_input</c> has <c>prevtx_len</c> = 0 and the
 /// receiver checks the txid against the current funding (IT-R-01). The txid is written in the same byte order as in
-/// <c>funding_created</c> and <see cref="FundingTxIdTlv"/>. The converter is lane IT-C's (IT3-T1).
+/// <c>funding_created</c> and <see cref="FundingTxIdTlv"/>. Converted by <c>SharedInputTxIdTlvConverter</c> (IT3-T1).
 /// </remarks>
 public sealed class SharedInputTxIdTlv : BaseTlv
 {

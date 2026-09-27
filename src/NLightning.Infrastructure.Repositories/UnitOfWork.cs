@@ -23,6 +23,7 @@ using Domain.Offers.Interfaces;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Persistence.Contexts;
 
@@ -56,6 +57,7 @@ public class UnitOfWork : IUnitOfWork
     private ChannelStateDbRepository? _channelStateDbRepository;
     private RemoteShachainDbRepository? _remoteShachainDbRepository;
     private ChannelSigningInfoDbRepository? _channelSigningInfoDbRepository;
+    private InteractiveTxSessionDbRepository? _interactiveTxSessionDbRepository;
 
     // Gossip graph
     private GraphDbRepository? _graphDbRepository;
@@ -145,6 +147,9 @@ public class UnitOfWork : IUnitOfWork
         _onionReplayDbRepository ??= new OnionReplayDbRepository(_context);
 
     public IOfferDbRepository OfferDbRepository => _offerDbRepository ??= new OfferDbRepository(_context);
+
+    public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
+        _interactiveTxSessionDbRepository ??= new InteractiveTxSessionDbRepository(_context);
 
     /// <param name="context">The scope's database context.</param>
     /// <param name="logger">The logger.</param>

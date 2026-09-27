@@ -10,6 +10,7 @@ using NLightning.Domain.Offers.Interfaces;
 using NLightning.Domain.Onchain.Interfaces;
 using NLightning.Domain.Payments.Interfaces;
 using NLightning.Domain.Persistence.Interfaces;
+using NLightning.Domain.Protocol.InteractiveTx.Interfaces;
 using NLightning.Domain.Protocol.Onion.Interfaces;
 
 namespace NLightning.Tests.Utils.Mocks;
@@ -71,6 +72,9 @@ public sealed class CrashingUnitOfWork(IUnitOfWork inner, int crashAtSave) : IUn
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
+
+    public IInteractiveTxSessionDbRepository InteractiveTxSessionDbRepository =>
+        inner.InteractiveTxSessionDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
 

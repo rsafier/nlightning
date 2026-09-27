@@ -201,6 +201,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddInteractiveTxSessions_When_Migrated_Then_SessionsRoundTrip()
+    {
+        // Arrange (splicing plan IT3-T2: every InteractiveTxSessionModel field, the list reads and the unresolved
+        // filter, on a real server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_interactive_tx_sessions");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await InteractiveTxSessionSchemaRoundTrip.AssertAsync(
+            () => new NLightningDbContext(options, databaseTypeProvider), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddFeeInputReservations_When_Migrated_Then_ReservationsRoundTrip()
     {
         // Arrange (BOLT 5 plan O7-T1: fee input reservations round-trip, the outpoint key refuses a second
