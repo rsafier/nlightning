@@ -327,22 +327,10 @@ public sealed class PeerService : IPeerService
         {
             HandleInitialization(message);
         }
-        else if (message is StfuMessage stfuMessage)
-        {
-            // Checked before the channel-message arm: StfuMessage is a channel message since the Q-0 contracts, and
-            // lane Q-A (NL-019) removes this arm when ChannelManager routes stfu to its handler.
-            // Quiescence (BOLT 2, option_quiesce) is not implemented, so we can never reply with our own stfu. The
-            // sender now considers the channel quiescing and stops sending updates; the only spec-defined way out is
-            // a disconnection. So send a channel-scoped warning and disconnect (the channel is NOT failed).
-            _logger.LogWarning("Received stfu for channel {channelId} from peer {peer}, but quiescence is not supported",
-                               stfuMessage.Payload.ChannelId, PeerPubKey);
-
-            Disconnect(new ChannelWarningException("Received stfu, but quiescence is not supported",
-                                                   stfuMessage.Payload.ChannelId,
-                                                   "Quiescence (stfu) is not supported"));
-        }
         else if (message is IChannelMessage channelMessage)
         {
+            // stfu (BOLT 2 quiescence) is a channel message too: ChannelManager routes it to StfuMessageHandler under
+            // the channel's lock (NL-019)
             _logger.LogTrace("Received channel message ({messageType}) from peer {peer}",
                              Enum.GetName(message.Type), PeerPubKey);
 

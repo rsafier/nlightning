@@ -270,24 +270,27 @@ public class PeerServiceTests
     }
 
     [Fact]
-    public void Given_InitializedPeer_When_StfuReceived_Then_ChannelWarningIsSentAndPeerIsDisconnected()
+    public void Given_InitializedPeer_When_StfuReceived_Then_RaisedAsChannelMessageAndPeerStaysConnected()
     {
-        // Arrange
+        // Arrange: BOLT 2 "Channel Quiescence": stfu carries a channel_id; it is a channel message routed by
+        // ChannelManager to StfuMessageHandler (splicing plan Q-W-01, NL-019), no longer a warning and a disconnect
         var channelIdBytes = new byte[32];
         channelIdBytes[31] = 0x01;
         var channelId = new ChannelId(channelIdBytes);
-        _ = CreatePeerService();
+        var peerService = CreatePeerService();
         RaiseMessage(CreateInitMessage(ChainConstants.Regtest));
+        ChannelMessageEventArgs? raised = null;
+        peerService.OnChannelMessageReceived += (_, args) => raised = args;
+        var stfu = new StfuMessage(new StfuPayload(channelId, true));
 
         // Act
-        RaiseMessage(new StfuMessage(new StfuPayload(channelId, true)));
+        RaiseMessage(stfu);
 
         // Assert
-        // The peer now considers the channel quiescing; only a disconnection ends that (BOLT 2), so we warn on the
-        // channel and disconnect, without failing the channel
-        _peerCommunicationServiceMock.Verify(
-            x => x.Disconnect(It.Is<ChannelWarningException>(e => e.ChannelId == channelId)), Times.Once);
-        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<ErrorException>()), Times.Never);
+        Assert.NotNull(raised);
+        Assert.Same(stfu, raised.Message);
+        Assert.Equal(channelId, raised.Message.Payload.ChannelId);
+        _peerCommunicationServiceMock.Verify(x => x.Disconnect(It.IsAny<Exception?>()), Times.Never);
     }
 
     [Fact]

@@ -8,9 +8,9 @@ using Payloads;
 /// </summary>
 /// <remarks>
 /// The stfu message means SomeThing Fundamental is Underway, so we kindly ask the other node to STFU because we have
-/// something important to say. It is a channel message (splicing plan D3, Q-W-01): once <c>PeerService</c> stops
-/// intercepting it (lane Q-A, NL-019) it is routed by <c>ChannelManager</c> under the channel's lock like every other
-/// channel message.
+/// something important to say. It is a channel message (splicing plan D3, Q-W-01): <c>PeerService</c> raises it like
+/// every other channel message and <c>ChannelManager</c> routes it to <c>StfuMessageHandler</c> under the channel's
+/// lock (Q1-T1, NL-019).
 /// The message type is 2.
 /// </remarks>
 /// <param name="payload">The stfu payload.</param>
