@@ -270,6 +270,26 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
     }
 
     /// <summary>
+    /// Raises the last used channel key index to at least <paramref name="highestUsedIndex"/> (the highest channel key
+    /// index stored anywhere else, e.g. in the channel tables) and writes it to the key file when it changed. Defence in
+    /// depth against a key-file write lost after its channel row was committed: the next
+    /// <see cref="GetNextChannelKey"/> can then never hand out an index a channel already uses (SECURITY_REVIEW SR-19).
+    /// Never lowers the index. Returns true when the index was raised.
+    /// </summary>
+    public bool EnsureLastUsedChannelIndexAtLeast(uint highestUsedIndex)
+    {
+        lock (_lastUsedIndexLock)
+        {
+            if (highestUsedIndex <= _lastUsedIndex)
+                return false;
+
+            _lastUsedIndex = highestUsedIndex;
+            PersistLastUsedIndex();
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Writes the last used channel key index to the key file (<see cref="GetNextChannelKey"/> already does it before
     /// it returns).
     /// </summary>
@@ -683,7 +703,51 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             TryDeleteFile(tempPath);
             throw;
         }
+
+        // The rename is only durable once the directory entry is on disk: without this a power loss could bring back
+        // the old key file (for example a lower LastUsedIndex, so a channel key index used twice; SECURITY_REVIEW SR-19)
+        SyncParentDirectory(targetPath);
     }
+
+    /// <summary>
+    /// fsyncs the directory that holds <paramref name="filePath"/> on Unix, so a rename into it survives a power loss.
+    /// Windows commits a replace with <c>MoveFileEx(MOVEFILE_WRITE_THROUGH)</c> semantics already and needs nothing
+    /// here. A failure throws: a key-index write that is not durable must not hand out the key.
+    /// </summary>
+    internal static void SyncParentDirectory(string filePath)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(filePath));
+        if (string.IsNullOrEmpty(directory))
+            return;
+
+        var fd = UnixOpen(directory, UnixOpenReadOnly);
+        if (fd < 0)
+            throw new IOException($"Could not open directory {directory} to sync it (errno {Marshal.GetLastPInvokeError()})");
+
+        try
+        {
+            if (UnixFsync(fd) != 0)
+                throw new IOException($"Could not sync directory {directory} (errno {Marshal.GetLastPInvokeError()})");
+        }
+        finally
+        {
+            _ = UnixClose(fd);
+        }
+    }
+
+    private const int UnixOpenReadOnly = 0;
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true, CharSet = CharSet.Ansi)]
+    private static extern int UnixOpen([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+
+    [DllImport("libc", EntryPoint = "fsync", SetLastError = true)]
+    private static extern int UnixFsync(int fd);
+
+    [DllImport("libc", EntryPoint = "close", SetLastError = true)]
+    private static extern int UnixClose(int fd);
 
     /// <summary>
     /// Follows symlinks so an atomic replace swaps the real file, not the link.

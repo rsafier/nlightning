@@ -762,6 +762,73 @@ public sealed class SecureKeyManagerTests : IDisposable
         Assert.Equal(50u, ReadKeyFile().LastUsedIndex);
     }
 
+    [Fact]
+    public void Given_ADatabaseIndexAboveTheKeyFile_When_EnsureLastUsedChannelIndexAtLeast_Then_TheNextKeyIsPastIt()
+    {
+        // Arrange: a lost key-file write left index 1 on file while a channel row already uses index 7 (SR-19)
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        keyManager.GetNextChannelKey(out _);
+
+        // Act
+        var raised = keyManager.EnsureLastUsedChannelIndexAtLeast(7);
+
+        // Assert
+        Assert.True(raised);
+        Assert.Equal(7u, ReadKeyFile().LastUsedIndex);
+        keyManager.GetNextChannelKey(out var next);
+        Assert.Equal(8u, next);
+    }
+
+    [Fact]
+    public void Given_ADatabaseIndexBelowTheKeyFile_When_EnsureLastUsedChannelIndexAtLeast_Then_ItIsNotLowered()
+    {
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        keyManager.GetNextChannelKey(out _);
+        keyManager.GetNextChannelKey(out _);
+
+        // Act
+        var raised = keyManager.EnsureLastUsedChannelIndexAtLeast(1);
+
+        // Assert
+        Assert.False(raised);
+        Assert.Equal(2u, ReadKeyFile().LastUsedIndex);
+        keyManager.GetNextChannelKey(out var next);
+        Assert.Equal(3u, next);
+    }
+
+    [Fact]
+    public void Given_AnExistingDirectory_When_SyncParentDirectory_Then_ItDoesNotThrow()
+    {
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+
+        // Act
+        var exception = Record.Exception(() => SecureKeyManager.SyncParentDirectory(_filePath));
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Given_AMissingDirectory_When_SyncParentDirectory_Then_ItThrowsOnUnix()
+    {
+        // Arrange
+        var path = Path.Combine(_directory, Guid.NewGuid().ToString("N"), "key.json");
+
+        // Act
+        var exception = Record.Exception(() => SecureKeyManager.SyncParentDirectory(path));
+
+        // Assert: Windows needs no directory sync and does nothing
+        if (OperatingSystem.IsWindows())
+            Assert.Null(exception);
+        else
+            Assert.IsType<IOException>(exception);
+    }
+
     private static ExtKey DecryptMasterKey(KeyFileData data, Network network)
     {
         var key = new byte[32];
