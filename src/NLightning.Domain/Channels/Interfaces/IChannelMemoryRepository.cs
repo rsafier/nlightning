@@ -113,6 +113,14 @@ public interface IChannelMemoryRepository
     bool TryRemoveTemporaryChannel(CompactPubKey compactPubKey, ChannelId channelId);
 
     /// <summary>
+    /// Removes every temporary channel of a peer: an open that has not reached funding_created (fundee) or turned
+    /// into a real channel after accept_channel (opener) does not survive its connection (BOLT 2; NL-392).
+    /// </summary>
+    /// <param name="compactPubKey">The peer whose temporary channels are removed.</param>
+    /// <returns>The temporary channel ids that were removed.</returns>
+    IReadOnlyList<ChannelId> RemoveTemporaryChannels(CompactPubKey compactPubKey);
+
+    /// <summary>
     /// Upgrades an existing channel by removing it from the temporary channel list and adding it to the channel list.
     /// </summary>
     /// <remarks>

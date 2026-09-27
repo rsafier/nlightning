@@ -784,6 +784,13 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
         if (!removed)
             return;
 
+        // NL-392: an open that has not reached funding_created (or, as opener, accept_channel) does not survive the
+        // connection (BOLT 2), so its temporary channel goes with it
+        var forgotten = _channelMemoryRepository.RemoveTemporaryChannels(session.Peer.NodeId);
+        if (forgotten is { Count: > 0 })
+            _logger.LogInformation("Forgot {Count} temporary channel(s) of peer {Peer} on disconnection",
+                                   forgotten.Count, session.Peer.NodeId);
+
         _channelManager.OnPeerConnectionChanged(session.Peer.NodeId);
         ReconnectIfNeeded(session);
     }

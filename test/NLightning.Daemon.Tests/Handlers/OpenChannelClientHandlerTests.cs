@@ -655,6 +655,114 @@ public class OpenChannelClientHandlerTests
                                                                           It.IsAny<ChannelId>()), Times.Never);
     }
 
+    [Fact]
+    public async Task Given_TheFundingLockFindsTooFewUtxos_When_HandleAsync_Then_NotEnoughBalance()
+    {
+        // Arrange (NL-393: the selection throws InvalidOperationException, e.g. after a concurrent spend)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        _utxoMemoryRepositoryMock.Setup(x => x.LockUtxosToSpendOnChannel(fundingAmount, channelModel.ChannelId))
+                                 .Throws(new InvalidOperationException("Insufficient funds"));
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ClientException>(() => _handler.HandleAsync(request, CancellationToken.None));
+
+        // Assert
+        Assert.Equal(ErrorCodes.NotEnoughBalance, ex.ErrorCode);
+        Assert.Contains("Insufficient funds", ex.Message);
+        _channelManagerMock.Verify(x => x.StartOpeningChannelAsync(peerId, channelModel, It.IsAny<IChannelMessage>()),
+                                   Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TheReserveLockFindsNoUtxos_When_HandleAsync_Then_NotEnoughBalanceAndPendingOpenReleased()
+    {
+        // Arrange (NL-393 through the anchors reserve service)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var reserveMock = new Mock<IAnchorReserveService>();
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
+        reserveMock.Setup(x => x.LockFundingUtxosAsync(fundingAmount, channelModel, It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new InvalidOperationException("No available UTXOs"));
+        var handler = CreateHandlerWithReserve(reserveMock.Object);
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ClientException>(() => handler.HandleAsync(request, CancellationToken.None));
+
+        // Assert
+        Assert.Equal(ErrorCodes.NotEnoughBalance, ex.ErrorCode);
+        Assert.Contains("No available UTXOs", ex.Message);
+        reserveMock.Verify(x => x.ReleasePendingChannel(channelModel.ChannelId), Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task Given_APeerThatNeverAnswers_When_TheOpenTimesOut_Then_ItFailsAndForgetsTheTemporaryChannel()
+    {
+        // Arrange (NL-392)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        _handler.OpenTimeout = TimeSpan.FromMilliseconds(100);
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ClientException>(() => _handler.HandleAsync(request, CancellationToken.None));
+
+        // Assert
+        Assert.Equal(ErrorCodes.ConnectionError, ex.ErrorCode);
+        Assert.Contains("did not answer open_channel", ex.Message);
+        _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(peerId, channelModel.ChannelId),
+                                            Times.Once);
+        _utxoMemoryRepositoryMock.Verify(x => x.ReturnUtxosNotSpentOnChannel(channelModel.ChannelId), Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_TheRequestIsCancelled_When_WaitingForAcceptChannel_Then_ItFailsAndForgetsTheTemporaryChannel()
+    {
+        // Arrange (NL-392: the IPC connection went away)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        using var cts = new CancellationTokenSource();
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, cts.Token);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        await cts.CancelAsync();
+
+        // Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => handleTask);
+        _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(peerId, channelModel.ChannelId),
+                                            Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ThePeerRefusesTheOpen_When_HandleAsync_Then_TheTemporaryChannelIsForgotten()
+    {
+        // Arrange (NL-392: an error for the temporary channel)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        Assert.True(_peerManagerMock.Object.GetPeer(peerId)!.TryGetPeerService(out var peerService));
+        var peerServiceMock = Mock.Get(peerService);
+
+        // Act
+        var handleTask = _handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(100, TestContext.Current.CancellationToken);
+        peerServiceMock.Raise(x => x.OnAttentionMessageReceived += null, null!,
+                              new AttentionMessageEventArgs("channel refused", peerId, channelModel.ChannelId));
+
+        // Assert
+        await Assert.ThrowsAsync<ChannelErrorException>(() => handleTask);
+        _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(peerId, channelModel.ChannelId),
+                                            Times.Once);
+    }
+
     private OpenChannelClientHandler CreateHandlerWithReserve(IAnchorReserveService reserveService) =>
         new(_blockchainMonitorMock.Object, _channelFactoryMock.Object, _channelManagerMock.Object,
             _channelMemoryRepositoryMock.Object, new Mock<ILogger<OpenChannelClientHandler>>().Object,
