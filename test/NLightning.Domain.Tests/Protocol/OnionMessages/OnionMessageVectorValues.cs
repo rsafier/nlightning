@@ -72,7 +72,8 @@ internal static class OnionMessageVectorValues
 
     /// <summary>
     /// The <c>route</c> as a BOLT 4 <c>blinded_path</c> on the wire (built from the fields above: the vector has no
-    /// wire form of it).
+    /// wire form of it; the independent wire bytes are the offers-test.json paths in
+    /// <see cref="OffersTestVectorValues"/>).
     /// </summary>
     public const string RouteWireHex =
         "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619031195a8046dcbb8e17034bca630065e7a"
