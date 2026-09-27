@@ -15,6 +15,7 @@ using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Relay;
 using Application.Gossip.Sync;
 using Application.Node.PeerStorage;
+using Application.Offers.Receive;
 using Application.Onchain;
 using Application.Onchain.Anchors;
 using Application.Onchain.Mempool;
@@ -212,6 +213,11 @@ public static class NodeServiceExtensions
         services.AddOperatorIpcServices();
         // On-chain withdraw (wave m6 W1, ClientCommand 25)
         services.AddWithdrawIpcServices();
+        // BOLT 12 offers (wave B12): createoffer/listoffers/disableoffer (ClientCommand 26-28) and payoffer/
+        // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
+        services.AddOfferIpcServices();
+        services.AddOfferSendIpcServices();
+        services.Configure<OfferOptions>(configuration.GetSection(OfferOptions.SectionName));
 
         // BOLT 4 onion messages (wave M6): the service, rate limiter and outbox cap read this section
         services.Configure<OnionMessageOptions>(configuration.GetSection(OnionMessageOptions.SectionName));

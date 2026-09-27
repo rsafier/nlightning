@@ -18,7 +18,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// <c>createoffer</c>, <c>listoffers</c> and <c>disableoffer</c> (provisional ClientCommand 26-28, wave B12 lane D)
+/// <c>createoffer</c>, <c>listoffers</c> and <c>disableoffer</c> (ClientCommand 26-28, wave B12 lane D)
 /// over IPC: requests reach <see cref="IOfferService"/>, results come back, refusals carry
 /// <see cref="ErrorCodes.InvalidOperation"/>.
 /// </summary>
@@ -50,11 +50,11 @@ public class OfferIpcHandlerTests
     public async Task Given_ACreateOfferRequest_When_Handled_Then_TheServiceGetsItAndTheOfferComesBack()
     {
         // Arrange
-        var handler = GetHandler(OfferClientCommands.CreateOffer);
+        var handler = GetHandler(ClientCommand.CreateOffer);
 
         // Act
         var response = await handler.HandleAsync(
-                           CreateEnvelope(OfferClientCommands.CreateOffer, new CreateOfferIpcRequest
+                           CreateEnvelope(ClientCommand.CreateOffer, new CreateOfferIpcRequest
                            {
                                Amount = LightningMoney.Satoshis(10_000),
                                Description = "coffee",
@@ -112,8 +112,8 @@ public class OfferIpcHandlerTests
         }
 
         // Act
-        var response = await GetHandler(OfferClientCommands.CreateOffer)
-                          .HandleAsync(CreateEnvelope(OfferClientCommands.CreateOffer, request),
+        var response = await GetHandler(ClientCommand.CreateOffer)
+                          .HandleAsync(CreateEnvelope(ClientCommand.CreateOffer, request),
                                        TestContext.Current.CancellationToken);
 
         // Assert
@@ -128,8 +128,8 @@ public class OfferIpcHandlerTests
                .ReturnsAsync([Offer(id: 1), Offer(id: 2)]);
 
         // Act
-        var response = await GetHandler(OfferClientCommands.ListOffers)
-                          .HandleAsync(CreateEnvelope(OfferClientCommands.ListOffers,
+        var response = await GetHandler(ClientCommand.ListOffers)
+                          .HandleAsync(CreateEnvelope(ClientCommand.ListOffers,
                                                       new ListOffersIpcRequest
                                                       {
                                                           ActiveOnly = true,
@@ -148,8 +148,8 @@ public class OfferIpcHandlerTests
     public async Task Given_AnInvalidPage_When_Listing_Then_InvalidOperation()
     {
         // Act
-        var response = await GetHandler(OfferClientCommands.ListOffers)
-                          .HandleAsync(CreateEnvelope(OfferClientCommands.ListOffers,
+        var response = await GetHandler(ClientCommand.ListOffers)
+                          .HandleAsync(CreateEnvelope(ClientCommand.ListOffers,
                                                       new ListOffersIpcRequest { Take = 0 }),
                                        TestContext.Current.CancellationToken);
 
@@ -168,8 +168,8 @@ public class OfferIpcHandlerTests
         _offers.Setup(o => o.DisableOfferAsync(offer.OfferId, It.IsAny<CancellationToken>())).ReturnsAsync(disabled);
 
         // Act
-        var response = await GetHandler(OfferClientCommands.DisableOffer)
-                          .HandleAsync(CreateEnvelope(OfferClientCommands.DisableOffer,
+        var response = await GetHandler(ClientCommand.DisableOffer)
+                          .HandleAsync(CreateEnvelope(ClientCommand.DisableOffer,
                                                       new DisableOfferIpcRequest { OfferId = offer.OfferId }),
                                        TestContext.Current.CancellationToken);
 
@@ -186,8 +186,8 @@ public class OfferIpcHandlerTests
     public async Task Given_AnUnknownOffer_When_Disabled_Then_InvalidOperation()
     {
         // Act
-        var response = await GetHandler(OfferClientCommands.DisableOffer)
-                          .HandleAsync(CreateEnvelope(OfferClientCommands.DisableOffer,
+        var response = await GetHandler(ClientCommand.DisableOffer)
+                          .HandleAsync(CreateEnvelope(ClientCommand.DisableOffer,
                                                       new DisableOfferIpcRequest { OfferId = new Hash(new byte[32]) }),
                                        TestContext.Current.CancellationToken);
 
@@ -203,10 +203,10 @@ public class OfferIpcHandlerTests
         services.AddLogging();
         services.AddOfferIpcServices();
         var handler = services.BuildServiceProvider().GetServices<IIpcCommandHandler>()
-                              .Single(h => h.Command == OfferClientCommands.ListOffers);
+                              .Single(h => h.Command == ClientCommand.ListOffers);
 
         // Act
-        var response = await handler.HandleAsync(CreateEnvelope(OfferClientCommands.ListOffers,
+        var response = await handler.HandleAsync(CreateEnvelope(ClientCommand.ListOffers,
                                                                 new ListOffersIpcRequest()),
                                                  TestContext.Current.CancellationToken);
 
@@ -226,8 +226,8 @@ public class OfferIpcHandlerTests
                                .ToList();
 
         // Assert
-        Assert.Equal([OfferClientCommands.CreateOffer, OfferClientCommands.ListOffers,
-                      OfferClientCommands.DisableOffer], commands);
+        Assert.Equal([ClientCommand.CreateOffer, ClientCommand.ListOffers,
+                      ClientCommand.DisableOffer], commands);
         Assert.Equal([(ClientCommand)26, (ClientCommand)27, (ClientCommand)28], commands);
     }
 

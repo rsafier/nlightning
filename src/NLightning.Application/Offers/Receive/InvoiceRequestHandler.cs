@@ -242,27 +242,15 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
     }
 
     /// <summary>
-    /// The invoice row: no BOLT 11 string (BOLT 12 invoices have none; lane B12-C's <see cref="InvoiceModel"/>), or,
-    /// with the B12-0 contract that still requires one, the invoice as an <c>lni1...</c> string (CLN's convention).
+    /// The invoice row: no BOLT 11 string (BOLT 12 invoices have none, <see cref="InvoiceModel"/> refuses one).
     /// </summary>
-    /// <remarks>Integration seam: once B12-C is merged the fallback is dead and goes.</remarks>
     private static InvoiceModel CreateInvoiceModel(Hash paymentHash, byte[] preimage, LightningMoney amount,
                                                    string? description, DateTimeOffset createdAt, uint expirySeconds,
                                                    ushort minFinalCltvExpiry, Bolt12InvoiceDetails details)
     {
         var paymentSecret = new Secret(RandomNumberGenerator.GetBytes(CryptoConstants.SecretLen));
-        try
-        {
-            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description, null!,
-                                    createdAt, expirySeconds, minFinalCltvExpiry, bolt12: details);
-        }
-        catch (ArgumentException)
-        {
-            return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description,
-                                    Bolt12Wire.ToBolt12String(Bolt12Constants.InvoiceHrp,
-                                                              details.InvoiceBytes.Span),
-                                    createdAt, expirySeconds, minFinalCltvExpiry, bolt12: details);
-        }
+        return new InvoiceModel(paymentHash, new Secret(preimage), paymentSecret, amount, description, null, createdAt,
+                                expirySeconds, minFinalCltvExpiry, bolt12: details);
     }
 
     private async Task<InvoiceRequestOutcome> RefuseAsync(WireBlindedPath replyPath, InvoiceRequestRefusal refusal,

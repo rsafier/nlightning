@@ -69,7 +69,7 @@ public sealed class OfferInfoIpcResponse
 }
 
 /// <summary>
-/// Response for CreateOffer (provisional ClientCommand 26).
+/// Response for CreateOffer (ClientCommand 26).
 /// </summary>
 [MessagePackObject]
 public sealed class CreateOfferIpcResponse
@@ -84,7 +84,7 @@ public sealed class CreateOfferIpcResponse
 }
 
 /// <summary>
-/// Response for ListOffers (provisional ClientCommand 27): our offers, newest first.
+/// Response for ListOffers (ClientCommand 27): our offers, newest first.
 /// </summary>
 [MessagePackObject]
 public sealed class ListOffersIpcResponse
@@ -102,7 +102,7 @@ public sealed class ListOffersIpcResponse
 }
 
 /// <summary>
-/// Response for DisableOffer (provisional ClientCommand 28).
+/// Response for DisableOffer (ClientCommand 28).
 /// </summary>
 [MessagePackObject]
 public sealed class DisableOfferIpcResponse

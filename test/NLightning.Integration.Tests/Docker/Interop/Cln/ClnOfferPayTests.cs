@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
-using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -22,8 +21,8 @@ using Utils;
 /// </summary>
 /// <remarks>
 /// The payer signs with the node's production <c>Bolt12Signer</c> (lane B12-B, <c>AddBitcoinInfrastructure</c>: payer
-/// keys derived from the node key and the request's metadata), and the node registers <c>AddOfferSendIpcServices</c>
-/// (TryAdd, so nothing changes once the integrator adds it to <c>AddNltgNodeServices</c>). Each test prints CLN's invoice as a <c>VECTOR cln invoice</c> line
+/// keys derived from the node key and the request's metadata), and the payer services come from the node composition
+/// (<c>AddApplicationServices</c> and <c>AddNltgNodeServices</c>) since the B12 integration. Each test prints CLN's invoice as a <c>VECTOR cln invoice</c> line
 /// for lane B12-A's captured vectors (B0-T4) and the introduction node of CLN's paths (BOLT 12 plan B12-PAY-02: with us
 /// as CLN's only peer, CLN's invoice paths are expected to start at us).
 /// </remarks>
@@ -167,11 +166,7 @@ public sealed class ClnOfferPayTests : IAsyncLifetime
     private async Task BuildAsync(string name, CancellationToken ct)
     {
         _session = await ClnChannelSession.BuildOurFundedAsync(
-                       _fixture, name, LightningMoney.Satoshis(500_000), LightningMoney.Zero, ct,
-                       node => node.ConfigureServices = services =>
-                       {
-                           services.AddOfferSendIpcServices();
-                       });
+                       _fixture, name, LightningMoney.Satoshis(500_000), LightningMoney.Zero, ct);
         var offers = _session.Node.Services.GetRequiredService<IOfferPaymentService>();
         Assert.IsType<Infrastructure.Bitcoin.Offers.Bolt12Signer>(
             _session.Node.Services.GetRequiredService<IBolt12Signer>());

@@ -7,7 +7,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 
 /// <summary>
-/// Request for CreateOffer (provisional ClientCommand 26, <c>OfferClientCommands.CreateOffer</c>).
+/// Request for CreateOffer (ClientCommand 26).
 /// </summary>
 [MessagePackObject]
 public sealed class CreateOfferIpcRequest
@@ -42,7 +42,7 @@ public sealed class CreateOfferIpcRequest
 }
 
 /// <summary>
-/// Request for ListOffers (provisional ClientCommand 27): a page of our offers, newest first.
+/// Request for ListOffers (ClientCommand 27): a page of our offers, newest first.
 /// </summary>
 [MessagePackObject]
 public sealed class ListOffersIpcRequest
@@ -60,7 +60,7 @@ public sealed class ListOffersIpcRequest
 }
 
 /// <summary>
-/// Request for DisableOffer (provisional ClientCommand 28).
+/// Request for DisableOffer (ClientCommand 28).
 /// </summary>
 [MessagePackObject]
 public sealed class DisableOfferIpcRequest

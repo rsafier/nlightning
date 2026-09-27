@@ -20,7 +20,7 @@ using Transport.Ipc.Requests;
 using Transport.Ipc.Responses;
 
 /// <summary>
-/// <c>payoffer</c> and <c>fetchinvoice</c> (ClientCommand 29 and 30, provisional) over IPC: the request reaches
+/// <c>payoffer</c> and <c>fetchinvoice</c> (ClientCommand 29 and 30) over IPC: the request reaches
 /// <see cref="IOfferPaymentService"/> with the options, the fetch and payment come back, and refusals carry the error
 /// code the CLI shows.
 /// </summary>

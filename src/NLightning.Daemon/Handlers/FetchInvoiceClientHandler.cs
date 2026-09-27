@@ -10,8 +10,7 @@ using Domain.Offers.Models;
 using Interfaces;
 
 /// <summary>
-/// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30, <c>fetchinvoice</c>,
-/// provisional).
+/// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30, <c>fetchinvoice</c>).
 /// </summary>
 /// <remarks>
 /// The payment limits of the request are ignored. A malformed, expired or unpayable offer, or a bad amount or quantity,

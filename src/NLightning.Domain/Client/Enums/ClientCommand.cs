@@ -35,8 +35,9 @@ public enum ClientCommand
     RestoreChanBackup = 23,
     DisconnectPeer = 24,
     Withdraw = 25,
-
-    // 26-28 are lane B12-D's createoffer/listoffers/disableoffer; numbers are provisional until the B12 integration
+    CreateOffer = 26,
+    ListOffers = 27,
+    DisableOffer = 28,
     PayOffer = 29,
     FetchInvoice = 30
 }

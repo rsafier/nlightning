@@ -4,8 +4,6 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
-using Application.Offers;
-using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -29,9 +27,9 @@ using Utils;
 /// after <c>disableoffer</c> CLN's <c>fetchinvoice</c> fails with our <c>invoice_error</c> (CLN code 1004, "Remote node
 /// sent failure message", as in Proof M6 (c)).</para>
 /// <para>Written in lane B12-D against the B12-0 contracts: it needs the lanes' signer (B12-B, registered by
-/// <c>AddBitcoinInfrastructure</c>) and persistence (B12-C, <c>IUnitOfWork.OfferDbRepository</c>). The node adds the
-/// offer registrations itself through <see cref="NLightningTestNode.ConfigureServices"/> (both are TryAdd, so they add
-/// nothing once the integrator wires them into <c>AddNltgNodeServices</c>).</para>
+/// <c>AddBitcoinInfrastructure</c>) and persistence (B12-C, <c>IUnitOfWork.OfferDbRepository</c>). The offer
+/// services and commands come from the node composition (<c>AddApplicationServices</c> and
+/// <c>AddNltgNodeServices</c>) since the B12 integration.</para>
 /// </remarks>
 [Collection(ClnInteropCollection.Name)]
 [Trait("Category", ClnInteropCollection.Category)]
@@ -80,12 +78,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
     }
 
     private Task<ClnChannelSession> BuildAsync(CancellationToken cancellationToken) =>
-        ClnChannelSession.BuildOurFundedAsync(_fixture, "nltg-offers", s_capacity, s_push, cancellationToken,
-                                              node => node.ConfigureServices = services =>
-                                              {
-                                                  services.AddOffersServices();
-                                                  services.AddOfferIpcServices();
-                                              });
+        ClnChannelSession.BuildOurFundedAsync(_fixture, "nltg-offers", s_capacity, s_push, cancellationToken);
 
     /// <summary>
     /// Proof B12 receive (a) and (c): an offer of 10,000 sat; CLN fetches an invoice through our offer path (CLN is its

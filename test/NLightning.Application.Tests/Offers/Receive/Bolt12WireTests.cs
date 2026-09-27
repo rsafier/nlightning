@@ -148,7 +148,7 @@ public class Bolt12WireTests
     public void Given_Features_When_Checked_Then_UnknownEvenBitsAreFound(string hex, bool expected)
     {
         // Act
-        var found = Bolt12Wire.HasUnknownEvenBit(Convert.FromHexString(hex), _ => false);
+        var found = Bolt12Wire.HasUnknownEvenBit(Convert.FromHexString(hex));
 
         // Assert
         Assert.Equal(expected, found);

@@ -19,6 +19,7 @@ using Application.Gossip.Services;
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
 using Application.Node.Managers;
+using Application.Offers.Receive;
 using Application.OnionMessages;
 using Application.Payments.Invoices;
 using Application.Payments.Routing;
@@ -42,6 +43,7 @@ using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
+using Domain.Offers.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
@@ -318,6 +320,37 @@ public class NodeServiceExtensionsTests
         Assert.NotNull(provider.GetRequiredService<IOnionMessageService>());
         Assert.NotNull(provider.GetRequiredService<IWalletSpendService>());
         Assert.Single(commands, c => c == ClientCommand.Withdraw);
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_TheWaveB12OffersAreWired()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(("Offers:MaxOfferPaths", "5")),
+                                     new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var handlers = provider.GetServices<IOnionMessageHandler>().ToList();
+        var commands = provider.GetServices<IIpcCommandHandler>().Select(h => h.Command).ToList();
+
+        // Assert: the receive and payer services, the type-64 handler, the options and the five commands 26-30
+        Assert.IsType<OfferService>(provider.GetRequiredService<IOfferService>());
+        Assert.NotNull(provider.GetRequiredService<IOfferPaymentService>());
+        Assert.Single(handlers, h => h is InvoiceRequestHandler
+                                  && h.PayloadTypes.Contains(InvoiceRequestHandler.InvoiceRequestType));
+        Assert.Equal(5, provider.GetRequiredService<IOptions<OfferOptions>>().Value.MaxOfferPaths);
+        Assert.Equal(26, (int)ClientCommand.CreateOffer);
+        Assert.Equal(30, (int)ClientCommand.FetchInvoice);
+        foreach (var command in new[]
+                 {
+                     ClientCommand.CreateOffer, ClientCommand.ListOffers, ClientCommand.DisableOffer,
+                     ClientCommand.PayOffer, ClientCommand.FetchInvoice
+                 })
+            Assert.Single(commands, c => c == command);
     }
 
     [Fact]

@@ -12,8 +12,8 @@ using Handlers;
 using Interfaces;
 
 /// <summary>
-/// The BOLT 12 offer commands <c>createoffer</c>, <c>listoffers</c> and <c>disableoffer</c> (provisional
-/// ClientCommand 26-28, <c>OfferClientCommands</c>; wave B12 lane D).
+/// The BOLT 12 offer commands <c>createoffer</c>, <c>listoffers</c> and <c>disableoffer</c> (ClientCommand
+/// 26-28; wave B12 lane D).
 /// </summary>
 public static class OfferIpcServiceExtensions
 {

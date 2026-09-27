@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 
 namespace NLightning.Daemon.Ipc.Handlers;
 
-using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
@@ -13,7 +12,7 @@ internal sealed class CreateOfferIpcHandler
     : ClientCommandIpcHandler<CreateOfferIpcRequest, CreateOfferClientRequest, CreateOfferClientResponse,
         CreateOfferIpcResponse>
 {
-    public override ClientCommand Command => OfferClientCommands.CreateOffer;
+    public override ClientCommand Command => ClientCommand.CreateOffer;
 
     public CreateOfferIpcHandler(ILogger<CreateOfferIpcHandler> logger, IServiceProvider serviceProvider)
         : base(logger, serviceProvider)
@@ -31,7 +30,7 @@ internal sealed class ListOffersIpcHandler
     : ClientCommandIpcHandler<ListOffersIpcRequest, ListOffersClientRequest, ListOffersClientResponse,
         ListOffersIpcResponse>
 {
-    public override ClientCommand Command => OfferClientCommands.ListOffers;
+    public override ClientCommand Command => ClientCommand.ListOffers;
 
     public ListOffersIpcHandler(ILogger<ListOffersIpcHandler> logger, IServiceProvider serviceProvider)
         : base(logger, serviceProvider)
@@ -49,7 +48,7 @@ internal sealed class DisableOfferIpcHandler
     : ClientCommandIpcHandler<DisableOfferIpcRequest, DisableOfferClientRequest, DisableOfferClientResponse,
         DisableOfferIpcResponse>
 {
-    public override ClientCommand Command => OfferClientCommands.DisableOffer;
+    public override ClientCommand Command => ClientCommand.DisableOffer;
 
     public DisableOfferIpcHandler(ILogger<DisableOfferIpcHandler> logger, IServiceProvider serviceProvider)
         : base(logger, serviceProvider)

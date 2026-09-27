@@ -12,8 +12,7 @@ using Handlers;
 using Interfaces;
 
 /// <summary>
-/// The payer side of BOLT 12 offers over IPC: <c>payoffer</c> and <c>fetchinvoice</c> (ClientCommand 29 and 30,
-/// provisional until the B12 integration).
+/// The payer side of BOLT 12 offers over IPC: <c>payoffer</c> and <c>fetchinvoice</c> (ClientCommand 29 and 30).
 /// </summary>
 public static class OfferSendIpcServiceExtensions
 {

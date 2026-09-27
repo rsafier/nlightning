@@ -127,7 +127,7 @@ public static class InvoiceRequestReader
             return Fail("invreq_payer_id missing or not a point", out reason);
 
         if (stream.TryGetValue(Bolt12TlvTypes.InvreqFeatures, out var features)
-         && Bolt12Wire.HasUnknownEvenBit(features.Span, _ => false))
+         && Bolt12Wire.HasUnknownEvenBit(features.Span))
             return Fail("invreq_features has an unknown even bit", out reason);
 
         if (stream.TryGetValue(Bolt12TlvTypes.InvreqPaths, out var paths)

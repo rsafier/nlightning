@@ -6,7 +6,7 @@ using Domain.Client.Requests;
 using Domain.Money;
 
 /// <summary>
-/// Request for PayOffer and FetchInvoice (ClientCommand 29 and 30, provisional until the B12 integration); FetchInvoice
+/// Request for PayOffer and FetchInvoice (ClientCommand 29 and 30); FetchInvoice
 /// ignores the payment limits (keys 4-6).
 /// </summary>
 [MessagePackObject]

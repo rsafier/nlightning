@@ -28,6 +28,8 @@ using Domain.Protocol.Interfaces;
 using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Node.Managers;
+using Offers;
+using Offers.Send;
 using Onchain;
 using Onchain.Anchors;
 using Onchain.Resolvers.Local;
@@ -112,6 +114,11 @@ public static class DependencyInjection
         services.AddAnchorCpfpServices();
         // BOLT 4 onion messages (wave M6): off until option_onion_messages is advertised
         services.AddOnionMessageServices();
+        // BOLT 12 offers (wave B12): the receive side (type-64 invoice_request handler, over the payments'
+        // BlindedPathBuilder) and the payer side (over the onion messages and PaymentService.PayBlindedAsync); both
+        // stay unavailable without an IBolt12Signer, onion messages and route blinding
+        services.AddOffersServices();
+        services.AddOfferSendServices();
         services.AddSingleton<IPeerManager>(sp =>
         {
             var peerManager = ActivatorUtilities.CreateInstance<PeerManager>(sp);

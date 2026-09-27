@@ -16,7 +16,7 @@ internal sealed record CreateOfferArguments(LightningMoney? Amount, string? Desc
 
 /// <summary>
 /// The BOLT 12 offer commands of the CLI: <c>createoffer|create-offer</c>, <c>listoffers|list-offers</c> and
-/// <c>disableoffer|disable-offer</c> (wave B12 lane D; provisional ClientCommand 26-28).
+/// <c>disableoffer|disable-offer</c> (wave B12 lane D; ClientCommand 26-28).
 /// </summary>
 internal static class OfferCommands
 {

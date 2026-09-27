@@ -5,7 +5,7 @@ namespace NLightning.Transport.Ipc.Responses;
 using Domain.Client.Responses;
 
 /// <summary>
-/// Response for PayOffer (ClientCommand 29, provisional): the fetch and, when an invoice was received, the payment.
+/// Response for PayOffer (ClientCommand 29): the fetch and, when an invoice was received, the payment.
 /// </summary>
 [MessagePackObject]
 public sealed class PayOfferIpcResponse

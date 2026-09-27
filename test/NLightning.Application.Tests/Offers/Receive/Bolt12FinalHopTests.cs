@@ -33,19 +33,8 @@ public class Bolt12FinalHopTests
     private static InvoiceModel Bolt12Invoice()
     {
         var details = new Bolt12InvoiceDetails(new Hash(new byte[32]), new byte[] { 1 }, TestPaths.Point(0x02));
-        // B12-0's InvoiceModel requires a string; B12-C's refuses one for a BOLT 12 invoice
-        try
-        {
-            return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret,
-                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", null!, DateTimeOffset.UtcNow,
-                                    7_200, MinFinalCltv, bolt12: details);
-        }
-        catch (ArgumentException)
-        {
-            return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret,
-                                    LightningMoney.MilliSatoshis(AmountMsat), "coffee", "lni1test",
-                                    DateTimeOffset.UtcNow, 7_200, MinFinalCltv, bolt12: details);
-        }
+        return new InvoiceModel(s_paymentHash, s_preimage, s_paymentSecret, LightningMoney.MilliSatoshis(AmountMsat),
+                                "coffee", null, DateTimeOffset.UtcNow, 7_200, MinFinalCltv, bolt12: details);
     }
 
     [Fact]

@@ -8,7 +8,7 @@ using Domain.Money;
 using Domain.Offers.Enums;
 
 /// <summary>
-/// Response for FetchInvoice (ClientCommand 30, provisional), and the fetch half of <see cref="PayOfferIpcResponse"/>.
+/// Response for FetchInvoice (ClientCommand 30), and the fetch half of <see cref="PayOfferIpcResponse"/>.
 /// </summary>
 [MessagePackObject]
 public sealed class FetchInvoiceIpcResponse

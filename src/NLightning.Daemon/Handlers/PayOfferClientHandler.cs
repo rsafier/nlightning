@@ -15,7 +15,7 @@ using Interfaces;
 
 /// <summary>
 /// Fetches an invoice for a BOLT 12 offer and pays it through <see cref="IOfferPaymentService"/>
-/// (ClientCommand 29, <c>payoffer</c>, provisional).
+/// (ClientCommand 29, <c>payoffer</c>).
 /// </summary>
 /// <remarks>
 /// The fetch takes at most <see cref="PayOfferOptions.MaxFetchAttempts"/> x <see cref="PayOfferOptions.FetchTimeout"/>

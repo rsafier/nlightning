@@ -6,7 +6,6 @@ using NLightning.Domain.Channels.ValueObjects;
 namespace NLightning.Client.Ipc;
 
 using Domain.Bitcoin.Enums;
-using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -332,37 +331,37 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Creates one of our BOLT 12 offers (provisional ClientCommand 26, <c>OfferClientCommands.CreateOffer</c>).
+    /// Creates one of our BOLT 12 offers (ClientCommand 26).
     /// </summary>
     public Task<CreateOfferIpcResponse> CreateOfferAsync(CreateOfferIpcRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        return SendRequestAsync<CreateOfferIpcRequest, CreateOfferIpcResponse>(OfferClientCommands.CreateOffer,
+        return SendRequestAsync<CreateOfferIpcRequest, CreateOfferIpcResponse>(ClientCommand.CreateOffer,
                                                                                request, ct);
     }
 
     /// <summary>
-    /// Lists our BOLT 12 offers, newest first (provisional ClientCommand 27).
+    /// Lists our BOLT 12 offers, newest first (ClientCommand 27).
     /// </summary>
     public Task<ListOffersIpcResponse> ListOffersAsync(bool activeOnly, int skip, int take,
                                                        CancellationToken ct = default)
     {
         var req = new ListOffersIpcRequest { ActiveOnly = activeOnly, Skip = skip, Take = take };
-        return SendRequestAsync<ListOffersIpcRequest, ListOffersIpcResponse>(OfferClientCommands.ListOffers, req, ct);
+        return SendRequestAsync<ListOffersIpcRequest, ListOffersIpcResponse>(ClientCommand.ListOffers, req, ct);
     }
 
     /// <summary>
-    /// Disables one of our BOLT 12 offers (provisional ClientCommand 28).
+    /// Disables one of our BOLT 12 offers (ClientCommand 28).
     /// </summary>
     public Task<DisableOfferIpcResponse> DisableOfferAsync(Hash offerId, CancellationToken ct = default)
     {
         var req = new DisableOfferIpcRequest { OfferId = offerId };
-        return SendRequestAsync<DisableOfferIpcRequest, DisableOfferIpcResponse>(OfferClientCommands.DisableOffer,
+        return SendRequestAsync<DisableOfferIpcRequest, DisableOfferIpcResponse>(ClientCommand.DisableOffer,
                                                                                  req, ct);
     }
 
     /// <summary>
-    /// Fetches an invoice for a BOLT 12 offer and pays it (ClientCommand 29, provisional).
+    /// Fetches an invoice for a BOLT 12 offer and pays it (ClientCommand 29).
     /// </summary>
     /// <param name="arguments">The parsed <c>payoffer</c> arguments.</param>
     /// <param name="ct">Cancels the call (a payment already started keeps going in the daemon).</param>
@@ -370,7 +369,7 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
         SendRequestAsync<PayOfferIpcRequest, PayOfferIpcResponse>(ClientCommand.PayOffer, ToRequest(arguments), ct);
 
     /// <summary>
-    /// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30, provisional).
+    /// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30).
     /// </summary>
     /// <param name="arguments">The parsed <c>fetchinvoice</c> arguments (the payment limits are ignored).</param>
     /// <param name="ct">Cancels the call.</param>

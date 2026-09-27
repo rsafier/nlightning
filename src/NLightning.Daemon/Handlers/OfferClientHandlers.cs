@@ -11,7 +11,7 @@ using Domain.Offers.Models;
 using Interfaces;
 
 /// <summary>
-/// Creates and stores one of our BOLT 12 offers through <see cref="IOfferService"/> (<c>createoffer</c>, provisional
+/// Creates and stores one of our BOLT 12 offers through <see cref="IOfferService"/> (<c>createoffer</c>,
 /// ClientCommand 26). The returned <c>lno1...</c> string is answerable as soon as this returns.
 /// </summary>
 /// <remarks>
@@ -28,7 +28,7 @@ public sealed class CreateOfferClientHandler : IClientCommandHandler<CreateOffer
     private readonly TimeProvider _timeProvider;
 
     /// <inheritdoc/>
-    public ClientCommand Command => OfferClientCommands.CreateOffer;
+    public ClientCommand Command => ClientCommand.CreateOffer;
 
     public CreateOfferClientHandler(IOfferService offerService, TimeProvider timeProvider)
     {
@@ -75,7 +75,7 @@ public sealed class CreateOfferClientHandler : IClientCommandHandler<CreateOffer
 }
 
 /// <summary>
-/// Lists a page of our BOLT 12 offers, newest first, with their invoice counts (<c>listoffers</c>, provisional
+/// Lists a page of our BOLT 12 offers, newest first, with their invoice counts (<c>listoffers</c>,
 /// ClientCommand 27).
 /// </summary>
 public sealed class ListOffersClientHandler : IClientCommandHandler<ListOffersClientRequest, ListOffersClientResponse>
@@ -84,7 +84,7 @@ public sealed class ListOffersClientHandler : IClientCommandHandler<ListOffersCl
     private readonly TimeProvider _timeProvider;
 
     /// <inheritdoc/>
-    public ClientCommand Command => OfferClientCommands.ListOffers;
+    public ClientCommand Command => ClientCommand.ListOffers;
 
     public ListOffersClientHandler(IOfferService offerService, TimeProvider timeProvider)
     {
@@ -111,7 +111,7 @@ public sealed class ListOffersClientHandler : IClientCommandHandler<ListOffersCl
 }
 
 /// <summary>
-/// Disables one of our BOLT 12 offers (<c>disableoffer</c>, provisional ClientCommand 28): later invoice_requests
+/// Disables one of our BOLT 12 offers (<c>disableoffer</c>, ClientCommand 28): later invoice_requests
 /// for it get an <c>invoice_error</c>; invoices already issued stay payable.
 /// </summary>
 public sealed class DisableOfferClientHandler
@@ -121,7 +121,7 @@ public sealed class DisableOfferClientHandler
     private readonly TimeProvider _timeProvider;
 
     /// <inheritdoc/>
-    public ClientCommand Command => OfferClientCommands.DisableOffer;
+    public ClientCommand Command => ClientCommand.DisableOffer;
 
     public DisableOfferClientHandler(IOfferService offerService, TimeProvider timeProvider)
     {
