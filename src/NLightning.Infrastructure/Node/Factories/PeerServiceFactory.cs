@@ -11,6 +11,7 @@ using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Protocol.Interfaces;
 using Services;
 
@@ -78,7 +79,8 @@ public class PeerServiceFactory : IPeerServiceFactory
         // Create the service
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
-                               _serviceProvider.GetService<IGossipSyncService>());
+                               _serviceProvider.GetService<IGossipSyncService>(),
+                               _serviceProvider.GetService<IPeerStorageService>());
     }
 
     /// <inheritdoc />
@@ -127,6 +129,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         // Create the application service (application layer)
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
-                               _serviceProvider.GetService<IGossipSyncService>());
+                               _serviceProvider.GetService<IGossipSyncService>(),
+                               _serviceProvider.GetService<IPeerStorageService>());
     }
 }

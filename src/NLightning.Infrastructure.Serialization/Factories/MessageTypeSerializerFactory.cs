@@ -83,6 +83,11 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
                                                                _tlvStreamSerializer));
         _serializers.Add(typeof(PingMessage), new PingMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(PongMessage), new PongMessageTypeSerializer(_payloadSerializerFactory));
+        _serializers.Add(typeof(PeerStorageMessage),
+                         new PeerStorageMessageTypeSerializer(_payloadSerializerFactory, _tlvStreamSerializer));
+        _serializers.Add(typeof(PeerStorageRetrievalMessage),
+                         new PeerStorageRetrievalMessageTypeSerializer(_payloadSerializerFactory,
+                                                                       _tlvStreamSerializer));
         _serializers.Add(typeof(RevokeAndAckMessage),
                          new RevokeAndAckMessageTypeSerializer(_payloadSerializerFactory));
         _serializers.Add(typeof(ShutdownMessage), new ShutdownMessageTypeSerializer(_payloadSerializerFactory));
@@ -166,6 +171,8 @@ public class MessageTypeSerializerFactory : IMessageTypeSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.OpenChannel2, typeof(OpenChannel2Message));
         _messageTypeDictionary.Add(MessageTypes.Ping, typeof(PingMessage));
         _messageTypeDictionary.Add(MessageTypes.Pong, typeof(PongMessage));
+        _messageTypeDictionary.Add(MessageTypes.PeerStorage, typeof(PeerStorageMessage));
+        _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalMessage));
         _messageTypeDictionary.Add(MessageTypes.RevokeAndAck, typeof(RevokeAndAckMessage));
         _messageTypeDictionary.Add(MessageTypes.Shutdown, typeof(ShutdownMessage));
         _messageTypeDictionary.Add(MessageTypes.Stfu, typeof(StfuMessage));

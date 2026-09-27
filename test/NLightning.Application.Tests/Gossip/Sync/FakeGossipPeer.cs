@@ -65,6 +65,12 @@ internal sealed class FakeGossipPeer : IPeerService
         return Task.CompletedTask;
     }
 
+    public Task SendPeerStorageMessageAsync(IMessage message)
+    {
+        Record(message);
+        return Task.CompletedTask;
+    }
+
     public Task SendWarningAsync(WarningException we)
     {
         lock (_lock)

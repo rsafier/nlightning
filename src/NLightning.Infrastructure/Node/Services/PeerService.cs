@@ -13,6 +13,7 @@ using Domain.Gossip.Queries;
 using Domain.Node.Events;
 using Domain.Node.Interfaces;
 using Domain.Node.Options;
+using Domain.Node.PeerStorage;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -53,6 +54,7 @@ public sealed class PeerService : IPeerService
     private readonly ILogger<PeerService> _logger;
     private readonly IGossipIngress? _gossipIngress;
     private readonly IGossipSyncService? _gossipSync;
+    private readonly IPeerStorageService? _peerStorage;
     private readonly ChainHash _chainHash;
     private readonly Lock _channelMessageLock = new();
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
@@ -180,15 +182,20 @@ public sealed class PeerService : IPeerService
     /// after init (BOLT 7 G3); null answers queries as a node without a graph and, while the graph is enabled, asks the
     /// peer for its whole graph with <c>gossip_timestamp_filter(0, 0xFFFFFFFF)</c>.
     /// </param>
+    /// <param name="peerStorage">
+    /// Where <c>peer_storage</c>/<c>peer_storage_retrieval</c> (BOLT 1) go, told after init so it sends the peer the
+    /// blob we keep for it before anything else; null drops both messages.
+    /// </param>
     public PeerService(IPeerCommunicationService peerCommunicationService, FeatureOptions features,
                        ILogger<PeerService> logger, TimeSpan networkTimeout, IGossipIngress? gossipIngress = null,
-                       IGossipSyncService? gossipSync = null)
+                       IGossipSyncService? gossipSync = null, IPeerStorageService? peerStorage = null)
     {
         _peerCommunicationService = peerCommunicationService;
         Features = features;
         _logger = logger;
         _gossipIngress = gossipIngress;
         _gossipSync = gossipSync;
+        _peerStorage = peerStorage;
         _chainHash = features.ChainHashes.Any() ? features.ChainHashes.First() : ChainConstants.Main;
 
         // Nobody has to observe a failed init wait (e.g. a connection that closes before anyone asked)
@@ -264,6 +271,18 @@ public sealed class PeerService : IPeerService
         if (message.Type is < MessageTypes.ChannelAnnouncement or > MessageTypes.GossipTimestampFilter)
             throw new ArgumentException($"{Enum.GetName(message.Type) ?? message.Type.ToString()} is not a gossip message",
                                         nameof(message));
+
+        return _peerCommunicationService.SendMessageAsync(message);
+    }
+
+    /// <inheritdoc/>
+    public Task SendPeerStorageMessageAsync(IMessage message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Type is not (MessageTypes.PeerStorage or MessageTypes.PeerStorageRetrieval))
+            throw new ArgumentException(
+                $"{Enum.GetName(message.Type) ?? message.Type.ToString()} is not a peer storage message",
+                nameof(message));
 
         return _peerCommunicationService.SendMessageAsync(message);
     }
@@ -370,6 +389,17 @@ public sealed class PeerService : IPeerService
                              channelUpdateMessage.Payload.ShortChannelId, PeerPubKey);
             RaiseChannelUpdate(channelUpdateMessage);
             _gossipIngress?.TryEnqueue(this, channelUpdateMessage);
+        }
+        else if (message is PeerStorageMessage or PeerStorageRetrievalMessage)
+        {
+            // BOLT 1 peer storage: kept (as a provider) or read back (as a client) by the peer storage service, which
+            // only queues work here
+            _logger.LogDebug("Received {messageType} from peer {peer}", Enum.GetName(message.Type), PeerPubKey);
+            if (_peerStorage is not null)
+                _peerStorage.HandleMessage(this, message);
+            else
+                _logger.LogTrace("Dropping {messageType} from peer {peer}: peer storage is off",
+                                 Enum.GetName(message.Type), PeerPubKey);
         }
         else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage)
         {
@@ -565,9 +595,12 @@ public sealed class PeerService : IPeerService
         Features = FeatureOptions.GetNodeOptions(negotiatedFeatures, initMessage.Extension);
         _logger.LogTrace("Initialization from peer {peer} completed successfully", PeerPubKey);
         _isInitialized = true;
-        _initReceived.TrySetResult();
 
+        // Before the init wait completes: whoever waits for it (the peer manager, which then sends
+        // channel_reestablish) comes after the peer_storage_retrieval this may send (BOLT 1)
         MarkBootstrapStep(ourInitSent: false);
+
+        _initReceived.TrySetResult();
     }
 
     /// <summary>
@@ -589,6 +622,10 @@ public sealed class PeerService : IPeerService
 
             _gossipRequested = true;
         }
+
+        // BOLT 1: peer_storage_retrieval right after init, before channel_reestablish (which the peer manager sends
+        // only after this connection was handed out): the service enqueues it on the transport before returning
+        _peerStorage?.OnPeerInitialized(this);
 
         RequestGossipIfEnabled();
     }
