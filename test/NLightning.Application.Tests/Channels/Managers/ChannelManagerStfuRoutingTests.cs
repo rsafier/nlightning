@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NLightning.Tests.Utils.Channels;
 using NLightning.Tests.Utils.Mocks;
@@ -7,6 +8,7 @@ namespace NLightning.Application.Tests.Channels.Managers;
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
 using Application.Channels.Managers;
+using Application.Channels.Reestablish;
 using Application.Channels.Services;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
@@ -179,7 +181,70 @@ public class ChannelManagerStfuRoutingTests
             Times.Never);
     }
 
-    private ChannelManager CreateChannelManager(bool withQuiescenceService)
+    [Fact]
+    public async Task Given_StfuBeforeChannelReestablish_When_Handled_Then_WarningClosesTheConnectionAndServiceNotCalled()
+    {
+        // Arrange: BOLT 2 B2-RE-07, nothing but channel_reestablish is exchanged for a channel until both were
+        // processed. The tracker knows the channel but it was not reestablished on this connection.
+        var tracker = new ReestablishTracker();
+        tracker.MarkSent(_channel.ChannelId, s_peerPubKey);
+        var channelManager = CreateChannelManager(withQuiescenceService: true, tracker);
+
+        // Act
+        var exception = await Assert.ThrowsAsync<ChannelWarningException>(() =>
+            channelManager.HandleChannelMessageAsync(new StfuMessage(new StfuPayload(_channel.ChannelId, true)),
+                                                     CreateNegotiatedFeatures(), s_peerPubKey));
+
+        // Assert
+        Assert.True(exception.CloseConnection);
+        Assert.Equal(_channel.ChannelId, exception.ChannelId);
+        Assert.Contains("B2-RE-07", exception.Message);
+        _mockQuiescenceService.Verify(
+            s => s.OnStfuReceived(It.IsAny<ChannelModel>(), It.IsAny<StfuPayload>(), It.IsAny<FeatureSet>()),
+            Times.Never);
+        Assert.Equal(0, _lockProvider.HeldCount);
+    }
+
+    [Fact]
+    public async Task Given_StfuAfterChannelReestablish_When_Handled_Then_ReachesTheQuiescenceService()
+    {
+        // Arrange: the same gate lets stfu through once the exchange completed on this connection
+        var tracker = new ReestablishTracker();
+        tracker.MarkSent(_channel.ChannelId, s_peerPubKey);
+        Assert.True(tracker.TryMarkReestablished(_channel.ChannelId));
+        _mockQuiescenceService
+           .Setup(s => s.OnStfuReceived(It.IsAny<ChannelModel>(), It.IsAny<StfuPayload>(), It.IsAny<FeatureSet>()))
+           .Returns((StfuMessage?)null);
+        var channelManager = CreateChannelManager(withQuiescenceService: true, tracker);
+
+        // Act
+        await channelManager.HandleChannelMessageAsync(new StfuMessage(new StfuPayload(_channel.ChannelId, true)),
+                                                       CreateNegotiatedFeatures(), s_peerPubKey);
+
+        // Assert
+        _mockQuiescenceService.Verify(
+            s => s.OnStfuReceived(_channel, It.IsAny<StfuPayload>(), It.IsAny<FeatureSet>()), Times.Once);
+    }
+
+    [Fact]
+    public void Given_AddApplicationServices_When_Registered_Then_ExactlyOneStfuHandlerIsStfuMessageHandler()
+    {
+        // Arrange: AddChannelMessageHandlers registers every IChannelMessageHandler<> of the assembly by reflection;
+        // a second stfu handler would silently replace this one (last registration wins)
+        var services = new ServiceCollection();
+
+        // Act
+        services.AddApplicationServices();
+
+        // Assert
+        var descriptor = Assert.Single(services, d => d.ServiceType == typeof(IChannelMessageHandler<StfuMessage>));
+        Assert.Equal(typeof(StfuMessageHandler), descriptor.ImplementationType);
+        Assert.Single(typeof(StfuMessageHandler).Assembly.GetTypes(),
+                      t => t is { IsClass: true, IsAbstract: false }
+                        && typeof(IChannelMessageHandler<StfuMessage>).IsAssignableFrom(t));
+    }
+
+    private ChannelManager CreateChannelManager(bool withQuiescenceService, ReestablishTracker? tracker = null)
     {
         var handler = new StfuMessageHandler(_mockChannelMemoryRepository.Object,
                                              new Mock<ILogger<StfuMessageHandler>>().Object,
@@ -188,6 +253,8 @@ public class ChannelManagerStfuRoutingTests
         serviceProvider.AddService(typeof(IChannelMessageHandler<StfuMessage>), handler);
         serviceProvider.AddService(typeof(IUnitOfWork), _mockUnitOfWork.Object);
         serviceProvider.AddService(typeof(ChannelDomainEventQueue), new ChannelDomainEventQueue());
+        if (tracker is not null)
+            serviceProvider.AddService(typeof(ReestablishTracker), tracker);
 
         return new ChannelManager(new Mock<IBlockchainMonitor>().Object, _lockProvider,
                                   _mockChannelMemoryRepository.Object, new Mock<ILogger<ChannelManager>>().Object,
