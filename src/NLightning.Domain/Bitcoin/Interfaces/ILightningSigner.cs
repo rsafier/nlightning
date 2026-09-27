@@ -356,13 +356,15 @@ public interface ILightningSigner
     /// node key, a transient payer key or our blinded key for a path_key).
     /// </summary>
     /// <remarks>
-    /// The signer computes the tagged hash itself and only accepts BOLT 12 signature tags
-    /// (<c>"lightning" || messagename || "signature"</c>), so the keys never sign an arbitrary digest. The auxiliary
+    /// The signer computes the tagged hash itself and only accepts the two BOLT 12 signature tags, each for its own key:
+    /// a payer key signs only under <c>lightninginvoice_requestsignature</c>, the node key and our blinded keys only
+    /// under <c>lightninginvoicesignature</c>, so the keys never sign an arbitrary digest. The auxiliary
     /// randomness is 32 zero bytes (as CLN, whose <c>signature-test.json</c> signature this reproduces), so the
     /// signature is deterministic.
     /// </remarks>
     /// <returns>The 64-byte signature.</returns>
-    /// <exception cref="ArgumentException">The tag is not a BOLT 12 signature tag, or a path_key is not a point.
+    /// <exception cref="ArgumentException">The tag is not the BOLT 12 signature tag of that key kind, or a path_key is
+    /// not a point.
     /// </exception>
     byte[] SignBolt12(Offers.Models.Bolt12SigningKey key, string tag, Hash merkleRoot) =>
         throw new NotSupportedException("This signer does not sign BOLT 12 messages.");
