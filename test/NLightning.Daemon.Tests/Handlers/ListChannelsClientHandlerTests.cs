@@ -407,6 +407,42 @@ public class ListChannelsClientHandlerTests
     }
 
     [Fact]
+    public async Task Given_ClosedAndStaleChannelsInDb_When_HandleAsync_Then_OnlyTheLiveChannelsFundingsAreRead()
+    {
+        // Arrange: one live channel and two persisted finished ones; only the live one's rows are queried
+        var liveId = CreateChannelId(1);
+        var closedId = CreateChannelId(2);
+        var staleId = CreateChannelId(3);
+        var closedTxId = CreateTxId(8);
+        SetupMemory(CreateChannel(liveId, s_alice, ChannelState.Open));
+        _channelDbRepositoryMock.Setup(x => x.GetAllAsync())
+                                .ReturnsAsync([
+                                     CreateChannel(closedId, s_bob, ChannelState.Closed,
+                                                   fundingOutput: new FundingOutputInfo(
+                                                       LightningMoney.Satoshis(700_000), CreatePubKey(3),
+                                                       CreatePubKey(4), closedTxId, 0)),
+                                     CreateChannel(staleId, s_bob, ChannelState.Stale)
+                                 ]);
+        SetupFundings(liveId,
+                      Funding(CreateTxId(2), ChannelFundingKind.Splice, ChannelFundingStatus.Current, 1_500_000));
+
+        // Act
+        var response = await CreateHandler(true).HandleAsync(new ListChannelsClientRequest(),
+                                                             TestContext.Current.CancellationToken);
+
+        // Assert
+        _channelFundingDbRepositoryMock.Verify(x => x.GetByChannelIdAsync(liveId), Times.Once);
+        _channelFundingDbRepositoryMock.Verify(x => x.GetByChannelIdAsync(closedId), Times.Never);
+        _channelFundingDbRepositoryMock.Verify(x => x.GetByChannelIdAsync(staleId), Times.Never);
+        Assert.Equal(3, response.Channels.Count);
+        Assert.Equal(CreateTxId(2), Assert.Single(response.Channels[0].Fundings).FundingTxId);
+        var closedFunding = Assert.Single(response.Channels.Single(c => c.ChannelId == closedId).Fundings);
+        Assert.Equal(closedTxId, closedFunding.FundingTxId);
+        Assert.Equal(ChannelFundingStatus.Current, closedFunding.Status);
+        Assert.Empty(response.Channels.Single(c => c.ChannelId == staleId).Fundings);
+    }
+
+    [Fact]
     public async Task Given_UnitOfWorkWithoutFundingStore_When_HandleAsync_Then_FundingOutputIsListed()
     {
         // Arrange: a unit of work that stores no fundings throws NotSupportedException from the default member
