@@ -50,7 +50,15 @@ public class PayBlindedTests
         Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
         Assert.Equal(harness.Carol.NodeId, result.Payment.PayeeNodeId);
         Assert.Equal(harness.Carol.NodeId, result.Payment.Route[^1].NodeId);
-        // The row's BOLT 12 columns come with lane B12-C's migration (AddBolt12Offers); until then SQLite drops them
+        // The row's BOLT 12 columns (lane B12-C's AddBolt12Offers) survive the SQLite round trip
+        var stored = await harness.Alice.InScopeAsync(u => u.PaymentDbRepository
+                                                             .GetByPaymentHashAsync(invoice.PaymentHash));
+        Assert.NotNull(stored?.Bolt12);
+        Assert.Equal(harness.Carol.NodeId, stored.PayeeNodeId);
+        Assert.Equal("lno1test", stored.Bolt12!.Offer);
+        Assert.Equal(new byte[] { 1, 2, 3 }, stored.Bolt12.InvoiceBytes.ToArray());
+        Assert.Equal(new byte[] { 9, 9 }, stored.Bolt12.InvoiceRequestMetadata.ToArray());
+        Assert.Equal("a note", stored.Bolt12.PayerNote);
     }
 
     [Fact]
