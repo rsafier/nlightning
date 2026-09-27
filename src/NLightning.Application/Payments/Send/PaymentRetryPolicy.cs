@@ -99,6 +99,17 @@ internal sealed class PaymentRetryPolicy
         if (index < hops.Count)
             _missionControl?.RecordFailure(part.Route, index, interpretation.Code);
 
+        if (part.Route.BlindedStartIndex is { } blindedStart && index >= blindedStart)
+        {
+            // BOLT 4: inside a blinded path only the introduction node answers, with invalid_onion_blinding whatever
+            // went wrong behind it; the path is not used again, another one may be
+            if (part.Route.BlindedPathIndex is not { } pathIndex)
+                return (false, $"the blinded path failed ({interpretation.Code})");
+
+            constraints.ExcludedBlindedPaths.Add(pathIndex);
+            return (true, $"blinded path {pathIndex} failed ({interpretation.Code}) and is avoided");
+        }
+
         if (interpretation.IsFinalNode)
         {
             if (interpretation.Code == FailureCode.MppTimeout)

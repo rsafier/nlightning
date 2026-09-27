@@ -83,6 +83,9 @@ public sealed class PaymentOnionFactory
         ArgumentNullException.ThrowIfNull(hop);
         ArgumentNullException.ThrowIfNull(route);
 
+        if (hop.EncryptedRecipientData is { } encryptedRecipientData)
+            return CreateBlindedPayload(hop, encryptedRecipientData, route);
+
         var tlvs = new List<BaseTlv>
         {
             new AmtToForwardTlv(hop.AmountToForward),
@@ -99,6 +102,30 @@ public sealed class PaymentOnionFactory
             if (route.PaymentMetadata is { Length: > 0 } metadata)
                 tlvs.Add(new PaymentMetadataTlv(metadata.Span));
         }
+
+        return new HopPayload(tlvs.ToArray());
+    }
+
+    /// <summary>
+    /// BOLT 4 writer inside a blinded route: every blinded hop gets its <c>encrypted_recipient_data</c> (the
+    /// introduction node also <c>current_path_key</c>); only the final one gets <c>amt_to_forward</c>,
+    /// <c>outgoing_cltv_value</c> and <c>total_amount_msat</c>, and no <c>payment_data</c> (the recipient's
+    /// <c>path_id</c> replaces the payment secret).
+    /// </summary>
+    private static HopPayload CreateBlindedPayload(RouteHop hop, ReadOnlyMemory<byte> encryptedRecipientData,
+                                                   PaymentRoute route)
+    {
+        var tlvs = new List<BaseTlv>();
+        if (hop.IsFinal)
+        {
+            tlvs.Add(new AmtToForwardTlv(hop.AmountToForward));
+            tlvs.Add(new OutgoingCltvValueTlv(hop.OutgoingCltvValue));
+            tlvs.Add(new TotalAmountMsatTlv(route.TotalAmount));
+        }
+
+        tlvs.Add(new EncryptedRecipientDataTlv(encryptedRecipientData.Span));
+        if (hop.CurrentPathKey is { } pathKey)
+            tlvs.Add(new CurrentPathKeyTlv(pathKey));
 
         return new HopPayload(tlvs.ToArray());
     }

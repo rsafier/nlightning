@@ -88,7 +88,8 @@ public sealed class MissionControl
         {
             // The HTLC reached the erring hop: every edge before it carried its amount
             RecordCarried(route, erringHopIndex, now);
-            if (isFinal || code is not { } failureCode)
+            // Nothing is known about the channels inside a blinded path (the introduction node answers for all)
+            if (isFinal || code is not { } failureCode || erringHopIndex >= route.PublicEdgeCount)
                 return;
 
             var flags = (FailureCodeFlags)((ushort)failureCode & 0xF000);
@@ -154,7 +155,7 @@ public sealed class MissionControl
 
     private void RecordCarried(PaymentRoute route, int reachedHopIndex, ulong now)
     {
-        for (var i = 0; i < reachedHopIndex; i++)
+        for (var i = 0; i < Math.Min(reachedHopIndex, route.PublicEdgeCount); i++)
             _liquidity.RecordSuccess(Edge(route, i), route.Hops[i].AmountToForward.MilliSatoshi, now);
     }
 

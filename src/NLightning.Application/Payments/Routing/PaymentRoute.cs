@@ -56,6 +56,23 @@ public sealed class PaymentRoute
     /// </summary>
     public LightningMoney TotalAmount { get; }
 
+    /// <summary>
+    /// The index in <see cref="Hops"/> of the introduction node of the blinded path the route ends in, or null for a
+    /// route without one. Every hop from it on is blinded: its channels are unknown to us.
+    /// </summary>
+    public int? BlindedStartIndex { get; }
+
+    /// <summary>
+    /// Which of the payment's blinded paths the route ends in (an index into the request's paths), or null.
+    /// </summary>
+    public int? BlindedPathIndex { get; init; }
+
+    /// <summary>
+    /// The number of edges from our peer whose channel we know (<see cref="RouteHop.OutgoingShortChannelId"/>): every
+    /// edge before the blinded path.
+    /// </summary>
+    public int PublicEdgeCount => BlindedStartIndex ?? Hops.Count - 1;
+
     /// <param name="hops">The onion layers, our peer first, the payee last.</param>
     /// <param name="firstHopAmount">The amount of our HTLC.</param>
     /// <param name="firstHopCltvExpiry">The <c>cltv_expiry</c> of our HTLC.</param>
@@ -76,6 +93,22 @@ public sealed class PaymentRoute
             throw new ArgumentException("The last hop is the payee and has no short_channel_id.", nameof(hops));
         if (hops.Take(hops.Count - 1).Any(hop => hop.IsFinal))
             throw new ArgumentException("Every hop but the last has a short_channel_id.", nameof(hops));
+
+        var blindedStart = -1;
+        for (var i = 0; i < hops.Count; i++)
+        {
+            if (hops[i].IsBlindedRelay && !hops[i].IsBlinded)
+                throw new ArgumentException("A blinded relay hop carries encrypted_recipient_data.", nameof(hops));
+            if (hops[i].IsBlinded && blindedStart < 0)
+                blindedStart = i;
+            else if (!hops[i].IsBlinded && blindedStart >= 0)
+                throw new ArgumentException("Every hop after the introduction node belongs to the blinded path.",
+                                            nameof(hops));
+        }
+
+        if (blindedStart >= 0 && hops[blindedStart].CurrentPathKey is null)
+            throw new ArgumentException("The introduction node of a blinded path gets current_path_key.",
+                                        nameof(hops));
         if (firstHopAmount < hops[^1].AmountToForward)
             throw new ArgumentException("The first HTLC cannot carry less than the payee receives.",
                                         nameof(firstHopAmount));
@@ -85,6 +118,7 @@ public sealed class PaymentRoute
                                         nameof(totalAmount));
 
         Hops = hops;
+        BlindedStartIndex = blindedStart >= 0 ? blindedStart : null;
         FirstHopAmount = firstHopAmount;
         TotalAmount = totalAmount ?? hops[^1].AmountToForward;
         FirstHopCltvExpiry = firstHopCltvExpiry;

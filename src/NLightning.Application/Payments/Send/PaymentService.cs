@@ -242,7 +242,55 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                                                                         PaymentSendOptions.MaxPartsLimit),
                                          Math.Max(1, sendOptions.MaxAttempts), deadline, now);
 
-        var paymentHash = target.PaymentHash;
+        return await RunSessionAsync(session, options.Timeout, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Rounds as for an invoice (<see cref="RunRoundsAsync"/>), each planned over the cheapest usable path
+    /// (<see cref="TryPlanBlinded"/>): one part only, <c>total_amount_msat</c> = the amount, the payment's stored payee
+    /// is the path's last blinded node id. An introduction node that is this node is not supported (the path is
+    /// skipped).
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">Also when no block was processed yet. Nothing is persisted.
+    /// </exception>
+    public async Task<PayInvoiceResult> PayBlindedAsync(PayBlindedRequest request, PayInvoiceOptions options,
+                                                        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(request.Amount);
+        if (request.Amount.IsZero)
+            throw new ArgumentException("The amount must be positive.", nameof(request));
+        if (request.Paths is not { Count: > 0 } paths || paths.Any(p => p?.Path is null || p.PayInfo is null))
+            throw new ArgumentException("At least one blinded path with its pay info is required.", nameof(request));
+        if (paths.Any(p => p.Path.Hops.Count == 0))
+            throw new ArgumentException("A blinded path has no hop.", nameof(request));
+        if (options.Timeout <= TimeSpan.Zero && options.Timeout != Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(options), "The timeout must be positive.");
+        if (_blockchainMonitor.LastProcessedBlockHeight == 0)
+            throw new InvalidOperationException("No block has been processed yet; cannot set the HTLC expiry.");
+
+        // The recipient hides behind the path: its last blinded node id stands for it in the stored payment
+        var target = new PaymentTarget(paths[0].Path.Hops[^1].BlindedNodeId, request.PaymentHash,
+                                       new Secret(new byte[32]), request.Amount, 0, []);
+        var sendOptions = _sendOptions.Value;
+        var now = _timeProvider.GetUtcNow();
+        DateTimeOffset? deadline = options.Timeout == Timeout.InfiniteTimeSpan ? null : now + options.Timeout;
+        var session = new PaymentSession(target, request.Invoice, request.Amount,
+                                         options.MaxFee ?? sendOptions.GetMaxFee(request.Amount), 1,
+                                         Math.Max(1, sendOptions.MaxAttempts), deadline, now)
+        {
+            BlindedPaths = paths
+        };
+
+        return await RunSessionAsync(session, options.Timeout, cancellationToken);
+    }
+
+    private async Task<PayInvoiceResult> RunSessionAsync(PaymentSession session, TimeSpan timeout,
+                                                         CancellationToken cancellationToken)
+    {
+        var paymentHash = session.PaymentHash;
         using (await AcquireHashLockAsync(paymentHash, cancellationToken))
         {
             await ThrowIfPaymentExistsAsync(paymentHash);
@@ -259,7 +307,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
             }
         }
 
-        await WaitAsync(session.Completion.Task, options.Timeout, cancellationToken);
+        await WaitAsync(session.Completion.Task, timeout, cancellationToken);
         if (cancellationToken.IsCancellationRequested)
             session.StopRequested = true;
 
@@ -590,15 +638,28 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 graph = _graphPathSource.CreateContext(session.ShadowCltvOffset.Value);
             }
 
-            var request = new PaymentPlanRequest(session.Target, remaining, session.Amount.MilliSatoshi, feeLeft,
-                                                 partsAllowed, height, _secureKeyManager.GetNodePubKey(),
-                                                 channels.Select(ToCandidate).ToList(),
-                                                 CreateLiquidityProbe(channels, height), session.Constraints,
-                                                 _sendOptions.Value.MinPartMsat,
-                                                 PaymentRoutePlanner.SumHintForwards(
-                                                     session.InFlightParts.Select(p => p.Route)), graph);
-            if (!_planner.TryPlan(request, out var planned, out var noRouteReason))
+            IReadOnlyList<PlannedPart>? planned;
+            string? noRouteReason;
+            if (session.BlindedPaths is { } blindedPaths)
             {
+                TryPlanBlinded(session, blindedPaths, remaining, feeLeft, height, channels, graph, out planned,
+                               out noRouteReason);
+            }
+            else
+            {
+                var request = new PaymentPlanRequest(session.Target, remaining, session.Amount.MilliSatoshi, feeLeft,
+                                                     partsAllowed, height, _secureKeyManager.GetNodePubKey(),
+                                                     channels.Select(ToCandidate).ToList(),
+                                                     CreateLiquidityProbe(channels, height), session.Constraints,
+                                                     _sendOptions.Value.MinPartMsat,
+                                                     PaymentRoutePlanner.SumHintForwards(
+                                                         session.InFlightParts.Select(p => p.Route)), graph);
+                _planner.TryPlan(request, out planned, out noRouteReason);
+            }
+
+            if (planned is null)
+            {
+                noRouteReason ??= "no route";
                 if (session.HasPartsInFlight)
                 {
                     _logger.LogInformation("Payment {PaymentHash}: {Remaining} msat cannot be sent again while other "
@@ -639,6 +700,81 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
                 _logger.LogInformation("Payment {PaymentHash}: split into {Parts} parts", session.PaymentHash,
                                        round.Count);
         }
+    }
+
+    /// <summary>
+    /// Plans one part to the recipient behind the cheapest usable blinded path (ONION M5): a route to the path's
+    /// introduction node for the amount plus the path's fee, with the path's CLTV delta as the final delta and what is
+    /// left of the fee limit after the path's fee, then the blinded hops appended by
+    /// <see cref="BlindedRouteComposer.Compose"/>.
+    /// </summary>
+    private bool TryPlanBlinded(PaymentSession session, IReadOnlyList<BlindedPaymentPath> paths, ulong remainingMsat,
+                                ulong feeLeftMsat, uint height, List<ChannelModel> channels,
+                                GraphRoutingContext? graph, out IReadOnlyList<PlannedPart>? planned,
+                                out string? reason)
+    {
+        planned = null;
+        var ourNodeId = _secureKeyManager.GetNodePubKey();
+        var amount = LightningMoney.MilliSatoshis(remainingMsat);
+        var reasons = new List<string>();
+        var candidates = new List<(int Index, ulong FeeMsat)>();
+        for (var i = 0; i < paths.Count; i++)
+        {
+            if (session.Constraints.ExcludedBlindedPaths.Contains(i))
+            {
+                reasons.Add($"blinded path {i}: failed before");
+                continue;
+            }
+
+            if (paths[i].Path.FirstNodeId == ourNodeId)
+            {
+                reasons.Add($"blinded path {i}: we are its introduction node (not supported)");
+                continue;
+            }
+
+            if (BlindedRouteComposer.CheckUsable(paths[i], amount) is { } unusable)
+            {
+                reasons.Add($"blinded path {i}: {unusable}");
+                continue;
+            }
+
+            var pathFee = paths[i].PayInfo.ComputeFeeMsat(remainingMsat);
+            if (pathFee > feeLeftMsat)
+            {
+                reasons.Add($"blinded path {i}: its fee {pathFee} msat is above the fee limit {feeLeftMsat} msat");
+                continue;
+            }
+
+            candidates.Add((i, pathFee));
+        }
+
+        foreach (var (index, pathFee) in candidates.OrderBy(c => c.FeeMsat))
+        {
+            var path = paths[index];
+            var introAmount = remainingMsat + pathFee;
+            var toIntroduction = new PaymentTarget(path.Path.FirstNodeId, session.PaymentHash,
+                                                   session.Target.PaymentSecret,
+                                                   LightningMoney.MilliSatoshis(introAmount),
+                                                   path.PayInfo.CltvExpiryDelta, []);
+            var request = new PaymentPlanRequest(toIntroduction, introAmount, introAmount, feeLeftMsat - pathFee, 1,
+                                                 height, ourNodeId, channels.Select(ToCandidate).ToList(),
+                                                 CreateLiquidityProbe(channels, height), session.Constraints,
+                                                 _sendOptions.Value.MinPartMsat, null, graph);
+            if (!_planner.TryPlan(request, out var toIntro, out var why))
+            {
+                reasons.Add($"blinded path {index}: no route to its introduction node {path.Path.FirstNodeId} ({why})");
+                continue;
+            }
+
+            var part = toIntro[0];
+            var route = BlindedRouteComposer.Compose(part.Route, path, amount, session.Amount, index);
+            planned = [part with { Route = route, Description = $"{part.Description} + blinded path {index}" }];
+            reason = null;
+            return true;
+        }
+
+        reason = reasons.Count > 0 ? string.Join("; ", reasons) : "no usable blinded path";
+        return false;
     }
 
     private string? GetStopReason(PaymentSession session)
