@@ -56,6 +56,20 @@ public interface IBitcoinChainService
         GetUnspentOutputAsync(outPoint);
 
     /// <summary>
+    /// The merkle root and the transaction count of the block with <paramref name="blockHash"/>
+    /// (<c>getblockheader &lt;hash&gt; true</c>: <c>merkleroot</c>, <c>nTx</c>). A pruned node keeps every header, so this
+    /// answers where <see cref="GetBlockTxIdsAsync"/> cannot; it lets the funding output lookup prove a txid an
+    /// untrusted index names (BOLT 7 plan D12, Esplora source). <c>TxCount</c> is 0 when the node does not know it (a
+    /// block it never downloaded, e.g. below an assumeutxo snapshot). Null when the block is unknown. The default reads
+    /// the whole block through <see cref="GetBlockAsync(uint256)"/>.
+    /// </summary>
+    async Task<(uint256 MerkleRoot, int TxCount)?> GetBlockHeaderSummaryAsync(uint256 blockHash)
+    {
+        var block = await GetBlockAsync(blockHash);
+        return block is null ? null : (block.Header.HashMerkleRoot, block.Transactions.Count);
+    }
+
+    /// <summary>
     /// The hash and the transaction ids, in block order, of the active chain's block at <paramref name="height"/>
     /// (<c>getblockhash</c> + <c>getblock &lt;hash&gt; 1</c>: txids only, no txindex needed; BOLT 7 plan §3.4). Null
     /// when the height is above the tip or the block's data is not available (a pruned node). The default reads the

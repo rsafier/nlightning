@@ -38,6 +38,12 @@ using Wallet.Interfaces;
 /// An output spent only by a mempool transaction is <see cref="FundingOutputStatus.OutputSpentInMempool"/> (a second
 /// <c>gettxout</c> without the mempool), which is transient like <see cref="FundingOutputStatus.BlockNotFound"/>.
 /// </para>
+/// <para>
+/// With an <see cref="IFundingTxIdSource"/> (<c>Gossip:FundingTxIdSource = Esplora</c>, D12 for pruned nodes) the txid
+/// at the position comes from that source, proven against our node's header, instead of bitcoind's txid list; the
+/// output is still read from our node's <c>gettxout</c>. Without one, a block bitcoind cannot serve (pruned) logs a
+/// one-time hint to configure it.
+/// </para>
 /// </remarks>
 public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
 {
@@ -47,6 +53,8 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
     private readonly SemaphoreSlim _concurrency;
     private readonly TokenBucketRateLimiter _rateLimiter;
     private readonly int _cacheCapacity;
+    private readonly IFundingTxIdSource? _txIdSource;
+    private int _prunedHintLogged;
 
     private readonly Lock _cacheGate = new();
     private readonly Dictionary<uint, LinkedListNode<CachedBlock>> _cache = new();
@@ -54,7 +62,8 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
 
     public FundingOutputLookup(IBitcoinChainService chain, ILogger<FundingOutputLookup> logger,
                                IOptions<FundingOutputLookupOptions>? options = null,
-                               TimeProvider? timeProvider = null, IOutpointWatcher? outpointWatcher = null)
+                               TimeProvider? timeProvider = null, IOutpointWatcher? outpointWatcher = null,
+                               IFundingTxIdSource? txIdSource = null)
     {
         ArgumentNullException.ThrowIfNull(chain);
         ArgumentNullException.ThrowIfNull(logger);
@@ -70,6 +79,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         _concurrency = new SemaphoreSlim(settings.ChainLookupConcurrency, settings.ChainLookupConcurrency);
         _rateLimiter = new TokenBucketRateLimiter(settings.ChainLookupsPerSecond, timeProvider ?? TimeProvider.System);
         _cacheCapacity = settings.ChainLookupCacheHeights;
+        _txIdSource = txIdSource;
 
         _outpointWatcher = outpointWatcher;
         if (_outpointWatcher is not null)
@@ -95,13 +105,21 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         {
             await _rateLimiter.WaitAsync(cancellationToken);
 
-            var result = await LookupOnceAsync(shortChannelId);
+            var result = await LookupOnceAsync(shortChannelId, cancellationToken);
             if (result.Status != FundingOutputStatus.ChainMoved)
                 return result;
 
             // The output was reported at another height: drop the cached list and ask once more
             InvalidateFrom(shortChannelId.BlockHeight);
-            return await LookupOnceAsync(shortChannelId);
+            return await LookupOnceAsync(shortChannelId, cancellationToken);
+        }
+        catch (EsploraUnavailableException ex)
+        {
+            // The index could not give a proven txid: transient, never held against the peer
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Funding txid of {ShortChannelId} unavailable from the index: {Reason}",
+                                 shortChannelId, ex.Message);
+            return FundingOutputLookupResult.Failed(FundingOutputStatus.ChainUnavailable);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -183,23 +201,24 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         return PayToMultiSigTemplate.Instance.GenerateScriptPubKey(2, orderedKeys).WitHash.ScriptPubKey.ToBytes();
     }
 
-    private async Task<FundingOutputLookupResult> LookupOnceAsync(ShortChannelId shortChannelId)
+    private async Task<FundingOutputLookupResult> LookupOnceAsync(ShortChannelId shortChannelId,
+                                                                  CancellationToken cancellationToken)
     {
         var height = shortChannelId.BlockHeight;
         var tip = await _chain.GetCurrentBlockHeightAsync();
         if (height > tip)
             return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockNotFound);
 
-        var block = await GetTxIdsAsync(height);
-        if (block is not { } list)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockUnavailable);
+        var position = await GetFundingTxIdAsync(shortChannelId, cancellationToken);
+        switch (position.Status)
+        {
+            case FundingTxIdStatus.BlockUnavailable:
+                return FundingOutputLookupResult.Failed(FundingOutputStatus.BlockUnavailable);
+            case FundingTxIdStatus.IndexOutOfRange:
+                return FundingOutputLookupResult.Failed(FundingOutputStatus.TransactionIndexOutOfRange);
+        }
 
-        var txIds = list.TxIds;
-
-        if (shortChannelId.TransactionIndex >= txIds.Count)
-            return FundingOutputLookupResult.Failed(FundingOutputStatus.TransactionIndexOutOfRange);
-
-        var txId = txIds[(int)shortChannelId.TransactionIndex];
+        var txId = position.TxId!;
         var outPoint = new OutPoint(txId, shortChannelId.OutputIndex);
         var unspent = await _chain.GetUnspentOutputAsync(outPoint);
         if (unspent is not { } found)
@@ -222,7 +241,7 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         // A reorg between reading the txid list and gettxout can mine the same tx at the same height at another index:
         // the list must still be the active chain's block at that height
         var blockHashNow = await _chain.GetBlockHashAsync(height);
-        if (blockHashNow != list.BlockHash)
+        if (blockHashNow != position.BlockHash)
         {
             if (_logger.IsEnabled(LogLevel.Debug))
                 _logger.LogDebug("Block {Height} changed during the funding output lookup of {ShortChannelId}", height,
@@ -234,6 +253,38 @@ public sealed class FundingOutputLookup : IFundingOutputLookup, IDisposable
         return FundingOutputLookupResult.WithOutput(FundingOutputStatus.Found, new TxId(txId.ToBytes()),
                                                     LightningMoney.Satoshis(found.Output.Value.Satoshi),
                                                     found.Output.ScriptPubKey.ToBytes(), confirmations);
+    }
+
+    // Funding txid source seam (D12, pruned nodes): the injected IFundingTxIdSource, else bitcoind's txid list
+    private async Task<FundingTxIdAtPosition> GetFundingTxIdAsync(ShortChannelId shortChannelId,
+                                                                  CancellationToken cancellationToken)
+    {
+        if (_txIdSource is not null)
+            return await _txIdSource.GetTxIdAsync(shortChannelId.BlockHeight, shortChannelId.TransactionIndex,
+                                                  cancellationToken);
+
+        var block = await GetTxIdsAsync(shortChannelId.BlockHeight);
+        if (block is not { } list)
+        {
+            LogPrunedHintOnce(shortChannelId.BlockHeight);
+            return FundingTxIdAtPosition.BlockUnavailable;
+        }
+
+        return shortChannelId.TransactionIndex >= list.TxIds.Count
+                   ? FundingTxIdAtPosition.IndexOutOfRange
+                   : FundingTxIdAtPosition.Found(list.BlockHash, list.TxIds[(int)shortChannelId.TransactionIndex]);
+    }
+
+    private void LogPrunedHintOnce(uint height)
+    {
+        if (Interlocked.Exchange(ref _prunedHintLogged, 1) != 0 || !_logger.IsEnabled(LogLevel.Warning))
+            return;
+
+        _logger.LogWarning(
+            "bitcoind cannot serve block {Height} (pruned?), so gossip channel announcements from pruned heights cannot "
+          + "be verified. Set Gossip:FundingTxIdSource=Esplora with Gossip:EsploraUrl (e.g. https://mempool.space/api "
+          + "or a self-hosted esplora/electrs) to take the funding txid from an index, proven against our node's "
+          + "headers, or Gossip:FundingValidation=SkipUnavailable to keep such channels unverified", height);
     }
 
     private async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetTxIdsAsync(uint height)
