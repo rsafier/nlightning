@@ -564,17 +564,40 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
             return;
 
         var fundings = _statePort.GetFundings(channel);
-        if (fundings.Pending.All(f => f.FundingTxId != funding.FundingTxId))
-            return;
-
-        var (next, retired) = _statePort.Discard(fundings, funding.FundingTxId);
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+        if (fundings.Pending.All(f => f.FundingTxId != funding.FundingTxId))
+        {
+            // Only our commitment_signed went out: its save stored the funding row as Pending (SignSpliceCommitmentAsync)
+            // but the engine never held it. A restart would load that row as a pending splice the peer forgot (a batch
+            // the peer fails the channel over), so it is discarded too
+            await DiscardStoredFundingAsync(channel, funding.FundingTxId, unitOfWork);
+            return;
+        }
+
+        var (next, retired) = _statePort.Discard(fundings, funding.FundingTxId);
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
         await unitOfWork.SaveChangesAsync();
         _statePort.ApplyFundings(channel, next, retired);
         _logger.LogInformation("Splice funding {TxId} of channel {ChannelId} discarded after the abort",
                                funding.FundingTxId, negotiation.ChannelId);
+    }
+
+    /// <summary>
+    /// Marks the stored <c>ChannelFundings</c> row of an aborted splice <c>Discarded</c> when it is still
+    /// <c>Pending</c> (own save).
+    /// </summary>
+    private async Task DiscardStoredFundingAsync(ChannelModel channel, TxId fundingTxId, IUnitOfWork unitOfWork)
+    {
+        var rows = unitOfWork.ChannelFundingDbRepository;
+        if ((await rows.GetByChannelIdAsync(channel.ChannelId))
+               .FirstOrDefault(f => f.FundingTxId == fundingTxId) is not { Status: ChannelFundingStatus.Pending } stored)
+            return;
+
+        await rows.UpsertAsync(channel.ChannelId, stored with { Status = ChannelFundingStatus.Discarded });
+        await unitOfWork.SaveChangesAsync();
+        _logger.LogInformation("Stored splice funding {TxId} of channel {ChannelId} discarded after the abort",
+                               fundingTxId, channel.ChannelId);
     }
 
     #endregion

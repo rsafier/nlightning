@@ -78,11 +78,23 @@ public class SpliceConformanceTests
             Assert.Empty(node.Broadcasts);
         }
 
-        // (Alice's ChannelFundings row of FundingTx2, written with her commitment_signed, is left Pending: the abort
-        // discards only a funding the engine holds, and Bob's commitment_signed never made it pending; ledger follow-up)
+        // Alice's ChannelFundings row of FundingTx2, written with her commitment_signed, is discarded with the splice:
+        // a restart would otherwise load it as a pending splice Bob forgot
+        Assert.Equal(ChannelFundingStatus.Discarded, harness.Alice.FundingRows.Committed[spliceTxId].Status);
         Assert.False(harness.Alice.Service.GetNegotiation(TwoNodeHarness.ChannelId) is
         { State: SpliceNegotiationState.CommitmentSigned });
         await AssertUsableAsync(harness, null);
+
+        // And after Alice restarts neither side names the splice again
+        await harness.RestartAsync(harness.Alice);
+        mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+        Assert.Null(Reestablish(harness, mark, "Alice").NextFundingTlv);
+        Assert.Null(Reestablish(harness, mark, "Bob").NextFundingTlv);
+        Assert.DoesNotContain(harness.Transcript.Skip(mark), t => t.Message is TxAbortMessage);
+        Assert.DoesNotContain(harness.Alice.FundingRows.Committed.Values,
+                              f => f.Status == ChannelFundingStatus.Pending);
     }
 
     #endregion
@@ -212,6 +224,42 @@ public class SpliceConformanceTests
         AssertSameBytes(harness, lost, Retransmitted<TxSignaturesMessage>(harness, mark, "Alice"));
         AssertPendingOnBoth(harness, lost.Payload.TxId);
         await AssertUsableAsync(harness, lost.Payload.TxId);
+    }
+
+    /// <summary>
+    /// SP-T-06 across a restart (SP-I7): Alice's second <c>tx_signatures</c> is lost and she restarts, so her
+    /// interactive-tx driver no longer holds the negotiation. BOLT 2: having received Bob's <c>tx_signatures</c> she
+    /// MUST send hers again; they are rebuilt byte for byte from her stored <c>InteractiveTxSessions</c> row and Bob
+    /// completes the splice.
+    /// </summary>
+    [Fact]
+    public async Task Given_TheSecondTxSignaturesLostAndTheSenderRestarted_When_Reconnected_Then_ItIsRebuiltFromItsRow()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(SpliceIn + 200_000);
+        var start = StartSplice(harness);
+        await PumpUntilAsync(harness, (from, m) => from == "Alice" && m is TxSignaturesMessage, start);
+        var lost = (TxSignaturesMessage)harness.Alice.Node.PeekNext()!;
+        Assert.Equal(SpliceNegotiationState.Signed, (await start).State);
+
+        // Act
+        await harness.RestartAsync(harness.Alice);
+        Assert.Null(harness.Alice.Driver.GetInfo(TwoNodeHarness.ChannelId));
+        var mark = harness.Transcript.Count;
+        await harness.Harness.ReconnectAsync();
+        await harness.PumpAsync();
+
+        // Assert: only Bob asks, Alice's tx_signatures come from her row, Bob completes
+        Assert.Null(Reestablish(harness, mark, "Alice").NextFundingTlv);
+        Assert.NotNull(Reestablish(harness, mark, "Bob").NextFundingTlv);
+        Assert.Equal(["Alice:ChannelReestablish", "Bob:ChannelReestablish", "Alice:TxSignatures"],
+                     Sequence(harness, mark, IsSigningStep));
+        AssertSameBytes(harness, lost, Retransmitted<TxSignaturesMessage>(harness, mark, "Alice"));
+        Assert.Empty(harness.Failures);
+        Assert.True(Assert.Single(harness.Bob.Node.State.PendingFundings).FundingTxId == lost.Payload.TxId);
+        Assert.Equal(lost.Payload.TxId, Assert.Single(harness.Bob.Broadcasts).TransactionId);
+        Assert.Equal(harness.Alice.Broadcasts.Single().RawTransaction, harness.Bob.Broadcasts.Single().RawTransaction);
     }
 
     #endregion
