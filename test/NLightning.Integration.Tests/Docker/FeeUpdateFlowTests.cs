@@ -12,6 +12,7 @@ using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Payments.Enums;
 using Fixtures;
@@ -57,7 +58,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
     /// <summary>
-    /// We fund a (legacy, non-anchor) channel to alice at 10,000 sat/kw. The estimate rises to 6,250 sat/kw: with the
+    /// We fund a (legacy, non-anchor: <c>option_anchors</c> turned off) channel to alice at 10,000 sat/kw. The estimate rises to 6,250 sat/kw: with the
     /// default 200 % non-anchor margin our scheduler sends one <c>update_fee</c> of 12,500 sat/kw, LND commits it (its
     /// <c>fee_per_kw</c> follows) and payments work both ways; then the estimate falls to 2,500 sat/kw (5,000 with the
     /// margin) and LND follows again.
@@ -68,7 +69,7 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
-        var node = await StartNodeAsync("fee-funder", ct);
+        var node = await StartNodeAsync("fee-funder", ct, staticRemoteKey: true);
         await node.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [alice], [node], ct);
         var aliceAddress = await node.ConnectToAsync(alice, ct);
@@ -126,6 +127,8 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var alice = _fixture.GetLndNode("alice");
         var node = await StartNodeAsync("fee-fundee", ct);
+        // The on-chain reserve we keep for an anchors channel (NL-379): without it we refuse alice's anchors open
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [alice], [node], ct);
         await node.ConnectToAsync(alice, ct);
 
@@ -177,8 +180,8 @@ public class FeeUpdateFlowTests : IAsyncLifetime
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var funder = await StartNodeAsync("fee-a", ct);
-        var fundee = await StartNodeAsync("fee-b", ct);
+        var funder = await StartNodeAsync("fee-a", ct, staticRemoteKey: true);
+        var fundee = await StartNodeAsync("fee-b", ct, staticRemoteKey: true);
         await funder.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [funder, fundee], ct);
         await funder.ConnectToAsync(fundee, ct);
@@ -248,10 +251,22 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         }
     }
 
-    private async Task<NLightningTestNode> StartNodeAsync(string name, CancellationToken ct)
+    /// <param name="name">The log prefix.</param>
+    /// <param name="ct">The test's cancellation token.</param>
+    /// <param name="staticRemoteKey">
+    /// Turn <c>option_anchors</c> off (on by default since wave O7b): the <c>update_fee</c> proofs of the channels we
+    /// fund check the non-anchor target (the estimate times the 200 % margin); with anchors the target is capped at
+    /// <c>MaxAnchorFeeratePerKw</c>, because the commitment is CPFP-bumped instead.
+    /// </param>
+    private async Task<NLightningTestNode> StartNodeAsync(string name, CancellationToken ct,
+                                                          bool staticRemoteKey = false)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, name,
-                                                        configureNodeOptions: o => o.ToSelfDelay = ToSelfDelay);
+        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: o =>
+        {
+            o.ToSelfDelay = ToSelfDelay;
+            if (staticRemoteKey)
+                o.Features.OptionAnchors = FeatureSupport.No;
+        });
         _nodes.Add(node);
         await node.StartAsync(ct);
         return node;
@@ -320,12 +335,14 @@ public class FeeUpdateFlowTests : IAsyncLifetime
         if (weAreFunder)
         {
             Assert.Equal(ours.RemoteBalance.Satoshi, lndChannel.LocalBalance);
-            Assert.Equal(ours.LocalBalance.Satoshi, lndChannel.RemoteBalance + lndChannel.CommitFee);
+            Assert.Equal(ours.LocalBalance.Satoshi,
+                         lndChannel.RemoteBalance + lndChannel.CommitFee + LndTestHelpers.FunderAnchorsSat(lndChannel));
         }
         else
         {
             Assert.Equal(ours.LocalBalance.Satoshi, lndChannel.RemoteBalance);
-            Assert.Equal(ours.RemoteBalance.Satoshi, lndChannel.LocalBalance + lndChannel.CommitFee);
+            Assert.Equal(ours.RemoteBalance.Satoshi,
+                         lndChannel.LocalBalance + lndChannel.CommitFee + LndTestHelpers.FunderAnchorsSat(lndChannel));
         }
 
         Assert.True(lndChannel.Active, "LND no longer lists the channel as active");

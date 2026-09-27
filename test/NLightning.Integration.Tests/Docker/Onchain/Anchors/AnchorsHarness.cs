@@ -83,13 +83,10 @@ internal sealed class AnchorsHarness
     public IReadOnlyList<NLightningTestNode> Nodes => _nodes;
 
     /// <summary>
-    /// <c>option_anchors</c> Optional (so both 22/23 are advertised as supported), allowed although experimental.
+    /// <c>option_anchors</c> Optional (so both 22/23 are advertised as supported): the default since wave O7b, set
+    /// here so the proofs do not depend on it.
     /// </summary>
-    public static void EnableAnchors(NodeOptions options)
-    {
-        options.Features.AllowExperimentalFeatures = true;
-        options.Features.OptionAnchors = FeatureSupport.Optional;
-    }
+    public static void EnableAnchors(NodeOptions options) => options.Features.OptionAnchors = FeatureSupport.Optional;
 
     /// <summary>
     /// A started node with anchors enabled; <paramref name="configure"/> runs after <see cref="EnableAnchors"/>, and

@@ -205,6 +205,14 @@ public static class LndTestHelpers
     /// <summary>
     /// The channel with LND's <c>txid:index</c> channel point (select channels by point, never by index).
     /// </summary>
+    /// <summary>
+    /// What LND's balances leave out of the funder's side besides <c>CommitFee</c>: the two 330-sat anchor outputs of
+    /// an anchors channel (BOLT 3, <c>option_anchors</c>, paid by the funder), 0 for the other commitment types. Since
+    /// wave O7b our node advertises <c>option_anchors</c> and LND opens and accepts anchors channels with it.
+    /// </summary>
+    public static long FunderAnchorsSat(Channel channel) =>
+        channel.CommitmentType is CommitmentType.Anchors or CommitmentType.SimpleTaproot ? 2 * 330 : 0;
+
     public static async Task<Channel?> GetChannelByPointAsync(LNDNodeConnection node, string channelPoint,
                                                               CancellationToken cancellationToken)
     {

@@ -73,6 +73,8 @@ public class PublicChannelFlowTests
         var bob = _fixture.GetLndNode("bob");
         const string alias = "nltg-g1b";
         await using var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, "gossip-g1b", alias, ct);
+        // The on-chain reserve we keep as fundee of an anchors channel (NL-379), LND's default type with us
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [node], ct);
         await node.ConnectToAsync(alice, ct);
 

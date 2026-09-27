@@ -288,7 +288,8 @@ public class OnchainO6Tests : IAsyncLifetime
     private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct,
                                                            bool watchMempool = true)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, name);
+        var node = await NLightningTestNode.CreateAsync(_fixture, name,
+            configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey);
         node.WatchMempool = watchMempool;
         _nodes.Add(node);
         await node.StartAsync(ct);

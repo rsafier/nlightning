@@ -119,11 +119,14 @@ public class NormalOperationFlowTests : IAsyncLifetime
         Assert.Equal(capacity, ours.Capacity);
 
         // LND is the non-funder: its balance is exactly the push; ours is the rest, from which LND's view of our
-        // side also deducts the commitment fee we pay as the funder (no anchors, plan D5)
+        // side also deducts the commitment fee and, on an anchors channel (the default since wave O7b), the two anchors
+        // we pay as the funder
+        Assert.Equal(CommitmentType.Anchors, lndChannel.CommitmentType);
         Assert.Equal(push.Satoshi, lndChannel.LocalBalance);
         Assert.Equal(push.MilliSatoshi, ours.RemoteBalance.MilliSatoshi);
         Assert.Equal((capacity - push).MilliSatoshi, ours.LocalBalance.MilliSatoshi);
-        Assert.Equal(ours.LocalBalance.Satoshi, lndChannel.RemoteBalance + lndChannel.CommitFee);
+        Assert.Equal(ours.LocalBalance.Satoshi,
+                     lndChannel.RemoteBalance + lndChannel.CommitFee + LndTestHelpers.FunderAnchorsSat(lndChannel));
         Assert.Single(_sentChannelReady, id => id == channel.ChannelId);
     }
 
@@ -216,10 +219,12 @@ public class NormalOperationFlowTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// BOLT2 plan Proof N8 (fee and dust rounding, plan risk 13): a 5,000 sat HTLC at 10,000 sat/kw is below the trim
-    /// threshold of both commitments (dust limit plus the HTLC-success/timeout fee, about 7,000 sat; checked from LND's
-    /// channel before paying, so the test fails if that stops holding), so it has no
-    /// output on either side, and it must still settle with the same balances on both sides.
+    /// BOLT2 plan Proof N8 (fee and dust rounding, plan risk 13): an HTLC below the trim threshold of both commitments
+    /// (checked from LND's channel before paying, so the test fails if that stops holding) has no output on either
+    /// side, and it must still settle with the same balances on both sides. On an anchors channel (the default since
+    /// wave O7b) the HTLC transactions pay no fee, so the threshold is the dust limit and the HTLC is one sat below the
+    /// lower one; on a non-anchor channel a 5,000 sat HTLC at 10,000 sat/kw is below the dust limit plus the
+    /// HTLC-success/timeout fee (about 7,000 sat).
     /// </summary>
     [Fact]
     public async Task Given_TrimmedHtlc_When_LndPaysOurInvoice_Then_Settled()
@@ -229,7 +234,10 @@ public class NormalOperationFlowTests : IAsyncLifetime
         var alice = GetAlice();
         var (channel, lndChannel) = await OpenUsableChannelAsync(alice, LightningMoney.Satoshis(1_000_000),
                                                                  LightningMoney.Satoshis(300_000), ct);
-        var amount = LightningMoney.Satoshis(5_000);
+        var amount = lndChannel.CommitmentType == CommitmentType.Anchors
+                         ? LightningMoney.Satoshis(Math.Min(lndChannel.LocalConstraints.DustLimitSat,
+                                                            lndChannel.RemoteConstraints.DustLimitSat) - 1)
+                         : LightningMoney.Satoshis(5_000);
         AssertTrimmedOnBothCommitments(lndChannel, amount);
 
         // Act + Assert
@@ -410,17 +418,20 @@ public class NormalOperationFlowTests : IAsyncLifetime
 
     /// <summary>
     /// Asserts that an HTLC of <paramref name="amount"/> offered by LND is trimmed on both commitments (BOLT 3 "Trimmed
-    /// Outputs", non-anchor channel types): below LND's dust limit plus the HTLC-timeout fee (weight 663) on LND's
-    /// commitment, where it is offered, and below our dust limit plus the HTLC-success fee (weight 703) on ours, where
-    /// it is received. Fails loudly when the channel type, a dust limit or the feerate no longer makes it trimmed.
+    /// Outputs"): below LND's dust limit plus the HTLC-timeout fee (weight 663) on LND's commitment, where it is
+    /// offered, and below our dust limit plus the HTLC-success fee (weight 703) on ours, where it is received; on an
+    /// anchors channel (<c>option_anchors_zero_fee_htlc_tx</c>) the HTLC transactions pay no fee, so the thresholds are
+    /// the dust limits. Fails loudly when the channel type, a dust limit or the feerate no longer makes it trimmed.
     /// </summary>
     private static void AssertTrimmedOnBothCommitments(Channel lndChannel, LightningMoney amount)
     {
-        const ulong htlcTimeoutWeight = 663;
-        const ulong htlcSuccessWeight = 703;
-
-        Assert.True(lndChannel.CommitmentType is CommitmentType.Legacy or CommitmentType.StaticRemoteKey,
-                    $"the trim thresholds below assume a non-anchor channel, LND reports {lndChannel.CommitmentType}");
+        Assert.True(lndChannel.CommitmentType is CommitmentType.Legacy or CommitmentType.StaticRemoteKey
+                                                 or CommitmentType.Anchors,
+                    $"the trim thresholds below assume a non-anchor or an anchors channel, LND reports "
+                  + $"{lndChannel.CommitmentType}");
+        var zeroFeeHtlcTx = lndChannel.CommitmentType == CommitmentType.Anchors;
+        var htlcTimeoutWeight = zeroFeeHtlcTx ? 0UL : 663UL;
+        var htlcSuccessWeight = zeroFeeHtlcTx ? 0UL : 703UL;
         var feePerKw = (ulong)lndChannel.FeePerKw;
         var lndThresholdSat = lndChannel.LocalConstraints.DustLimitSat + htlcTimeoutWeight * feePerKw / 1_000;
         var ourThresholdSat = lndChannel.RemoteConstraints.DustLimitSat + htlcSuccessWeight * feePerKw / 1_000;
@@ -565,8 +576,10 @@ public class NormalOperationFlowTests : IAsyncLifetime
                      (long)after.RemoteBalance.MilliSatoshi - (long)before.RemoteBalance.MilliSatoshi);
 
         // LND agrees: it is the non-funder, so its to_local is its whole balance; ours also pays the commitment fee
+        // and, on an anchors channel, the two anchors
         Assert.Equal(after.RemoteBalance.Satoshi, lndChannel.LocalBalance);
-        Assert.Equal(after.LocalBalance.Satoshi, lndChannel.RemoteBalance + lndChannel.CommitFee);
+        Assert.Equal(after.LocalBalance.Satoshi,
+                     lndChannel.RemoteBalance + lndChannel.CommitFee + LndTestHelpers.FunderAnchorsSat(lndChannel));
 
         Assert.True(lndChannel.Active, "LND no longer lists the channel as active");
         Assert.True(after.IsUsable(), $"our channel is no longer usable: {after.Describe()}");

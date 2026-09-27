@@ -194,7 +194,7 @@ public class OnchainMempoolTests : IAsyncLifetime
     private async Task<NLightningTestNode> CreateNodeAsync(string name, CancellationToken ct,
                                                            Action<Domain.Node.Options.NodeOptions>? configure = null)
     {
-        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: configure);
+        var node = await NLightningTestNode.CreateAsync(_fixture, name, configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey(configure));
         _nodes.Add(node);
         await node.StartAsync(ct);
         return node;

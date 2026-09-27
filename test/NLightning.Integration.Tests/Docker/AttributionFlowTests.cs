@@ -191,6 +191,8 @@ public class AttributionFlowTests : IAsyncLifetime
         var bob = await StartNodeAsync("attr-bob", attributing: false, ct);
         var carol = await StartNodeAsync("attr-carol", attributing: true, ct);
         await bob.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
+        // carol keeps the on-chain reserve of an anchors channel as fundee (NL-379)
+        await carol.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [], [bob, carol], ct);
         await bob.ConnectToAsync(carol, ct);
         var channel = await bob.OpenChannelAsync(new OpenChannelClientRequest(carol.Address, s_capacity)
@@ -243,6 +245,8 @@ public class AttributionFlowTests : IAsyncLifetime
         var payee = await StartAdvertisingNodeAsync("attr-payee", ct);
         await payer.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
         await hop.FundWalletAsync(LightningMoney.Satoshis(2_000_000), AddressType.P2Wpkh, ct);
+        // the payee keeps the on-chain reserve of an anchors channel as fundee (NL-379)
+        await payee.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [], [payer, hop, payee], ct);
         await payer.ConnectToAsync(hop, ct);
         await hop.ConnectToAsync(payee, ct);
