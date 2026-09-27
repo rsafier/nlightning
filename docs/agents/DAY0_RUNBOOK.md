@@ -65,6 +65,12 @@ Also required green: Proof SP1 (`Docker/Interop/Cln/ClnSpliceTests`), Proof DF (
     and port 9735 (not the port it dialed from), so the side that dials must itself listen on 9735 for the other
     side's reconnects. Check with `listpeers` on both sides, and after the first restart that `listchannels` still
     lists the channel.
+  - **Each node needs its own well-connected peers** besides the other day-0 node. Our node sends its own
+    `channel_announcement`, `channel_update` and `node_announcement` to its connected peers, but relays the other
+    end's `channel_update` of our channel only as others' gossip, i.e. only to peers that sent a
+    `gossip_timestamp_filter` (LND sends one only to its few active sync peers) and never on mainnet
+    (`Gossip:RelayEnabled=false`, NL-417). In `Day0FlowTests` LND alice, a peer of A only, never learned B's
+    direction until B connected to her too (found in wave sp2, reported to the ledger).
 - [ ] **Amounts approved by the owner** (§3.1 table), written down before anything is sent.
 - [ ] Both operators have read §4 and accept it: **never start a node on an old copy of `nltg.db`.**
 
