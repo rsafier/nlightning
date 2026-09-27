@@ -16,9 +16,8 @@ using Domain.Protocol.Messages;
 /// <para>Every member is called under the channel's lock. The <c>Stage*</c>/<c>Sign*</c>/<c>Receive*</c> members only
 /// stage writes on the given unit of work; the caller saves, then calls the matching <c>On*Saved</c>/<c>Apply*</c>
 /// member (persist, then memory, then send; SP-I7).</para>
-/// <para>Until lanes SP1-B and SP1-C land, the registered default is <see cref="UnavailableSpliceStatePort"/>, which
-/// reports a channel that was never spliced and refuses everything else: the integrator replaces it with the adapter
-/// over the engine and the signer.</para>
+/// <para>The registered implementation is <see cref="EngineSpliceStatePort"/>; the splice harness replaces it with an
+/// in-memory stand-in.</para>
 /// </remarks>
 public interface ISpliceStatePort
 {

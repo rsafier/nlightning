@@ -728,8 +728,8 @@ internal sealed class HarnessNode : IDisposable
                                                          CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
         {
             channels.TryGetChannel(channelId, out var channel);
-            var txId = service.SignRemoteCommitment(channel!, CommitmentTxSpec.FromCommitmentSpec(spec), number,
-                                                    remotePerCommitmentPoint).CommitmentTxId;
+            var txId = service.SignRemoteCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
+                                                    number, remotePerCommitmentPoint).CommitmentTxId;
             signed.Add((number, txId));
             return _inner.SignRemoteCommitment(channelId, funding, number, spec, remotePerCommitmentPoint);
         }
@@ -749,8 +749,9 @@ internal sealed class HarnessNode : IDisposable
                 return false;
 
             channels.TryGetChannel(channelId, out var channel);
-            var txId = service.VerifyLocalCommitment(channel!, CommitmentTxSpec.FromCommitmentSpec(spec), number,
-                                                     signatures.Signature, signatures.HtlcSignatures).CommitmentTxId;
+            var txId = service.VerifyLocalCommitment(channel!, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
+                                                     number, signatures.Signature, signatures.HtlcSignatures)
+                              .CommitmentTxId;
             verified.Add((number, txId));
             return true;
         }
