@@ -62,6 +62,14 @@ public static class ClientUtils
         Console.WriteLine("                               Cooperatively close a channel (alias: close-channel) and");
         Console.WriteLine("                               wait for the closing transaction [wait 0-300 s, default 30];");
         Console.WriteLine("                               nofeerange negotiates without fee_range");
+        Console.WriteLine("  splicein <channel_id> <sats> [--feerate <sat_per_kw>]");
+        Console.WriteLine("                               Splice wallet funds into a channel (alias: splice-in); the");
+        Console.WriteLine("                               channel keeps working meanwhile; feerate 253-250000 sat/kw");
+        Console.WriteLine("                               [default: the node's estimate]; exit code 1 if refused or");
+        Console.WriteLine("                               aborted");
+        Console.WriteLine("  spliceout <channel_id> <sats> [--address <address>] [--feerate <sat_per_kw>]");
+        Console.WriteLine("                               Splice funds out of a channel to an address [default: a");
+        Console.WriteLine("                               new address of the node's wallet] (alias: splice-out)");
         Console.WriteLine("  forceclosechannel <channel_id>");
         Console.WriteLine("                               Fail a channel and broadcast our latest commitment (alias:");
         Console.WriteLine("                               force-close-channel)");

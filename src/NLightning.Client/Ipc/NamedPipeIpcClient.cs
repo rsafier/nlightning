@@ -331,6 +331,42 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Splices wallet funds into a channel (ClientCommand 33) and waits for the negotiation (bounded by the daemon).
+    /// </summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="amountSat">The amount added to our channel balance, in sats.</param>
+    /// <param name="feeRatePerKw">The splice transaction's feerate in sat/kw; null for the node's estimate.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<SpliceIpcResponse> SpliceInAsync(ChannelId channelId, ulong amountSat, uint? feeRatePerKw,
+                                                 CancellationToken ct = default)
+    {
+        var req = new SpliceInIpcRequest { ChannelId = channelId, AmountSat = amountSat, FeeRatePerKw = feeRatePerKw };
+        return SendRequestAsync<SpliceInIpcRequest, SpliceIpcResponse>(ClientCommand.SpliceIn, req, ct);
+    }
+
+    /// <summary>
+    /// Splices funds out of a channel to an address or our wallet (ClientCommand 34) and waits for the negotiation
+    /// (bounded by the daemon).
+    /// </summary>
+    /// <param name="channelId">The channel.</param>
+    /// <param name="amountSat">The amount taken out of our channel balance, in sats.</param>
+    /// <param name="address">The destination; null for a new address of the node's wallet.</param>
+    /// <param name="feeRatePerKw">The splice transaction's feerate in sat/kw; null for the node's estimate.</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<SpliceIpcResponse> SpliceOutAsync(ChannelId channelId, ulong amountSat, string? address,
+                                                  uint? feeRatePerKw, CancellationToken ct = default)
+    {
+        var req = new SpliceOutIpcRequest
+        {
+            ChannelId = channelId,
+            AmountSat = amountSat,
+            Address = address,
+            FeeRatePerKw = feeRatePerKw
+        };
+        return SendRequestAsync<SpliceOutIpcRequest, SpliceIpcResponse>(ClientCommand.SpliceOut, req, ct);
+    }
+
+    /// <summary>
     /// Lists the latest peer_storage_retrieval of each peer and the blobs we keep for our peers (ClientCommand 32).
     /// </summary>
     /// <param name="peerNodeId">Only this peer; null for every peer.</param>

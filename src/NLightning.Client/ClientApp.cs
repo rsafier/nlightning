@@ -281,6 +281,13 @@ internal static class ClientApp
                 case "list-peer-storage":
                     await PeerStorageCommands.RunAsync(commandArgs, client, cancellationToken);
                     break;
+                case "splicein":
+                case "splice-in":
+                case "spliceout":
+                case "splice-out":
+                    if (!await SpliceCommands.RunAsync(cmd, commandArgs, client, cancellationToken))
+                        return Failure;
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -466,6 +473,11 @@ internal static class ClientApp
             case "listpeerstorage":
             case "list-peer-storage":
                 return PeerStorageCommands.Validate(cmd, commandArgs);
+            case "splicein":
+            case "splice-in":
+            case "spliceout":
+            case "splice-out":
+                return SpliceCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
