@@ -70,7 +70,6 @@ public class FeatureOptionsTests
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
     [InlineData(Feature.OptionAttributionData)]
-    [InlineData(Feature.OptionProvideStorage)]
     [InlineData(Feature.OptionScidAlias)]
     [InlineData(Feature.OptionUpfrontShutdownScript)]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_UnimplementedFeatureIsNotAdvertised(Feature feature)
@@ -244,7 +243,6 @@ public class FeatureOptionsTests
     [Theory]
     [MemberData(nameof(RequiredExperimentalFeatures))]
     [InlineData(Feature.OptionOnionMessages)]
-    [InlineData(Feature.OptionProvideStorage)]
     public void Given_ExperimentalFeatureEnabledWithoutOptIn_When_Validating_Then_ErrorAndNotAdvertised(
         Feature feature)
     {

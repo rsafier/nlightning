@@ -17,8 +17,8 @@ public class FeatureOptions
     /// </summary>
     /// <remarks>
     /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
-    /// attribution_data error attribution (onion M3b), onion_messages the onion_message handler and provide_storage
-    /// peer_storage.
+    /// attribution_data error attribution (onion M3b) and onion_messages the onion_message handler (provide_storage
+    /// left the set with the peer_storage handlers, wave rf1).
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
@@ -27,8 +27,7 @@ public class FeatureOptions
         Feature.OptionDualFund,
         Feature.OptionRouteBlinding,
         Feature.OptionAttributionData,
-        Feature.OptionOnionMessages,
-        Feature.OptionProvideStorage
+        Feature.OptionOnionMessages
     };
 
     /// <summary>
@@ -156,12 +155,14 @@ public class FeatureOptions
     public FeatureSupport OptionOnionMessages { get; set; } = FeatureSupport.No;
 
     /// <summary>
-    /// Enable peer storage.
+    /// Offer BOLT 1 peer storage: keep the latest <c>peer_storage</c> blob of each peer we have a channel with and hand
+    /// it back with <c>peer_storage_retrieval</c> after every init.
     /// </summary>
     /// <remarks>
-    /// Defaults to No: peer_storage messages are not handled.
+    /// Defaults to Optional (the Application <c>PeerStorageService</c>). Negotiated with a peer, it also makes us send
+    /// that peer our own encrypted backup blob.
     /// </remarks>
-    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.Optional;
 
     public FeatureSupport OptionChannelType { get; private set; } = FeatureSupport.Compulsory;
 
