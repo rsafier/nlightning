@@ -263,7 +263,7 @@ public partial class LocalLightningSigner : ILightningSigner
             System.Security.Cryptography.SHA256.HashData(unsignedAnnouncement.Span));
         var nodeSignature = SignNodeMessage(hash);
 
-        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex, signingInfo.LocalFundingKeyIndex);
         if (!fundingKey.PubKey.ToBytes().AsSpan().SequenceEqual(signingInfo.LocalFundingPubKey))
             throw new SignerException("The derived funding key does not match the channel's funding key", channelId,
                                       "Internal error");
@@ -315,10 +315,35 @@ public partial class LocalLightningSigner : ILightningSigner
         // short channel id, the peer's node id and htlc_basepoint. It never swaps the keys or the funding outpoint: a
         // registration of another channel under this id is refused before it can touch any guard of this one.
         var mismatch = false;
-        _channelSigningInfo.AddOrUpdate(channelId, signingInfo, (_, current) =>
+
+        // Under the commitment lock: a spliced channel's known fundings are read to accept a stale registration
+        lock (GetCommitmentLock(channelId))
+            _channelSigningInfo.AddOrUpdate(channelId, signingInfo, (_, current) =>
         {
-            mismatch = !IsSameChannel(current, signingInfo);
-            return mismatch ? current : signingInfo;
+            if (IsSameChannel(current, signingInfo))
+            {
+                mismatch = false;
+
+                // The funding key index is the signer's own record once a splice rotated it (a model knows only 0)
+                return signingInfo with
+                {
+                    LocalFundingKeyIndex = current.LocalFundingKeyIndex,
+                    Fundings = null,
+                    PersistedSpliceCommitments = null
+                };
+            }
+
+            // A spliced channel registered from data that predates the lock (splicing plan SP1-C): the other data is
+            // refreshed, its fundings stay the signer's
+            mismatch = !IsKnownSpliceFunding(channelId, current, signingInfo);
+            return mismatch
+                       ? current
+                       : current with
+                       {
+                           RemoteHtlcBasepoint = signingInfo.RemoteHtlcBasepoint ?? current.RemoteHtlcBasepoint,
+                           RemoteNodeId = signingInfo.RemoteNodeId ?? current.RemoteNodeId,
+                           AnnounceChannel = signingInfo.AnnounceChannel
+                       };
         });
         if (mismatch)
         {
@@ -342,6 +367,9 @@ public partial class LocalLightningSigner : ILightningSigner
         // Data loss is sticky: a registration never clears it
         if (signingInfo.DataLossDetected)
             _dataLossChannels[channelId] = true;
+
+        // The pending splices and retired fundings, and the SP-I1 marks, of a channel reloaded after a restart
+        RestoreSpliceState(channelId, signingInfo);
     }
 
     /// <inheritdoc />
@@ -455,6 +483,19 @@ public partial class LocalLightningSigner : ILightningSigner
         ArgumentNullException.ThrowIfNull(unsignedCommitment);
         ArgumentNullException.ThrowIfNull(remoteSignature);
         var signingInfo = GetRegisteredSigningInfo(channelId);
+        return SignLocalCommitmentForBroadcastCore(channelId, signingInfo, FromSigningInfo(signingInfo),
+                                                   commitmentNumber, unsignedCommitment, remoteSignature);
+    }
+
+    /// <summary>
+    /// The broadcast signature of our commitment <paramref name="commitmentNumber"/> spending
+    /// <paramref name="funding"/> (the current funding, or a pending splice: SP-I4), under the commitment lock.
+    /// </summary>
+    private SignedTransaction SignLocalCommitmentForBroadcastCore(ChannelId channelId, ChannelSigningInfo signingInfo,
+                                                                  FundingKeys funding, ulong commitmentNumber,
+                                                                  SignedTransaction unsignedCommitment,
+                                                                  CompactSignature remoteSignature)
+    {
         ThrowIfDataLoss(channelId, "broadcast our commitment");
 
         // I4: never sign a revoked commitment for broadcast (the peer holds its revocation secret)
@@ -464,7 +505,8 @@ public partial class LocalLightningSigner : ILightningSigner
                 $"Refusing to sign revoked local commitment {commitmentNumber} for broadcast (current local "
               + $"commitment is {localCommitmentNumber})", channelId, "Internal error");
 
-        // S1: once a commitment is signed for broadcast, only that commitment may be signed again (a retry)
+        // S1 (SP-I4 across fundings): once a commitment is signed for broadcast, only that commitment number may be
+        // signed again (a retry, or the same number on the funding that confirmed instead)
         if (_broadcastSignedNumbers.TryGetValue(channelId, out var broadcastNumber) && commitmentNumber != broadcastNumber)
             throw new SignerException(
                 $"Refusing to sign local commitment {commitmentNumber} for broadcast: commitment {broadcastNumber} is "
@@ -484,15 +526,10 @@ public partial class LocalLightningSigner : ILightningSigner
             throw new SignerException("A commitment transaction has exactly one input", channelId, "Internal error");
 
         // The peer's signature must be valid for exactly this transaction, or the broadcast would be rejected
-        ValidateSignature(channelId, remoteSignature, unsignedCommitment);
-        var localCompact = SignFundingInput(channelId, signingInfo, unsignedCommitment);
+        VerifyFundingSpendSignature(channelId, funding, tx, 0, remoteSignature);
+        var localCompact = SignFundingSpend(channelId, signingInfo.ChannelKeyIndex, funding, tx, 0);
 
-        var fundingOutput = _fundingOutputBuilder.Build(new FundingOutputInfo(signingInfo.FundingSatoshis,
-                                                                              signingInfo.LocalFundingPubKey,
-                                                                              signingInfo.RemoteFundingPubKey,
-                                                                              signingInfo.FundingTxId,
-                                                                              signingInfo.FundingOutputIndex));
-        var fundingScript = fundingOutput.RedeemScript;
+        var fundingScript = BuildFundingOutput(funding).RedeemScript;
 
         if (!ECDSASignature.TryParseFromCompact(localCompact, out var localSignature)
          || !ECDSASignature.TryParseFromCompact(remoteSignature, out var remoteEcdsa))
@@ -506,7 +543,7 @@ public partial class LocalLightningSigner : ILightningSigner
         MarkBroadcastSigned(channelId, commitmentNumber);
 
         // BOLT 3 funding witness: 0 <pubkey1_signature> <pubkey2_signature> <funding script>, in the script's key order
-        var localFirst = IsFirstFundingKey(fundingScript, signingInfo.LocalFundingPubKey);
+        var localFirst = IsFirstFundingKey(fundingScript, funding.LocalPubKey);
         tx.Inputs[0].WitScript = new WitScript(new[]
         {
             Array.Empty<byte>(), localFirst ? localSig : remoteSig, localFirst ? remoteSig : localSig,
@@ -514,8 +551,9 @@ public partial class LocalLightningSigner : ILightningSigner
         });
 
         if (_logger.IsEnabled(LogLevel.Information))
-            _logger.LogInformation("Signed local commitment {CommitmentNumber} ({TxId}) of channel {ChannelId} for "
-                                 + "broadcast", commitmentNumber, tx.GetHash(), channelId);
+            _logger.LogInformation("Signed local commitment {CommitmentNumber} ({TxId}) of channel {ChannelId} on "
+                                 + "funding {FundingTxId} for broadcast", commitmentNumber, tx.GetHash(), channelId,
+                                   funding.TxId);
 
         return new SignedTransaction(tx.GetHash().ToBytes(), tx.ToBytes());
     }
@@ -1402,8 +1440,9 @@ public partial class LocalLightningSigner : ILightningSigner
             var signatureHash = nBitcoinTx.GetSignatureHash(fundingOutput.RedeemScript, 0, SigHash.All, spentOutput,
                                                             HashVersion.WitnessV0);
 
-            // Get the funding private key
-            using var fundingPrivateKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+            // Get the funding private key (the current funding's, rotated by a splice, splicing plan D5)
+            using var fundingPrivateKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex,
+                                                                    signingInfo.LocalFundingKeyIndex);
 
             var signature = fundingPrivateKey.Sign(signatureHash, new SigningOptions(SigHash.All, false));
 
@@ -1603,7 +1642,7 @@ public partial class LocalLightningSigner : ILightningSigner
         var spentOutput = new TxOut(Money.Satoshis(amount.Satoshi), anchorScript.WitHash.ScriptPubKey);
         var sigHash = tx.GetSignatureHash(anchorScript, inputIndex, SigHash.All, spentOutput, HashVersion.WitnessV0);
 
-        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex);
+        using var fundingKey = GenerateFundingPrivateKey(signingInfo.ChannelKeyIndex, signingInfo.LocalFundingKeyIndex);
         if (fundingKey.PubKey != new PubKey(signingInfo.LocalFundingPubKey))
             throw new SignerException("The derived funding key does not match the channel's funding pubkey", channelId,
                                       "Internal error");

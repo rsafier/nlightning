@@ -37,8 +37,8 @@ public sealed class EngineCommitmentVerifierPort : ICommitmentVerifier
     /// <inheritdoc />
     /// <exception cref="ArgumentException"><paramref name="spec"/> is not a local commitment.</exception>
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
-    /// <remarks>Verifies against the channel's registered funding: <paramref name="funding"/> is not used until lane
-    /// SP1-C verifies per funding.</remarks>
+    /// <remarks>A null <paramref name="funding"/>, or the channel's current one, verifies against the channel's funding
+    /// output; a pending splice funding against its own outpoint and keys (splicing plan SP1-C).</remarks>
     public bool VerifyLocalCommitment(ChannelId channelId, ChannelFunding? funding, ulong number, CommitmentSpec spec,
                                       CommitmentSignatures signatures)
     {
@@ -53,8 +53,8 @@ public sealed class EngineCommitmentVerifierPort : ICommitmentVerifier
 
         try
         {
-            _commitmentSigningService.VerifyLocalCommitment(channel, CommitmentTxSpec.FromCommitmentSpec(spec), number,
-                                                            signatures.Signature, signatures.HtlcSignatures);
+            _commitmentSigningService.VerifyLocalCommitment(channel, funding, CommitmentTxSpec.FromCommitmentSpec(spec),
+                                                            number, signatures.Signature, signatures.HtlcSignatures);
             return true;
         }
         catch (SignerException e)
