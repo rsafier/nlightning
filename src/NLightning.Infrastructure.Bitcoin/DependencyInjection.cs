@@ -17,6 +17,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Gossip;
 using Infrastructure.Crypto.Interfaces;
 using Onion;
+using Onion.RouteBlinding;
 using Services;
 using Signers;
 using Wallet;
@@ -58,6 +59,9 @@ public static class DependencyInjection
 
         // BOLT 4 attributable failures and hold times (onion M3b); the switch uses it when OptionAttributionData is advertised
         services.AddOnionAttributionServices();
+
+        // BOLT 4 route blinding (onion M5); the switch reads blinded payloads when OptionRouteBlinding is advertised
+        services.AddRouteBlindingServices();
 
         // BOLT 7 gossip signature verification and the funding output lookup of channel announcements (G0-T3, G2-T2)
         services.AddGossipBitcoinServices();
