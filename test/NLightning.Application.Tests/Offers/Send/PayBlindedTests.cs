@@ -168,6 +168,37 @@ public class PayBlindedTests
     }
 
     [Fact]
+    public async Task Given_WeIntroduceAPathWhosePayInfoIsBelowOurHopsRelayFee_When_BobPays_Then_TheNextPathIsUsed()
+    {
+        // Arrange: Carol writes both Bob's payment_relay and the payinfo; on the first path the payinfo fee is 0, so
+        // Bob's own hop would leave Carol less than the amount (a route the PaymentRoute constructor refuses)
+        var ct = TestContext.Current.CancellationToken;
+        await using var harness = await CreateAsync(bobPays: true);
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "bad first path", null, ct);
+        var paths = await BuildPathsAsync(harness, invoice.Preimage, invoice.MinFinalCltvExpiry, 2);
+        Assert.True(paths[0].PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi) > 0);
+        var underpaid = paths[0] with
+        {
+            PayInfo = paths[0].PayInfo with { FeeBaseMsat = 0, FeeProportionalMillionths = 0 }
+        };
+        var request = new PayBlindedRequest(invoice.PaymentHash, s_amount, [underpaid, paths[1]])
+        {
+            PayeeNodeId = harness.Carol.NodeId
+        };
+
+        // Act
+        var paying = Payments(harness.Bob).PayBlindedAsync(request, Options(), ct);
+        await harness.PumpAsync();
+        var result = await paying;
+
+        // Assert: the bad path is skipped (no HTLC over it), the second one settles
+        Assert.True(result.Payment.Status == PaymentStatus.Succeeded, result.Payment.FailureReason);
+        Assert.Equal(1, result.Attempts);
+        Assert.Single(harness.Carol.Received, m => m is UpdateAddHtlcMessage);
+        Assert.True(result.Payment.Fee.MilliSatoshi <= paths[1].PayInfo.ComputeFeeMsat(s_amount.MilliSatoshi));
+    }
+
+    [Fact]
     public async Task Given_APathThatEndsAtThePayer_When_Paying_Then_ItIsRefusedWithoutAnHtlc()
     {
         // Arrange: a path Bob built to himself, paid by Bob

@@ -157,9 +157,19 @@ public sealed class SelfIntroducedBlindedPath
     /// What our HTLC to <see cref="NextNodeId"/> carries when the introduction node (us) would have received
     /// <paramref name="introductionAmountMsat"/> with <paramref name="introductionCltvExpiry"/>: each of our hops
     /// applies its <c>payment_relay</c> (BOLT 4 reader of a non-final blinded hop) after its
-    /// <c>payment_constraints</c> are checked.
+    /// <c>payment_constraints</c> are checked. The result must still cover what the recipient gets: the recipient
+    /// writes both our hop's <c>payment_relay</c> and the path's <c>blinded_payinfo</c>, and a relay fee or delta above
+    /// the aggregate makes the path unusable (it is skipped, not the payment aborted).
     /// </summary>
-    public bool TryComputeFirstHop(ulong introductionAmountMsat, uint introductionCltvExpiry, out ulong amountMsat,
+    /// <param name="introductionAmountMsat">What the introduction node would receive (amount plus the path fee).</param>
+    /// <param name="introductionCltvExpiry">The introduction node's <c>cltv_expiry</c>.</param>
+    /// <param name="recipientAmountMsat">What the recipient receives on this route.</param>
+    /// <param name="finalCltv">The recipient's <c>outgoing_cltv_value</c>.</param>
+    /// <param name="amountMsat">Our HTLC's amount.</param>
+    /// <param name="cltvExpiry">Our HTLC's <c>cltv_expiry</c>.</param>
+    /// <param name="reason">Why the path cannot be used.</param>
+    public bool TryComputeFirstHop(ulong introductionAmountMsat, uint introductionCltvExpiry,
+                                   ulong recipientAmountMsat, uint finalCltv, out ulong amountMsat,
                                    out uint cltvExpiry, [NotNullWhen(false)] out string? reason)
     {
         amountMsat = introductionAmountMsat;
@@ -189,6 +199,20 @@ public sealed class SelfIntroducedBlindedPath
                 reason = "our hop's payment_relay does not fit the amount or expiry";
                 return false;
             }
+        }
+
+        if (amountMsat < recipientAmountMsat)
+        {
+            reason = $"our hop's payment_relay leaves {amountMsat} msat, below the {recipientAmountMsat} msat the "
+                   + "recipient gets (the path's blinded_payinfo fee is too low)";
+            return false;
+        }
+
+        if (cltvExpiry < finalCltv)
+        {
+            reason = $"our hop's payment_relay leaves cltv_expiry {cltvExpiry}, below the recipient's {finalCltv} "
+                   + "(the path's blinded_payinfo cltv_expiry_delta is too low)";
+            return false;
         }
 
         reason = null;

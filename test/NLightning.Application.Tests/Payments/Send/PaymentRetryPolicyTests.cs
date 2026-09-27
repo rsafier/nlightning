@@ -66,6 +66,28 @@ public class PaymentRetryPolicyTests
         return new PaymentPart(s_toCarol, blinded, [], "blinded path 0");
     }
 
+    /// <summary>
+    /// Carol → David as blinded path 1: <paramref name="selfIntroduced"/> has us as the introduction node, so our
+    /// update_add_htlc carries the path_key (B12-PAY-02); otherwise Carol, our peer, is the introduction node.
+    /// </summary>
+    private static PaymentPart BlindedFromOurPeerPart(bool selfIntroduced)
+    {
+        var route = Part().Route;
+        var hops = route.Hops.ToList();
+        hops[0] = hops[0] with
+        {
+            OutgoingShortChannelId = null,
+            EncryptedRecipientData = new byte[] { 4, 5, 6 },
+            IsBlindedRelay = true,
+            CurrentPathKey = selfIntroduced ? null : s_carol
+        };
+        hops[^1] = hops[^1] with { EncryptedRecipientData = new byte[] { 1, 2, 3 } };
+        var blinded = new PaymentRoute(hops, route.FirstHopAmount, route.FirstHopCltvExpiry, route.PaymentHash,
+                                       route.PaymentSecret, null, null, selfIntroduced ? s_david : null)
+        { BlindedPathIndex = 1 };
+        return new PaymentPart(s_toCarol, blinded, [], "blinded path 1");
+    }
+
     /// <summary>Carol's update for Carol → David (Carol's direction), as a failure field payload.</summary>
     private static ReadOnlyMemory<byte> CarolUpdate(uint timestamp = 10, uint feeBase = 3_000,
                                                     ShortChannelId? scid = null, bool disabled = false,
@@ -283,6 +305,32 @@ public class PaymentRetryPolicyTests
         // Assert
         Assert.True(retry);
         Assert.Contains(s_toCarol.ChannelId, _constraints.ExcludedLocalChannels);
+    }
+
+    [Fact]
+    public void Given_MalformedFromOurPeerInsideAPathWeIntroduced_When_Decided_Then_ThePathIsAvoidedNotTheChannel()
+    {
+        // Act: BOLT 4 has a blinded hop that is not the introduction node answer with update_fail_malformed_htlc
+        var (retry, _) = Policy().Decide(BlindedFromOurPeerPart(selfIntroduced: true), HtlcRemovalKind.FailMalformed,
+                                         null, _constraints);
+
+        // Assert
+        Assert.True(retry);
+        Assert.Contains(1, _constraints.ExcludedBlindedPaths);
+        Assert.Empty(_constraints.ExcludedLocalChannels);
+    }
+
+    [Fact]
+    public void Given_MalformedFromOurPeerThatIntroducesThePath_When_Decided_Then_OurChannelIsAvoided()
+    {
+        // Act: an introduction node answers with update_fail_htlc, so a malformed from it means our onion was bad
+        var (retry, _) = Policy().Decide(BlindedFromOurPeerPart(selfIntroduced: false),
+                                         HtlcRemovalKind.FailMalformed, null, _constraints);
+
+        // Assert
+        Assert.True(retry);
+        Assert.Contains(s_toCarol.ChannelId, _constraints.ExcludedLocalChannels);
+        Assert.Empty(_constraints.ExcludedBlindedPaths);
     }
 
     [Fact]

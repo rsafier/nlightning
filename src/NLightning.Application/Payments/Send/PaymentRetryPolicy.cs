@@ -78,9 +78,12 @@ internal sealed class PaymentRetryPolicy
 
         switch (removalKind)
         {
-            case HtlcRemovalKind.FailMalformed when part.Route is { BlindedStartIndex: 0, BlindedPathIndex: { } path }:
-                // Our peer is a blinded hop of a path we introduced (B12-PAY-02): BOLT 4 has it answer every failure
-                // with update_fail_malformed_htlc (invalid_onion_blinding), so the path failed, not our channel
+            case HtlcRemovalKind.FailMalformed when part.Route is { FirstHopPathKey: not null, BlindedPathIndex: { } path }:
+                // Our peer is a blinded hop (not the introduction node) of a path we introduced (B12-PAY-02, the
+                // route's FirstHopPathKey): BOLT 4 has it answer every failure with update_fail_malformed_htlc
+                // (invalid_onion_blinding), so the path failed, not our channel. A peer that is itself the
+                // introduction node answers with update_fail_htlc, so its malformed means our onion was bad: the
+                // channel is avoided as for any route
                 constraints.ExcludedBlindedPaths.Add(path);
                 return (true, $"blinded path {path} failed at our peer and is avoided");
             case HtlcRemovalKind.FailMalformed:

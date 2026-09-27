@@ -92,9 +92,10 @@ public static class InvoiceVerifier
         {
             if (Bolt12Wire.IsSignatureType(record.Type))
             {
-                if (record.Type != Bolt12TlvTypes.Signature)
+                // Odd signature-range elements are ignored (outside the Merkle tree), unknown even ones rejected.
+                if (record.Type != Bolt12TlvTypes.Signature && record.Type % 2 == 0)
                 {
-                    reason = $"B12-SIG-03: signature element {record.Type} besides signature";
+                    reason = $"B12-SIG-03: unknown even signature element {record.Type}";
                     return false;
                 }
 
