@@ -1,0 +1,94 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+
+namespace NLightning.Application.Channels.Splicing;
+
+using Domain.Bitcoin.Events;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Interfaces;
+using Domain.Channels.ValueObjects;
+using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Interfaces;
+
+/// <summary>
+/// Sends <c>splice_locked</c> when a pending splice transaction reaches acceptable depth (BOLT 2 SP-LK-01; D8: the
+/// channel's <c>minimum_depth</c>). Minimal SP1 version: the completion of a splice watches its transaction with that
+/// depth (<c>WatchedTransactions</c>), and the chain monitor's <see cref="IBlockchainMonitor.OnTransactionConfirmed"/>
+/// for a pending splice of the channel hands it to <see cref="SpliceService.OnSpliceDepthReachedAsync"/>, off the event
+/// thread. Reorgs of a splice and the startup catch-up of splices confirmed while we were down are wave SP2
+/// (SP2-B-T1, SP2-C-T4).
+/// </summary>
+/// <remarks>
+/// Singleton; subscribes in its constructor, so the host must resolve it at startup (<c>AddSpliceServices</c> registers
+/// it). The channel manager also receives the event (a funding confirmation of a channel still being opened); it
+/// ignores an <c>Open</c> channel, and the reorg handler of the funding compares the txid with the channel's funding.
+/// </remarks>
+public sealed class SpliceDepthWatcher : IDisposable
+{
+    private readonly IBlockchainMonitor _blockchainMonitor;
+    private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly ILogger<SpliceDepthWatcher> _logger;
+    private readonly ConcurrentDictionary<Task, byte> _running = new();
+    private readonly SpliceService _spliceService;
+    private readonly ISpliceStatePort _statePort;
+
+    public SpliceDepthWatcher(IBlockchainMonitor blockchainMonitor, IChannelMemoryRepository channelMemoryRepository,
+                              SpliceService spliceService, ISpliceStatePort statePort,
+                              ILogger<SpliceDepthWatcher> logger)
+    {
+        _blockchainMonitor = blockchainMonitor;
+        _channelMemoryRepository = channelMemoryRepository;
+        _spliceService = spliceService;
+        _statePort = statePort;
+        _logger = logger;
+        _blockchainMonitor.OnTransactionConfirmed += OnTransactionConfirmed;
+    }
+
+    /// <summary>Completes when no confirmation handed over by this watcher is still being handled (tests).</summary>
+    public async Task WhenIdleAsync()
+    {
+        while (!_running.IsEmpty)
+            await Task.WhenAll(_running.Keys.ToArray());
+    }
+
+    /// <inheritdoc />
+    public void Dispose() => _blockchainMonitor.OnTransactionConfirmed -= OnTransactionConfirmed;
+
+    private void OnTransactionConfirmed(object? sender, TransactionConfirmedEventArgs args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        var watch = args.WatchedTransaction;
+        try
+        {
+            if (!_channelMemoryRepository.TryGetChannel(watch.ChannelId, out var channel)
+             || _statePort.GetFundings(channel).Pending.All(f => f.FundingTxId != watch.TransactionId))
+                return;
+        }
+        catch (Exception e) when (e is InvalidOperationException or NotImplementedException)
+        {
+            return;
+        }
+
+        Task round;
+        using (ExecutionContext.SuppressFlow())
+            round = Task.Run(() => HandleAsync(watch.ChannelId, watch.TransactionId,
+                                               watch.FirstSeenAtHeight ?? args.Height));
+        _running[round] = 0;
+        round.ContinueWith(t => _running.TryRemove(t, out _), CancellationToken.None,
+                           TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        if (round.IsCompleted)
+            _running.TryRemove(round, out _);
+    }
+
+    private async Task HandleAsync(ChannelId channelId, TxId txId, uint height)
+    {
+        try
+        {
+            await _spliceService.OnSpliceDepthReachedAsync(channelId, txId, height);
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Could not lock splice {TxId} of channel {ChannelId}", txId, channelId);
+        }
+    }
+}
