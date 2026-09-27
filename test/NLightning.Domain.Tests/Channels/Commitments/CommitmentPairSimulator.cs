@@ -604,7 +604,7 @@ internal sealed class CommitmentPairSimulator
         Check(signed.Count == active && signed.All(s => s.RemoteCommitmentNumber == cs.RemoteCommitmentNumber),
               $"{node.Name} signed {signed.Count} commitments for {active} fundings");
         Check(active == 1
-                  ? result.Outbound.Count == 1 && cs.FundingTxId is null
+                  ? result.Outbound.Count == 1 && cs.FundingTxId == node.State.Params.Funding?.FundingTxId
                   : result.Outbound[0] is OutboundStartBatch batch && batch.BatchSize == active
                  && cs.FundingTxId == node.State.Params.Funding!.FundingTxId
                  && signed.Skip(1).Select(s => s.FundingTxId!.Value)

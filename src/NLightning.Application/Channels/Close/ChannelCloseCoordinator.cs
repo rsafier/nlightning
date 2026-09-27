@@ -119,6 +119,10 @@ public sealed class ChannelCloseCoordinator
                 $"Channel {channel.ChannelId} is {Enum.GetName(channel.State)}; only an open channel can be closed");
         if (channel.DataLossDetected)
             throw new InvalidOperationException($"Channel {channel.ChannelId} lost data; it can't be closed mutually");
+        // BOLT 2 splicing: MUST NOT send shutdown if there is a splice transaction that isn't locked yet
+        if (HasUnlockedSplice(channel))
+            throw new InvalidOperationException(
+                $"Channel {channel.ChannelId} has a splice that is not locked yet; close it once the splice locks");
 
         var replies = new List<IChannelMessage>();
         if (channel.Commitments is { HasPendingChangesForRemote: true } commitments)
@@ -127,13 +131,17 @@ public sealed class ChannelCloseCoordinator
                 throw new InvalidOperationException(
                     $"Channel {channel.ChannelId} has updates waiting for the peer's revoke_and_ack; try again");
 
-            if (await _transitions.SignIfPendingAsync(channel) is { } commitmentSigned)
-                replies.Add(commitmentSigned);
+            // The list form: with a pending splice the signature is a batch, which must go before the shutdown
+            replies.AddRange(await _transitions.SignPendingAsync(channel));
         }
 
         replies.Add(await SendShutdownAsync(channel));
         return replies;
     }
+
+    /// <summary>A splice of the channel is not locked yet (BOLT 2: no <c>shutdown</c> until it is).</summary>
+    private static bool HasUnlockedSplice(ChannelModel channel) =>
+        channel.Commitments is { PendingFundings.IsEmpty: false };
 
     /// <summary>
     /// Our <c>shutdown</c> again, for the <c>channel_reestablish</c> of a new connection (B2-RE-28), or null when we
@@ -258,6 +266,13 @@ public sealed class ChannelCloseCoordinator
         if (channel.LocalShutdownScript is not null)
             return [];
 
+        // BOLT 2 splicing: no shutdown of ours while a splice is not locked; AdvanceAsync sends it after the lock
+        if (HasUnlockedSplice(channel))
+        {
+            _logger.LogInformation("Deferring our shutdown for channel {ChannelId} until its splice locks", channelId);
+            return [];
+        }
+
         // B2-SHUT-R04: reply once no update of ours is unsigned; sign them first when we can
         var replies = new List<IChannelMessage>();
         if (channel.Commitments is { HasPendingChangesForRemote: true } commitments)
@@ -269,8 +284,7 @@ public sealed class ChannelCloseCoordinator
                 return [];
             }
 
-            if (await _transitions.SignIfPendingAsync(channel) is { } commitmentSigned)
-                replies.Add(commitmentSigned);
+            replies.AddRange(await _transitions.SignPendingAsync(channel));
         }
 
         replies.Add(await SendShutdownAsync(channel));
@@ -293,7 +307,7 @@ public sealed class ChannelCloseCoordinator
         var messages = new List<IChannelMessage>();
 
         if (channel is { State: ChannelState.ShuttingDown, RemoteShutdownScript: not null, LocalShutdownScript: null }
-         && channel.Commitments is not { HasPendingChangesForRemote: true })
+         && channel.Commitments is not { HasPendingChangesForRemote: true } && !HasUnlockedSplice(channel))
             messages.Add(await SendShutdownAsync(channel));
 
         await MoveToNegotiatingIfClearedAsync(channel);

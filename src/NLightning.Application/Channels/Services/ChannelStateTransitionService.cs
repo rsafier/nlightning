@@ -298,11 +298,18 @@ public sealed class ChannelStateTransitionService
 
     /// <summary>
     /// Receives a <c>start_batch</c> group of <c>commitment_signed</c> (SP-OP-05/06/07): the engine verifies every
-    /// member against its funding before anything changes; the new local commitment (every funding's signatures) is
-    /// persisted in one save before the signer releases the revoked secret (I3, SP-I3); then <b>one</b>
-    /// <c>revoke_and_ack</c> is returned, followed by our own signature (a batch when splices are pending) if changes
-    /// are pending for the peer.
+    /// member against its funding before anything changes; the transition is saved (one
+    /// <see cref="IChannelStateDbRepository.ApplyAsync"/> + save) before the signer releases the revoked secret (I3);
+    /// then <b>one</b> <c>revoke_and_ack</c> is returned, followed by our own signature (a batch when splices are
+    /// pending) if changes are pending for the peer.
     /// </summary>
+    /// <remarks>
+    /// SP-I3 (every funding's signatures on disk before the secret) holds only once the repository writes
+    /// <see cref="ChannelTransition.FundingsChanged"/>, the per-funding signatures of <c>LocalCommit</c>/<c>RemoteNextCommit</c>
+    /// and <see cref="ChannelTransition.RevokedRemoteCommitFundings"/>, and restores the pending fundings: that is lane
+    /// SP1-C (SP1-C-T4). Until then batches are refused unless <c>option_splice</c> (experimental) was negotiated
+    /// (<see cref="Managers.ChannelManager.HandleCommitmentSignedBatchAsync"/>).
+    /// </remarks>
     /// <param name="channel">The channel (from <see cref="GetUpdatableChannel"/>).</param>
     /// <param name="batch">The grouped messages.</param>
     /// <returns>The replies in wire order.</returns>
@@ -336,7 +343,7 @@ public sealed class ChannelStateTransitionService
 
         var revokeAndAck = result.Outbound.OfType<OutboundRevokeAndAck>().Single();
 
-        // Persist every funding's new local commitment before the secret exists (B2-CS-R06, I3, SP-I3)
+        // Persist the new local commitment before the secret exists (B2-CS-R06, I3; per-funding rows: SP1-C, SP-I3)
         await CommitAsync(channel, result, new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
         var revokeAndAckMessage = CreateRevokeAndAck(channel, revokeAndAck);
 

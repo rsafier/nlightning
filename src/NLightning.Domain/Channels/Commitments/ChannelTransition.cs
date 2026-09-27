@@ -22,9 +22,10 @@ using Splicing;
 /// <param name="RetiredFundings">Fundings that left the active set in this transition, with their final status (the
 /// replaced current funding and the discarded siblings of a lock, or the discarded pending fundings); their revocation
 /// data is kept (SP-I5). Null means none.</param>
-/// <param name="RevokedRemoteCommitFundings">The pending fundings <see cref="RevokedRemoteCommit"/> was also signed on
-/// (the revoked commitment on each is <see cref="ChannelCommitments.SpecFor"/> of its spec; SP-I3, SP-I5). Null means
-/// none (no pending splice).</param>
+/// <param name="RevokedRemoteCommitFundings">The fundings besides the current one that <see cref="RevokedRemoteCommit"/>
+/// was also signed on (<see cref="RemoteCommit.SignedOnFundings"/>: pending ones, and ones discarded or replaced by a
+/// lock since it was signed; the revoked commitment on each is <see cref="ChannelCommitments.SpecFor"/> of its spec;
+/// SP-I3, SP-I5). Null means none (no splice was pending when it was signed).</param>
 public sealed record ChannelTransition(
     IReadOnlyList<HtlcRecord> UpsertedHtlcs,
     IReadOnlyList<HtlcRecord> SettledHtlcs,

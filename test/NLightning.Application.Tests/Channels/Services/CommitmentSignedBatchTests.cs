@@ -4,22 +4,31 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Channels.Services;
 
+using Application.Channels.Close;
 using Application.Channels.Interfaces;
 using Application.Channels.Managers;
+using Application.Channels.Reestablish;
 using Application.Channels.Services;
+using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
 using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
+using Domain.Protocol.Payloads;
 using Handlers;
+using Infrastructure.Bitcoin.Builders;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using static Handlers.NormalOperationTestContext;
 
@@ -32,6 +41,9 @@ public class CommitmentSignedBatchTests
 {
     private static readonly TxId s_currentTxId = new(Enumerable.Repeat((byte)0x77, 32).ToArray());
     private static readonly TxId s_spliceTxId = new(Enumerable.Repeat((byte)0x88, 32).ToArray());
+
+    /// <summary>option_splice negotiated: batches are accepted only then (SP1-C persists splice commitments).</summary>
+    private static readonly FeatureOptions s_spliceFeatures = new() { OptionSplice = FeatureSupport.Optional };
 
     private readonly NormalOperationTestContext _context = new();
     private readonly Mock<ICommitScheduler> _commitScheduler = new();
@@ -226,7 +238,7 @@ public class CommitmentSignedBatchTests
 
         // Act
         await manager.HandleCommitmentSignedBatchAsync(PeerBatch(1, s_currentTxId, s_spliceTxId),
-                                                       new FeatureOptions(), PeerNodeId);
+                                                       s_spliceFeatures, PeerNodeId);
 
         // Assert
         Assert.IsType<RevokeAndAckMessage>(raised[0].Message);
@@ -244,7 +256,7 @@ public class CommitmentSignedBatchTests
 
         // Act
         await Assert.ThrowsAsync<ChannelFailedException>(
-            () => manager.HandleCommitmentSignedBatchAsync(PeerBatch(1, s_currentTxId), new FeatureOptions(),
+            () => manager.HandleCommitmentSignedBatchAsync(PeerBatch(1, s_currentTxId), s_spliceFeatures,
                                                            PeerNodeId));
 
         // Assert: Failed and the error are saved before the error goes out (N6-T3)
@@ -268,14 +280,158 @@ public class CommitmentSignedBatchTests
 
         // Act
         var e = await Assert.ThrowsAsync<ChannelWarningException>(
-            () => manager.HandleCommitmentSignedBatchAsync(batch, new FeatureOptions(), PeerNodeId));
+            () => manager.HandleCommitmentSignedBatchAsync(batch, s_spliceFeatures, PeerNodeId));
 
         // Assert
         Assert.True(e.CloseConnection);
         Assert.Empty(_context.Calls);
     }
 
-    private (ChannelManager Manager, ChannelLockProvider LockProvider) CreateChannelManager()
+    [Fact]
+    public async Task Given_SpliceNotNegotiated_When_TheManagerHandlesABatch_Then_WarningAndCloseAndNothingPersisted()
+    {
+        // Arrange: splice commitments are not persisted per funding before SP1-C, so no batch without option_splice
+        AddPendingSplice();
+        _context.SetState(_context.State.ReceiveAdd(0, 50_000_000, HashOf(SecretOf(2)), 600, Onion).Next);
+        var before = _context.State;
+        var (manager, _) = CreateChannelManager();
+
+        // Act
+        var e = await Assert.ThrowsAsync<ChannelWarningException>(
+            () => manager.HandleCommitmentSignedBatchAsync(PeerBatch(1, s_currentTxId, s_spliceTxId),
+                                                           new FeatureOptions(), PeerNodeId));
+
+        // Assert
+        Assert.True(e.CloseConnection);
+        Assert.Empty(_context.Calls);
+        Assert.Same(before, _context.State);
+        _context.LightningSigner.Verify(
+            s => s.RevealPerCommitmentSecret(It.IsAny<ChannelId>(), It.IsAny<ulong>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TheConnectionChangedDuringTheSave_When_OurBatchIsPublished_Then_NothingGoesOut()
+    {
+        // Arrange: regression, start_batch was not gated with the commitment_signed it announces (B2-RE-07)
+        AddPendingSplice();
+        _context.SetState(_context.State.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next);
+        var batch = await CreateTransitions().SignPendingAsync(_context.Channel);
+        var tracker = new ReestablishTracker();
+        tracker.MarkOpened(TestChannelId, PeerNodeId);
+        var (manager, _) = CreateChannelManager(tracker);
+        var raised = new List<IChannelMessage>();
+        manager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
+        manager.OnPeerConnectionChanged(PeerNodeId);
+
+        // Act
+        manager.Publish(PeerNodeId, batch);
+
+        // Assert: neither the start_batch nor its members precede our channel_reestablish
+        Assert.IsType<StartBatchMessage>(batch[0]);
+        Assert.Empty(raised);
+    }
+
+    [Fact]
+    public async Task Given_TheChannelReestablished_When_OurBatchIsPublished_Then_TheWholeBatchGoesOut()
+    {
+        // Arrange
+        AddPendingSplice();
+        _context.SetState(_context.State.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next);
+        var batch = await CreateTransitions().SignPendingAsync(_context.Channel);
+        var tracker = new ReestablishTracker();
+        tracker.MarkOpened(TestChannelId, PeerNodeId);
+        var (manager, _) = CreateChannelManager(tracker);
+        var raised = new List<IChannelMessage>();
+        manager.OnResponseMessageReady += (_, args) => raised.Add(args.ResponseMessage);
+
+        // Act
+        manager.Publish(PeerNodeId, batch);
+
+        // Assert
+        Assert.Equal(batch, raised);
+    }
+
+    [Fact]
+    public async Task Given_APendingSplice_When_TheCloseIsInitiated_Then_RefusedAndNoShutdown()
+    {
+        // Arrange: BOLT 2, MUST NOT send shutdown while a splice is not locked; our add is pending as well
+        AddPendingSplice();
+        _context.SetState(_context.State.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next);
+
+        // Act
+        var e = await Record.ExceptionAsync(
+            () => CreateCloseCoordinator().InitiateAsync(_context.Channel, new ChannelCloseRequest()));
+
+        // Assert
+        Assert.IsType<InvalidOperationException>(e);
+        Assert.Null(_context.Channel.LocalShutdownScript);
+        Assert.Empty(_context.Calls);
+    }
+
+    [Fact]
+    public async Task Given_APendingSplice_When_ThePeerSendsShutdown_Then_OurShutdownIsDeferred()
+    {
+        // Arrange
+        AddPendingSplice();
+        _context.SetState(_context.State.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next);
+        var coordinator = CreateCloseCoordinator();
+
+        // Act
+        var replies = await coordinator.ReceiveShutdownAsync(_context.Channel, Shutdown(), new FeatureOptions());
+        var advanced = await coordinator.AdvanceAsync(_context.Channel);
+
+        // Assert: nothing signed, no shutdown of ours (B2-SHUT-S03 and the splice rule)
+        Assert.Empty(replies);
+        Assert.DoesNotContain(advanced, m => m is ShutdownMessage);
+        Assert.Null(_context.Channel.LocalShutdownScript);
+        Assert.DoesNotContain("apply", _context.Calls);
+    }
+
+    [Fact]
+    public async Task Given_PendingUpdatesWithoutSplice_When_ThePeerSendsShutdown_Then_OurSignatureThenOurShutdown()
+    {
+        // Arrange
+        _context.SetState(_context.State.SendAdd(50_000_000, HashOf(SecretOf(1)), 600, Onion).Next);
+
+        // Act
+        var replies = await CreateCloseCoordinator().ReceiveShutdownAsync(_context.Channel, Shutdown(),
+                                                                          new FeatureOptions());
+
+        // Assert: B2-SHUT-S03, the updates are signed before our shutdown
+        Assert.Equal(2, replies.Count);
+        Assert.IsType<CommitmentSignedMessage>(replies[0]);
+        Assert.IsType<ShutdownMessage>(replies[1]);
+    }
+
+    private ChannelCloseCoordinator CreateCloseCoordinator()
+    {
+        var nodeOptions = Options.Create(_context.NodeOptions);
+        var feeService = new Mock<IFeeService>();
+        feeService.Setup(f => f.GetCachedFeeRatePerKw()).Returns(LightningMoney.Satoshis(1_000));
+        feeService.Setup(f => f.GetFeeRatePerKwAsync(It.IsAny<CancellationToken>()))
+                  .ReturnsAsync(LightningMoney.Satoshis(1_000));
+        return new ChannelCloseCoordinator(new ClosingTransactionBuilder(nodeOptions),
+                                           _context.ChannelMemoryRepository.Object, feeService.Object,
+                                           _context.LightningSigner.Object,
+                                           NullLogger<ChannelCloseCoordinator>.Instance, _context.MessageFactory,
+                                           Options.Create(new ChannelCloseOptions()),
+                                           new ClosingNegotiationRegistry(), new FixedProvider(s_localScript),
+                                           CreateTransitions(), _context.UnitOfWork.Object);
+    }
+
+    private static readonly BitcoinScript s_localScript = Convert.FromHexString("0014" + new string('1', 40));
+
+    private static ShutdownMessage Shutdown() =>
+        new(new ShutdownPayload(TestChannelId, Convert.FromHexString("0020" + new string('2', 64))));
+
+    private sealed class FixedProvider(BitcoinScript script)
+        : ShutdownScriptProvider(Options.Create(new NodeOptions()), new Mock<IBitcoinWalletService>().Object)
+    {
+        public override Task<BitcoinScript> GetLocalScriptAsync(ChannelModel channel) => Task.FromResult(script);
+    }
+
+    private (ChannelManager Manager, ChannelLockProvider LockProvider) CreateChannelManager(
+        ReestablishTracker? tracker = null)
     {
         _context.ChannelMemoryRepository
                 .Setup(r => r.TryGetChannelState(TestChannelId, out It.Ref<ChannelState>.IsAny))
@@ -290,6 +446,8 @@ public class CommitmentSignedBatchTests
         services.AddSingleton<IMessageFactory>(_context.MessageFactory);
         services.AddSingleton(_context.MessageSerializer.Object);
         services.AddScoped(_ => CreateTransitions());
+        if (tracker is not null)
+            services.AddSingleton(tracker);
         var lockProvider = new ChannelLockProvider();
         var manager = new ChannelManager(new Mock<IBlockchainMonitor>().Object, lockProvider,
                                          _context.ChannelMemoryRepository.Object, NullLogger<ChannelManager>.Instance,

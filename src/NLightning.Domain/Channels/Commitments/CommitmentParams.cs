@@ -59,6 +59,18 @@ public sealed record CommitmentParams(
     /// <see cref="LocalReserveMsatOn"/>).</summary>
     public ulong RemoteReserveMsatOn(ChannelFunding? funding) => ReserveMsatOn(Local.ChannelReserveSatoshis, funding);
 
+    /// <summary>
+    /// The reserve (msat) we hold the peer to when we <b>receive</b> its updates on the commitments of
+    /// <paramref name="funding"/>: the announced one on the initial funding, else the <b>smaller</b> of it and 1 % of
+    /// that funding's capacity. BOLT 2 defines no reserve for a spliced v1 channel and Eclair uses 1 % of the capacity
+    /// there, so a peer that keeps only that must not be failed (splicing plan D9, Q3); our own sends keep the stricter
+    /// <see cref="LocalReserveMsatOn"/>.
+    /// </summary>
+    public ulong RemoteReceiveReserveMsatOn(ChannelFunding? funding) =>
+        checked((funding is null || funding.Kind == ChannelFundingKind.Initial
+                     ? Local.ChannelReserveSatoshis
+                     : Math.Min(Local.ChannelReserveSatoshis, funding.CapacitySatoshis / 100)) * 1_000);
+
     private static ulong ReserveMsatOn(ulong announcedSatoshis, ChannelFunding? funding) =>
         checked((funding is null || funding.Kind == ChannelFundingKind.Initial
                      ? announcedSatoshis

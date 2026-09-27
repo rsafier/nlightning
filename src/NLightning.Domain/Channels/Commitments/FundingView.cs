@@ -11,14 +11,17 @@ using Splicing;
 /// <param name="LocalDeltaMsat">Our main balance on it minus ours on the current funding.</param>
 /// <param name="RemoteDeltaMsat">The same for the peer.</param>
 /// <param name="LocalReserveMsat">The reserve we must keep on it.</param>
-/// <param name="RemoteReserveMsat">The reserve the peer must keep on it.</param>
+/// <param name="RemoteReserveMsat">The reserve the peer must keep on it (checked on what we send).</param>
+/// <param name="RemoteReceiveReserveMsat">The reserve the peer's own updates are held to on it (the lenient D9
+/// reading, <see cref="CommitmentParams.RemoteReceiveReserveMsatOn"/>).</param>
 internal readonly record struct FundingView(
     ChannelFunding? Funding,
     bool IsCurrent,
     long LocalDeltaMsat,
     long RemoteDeltaMsat,
     long LocalReserveMsat,
-    long RemoteReserveMsat)
+    long RemoteReserveMsat,
+    long RemoteReceiveReserveMsat)
 {
     /// <summary>A suffix for rule messages: empty on the current funding, so single-funding texts are unchanged.</summary>
     public string Label => IsCurrent ? string.Empty : $" on splice funding {Funding?.FundingTxId}";
