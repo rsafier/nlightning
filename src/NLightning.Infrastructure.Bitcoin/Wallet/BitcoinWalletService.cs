@@ -43,22 +43,9 @@ public class BitcoinWalletService : IBitcoinWalletService
                                nodeOptions.Value.BitcoinNetwork);
     }
 
-    public async Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange)
-    {
-        if (addressType is not (AddressType.P2Wpkh or AddressType.P2Tr))
-            throw new InvalidOperationException(
-                "You cannot use flags for this method. Please select only one address type.");
-
-        await s_addressGenerationLock.WaitAsync();
-        try
-        {
-            return await GetOrGenerateUnusedAddressAsync(addressType, isChange);
-        }
-        finally
-        {
-            s_addressGenerationLock.Release();
-        }
-    }
+    /// <inheritdoc />
+    public Task<WalletAddressModel> GetUnusedAddressAsync(AddressType addressType, bool isChange) =>
+        ReserveUnusedAddressAsync(addressType, isChange);
 
     public async Task<WalletAddressModel> ReserveUnusedAddressAsync(AddressType addressType, bool isChange)
     {
@@ -73,7 +60,7 @@ public class BitcoinWalletService : IBitcoinWalletService
             var address = await GetOrGenerateUnusedAddressAsync(addressType, isChange);
             await _uow.WalletAddressesDbRepository.ReserveAsync(address);
             await _uow.SaveChangesAsync();
-            _logger.LogInformation("Reserved wallet address {Address}", address.Address);
+            _logger.LogDebug("Handed out and reserved wallet address {Address}", address.Address);
             return new WalletAddressModel(address.AddressType, address.Index, address.IsChange, address.Address)
             {
                 IsReserved = true

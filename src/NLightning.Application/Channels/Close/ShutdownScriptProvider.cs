@@ -22,13 +22,10 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <remarks>
 /// Scoped: <see cref="IBitcoinWalletService"/> uses the scope's unit of work. The address is handed to the blockchain
 /// monitor again (idempotent; the monitor keeps watching every wallet address after a deposit), so the closing output
-/// is credited to the wallet. The wallet returns its first address without a UTXO (NL-280), so two channels that close
-/// at the same time would get the same shutdown address, which links them on chain: an address that is the shutdown
-/// script of another channel whose close is not confirmed yet, or that another close of this process claimed first
-/// (<see cref="ClosingNegotiationRegistry.TryReserveShutdownScript"/>, atomic across channel locks), is skipped for the
-/// first unused change address (also a wallet address, so the output is credited the same way). A third concurrent
-/// close can still collide (logged), and the change address is also the one the next funding transaction's change
-/// output gets, until the wallet reserves each address it hands out (NL-280).
+/// is credited to the wallet. Since NL-280 the wallet reserves every address it hands out, so two closes never get the
+/// same fresh address; the claim check below (another loaded close paying to the script, or another close of this
+/// process that claimed it first through <see cref="ClosingNegotiationRegistry.TryReserveShutdownScript"/>, atomic
+/// across channel locks) stays as a guard and falls back to a change address.
 /// </remarks>
 public class ShutdownScriptProvider
 {

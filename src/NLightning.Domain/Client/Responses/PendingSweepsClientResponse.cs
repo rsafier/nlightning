@@ -7,17 +7,36 @@ using Onchain.Enums;
 
 /// <summary>
 /// The on-chain resolution of the node's closed channels (<c>ClientCommand.PendingSweeps</c>): per channel its funding
-/// spend and every output being resolved.
+/// spend and every output being resolved, and the broadcasts the node gave up.
 /// </summary>
 public sealed class PendingSweepsClientResponse
 {
     public IReadOnlyList<PendingSweepChannelInfo> Channels { get; }
 
-    public PendingSweepsClientResponse(IReadOnlyList<PendingSweepChannelInfo> channels)
+    /// <summary>
+    /// Transactions we broadcast and gave up (NL-294): a funding or wallet send bitcoind refused for good, or a
+    /// transaction of the on-chain resolution a conflicting spend made impossible.
+    /// </summary>
+    public IReadOnlyList<AbandonedBroadcastInfo> AbandonedBroadcasts { get; }
+
+    public PendingSweepsClientResponse(IReadOnlyList<PendingSweepChannelInfo> channels,
+                                       IReadOnlyList<AbandonedBroadcastInfo>? abandonedBroadcasts = null)
     {
         Channels = channels;
+        AbandonedBroadcasts = abandonedBroadcasts ?? [];
     }
 }
+
+/// <summary>A broadcast the node gave up.</summary>
+/// <param name="TransactionId">The transaction.</param>
+/// <param name="Purpose">What it was for.</param>
+/// <param name="ChannelId">Its channel, if any.</param>
+/// <param name="FirstBroadcastHeight">The last processed block height when it was first broadcast.</param>
+public sealed record AbandonedBroadcastInfo(
+    TxId TransactionId,
+    BroadcastPurpose Purpose,
+    ChannelId? ChannelId,
+    uint FirstBroadcastHeight);
 
 /// <summary>One closed channel: what spent its funding output and its outputs to resolve.</summary>
 /// <param name="ChannelId">The channel.</param>

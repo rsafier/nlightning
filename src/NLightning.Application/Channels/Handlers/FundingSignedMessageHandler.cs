@@ -6,6 +6,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -73,38 +74,53 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
         if (!_channelMemoryRepository.TryGetChannel(payload.ChannelId, out var channel))
             throw new ChannelErrorException("This channel has never been negotiated", payload.ChannelId);
 
-        // Generate the base commitment transactions
-        var localCommitmentTransaction =
-            _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
-                                                                                channel.LocalCommitmentNumber);
+        SignedTransaction unsignedFundingTransaction;
+        uint fundingOutputIndex;
+        try
+        {
+            // Generate the base commitment transactions
+            var localCommitmentTransaction =
+                _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                                                    channel.LocalCommitmentNumber);
 
-        // Build the output and the transactions
-        var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
+            // Build the output and the transactions
+            var localUnsignedCommitmentTransaction = _commitmentTransactionBuilder.Build(localCommitmentTransaction);
 
-        // Validate remote signature for our local commitment transaction
-        _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature, localUnsignedCommitmentTransaction);
+            // Validate remote signature for our local commitment transaction
+            _lightningSigner.ValidateSignature(channel.ChannelId, payload.Signature, localUnsignedCommitmentTransaction);
 
-        // Update the channel with the new signature
-        channel.UpdateLastReceivedSignature(payload.Signature);
+            // Update the channel with the new signature
+            channel.UpdateLastReceivedSignature(payload.Signature);
 
-        // Get the locked utxos to create the funding transaction
-        var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(channel.ChannelId);
+            // Get the locked utxos to create the funding transaction
+            var utxos = _utxoMemoryRepository.GetLockedUtxosForChannel(channel.ChannelId);
 
-        // Get a change address in case we need one
-        var fundingTransactionModel = _fundingTransactionModelFactory.Create(channel, utxos, channel.ChangeAddress);
-        var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
-        var unsignedFundingTransaction = fundingTransaction.Transaction;
+            // Get a change address in case we need one
+            var fundingTransactionModel = _fundingTransactionModelFactory.Create(channel, utxos, channel.ChangeAddress);
+            var fundingTransaction = _fundingTransactionBuilder.Build(fundingTransactionModel);
+            unsignedFundingTransaction = fundingTransaction.Transaction;
+            fundingOutputIndex = fundingTransaction.FundingOutputIndex;
 
-        // The rebuilt funding transaction must be the one the peer signed a commitment for
-        if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
-         || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
-            throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
-                                            channel.ChannelId, "Sorry, we had an internal error");
+            // The rebuilt funding transaction must be the one the peer signed a commitment for
+            if (channel.FundingOutput?.TransactionId != unsignedFundingTransaction.TxId
+             || channel.FundingOutput?.Index != fundingTransaction.FundingOutputIndex)
+                throw new ChannelErrorException("Rebuilt funding transaction does not match the channel funding outpoint",
+                                                channel.ChannelId, "Sorry, we had an internal error");
 
-        // Sign the transaction
-        var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
-        if (!allSigned)
-            throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
+            // Sign the transaction
+            var allSigned = _lightningSigner.SignFundingTransaction(channel.ChannelId, unsignedFundingTransaction);
+            if (!allSigned)
+                throw new ChannelErrorException("Unable to sign all inputs for the funding transaction");
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            // NL-259: the funding transaction will never be published, so the channel is forgotten (at the next start
+            // it is persisted Stale): its wallet outputs go back to the wallet now
+            var released = _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(channel.ChannelId);
+            _logger.LogWarning("funding_signed of channel {ChannelId} failed; released {Count} wallet output(s) locked "
+                             + "to it", channel.ChannelId, released.Count);
+            throw;
+        }
 
         // One save (BOLT 5 plan O0-T1/T2, NL-258): the channel as V1FundingSigned, the funding watch, the signed funding
         // transaction (sent again after every block until a block holds it, so a crash or a refused send before or
@@ -116,7 +132,7 @@ public class FundingSignedMessageHandler : IChannelMessageHandler<FundingSignedM
                                                              channel.ChannelId,
                                                              _blockchainMonitor.LastProcessedBlockHeight);
         var fundingOutputWatch = new WatchedOutpointModel(unsignedFundingTransaction.TxId,
-                                                          fundingTransaction.FundingOutputIndex, channel.ChannelId,
+                                                          fundingOutputIndex, channel.ChannelId,
                                                           WatchedOutpointPurpose.FundingOutput);
         await PersistChannelAsync(channel, uow =>
         {

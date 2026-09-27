@@ -55,6 +55,7 @@ public class FundingSignedMessageHandlerTests
         var mockFundingTransactionModelFactory = new Mock<IFundingTransactionModelFactory>();
         var mockUnitOfWork = new Mock<IUnitOfWork>();
         var mockUtxoMemoryRepository = new Mock<IUtxoMemoryRepository>();
+        mockUtxoMemoryRepository.Setup(x => x.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>())).Returns([]);
 
         CompactPubKey emptyPubKey = new byte[]
         {

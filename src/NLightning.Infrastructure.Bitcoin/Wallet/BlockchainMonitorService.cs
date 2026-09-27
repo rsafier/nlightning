@@ -74,6 +74,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
     private readonly ConcurrentDictionary<OutPoint, ChannelId> _watchedOutpoints = new();
     private readonly ConcurrentDictionary<uint256, BroadcastTransactionModel> _pendingBroadcasts = new();
     private readonly ConcurrentDictionary<uint256, int> _refusals = new();
+    private readonly ConcurrentDictionary<uint256, int> _permanentRefusals = new();
     private readonly SortedDictionary<uint, BlockHeaderModel> _headers = new();
     private readonly OrderedDictionary<uint, Block> _blocksToProcess = new();
     private readonly Lock _mempoolLock = new();
@@ -137,9 +138,15 @@ public class BlockchainMonitorService : IBlockchainMonitor
 
     /// <summary>
     /// A pending broadcast the node keeps refusing is logged at Warning on its first refusal and then once every this
-    /// many refusals in a row (it is retried after every block, with no abandonment rule yet).
+    /// many refusals in a row (it is retried after every block).
     /// </summary>
     internal int RefusalWarningInterval { get; set; } = 6;
+
+    /// <summary>
+    /// A pending funding or wallet send refused this many times in a row for a permanent reason is abandoned (NL-294,
+    /// <see cref="BroadcastRefusalRules"/>); other transactions are only reported at Error once they get there.
+    /// </summary>
+    internal int AbandonAfterPermanentRefusals { get; set; } = 12;
 
     public BlockchainMonitorService(IOptions<BitcoinOptions> bitcoinOptions, IBitcoinChainService bitcoinChainService,
                                     ILogger<BlockchainMonitorService> logger, IOptions<NodeOptions> nodeOptions,
@@ -1109,7 +1116,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
         foreach (var txId in effects.ConfirmedBroadcasts)
         {
             _pendingBroadcasts.TryRemove(txId, out _);
-            _refusals.TryRemove(txId, out _);
+            ForgetRefusals(txId);
         }
 
         _headers[effects.Height] = effects.Header;
@@ -1435,7 +1442,7 @@ public class BlockchainMonitorService : IBlockchainMonitor
                     continue;
 
                 _pendingBroadcasts.TryRemove(txId, out _);
-                _refusals.TryRemove(txId, out _);
+                ForgetRefusals(txId);
                 if (_logger.IsEnabled(LogLevel.Information))
                     _logger.LogInformation("{Purpose} transaction {TxId} is {State}; it is no longer rebroadcast",
                                            Enum.GetName(stored.Purpose), txId, Enum.GetName(stored.State));
@@ -1458,14 +1465,14 @@ public class BlockchainMonitorService : IBlockchainMonitor
         try
         {
             await _bitcoinChainService.SendTransactionAsync(Transaction.Load(broadcast.RawTransaction, _network));
-            _refusals.TryRemove(txId, out _);
+            ForgetRefusals(txId);
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (IsAlreadyKnown(ex))
             {
-                _refusals.TryRemove(txId, out _);
+                ForgetRefusals(txId);
                 return true;
             }
 
@@ -1475,8 +1482,106 @@ public class BlockchainMonitorService : IBlockchainMonitor
                 _logger.Log(level, ex,
                             "Broadcast of {Purpose} transaction {TxId} was refused ({Refusals} time(s) in a row); it is sent again after the next block",
                             Enum.GetName(broadcast.Purpose), txId, refusals);
+
+            if (!BroadcastRefusalRules.IsPermanent(ex))
+            {
+                _permanentRefusals.TryRemove(txId, out _);
+                return false;
+            }
+
+            var permanent = _permanentRefusals.AddOrUpdate(txId, 1, (_, count) => count + 1);
+            if (permanent >= AbandonAfterPermanentRefusals)
+                await HandleRefusedForGoodAsync(broadcast, ex, permanent);
+
             return false;
         }
+    }
+
+    /// <summary>
+    /// A pending broadcast was refused <see cref="AbandonAfterPermanentRefusals"/> times in a row for a permanent
+    /// reason (NL-294). A funding or wallet send is abandoned (its row is marked
+    /// <see cref="BroadcastState.Abandoned"/> and saved, it is no longer sent, and a funding's wallet UTXO locks are
+    /// released, NL-259), unless it was refused for missing inputs while every input is still confirmed and unspent
+    /// (then bitcoind's answer does not add up, and it is kept). Any other transaction is kept and reported at Error
+    /// once (see <see cref="BroadcastRefusalRules"/>).
+    /// </summary>
+    private async Task HandleRefusedForGoodAsync(BroadcastTransactionModel broadcast, Exception refusal,
+                                                 int permanentRefusals)
+    {
+        var txId = new uint256(broadcast.TransactionId);
+        if (!BroadcastRefusalRules.MayAbandon(broadcast.Purpose))
+        {
+            if (permanentRefusals == AbandonAfterPermanentRefusals)
+                _logger.LogError(refusal,
+                                 "{Purpose} transaction {TxId} of channel {ChannelId} was refused {Refusals} times in a "
+                               + "row for a permanent reason; it spends a channel output, so it is not abandoned and is "
+                               + "sent again after every block until the on-chain resolution gives it up",
+                                 Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals);
+            return;
+        }
+
+        try
+        {
+            if (BroadcastRefusalRules.IsMissingInputs(refusal) && !await HasGoneInputAsync(broadcast))
+            {
+                if (permanentRefusals == AbandonAfterPermanentRefusals)
+                    _logger.LogError(refusal,
+                                     "{Purpose} transaction {TxId} is refused for missing inputs, but every input is "
+                                   + "still confirmed and unspent; it is kept and sent again after every block",
+                                     Enum.GetName(broadcast.Purpose), txId);
+                return;
+            }
+
+            using (var scope = _serviceProvider.CreateScope())
+            {
+                using var uow = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+                await uow.BroadcastTransactionDbRepository.MarkAbandonedAsync(broadcast.TransactionId);
+                await uow.SaveChangesAsync();
+            }
+
+            broadcast.MarkAbandoned();
+            _pendingBroadcasts.TryRemove(txId, out _);
+            ForgetRefusals(txId);
+
+            var released = 0;
+            if (BroadcastRefusalRules.IsFunding(broadcast.Purpose) && broadcast.ChannelId is { } channelId
+                                                                   && _serviceProvider.GetService<IUtxoMemoryRepository>()
+                                                                          is { } utxos)
+                released = utxos.ReturnUtxosNotSpentOnChannel(channelId).Count;
+
+            _logger.LogError(refusal,
+                             "{Purpose} transaction {TxId} of channel {ChannelId} was refused {Refusals} times in a row "
+                           + "for a permanent reason and is abandoned: it is no longer sent ({Released} wallet "
+                           + "output(s) locked to the channel released)",
+                             Enum.GetName(broadcast.Purpose), txId, broadcast.ChannelId, permanentRefusals, released);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Could not abandon {Purpose} transaction {TxId}; it is sent again after the next block",
+                               Enum.GetName(broadcast.Purpose), txId);
+        }
+    }
+
+    /// <summary>
+    /// True when an input of the transaction is not a confirmed unspent output any more (spent on chain, or reorged
+    /// away); our fundings and wallet sends only spend confirmed wallet outputs.
+    /// </summary>
+    private async Task<bool> HasGoneInputAsync(BroadcastTransactionModel broadcast)
+    {
+        var transaction = Transaction.Load(broadcast.RawTransaction, _network);
+        foreach (var input in transaction.Inputs)
+        {
+            if (await _bitcoinChainService.GetConfirmedUnspentOutputAsync(input.PrevOut) is null)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void ForgetRefusals(uint256 txId)
+    {
+        _refusals.TryRemove(txId, out _);
+        _permanentRefusals.TryRemove(txId, out _);
     }
 
     private static bool IsAlreadyKnown(Exception sendError)

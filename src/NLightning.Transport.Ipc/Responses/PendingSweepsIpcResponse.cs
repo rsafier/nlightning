@@ -16,6 +16,9 @@ public sealed class PendingSweepsIpcResponse
 {
     [Key(0)] public required List<PendingSweepChannelIpcInfo> Channels { get; init; }
 
+    /// <summary>Broadcasts the node gave up (NL-294); an older daemon sends none.</summary>
+    [Key(1)] public List<AbandonedBroadcastIpcInfo>? AbandonedBroadcasts { get; init; }
+
     public static PendingSweepsIpcResponse FromClientResponse(PendingSweepsClientResponse clientResponse)
     {
         ArgumentNullException.ThrowIfNull(clientResponse);
@@ -43,6 +46,13 @@ public sealed class PendingSweepsIpcResponse
                     DeadlineHeight = o.DeadlineHeight,
                     ResolvedHeight = o.ResolvedHeight
                 }).ToList()
+            }).ToList(),
+            AbandonedBroadcasts = clientResponse.AbandonedBroadcasts.Select(b => new AbandonedBroadcastIpcInfo
+            {
+                TransactionId = ToDisplay(b.TransactionId),
+                Purpose = b.Purpose,
+                ChannelId = b.ChannelId,
+                FirstBroadcastHeight = b.FirstBroadcastHeight
             }).ToList()
         };
     }
@@ -80,4 +90,14 @@ public sealed class PendingSweepOutputIpcInfo
     [Key(8)] public uint? WaitUntilHeight { get; init; }
     [Key(9)] public uint? DeadlineHeight { get; init; }
     [Key(10)] public uint? ResolvedHeight { get; init; }
+}
+
+/// <summary>One abandoned broadcast of a <see cref="PendingSweepsIpcResponse"/>.</summary>
+[MessagePackObject]
+public sealed class AbandonedBroadcastIpcInfo
+{
+    [Key(0)] public required string TransactionId { get; init; }
+    [Key(1)] public BroadcastPurpose Purpose { get; init; }
+    [Key(2)] public ChannelId? ChannelId { get; init; }
+    [Key(3)] public uint FirstBroadcastHeight { get; init; }
 }

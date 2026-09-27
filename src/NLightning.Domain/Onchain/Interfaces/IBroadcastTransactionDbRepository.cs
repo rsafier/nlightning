@@ -39,6 +39,14 @@ public interface IBroadcastTransactionDbRepository
     /// </summary>
     Task<bool> MarkPendingAsync(TxId transactionId);
 
+    /// <summary>
+    /// Every broadcast given up (<see cref="Enums.BroadcastState.Abandoned"/>), oldest first: by the chain monitor after
+    /// permanent refusals (NL-294), or by the on-chain resolution after a conflicting spend. Read by
+    /// <c>pendingsweeps</c>. The default reads none (test doubles).
+    /// </summary>
+    Task<IReadOnlyList<BroadcastTransactionModel>> GetAbandonedAsync() =>
+        Task.FromResult<IReadOnlyList<BroadcastTransactionModel>>([]);
+
     /// <summary>Every broadcast that is still pending (the rebroadcast set).</summary>
     Task<IReadOnlyList<BroadcastTransactionModel>> GetPendingAsync();
 

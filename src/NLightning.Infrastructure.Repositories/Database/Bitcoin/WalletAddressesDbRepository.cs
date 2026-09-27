@@ -13,15 +13,29 @@ public class WalletAddressesDbRepository(NLightningDbContext context)
 {
     public async Task<WalletAddressModel?> GetUnusedAddressAsync(AddressType type, bool isChange)
     {
-        var walletAddressEntity = await DbSet.AsNoTracking()
-                                             .Include(x => x.Utxos)
-                                             .Where(x => x.AddressType.Equals(type)
-                                                      && x.IsChange.Equals(isChange)
-                                                      && !x.IsReserved)
-                                             .Where(x => x.Utxos != null
-                                                      && x.Utxos.Count().Equals(0))
-                                             .OrderBy(x => x.Index)
-                                             .FirstOrDefaultAsync();
+        // NL-280: never go back below an address that was handed out (reserved) or received funds. Spending deletes the
+        // UTXO row, so an address handed out before reservations existed and since spent is skipped as long as a later
+        // address was used.
+        var highestUsedEntity = await DbSet.AsNoTracking()
+                                           .Where(x => x.AddressType.Equals(type)
+                                                    && x.IsChange.Equals(isChange)
+                                                    && (x.IsReserved || (x.Utxos != null && x.Utxos.Any())))
+                                           .OrderByDescending(x => x.Index)
+                                           .FirstOrDefaultAsync();
+        var query = DbSet.AsNoTracking()
+                         .Include(x => x.Utxos)
+                         .Where(x => x.AddressType.Equals(type)
+                                  && x.IsChange.Equals(isChange)
+                                  && !x.IsReserved)
+                         .Where(x => x.Utxos != null
+                                  && x.Utxos.Count().Equals(0));
+        if (highestUsedEntity is not null)
+        {
+            var highestUsed = highestUsedEntity.Index;
+            query = query.Where(x => x.Index > highestUsed);
+        }
+
+        var walletAddressEntity = await query.OrderBy(x => x.Index).FirstOrDefaultAsync();
 
         return walletAddressEntity is null ? null : MapEntityToModel(walletAddressEntity);
     }
