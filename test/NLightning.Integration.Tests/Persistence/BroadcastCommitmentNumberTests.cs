@@ -77,6 +77,7 @@ public class BroadcastCommitmentNumberTests
         var repositoryAfter = new BroadcastTransactionDbRepository(readContext);
         Assert.Equal(BroadcastState.Abandoned, (await repositoryAfter.GetByTransactionIdAsync(txId))!.State);
         Assert.DoesNotContain(await repositoryAfter.GetPendingAsync(), b => b.TransactionId == txId);
+        Assert.Contains(await repositoryAfter.GetAbandonedAsync(), b => b.TransactionId == txId);
     }
 
     private static SignedTransaction ToSigned(Transaction transaction) =>

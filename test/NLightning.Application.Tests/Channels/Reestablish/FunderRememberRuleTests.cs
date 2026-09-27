@@ -53,6 +53,7 @@ public class FunderRememberRuleTests
     private readonly Mock<ILightningSigner> _signer = new();
     private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<IUtxoMemoryRepository> _utxoMemory = new();
     private readonly List<string> _steps = [];
     private readonly FundingSignedMessageHandler _handler;
     private readonly ChannelModel _channel;
@@ -66,7 +67,7 @@ public class FunderRememberRuleTests
         var commitmentModelFactory = new Mock<ICommitmentTransactionModelFactory>();
         var fundingModelFactory = new Mock<IFundingTransactionModelFactory>();
         var fundingBuilder = new Mock<IFundingTransactionBuilder>();
-        var utxoMemory = new Mock<IUtxoMemoryRepository>();
+        var utxoMemory = _utxoMemory;
 
         var key = NormalOperationTestContext.Point(0x01);
         var channelId = new ChannelId(Enumerable.Repeat((byte)0x21, 32).ToArray());
@@ -105,6 +106,7 @@ public class FunderRememberRuleTests
             new(TxId.One, 0, LightningMoney.Satoshis(20_000), 100, 0, false, AddressType.P2Wpkh)
         };
         utxoMemory.Setup(u => u.GetLockedUtxosForChannel(channelId)).Returns(utxos);
+        utxoMemory.Setup(u => u.ReturnUtxosNotSpentOnChannel(channelId)).Returns(utxos);
         fundingModelFactory.Setup(f => f.Create(It.IsAny<ChannelModel>(), utxos, It.IsAny<WalletAddressModel?>()))
                            .Returns(new FundingTransactionModel(utxos, fundingOutput, LightningMoney.Satoshis(1_000)));
         fundingBuilder.Setup(b => b.Build(It.IsAny<FundingTransactionModel>()))
@@ -177,10 +179,11 @@ public class FunderRememberRuleTests
         _blockchainMonitor.Verify(b => b.TrackWatchedTransaction(It.IsAny<WatchedTransactionModel>()), Times.Once);
         _blockchainMonitor.Verify(b => b.TrackWatchedOutpoint(It.Is<WatchedOutpointModel>(o => o.OutputIndex == 1)),
                                   Times.Once);
+        _utxoMemory.Verify(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>()), Times.Never);
     }
 
     [Fact]
-    public async Task Given_FundingSignedWithABadSignature_When_Handled_Then_NothingIsRememberedOrBroadcast()
+    public async Task Given_FundingSignedWithABadSignature_When_Handled_Then_NothingIsRememberedOrBroadcastAndTheUtxosAreReleased()
     {
         // Arrange
         _signer.Setup(s => s.ValidateSignature(It.IsAny<ChannelId>(), It.IsAny<CompactSignature>(),
@@ -191,9 +194,10 @@ public class FunderRememberRuleTests
         await Assert.ThrowsAsync<ChannelErrorException>(
             () => _handler.HandleAsync(_message, ChannelState.V1FundingCreated, new FeatureOptions(), _peer));
 
-        // Assert
+        // Assert: nothing stored, and the wallet outputs locked for the funding go back to the wallet (NL-259)
         Assert.Empty(_steps);
         Assert.Equal(ChannelState.V1FundingCreated, _channel.State);
+        _utxoMemory.Verify(u => u.ReturnUtxosNotSpentOnChannel(_channel.ChannelId), Times.Once);
     }
 
     [Fact]

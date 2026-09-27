@@ -6,7 +6,11 @@ using Enums;
 
 public interface IWalletAddressesDbRepository
 {
-    /// <summary>The lowest-index address of that type and chain without a UTXO that is not reserved, or null.</summary>
+    /// <summary>
+    /// The lowest-index address of that type and chain that is not reserved, has no UTXO and lies above every address
+    /// of that type and chain that is reserved or holds a UTXO (NL-280: the lookup never goes back to an address that
+    /// was handed out or funded, even after its UTXOs were spent), or null.
+    /// </summary>
     Task<WalletAddressModel?> GetUnusedAddressAsync(AddressType type, bool isChange);
 
     /// <summary>

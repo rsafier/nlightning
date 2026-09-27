@@ -39,6 +39,8 @@ public class StartupStateTests
     private readonly Mock<IChannelDbRepository> _channelDb = new();
     private readonly Mock<IWatchedTransactionDbRepository> _watchedDb = new();
     private readonly Mock<IUnitOfWork> _unitOfWork = new();
+    private readonly Mock<IBroadcastTransactionDbRepository> _broadcastDb = new();
+    private readonly Mock<IUtxoMemoryRepository> _utxoMemory = new();
     private readonly List<ChannelState> _persistedStates = [];
     private readonly List<(CompactPubKey Peer, IChannelMessage Message)> _raised = [];
 
@@ -50,6 +52,9 @@ public class StartupStateTests
                   .Callback((ChannelModel c) => _persistedStates.Add(c.State))
                   .Returns(Task.CompletedTask);
         _memory.Setup(m => m.FindChannels(It.IsAny<Func<ChannelModel, bool>>())).Returns([]);
+        _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(_broadcastDb.Object);
+        _broadcastDb.Setup(r => r.GetByChannelIdAsync(It.IsAny<ChannelId>())).ReturnsAsync([]);
+        _utxoMemory.Setup(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>())).Returns([]);
     }
 
     [Fact]
@@ -90,6 +95,56 @@ public class StartupStateTests
         Assert.Equal([ChannelState.Stale], _persistedStates);
         _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
         _signer.Verify(s => s.RegisterChannel(It.IsAny<ChannelId>(), It.IsAny<ChannelSigningInfo>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AForgottenFunderChannel_When_Registered_Then_ItsUtxoLocksAndPendingFundingAreReleased()
+    {
+        // Arrange - NL-259: no watch, a leftover pending funding row and wallet outputs locked to the channel
+        var channel = CreateChannel(ChannelState.V1FundingCreated);
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(It.IsAny<TxId>()))
+                  .ReturnsAsync((WatchedTransactionModel?)null);
+        var funding = new BroadcastTransactionModel(new SignedTransaction(channel.FundingOutput!.TransactionId!.Value,
+                                                                          [0x01]),
+                                                    BroadcastPurpose.Funding, channel.ChannelId, 100);
+        var sweep = new BroadcastTransactionModel(
+            new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x44, 32).ToArray()), [0x02]),
+            BroadcastPurpose.Sweep, channel.ChannelId, 100);
+        _broadcastDb.Setup(r => r.GetByChannelIdAsync(channel.ChannelId)).ReturnsAsync([funding, sweep]);
+        var steps = new List<string>();
+        _broadcastDb.Setup(r => r.MarkAbandonedAsync(It.IsAny<TxId>()))
+                    .Callback((TxId txId) => steps.Add($"abandon {txId == funding.TransactionId}"))
+                    .ReturnsAsync(true);
+        _unitOfWork.Setup(u => u.SaveChangesAsync()).Callback(() => steps.Add("save")).Returns(Task.CompletedTask);
+        var manager = CreateManager(utxoMemory: _utxoMemory.Object);
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert - the funding row abandoned in the Stale save (the sweep row left alone), the locks released
+        Assert.Equal(ChannelState.Stale, channel.State);
+        Assert.Equal(["abandon True", "save"], steps);
+        _utxoMemory.Verify(u => u.ReturnUtxosNotSpentOnChannel(channel.ChannelId), Times.Once);
+        _memory.Verify(m => m.AddChannel(It.IsAny<ChannelModel>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_ARememberedFunderChannel_When_Registered_Then_ItsUtxoLocksAndFundingAreKept()
+    {
+        // Arrange - the funding is watched: it may be out, so nothing is released
+        var channel = CreateChannel(ChannelState.V1FundingCreated);
+        var fundingTxId = channel.FundingOutput!.TransactionId!.Value;
+        _watchedDb.Setup(r => r.GetByTransactionIdAsync(fundingTxId))
+                  .ReturnsAsync(new WatchedTransactionModel(channel.ChannelId, fundingTxId, 3));
+        var manager = CreateManager(utxoMemory: _utxoMemory.Object);
+
+        // Act
+        await manager.RegisterExistingChannelAsync(channel);
+
+        // Assert
+        Assert.Equal(ChannelState.V1FundingSigned, channel.State);
+        _broadcastDb.Verify(r => r.MarkAbandonedAsync(It.IsAny<TxId>()), Times.Never);
+        _utxoMemory.Verify(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>()), Times.Never);
     }
 
     [Fact]
@@ -224,9 +279,12 @@ public class StartupStateTests
                        Times.Once);
     }
 
-    private ChannelManager CreateManager(IChannelSigningInfoSource? signingInfoSource = null)
+    private ChannelManager CreateManager(IChannelSigningInfoSource? signingInfoSource = null,
+                                         IUtxoMemoryRepository? utxoMemory = null)
     {
         var services = new ServiceCollection();
+        if (utxoMemory is not null)
+            services.AddSingleton(utxoMemory);
         if (signingInfoSource is not null)
             services.AddSingleton(signingInfoSource);
         services.AddSingleton(new ReestablishTracker());

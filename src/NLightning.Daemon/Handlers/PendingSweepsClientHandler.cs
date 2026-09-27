@@ -12,7 +12,8 @@ using Interfaces;
 /// <summary>
 /// Lists the on-chain resolution of closed channels (ClientCommand 15, BOLT 5 plan O3-T6): every recorded funding spend
 /// (<c>ChannelCloses</c>) with its outputs (<c>OutputResolutions</c>) and the channel's state. Channels already
-/// <c>Closed</c> are left out unless asked for.
+/// <c>Closed</c> are left out unless asked for. Also lists the broadcasts the node gave up (NL-294), with the same
+/// channel filters.
 /// </summary>
 public sealed class PendingSweepsClientHandler
     : IClientCommandHandler<PendingSweepsClientRequest, PendingSweepsClientResponse>
@@ -52,7 +53,22 @@ public sealed class PendingSweepsClientHandler
                                                      outputs.Select(ToInfo).ToList()));
         }
 
-        return new PendingSweepsClientResponse(channels);
+        var abandoned = new List<AbandonedBroadcastInfo>();
+        foreach (var broadcast in await _unitOfWork.BroadcastTransactionDbRepository.GetAbandonedAsync())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (request.ChannelId is { } only && broadcast.ChannelId != only)
+                continue;
+
+            if (!request.IncludeClosed && broadcast.ChannelId is { } channelId
+                                       && await GetStateAsync(channelId) == ChannelState.Closed)
+                continue;
+
+            abandoned.Add(new AbandonedBroadcastInfo(broadcast.TransactionId, broadcast.Purpose, broadcast.ChannelId,
+                                                     broadcast.FirstBroadcastHeight));
+        }
+
+        return new PendingSweepsClientResponse(channels, abandoned);
     }
 
     private async Task<ChannelState> GetStateAsync(Domain.Channels.ValueObjects.ChannelId channelId)

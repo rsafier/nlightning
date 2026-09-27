@@ -854,6 +854,122 @@ public class BlockchainMonitorServiceTests
     }
 
     [Fact]
+    public async Task Given_AFundingRefusedForGood_When_TheThresholdIsReached_Then_ItIsAbandonedAndItsUtxosReleased()
+    {
+        // Arrange (NL-294, NL-259): our funding transaction's inputs are gone, bitcoind refuses it every block
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.AbandonAfterPermanentRefusals = 3;
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        utxos.Setup(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>()))
+             .Returns([new UtxoModel(TxId.One, 0, LightningMoney.Satoshis(50_000), 100, 0, false, AddressType.P2Wpkh)]);
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var channelId = new ChannelId(Enumerable.Repeat((byte)0x3a, 32).ToArray());
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x3b)), BroadcastPurpose.Funding,
+                                                      channelId, 110);
+        _mockBroadcastRepository.Setup(x => x.MarkAbandonedAsync(broadcast.TransactionId))
+                                .Callback(() => _steps.Add("abandon"))
+                                .ReturnsAsync(true);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act: the first send and two blocks reach the threshold, three more blocks follow
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: abandoned (saved) at the third refusal, never sent again, the channel's outputs released
+        Assert.Equal(3, _chain.SendAttempts.Count(t => t.GetHash() == new uint256((byte[])broadcast.TransactionId)));
+        _mockBroadcastRepository.Verify(x => x.MarkAbandonedAsync(broadcast.TransactionId), Times.Once);
+        Assert.Equal("save", _steps[_steps.IndexOf("abandon") + 1]);
+        utxos.Verify(u => u.ReturnUtxosNotSpentOnChannel(channelId), Times.Once);
+        Assert.Equal(BroadcastState.Abandoned, broadcast.State);
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("is abandoned")
+                                          && e.Message.Contains("1 wallet output(s)"));
+    }
+
+    [Theory]
+    [InlineData(BroadcastPurpose.LocalCommitment)]
+    [InlineData(BroadcastPurpose.Penalty)]
+    [InlineData(BroadcastPurpose.HtlcTransaction)]
+    [InlineData(BroadcastPurpose.Sweep)]
+    [InlineData(BroadcastPurpose.AnchorCpfp)]
+    public async Task Given_AChannelOutputSpendRefusedForGood_When_BlocksArrive_Then_ItIsNeverAbandoned(
+        BroadcastPurpose purpose)
+    {
+        // Arrange (NL-294): an input that is not confirmed yet is refused as missing too, so a transaction spending a
+        // channel output is kept, whatever the count
+        var logger = new RecordingLogger();
+        var service = CreateService(_chain, logger: logger);
+        service.AbandonAfterPermanentRefusals = 2;
+        var utxos = new Mock<IUtxoMemoryRepository>();
+        _fakeServiceProvider.AddService(typeof(IUtxoMemoryRepository), utxos.Object);
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x3c)), purpose,
+                                                      new ChannelId(Enumerable.Repeat((byte)0x3d, 32).ToArray()), 110);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 5; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert: sent every block, never abandoned, one error when it reached the threshold
+        Assert.Equal(6, _chain.SendAttempts.Count(t => t.GetHash() == new uint256((byte[])broadcast.TransactionId)));
+        _mockBroadcastRepository.Verify(x => x.MarkAbandonedAsync(It.IsAny<TxId>()), Times.Never);
+        utxos.Verify(u => u.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>()), Times.Never);
+        Assert.Equal(BroadcastState.Pending, broadcast.State);
+        Assert.Single(logger.Entries, e => e.Level == LogLevel.Error && e.Message.Contains("not abandoned"));
+    }
+
+    [Fact]
+    public async Task Given_AFundingRefusedForATemporaryReason_When_BlocksArrive_Then_ItIsNeverAbandoned()
+    {
+        // Arrange (NL-294): a fee refusal can change with the mempool
+        var service = CreateService(_chain);
+        service.AbandonAfterPermanentRefusals = 2;
+        await service.StartAsync(0, TestContext.Current.CancellationToken);
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateTransaction(0x3e)), BroadcastPurpose.Funding,
+                                                      new ChannelId(Enumerable.Repeat((byte)0x3f, 32).ToArray()), 110);
+        _chain.SendFailure = new InvalidOperationException("min relay fee not met");
+
+        // Act
+        Assert.False(await service.PublishAsync(broadcast));
+        for (var i = 0; i < 4; i++)
+            await service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await service.StopAsync();
+
+        // Assert
+        Assert.Equal(5, _chain.SendAttempts.Count(t => t.GetHash() == new uint256((byte[])broadcast.TransactionId)));
+        _mockBroadcastRepository.Verify(x => x.MarkAbandonedAsync(It.IsAny<TxId>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AFundingRefusedForMissingInputsThatAreStillUnspent_When_BlocksArrive_Then_ItIsKept()
+    {
+        // Arrange (NL-294): bitcoind's answer does not match the chain (every input confirmed and unspent)
+        var parent = CreateTransaction(0x40);
+        await _service.StartAsync(0, TestContext.Current.CancellationToken);
+        await _service.ProcessNewBlockAsync(_chain.Mine(parent), _chain.TipHeight);
+        _service.AbandonAfterPermanentRefusals = 2;
+        var broadcast = new BroadcastTransactionModel(ToSigned(CreateSpend(parent, 0)), BroadcastPurpose.Funding,
+                                                      new ChannelId(Enumerable.Repeat((byte)0x41, 32).ToArray()), 110);
+        _chain.SendFailure = new InvalidOperationException("bad-txns-inputs-missingorspent");
+
+        // Act
+        Assert.False(await _service.PublishAsync(broadcast));
+        for (var i = 0; i < 3; i++)
+            await _service.ProcessNewBlockAsync(_chain.Mine(), _chain.TipHeight);
+        await _service.StopAsync();
+
+        // Assert
+        _mockBroadcastRepository.Verify(x => x.MarkAbandonedAsync(It.IsAny<TxId>()), Times.Never);
+        Assert.Equal(BroadcastState.Pending, broadcast.State);
+    }
+
+    [Fact]
     public async Task Given_APendingBroadcastReplacedByRbf_When_TheNextBlockArrives_Then_ItIsNotSentAgain()
     {
         // Arrange (NL-294, O6-T1): a sweep sent once, then replaced by the sweep scheduler (its row is Replaced)

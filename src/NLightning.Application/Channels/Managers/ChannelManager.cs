@@ -268,6 +268,21 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         var published = watched is not null && watched.ChannelId == channel.ChannelId;
         channel.UpdateState(published ? ChannelState.V1FundingSigned : ChannelState.Stale);
         await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+
+        // NL-259: a forgotten funder channel gives its funding up in the same save (a pending funding row would keep
+        // its inputs out of coin selection, NL-385, and be sent after every block)
+        var abandoned = 0;
+        if (!published)
+        {
+            foreach (var broadcast in await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(
+                                          channel.ChannelId))
+            {
+                if (broadcast.Purpose is BroadcastPurpose.Funding or BroadcastPurpose.Unspecified
+                 && await unitOfWork.BroadcastTransactionDbRepository.MarkAbandonedAsync(broadcast.TransactionId))
+                    abandoned++;
+            }
+        }
+
         await unitOfWork.SaveChangesAsync();
 
         if (published)
@@ -278,9 +293,13 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
             return true;
         }
 
+        // ... and releases the wallet outputs locked to it (the locks live in memory only)
+        var released = _serviceProvider.GetService<IUtxoMemoryRepository>()?.ReturnUtxosNotSpentOnChannel(
+                           channel.ChannelId).Count ?? 0;
+
         _logger.LogWarning(
-            "Channel {ChannelId} was stopped before its funding transaction was published; forgetting it (BOLT 2: a funder that has not broadcast SHOULD NOT remember the channel)",
-            channel.ChannelId);
+            "Channel {ChannelId} was stopped before its funding transaction was published; forgetting it (BOLT 2: a funder that has not broadcast SHOULD NOT remember the channel); {Released} wallet output(s) released, {Abandoned} funding broadcast(s) abandoned",
+            channel.ChannelId, released, abandoned);
         return false;
     }
 

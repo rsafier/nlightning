@@ -14,8 +14,7 @@ using Infrastructure.Bitcoin.Wallet.Interfaces;
 /// <c>ShutdownScriptProvider</c> does for a closing output).
 /// </summary>
 /// <remarks>
-/// The wallet hands out its first address without a UTXO (NL-280), so sweeps decided in the same block can share an
-/// address; that links them on chain but loses nothing.
+/// The wallet reserves every address it hands out (NL-280), so every sweep pays to an address of its own.
 /// </remarks>
 public sealed class WalletSweepDestinationProvider : ISweepDestinationProvider
 {

@@ -200,6 +200,18 @@ public class SqlServerTests
                                                           TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task Given_SqlServerSchema_When_AddressesAreIssuedAndBroadcastsAbandoned_Then_TheSharedRoundTripHolds()
+    {
+        // Arrange (NL-280: reserved and funded addresses never handed out again; NL-294: abandoned broadcasts listed)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_wallet_issuance");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.MicrosoftSql);
+
+        // Act & Assert
+        await WalletIssuanceSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                        TestContext.Current.CancellationToken);
+    }
+
     /// <summary>Options for a database of its own on the container's server, once the server accepts
     /// connections.</summary>
     private async Task<DbContextOptions<NLightningDbContext>> CreateOwnDatabaseOptionsAsync(string database)

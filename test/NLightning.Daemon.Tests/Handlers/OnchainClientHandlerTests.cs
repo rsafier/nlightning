@@ -138,6 +138,9 @@ public class OnchainClientHandlerTests
         var unitOfWork = new Mock<IUnitOfWork>();
         unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(resolution.Object);
         unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
+        broadcasts.Setup(b => b.GetAbandonedAsync()).ReturnsAsync([]);
+        unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
         var memory = new Mock<IChannelMemoryRepository>();
         memory.Setup(m => m.TryGetChannelState(s_channelId, out It.Ref<ChannelState>.IsAny))
               .Returns(new TryGetStateCallback((ChannelId _, out ChannelState state) =>
@@ -173,6 +176,56 @@ public class OnchainClientHandlerTests
     }
 
     [Fact]
+    public async Task Given_AbandonedBroadcasts_When_PendingSweepsListed_Then_TheyAreListedWithTheChannelFilters()
+    {
+        // Arrange (NL-294): a funding the chain monitor gave up (its channel still loaded), a wallet send without a
+        // channel, and a commitment of a channel that is Closed
+        var closedChannel = new ChannelId(Enumerable.Repeat((byte)0x24, 32).ToArray());
+        var funding = new BroadcastTransactionModel(new SignedTransaction(s_txId, [0x01]), BroadcastPurpose.Funding,
+                                                    s_channelId, 500);
+        var withdraw = new BroadcastTransactionModel(
+            new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x31, 32).ToArray()), [0x02]),
+            BroadcastPurpose.WalletSend, null, 510);
+        var commitment = new BroadcastTransactionModel(
+            new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x32, 32).ToArray()), [0x03]),
+            BroadcastPurpose.LocalCommitment, closedChannel, 520);
+        var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
+        broadcasts.Setup(b => b.GetAbandonedAsync()).ReturnsAsync([funding, withdraw, commitment]);
+        var resolution = new Mock<IOnchainResolutionDbRepository>();
+        resolution.Setup(r => r.GetClosesAsync()).ReturnsAsync([]);
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(c => c.GetByIdAsync(closedChannel)).ReturnsAsync((ChannelModel?)null);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.OnchainResolutionDbRepository).Returns(resolution.Object);
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
+        var memory = new Mock<IChannelMemoryRepository>();
+        memory.Setup(m => m.TryGetChannelState(s_channelId, out It.Ref<ChannelState>.IsAny))
+              .Returns(new TryGetStateCallback((ChannelId _, out ChannelState state) =>
+               {
+                   state = ChannelState.V1FundingSigned;
+                   return true;
+               }));
+        var handler = new PendingSweepsClientHandler(memory.Object, unitOfWork.Object);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var pending = await handler.HandleAsync(new PendingSweepsClientRequest(), ct);
+        var all = await handler.HandleAsync(new PendingSweepsClientRequest { IncludeClosed = true }, ct);
+        var one = await handler.HandleAsync(new PendingSweepsClientRequest { ChannelId = s_channelId }, ct);
+
+        // Assert
+        Assert.Equal([BroadcastPurpose.Funding, BroadcastPurpose.WalletSend],
+                     pending.AbandonedBroadcasts.Select(b => b.Purpose));
+        Assert.Equal(3, all.AbandonedBroadcasts.Count);
+        var only = Assert.Single(one.AbandonedBroadcasts);
+        Assert.Equal(s_txId, only.TransactionId);
+        Assert.Equal(s_channelId, only.ChannelId);
+        Assert.Equal(500U, only.FirstBroadcastHeight);
+        Assert.Empty(pending.Channels);
+    }
+
+    [Fact]
     public void Given_IpcDtos_When_RoundTripped_Then_EveryFieldIsPreserved()
     {
         // Arrange
@@ -191,7 +244,7 @@ public class OnchainClientHandlerTests
                                            OutputResolutionState.Broadcast, 5_000, HtlcDirection.Incoming, 9,
                                            s_txId, 710, 740, null)
             ])
-        ]));
+        ], [new AbandonedBroadcastInfo(s_txId, BroadcastPurpose.Funding, s_channelId, 690)]));
 
         // Act
         var forceRequest2 = MessagePackSerializer.Deserialize<ForceCloseChannelIpcRequest>(
@@ -229,6 +282,11 @@ public class OnchainClientHandlerTests
         Assert.Equal(710U, output.WaitUntilHeight);
         Assert.Equal(740U, output.DeadlineHeight);
         Assert.Null(output.ResolvedHeight);
+        var abandoned = Assert.Single(sweepsResponse2.AbandonedBroadcasts!);
+        Assert.Equal(displayTxId, abandoned.TransactionId);
+        Assert.Equal(BroadcastPurpose.Funding, abandoned.Purpose);
+        Assert.Equal(s_channelId, abandoned.ChannelId);
+        Assert.Equal(690U, abandoned.FirstBroadcastHeight);
     }
 
     [Fact]

@@ -14,6 +14,7 @@ public sealed class PendingSweepsPrinter : IPrinter<PendingSweepsIpcResponse>
     public void Print(PendingSweepsIpcResponse item)
     {
         ArgumentNullException.ThrowIfNull(item);
+        PrintAbandoned(item.AbandonedBroadcasts);
         if (item.Channels.Count == 0)
         {
             _output.WriteLine("No channel is being resolved on chain.");
@@ -46,6 +47,21 @@ public sealed class PendingSweepsPrinter : IPrinter<PendingSweepsIpcResponse>
                     line += $" resolved at {resolved}";
                 _output.WriteLine(line);
             }
+        }
+    }
+
+    private void PrintAbandoned(List<AbandonedBroadcastIpcInfo>? abandoned)
+    {
+        if (abandoned is not { Count: > 0 })
+            return;
+
+        _output.WriteLine("Abandoned broadcasts (no longer sent):");
+        foreach (var broadcast in abandoned)
+        {
+            var line = $"  {broadcast.TransactionId} {broadcast.Purpose}";
+            if (broadcast.ChannelId is { } channelId)
+                line += $" channel {channelId}";
+            _output.WriteLine(line + $" first sent at height {broadcast.FirstBroadcastHeight}");
         }
     }
 }

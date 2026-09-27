@@ -106,6 +106,16 @@ public class BroadcastTransactionDbRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<BroadcastTransactionModel>> GetAbandonedAsync()
+    {
+        const byte abandoned = (byte)BroadcastState.Abandoned;
+        var entities = await DbSet.AsNoTracking()
+                                  .Where(b => b.State == abandoned)
+                                  .ToListAsync();
+        return entities.OrderBy(b => b.CreatedAt).Select(MapEntityToDomain).ToList();
+    }
+
+    /// <inheritdoc />
     public async Task MarkConfirmedAsync(TxId transactionId, uint height, Hash blockHash)
     {
         var entity = await DbSet.FindAsync(transactionId);
