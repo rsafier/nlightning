@@ -9,6 +9,7 @@ using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -51,6 +52,13 @@ using Interfaces;
 /// throws <see cref="KeyNotFoundException"/>.
 /// </para>
 /// <para>
+/// Quiescence (BOLT 2 "Channel Quiescence", splicing plan Q1-T4): while the channel is quiescing or quiescent
+/// (<see cref="QuiescenceState.BlocksNewLocalUpdates"/> of the optional <see cref="IQuiescenceService"/>) every update is
+/// refused with <see cref="ChannelQuiescentException"/> (Q-S-04 once we sent <c>stfu</c>, else Q-R-02), nothing
+/// persisted or sent. It is temporary: when the quiescence ends the service replays the channel's pending HTLC events,
+/// so a refused fulfill or fail is sent then. The commit scheduler still signs what is pending (the drain).
+/// </para>
+/// <para>
 /// The <see cref="HtlcOrigin"/> of an offer is validated and staged with
 /// <see cref="IChannelStateDbRepository.SetHtlcOriginAsync"/> in the same save as the add (NL-250), so after a restart
 /// the resolution of the outgoing HTLC can always be routed back to its payment or forward circuit.
@@ -75,6 +83,7 @@ public sealed class ChannelOperationsService : IChannelOperations
     private readonly ILogger<ChannelOperationsService> _logger;
     private readonly NodeOptions _nodeOptions;
     private readonly IPeerLivenessProbe _peerLivenessProbe;
+    private readonly IQuiescenceService? _quiescenceService;
     private readonly IServiceScopeFactory _serviceScopeFactory;
     private readonly TimeProvider _timeProvider;
 
@@ -83,8 +92,10 @@ public sealed class ChannelOperationsService : IChannelOperations
                                     IChannelMessagePublisher channelMessagePublisher, ICommitScheduler commitScheduler,
                                     ILogger<ChannelOperationsService> logger, IOptions<NodeOptions> nodeOptions,
                                     IPeerLivenessProbe peerLivenessProbe, IServiceScopeFactory serviceScopeFactory,
-                                    IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null)
+                                    IBlockchainMonitor? blockchainMonitor = null, TimeProvider? timeProvider = null,
+                                    IQuiescenceService? quiescenceService = null)
     {
+        _quiescenceService = quiescenceService;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _blockchainMonitor = blockchainMonitor;
         _channelLockProvider = channelLockProvider;
@@ -239,6 +250,7 @@ public sealed class ChannelOperationsService : IChannelOperations
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
             var channel = GetOperableChannel(channelId, operationName);
+            ThrowIfQuiescing(channelId, operationName);
             if (!await _peerLivenessProbe.IsAliveAsync(channelId, channel.RemoteNodeId, cancellationToken))
                 throw new CommitmentRefusedException("B2-NO-02",
                                                      $"{operationName} refused: the peer of channel {channelId} is not connected on the channel's link");
@@ -312,6 +324,21 @@ public sealed class ChannelOperationsService : IChannelOperations
                                                  $"{operationName} refused: channel {channelId} has no commitment state");
 
         return channel;
+    }
+
+    /// <summary>
+    /// Q-S-04 / Q-R-02: no update of ours while the channel is quiescing or quiescent (checked under the lock, where the
+    /// quiescence state changes).
+    /// </summary>
+    private void ThrowIfQuiescing(ChannelId channelId, string operationName)
+    {
+        if (_quiescenceService?.GetState(channelId) is not { BlocksNewLocalUpdates: true } state)
+            return;
+
+        var requirementId = state.StfuSent ? "Q-S-04" : "Q-R-02";
+        throw new ChannelQuiescentException(channelId, requirementId,
+                                            $"{operationName} refused: channel {channelId} is "
+                                          + (state.IsQuiescent ? "quiescent" : "quiescing"));
     }
 
     /// <summary>
