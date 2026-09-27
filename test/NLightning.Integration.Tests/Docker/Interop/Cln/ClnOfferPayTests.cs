@@ -1,9 +1,5 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using NBitcoin.Secp256k1;
 
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
@@ -11,8 +7,8 @@ using Daemon.Extensions;
 using Daemon.Interfaces;
 using Domain.Client.Requests;
 using Domain.Client.Responses;
-using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Encoding;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Payments.Enums;
@@ -25,9 +21,9 @@ using Utils;
 /// invoice and pays it over CLN's blinded paths; CLN lists the invoice paid.
 /// </summary>
 /// <remarks>
-/// Lane B12-B's <c>Bolt12Signer</c> is not integrated yet, so the node registers <see cref="ProofBolt12Signer"/>, a
-/// BIP-340 signer with random payer keys (the payer side needs no node key), and <c>AddOfferSendIpcServices</c> (the
-/// integrator adds it to <c>AddNltgNodeServices</c>). Each test prints CLN's invoice as a <c>VECTOR cln invoice</c> line
+/// The payer signs with the node's production <c>Bolt12Signer</c> (lane B12-B, <c>AddBitcoinInfrastructure</c>: payer
+/// keys derived from the node key and the request's metadata), and the node registers <c>AddOfferSendIpcServices</c>
+/// (TryAdd, so nothing changes once the integrator adds it to <c>AddNltgNodeServices</c>). Each test prints CLN's invoice as a <c>VECTOR cln invoice</c> line
 /// for lane B12-A's captured vectors (B0-T4) and the introduction node of CLN's paths (BOLT 12 plan B12-PAY-02: with us
 /// as CLN's only peer, CLN's invoice paths are expected to start at us).
 /// </remarks>
@@ -174,11 +170,11 @@ public sealed class ClnOfferPayTests : IAsyncLifetime
                        _fixture, name, LightningMoney.Satoshis(500_000), LightningMoney.Zero, ct,
                        node => node.ConfigureServices = services =>
                        {
-                           services.RemoveAll<IBolt12Signer>();
-                           services.AddSingleton<IBolt12Signer, ProofBolt12Signer>();
                            services.AddOfferSendIpcServices();
                        });
         var offers = _session.Node.Services.GetRequiredService<IOfferPaymentService>();
+        Assert.IsType<Infrastructure.Bitcoin.Offers.Bolt12Signer>(
+            _session.Node.Services.GetRequiredService<IBolt12Signer>());
         await Poll.UntilAsync(() => Task.FromResult(offers.IsAvailable), TimeSpan.FromSeconds(30),
                               "offer payments available (onion messages on)", ct);
     }
@@ -196,7 +192,7 @@ public sealed class ClnOfferPayTests : IAsyncLifetime
         if (response.Fetch.Invoice is { } invoice)
         {
             Console.WriteLine($"VECTOR cln invoice {Convert.ToHexString(invoice).ToLowerInvariant()}");
-            await LogDecodedAsync("lni1" + Bech32(invoice), ct);
+            await LogDecodedAsync(Bolt12Bech32.Encode("lni", invoice), ct);
         }
 
         return response;
@@ -225,73 +221,6 @@ public sealed class ClnOfferPayTests : IAsyncLifetime
         catch (ClnRpcException e)
         {
             Console.WriteLine($"[cln] decode of {bolt12[..3]} failed: {e.Message}");
-        }
-    }
-
-    private static string Bech32(ReadOnlySpan<byte> data)
-    {
-        const string charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-        var builder = new StringBuilder();
-        int accumulator = 0, bits = 0;
-        foreach (var b in data)
-        {
-            accumulator = (accumulator << 8) | b;
-            bits += 8;
-            while (bits >= 5)
-            {
-                bits -= 5;
-                builder.Append(charset[(accumulator >> bits) & 31]);
-            }
-
-            accumulator &= (1 << bits) - 1;
-        }
-
-        if (bits > 0)
-            builder.Append(charset[(accumulator << (5 - bits)) & 31]);
-        return builder.ToString();
-    }
-
-    /// <summary>
-    /// A BIP-340 <see cref="IBolt12Signer"/> for the payer side of the proof (stand-in for lane B12-B): payer keys
-    /// derived as <c>HMAC-SHA256(random secret, metadata)</c>; signing as the node or a blinded recipient is not
-    /// needed to pay.
-    /// </summary>
-    private sealed class ProofBolt12Signer : IBolt12Signer
-    {
-        private readonly byte[] _payerSecret = RandomNumberGenerator.GetBytes(32);
-
-        public bool Verify(string tag, Hash merkleRoot, CompactPubKey signerId, ReadOnlyMemory<byte> signature)
-        {
-            if (signature.Length != 64
-             || !ECPubKey.TryCreate(((byte[])signerId).AsSpan(), Context.Instance, out _, out var key)
-             || !SecpSchnorrSignature.TryCreate(signature.Span, out var schnorr))
-                return false;
-
-            return key.ToXOnlyPubKey().SigVerifyBIP340(schnorr, TaggedHash(tag, merkleRoot));
-        }
-
-        public byte[] SignAsNode(string tag, Hash merkleRoot) => throw new NotSupportedException();
-
-        public CompactPubKey DerivePayerId(ReadOnlyMemory<byte> invoiceRequestMetadata) =>
-            new(ECPrivKey.Create(PayerKey(invoiceRequestMetadata)).CreatePubKey().ToBytes(true));
-
-        public byte[] SignAsPayer(ReadOnlyMemory<byte> invoiceRequestMetadata, string tag, Hash merkleRoot)
-        {
-            var signature = ECPrivKey.Create(PayerKey(invoiceRequestMetadata)).SignBIP340(TaggedHash(tag, merkleRoot));
-            var bytes = new byte[64];
-            signature.WriteToSpan(bytes);
-            return bytes;
-        }
-
-        public byte[] SignAsBlindedRecipient(CompactPubKey pathKey, string tag, Hash merkleRoot) =>
-            throw new NotSupportedException();
-
-        private byte[] PayerKey(ReadOnlyMemory<byte> metadata) => System.Security.Cryptography.HMACSHA256.HashData(_payerSecret, metadata.Span);
-
-        private static byte[] TaggedHash(string tag, byte[] message)
-        {
-            var tagHash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(tag));
-            return System.Security.Cryptography.SHA256.HashData([.. tagHash, .. tagHash, .. message]);
         }
     }
 }
