@@ -25,10 +25,6 @@ public partial class LocalLightningSigner
     private static ReadOnlySpan<byte> OffersSecretLabel => "nltg_bolt12"u8;
     private static ReadOnlySpan<byte> PayerKeyLabel => "nltg_bolt12_payer"u8;
 
-    // BIP-340 auxiliary randomness: 32 zero bytes, as CLN (libsecp256k1 with no aux data), so a signature is
-    // deterministic and reproduces the BOLT 12 signature-test.json vector
-    private static readonly ReadOnlyMemory<byte> s_zeroAuxRandomness = new byte[32];
-
     /// <inheritdoc />
     public CompactPubKey GetBolt12PayerId(ReadOnlyMemory<byte> invoiceRequestMetadata)
     {
@@ -45,11 +41,12 @@ public partial class LocalLightningSigner
     public byte[] SignBolt12(Bolt12SigningKey key, string tag, Hash merkleRoot)
     {
         ArgumentNullException.ThrowIfNull(key);
-        if (!Bolt12TaggedHash.IsSignatureTag(tag))
-            throw new ArgumentException($"'{tag}' is not a BOLT 12 signature tag.", nameof(tag));
+        // Only the two BOLT 12 signature tags, each for its own key kind: a payer key signs invoice_requests, the node
+        // key and our blinded keys sign invoices, so no key signs a digest under any other name
+        if (!Bolt12TaggedHash.IsSignatureTagFor(key.Kind, tag))
+            throw new ArgumentException($"'{tag}' is not a BOLT 12 signature tag for a {key.Kind} key.", nameof(tag));
 
         var root = (byte[])merkleRoot ?? throw new ArgumentException("No Merkle root.", nameof(merkleRoot));
-        var digest = Bolt12TaggedHash.Compute(tag, root);
 
         using var signingKey = key.Kind switch
         {
@@ -60,10 +57,7 @@ public partial class LocalLightningSigner
             _ => throw new ArgumentOutOfRangeException(nameof(key), key.Kind, "Unknown BOLT 12 signing key.")
         };
 
-        var signature = signingKey.SignBIP340(digest, s_zeroAuxRandomness);
-        var bytes = new byte[CryptoConstants.MaxSignatureSize];
-        signature.WriteToSpan(bytes);
-        return bytes;
+        return Bolt12TaggedHash.SignBip340(signingKey, tag, root);
     }
 
     /// <summary>
@@ -124,13 +118,17 @@ public partial class LocalLightningSigner
         Span<byte> tweak = stackalloc byte[CryptoConstants.SecretLen];
         try
         {
-            SphinxKeyGenerator.ComputeEcdhSharedSecret(nodeKey, (byte[])pathKey, sharedSecret);
+            try
+            {
+                SphinxKeyGenerator.ComputeEcdhSharedSecret(nodeKey, (byte[])pathKey, sharedSecret);
+            }
+            catch (ArgumentException e)
+            {
+                throw new ArgumentException("The path_key is not a valid point.", nameof(pathKey), e);
+            }
+
             HMACSHA256.HashData(OnionConstants.BlindedNodeId, sharedSecret, tweak);
             return nodeKey.TweakMul(tweak);
-        }
-        catch (ArgumentException e)
-        {
-            throw new ArgumentException("The path_key is not a valid point.", nameof(pathKey), e);
         }
         finally
         {

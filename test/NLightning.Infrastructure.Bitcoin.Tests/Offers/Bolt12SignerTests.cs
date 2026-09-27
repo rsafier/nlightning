@@ -72,18 +72,21 @@ public class Bolt12SignerTests
     }
 
     [Fact]
-    public void Given_SignatureTestVector_When_SignedWithPayerKey_Then_SignatureBytesEqualVector()
+    public void Given_SignatureTestVector_When_SignedWithTheVectorKey_Then_SignatureBytesEqualVector()
     {
-        // Arrange: the vector signs deterministically (BIP-340 with 32 zero bytes of aux randomness, as CLN)
+        // Arrange: the vector signs deterministically (BIP-340 with 32 zero bytes of aux randomness, as CLN). This is
+        // the BIP-340 path every key kind of the signer shares; a derived payer key is never 0x42, so the payer
+        // derivation is covered by the formula and sign/verify tests instead
         var vector = SignatureVector.Load();
-        var bolt12Signer = new Bolt12Signer(CreateSigner(s_bobKey));
+        Assert.True(NLightningCryptoContext.Instance.TryCreateECPrivKey(s_bobKey, out var bobKey));
 
         // Act
-        var signature = bolt12Signer.SignAsNode(vector.Tag, vector.MerkleRoot);
+        byte[] signature;
+        using (bobKey)
+            signature = Bolt12TaggedHash.SignBip340(bobKey!, vector.Tag, (byte[])vector.MerkleRoot);
 
         // Assert
         Assert.Equal(vector.Signature, signature);
-        Assert.Equal(s_bobId, CreateSigner(s_bobKey).GetNodePublicKey());
     }
 
     [Fact]
@@ -256,6 +259,10 @@ public class Bolt12SignerTests
     [InlineData("lightninginvoice_request")]
     [InlineData("invoice_requestsignature")]
     [InlineData("lightningsignature")]
+    [InlineData("lightningfoosignature")]
+    [InlineData("lightningofferssignature")]
+    [InlineData("lightninginvoice_errorsignature")]
+    [InlineData("Lightninginvoicesignature")]
     [InlineData("")]
     public void Given_NonBolt12Tag_When_Signing_Then_Refused(string tag)
     {
@@ -266,6 +273,22 @@ public class Bolt12SignerTests
         Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsNode(tag, s_someRoot));
         Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsPayer(new byte[8], tag, s_someRoot));
         Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsBlindedRecipient(s_evePathKey, tag, s_someRoot));
+    }
+
+    [Fact]
+    public void Given_Bolt12TagOfTheOtherMessage_When_Signing_Then_RefusedForThatKeyKind()
+    {
+        // Arrange: a payer key signs only invoice_requests; the node and blinded keys sign only invoices
+        var bolt12Signer = new Bolt12Signer(CreateSigner(s_bobKey));
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsNode(Bolt12Constants.InvoiceRequestSignatureTag,
+                                                                       s_someRoot));
+        Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsPayer(new byte[8],
+                                                                        Bolt12Constants.InvoiceSignatureTag,
+                                                                        s_someRoot));
+        Assert.Throws<ArgumentException>(() => bolt12Signer.SignAsBlindedRecipient(
+                                             s_evePathKey, Bolt12Constants.InvoiceRequestSignatureTag, s_someRoot));
     }
 
     [Fact]
@@ -312,15 +335,14 @@ public class Bolt12SignerTests
         var metadata = new byte[] { 1, 2, 3, 4 };
         var offersSecret = HMACSHA256.HashData(nodeKey, "nltg_bolt12"u8);
         var payerSecret = HMACSHA256.HashData(offersSecret, "nltg_bolt12_payer"u8.ToArray().Concat(metadata).ToArray());
-        var tag = Bolt12Constants.InvoiceRequestSignatureTag;
 
         // Act
         var outputs = new List<byte[]>
         {
-            bolt12Signer.SignAsNode(tag, s_someRoot),
-            bolt12Signer.SignAsPayer(metadata, tag, s_someRoot),
+            bolt12Signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, s_someRoot),
+            bolt12Signer.SignAsPayer(metadata, Bolt12Constants.InvoiceRequestSignatureTag, s_someRoot),
             (byte[])bolt12Signer.DerivePayerId(metadata),
-            bolt12Signer.SignAsBlindedRecipient(s_evePathKey, tag, s_someRoot)
+            bolt12Signer.SignAsBlindedRecipient(s_evePathKey, Bolt12Constants.InvoiceSignatureTag, s_someRoot)
         };
 
         // Assert: every node-key copy the key manager handed out was zeroed, and no output holds a secret
