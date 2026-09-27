@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Handlers;
 
+using Application.Channels.RoutingPolicies;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
@@ -24,8 +25,9 @@ using Interfaces;
 /// <remarks>
 /// Pending HTLC counts come from the commitment snapshot (<see cref="ChannelModel.Commitments"/>): every HTLC whose
 /// state is not final, per direction (NL-241). The legacy <c>LocalOfferedHtlcs</c>/<c>RemoteOfferedHtlcs</c>
-/// collections are only used for a channel without a snapshot. The fee policy is the node's
-/// <see cref="RoutingOptions"/> (one policy for every channel).
+/// collections are only used for a channel without a snapshot. The routing policy is the one the channel announces
+/// (<see cref="ChannelPolicyRules.Resolve"/>): its <c>setchannelpolicy</c> override where set (wave sp1 lane SP1-G,
+/// through the optional <see cref="IChannelPolicyProvider"/>), the node's <see cref="RoutingOptions"/> elsewhere.
 /// </remarks>
 public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClientRequest, ListChannelsClientResponse>
 {
@@ -34,14 +36,17 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
     private readonly IReestablishTracker _reestablishTracker;
     private readonly IUnitOfWork _unitOfWork;
     private readonly RoutingOptions _routingOptions;
+    private readonly IChannelPolicyProvider? _channelPolicyProvider;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.ListChannels;
 
     public ListChannelsClientHandler(IChannelMemoryRepository channelMemoryRepository, IPeerManager peerManager,
                                      IReestablishTracker reestablishTracker, IUnitOfWork unitOfWork,
-                                     IOptions<NodeOptions> nodeOptions)
+                                     IOptions<NodeOptions> nodeOptions,
+                                     IChannelPolicyProvider? channelPolicyProvider = null)
     {
+        _channelPolicyProvider = channelPolicyProvider;
         _routingOptions = nodeOptions.Value.Routing;
         _channelMemoryRepository = channelMemoryRepository;
         _peerManager = peerManager;
@@ -77,6 +82,8 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
 
     private ChannelInfoClientResponse ToChannelInfo(ChannelModel channel)
     {
+        var policy = _channelPolicyProvider?.GetEffectivePolicy(channel)
+                  ?? ChannelPolicyRules.Resolve(channel, _routingOptions, null);
         return new ChannelInfoClientResponse
         {
             ChannelId = channel.ChannelId,
@@ -100,8 +107,12 @@ public class ListChannelsClientHandler : IClientCommandHandler<ListChannelsClien
             DataLossDetected = channel.DataLossDetected,
             // True once channel_reestablish was exchanged on the peer's current connection (BOLT2 plan N7)
             IsReestablished = _reestablishTracker.IsReestablished(channel.ChannelId),
-            FeeBaseMsat = _routingOptions.FeeBaseMsat,
-            FeePpm = _routingOptions.FeeProportionalMillionths
+            FeeBaseMsat = policy.FeeBaseMsat,
+            FeePpm = policy.FeeProportionalMillionths,
+            CltvExpiryDelta = policy.CltvExpiryDelta,
+            HtlcMinimumMsat = policy.HtlcMinimumMsat,
+            HtlcMaximumMsat = policy.HtlcMaximumMsat,
+            HasPolicyOverride = policy.Override is not null
         };
     }
 

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Payments.Policy;
 
+using Application.Channels.RoutingPolicies;
 using Application.Payments.Policy;
 using Domain.Channels.ValueObjects;
 using Domain.Money;
@@ -279,5 +280,128 @@ public class HtlcForwardingPolicyTests
 
         // Assert
         Assert.Equal(FailureCode.IncorrectCltvExpiry, decision.FailureCode);
+    }
+
+    // Wave sp1 lane SP1-G: the outgoing channel's own policy (setchannelpolicy) replaces Node:Routing's values
+
+    private static readonly ChannelId s_policyChannelId = new(Enumerable.Repeat((byte)0x42, 32).ToArray());
+
+    private HtlcForwardingPolicy CreatePolicy(ConfiguredChannelPolicy channelPolicy)
+    {
+        var provider = new Mock<IChannelPolicyProvider>();
+        provider.Setup(p => p.GetConfiguredPolicy(It.IsAny<ChannelId>()))
+                .Returns((ChannelId id) => id == s_policyChannelId
+                                               ? channelPolicy
+                                               : ConfiguredChannelPolicy.From(_nodeOptions.Routing, null));
+        return new HtlcForwardingPolicy(Options.Create(_nodeOptions), provider.Object);
+    }
+
+    private static OutgoingChannelInfo PolicyChannel() =>
+        new(s_policyChannelId, true, LightningMoney.MilliSatoshis(1), LightningMoney.MilliSatoshis(10_000_000_000));
+
+    [Theory]
+    // The channel charges 5,000 msat + 2,000 ppm: 1,000,000 msat forwarded costs 7,000 msat
+    [InlineData(7_000UL, true)]
+    [InlineData(6_999UL, false)]
+    // Node:Routing's fee (1,100 msat) is no longer enough on that channel
+    [InlineData(1_100UL, false)]
+    public void Given_AChannelFee_When_Evaluated_Then_TheOutgoingChannelsFeeIsRequired(ulong feeMsat, bool forwards)
+    {
+        // Arrange
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(5_000, 2_000, Delta, 1_000, null));
+        var request = Request(AmountMsat + feeMsat, channel: PolicyChannel());
+
+        // Act
+        var decision = policy.Evaluate(request);
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
+    }
+
+    [Theory]
+    [InlineData(80, true)]
+    [InlineData(79, false)]
+    public void Given_AChannelCltvDelta_When_Evaluated_Then_TheOutgoingChannelsDeltaIsRequired(uint delta,
+        bool forwards)
+    {
+        // Arrange
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(1_000, 100, 80, 1_000, null));
+        var request = Request(incomingCltv: OutgoingCltv + delta, channel: PolicyChannel());
+
+        // Act
+        var decision = policy.Evaluate(request);
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.IncorrectCltvExpiry, decision.FailureCode);
+    }
+
+    [Theory]
+    [InlineData(500_000UL, true)]
+    [InlineData(500_001UL, false)]
+    public void Given_AChannelHtlcMaximum_When_Evaluated_Then_AboveItFailsWithTemporaryChannelFailure(
+        ulong amountMsat, bool forwards)
+    {
+        // Arrange
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(1_000, 100, Delta, 1_000, 500_000));
+        var request = Request(amountMsat: amountMsat, channel: PolicyChannel());
+
+        // Act
+        var decision = policy.Evaluate(request);
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.TemporaryChannelFailure, decision.FailureCode);
+    }
+
+    [Theory]
+    [InlineData(200_000UL, true)]
+    [InlineData(199_999UL, false)]
+    public void Given_AChannelHtlcMinimum_When_Evaluated_Then_BelowItFailsWithAmountBelowMinimum(ulong amountMsat,
+        bool forwards)
+    {
+        // Arrange
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(1_000, 100, Delta, 200_000, null));
+        var request = Request(amountMsat: amountMsat, channel: PolicyChannel());
+
+        // Act
+        var decision = policy.Evaluate(request);
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.AmountBelowMinimum, decision.FailureCode);
+    }
+
+    [Fact]
+    public void Given_AnOverrideOnAnotherChannel_When_Evaluated_Then_NodeRoutingApplies()
+    {
+        // Arrange: the override (max 1 msat) is for s_policyChannelId, the HTLC leaves on ChannelId.Zero
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(1_000_000, 1_000_000, 1_000, 1, 1));
+
+        // Act
+        var decision = policy.Evaluate(Request());
+
+        // Assert
+        Assert.True(decision.IsForward);
+    }
+
+    [Fact]
+    public void Given_ABlindedRelayBelowTheChannelsFee_When_Evaluated_Then_FeeInsufficient()
+    {
+        // Arrange: the relay pays Node:Routing's fee (1,000 msat + 100 ppm), the channel asks for 2,000 msat
+        var policy = CreatePolicy(new ConfiguredChannelPolicy(2_000, 100, Delta, 1_000, null));
+        var relay = new Domain.Protocol.Onion.Models.BlindedPaymentRelay(Delta, 100, 1_000);
+        var request = Request(channel: PolicyChannel()) with { BlindedRelay = relay };
+
+        // Act
+        var decision = policy.Evaluate(request);
+
+        // Assert
+        Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
     }
 }

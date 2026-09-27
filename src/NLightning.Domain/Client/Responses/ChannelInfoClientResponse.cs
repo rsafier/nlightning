@@ -78,4 +78,24 @@ public sealed class ChannelInfoClientResponse
     /// Our forwarding <c>fee_proportional_millionths</c> on this channel.
     /// </summary>
     public uint FeePpm { get; init; }
+
+    /// <summary>
+    /// Our <c>cltv_expiry_delta</c> on this channel (wave sp1 lane SP1-G).
+    /// </summary>
+    public ushort CltvExpiryDelta { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_minimum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    public ulong HtlcMinimumMsat { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_maximum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    public ulong HtlcMaximumMsat { get; init; }
+
+    /// <summary>
+    /// True when the channel has a <c>setchannelpolicy</c> override (some of its values are not <c>Node:Routing</c>'s).
+    /// </summary>
+    public bool HasPolicyOverride { get; init; }
 }

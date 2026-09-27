@@ -320,7 +320,11 @@ public class PrinterSnapshotTests
                     ReceivedHtlcCount = 1,
                     IsReestablished = true,
                     FeeBaseMsat = 1_000,
-                    FeePpm = 100
+                    FeePpm = 100,
+                    CltvExpiryDelta = 40,
+                    HtlcMinimumMsat = 1_000,
+                    HtlcMaximumMsat = 1_980_000_000,
+                    HasPolicyOverride = true
                 }
             ]
         };
@@ -344,7 +348,9 @@ public class PrinterSnapshotTests
                          "  Remote (msat):      50003148",
                          "  Commitment (l/r):   2/2",
                          "  HTLCs (out/in):     0/1",
-                         "  Fee (base/ppm):     1000 msat/100",
+                         "  Fee (base/ppm):     1000 msat/100 (channel policy)",
+                         "  CLTV Delta:         40",
+                         "  HTLC (min/max):     1000/1980000000 msat",
                          Separator), output);
     }
 

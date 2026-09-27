@@ -281,6 +281,12 @@ internal static class ClientApp
                 case "list-peer-storage":
                     await PeerStorageCommands.RunAsync(commandArgs, client, cancellationToken);
                     break;
+                case "setchannelpolicy":
+                case "set-channel-policy":
+                case "getchannelpolicy":
+                case "get-channel-policy":
+                    await ChannelPolicyCommands.RunAsync(cmd, commandArgs, client, cancellationToken);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -466,6 +472,11 @@ internal static class ClientApp
             case "listpeerstorage":
             case "list-peer-storage":
                 return PeerStorageCommands.Validate(cmd, commandArgs);
+            case "setchannelpolicy":
+            case "set-channel-policy":
+            case "getchannelpolicy":
+            case "get-channel-policy":
+                return ChannelPolicyCommands.Validate(cmd, commandArgs);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":
