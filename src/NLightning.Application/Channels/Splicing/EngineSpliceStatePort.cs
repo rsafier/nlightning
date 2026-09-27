@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace NLightning.Application.Channels.Splicing;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Interfaces;
@@ -13,6 +14,7 @@ using Domain.Channels.Splicing;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Exceptions;
+using Domain.Money;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
@@ -291,7 +293,14 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
 
         if (applied.IsLock)
         {
-            // The locked funding is the signer's current one from here on; the retired ones stay known (SP-I5)
+            // The channel model's funding output follows the lock (listchannels, the close, the failure broadcast and
+            // every single-funding reader); the locked funding is the signer's current one from here on; the retired
+            // ones stay known (SP-I5)
+            var locked = next.Current;
+            channel.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(locked.CapacitySatoshis),
+                                                               locked.LocalFundingPubKey, locked.RemoteFundingPubKey,
+                                                               locked.FundingTxId, locked.OutputIndex));
+            _channelMemoryRepository.UpdateChannel(channel);
             _signer.LockFunding(channel.ChannelId, next.Current.FundingTxId);
             _logger.LogInformation("Channel {ChannelId} now runs on funding {FundingTxId} ({Capacity} sat); {Retired} "
                                  + "funding(s) retired", channel.ChannelId, next.Current.FundingTxId,

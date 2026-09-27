@@ -311,6 +311,21 @@ public class ChannelModel
         FundingOutput = fundingOutput;
     }
 
+    /// <summary>
+    /// A splice was locked (splicing plan §3.3: <see cref="FundingOutput"/> stays a view of the current funding): the
+    /// channel now spends <paramref name="fundingOutput"/>, with its own outpoint, capacity and funding keys. The short
+    /// channel id is not changed here (wave SP2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The channel has no funding output yet.</exception>
+    public void ReplaceFundingOutput(FundingOutputInfo fundingOutput)
+    {
+        ArgumentNullException.ThrowIfNull(fundingOutput);
+        if (FundingOutput is null)
+            throw new InvalidOperationException("The channel has no funding output to replace");
+
+        FundingOutput = fundingOutput;
+    }
+
     public void UpdateLastSentSignature(CompactSignature lastSentSignature)
     {
         LastSentSignature = lastSentSignature;
