@@ -73,6 +73,7 @@ public class OnchainO3Tests : IAsyncLifetime
     {
         _node = await NLightningTestNode.CreateAsync(_fixture, "o3", configureNodeOptions: o =>
         {
+            LegacyChannelOptions.PinStaticRemoteKey(o);
             o.Routing.CltvExpiryDelta = OurCltvExpiryDelta;
             o.Routing.FeeBaseMsat = OurFeeBaseMsat;
             o.Routing.FeeProportionalMillionths = OurFeeProportionalMillionths;

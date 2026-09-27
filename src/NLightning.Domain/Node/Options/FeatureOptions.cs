@@ -16,15 +16,13 @@ public class FeatureOptions
     /// fails <see cref="GetValidationErrors"/>) unless <see cref="AllowExperimentalFeatures"/> is set.
     /// </summary>
     /// <remarks>
-    /// Advertising a feature makes peers act on it: anchors need BOLT 5 CPFP / fee bumping (BOLT 2 plan N11), quiesce
-    /// needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
+    /// Advertising a feature makes peers act on it: quiesce needs stfu handling, dual_fund the interactive-tx handlers, route_blinding blinded payloads (onion M5),
     /// attribution_data error attribution (onion M3b), onion_messages the onion_message handler and provide_storage
     /// peer_storage.
     /// Remove a feature from this set when it is implemented.
     /// </remarks>
     public static readonly IReadOnlySet<Feature> ExperimentalFeatures = new HashSet<Feature>
     {
-        Feature.OptionAnchors,
         Feature.OptionQuiesce,
         Feature.OptionDualFund,
         Feature.OptionRouteBlinding,
@@ -103,13 +101,17 @@ public class FeatureOptions
     public FeatureSupport LargeChannels { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
-    /// Enable zero fee anchor tx.
+    /// Enable zero fee anchor tx (option_anchors, BOLT 3 <c>option_anchors_zero_fee_htlc_tx</c>).
     /// </summary>
     /// <remarks>
-    /// Experimental (see <see cref="ExperimentalFeatures"/>): anchor channels are unsafe without BOLT 5 CPFP fee
-    /// bumping (BOLT 2 plan N11).
+    /// Optional since wave O7b (BOLT 5 plan O7-T4): our commitment is CPFP-bumped through our anchor (also as a
+    /// <c>submitpackage</c> package below the mempool minimum), the peer's through our anchor on it, our anchors HTLC
+    /// transactions take wallet fee inputs, and every anchors channel keeps an on-chain reserve
+    /// (<c>Node:Anchors</c>, <see cref="AnchorReserveOptions"/>). When both sides support it the opener picks the
+    /// anchors channel type; with a peer without it the channel stays <c>option_static_remotekey</c>. Set No to open and
+    /// accept <c>option_static_remotekey</c> channels only.
     /// </remarks>
-    public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.No;
+    public FeatureSupport OptionAnchors { get; set; } = FeatureSupport.Optional;
 
     /// <summary>
     /// Enable route blinding.

@@ -53,7 +53,8 @@ public class OnchainWatchCatchUpTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         // Started by the test, with its decorator
-        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-nl311");
+        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-nl311",
+            configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey);
     }
 
     [Fact]

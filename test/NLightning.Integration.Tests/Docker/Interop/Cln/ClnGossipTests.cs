@@ -493,6 +493,8 @@ public sealed class ClnGossipTopology : IAsyncDisposable
         Console.WriteLine($"[cln-gossip] N1 opened public {N1ChannelId} ({n1Channel.ChannelPoint()}) to CLN");
 
         // CLN -> N2, public (CLN picks its own feerate as opener; we accept from 253 sat/kw, NL-289)
+        // N2 keeps the on-chain reserve of an anchors channel as fundee (NL-379)
+        await N2.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await _fixture.FundClnWalletAsync(LightningMoney.Satoshis(Capacity.Satoshi * 2), [N1, N2], ct);
         await ConnectAsync(N2, ct);
         var funded = await cln.CallAsync("fundchannel", ct, ("id", N2.NodeIdHex), ("amount", Capacity.Satoshi),

@@ -57,7 +57,8 @@ public class OnchainFinalHopTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-final-hop");
+        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-final-hop",
+            configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey);
         await Node.StartAsync(TestContext.Current.CancellationToken);
     }
 

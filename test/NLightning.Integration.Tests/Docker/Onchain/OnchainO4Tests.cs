@@ -74,7 +74,8 @@ public class OnchainO4Tests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-o4");
+        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain-o4",
+            configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey);
         await Node.StartAsync(TestContext.Current.CancellationToken);
     }
 

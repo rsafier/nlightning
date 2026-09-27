@@ -371,6 +371,15 @@ public sealed class AbcdNetwork : IAsyncDisposable
                      BobCarol.ShortChannelId);
 
         await ChainSync.WaitAllAtTipAsync(_fixture, Nodes, cancellationToken);
+
+        // Since wave O7b every hop is an anchors channel: LND and our nodes all advertise option_anchors
+        foreach (var (node, channel) in new[] { (Bob, AliceBob), (Bob, BobCarol), (Carol, BobCarol), (Carol, CarolDavid) })
+        {
+            Assert.True(node.ChannelMemoryRepository.TryGetChannel(channel!.ChannelId, out var model),
+                        $"{node.Name} does not hold {channel}");
+            Assert.True(model.ChannelParams.OptionAnchorOutputs, $"{channel} on {node.Name} is not an anchors channel");
+        }
+
         Console.WriteLine($"[abcd] network ready: {AliceBob}; {BobCarol}; {CarolDavid}");
     }
 

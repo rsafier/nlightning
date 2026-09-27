@@ -3,6 +3,8 @@ using Lnrpc;
 
 namespace NLightning.Integration.Tests.Docker.Gossip.Capture;
 
+using Domain.Bitcoin.Enums;
+using Domain.Money;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
@@ -81,6 +83,8 @@ public sealed class LndGossipCaptureTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var node = _node!;
         var alice = _fixture.GetLndNode("alice");
+        // The on-chain reserve we keep as fundee of an anchors channel (NL-379), LND's default type with us
+        await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, ct);
         await ChainSync.WaitAllAtTipAsync(_fixture, [node], ct);
         await node.ConnectToAsync(alice, ct);
 

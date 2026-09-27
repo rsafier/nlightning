@@ -7,6 +7,7 @@ using Abcd;
 using Domain.Bitcoin.Enums;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Money;
 using Domain.Node.ValueObjects;
 using Domain.Payments.Enums;
@@ -170,15 +171,18 @@ public sealed class ClnInteropTests : IAsyncLifetime
     /// 253 sat/kw relay floor, while our estimate is 2,500 sat/kw. We used to refuse the <c>open_channel</c> ("Fee rate
     /// per kw is too small": below 1,000 sat/kw and below 80 % of our estimate); BOLT 2 only lets the fundee fail a
     /// feerate too small for timely processing, and we now accept anything from the 253 sat/kw floor. Payments work
-    /// both ways over the channel.
+    /// both ways over the channel. Our node turns <c>option_anchors</c> off (on by default since wave O7b): on an
+    /// anchors channel CLN opens at a higher commitment feerate (1,250 sat/kw seen), which would not exercise the old
+    /// floor.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_ClnFundsAtItsOwnEstimate_When_Opening_Then_WeAccept()
     {
-        // Arrange + Act: fundchannel at CLN's own opening estimate
+        // Arrange + Act: fundchannel at CLN's own opening estimate, on a static_remotekey channel
         var ct = TestContext.Current.CancellationToken;
         await using var session = await ClnChannelSession.BuildClnFundedAsync(
-                                      _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000), "opening", ct);
+                                      _fixture, "nltg-fee-floor", LightningMoney.Satoshis(500_000), "opening", ct,
+                                      options => options.Features.OptionAnchors = FeatureSupport.No);
 
         // Assert: usable at our end, at a feerate our old floor refused
         Assert.True((await session.GetOurChannelAsync(ct)).IsUsable());

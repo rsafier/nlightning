@@ -201,8 +201,7 @@ public class FeatureOptionsTests
 
     public static TheoryData<Feature> RequiredExperimentalFeatures =>
     [
-        Feature.OptionAnchors, Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionRouteBlinding,
-        Feature.OptionAttributionData
+        Feature.OptionQuiesce, Feature.OptionDualFund, Feature.OptionRouteBlinding, Feature.OptionAttributionData
     ];
 
     [Fact]
@@ -306,20 +305,80 @@ public class FeatureOptionsTests
     }
 
     [Fact]
-    public void Given_CompulsoryAnchorsWithoutOptIn_When_PeerRequiresAnchors_Then_IsNotCompatible()
+    public void Given_DefaultOptions_When_GetNodeFeatures_Then_AnchorsAdvertisedOptionalAndNotExperimental()
+    {
+        // Arrange (wave O7b, BOLT 5 plan O7-T4: option_anchors is implemented and on by default)
+        var options = new FeatureOptions();
+
+        // Act
+        var initFeatures = options.GetNodeFeatures(FeatureContext.Init);
+        var nodeAnnouncementFeatures = options.GetNodeFeatures(FeatureContext.NodeAnnouncement);
+
+        // Assert
+        Assert.DoesNotContain(Feature.OptionAnchors, FeatureOptions.ExperimentalFeatures);
+        Assert.Equal(FeatureSupport.Optional, options.OptionAnchors);
+        Assert.True(initFeatures.IsFeatureSet(Feature.OptionAnchors, false));
+        Assert.False(initFeatures.IsFeatureSet(Feature.OptionAnchors, true));
+        Assert.True(nodeAnnouncementFeatures.IsFeatureSet(Feature.OptionAnchors, false));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_AnchorsNo_When_GetNodeFeatures_Then_NotAdvertised()
     {
         // Arrange
-        var options = new FeatureOptions { OptionAnchors = FeatureSupport.Compulsory };
-        var local = options.GetNodeFeatures();
-        var remote = new FeatureOptions().GetNodeFeatures();
-        remote.SetFeature(Feature.OptionAnchors, true);
+        var options = new FeatureOptions { OptionAnchors = FeatureSupport.No };
+
+        // Act
+        var features = options.GetNodeFeatures();
+
+        // Assert
+        Assert.False(features.HasFeature(Feature.OptionAnchors));
+        Assert.Empty(options.GetValidationErrors());
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_PeerRequiresAnchors_Then_CompatibleAndAnchorsNegotiated()
+    {
+        // Arrange
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions { OptionAnchors = FeatureSupport.Compulsory }.GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.Compulsory,
+                     FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null).OptionAnchors);
+    }
+
+    [Fact]
+    public void Given_DefaultOptions_When_PeerWithoutAnchors_Then_AnchorsNotNegotiated()
+    {
+        // Arrange: a peer that only knows option_static_remotekey channels
+        var local = new FeatureOptions().GetNodeFeatures();
+        var remote = new FeatureOptions { OptionAnchors = FeatureSupport.No }.GetNodeFeatures();
+
+        // Act
+        var result = local.IsCompatible(remote, out var negotiatedFeatureSet);
+
+        // Assert
+        Assert.True(result);
+        Assert.Equal(FeatureSupport.No, FeatureOptions.GetNodeOptions(negotiatedFeatureSet!, null).OptionAnchors);
+    }
+
+    [Fact]
+    public void Given_AnchorsNo_When_PeerRequiresAnchors_Then_IsNotCompatible()
+    {
+        // Arrange
+        var local = new FeatureOptions { OptionAnchors = FeatureSupport.No }.GetNodeFeatures();
+        var remote = new FeatureOptions { OptionAnchors = FeatureSupport.Compulsory }.GetNodeFeatures();
 
         // Act
         var result = local.IsCompatible(remote, out _);
 
         // Assert
-        // We refuse to advertise anchors, so a peer that requires them is not compatible
-        Assert.False(local.HasFeature(Feature.OptionAnchors));
         Assert.False(result);
     }
 
@@ -327,9 +386,9 @@ public class FeatureOptionsTests
     public void Given_NegotiatedExperimentalFeature_When_GetNodeOptions_Then_FeatureIsKept()
     {
         // Arrange
-        var local = new FeatureOptions { AllowExperimentalFeatures = true, OptionAnchors = FeatureSupport.Optional }
+        var local = new FeatureOptions { AllowExperimentalFeatures = true, OptionQuiesce = FeatureSupport.Optional }
            .GetNodeFeatures();
-        var remote = new FeatureOptions { AllowExperimentalFeatures = true, OptionAnchors = FeatureSupport.Optional }
+        var remote = new FeatureOptions { AllowExperimentalFeatures = true, OptionQuiesce = FeatureSupport.Optional }
            .GetNodeFeatures();
         Assert.True(local.IsCompatible(remote, out var negotiatedFeatureSet));
 
@@ -338,8 +397,8 @@ public class FeatureOptionsTests
 
         // Assert
         // Negotiated options describe what both sides agreed on; the experimental gate only applies to what we send
-        Assert.Equal(FeatureSupport.Optional, negotiated.OptionAnchors);
-        Assert.True(negotiated.GetNodeFeatures().IsFeatureSet(Feature.OptionAnchors, false));
+        Assert.Equal(FeatureSupport.Optional, negotiated.OptionQuiesce);
+        Assert.True(negotiated.GetNodeFeatures().IsFeatureSet(Feature.OptionQuiesce, false));
     }
 
     private static void Enable(FeatureOptions options, Feature feature, FeatureSupport support)

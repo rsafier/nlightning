@@ -46,7 +46,8 @@ public class OnchainSmokeTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain");
+        _node = await NLightningTestNode.CreateAsync(_fixture, "onchain",
+            configureNodeOptions: LegacyChannelOptions.PinStaticRemoteKey);
         await _node.StartAsync(TestContext.Current.CancellationToken);
     }
 

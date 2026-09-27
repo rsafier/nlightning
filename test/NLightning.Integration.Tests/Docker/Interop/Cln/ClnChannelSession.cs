@@ -9,6 +9,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Node.ValueObjects;
 using Fixtures;
 using Utils;
@@ -211,16 +212,21 @@ public sealed class ClnChannelSession : IAsyncDisposable
     /// A separate node <paramref name="nodeName"/> to which CLN opens a private channel of
     /// <paramref name="capacity"/> (CLN funds it from its own wallet, at <paramref name="clnFeerate"/>, e.g.
     /// <c>opening</c> for CLN's own estimate or <c>10000perkw</c>), followed until both ends are usable. The caller disposes the session (and so the node).
+    /// <paramref name="configureNodeOptions"/> changes the node's options (e.g. <c>option_anchors</c> off).
     /// </summary>
     public static async Task<ClnChannelSession> BuildClnFundedAsync(ClnFixture fixture, string nodeName,
                                                                     LightningMoney capacity, string clnFeerate,
-                                                                    CancellationToken cancellationToken)
+                                                                    CancellationToken cancellationToken,
+                                                                    Action<NodeOptions>? configureNodeOptions = null)
     {
-        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName);
+        var node = await NLightningTestNode.CreateAsync(fixture.Bitcoin, nodeName,
+                                                        configureNodeOptions: configureNodeOptions);
         var session = new ClnChannelSession(fixture, node);
         try
         {
             await session.StartNodeAsync(cancellationToken);
+            // The on-chain reserve we keep as fundee of an anchors channel (NL-379), CLN's default type with us
+            await node.FundWalletAsync(LightningMoney.Satoshis(200_000), AddressType.P2Wpkh, cancellationToken);
             await fixture.FundClnWalletAsync(LightningMoney.Satoshis(capacity.Satoshi * 2), [node], cancellationToken);
             await session.ConnectAsync(cancellationToken);
 
