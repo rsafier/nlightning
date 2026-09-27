@@ -48,6 +48,7 @@ public class PrinterSnapshotTests
         // Assert
         Assert.Equal(Lines(
                          "Invoice:",
+                         "  Kind:               BOLT 11",
                          "  Bolt11:             lnbcrt500u1ptest",
                          $"  Payment Hash:       {Hex(0xab)}",
                          "  Amount (msat):      50000123",
@@ -95,6 +96,7 @@ public class PrinterSnapshotTests
         Assert.Equal(Lines(
                          "Invoices:",
                          Separator,
+                         "  Kind:               BOLT 11",
                          "  Bolt11:             lnbcrt1settled",
                          $"  Payment Hash:       {Hex(0xab)}",
                          "  Amount (msat):      1000",
@@ -105,6 +107,7 @@ public class PrinterSnapshotTests
                          "  Received (msat):    1001",
                          "  Settled:            2026-09-25 10:05:00Z",
                          Separator,
+                         "  Kind:               BOLT 11",
                          "  Bolt11:             lnbcrt1expired",
                          $"  Payment Hash:       {Hex(0xab)}",
                          "  Amount (msat):      any",
@@ -112,6 +115,47 @@ public class PrinterSnapshotTests
                          "  Status:             Open (expired)",
                          "  Created:            2026-09-25 10:00:00Z",
                          "  Expires:            2026-09-25 11:00:00Z",
+                         Separator), output);
+    }
+
+    [Fact]
+    public void Given_Bolt12Invoice_When_Listed_Then_KindAndOfferIdInsteadOfBolt11()
+    {
+        // Arrange: NL-454, a BOLT 12 invoice has no string form; it shows its kind and the offer it answers
+        var offerId = new Hash(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        var response = new ListInvoicesIpcResponse
+        {
+            Invoices =
+            [
+                new InvoiceInfoIpcResponse
+                {
+                    Kind = InvoiceKind.Bolt12,
+                    OfferId = offerId,
+                    PaymentHash = s_paymentHash,
+                    Amount = LightningMoney.MilliSatoshis(10_000),
+                    Description = "coffee",
+                    Status = InvoiceStatus.Open,
+                    CreatedAt = s_createdAt,
+                    ExpiresAt = s_createdAt.AddHours(2)
+                }
+            ]
+        };
+
+        // Act
+        var output = Print(w => new ListInvoicesPrinter(w).Print(response));
+
+        // Assert
+        Assert.Equal(Lines(
+                         "Invoices:",
+                         Separator,
+                         "  Kind:               BOLT 12",
+                         $"  Offer Id:           {Hex(0x0f)}",
+                         $"  Payment Hash:       {Hex(0xab)}",
+                         "  Amount (msat):      10000",
+                         "  Description:        coffee",
+                         "  Status:             Open",
+                         "  Created:            2026-09-25 10:00:00Z",
+                         "  Expires:            2026-09-25 12:00:00Z",
                          Separator), output);
     }
 

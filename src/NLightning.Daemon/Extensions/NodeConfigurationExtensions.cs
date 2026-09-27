@@ -6,6 +6,7 @@ using Serilog;
 
 namespace NLightning.Daemon.Extensions;
 
+using Application.Offers.Receive;
 using Application.OnionMessages;
 using Domain.Node.Options;
 using Domain.Protocol.Constants;
@@ -256,6 +257,7 @@ public static class NodeConfigurationExtensions
     /// <c>Bitcoin</c> holds bitcoind's default RPC port for the network; on signets also the ZMQ ports of
     /// <c>docs/agents/MUTINYNET.md</c>. <c>OnionMessages</c> carries the <see cref="OnionMessageOptions"/> defaults
     /// (BOLT 4 onion messages, wave M6); they apply only once <c>Node:Features:OptionOnionMessages</c> is advertised.
+    /// <c>Offers</c> carries the <see cref="OfferOptions"/> defaults (BOLT 12 offers, wave B12; NL-454).
     /// </remarks>
     /// <exception cref="ArgumentException">The network is unknown.</exception>
     internal static string CreateDefaultConfigJson(string network)
@@ -267,6 +269,7 @@ public static class NodeConfigurationExtensions
         var routing = new RoutingOptions();
         var fees = new FeeEstimationOptions();
         var onionMessages = new OnionMessageOptions();
+        var offers = new OfferOptions();
         var isMainnet = resolved == BitcoinNetwork.Mainnet;
         // Regtest and signets switch HTLCs on explicitly; mainnet and testnet leave the switch to NodeOptions' code
         // default (null binds as unset), so the BOLT 5 O6-T4 gate decides both
@@ -383,6 +386,18 @@ public static class NodeConfigurationExtensions
                    "GlobalBurstMessages": {{OM_GLOBAL_BURST_MSGS}},
                    "ConnectToReply": false
                  },
+                 "Offers": {
+                   "InvoiceRelativeExpirySeconds": {{OF_INVOICE_EXPIRY}},
+                   "MaxPaymentPaths": {{OF_MAX_PAYMENT_PATHS}},
+                   "MaxOfferPaths": {{OF_MAX_OFFER_PATHS}},
+                   "MaxUnpaidInvoicesPerOffer": {{OF_MAX_UNPAID_PER_OFFER}},
+                   "MaxUnpaidInvoices": {{OF_MAX_UNPAID}},
+                   "InvoiceRequestsPerSecondPerOffer": {{OF_IRQ_PER_OFFER}},
+                   "InvoiceRequestsPerSecond": {{OF_IRQ}},
+                   "PathLifetimeMarginBlocks": {{OF_PATH_MARGIN}},
+                   "ExpiredInvoicePruneInterval": "{{OF_PRUNE_INTERVAL}}",
+                   "ExpiredInvoicePruneBatchSize": {{OF_PRUNE_BATCH}}
+                 },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
                    "Url": "{{FEE_URL}}",
@@ -440,6 +455,16 @@ public static class NodeConfigurationExtensions
                   .Replace("{{OM_GLOBAL_BURST}}", Invariant(onionMessages.GlobalBurstBytes))
                   .Replace("{{OM_GLOBAL_MPS}}", Invariant(onionMessages.GlobalMessagesPerSecond))
                   .Replace("{{OM_GLOBAL_BURST_MSGS}}", Invariant(onionMessages.GlobalBurstMessages))
+                  .Replace("{{OF_INVOICE_EXPIRY}}", Invariant(offers.InvoiceRelativeExpirySeconds))
+                  .Replace("{{OF_MAX_PAYMENT_PATHS}}", Invariant(offers.MaxPaymentPaths))
+                  .Replace("{{OF_MAX_OFFER_PATHS}}", Invariant(offers.MaxOfferPaths))
+                  .Replace("{{OF_MAX_UNPAID_PER_OFFER}}", Invariant(offers.MaxUnpaidInvoicesPerOffer))
+                  .Replace("{{OF_MAX_UNPAID}}", Invariant(offers.MaxUnpaidInvoices))
+                  .Replace("{{OF_IRQ_PER_OFFER}}", Invariant(offers.InvoiceRequestsPerSecondPerOffer))
+                  .Replace("{{OF_IRQ}}", Invariant(offers.InvoiceRequestsPerSecond))
+                  .Replace("{{OF_PATH_MARGIN}}", Invariant(offers.PathLifetimeMarginBlocks))
+                  .Replace("{{OF_PRUNE_INTERVAL}}", Invariant(offers.ExpiredInvoicePruneInterval))
+                  .Replace("{{OF_PRUNE_BATCH}}", Invariant(offers.ExpiredInvoicePruneBatchSize))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
                   .Replace("{{FEE_RATE_UNIT}}", FeeRateConverter.SatPerVByte)

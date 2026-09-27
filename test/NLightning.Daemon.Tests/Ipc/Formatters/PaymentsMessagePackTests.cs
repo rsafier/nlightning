@@ -5,9 +5,12 @@ namespace NLightning.Daemon.Tests.Ipc.Formatters;
 
 using Domain.Channels.Enums;
 using Domain.Channels.ValueObjects;
+using Domain.Client.Responses;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
+using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Transport.Ipc.MessagePack;
 using Transport.Ipc.Requests;
@@ -127,6 +130,53 @@ public class PaymentsMessagePackTests
         Assert.False(result.IsExpired);
         Assert.Equal(50_000_200UL, result.AmountReceived!.MilliSatoshi);
         Assert.Equal(s_createdAt.AddMinutes(1), result.SettledAt);
+    }
+
+    [Fact]
+    public void Given_Bolt12Invoice_When_RoundTripped_Then_KindAndOfferIdArePreserved()
+    {
+        // Arrange: NL-454
+        var offerId = new Hash(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        var bolt12 = new InvoiceInfoIpcResponse
+        {
+            Kind = InvoiceKind.Bolt12,
+            OfferId = offerId,
+            PaymentHash = s_paymentHash,
+            Status = InvoiceStatus.Open,
+            CreatedAt = s_createdAt,
+            ExpiresAt = s_createdAt.AddHours(1)
+        };
+
+        // Act
+        var result = RoundTrip(new ListInvoicesIpcResponse { Invoices = [bolt12, CreateInvoice(InvoiceStatus.Open)] });
+
+        // Assert
+        Assert.Equal(InvoiceKind.Bolt12, result.Invoices[0].Kind);
+        Assert.Equal(offerId, result.Invoices[0].OfferId);
+        Assert.Null(result.Invoices[0].Bolt11);
+        Assert.Equal(InvoiceKind.Bolt11, result.Invoices[1].Kind);
+        Assert.Null(result.Invoices[1].OfferId);
+    }
+
+    [Fact]
+    public void Given_Bolt12InvoiceModel_When_MappedToClientAndIpcResponses_Then_KindAndOfferIdCarried()
+    {
+        // Arrange: NL-454
+        var offerId = new Hash(Enumerable.Repeat((byte)0x0f, 32).ToArray());
+        var details = new Bolt12InvoiceDetails(offerId, new byte[] { 1 },
+                                               new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x22, 32)]));
+        var model = new InvoiceModel(s_paymentHash, new byte[32], new byte[32], LightningMoney.MilliSatoshis(5_000),
+                                     null, null, s_createdAt, 3_600, 40, bolt12: details);
+
+        // Act
+        var client = InvoiceInfoClientResponse.FromModel(model, s_createdAt);
+        var ipc = InvoiceInfoIpcResponse.FromClientResponse(client);
+
+        // Assert
+        Assert.Equal(InvoiceKind.Bolt12, client.Kind);
+        Assert.Equal(offerId, client.OfferId);
+        Assert.Equal(InvoiceKind.Bolt12, ipc.Kind);
+        Assert.Equal(offerId, ipc.OfferId);
     }
 
     [Fact]

@@ -42,6 +42,16 @@ public sealed class InvoiceInfoIpcResponse
 
     [Key(9)] public DateTimeOffset? SettledAt { get; init; }
 
+    /// <summary>
+    /// BOLT 11 or BOLT 12 (NL-454); a response without the key reads as BOLT 11.
+    /// </summary>
+    [Key(10)] public InvoiceKind Kind { get; init; }
+
+    /// <summary>
+    /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
+    /// </summary>
+    [Key(11)] public Hash? OfferId { get; init; }
+
     public static InvoiceInfoIpcResponse FromClientResponse(InvoiceInfoClientResponse invoice)
     {
         ArgumentNullException.ThrowIfNull(invoice);
@@ -56,7 +66,9 @@ public sealed class InvoiceInfoIpcResponse
             ExpiresAt = invoice.ExpiresAt,
             IsExpired = invoice.IsExpired,
             AmountReceived = invoice.AmountReceived,
-            SettledAt = invoice.SettledAt
+            SettledAt = invoice.SettledAt,
+            Kind = invoice.Kind,
+            OfferId = invoice.OfferId
         };
     }
 }
