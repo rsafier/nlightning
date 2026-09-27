@@ -66,6 +66,7 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _serializers.Add(typeof(InitPayload), new InitPayloadSerializer(_featureSetSerializer));
         _serializers.Add(typeof(OpenChannel1Payload), new OpenChannel1PayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(OpenChannel2Payload), new OpenChannel2PayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(OnionMessagePayload), new OnionMessagePayloadSerializer());
         _serializers.Add(typeof(PingPayload), new PingPayloadSerializer());
         _serializers.Add(typeof(PongPayload), new PongPayloadSerializer());
         _serializers.Add(typeof(PeerStoragePayload), new PeerStoragePayloadSerializer());
@@ -119,6 +120,7 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.Init, typeof(InitPayload));
         _messageTypeDictionary.Add(MessageTypes.OpenChannel, typeof(OpenChannel1Payload));
         _messageTypeDictionary.Add(MessageTypes.OpenChannel2, typeof(OpenChannel2Payload));
+        _messageTypeDictionary.Add(MessageTypes.OnionMessage, typeof(OnionMessagePayload));
         _messageTypeDictionary.Add(MessageTypes.Ping, typeof(PingPayload));
         _messageTypeDictionary.Add(MessageTypes.Pong, typeof(PongPayload));
         _messageTypeDictionary.Add(MessageTypes.PeerStorage, typeof(PeerStoragePayload));
