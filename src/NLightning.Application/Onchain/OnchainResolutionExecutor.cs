@@ -82,6 +82,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
     private readonly ConcurrentDictionary<ChannelId, byte> _graceBroadcastDone = new();
     private readonly ConcurrentDictionary<ChannelId, byte> _savedWatchesCaughtUp = new();
     private readonly ConcurrentDictionary<ChannelId, uint> _savedWatchesScannedTo = new();
+    private readonly SpliceReorgMonitor _spliceReorgMonitor;
 
     private readonly Lock _gate = new();
     private Task _loop = Task.CompletedTask;
@@ -101,6 +102,7 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
         _outpointWatcher = outpointWatcher;
         _serviceScopeFactory = serviceScopeFactory;
         _options = options?.Value ?? new OnchainOptions();
+        _spliceReorgMonitor = new SpliceReorgMonitor(channelMemoryRepository, logger, serviceScopeFactory);
 
         // NL-292: a funding transaction confirmed again after a reorg moves its channel's short channel id
         if (outpointWatcher is IBlockchainMonitor blockchainMonitor)
@@ -165,6 +167,20 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             }
         }
 
+        // SP2-C-T4: a locked splice that left the active chain is reported (the channel keeps operating)
+        try
+        {
+            await _spliceReorgMonitor.CheckAsync(height, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Checking the locked splices at height {Height} failed", height);
+        }
+
         // NL-311: after every channel's time-critical round, one scan for spends of the saved watches of the channels
         // not caught up yet in this process that the chain monitor processed before they were tracked (a crash
         // between a save and the tracking)
@@ -185,6 +201,9 @@ public sealed class OnchainResolutionExecutor : IOnchainResolutionExecutor
             _logger.LogError(e, "Catching up the saved resolution watches at height {Height} failed", height);
         }
     }
+
+    /// <summary>The locked-splice reorg check of every block round (SP2-C-T4; tests, diagnostics).</summary>
+    internal SpliceReorgMonitor SpliceReorgs => _spliceReorgMonitor;
 
     /// <inheritdoc />
     public Task ResolveChannelAsync(ChannelId channelId, uint height, CancellationToken cancellationToken = default) =>
