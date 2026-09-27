@@ -21,7 +21,8 @@ public sealed class TxAddInputMessage : BaseChannelMessage
 
     /// <summary>
     /// <c>shared_input_txid</c> (TLV 0): set when the input is the channel's shared funding output (a splice), whose
-    /// <c>prevtx</c> is then empty. Not serialized until lane IT-C adds its converter (IT3-T1).
+    /// <c>prevtx</c> is then empty. Written and read strictly by <c>TxAddInputMessageTypeSerializer</c> through
+    /// <c>SharedInputTxIdTlvConverter</c>.
     /// </summary>
     public SharedInputTxIdTlv? SharedInputTxIdTlv { get; }
 

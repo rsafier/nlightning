@@ -35,4 +35,12 @@ public interface IInteractiveTxSessionDbRepository
 
     /// <summary>Stages the deletion of the row; false when there is none.</summary>
     Task<bool> DeleteAsync(ChannelId channelId, Guid sessionId);
+
+    /// <summary>
+    /// Stages the deletion of every row of the channel and returns how many. The table has no FK to <c>Channels</c>
+    /// (a dual-funded open may store its negotiation before its channel row), so whoever forgets or deletes a channel
+    /// calls this in the same save; otherwise <see cref="GetUnresolvedAsync"/> keeps returning its sessions and their
+    /// wallet reservations.
+    /// </summary>
+    Task<int> DeleteByChannelIdAsync(ChannelId channelId);
 }

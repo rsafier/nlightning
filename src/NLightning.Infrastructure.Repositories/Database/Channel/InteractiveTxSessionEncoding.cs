@@ -259,6 +259,11 @@ internal static class InteractiveTxSessionEncoding
 
         public void WriteBytes(byte[] value)
         {
+            // A default value object (e.g. default(Witness)) converts to a null array despite the annotation
+            if (value is null)
+                throw new ArgumentException("A byte string to persist is null (a default value object?)",
+                                            nameof(value));
+
             WriteU32((uint)value.Length);
             _stream.Write(value);
         }

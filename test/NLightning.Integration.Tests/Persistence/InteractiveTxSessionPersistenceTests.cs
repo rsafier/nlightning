@@ -180,6 +180,71 @@ public class InteractiveTxSessionPersistenceTests
                                                                 session.SessionId));
     }
 
+    [Fact]
+    public async Task Given_SavedAndStagedSessionsOfTwoChannels_When_DeletedByChannelId_Then_OnlyThatChannelsRowsGo()
+    {
+        // Arrange
+        await using var connection = await OpenConnectionAsync();
+        var options = await MigratedOptionsAsync(connection);
+        var forgotten = InteractiveTxSessionSchemaRoundTrip.ChannelIdOf(0x41);
+        var kept = InteractiveTxSessionSchemaRoundTrip.ChannelIdOf(0x42);
+        var savedA = InteractiveTxSessionSchemaRoundTrip.FullSession(forgotten, s_createdAt);
+        var savedB = InteractiveTxSessionSchemaRoundTrip.MinimalSession(forgotten, s_createdAt.AddSeconds(1)) with
+        {
+            SessionId = Guid.NewGuid()
+        };
+        var other = InteractiveTxSessionSchemaRoundTrip.MinimalSession(kept, s_createdAt);
+        using (var unitOfWork = CreateUnitOfWork(options))
+        {
+            unitOfWork.InteractiveTxSessionDbRepository.Add(savedA);
+            unitOfWork.InteractiveTxSessionDbRepository.Add(savedB);
+            unitOfWork.InteractiveTxSessionDbRepository.Add(other);
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        int deleted;
+        using (var unitOfWork = CreateUnitOfWork(options))
+        {
+            var staged = InteractiveTxSessionSchemaRoundTrip.MinimalSession(forgotten, s_createdAt.AddSeconds(2)) with
+            {
+                SessionId = Guid.NewGuid()
+            };
+            unitOfWork.InteractiveTxSessionDbRepository.Add(staged);
+
+            // Act
+            deleted = await unitOfWork.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(forgotten);
+            await unitOfWork.SaveChangesAsync();
+        }
+
+        // Assert
+        Assert.Equal(3, deleted);
+        using var reopened = CreateUnitOfWork(options);
+        Assert.Empty(await reopened.InteractiveTxSessionDbRepository.GetByChannelIdAsync(forgotten));
+        var unresolved = Assert.Single(await reopened.InteractiveTxSessionDbRepository.GetUnresolvedAsync());
+        InteractiveTxSessionSchemaRoundTrip.AssertSessionEqual(other, unresolved);
+        Assert.Equal(0, await reopened.InteractiveTxSessionDbRepository.DeleteByChannelIdAsync(forgotten));
+    }
+
+    [Fact]
+    public async Task Given_ADefaultWitness_When_TheSessionIsAdded_Then_ArgumentExceptionAndNothingIsStaged()
+    {
+        // Arrange
+        await using var connection = await OpenConnectionAsync();
+        var options = await MigratedOptionsAsync(connection);
+        var session = InteractiveTxSessionSchemaRoundTrip.MinimalSession(
+            InteractiveTxSessionSchemaRoundTrip.ChannelIdOf(0x43), s_createdAt) with
+        {
+            OurWitnesses = [default]
+        };
+        using var unitOfWork = CreateUnitOfWork(options);
+
+        // Act & Assert
+        Assert.Throws<ArgumentException>(() => unitOfWork.InteractiveTxSessionDbRepository.Add(session));
+        await unitOfWork.SaveChangesAsync();
+        Assert.Null(await unitOfWork.InteractiveTxSessionDbRepository.GetByIdAsync(session.ChannelId,
+                                                                                    session.SessionId));
+    }
+
     private static async Task<SqliteConnection> OpenConnectionAsync()
     {
         var connection = new SqliteConnection("Data Source=:memory:");

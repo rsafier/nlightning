@@ -21,8 +21,8 @@ public sealed class TxSignaturesMessage : BaseChannelMessage
     public new TxSignaturesPayload Payload { get => (TxSignaturesPayload)base.Payload; }
 
     /// <summary>
-    /// <c>shared_input_signature</c> (TLV 0): the sender's signature of the shared funding input of a splice. Not
-    /// serialized until lane IT-C adds its converter (IT3-T1).
+    /// <c>shared_input_signature</c> (TLV 0): the sender's signature of the shared funding input of a splice. Written
+    /// and read strictly by <c>TxSignaturesMessageTypeSerializer</c> through <c>SharedInputSignatureTlvConverter</c>.
     /// </summary>
     public SharedInputSignatureTlv? SharedInputSignatureTlv { get; }
 

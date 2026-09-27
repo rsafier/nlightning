@@ -108,6 +108,21 @@ public class InteractiveTxSessionDbRepository : BaseDbRepository<InteractiveTxSe
         return true;
     }
 
+    /// <inheritdoc />
+    public async Task<int> DeleteByChannelIdAsync(ChannelId channelId)
+    {
+        // Load the saved rows into the tracker, then take every tracked row of the channel (staged adds included)
+        await DbSet.Where(e => e.ChannelId == channelId).LoadAsync();
+        var entities = DbSet.Local
+                            .Where(e => e.ChannelId == channelId
+                                        && _context.Entry(e).State != EntityState.Deleted)
+                            .ToList();
+        foreach (var entity in entities)
+            Delete(entity);
+
+        return entities.Count;
+    }
+
     // EF SQLite cannot order DateTimeOffset columns; the rows are few, so they are ordered in memory
     private static List<InteractiveTxSessionModel> OldestFirst(IEnumerable<InteractiveTxSessionEntity> entities)
     {
