@@ -1,6 +1,33 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave O7b @ `c16d6e1`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave d12 @ `aa1cc10`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Wave d12 (BOLT 7 D12: mainnet gossip gate): integrated into `wip/fafo` @ `aa1cc10` (2026-09-27), gates GREEN, D12 decided
+
+Four lanes (Z1 graph hygiene, Z2 memory budget, Z3 verified-sync efficiency, Z4 pruned funding lookup), each with a review/fix step; no migration. Lane commits cherry-picked with `-x` onto `b1cd9b3` in the order Z2 → Z1 → Z3 → Z4; integrator commits 3736a39 (binds `FundingTxIdSourceOptions`, holds the memory budget at the promotion of a pending announcement, moves Z1's `describegraph` pending count from IPC key 23 to 28, merges the Z3/Z4 `FundingOutputLookup` conflicts), 4dc261f and 8b97462 (probe relay run and samples), 73a1acd (D12 defaults), aa1cc10 (D12 record in `BOLT7_GOSSIP_PLAN.md`, "D12 runs" in `MAINNET_GOSSIP_PROBE.md`).
+
+| Lane | Result | `wip/fafo` SHAs (lane) | Ledger |
+|---|---|---|---|
+| Z1 graph hygiene | done: `PendingAnnouncementIndex` (announcements without an update outside the graph, up to 4 candidates per scid, 50,000 cap with per-sender eviction, 14-day TTL, chain lookup at promotion), scid-partitioned ingress queues | ab55e29, 4a48443 (0afbba5, 6024598) | NL-406, NL-408 fixed; new NL-418, NL-425 |
+| Z2 memory budget | done: `Gossip:MaxMemoryMb` 1,024 MB against the process RSS, no new channels/nodes over it, resume below 90 %, metrics, `describegraph` keys 23-27; interning dropped by owner decision | 60d1fca, cdaf2fa (9777f5d, 43a4f6e) | NL-373 fixed; new NL-419 |
+| Z3 verified-sync efficiency | done: `gettxout` height from `bestblock`, mempool-spent answers kept per block, `QueriedChannelTracker` + `IGossipPendingChannels` in the re-diff, outbox gossip cap (ships off) | 8c64733, a0561db, 59b1e16, acb7e4d, 55c0645, 69dcecf, 8c98b15, 2bd6764, 1e386db | NL-413, NL-414, NL-415 fixed; NL-360 partial; new NL-420, NL-421 |
+| Z4 pruned funding lookup | done: `Gossip:FundingTxIdSource=Esplora` (txid from an Esplora index, proven against our node's header merkle root; output from our `gettxout`), one-time pruned-node hint | 0fa7cf3, c0a71af (eb6b1b8, 29f696d) | NL-346 partial; new NL-422, NL-423, NL-424 |
+| Integration + proofs | D12 defaults, probe relay run, verified mainnet run | 3736a39, 4dc261f, 8b97462, 73a1acd, aa1cc10 | NL-099 partial; new NL-417 |
+
+Gates at `aa1cc10`:
+- Build: Release and Release.Native, 0 errors, the same **5** CS86xx warnings (NL-171); net11.0 compile check green. `dotnet format --verify-no-changes` clean. No schema change.
+- Tests (net10.0, Release and Release.Native): **7540** non-Docker, all pass, no skips (Domain 2419, Application 1776, Integration 713, Serialization 520, Infrastructure 405, Infrastructure.Bitcoin 1028, Bolt11 278, Daemon 401). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, one process at a time, SQL Server skipped; run before the D12 default commit, which changes mainnet defaults only): gossip **24/24**, CLN **22/22**, LND suite (Postgres) **59/59**, ABCD **3 x 10/10**, on-chain legacy **24** (2 `Explicit` not run), anchors **18/18**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` (its SQL Server row cannot be dropped alone).
+- Mainnet (probe, read-only RPC): verified run 30 min, fresh database, five peers: 99 % of the graph in 13 min (was 19), RSS peak 610 MB of the 1,024 MB budget, 0 refusals, 179,210 RPCs (5.8 per lookup), download 2.3x (was 3.6x), 30,537 channels all with a policy, 0 disconnects, bans or warnings. Relay run 20 min toward Blockstream Store: clean, but nothing relayed (no peer subscribes to a channel-less node, NL-417).
+
+Decision (`BOLT7_GOSSIP_PLAN.md` "D12 wave record"): **graph and gossip sync on by default on mainnet; relay of other nodes' gossip stays off on mainnet; `AllowPublicChannelsOnMainnet` stays false.**
+
+### Carried into the next wave (after d12)
+
+- **BOLT 7 mainnet follow-ups:** a relay proof from a node with a public channel, then the mainnet relay default (NL-417); the relay pause on a full outbox so `Gossip:MaxOutboxGossipPerPeer` can ship on (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); verified-sync garbage (NL-416); d12 follow-ups NL-418 (pending-candidate sybil limit), NL-419 (re-query after a budget refusal), NL-420 (ingress as `IGossipPendingChannels`), NL-421 (lookup counter), NL-422..NL-424 (Esplora live proof, speed, wrong-network check), NL-425 (node announcements of pending-only nodes).
+- **Earlier BOLT 7 follow-ups:** NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; B7-CU-01b; flakes NL-382, NL-394.
+- **Anchors and BOLT 5 follow-ups** (unchanged from O7b): NL-384 (partial), NL-386, NL-387, NL-389..NL-393; NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Beyond:** operations before real funds (backup and restore, a security review of key files and the IPC cookie), route blinding (M5, NL-079) then BOLT 12, dual funding (NL-037), the rest of `REMAINING_WORK.md`.
 
 ### Wave O7b (BOLT 5 anchors gaps and O7-T4): integrated into `wip/fafo` @ `c16d6e1` (2026-09-26), gates GREEN, `option_anchors` ON by default
 
