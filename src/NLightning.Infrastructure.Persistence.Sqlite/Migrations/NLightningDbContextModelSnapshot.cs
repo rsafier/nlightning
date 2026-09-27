@@ -702,6 +702,84 @@ namespace NLightning.Infrastructure.Persistence.Sqlite.Migrations
                     b.ToTable("Htlcs");
                 });
 
+            modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.InteractiveTxSessionEntity", b =>
+                {
+                    b.Property<byte[]>("ChannelId")
+                        .HasColumnType("BLOB");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("CommitmentSignedReceived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("CommitmentSignedSent")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("ConstructedTx")
+                        .HasColumnType("BLOB");
+
+                    b.Property<long>("CreatedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<uint>("FeeratePerKw")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("Inputs")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool>("IsInitiator")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("LocalContribution")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<Guid?>("LocalReservationId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<uint>("Locktime")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("OurSharedInputSignature")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("OurWitnesses")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("Outputs")
+                        .IsRequired()
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte>("Purpose")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<long?>("ResolvedAt")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte>("State")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<byte[]>("TheirSharedInputSignature")
+                        .HasColumnType("BLOB");
+
+                    b.Property<byte[]>("TheirWitnesses")
+                        .HasColumnType("BLOB");
+
+                    b.Property<bool>("TxSignaturesReceived")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("TxSignaturesSent")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("ChannelId", "SessionId");
+
+                    b.HasIndex("ResolvedAt");
+
+                    b.ToTable("InteractiveTxSessions");
+                });
+
             modelBuilder.Entity("NLightning.Infrastructure.Persistence.Entities.Channel.RemoteShachainEntity", b =>
                 {
                     b.Property<byte[]>("ChannelId")

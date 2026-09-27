@@ -113,7 +113,7 @@ public class TxSignaturesMessageTests
     public async Task Given_SharedInputSignature_When_RoundTripped_Then_MessageIsEqual()
     {
         // Arrange
-        byte[] txId = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        var txId = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
         var original = new TxSignaturesMessage(new TxSignaturesPayload(ChannelId.Zero, txId, []),
                                                new SharedInputSignatureTlv(Convert.FromHexString(SignatureHex)));
         var stream = new MemoryStream();
