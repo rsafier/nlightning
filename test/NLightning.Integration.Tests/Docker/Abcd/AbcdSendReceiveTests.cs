@@ -80,7 +80,7 @@ public class AbcdSendReceiveTests(LightningRegtestNetworkFixture fixture, ITestO
                                                      ct);
 
         // Act
-        var payment = await n.PayFromAliceAsync(invoice.Bolt11, ct);
+        var payment = await n.PayFromAliceAsync(invoice.Bolt11!, ct);
 
         // Assert
         Console.WriteLine($"Alice's payment: {payment.Status}, fee {payment.FeeMsat} msat, reason {payment.FailureReason}");

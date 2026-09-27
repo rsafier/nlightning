@@ -282,7 +282,7 @@ public sealed class ClnCloseTests : IAsyncLifetime
     private static async Task ClnPaysUsAsync(ClnChannelSession session, LightningMoney amount, CancellationToken ct)
     {
         var invoice = await session.Node.CreateInvoiceAsync(amount, $"cln pays before close {Guid.NewGuid():N}", ct);
-        var result = await session.Cln.CallAsync("pay", ct, ("bolt11", invoice.Bolt11), ("retry_for", 30));
+        var result = await session.Cln.CallAsync("pay", ct, ("bolt11", invoice.Bolt11!), ("retry_for", 30));
         Assert.Equal("complete", result["status"]!.GetValue<string>());
         var preimage = Convert.FromHexString(result["payment_preimage"]!.GetValue<string>());
         Assert.Equal((byte[])invoice.PaymentHash, SHA256.HashData(preimage));

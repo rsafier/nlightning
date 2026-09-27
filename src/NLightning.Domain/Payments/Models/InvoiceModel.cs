@@ -6,12 +6,13 @@ using Money;
 using Offers.Models;
 
 /// <summary>
-/// An invoice we issued (BOLT 11), with the secrets the final hop needs to accept a payment for it.
+/// An invoice we issued (BOLT 11, or BOLT 12 for one of our offers), with the secrets the final hop needs to accept a
+/// payment for it.
 /// </summary>
 /// <remarks>
 /// <para>The preimage and payment secret come from a CSPRNG and the model is persisted
-/// (<c>IInvoiceDbRepository</c>) <b>before</b> the BOLT 11 string is handed to anyone, so a payment can never arrive
-/// for an invoice we forgot.</para>
+/// (<c>IInvoiceDbRepository</c>) <b>before</b> the BOLT 11 string (or the BOLT 12 invoice) is handed to anyone, so a
+/// payment can never arrive for an invoice we forgot.</para>
 /// <para>Status moves only forward: <see cref="InvoiceStatus.Open"/> → <see cref="InvoiceStatus.Accepted"/> →
 /// <see cref="InvoiceStatus.Settled"/>, or <see cref="InvoiceStatus.Open"/> → <see cref="InvoiceStatus.Canceled"/>.
 /// The mutators throw <see cref="InvalidOperationException"/> on any other transition.</para>
@@ -38,9 +39,10 @@ public sealed class InvoiceModel
     public string? Description { get; }
 
     /// <summary>
-    /// The encoded, signed BOLT 11 string.
+    /// The encoded, signed BOLT 11 string, or null for a BOLT 12 invoice (<see cref="Bolt12"/> is set instead: BOLT 12
+    /// invoices have no string form and travel only in onion messages).
     /// </summary>
-    public string Bolt11 { get; }
+    public string? Bolt11 { get; }
 
     public DateTimeOffset CreatedAt { get; }
 
@@ -76,12 +78,15 @@ public sealed class InvoiceModel
     public InvoiceKind Kind => Bolt12 is null ? InvoiceKind.Bolt11 : InvoiceKind.Bolt12;
 
     public InvoiceModel(Hash paymentHash, Secret preimage, Secret paymentSecret, LightningMoney? amount,
-                        string? description, string bolt11, DateTimeOffset createdAt, uint expirySeconds,
+                        string? description, string? bolt11, DateTimeOffset createdAt, uint expirySeconds,
                         ushort minFinalCltvExpiry, InvoiceStatus status = InvoiceStatus.Open,
                         LightningMoney? amountReceived = null, DateTimeOffset? settledAt = null,
                         Bolt12InvoiceDetails? bolt12 = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(bolt11);
+        if (bolt12 is null)
+            ArgumentException.ThrowIfNullOrWhiteSpace(bolt11);
+        else if (bolt11 is not null)
+            throw new ArgumentException("A BOLT 12 invoice has no BOLT 11 string.", nameof(bolt11));
         if (amount is { IsZero: true })
             throw new ArgumentOutOfRangeException(nameof(amount), "An invoice amount must be positive; use null for "
                                                                 + "any amount.");

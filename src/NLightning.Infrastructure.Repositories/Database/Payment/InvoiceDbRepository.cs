@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Payment;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -11,7 +12,9 @@ using Persistence.Contexts;
 using Persistence.Entities.Payment;
 
 /// <summary>
-/// Stores the invoices we issued (BOLT2 plan N8-T2), keyed by payment hash.
+/// Stores the invoices we issued (BOLT2 plan N8-T2), keyed by payment hash: BOLT 11 invoices and, since migration
+/// <c>AddBolt12Offers</c>, the BOLT 12 invoices of our offers (<see cref="InvoiceModel.Bolt12"/>, written by
+/// <see cref="AddAsync"/> only).
 /// </summary>
 /// <remarks>
 /// Writes are staged on the unit of work. <see cref="GetByPaymentHashAsync"/> sees what this unit of work staged
@@ -40,6 +43,12 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
             AmountMsat = ToMsat(invoice.Amount),
             Description = invoice.Description,
             Bolt11 = invoice.Bolt11,
+            Kind = (byte)invoice.Kind,
+            OfferId = invoice.Bolt12?.OfferId,
+            Bolt12InvoiceBytes = invoice.Bolt12?.InvoiceBytes.ToArray(),
+            InvoiceRequestPayerId = invoice.Bolt12?.PayerId,
+            Quantity = invoice.Bolt12?.Quantity,
+            PayerNote = invoice.Bolt12?.PayerNote,
             CreatedAt = invoice.CreatedAt,
             ExpirySeconds = invoice.ExpirySeconds,
             MinFinalCltvExpiry = invoice.MinFinalCltvExpiry,
@@ -92,7 +101,21 @@ public class InvoiceDbRepository : BaseDbRepository<InvoiceEntity>, IInvoiceDbRe
         return new InvoiceModel(entity.PaymentHash, new Secret(entity.Preimage), new Secret(entity.PaymentSecret),
                                 ToMoney(entity.AmountMsat), entity.Description, entity.Bolt11, entity.CreatedAt,
                                 entity.ExpirySeconds, entity.MinFinalCltvExpiry, (InvoiceStatus)entity.Status,
-                                ToMoney(entity.AmountReceivedMsat), entity.SettledAt);
+                                ToMoney(entity.AmountReceivedMsat), entity.SettledAt, MapBolt12(entity));
+    }
+
+    private static Bolt12InvoiceDetails? MapBolt12(InvoiceEntity entity)
+    {
+        if (entity.Kind != (byte)InvoiceKind.Bolt12)
+            return null;
+
+        if (entity.OfferId is not { } offerId || entity.Bolt12InvoiceBytes is null
+                                              || entity.InvoiceRequestPayerId is not { } payerId)
+            throw new InvalidOperationException(
+                $"The BOLT 12 invoice for payment hash {entity.PaymentHash} lacks its offer, bytes or payer id");
+
+        return new Bolt12InvoiceDetails(offerId, entity.Bolt12InvoiceBytes, payerId, entity.Quantity,
+                                        entity.PayerNote);
     }
 
     private static long? ToMsat(LightningMoney? amount) =>

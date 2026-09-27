@@ -417,7 +417,7 @@ public class OnchainO6Tests : IAsyncLifetime
                                        long amountSat, CancellationToken ct)
     {
         var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(amountSat), "o6 payment", ct);
-        var payment = await payer.PayInvoiceAsync(invoice.Bolt11, ct);
+        var payment = await payer.PayInvoiceAsync(invoice.Bolt11!, ct);
         Assert.Equal(PaymentStatus.Succeeded, payment.Status);
         await Poll.UntilAsync(async () =>
         {

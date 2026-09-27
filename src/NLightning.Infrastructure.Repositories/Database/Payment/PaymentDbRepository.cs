@@ -4,6 +4,7 @@ namespace NLightning.Infrastructure.Repositories.Database.Payment;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Models;
 using Domain.Payments.Enums;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -140,12 +141,26 @@ public class PaymentDbRepository : BaseDbRepository<PaymentEntity>, IPaymentDbRe
                                     (PaymentStatus)entity.Status, entity.OutgoingChannelId, entity.OutgoingHtlcId,
                                     entity.Preimage is { } preimage ? new Secret(preimage) : (Secret?)null,
                                     entity.FailureCode is { } code ? (FailureCode)code : (FailureCode?)null,
-                                    entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route);
+                                    entity.FailureSourceIndex, entity.FailureReason, entity.CompletedAt, route,
+                                    MapBolt12(entity));
+    }
+
+    private static Bolt12PaymentDetails? MapBolt12(PaymentEntity entity)
+    {
+        if (entity.OfferBolt12 is null)
+            return null;
+
+        return new Bolt12PaymentDetails(entity.OfferBolt12, entity.Bolt12InvoiceBytes ?? [],
+                                        entity.InvoiceRequestMetadata ?? [], entity.PayerNote);
     }
 
     private static void MapDomainToEntity(PaymentModel payment, PaymentEntity entity)
     {
         entity.Bolt11 = payment.Bolt11;
+        entity.OfferBolt12 = payment.Bolt12?.Offer;
+        entity.Bolt12InvoiceBytes = payment.Bolt12?.InvoiceBytes.ToArray();
+        entity.InvoiceRequestMetadata = payment.Bolt12?.InvoiceRequestMetadata.ToArray();
+        entity.PayerNote = payment.Bolt12?.PayerNote;
         entity.AmountMsat = checked((long)payment.Amount.MilliSatoshi);
         entity.FeeMsat = checked((long)payment.Fee.MilliSatoshi);
         MapMutableFields(payment, entity);

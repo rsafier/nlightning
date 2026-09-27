@@ -146,7 +146,7 @@ public class OnchainO4Tests : IAsyncLifetime
         var invoice = await Node.CreateInvoiceAsync(LightningMoney.Satoshis(50_000), "o4 (b) claim with preimage", ct);
         // LND lists the channel active before its router has the private channel's edge in its graph; until then
         // pathfinding sees no local balance (insufficient_balance), so the payment is retried until the edge is there
-        await PayUntilSentAsync(david, invoice.Bolt11, lndChannel.ChanId, crashed.Task, ct);
+        await PayUntilSentAsync(david, invoice.Bolt11!, lndChannel.ChanId, crashed.Task, ct);
         var htlc = Assert.Single(GetHtlcs(channel.ChannelId), h => h.Direction == HtlcDirection.Incoming);
         Assert.NotNull(htlc.Removal);
         Assert.True(htlc.Removal.IsFulfill);

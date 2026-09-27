@@ -52,7 +52,7 @@ public class GraphPaymentHarnessTests
         var erinBefore = erin.Channel(harness.DavidErin).LocalBalance.MilliSatoshi;
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: Erin is not Bob's peer and hints nothing
         Assert.Empty(Invoice.Decode(invoice.Bolt11, BitcoinNetwork.Regtest).RouteHints);
@@ -109,7 +109,7 @@ public class GraphPaymentHarnessTests
         };
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: the second HTLC went over the other Carol–David channel
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
@@ -154,7 +154,7 @@ public class GraphPaymentHarnessTests
         var invoice = await erin.CreateMppInvoiceAsync(s_amount, []);
 
         // Act
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: two HTLCs, one over each Carol–David channel, delivering the amount to Erin together
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);
@@ -181,7 +181,7 @@ public class GraphPaymentHarnessTests
         // Act: getroute first (nothing sent), then the payment of Erin's invoice (c = 40)
         var quote = await harness.Bob.RouteQuery.QuoteRouteAsync(erin.NodeId, s_amount, null, 40, ct);
         var invoice = await erin.InvoiceService.CreateInvoiceAsync(s_amount, "quote", null, ct);
-        var result = await PayAsync(harness, invoice.Bolt11);
+        var result = await PayAsync(harness, invoice.Bolt11!);
 
         // Assert: the same hops, amounts, CLTVs and fee; two unknown channels after ours at the 0.6 prior each
         Assert.Equal(PaymentStatus.Succeeded, result.Payment.Status);

@@ -448,7 +448,7 @@ public class CooperativeCloseFlowTests : IAsyncLifetime
         {
             await LndTestHelpers.ResetMissionControlAsync(alice, ct);
             var alicePayment = await LndTestHelpers.SendPaymentV2Async(
-                                   alice, LndTestHelpers.PinnedPayment(ourInvoice.Bolt11, [lndChannel.ChanId]), ct);
+                                   alice, LndTestHelpers.PinnedPayment(ourInvoice.Bolt11!, [lndChannel.ChanId]), ct);
             if (alicePayment.Status == Payment.Types.PaymentStatus.Succeeded)
                 break;
 

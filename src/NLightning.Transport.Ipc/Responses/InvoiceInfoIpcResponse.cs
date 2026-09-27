@@ -14,7 +14,10 @@ using Domain.Payments.Enums;
 [MessagePackObject]
 public sealed class InvoiceInfoIpcResponse
 {
-    [Key(0)] public required string Bolt11 { get; init; }
+    /// <summary>
+    /// The BOLT 11 string, or null for a BOLT 12 invoice (issued for one of our offers; it has no string form).
+    /// </summary>
+    [Key(0)] public string? Bolt11 { get; init; }
     [Key(1)] public required Hash PaymentHash { get; init; }
 
     /// <summary>

@@ -215,7 +215,7 @@ public class AttributionFlowTests : IAsyncLifetime
         _failWithAttribution[invoice.PaymentHash] = 0;
 
         // Act
-        var payment = await bob.PayInvoiceAsync(invoice.Bolt11, ct);
+        var payment = await bob.PayInvoiceAsync(invoice.Bolt11!, ct);
 
         // Assert: carol's failure reached bob with attribution_data; bob verified it and blames carol (index 0)
         Console.WriteLine($"Bob's payment: {payment.Status}, {payment.FailureCode}: {payment.FailureReason}");
@@ -286,7 +286,7 @@ public class AttributionFlowTests : IAsyncLifetime
         var invoice = await payee.CreateInvoiceAsync(LightningMoney.Satoshis(25_000), "w7 attributed forward", ct);
 
         // Act
-        var payment = await payer.PayInvoiceAsync(invoice.Bolt11, ct);
+        var payment = await payer.PayInvoiceAsync(invoice.Bolt11!, ct);
 
         // Assert: both fulfills carried attribution_data, and the payer verified a hold time for both hops
         Console.WriteLine($"Payer's payment: {payment.Status}, {payment.FailureCode}: {payment.FailureReason}");

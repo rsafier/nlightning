@@ -5,7 +5,8 @@ namespace NLightning.Infrastructure.Persistence.Entities.Payment;
 using Domain.Crypto.ValueObjects;
 
 /// <summary>
-/// An invoice we issued (<c>InvoiceModel</c>, BOLT2 plan N8-T2), keyed by payment hash.
+/// An invoice we issued (<c>InvoiceModel</c>, BOLT2 plan N8-T2; BOLT 12 columns since <c>AddBolt12Offers</c>), keyed
+/// by payment hash.
 /// </summary>
 public class InvoiceEntity
 {
@@ -36,9 +37,39 @@ public class InvoiceEntity
     public string? Description { get; set; }
 
     /// <summary>
-    /// The encoded, signed BOLT 11 string.
+    /// The encoded, signed BOLT 11 string, or null for a BOLT 12 invoice.
     /// </summary>
-    public required string Bolt11 { get; set; }
+    public string? Bolt11 { get; set; }
+
+    /// <summary>
+    /// <c>InvoiceKind</c> (0 BOLT 11, 1 BOLT 12; migration <c>AddBolt12Offers</c>, existing rows 0).
+    /// </summary>
+    public required byte Kind { get; set; }
+
+    /// <summary>
+    /// The offer a BOLT 12 invoice was issued for (foreign key to <c>Offers</c>).
+    /// </summary>
+    public Hash? OfferId { get; set; }
+
+    /// <summary>
+    /// The signed BOLT 12 invoice's TLV stream, as sent.
+    /// </summary>
+    public byte[]? Bolt12InvoiceBytes { get; set; }
+
+    /// <summary>
+    /// The invoice_request's 33-byte <c>invreq_payer_id</c>.
+    /// </summary>
+    public CompactPubKey? InvoiceRequestPayerId { get; set; }
+
+    /// <summary>
+    /// The invoice_request's <c>invreq_quantity</c>, if any.
+    /// </summary>
+    public ulong? Quantity { get; set; }
+
+    /// <summary>
+    /// The invoice_request's <c>invreq_payer_note</c>, if any.
+    /// </summary>
+    public string? PayerNote { get; set; }
 
     /// <summary>
     /// When the invoice was created (stored as UTC ticks).
