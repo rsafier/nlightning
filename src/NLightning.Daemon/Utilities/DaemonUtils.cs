@@ -13,9 +13,12 @@ public class DaemonUtils
     private const string DashDashDaemonChild = "--daemon-child";
 
     /// <summary>
-    /// Shell script that starts "$0" with "$@" detached from the terminal and prints its PID.
+    /// Shell script that starts "$0" with "$@" detached from the terminal and prints its PID. The program's stdin is
+    /// the shell's stdin (a pipe the parent writes the key password into, SR-11): a background job of a
+    /// non-interactive shell would otherwise read /dev/null, so it is handed over explicitly through fd 3.
     /// </summary>
-    internal const string UnixDaemonLauncherScript = "nohup \"$0\" \"$@\" </dev/null >/dev/null 2>&1 & echo $!";
+    internal const string UnixDaemonLauncherScript =
+        "exec 3<&0; nohup \"$0\" \"$@\" <&3 3<&- >/dev/null 2>&1 & exec 3<&-; echo $!";
 
     private static readonly HashSet<string> s_bareFlags = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -159,7 +162,7 @@ public class DaemonUtils
     /// <param name="configuration">Configuration</param>
     /// <param name="pidFilePath">Path where to store the PID file</param>
     /// <param name="logger">Logger for startup messages</param>
-    /// <param name="password">Key password, handed to the daemon process through its environment</param>
+    /// <param name="password">Key password, handed to the daemon process through its stdin (SR-11)</param>
     /// <returns>True if the parent process should exit, false to continue execution</returns>
     public static bool StartDaemonIfRequested(string[] args, IConfiguration configuration, string pidFilePath,
                                               ILogger logger, string password)
@@ -189,7 +192,8 @@ public class DaemonUtils
 
     /// <summary>
     /// Builds the daemon child's arguments: drops <c>--daemon</c> and every password option, and appends
-    /// <c>--daemon-child</c>.
+    /// <c>--password-stdin</c> (the parent writes the password into the child's stdin, never into its environment or
+    /// command line; SR-11) and <c>--daemon-child</c>.
     /// </summary>
     public static string[] BuildDaemonChildArgs(string[] args)
     {
@@ -220,6 +224,7 @@ public class DaemonUtils
             childArgs.Add(arg);
         }
 
+        childArgs.Add(PasswordUtils.DashDashPasswordStdin);
         childArgs.Add(DashDashDaemonChild);
         return childArgs.ToArray();
     }
@@ -231,6 +236,77 @@ public class DaemonUtils
             return null;
 
         return envDaemon.Equals("true", StringComparison.OrdinalIgnoreCase) || envDaemon.Equals("1");
+    }
+
+    /// <summary>
+    /// Builds the Unix launcher: <c>/bin/sh -c UnixDaemonLauncherScript program args...</c> with stdin and stdout
+    /// redirected. "$0" "$@" passes every argument through verbatim, without any shell quoting. The child does not
+    /// inherit <c>NLTG_PASSWORD</c> (SR-11).
+    /// </summary>
+    internal static ProcessStartInfo CreateUnixDaemonStartInfo(string fileName, IEnumerable<string> childArgs)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "/bin/sh",
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            StandardInputEncoding = PasswordUtils.StdinEncoding,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true,
+            WorkingDirectory = Environment.CurrentDirectory
+        };
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(UnixDaemonLauncherScript);
+        startInfo.ArgumentList.Add(fileName);
+        foreach (var arg in childArgs)
+            startInfo.ArgumentList.Add(arg);
+
+        startInfo.Environment.Remove(PasswordUtils.PasswordEnvironmentVariable);
+        return startInfo;
+    }
+
+    /// <summary>
+    /// Builds the Windows daemon start info with stdin redirected; the child does not inherit <c>NLTG_PASSWORD</c>.
+    /// </summary>
+    internal static ProcessStartInfo CreateWindowsDaemonStartInfo(string fileName, IEnumerable<string> childArgs)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = fileName,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            StandardInputEncoding = PasswordUtils.StdinEncoding,
+            CreateNoWindow = true,
+            WorkingDirectory = Environment.CurrentDirectory
+        };
+        foreach (var arg in childArgs)
+            startInfo.ArgumentList.Add(arg);
+
+        startInfo.Environment.Remove(PasswordUtils.PasswordEnvironmentVariable);
+        return startInfo;
+    }
+
+    /// <summary>
+    /// Writes the password as one line into the child's stdin and closes it, so the child reads it with
+    /// <c>--password-stdin</c> and then sees the end of the stream.
+    /// </summary>
+    /// <exception cref="ArgumentException">The password contains a line break, which one line cannot carry.</exception>
+    internal static void WritePasswordToChild(StreamWriter stdin, string password)
+    {
+        try
+        {
+            if (password.Contains('\n') || password.Contains('\r'))
+                throw new ArgumentException("A password with a line break cannot be handed to the daemon process",
+                                            nameof(password));
+
+            stdin.Write(password);
+            stdin.Write('\n');
+            stdin.Flush();
+        }
+        finally
+        {
+            stdin.Close();
+        }
     }
 
     /// <summary>
@@ -251,18 +327,7 @@ public class DaemonUtils
         try
         {
             var (fileName, prefixArgs) = GetCurrentProgram();
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = fileName,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Environment.CurrentDirectory
-            };
-
-            foreach (var arg in prefixArgs.Concat(BuildDaemonChildArgs(args)))
-                startInfo.ArgumentList.Add(arg);
-
-            startInfo.Environment[PasswordUtils.PasswordEnvironmentVariable] = password;
+            var startInfo = CreateWindowsDaemonStartInfo(fileName, prefixArgs.Concat(BuildDaemonChildArgs(args)));
 
             // Start the new process
             var process = Process.Start(startInfo);
@@ -271,6 +336,8 @@ public class DaemonUtils
                 logger.Error("Failed to start daemon process");
                 return false;
             }
+
+            WritePasswordToChild(process.StandardInput, password);
 
             // Write PID to file
             File.WriteAllText(pidFilePath, process.Id.ToString());
@@ -294,22 +361,7 @@ public class DaemonUtils
         {
             var (fileName, prefixArgs) = GetCurrentProgram();
 
-            // "$0" "$@" passes every argument through verbatim, without any shell quoting
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = "/bin/sh",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true,
-                WorkingDirectory = Environment.CurrentDirectory
-            };
-            startInfo.ArgumentList.Add("-c");
-            startInfo.ArgumentList.Add(UnixDaemonLauncherScript);
-            startInfo.ArgumentList.Add(fileName);
-            foreach (var arg in prefixArgs.Concat(BuildDaemonChildArgs(args)))
-                startInfo.ArgumentList.Add(arg);
-
-            startInfo.Environment[PasswordUtils.PasswordEnvironmentVariable] = password;
+            var startInfo = CreateUnixDaemonStartInfo(fileName, prefixArgs.Concat(BuildDaemonChildArgs(args)));
 
             using var shell = Process.Start(startInfo);
             if (shell is null)
@@ -317,6 +369,8 @@ public class DaemonUtils
                 logger.Error("Failed to start daemon process");
                 return false;
             }
+
+            WritePasswordToChild(shell.StandardInput, password);
 
             var pidText = shell.StandardOutput.ReadLine()?.Trim();
             shell.WaitForExit();

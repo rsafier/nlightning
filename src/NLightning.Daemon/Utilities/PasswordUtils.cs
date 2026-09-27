@@ -1,3 +1,4 @@
+using System.Text;
 using Serilog;
 
 namespace NLightning.Daemon.Utilities;
@@ -11,6 +12,21 @@ public static class PasswordUtils
     public const string DashDashPassword = "--password";
     public const string DashDashPasswordFile = "--password-file";
     public const string DashDashPasswordStdin = "--password-stdin";
+
+    /// <summary>
+    /// The encoding of a password read from redirected stdin, and written by the parent into a daemon child's stdin:
+    /// UTF-8 without a byte order mark, whatever the console code page is.
+    /// </summary>
+    public static readonly Encoding StdinEncoding = new UTF8Encoding(false);
+
+    /// <summary>
+    /// Gets the reader for <c>--password-stdin</c>: UTF-8 (<see cref="StdinEncoding"/>) when stdin is redirected (a
+    /// pipe, such as the one a daemon parent writes the password into), else the console.
+    /// </summary>
+    public static TextReader OpenStdinReader() =>
+        Console.IsInputRedirected
+            ? new StreamReader(Console.OpenStandardInput(), StdinEncoding, false)
+            : Console.In;
 
     /// <summary>
     /// Gets the password without prompting.
