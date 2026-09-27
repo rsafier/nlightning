@@ -244,4 +244,40 @@ public class HtlcForwardingPolicyTests
         // Assert
         Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
     }
+    [Theory]
+    // Inside a blinded route the recipient's payment_relay is our fee: at least our policy forwards, even when its
+    // rounding leaves the computed amount a msat short of the BOLT 7 fee
+    [InlineData(1_000U, 100U, true)]
+    [InlineData(2_000U, 100U, true)]
+    [InlineData(999U, 100U, false)]
+    [InlineData(1_000U, 99U, false)]
+    public void Given_BlindedRelay_When_Evaluated_Then_ComparedWithOurPolicyInsteadOfTheAmounts(uint feeBase,
+        uint feeRate, bool forwards)
+    {
+        // Arrange: an incoming amount one msat below the BOLT 7 fee
+        var relay = new Domain.Protocol.Onion.Models.BlindedPaymentRelay(Delta, feeRate, feeBase);
+        var request = Request(incomingMsat: AmountMsat + Fee(AmountMsat) - 1) with { BlindedRelay = relay };
+
+        // Act
+        var decision = CreatePolicy().Evaluate(request);
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
+    }
+
+    [Fact]
+    public void Given_BlindedRelayWithASmallerDelta_When_Evaluated_Then_IncorrectCltvExpiry()
+    {
+        // Arrange: outgoing = incoming - relay delta (39) is one block short of our delta (40)
+        var relay = new Domain.Protocol.Onion.Models.BlindedPaymentRelay(Delta - 1, 100, 1_000);
+        var request = Request(incomingCltv: OutgoingCltv + Delta - 1) with { BlindedRelay = relay };
+
+        // Act
+        var decision = CreatePolicy().Evaluate(request);
+
+        // Assert
+        Assert.Equal(FailureCode.IncorrectCltvExpiry, decision.FailureCode);
+    }
 }

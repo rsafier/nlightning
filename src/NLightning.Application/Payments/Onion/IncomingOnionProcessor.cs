@@ -1,10 +1,14 @@
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Payments.Onion;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
+using Domain.Money;
+using Domain.Node.Options;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Extensions;
 using Domain.Protocol.Onion.Interfaces;
@@ -14,12 +18,12 @@ using Domain.Protocol.Onion.ValueObjects;
 using Domain.Serialization.Interfaces;
 
 /// <summary>
-/// Processes the onion of a locked-in incoming HTLC (ONION M4-T2): peel one layer with the node key, check the replay
-/// cache, parse and validate the hop payload, and classify the HTLC as a forward or a final-hop payment, or say how to
-/// fail it.
+/// Processes the onion of a locked-in incoming HTLC (ONION M4-T2, M5): peel one layer with the node key, check the
+/// replay cache, parse and validate the hop payload, read the recipient's instructions inside a blinded route, and
+/// classify the HTLC as a forward or a final-hop payment, or say how to fail it.
 /// </summary>
 /// <remarks>
-/// <para>Order (BOLT 4 "Accepting and Forwarding a Payment" and "Returning Errors"):</para>
+/// <para>Order (BOLT 4 "Accepting and Forwarding a Payment", "Route Blinding" and "Returning Errors"):</para>
 /// <list type="number">
 ///   <item>Peel with <see cref="ISphinxService.PeelAsLocalNode"/> and the <c>payment_hash</c> as associated data.
 ///   A BADONION failure (bad version, key or HMAC; with an <c>update_add_htlc</c> <c>path_key</c> every failure is
@@ -29,13 +33,19 @@ using Domain.Serialization.Interfaces;
 ///   incoming HTLC (<see cref="OnionReplayOwner"/>) and kept until its <c>cltv_expiry</c> (NL-078). The same HTLC
 ///   processed again (restart, link-up) is not a replay; another HTLC carrying a recorded HMAC is →
 ///   <see cref="IncomingOnionFailed"/> with <c>temporary_node_failure</c> (we never know the preimage of a forward,
-///   and the final hop's invoice logic is not consulted for a replayed onion).</item>
+///   and the final hop's invoice logic is not consulted for a replayed onion), or <c>invalid_onion_blinding</c> inside
+///   a blinded route.</item>
 ///   <item>Parse the payload with <see cref="IHopPayloadSerializer.DeserializeAsync"/> and validate it with
 ///   <see cref="HopPayloadValidator"/> → <c>invalid_onion_payload</c> (type, offset) on failure.</item>
-///   <item>Route blinding (M5) is not implemented. An HTLC with an <c>update_add_htlc</c> <c>path_key</c> is failed
-///   with <c>update_fail_malformed_htlc</c> + <c>invalid_onion_blinding</c>; a payload carrying
-///   <c>current_path_key</c> (we would be the introduction point) with <c>update_fail_htlc</c> +
-///   <c>invalid_onion_blinding</c> (BOLT 2 <c>update_add_htlc</c> receiver rules).</item>
+///   <item>Route blinding (M5), only when we advertise <c>option_route_blinding</c> and an
+///   <see cref="IRouteBlindingService"/> is registered: decrypt <c>encrypted_recipient_data</c> with the
+///   <c>update_add_htlc</c> path_key (reusing the peel's <see cref="PeeledOnion.PathKeySharedSecret"/>) or, at the
+///   introduction node, the payload's <c>current_path_key</c>; check it with
+///   <see cref="BlindedRecipientDataValidator"/> (with the incoming amount and expiry when given) and compute the
+///   forward's amount and expiry from <c>payment_relay</c>. Any failure: <c>update_fail_malformed_htlc</c> +
+///   <c>invalid_onion_blinding</c> when the path_key came in <c>update_add_htlc</c>, else (introduction node)
+///   <c>update_fail_htlc</c> + <c>invalid_onion_blinding</c>. Without the feature, a blinded HTLC is refused the same
+///   way (BOLT 2 <c>update_add_htlc</c> receiver rules).</item>
 /// </list>
 /// <para>Pure apart from the replay store (which persists the HMAC before this returns): no channel calls.
 /// Thread-safe.</para>
@@ -46,15 +56,27 @@ public sealed class IncomingOnionProcessor
     private readonly IHopPayloadSerializer _hopPayloadSerializer;
     private readonly IOnionReplayStore _replayStore;
     private readonly ILogger<IncomingOnionProcessor> _logger;
+    private readonly IRouteBlindingService? _routeBlindingService;
 
     public IncomingOnionProcessor(ISphinxService sphinxService, IHopPayloadSerializer hopPayloadSerializer,
-                                  IOnionReplayStore replayStore, ILogger<IncomingOnionProcessor> logger)
+                                  IOnionReplayStore replayStore, ILogger<IncomingOnionProcessor> logger,
+                                  IRouteBlindingService? routeBlindingService = null,
+                                  IOptions<NodeOptions>? nodeOptions = null)
     {
         _sphinxService = sphinxService;
         _hopPayloadSerializer = hopPayloadSerializer;
         _replayStore = replayStore;
         _logger = logger;
+
+        // Blinded payloads are read only when we advertise the feature: nobody should send them to us otherwise
+        var advertised = (nodeOptions?.Value.Features.OptionRouteBlinding ?? FeatureSupport.No) != FeatureSupport.No;
+        _routeBlindingService = advertised ? routeBlindingService : null;
     }
+
+    /// <summary>
+    /// Whether blinded payloads are read (we advertise <c>option_route_blinding</c> and have the service).
+    /// </summary>
+    public bool ReadsBlindedPayloads => _routeBlindingService is not null;
 
     /// <summary>
     /// Processes the onion of an incoming HTLC.
@@ -69,12 +91,18 @@ public sealed class IncomingOnionProcessor
     /// restart.</param>
     /// <param name="updateAddPathKey">The <c>update_add_htlc</c> <c>path_key</c> TLV, if any; never the payload's
     /// <c>current_path_key</c>.</param>
+    /// <param name="incomingAmount">The incoming HTLC's <c>amount_msat</c>. Needed inside a blinded route to check
+    /// <c>payment_constraints</c> and compute the forward's amount; without it those are skipped (use only to recover
+    /// the shared secret or the blinded role).</param>
+    /// <param name="incomingCltvExpiry">The incoming HTLC's <c>cltv_expiry</c>, needed the same way.</param>
     /// <returns>The classification; never throws for a bad onion.</returns>
     /// <exception cref="ArgumentException">If <paramref name="onionRoutingPacket"/> is not a payment onion length
     /// (the <c>update_add_htlc</c> serializer already guarantees it).</exception>
     public async Task<IncomingOnionResult> ProcessAsync(ReadOnlyMemory<byte> onionRoutingPacket, Hash paymentHash,
                                                         OnionReplayOwner? replayOwner,
-                                                        CompactPubKey? updateAddPathKey = null)
+                                                        CompactPubKey? updateAddPathKey = null,
+                                                        LightningMoney? incomingAmount = null,
+                                                        uint? incomingCltvExpiry = null)
     {
         var packet = new OnionPacket(onionRoutingPacket.Span);
         var hasPathKey = updateAddPathKey is not null;
@@ -97,8 +125,12 @@ public sealed class IncomingOnionProcessor
             if (_logger.IsEnabled(LogLevel.Warning))
                 _logger.LogWarning("Replayed onion for payment hash {PaymentHash}", paymentHash);
 
-            return hasPathKey
-                       ? Malformed(FailureCode.InvalidOnionBlinding, onionRoutingPacket)
+            if (hasPathKey)
+                return Malformed(FailureCode.InvalidOnionBlinding, onionRoutingPacket);
+
+            // An introduction node that is not the final node answers every error with invalid_onion_blinding
+            return !peeled.IsFinal && await CarriesCurrentPathKeyAsync(peeled)
+                       ? BlindingFailed(peeled, onionRoutingPacket)
                        : new IncomingOnionFailed(peeled.SharedSecret, FailureMessage.TemporaryNodeFailure());
         }
 
@@ -116,19 +148,93 @@ public sealed class IncomingOnionProcessor
         if (!HopPayloadValidator.TryValidate(payload, peeled.IsFinal, hasPathKey, out var validationError))
             return FromPayloadFailure(validationError, peeled, onionRoutingPacket, hasPathKey, payload);
 
-        // 4. Route blinding is not supported yet (ONION M5)
-        if (hasPathKey)
-            return Malformed(FailureCode.InvalidOnionBlinding, onionRoutingPacket);
-
-        if (payload.IsBlinded)
-            return new IncomingOnionFailed(peeled.SharedSecret,
-                                           FailureMessage.InvalidOnionBlinding(Sha256OfOnion(onionRoutingPacket)));
+        // 4. Route blinding (ONION M5)
+        if (hasPathKey || payload.IsBlinded)
+            return ProcessBlinded(peeled, payload, onionRoutingPacket, updateAddPathKey, incomingAmount,
+                                  incomingCltvExpiry);
 
         // 5. Classify
         if (peeled.IsFinal)
             return new IncomingOnionFinal(peeled.SharedSecret, payload);
 
         return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value);
+    }
+
+    private IncomingOnionResult ProcessBlinded(PeeledOnion peeled, HopPayload payload, ReadOnlyMemory<byte> onion,
+                                               CompactPubKey? updateAddPathKey, LightningMoney? incomingAmount,
+                                               uint? incomingCltvExpiry)
+    {
+        IncomingOnionResult Refuse(string reason)
+        {
+            if (_logger.IsEnabled(LogLevel.Debug))
+                _logger.LogDebug("Blinded HTLC refused: {Reason}", reason);
+
+            return updateAddPathKey is not null
+                       ? Malformed(FailureCode.InvalidOnionBlinding, onion)
+                       : BlindingFailed(peeled, onion);
+        }
+
+        if (_routeBlindingService is null)
+            return Refuse("route blinding is not enabled (option_route_blinding is not advertised).");
+
+        // The validator guarantees exactly one path key and the encrypted_recipient_data
+        var isIntroduction = updateAddPathKey is null;
+        var pathKey = updateAddPathKey ?? payload.CurrentPathKey!.Value;
+        BlindedHopUnblinding unblinded;
+        try
+        {
+            unblinded = _routeBlindingService.UnblindAsLocalNode(pathKey, payload.EncryptedRecipientData!.Value,
+                                                                 peeled.PathKeySharedSecret);
+        }
+        catch (OnionException e)
+        {
+            return Refuse(e.Message);
+        }
+
+        var data = unblinded.RecipientData;
+        if (!BlindedRecipientDataValidator.TryValidate(data, peeled.IsFinal, incomingAmount?.MilliSatoshi,
+                                                       incomingCltvExpiry, out var reason))
+            return Refuse(reason);
+
+        if (peeled.IsFinal)
+            return new IncomingOnionFinal(peeled.SharedSecret, payload,
+                                          new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey));
+
+        // BOLT 4: amt_to_forward and outgoing_cltv_value come from payment_relay
+        var relay = data.PaymentRelay!;
+        LightningMoney? amountToForward = null;
+        if (incomingAmount is not null)
+        {
+            if (!relay.TryComputeAmountToForward(incomingAmount.MilliSatoshi, out var amountToForwardMsat))
+                return Refuse($"amount_msat {incomingAmount.MilliSatoshi} does not cover fee_base_msat "
+                            + $"{relay.FeeBaseMsat}.");
+            amountToForward = LightningMoney.MilliSatoshis(amountToForwardMsat);
+        }
+
+        uint? outgoingCltvValue = null;
+        if (incomingCltvExpiry is { } expiry)
+        {
+            if (!relay.TryComputeOutgoingCltvValue(expiry, out var outgoing))
+                return Refuse($"cltv_expiry {expiry} is below payment_relay.cltv_expiry_delta "
+                            + $"{relay.CltvExpiryDelta}.");
+            outgoingCltvValue = outgoing;
+        }
+
+        return new IncomingOnionForward(peeled.SharedSecret, payload, peeled.NextPacket!.Value,
+                                        new IncomingBlindedHop(isIntroduction, data, unblinded.NextPathKey,
+                                                               amountToForward, outgoingCltvValue));
+    }
+
+    private async Task<bool> CarriesCurrentPathKeyAsync(PeeledOnion peeled)
+    {
+        try
+        {
+            return (await _hopPayloadSerializer.DeserializeAsync(peeled.Payload)).CurrentPathKey is not null;
+        }
+        catch (OnionException)
+        {
+            return false;
+        }
     }
 
     private IncomingOnionResult FromPeelFailure(OnionException e, ReadOnlyMemory<byte> onion, bool hasPathKey)
@@ -161,8 +267,7 @@ public sealed class IncomingOnionProcessor
 
         // BOLT 4: an erring non-final node with current_path_key in its payload returns invalid_onion_blinding
         if (payload?.CurrentPathKey is not null && !peeled.IsFinal)
-            return new IncomingOnionFailed(peeled.SharedSecret,
-                                           FailureMessage.InvalidOnionBlinding(Sha256OfOnion(onion)));
+            return BlindingFailed(peeled, onion);
 
         return TryCreateFailure(e, out var failure)
                    ? new IncomingOnionFailed(peeled.SharedSecret, failure)
@@ -182,6 +287,9 @@ public sealed class IncomingOnionProcessor
             return false;
         }
     }
+
+    private static IncomingOnionFailed BlindingFailed(PeeledOnion peeled, ReadOnlyMemory<byte> onion) =>
+        new(peeled.SharedSecret, FailureMessage.InvalidOnionBlinding(Sha256OfOnion(onion)));
 
     private static IncomingOnionMalformed Malformed(FailureCode failureCode, ReadOnlyMemory<byte> onion) =>
         new(failureCode, Sha256OfOnion(onion));
