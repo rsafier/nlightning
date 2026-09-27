@@ -38,4 +38,16 @@ public interface IPeerStorageService
     /// The blob we keep for <paramref name="peerNodeId"/>, or null.
     /// </summary>
     Task<StoredPeerBlob?> GetStoredBlobAsync(CompactPubKey peerNodeId);
+
+    /// <summary>
+    /// True once a peer handed back a backup of ours naming channels we have no record of: from then on (until the
+    /// restart) our backup is sent to no peer, so the copies that prove the data loss are not overwritten.
+    /// </summary>
+    bool BackupsHeldForDataLoss { get; }
+
+    /// <summary>
+    /// Stops the periodic round and writes the blobs whose write was delayed. Call it at shutdown after the peers
+    /// stopped and before the service provider is disposed (disposal alone cannot open a database scope any more).
+    /// </summary>
+    Task StopAsync();
 }

@@ -441,6 +441,7 @@ public class PeerStorageServiceTests
         other.AddChannel(new FakeGossipPeer(29).PeerPubKey);
         var foreign = await other.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
         var peer = new FakeGossipPeer(30);
+        context.AddChannel(peer.PeerPubKey);
 
         // Act
         context.Service.HandleMessage(
@@ -452,6 +453,143 @@ public class PeerStorageServiceTests
         Assert.Null(retrieval.Contents);
         Assert.Null(retrieval.MatchesLastSent);
         Assert.Empty(retrieval.UnknownChannels);
+    }
+
+    [Fact]
+    public async Task Given_AStrangerWithoutChannel_When_ItSendsARetrieval_Then_NothingIsRecorded()
+    {
+        // Arrange: any node id can connect and send one
+        using var context = new PeerStorageTestContext();
+        var stranger = new FakeGossipPeer(35);
+
+        // Act
+        context.Service.HandleMessage(
+            stranger, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(new byte[] { 1, 2, 3 })));
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.Empty(context.Service.GetRetrievals());
+    }
+
+    [Fact]
+    public async Task Given_ARestartWithFewerChannels_When_ThePeersCopyNamesALostChannel_Then_NoBackupReplacesIt()
+    {
+        // Arrange: the peer keeps our backup naming two channels; we restarted from an older database that lost one
+        using var context = new PeerStorageTestContext(options: new PeerStorageOptions
+        {
+            RetrievalWait = TimeSpan.FromSeconds(30)
+        });
+        var peer = new FakeGossipPeer(36);
+        context.AddChannel(peer.PeerPubKey);
+        var lost = context.AddChannel(new FakeGossipPeer(37).PeerPubKey);
+        var keptByPeer = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        context.Channels.Remove(lost);
+        context.KnownChannelIds.Remove(lost.ChannelId);
+
+        // Act: first connection of the process, then the peer's retrieval, then the wait and a round pass
+        context.Service.OnPeerInitialized(peer);
+        var waiting = context.Service.LastWork;
+        var nothingBeforeRetrieval = await peer.NothingSentWithinAsync(s_quiet);
+        context.Service.HandleMessage(
+            peer, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(keptByPeer!.Blob)));
+        await context.Service.LastWork;
+        await waiting;
+        context.Time.Advance(TimeSpan.FromMinutes(1));
+        await context.Service.RunRoundAsync();
+        var another = new FakeGossipPeer(38);
+        context.AddChannel(another.PeerPubKey);
+        context.Service.OnPeerInitialized(another);
+        context.Time.Advance(TimeSpan.FromSeconds(30));
+        await context.Service.LastWork;
+
+        // Assert: the data loss is recorded and our backup goes to nobody (the peer's copy is the evidence)
+        Assert.True(nothingBeforeRetrieval);
+        Assert.True(context.Service.BackupsHeldForDataLoss);
+        var retrieval = Assert.Single(context.Service.GetRetrievals());
+        Assert.Equal(lost.ChannelId, Assert.Single(retrieval.UnknownChannels).ChannelId);
+        Assert.True(await peer.NothingSentWithinAsync(s_quiet));
+        Assert.True(await another.NothingSentWithinAsync(s_quiet));
+    }
+
+    [Fact]
+    public async Task Given_ARestart_When_ThePeersRetrievalMatchesOurChannels_Then_TheBackupFollowsIt()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext(options: new PeerStorageOptions
+        {
+            RetrievalWait = TimeSpan.FromSeconds(30)
+        });
+        var peer = new FakeGossipPeer(39);
+        context.AddChannel(peer.PeerPubKey);
+        var older = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        context.AddChannel(new FakeGossipPeer(40).PeerPubKey);
+
+        // Act
+        context.Service.OnPeerInitialized(peer);
+        var waiting = context.Service.LastWork;
+        context.Service.HandleMessage(
+            peer, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(older!.Blob)));
+        await context.Service.LastWork;
+        await waiting;
+
+        // Assert: no data loss (every channel it names is known), so the current backup replaces it at once
+        Assert.False(context.Service.BackupsHeldForDataLoss);
+        var sent = await peer.NextAsync<PeerStorageMessage>();
+        var contents = await context.BlobProvider.TryReadBlobAsync(sent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Equal(2, contents!.Channels.Count);
+    }
+
+    [Fact]
+    public async Task Given_ARestart_When_ThePeerSendsNoRetrieval_Then_TheBackupIsSentAfterTheWait()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext(options: new PeerStorageOptions
+        {
+            RetrievalWait = TimeSpan.FromSeconds(30)
+        });
+        var peer = new FakeGossipPeer(41);
+        context.AddChannel(peer.PeerPubKey);
+
+        // Act
+        context.Service.OnPeerInitialized(peer);
+        var waiting = context.Service.LastWork;
+        var nothingBeforeTheWait = await peer.NothingSentWithinAsync(s_quiet);
+        context.Time.Advance(TimeSpan.FromSeconds(30));
+        await waiting;
+
+        // Assert
+        Assert.True(nothingBeforeTheWait);
+        Assert.IsType<PeerStorageMessage>(await peer.NextAsync<PeerStorageMessage>());
+    }
+
+    [Fact]
+    public async Task Given_ARetrievalBeforeTheInitHook_When_ThePeerLostOurBackup_Then_TheNextConnectionSendsIt()
+    {
+        // Arrange: we sent our backup; the peer lost it and, on its next connection, its retrieval (an older backup
+        // of ours) is handled before our init hook registered that connection
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(42);
+        context.AddChannel(peer.PeerPubKey);
+        var older = await context.BlobProvider.CreateBlobAsync(TestContext.Current.CancellationToken);
+        context.AddChannel(new FakeGossipPeer(43).PeerPubKey);
+        context.Service.OnPeerInitialized(peer);
+        await peer.NextAsync<PeerStorageMessage>();
+        peer.Disconnect();
+        var reconnected = new FakeGossipPeer(42);
+
+        // Act
+        context.Service.HandleMessage(
+            reconnected, new PeerStorageRetrievalMessage(new PeerStorageRetrievalPayload(older!.Blob)));
+        await context.Service.LastWork;
+        context.Service.OnPeerInitialized(reconnected);
+        await context.Service.LastWork;
+
+        // Assert
+        var resent = await reconnected.NextAsync<PeerStorageMessage>();
+        var contents = await context.BlobProvider.TryReadBlobAsync(resent.Payload.Blob,
+                                                                   TestContext.Current.CancellationToken);
+        Assert.Equal(2, contents!.Channels.Count);
     }
 
     #endregion

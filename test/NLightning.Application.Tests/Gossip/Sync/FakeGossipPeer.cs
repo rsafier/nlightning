@@ -26,14 +26,16 @@ internal sealed class FakeGossipPeer : IPeerService
     private readonly List<IMessage> _all = [];
     private readonly Lock _lock = new();
 
-    public FakeGossipPeer(byte seed, bool gossipQueries = true, bool gossipQueriesEx = false)
+    public FakeGossipPeer(byte seed, bool gossipQueries = true, bool gossipQueriesEx = false,
+                          bool provideStorage = true)
     {
         PeerPubKey = new TestGossipKey(seed).PubKey;
         Features = new FeatureOptions
         {
             ChainHashes = [ChainConstants.Regtest],
             GossipQueries = gossipQueries ? FeatureSupport.Optional : FeatureSupport.No,
-            ExpandedGossipQueries = gossipQueriesEx ? FeatureSupport.Optional : FeatureSupport.No
+            ExpandedGossipQueries = gossipQueriesEx ? FeatureSupport.Optional : FeatureSupport.No,
+            OptionProvideStorage = provideStorage ? FeatureSupport.Optional : FeatureSupport.No
         };
     }
 
