@@ -41,7 +41,10 @@ public sealed class SpliceOutClientRequest
 
     public ChannelId ChannelId { get; }
 
-    /// <summary>The amount taken out of our channel balance, in satoshis.</summary>
+    /// <summary>
+    /// The amount paid to <see cref="Address"/> (or our wallet), in satoshis. Our channel balance drops by this plus our
+    /// share of the splice fee.
+    /// </summary>
     public ulong AmountSat { get; }
 
     /// <summary>Where the amount goes, or null for a new address of our wallet.</summary>
@@ -50,6 +53,11 @@ public sealed class SpliceOutClientRequest
     /// <summary>The splice transaction's feerate, or null for the fee service's estimate.</summary>
     public uint? FeeRatePerKw { get; init; }
 
-    /// <summary>The <c>ISpliceService</c> request: a negative contribution.</summary>
+    /// <summary>
+    /// The <c>ISpliceService</c> request: -<see cref="AmountSat"/>, the operator's amount out. This is not the wire
+    /// value: the service turns it into a <c>funding_contribution_satoshis</c> of -(amount + our fee share), because
+    /// BOLT 2 sets the contribution to what leaves our balance and the new funding output to the previous capacity plus
+    /// the contributions (splicing plan D16). Putting -amount on the wire makes the peer <c>tx_abort</c>.
+    /// </summary>
     public SpliceRequest ToSpliceRequest() => new(ChannelId, -checked((long)AmountSat), FeeRatePerKw, Address);
 }
