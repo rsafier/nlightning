@@ -138,8 +138,10 @@ public static class NodeConfigurationExtensions
                 // An unknown network fails here, before its directory is created
                 _ = BitcoinNetwork.Resolve(network);
 
-                Directory.CreateDirectory(configPath);
-                File.WriteAllText(configFile, CreateDefaultConfigJson(network));
+                // Owner-only: the directory gets the key file, the cookie, the database and the logs, and the file
+                // gets the bitcoind RPC password
+                FilePermissionUtils.CreateOwnerOnlyDirectory(configPath);
+                FilePermissionUtils.WriteNewOwnerOnlyFile(configFile, CreateDefaultConfigJson(network));
             }
         }
 
@@ -155,6 +157,12 @@ public static class NodeConfigurationExtensions
 
         // Log startup info using bootstrap logger
         Log.Information("Starting NLTG with configuration from {ConfigPath} (Network: {Network})", configPath, network);
+
+        // Directories and files written by older builds (or by hand) may be readable by other users
+        if (!string.IsNullOrEmpty(configPath))
+            FilePermissionUtils.WarnIfAccessibleByOthers(configPath, "The configuration directory", Log.Logger);
+        if (!string.IsNullOrEmpty(configFile))
+            FilePermissionUtils.WarnIfAccessibleByOthers(configFile, "The configuration file", Log.Logger);
 
         // Build configuration with proper precedence
         var config = new ConfigurationBuilder();

@@ -16,7 +16,8 @@ public static class PasswordUtils
     /// Gets the password without prompting.
     /// </summary>
     /// <remarks>
-    /// Precedence: <c>--password-file &lt;path&gt;</c>, <c>--password-stdin</c>, <c>--password &lt;value&gt;</c>
+    /// Precedence: <c>--password-file &lt;path&gt;</c> (logs a warning when other users can access the file),
+    /// <c>--password-stdin</c>, <c>--password &lt;value&gt;</c>
     /// (logs a warning, because the value is visible in the process list), then the <c>NLTG_PASSWORD</c>
     /// environment variable.
     /// </remarks>
@@ -25,7 +26,10 @@ public static class PasswordUtils
     {
         var passwordFile = GetOptionValue(args, DashDashPasswordFile);
         if (passwordFile is not null)
+        {
+            FilePermissionUtils.WarnIfAccessibleByOthers(passwordFile, "The password file", logger);
             return TrimLineEnding(File.ReadAllText(passwordFile));
+        }
 
         if (args.Any(arg => arg.Equals(DashDashPasswordStdin, StringComparison.OrdinalIgnoreCase)))
             return TrimLineEnding(stdin.ReadLine() ?? string.Empty);
