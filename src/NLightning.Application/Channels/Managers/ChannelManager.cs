@@ -483,6 +483,83 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
     /// <inheritdoc />
     /// <remarks>
+    /// Splicing plan SP1-B-T2 (SP-OP-05/06/07): the whole batch is handled under one acquisition of the channel's lock,
+    /// with the same gates as a single <c>commitment_signed</c> (failed channel, B2-RE-07, unknown channel, the
+    /// updatable-channel guard) and the same failure handling as <see cref="HandleChannelMessageAsync"/>;
+    /// <see cref="ChannelStateTransitionService.ReceiveCommitmentSignedBatchAsync"/> verifies every member before
+    /// anything changes, persists, then answers with one <c>revoke_and_ack</c> (and our own signature when due).
+    /// </remarks>
+    public async Task HandleCommitmentSignedBatchAsync(Domain.Protocol.Models.CommitmentSignedBatch batch,
+                                                       FeatureOptions negotiatedFeatures,
+                                                       CompactPubKey peerPubKey)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        var channelId = batch.ChannelId;
+
+        using var scope = _serviceProvider.CreateScope();
+        PreparedChannelFailure? preparedFailure = null;
+        try
+        {
+            using (await _channelLockProvider.AcquireAsync(channelId))
+            {
+                IReadOnlyList<IChannelMessage> replies;
+                try
+                {
+                    if (batch.Messages.Count == 0 || batch.Messages.Any(m => m.Payload.ChannelId != channelId))
+                        throw new ChannelWarningException(
+                            $"[SP-OP-04] commitment_signed batch for {channelId} holds another channel's message",
+                            channelId, "start_batch holds a message for another channel")
+                        { CloseConnection = true };
+
+                    _channelMemoryRepository.TryGetChannelState(channelId, out var currentState);
+                    if (currentState is ChannelState.Failed or ChannelState.OnchainResolving
+                     && _channelMemoryRepository.TryGetChannel(channelId, out var failed))
+                        throw new ChannelFailedException(channelId,
+                                                         $"Ignoring a commitment_signed batch on failed channel {channelId}",
+                                                         await GetStoredErrorTextAsync(scope, failed));
+
+                    ThrowIfNotReestablished(channelId, currentState, MessageTypes.CommitmentSigned);
+                    await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+
+                    var transitions = scope.ServiceProvider.GetRequiredService<ChannelStateTransitionService>();
+                    var channel = transitions.GetUpdatableChannel(channelId, currentState, "commitment_signed");
+                    replies = await transitions.ReceiveCommitmentSignedBatchAsync(channel, batch);
+                }
+                catch (ChannelFailedException cfe)
+                {
+                    // Persist Failed and the error before it is sent, still under the lock (N6-T3, NL-271)
+                    preparedFailure = await PersistFailedChannelAsync(scope, cfe);
+                    throw;
+                }
+
+                replies = await AdvanceCloseAsync(scope, channelId, replies);
+                RaiseResponseMessages(peerPubKey, replies);
+            }
+        }
+        catch (ChannelFailedException cfe) when (cfe.MustBroadcast)
+        {
+            await BroadcastFailedChannelAsync(cfe, preparedFailure);
+            throw;
+        }
+        catch (ChannelErrorException cee) when (!IsChannelScoped(cee.ChannelId) && IsChannelScoped(channelId))
+        {
+            throw new ChannelErrorException(cee.Message, channelId, cee, cee.PeerMessage);
+        }
+        catch (ChannelWarningException cwe) when (!IsChannelScoped(cwe.ChannelId) && IsChannelScoped(channelId))
+        {
+            throw new ChannelWarningException(cwe.Message, channelId, cwe, cwe.PeerMessage)
+            {
+                CloseConnection = cwe.CloseConnection
+            };
+        }
+        finally
+        {
+            await RaiseDomainEventsAsync(scope);
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Each channel is handled under its own lock (one at a time, never two). Failed channels get no
     /// channel_reestablish (BOLT 2: "retransmit the error packet and ignore any other packets for that channel").
     /// Every other channel past funding_signed sends its channel_reestablish now (BOLT 2: "MUST transmit

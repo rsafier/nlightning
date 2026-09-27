@@ -44,6 +44,34 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
         RunSeeds(DefaultSeeds, LongSeeds);
     }
 
+    /// <summary>
+    /// Splicing plan SP1-B-T5: the same random schedule with splice-in/out (and RBF attempts) negotiated while
+    /// quiescent, locks and discards at any time, batched commitment_signed and disconnects; SP-I2, SP-I3, SP-I6 and I6
+    /// per funding after every step.
+    /// </summary>
+    [Fact]
+    public void Given_500SplicingSeeds_When_Simulated_Then_InvariantsHoldAndEverySplicePathIsCovered()
+    {
+        // Arrange / Act
+        var stats = RunSeeds(0, DefaultSeeds, splicing: true);
+
+        // Assert
+        Assert.True(stats.Splices > 1_000 && stats.RbfSplices > 200, stats.ToString());
+        Assert.True(stats.SpliceIns > 300 && stats.SpliceOuts > 300, stats.ToString());
+        Assert.True(stats.Locks > 500 && stats.Discards > 100, stats.ToString());
+        Assert.True(stats.BatchesSigned > 2_000 && stats.ObsoleteBatchMembers > 20, stats.ToString());
+        Assert.True(stats.Disconnects > 300 && stats.RetransmittedCommitments > 100, stats.ToString());
+        Assert.True(stats.Adds > 4_000 && stats.Fulfills > 500, stats.ToString());
+    }
+
+    [Fact(Explicit = true)]
+    [Trait("Category", "Long")]
+    public void Given_10kSplicingSeeds_When_Simulated_Then_InvariantsHold()
+    {
+        // Arrange / Act / Assert
+        RunSeeds(DefaultSeeds, LongSeeds, splicing: true);
+    }
+
     [Fact]
     public void Given_483Limit_When_BothSidesFill_Then_RefusedExactlyAtLimitAndSettled()
     {
@@ -80,7 +108,7 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
 
     /// <summary>Runs the seeds in parallel; on failure reports the lowest failing seed (with its trace) and how many
     /// failed.</summary>
-    private SimulatorStats RunSeeds(int first, int count)
+    private SimulatorStats RunSeeds(int first, int count, bool splicing = false)
     {
         var total = new SimulatorStats();
         var failures = new ConcurrentBag<SimulatorFailureException>();
@@ -88,7 +116,7 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
         var options = new ParallelOptions { MaxDegreeOfParallelism = Math.Min(4, Environment.ProcessorCount) };
         Parallel.For(first, first + count, options, () => new SimulatorStats(), (seed, _, stats) =>
         {
-            var simulator = new CommitmentPairSimulator(seed);
+            var simulator = new CommitmentPairSimulator(seed, splicing: splicing);
             try
             {
                 simulator.Run();
@@ -106,7 +134,7 @@ public class CommitmentSimulatorTests(ITestOutputHelper output)
                 total.Add(stats);
         });
 
-        output.WriteLine($"seeds {first}..{first + count - 1}: {total}");
+        output.WriteLine($"{(splicing ? "splicing " : "")}seeds {first}..{first + count - 1}: {total}");
         if (!failures.IsEmpty)
         {
             var seeds = string.Join(", ", failures.Select(f => f.Seed).Order().Take(20));

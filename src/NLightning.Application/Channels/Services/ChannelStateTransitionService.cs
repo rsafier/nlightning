@@ -17,9 +17,11 @@ using Domain.Node.Options;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.Models;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
+using Interfaces;
 using Quiescence;
 
 /// <summary>
@@ -49,6 +51,8 @@ public sealed class ChannelStateTransitionService
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ChannelDomainEventQueue _eventQueue;
     private readonly ICommitmentSigner _commitmentSigner;
+    private readonly ICommitmentVerifier? _commitmentVerifier;
+    private readonly ICommitScheduler? _commitScheduler;
     private readonly ILightningSigner _lightningSigner;
     private readonly ILogger<ChannelStateTransitionService> _logger;
     private readonly IMessageFactory _messageFactory;
@@ -64,9 +68,13 @@ public sealed class ChannelStateTransitionService
                                          ILogger<ChannelStateTransitionService> logger, IMessageFactory messageFactory,
                                          IMessageSerializer messageSerializer, IOptions<NodeOptions> nodeOptions,
                                          ISecretStorageServiceFactory secretStorageServiceFactory,
-                                         IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null)
+                                         IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null,
+                                         ICommitmentVerifier? commitmentVerifier = null,
+                                         ICommitScheduler? commitScheduler = null)
     {
         _stfuReleaseScheduler = stfuReleaseScheduler;
+        _commitmentVerifier = commitmentVerifier;
+        _commitScheduler = commitScheduler;
         _channelMemoryRepository = channelMemoryRepository;
         _eventQueue = eventQueue;
         _commitmentSigner = commitmentSigner;
@@ -218,25 +226,60 @@ public sealed class ChannelStateTransitionService
     /// <c>revoke_and_ack</c> (D7), persisting it together with the sent diff (D4) before returning the message.
     /// </summary>
     /// <returns>The <c>commitment_signed</c> to send, or null when there is nothing to sign.</returns>
+    /// <remarks>
+    /// With a pending splice the signature is a batch (<c>start_batch</c> and one <c>commitment_signed</c> per active
+    /// funding, SP-OP-03), which this single-message form cannot return: nothing is signed here then, and the
+    /// signature is handed to the <see cref="ICommitScheduler"/> (when one is registered), which signs and publishes the
+    /// whole batch through <see cref="SignPendingAsync"/> after the caller's replies. Callers that can send several
+    /// messages should call <see cref="SignPendingAsync"/> directly.
+    /// </remarks>
     public async Task<CommitmentSignedMessage?> SignIfPendingAsync(ChannelModel channel)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (channel.Commitments is { PendingFundings.IsEmpty: false, CanSendCommit: true })
+        {
+            if (_commitScheduler is null)
+                _logger.LogWarning(
+                    "Channel {ChannelId} has a pending splice: its commitment_signed batch is signed by the next update or reestablish",
+                    channel.ChannelId);
+            else
+                _commitScheduler.Schedule(channel.ChannelId);
+
+            return null;
+        }
+
+        var messages = await SignPendingAsync(channel);
+        return messages.Count == 0 ? null : (CommitmentSignedMessage)messages.Single();
+    }
+
+    /// <summary>
+    /// Signs the peer's next commitment when changes are pending and no <c>commitment_signed</c> is waiting for its
+    /// <c>revoke_and_ack</c> (D7), persisting it together with the sent diff (D4) before returning the messages: one
+    /// <c>commitment_signed</c>, or with pending splices <c>start_batch</c> then one <c>commitment_signed</c> per active
+    /// funding, the current funding first (SP-OP-03). The messages go out together, nothing between them.
+    /// </summary>
+    /// <returns>The messages to send in order; empty when there is nothing to sign.</returns>
+    public async Task<IReadOnlyList<IChannelMessage>> SignPendingAsync(ChannelModel channel)
     {
         ArgumentNullException.ThrowIfNull(channel);
         var commitments = channel.Commitments
                        ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no commitment state");
         if (!commitments.CanSendCommit)
-            return null;
+            return [];
 
         if (channel.DataLossDetected || !CarriesUpdates(channel.State))
         {
             _logger.LogWarning("Not signing a commitment for channel {ChannelId} in state {State} (data loss: {Lost})",
                                channel.ChannelId, Enum.GetName(channel.State), channel.DataLossDetected);
-            return null;
+            return [];
         }
 
         var updates = PendingLocalUpdates(commitments).Select(u => ToWireMessage(channel, u)).ToList();
         var result = commitments.SendCommit(_commitmentSigner);
-        var commitmentSigned = (CommitmentSignedMessage)ToWireMessage(channel, result.Outbound.Single());
-        var diff = await SentCommitDiffCodec.EncodeAsync(_messageSerializer, updates.Append(commitmentSigned));
+        var signed = result.Outbound.Select(o => ToWireMessage(channel, o)).ToList();
+
+        // The whole batch is retransmitted verbatim on reestablish (D4)
+        var diff = await SentCommitDiffCodec.EncodeAsync(_messageSerializer, updates.Concat(signed));
 
         await CommitAsync(channel, result, new ChannelStateExtras
         {
@@ -245,10 +288,75 @@ public sealed class ChannelStateTransitionService
         });
 
         if (_logger.IsEnabled(LogLevel.Debug))
-            _logger.LogDebug("Signed remote commitment {Number} of channel {ChannelId} with {Updates} update(s)",
-                             channel.Commitments!.RemoteNextCommit!.Commit.Number, channel.ChannelId, updates.Count);
+            _logger.LogDebug(
+                "Signed remote commitment {Number} of channel {ChannelId} on {Fundings} funding(s) with {Updates} update(s)",
+                channel.Commitments!.RemoteNextCommit!.Commit.Number, channel.ChannelId,
+                commitments.PendingFundings.Count + 1, updates.Count);
 
-        return commitmentSigned;
+        return signed;
+    }
+
+    /// <summary>
+    /// Receives a <c>start_batch</c> group of <c>commitment_signed</c> (SP-OP-05/06/07): the engine verifies every
+    /// member against its funding before anything changes; the new local commitment (every funding's signatures) is
+    /// persisted in one save before the signer releases the revoked secret (I3, SP-I3); then <b>one</b>
+    /// <c>revoke_and_ack</c> is returned, followed by our own signature (a batch when splices are pending) if changes
+    /// are pending for the peer.
+    /// </summary>
+    /// <param name="channel">The channel (from <see cref="GetUpdatableChannel"/>).</param>
+    /// <param name="batch">The grouped messages.</param>
+    /// <returns>The replies in wire order.</returns>
+    /// <exception cref="ChannelFailedException">A batch rule was broken (SP-OP-05/06, fail the channel).</exception>
+    /// <exception cref="ChannelWarningException">Another receiver rule was broken (warning and close).</exception>
+    public async Task<IReadOnlyList<IChannelMessage>> ReceiveCommitmentSignedBatchAsync(
+        ChannelModel channel, CommitmentSignedBatch batch)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(batch);
+        var commitments = channel.Commitments
+                       ?? throw new InvalidOperationException($"Channel {channel.ChannelId} has no commitment state");
+        if (_commitmentVerifier is null)
+            throw new InvalidOperationException("No commitment verifier is registered");
+
+        CommitmentsResult result;
+        try
+        {
+            var members = batch.Messages
+                               .Select(m => new ReceivedCommitmentSigned(m.FundingTxIdTlv?.FundingTxId,
+                                                                         new CommitmentSignatures(
+                                                                             m.Payload.Signature,
+                                                                             m.Payload.HtlcSignatures.ToList())))
+                               .ToList();
+            result = commitments.ReceiveCommitBatch(members, _commitmentVerifier);
+        }
+        catch (CommitmentViolationException e)
+        {
+            throw ToPeerException(e, channel.ChannelId);
+        }
+
+        var revokeAndAck = result.Outbound.OfType<OutboundRevokeAndAck>().Single();
+
+        // Persist every funding's new local commitment before the secret exists (B2-CS-R06, I3, SP-I3)
+        await CommitAsync(channel, result, new ChannelStateExtras { LastSent = LastSentCommitmentMessage.RevokeAndAck });
+        var revokeAndAckMessage = CreateRevokeAndAck(channel, revokeAndAck);
+
+        if (_logger.IsEnabled(LogLevel.Debug))
+            _logger.LogDebug("Accepted local commitment {Number} of channel {ChannelId} on {Fundings} funding(s)",
+                             channel.Commitments!.LocalCommit.Number, channel.ChannelId, batch.Messages.Count);
+
+        IReadOnlyList<IChannelMessage> followUp;
+        try
+        {
+            followUp = await SignPendingAsync(channel);
+        }
+        catch (Exception e)
+        {
+            // The revoke_and_ack is persisted and must still go out; the next trigger signs again
+            _logger.LogError(e, "Failed to sign the next remote commitment of channel {ChannelId}", channel.ChannelId);
+            followUp = [];
+        }
+
+        return [revokeAndAckMessage, .. followUp];
     }
 
     /// <summary>
@@ -340,9 +448,12 @@ public sealed class ChannelStateTransitionService
             OutboundCommitmentSigned signed =>
                 _messageFactory.CreateCommitmentSignedMessage(channelId, signed.Signatures.Signature,
                                                               signed.Signatures.HtlcSignatures,
-                                                              channel.FundingOutput?.TransactionId
+                                                              signed.FundingTxId
+                                                           ?? channel.FundingOutput?.TransactionId
                                                            ?? throw new InvalidOperationException(
                                                                   $"Channel {channelId} has no funding txid")),
+            OutboundStartBatch batch =>
+                _messageFactory.CreateStartBatchMessage(channelId, checked((ushort)batch.BatchSize)),
             OutboundRevokeAndAck =>
                 throw new InvalidOperationException("revoke_and_ack is built by CreateRevokeAndAck after the save"),
             _ => throw new InvalidOperationException($"Unknown outbound message {outbound?.GetType().Name}")

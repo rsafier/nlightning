@@ -4,6 +4,7 @@ namespace NLightning.Domain.Channels.Commitments;
 
 using Bitcoin.Transactions.Enums;
 using Bitcoin.Transactions.Factories;
+using Bitcoin.ValueObjects;
 using Crypto.Constants;
 using Crypto.Hashes;
 using Crypto.ValueObjects;
@@ -11,6 +12,8 @@ using Enums;
 using Events;
 using Exceptions;
 using Interfaces;
+using Splicing;
+using Splicing.Enums;
 using Validators;
 using ValueObjects;
 
@@ -78,6 +81,17 @@ public sealed record ChannelCommitments
 
     /// <summary>The peer's per-commitment point for <c>RemoteCommit.Number + 1</c>; needed to sign (B2-CS-S06).</summary>
     public CompactPubKey? RemoteNextPerCommitmentPoint { get; private init; }
+
+    /// <summary>
+    /// The negotiated splices not locked yet, oldest first (splicing plan §3.3, D7): the HTLC set, fee updates and
+    /// commitment numbers are shared, and every commitment is signed on each of them too (SP-OP-01/03). Empty for a
+    /// channel without a pending splice, where the engine behaves exactly as the single-funding engine. The current
+    /// funding is <see cref="CommitmentParams.Funding"/>.
+    /// </summary>
+    public ImmutableList<ChannelFunding> PendingFundings { get; private init; } = ImmutableList<ChannelFunding>.Empty;
+
+    /// <summary>The current funding and the pending ones, or null when the engine has no funding data.</summary>
+    public FundingSet? Fundings => Params.Funding is { } current ? new FundingSet(current, PendingFundings) : null;
 
     private ChannelCommitments(ChannelId channelId, CommitmentParams @params, ulong localBalanceMsat,
                                ulong remoteBalanceMsat, ImmutableSortedDictionary<HtlcKey, HtlcRecord> htlcs,
@@ -152,7 +166,8 @@ public sealed record ChannelCommitments
                                              IEnumerable<FeeUpdate> feeUpdates, ulong localNextHtlcId,
                                              ulong remoteNextHtlcId, LocalCommit localCommit,
                                              RemoteCommit remoteCommit, RemoteNextCommit? remoteNextCommit,
-                                             CompactPubKey? remoteNextPerCommitmentPoint)
+                                             CompactPubKey? remoteNextPerCommitmentPoint,
+                                             IEnumerable<ChannelFunding>? pendingFundings = null)
     {
         ArgumentNullException.ThrowIfNull(@params);
         var htlcMap = ImmutableSortedDictionary.CreateBuilder<HtlcKey, HtlcRecord>();
@@ -189,7 +204,43 @@ public sealed record ChannelCommitments
         if (total != @params.FundingMsat)
             throw new ArgumentException($"Balances add up to {total} msat, not {@params.FundingMsat}");
 
+        var pending = pendingFundings?.ToImmutableList() ?? ImmutableList<ChannelFunding>.Empty;
+        if (pending.IsEmpty)
+        {
+            if (localCommit.PendingFundingSignatures.Count != 0
+             || remoteNextCommit?.PendingFundingSignatures.Count is > 0)
+                throw new ArgumentException("Per-funding signatures without a pending funding");
+
+            return restored;
+        }
+
+        if (@params.Funding is not { } current)
+            throw new ArgumentException("Pending fundings need the current funding", nameof(@params));
+
+        var set = FundingSet.Single(current);
+        foreach (var funding in pending)
+            set = set.AddPending(funding);
+
+        restored = restored with { PendingFundings = pending };
+        restored.CheckFundingSignatures(localCommit.PendingFundingSignatures, "local commitment");
+        if (remoteNextCommit is not null)
+            restored.CheckFundingSignatures(remoteNextCommit.PendingFundingSignatures, "unacked remote commitment");
+        foreach (var funding in pending)
+        {
+            SpecFor(localCommit.Spec, funding);
+            SpecFor(remoteCommit.Spec, funding);
+            if (remoteNextCommit is not null)
+                SpecFor(remoteNextCommit.Commit.Spec, funding);
+        }
+
         return restored;
+    }
+
+    /// <summary>Per-funding signatures must name exactly the pending fundings, in order (SP-I2).</summary>
+    private void CheckFundingSignatures(IReadOnlyList<FundingSignatures> signatures, string what)
+    {
+        if (!signatures.Select(s => s.FundingTxId).SequenceEqual(PendingFundings.Select(f => f.FundingTxId)))
+            throw new ArgumentException($"The {what} does not hold one signature set per pending funding, in order");
     }
 
     #endregion
@@ -218,6 +269,51 @@ public sealed record ChannelCommitments
             throw new InvalidOperationException($"Negative balance in the {side} commitment: engine invariant broken");
 
         return view.ToSpec();
+    }
+
+    /// <summary>
+    /// The latest <paramref name="side"/> commitment on <paramref name="funding"/> (splicing plan §3.3): the shared
+    /// reduce with the main balances moved by the funding's deltas. On the current funding (deltas 0) it is
+    /// <see cref="BuildSpec(CommitmentSide)"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A balance is negative on that funding (engine invariant SP-I6
+    /// broken).</exception>
+    public CommitmentSpec BuildSpec(CommitmentSide side, ChannelFunding funding) => SpecFor(BuildSpec(side), funding);
+
+    /// <summary>
+    /// The same commitment on another funding: <paramref name="spec"/> (built on the current funding) with the main
+    /// balances moved by the deltas of <paramref name="funding"/> (splicing plan §3.3; I6 per funding:
+    /// <c>TotalMsat</c> becomes that funding's capacity). Returns <paramref name="spec"/> itself when the deltas are 0.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">A balance would be negative (SP-I6 broken).</exception>
+    public static CommitmentSpec SpecFor(CommitmentSpec spec, ChannelFunding funding)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentNullException.ThrowIfNull(funding);
+        if (funding.LocalBalanceDeltaMsat == 0 && funding.RemoteBalanceDeltaMsat == 0)
+            return spec;
+
+        var local = checked((long)spec.LocalMsat + funding.LocalBalanceDeltaMsat);
+        var remote = checked((long)spec.RemoteMsat + funding.RemoteBalanceDeltaMsat);
+        if (local < 0 || remote < 0)
+            throw new InvalidOperationException(
+                $"Negative balance in the {spec.Holder} commitment on funding {funding.FundingTxId}: invariant SP-I6 broken");
+
+        return new CommitmentSpec(spec.Holder, spec.FeeratePerKw, (ulong)local, (ulong)remote, spec.Htlcs);
+    }
+
+    /// <summary>
+    /// Every active funding as the update rules see it (SP-OP-01, SP-I6): the current funding first, with its deltas 0,
+    /// then each pending funding. The reserves follow D9 (<see cref="CommitmentParams.LocalReserveMsatOn"/>).
+    /// </summary>
+    internal IEnumerable<FundingView> ActiveFundingViews()
+    {
+        yield return new FundingView(Params.Funding, true, 0, 0, (long)Params.LocalReserveMsatOn(Params.Funding),
+                                     (long)Params.RemoteReserveMsatOn(Params.Funding));
+        foreach (var funding in PendingFundings)
+            yield return new FundingView(funding, false, funding.LocalBalanceDeltaMsat, funding.RemoteBalanceDeltaMsat,
+                                         (long)Params.LocalReserveMsatOn(funding),
+                                         (long)Params.RemoteReserveMsatOn(funding));
     }
 
     /// <summary>
@@ -598,18 +694,47 @@ public sealed record ChannelCommitments
         var advanced = Advance(HtlcEvent.SendCommit, out var settled);
         var spec = advanced.BuildSpec(CommitmentSide.Remote);
         var number = checked(RemoteCommit.Number + 1);
-        var signatures = signer.SignRemoteCommitment(ChannelId, Params.Funding, number, spec, point);
+        var signatures = SignRemote(signer, Params.Funding, number, spec, point);
+
+        // SP-OP-03: the same commitment number on every pending splice funding, the current funding first
+        var pendingSignatures = PendingFundings
+                               .Select(f => new FundingSignatures(
+                                           f.FundingTxId,
+                                           SignRemote(signer, f, number, SpecFor(spec, f), point)))
+                               .ToList();
+        var next = advanced with
+        {
+            RemoteNextCommit = new RemoteNextCommit(new RemoteCommit(number, spec, point), signatures)
+            {
+                PendingFundingSignatures = pendingSignatures
+            }
+        };
+
+        if (pendingSignatures.Count == 0)
+            return Result(next, [new OutboundCommitmentSigned(number, signatures)], settled);
+
+        var outbound = new List<CommitmentOutbound>(pendingSignatures.Count + 2)
+        {
+            new OutboundStartBatch(pendingSignatures.Count + 1),
+            new OutboundCommitmentSigned(number, signatures, Params.Funding!.FundingTxId)
+        };
+        outbound.AddRange(pendingSignatures.Select(s => new OutboundCommitmentSigned(number, s.Signatures,
+                                                                                     s.FundingTxId)));
+        return Result(next, outbound, settled);
+    }
+
+    /// <summary>Signs one remote commitment and checks the HTLC signature count.</summary>
+    private CommitmentSignatures SignRemote(ICommitmentSigner signer, ChannelFunding? funding, ulong number,
+                                            CommitmentSpec spec, CompactPubKey point)
+    {
+        var signatures = signer.SignRemoteCommitment(ChannelId, funding, number, spec, point);
         var expected =
             CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Remote.DustLimitSatoshis, Params.OptionAnchors);
         if (signatures.HtlcSignatures.Count != expected)
             throw new InvalidOperationException(
                 $"Signer returned {signatures.HtlcSignatures.Count} HTLC signatures, expected {expected}");
 
-        var next = advanced with
-        {
-            RemoteNextCommit = new RemoteNextCommit(new RemoteCommit(number, spec, point), signatures)
-        };
-        return Result(next, [new OutboundCommitmentSigned(number, signatures)], settled);
+        return signatures;
     }
 
     /// <summary>
@@ -623,27 +748,116 @@ public sealed record ChannelCommitments
     /// <exception cref="CommitmentViolationException">The funder (the peer) cannot pay the fee of the new commitment
     /// (B2-FEE-R03 when it carries a new feerate, else B2-ADD-R02), <c>num_htlcs</c> mismatch (B2-CS-R02) or invalid
     /// signature (B2-CS-R01, B2-CS-R03).</exception>
+    /// <exception cref="CommitmentViolationException">Also (must fail the channel) when a splice is pending: a lone
+    /// <c>commitment_signed</c> outside a <c>start_batch</c> (SP-OP-05); use <see cref="ReceiveCommitBatch"/>.</exception>
     public CommitmentsResult ReceiveCommit(CommitmentSignatures signatures, ICommitmentVerifier verifier)
     {
         ArgumentNullException.ThrowIfNull(signatures);
         ArgumentNullException.ThrowIfNull(verifier);
+        if (!PendingFundings.IsEmpty)
+            throw FailChannel("SP-OP-05",
+                              $"commitment_signed outside a start_batch while {PendingFundings.Count} splice(s) are pending");
 
+        return ReceiveCommitCore(signatures, [], verifier);
+    }
+
+    /// <summary>
+    /// Applies a <c>start_batch</c> group of <c>commitment_signed</c> (BOLT 2 "Batching channel messages"; SP-OP-05,
+    /// 06, 07): all verified first, then our commitment moves to the next number on every active funding at once and
+    /// <b>one</b> <c>revoke_and_ack</c> is owed.
+    /// </summary>
+    /// <remarks>
+    /// <para>A member without <c>funding_txid</c> fails the channel. Every active funding needs exactly one member (a
+    /// missing or duplicated one fails the channel, SP-OP-05). Members whose <c>funding_txid</c> matches no active
+    /// funding are ignored, with or without pending splices: they are obsolete ones the peer sent before our
+    /// <c>splice_locked</c> or a sibling discard reached it (SP-OP-06; BOLT 2 rationale "we can safely ignore them by
+    /// filtering on funding_txid", Eclair matches members to its active commitments the same way).</para>
+    /// <para>All-or-nothing (splicing plan risk 1): any invalid member leaves this snapshot unchanged, so no secret is
+    /// ever released for a partially verified batch.</para>
+    /// </remarks>
+    /// <param name="batch">The members in arrival order.</param>
+    /// <param name="verifier">The signature verifier.</param>
+    /// <exception cref="CommitmentViolationException">See above and <see cref="ReceiveCommit"/>.</exception>
+    /// <exception cref="InvalidOperationException">The engine has no funding data (a batch cannot be matched).</exception>
+    public CommitmentsResult ReceiveCommitBatch(IReadOnlyList<ReceivedCommitmentSigned> batch,
+                                                ICommitmentVerifier verifier)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(verifier);
+        var current = Params.Funding
+                   ?? throw new InvalidOperationException("A commitment_signed batch needs the channel's funding data");
+        if (batch.Count == 0)
+            throw FailChannel("SP-OP-05", "Empty commitment_signed batch");
+        if (batch.Any(m => m.FundingTxId is null))
+            throw FailChannel("SP-OP-05", "A batched commitment_signed has no funding_txid");
+
+        // Obsolete members (fundings no longer active) are dropped before any check (SP-OP-06)
+        var byFunding = batch.Where(m => IsActiveFunding(m.FundingTxId!.Value))
+                             .GroupBy(m => m.FundingTxId!.Value)
+                             .ToList();
+        if (byFunding.FirstOrDefault(g => g.Count() > 1) is { } duplicate)
+            throw FailChannel("SP-OP-05", $"The batch holds {duplicate.Count()} commitment_signed for funding {duplicate.Key}");
+
+        var currentSignatures = byFunding.FirstOrDefault(g => g.Key == current.FundingTxId)?.Single().Signatures
+                             ?? throw FailChannel(PendingFundings.IsEmpty ? "SP-OP-06" : "SP-OP-05",
+                                                  $"The batch has no commitment_signed for the current funding {current.FundingTxId}");
+        if (PendingFundings.IsEmpty)
+            return ReceiveCommitCore(currentSignatures, [], verifier);
+
+        var pendingSignatures = new List<FundingSignatures>(PendingFundings.Count);
+        foreach (var funding in PendingFundings)
+        {
+            var member = byFunding.FirstOrDefault(g => g.Key == funding.FundingTxId)?.Single()
+                      ?? throw FailChannel("SP-OP-05",
+                                           $"The batch has no commitment_signed for pending funding {funding.FundingTxId}");
+            pendingSignatures.Add(new FundingSignatures(funding.FundingTxId, member.Signatures));
+        }
+
+        return ReceiveCommitCore(currentSignatures, pendingSignatures, verifier);
+    }
+
+    /// <summary>Whether <paramref name="fundingTxId"/> is the current funding or a pending splice.</summary>
+    private bool IsActiveFunding(TxId fundingTxId) =>
+        Params.Funding?.FundingTxId == fundingTxId || PendingFundings.Any(f => f.FundingTxId == fundingTxId);
+
+    /// <summary>The <c>commitment_signed</c> receiver rules on every active funding, then one revocation.</summary>
+    private CommitmentsResult ReceiveCommitCore(CommitmentSignatures signatures,
+                                                IReadOnlyList<FundingSignatures> pendingSignatures,
+                                                ICommitmentVerifier verifier)
+    {
         var committed = Advance(HtlcEvent.RecvCommit, out var settledOnCommit);
         var spec = committed.BuildSpec(CommitmentSide.Local);
         UpdateValidator.ValidateReceivedCommitFee(this, spec);
         var number = checked(LocalCommit.Number + 1);
+
+        // Every count first, then every signature: nothing is accepted unless the whole batch is valid (SP-I3)
+        var members = new List<(ChannelFunding? Funding, CommitmentSpec Spec, CommitmentSignatures Signatures)>
+        {
+            (Params.Funding, spec, signatures)
+        };
+        members.AddRange(PendingFundings.Zip(pendingSignatures, (f, s) => ((ChannelFunding?)f, SpecFor(spec, f),
+                                                                          s.Signatures)));
         var expected =
             CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
-        if (signatures.HtlcSignatures.Count != expected)
-            throw Violation("B2-CS-R02", $"num_htlcs {signatures.HtlcSignatures.Count}, expected {expected}");
-        if (!verifier.VerifyLocalCommitment(ChannelId, Params.Funding, number, spec, signatures))
-            throw Violation("B2-CS-R01", $"Invalid signature for local commitment {number}");
+        foreach (var (funding, _, memberSignatures) in members)
+            if (memberSignatures.HtlcSignatures.Count != expected)
+                throw Violation("B2-CS-R02",
+                                $"num_htlcs {memberSignatures.HtlcSignatures.Count}, expected {expected}{Label(funding)}");
+        foreach (var (funding, memberSpec, memberSignatures) in members)
+            if (!verifier.VerifyLocalCommitment(ChannelId, funding, number, memberSpec, memberSignatures))
+                throw Violation("B2-CS-R01", $"Invalid signature for local commitment {number}{Label(funding)}");
 
-        var revoked = (committed with { LocalCommit = new LocalCommit(number, spec, signatures) })
+        var localCommit = new LocalCommit(number, spec, signatures) { PendingFundingSignatures = pendingSignatures };
+        var revoked = (committed with { LocalCommit = localCommit })
            .Advance(HtlcEvent.SendRevoke, out var settledOnRevoke);
         return Result(revoked, [new OutboundRevokeAndAck(LocalCommit.Number, checked(number + 1))],
                       settledOnCommit.Concat(settledOnRevoke).ToList());
     }
+
+    /// <summary>A rule-message suffix naming a pending funding; empty for the current one.</summary>
+    private string Label(ChannelFunding? funding) =>
+        funding is null || ReferenceEquals(funding, Params.Funding) ? string.Empty
+                                                                     : $" on splice funding {funding.FundingTxId}";
 
     /// <summary>
     /// Applies the peer's <c>revoke_and_ack</c>: checks the secret of its current commitment, then rotates to the
@@ -675,8 +889,16 @@ public sealed record ChannelCommitments
         };
         var result = Result(next, [], settled);
 
-        // The commitment the peer just revoked goes to the revocation log (BOLT 5 plan O1-T1)
-        return result with { Transition = result.Transition with { RevokedRemoteCommit = RemoteCommit } };
+        // The commitment the peer just revoked goes to the revocation log (BOLT 5 plan O1-T1), on every funding it was
+        // signed on: one secret revokes the number on all of them (SP-OP-07, SP-I3, SP-I5)
+        return result with
+        {
+            Transition = result.Transition with
+            {
+                RevokedRemoteCommit = RemoteCommit,
+                RevokedRemoteCommitFundings = PendingFundings.IsEmpty ? null : PendingFundings
+            }
+        };
     }
 
     /// <summary>
@@ -771,9 +993,206 @@ public sealed record ChannelCommitments
 
     #endregion
 
+    #region Splicing
+
+    /// <summary>The most active fundings a channel may have: a <c>start_batch</c> carries at most 20 messages.</summary>
+    public const int MaxActiveFundings = 20;
+
+    /// <summary>
+    /// No update is pending in either direction and no <c>revoke_and_ack</c> is awaited: the state quiescence
+    /// guarantees (BOLT 2 <c>stfu</c>), in which both sides agree on the HTLC set and the commitment numbers a splice
+    /// commitment uses (SP-I8).
+    /// </summary>
+    public bool IsSettledForSplice => RemoteNextCommit is null && !HasPendingChangesForRemote
+                                                               && !HasPendingChangesForLocal;
+
+    /// <summary>
+    /// Signs the peer's commitment on a negotiated splice funding (SP-CS-01): the <b>current</b> remote commitment
+    /// number and content, moved to <paramref name="funding"/>'s balances. Nothing advances and no
+    /// <c>revoke_and_ack</c> is involved (SP-CS-02); the snapshot is unchanged (the interactive-tx session keeps what was
+    /// sent, SP-I7).
+    /// </summary>
+    /// <param name="funding">The splice funding (not yet pending, or already pending for a retransmission).</param>
+    /// <param name="signer">The signer.</param>
+    /// <returns>A result whose only outbound is the <see cref="OutboundCommitmentSigned"/> with the funding's txid.</returns>
+    /// <exception cref="CommitmentRefusedException">Updates are pending (SP-I8).</exception>
+    /// <exception cref="ArgumentException">The funding breaks the <see cref="FundingSet.AddPending"/> rules.</exception>
+    /// <exception cref="InvalidOperationException">No funding data, or a balance would be negative on the funding.</exception>
+    public CommitmentsResult SignSpliceCommitment(ChannelFunding funding, ICommitmentSigner signer)
+    {
+        ArgumentNullException.ThrowIfNull(funding);
+        ArgumentNullException.ThrowIfNull(signer);
+        CheckSpliceFunding(funding);
+        if (!IsSettledForSplice)
+            throw new CommitmentRefusedException("SP-CS-01", "Updates are pending: a splice commitment needs quiescence");
+
+        var spec = SpecFor(RemoteCommit.Spec, funding);
+        var signatures = SignRemote(signer, funding, RemoteCommit.Number, spec, RemoteCommit.PerCommitmentPoint);
+        return Result(this, [new OutboundCommitmentSigned(RemoteCommit.Number, signatures, funding.FundingTxId)]);
+    }
+
+    /// <summary>
+    /// Verifies the peer's <c>commitment_signed</c> for our commitment on a negotiated splice funding (SP-CS-01: the
+    /// current local number and content, moved to <paramref name="funding"/>'s balances) and adds the funding as
+    /// pending with those signatures (SP-I2). No <c>revoke_and_ack</c> is owed (SP-CS-02).
+    /// </summary>
+    /// <remarks>Persist the result before <c>tx_signatures</c> releases the shared input (SP-I1). A retransmitted
+    /// signature for an already pending funding replaces the stored one after the same checks.</remarks>
+    /// <exception cref="CommitmentViolationException">Updates are pending (SP-I8), <c>num_htlcs</c> mismatch (B2-CS-R02)
+    /// or an invalid signature (B2-CS-R01); the channel must fail.</exception>
+    /// <exception cref="ArgumentException">The funding breaks the <see cref="FundingSet.AddPending"/> rules.</exception>
+    /// <exception cref="InvalidOperationException">No funding data, too many fundings, or a negative balance.</exception>
+    public CommitmentsResult ReceiveSpliceCommitment(ChannelFunding funding, CommitmentSignatures signatures,
+                                                     ICommitmentVerifier verifier)
+    {
+        ArgumentNullException.ThrowIfNull(funding);
+        ArgumentNullException.ThrowIfNull(signatures);
+        ArgumentNullException.ThrowIfNull(verifier);
+        var alreadyPending = CheckSpliceFunding(funding);
+        if (!IsSettledForSplice)
+            throw FailChannel("SP-CS-01", "Splice commitment_signed while updates are pending");
+
+        var spec = SpecFor(LocalCommit.Spec, funding);
+        var expected =
+            CommitmentFeeCalculator.UntrimmedHtlcCount(spec, Params.Local.DustLimitSatoshis, Params.OptionAnchors);
+        if (signatures.HtlcSignatures.Count != expected)
+            throw FailChannel("B2-CS-R02",
+                              $"num_htlcs {signatures.HtlcSignatures.Count}, expected {expected} on splice funding {funding.FundingTxId}");
+        if (!verifier.VerifyLocalCommitment(ChannelId, funding, LocalCommit.Number, spec, signatures))
+            throw FailChannel("B2-CS-R01",
+                              $"Invalid signature for local commitment {LocalCommit.Number} on splice funding {funding.FundingTxId}");
+
+        var entry = new FundingSignatures(funding.FundingTxId, signatures);
+        var next = alreadyPending
+                       ? this with
+                       {
+                           LocalCommit = LocalCommit with
+                           {
+                               PendingFundingSignatures = LocalCommit.PendingFundingSignatures
+                                                                     .Select(s => s.FundingTxId == funding.FundingTxId
+                                                                                      ? entry
+                                                                                      : s)
+                                                                     .ToList()
+                           }
+                       }
+                       : this with
+                       {
+                           PendingFundings = PendingFundings.Add(funding),
+                           LocalCommit = LocalCommit with
+                           {
+                               PendingFundingSignatures = [.. LocalCommit.PendingFundingSignatures, entry]
+                           }
+                       };
+        return Result(next, []);
+    }
+
+    /// <summary>
+    /// Locks the pending funding <paramref name="fundingTxId"/> (<c>splice_locked</c> sent and received for it,
+    /// SP-LK-03): it becomes the current funding with its deltas folded into the settled balances, every commitment
+    /// moves to it with the signatures kept for it, and the other pending attempts are discarded. The retired fundings
+    /// (the replaced one, the discarded ones) are in <see cref="ChannelTransition.RetiredFundings"/> for the lock's save;
+    /// their revocation data must be kept (SP-I5).
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="fundingTxId"/> is not pending (SP-LK-02 is the caller's).</exception>
+    /// <exception cref="InvalidOperationException">No funding data.</exception>
+    public CommitmentsResult LockFunding(TxId fundingTxId)
+    {
+        var set = Fundings ?? throw new InvalidOperationException("The engine has no funding data");
+        var (nextSet, retired) = set.Lock(fundingTxId);
+        var locked = PendingFundings.First(f => f.FundingTxId == fundingTxId);
+
+        var localCommit = new LocalCommit(LocalCommit.Number, SpecFor(LocalCommit.Spec, locked),
+                                          LocalCommit.SignaturesFor(fundingTxId)
+                                       ?? throw new InvalidOperationException(
+                                              $"No signatures of our commitment on funding {fundingTxId}"));
+        var remoteNext = RemoteNextCommit is { } unacked
+                             ? new RemoteNextCommit(unacked.Commit with { Spec = SpecFor(unacked.Commit.Spec, locked) },
+                                                    unacked.SignaturesFor(fundingTxId)
+                                                 ?? throw new InvalidOperationException(
+                                                        $"No sent signatures on funding {fundingTxId}"))
+                             : null;
+        var next = this with
+        {
+            Params = Params with { FundingSatoshis = locked.CapacitySatoshis, Funding = nextSet.Current },
+            PendingFundings = ImmutableList<ChannelFunding>.Empty,
+            LocalBalanceMsat = checked((ulong)((long)LocalBalanceMsat + locked.LocalBalanceDeltaMsat)),
+            RemoteBalanceMsat = checked((ulong)((long)RemoteBalanceMsat + locked.RemoteBalanceDeltaMsat)),
+            LocalCommit = localCommit,
+            RemoteCommit = RemoteCommit with { Spec = SpecFor(RemoteCommit.Spec, locked) },
+            RemoteNextCommit = remoteNext
+        };
+        return Result(next, [], retired: retired);
+    }
+
+    /// <summary>
+    /// Discards pending fundings: the one named by <paramref name="fundingTxId"/> (an aborted negotiation or RBF
+    /// attempt), or every one when null (a commitment of the current funding confirmed, splicing plan §3.6). Their
+    /// signatures leave every commitment; the discarded fundings are in <see cref="ChannelTransition.RetiredFundings"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="fundingTxId"/> is not pending.</exception>
+    public CommitmentsResult DiscardPendingFundings(TxId? fundingTxId = null)
+    {
+        var discarded = PendingFundings.Where(f => fundingTxId is null || f.FundingTxId == fundingTxId.Value).ToList();
+        if (fundingTxId is { } txId && discarded.Count == 0)
+            throw new ArgumentException($"Funding {txId} is not pending", nameof(fundingTxId));
+        if (discarded.Count == 0)
+            return Result(this, []);
+
+        var gone = discarded.Select(f => f.FundingTxId).ToHashSet();
+        var next = this with
+        {
+            PendingFundings = PendingFundings.RemoveAll(f => gone.Contains(f.FundingTxId)),
+            LocalCommit = LocalCommit with
+            {
+                PendingFundingSignatures = LocalCommit.PendingFundingSignatures
+                                                      .Where(s => !gone.Contains(s.FundingTxId)).ToList()
+            },
+            RemoteNextCommit = RemoteNextCommit is { } unacked
+                                   ? unacked with
+                                   {
+                                       PendingFundingSignatures = unacked.PendingFundingSignatures
+                                                                         .Where(s => !gone.Contains(s.FundingTxId))
+                                                                         .ToList()
+                                   }
+                                   : null
+        };
+        return Result(next, [], retired: discarded.Select(f => f with { Status = ChannelFundingStatus.Discarded })
+                                                  .ToList());
+    }
+
+    /// <summary>
+    /// Checks a splice funding against the current one: the <see cref="FundingSet.AddPending"/> rules for a new one, the
+    /// same data for one already pending, the batch limit, and non-negative balances on both current commitments.
+    /// </summary>
+    /// <returns>True when the funding is already pending.</returns>
+    private bool CheckSpliceFunding(ChannelFunding funding)
+    {
+        var set = Fundings ?? throw new InvalidOperationException("The engine has no funding data");
+        var pending = PendingFundings.FirstOrDefault(f => f.FundingTxId == funding.FundingTxId);
+        if (pending is not null)
+        {
+            if (!pending.Equals(funding))
+                throw new ArgumentException($"Funding {funding.FundingTxId} is pending with other data",
+                                            nameof(funding));
+        }
+        else
+        {
+            if (set.ActiveCount >= MaxActiveFundings)
+                throw new InvalidOperationException($"A channel may have at most {MaxActiveFundings} active fundings");
+            set.AddPending(funding);
+        }
+
+        SpecFor(LocalCommit.Spec, funding);
+        SpecFor(RemoteCommit.Spec, funding);
+        return pending is not null;
+    }
+
+    #endregion
+
     private CommitmentsResult Result(ChannelCommitments next, IReadOnlyList<CommitmentOutbound> outbound,
                                      IReadOnlyList<HtlcRecord>? settled = null,
-                                     IReadOnlyList<HtlcRecord>? dropped = null)
+                                     IReadOnlyList<HtlcRecord>? dropped = null,
+                                     IReadOnlyList<ChannelFunding>? retired = null)
     {
         var upserted = next.Htlcs.Values
                            .Where(h => !Htlcs.TryGetValue(h.Key, out var old) || !old.Equals(h))
@@ -786,11 +1205,18 @@ public sealed record ChannelCommitments
                               || !ReferenceEquals(RemoteNextCommit, next.RemoteNextCommit),
             ScalarsChanged: LocalBalanceMsat != next.LocalBalanceMsat || RemoteBalanceMsat != next.RemoteBalanceMsat
                          || LocalNextHtlcId != next.LocalNextHtlcId || RemoteNextHtlcId != next.RemoteNextHtlcId
-                         || !Nullable.Equals(RemoteNextPerCommitmentPoint, next.RemoteNextPerCommitmentPoint));
+                         || !Nullable.Equals(RemoteNextPerCommitmentPoint, next.RemoteNextPerCommitmentPoint),
+            FundingsChanged: !PendingFundings.SequenceEqual(next.PendingFundings)
+                          || !Equals(Params.Funding, next.Params.Funding),
+            RetiredFundings: retired);
         var events = ChannelDomainEvents.FromChange(ChannelId, Htlcs, next.Htlcs, transition.SettledHtlcs);
         return new CommitmentsResult(next, outbound, transition, events);
     }
 
     private CommitmentViolationException Violation(string requirementId, string message) =>
         new(requirementId, message, ChannelId);
+
+    /// <summary>A violation for which BOLT 2 allows only "send an error and fail the channel".</summary>
+    private CommitmentViolationException FailChannel(string requirementId, string message) =>
+        new(requirementId, message, ChannelId) { MustFailChannel = true };
 }

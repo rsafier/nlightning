@@ -3,6 +3,7 @@ namespace NLightning.Domain.Channels.Commitments;
 using Bitcoin.Transactions.Enums;
 using Models;
 using Splicing;
+using Splicing.Enums;
 using ValueObjects;
 
 /// <summary>
@@ -22,8 +23,10 @@ using ValueObjects;
 /// affordability) still apply, and our own offers are still checked against the (possibly guessed) peer limits, which
 /// can only refuse a send, never fail the channel.</param>
 /// <param name="Funding">The channel's current funding (splicing plan SP1-0), handed to the signer and verifier ports;
-/// null when unknown (an engine built by hand in tests). Lane SP1-B moves the funding data into the engine's
-/// <see cref="FundingSet"/>; <see cref="FundingSatoshis"/> stays the current capacity.</param>
+/// null when unknown (an engine built by hand in tests; such an engine cannot hold a pending splice). The pending
+/// fundings live in <see cref="ChannelCommitments.PendingFundings"/>; a lock
+/// (<see cref="ChannelCommitments.LockFunding"/>) replaces this and <see cref="FundingSatoshis"/>, which is always the
+/// current capacity.</param>
 public sealed record CommitmentParams(
     bool LocalIsFunder,
     ulong FundingSatoshis,
@@ -44,6 +47,22 @@ public sealed record CommitmentParams(
 
     /// <summary>The reserve (msat) the peer must keep: announced by us.</summary>
     public ulong RemoteReserveMsat => checked(Local.ChannelReserveSatoshis * 1_000);
+
+    /// <summary>
+    /// The reserve (msat) we must keep on the commitments of <paramref name="funding"/> (splicing plan D9, SP-I6): the
+    /// announced one (<see cref="LocalReserveMsat"/>) on the initial funding (or when the funding is unknown), else the
+    /// larger of it and 1 % of that funding's capacity.
+    /// </summary>
+    public ulong LocalReserveMsatOn(ChannelFunding? funding) => ReserveMsatOn(Remote.ChannelReserveSatoshis, funding);
+
+    /// <summary>The reserve (msat) the peer must keep on the commitments of <paramref name="funding"/> (see
+    /// <see cref="LocalReserveMsatOn"/>).</summary>
+    public ulong RemoteReserveMsatOn(ChannelFunding? funding) => ReserveMsatOn(Local.ChannelReserveSatoshis, funding);
+
+    private static ulong ReserveMsatOn(ulong announcedSatoshis, ChannelFunding? funding) =>
+        checked((funding is null || funding.Kind == ChannelFundingKind.Initial
+                     ? announcedSatoshis
+                     : Math.Max(announcedSatoshis, funding.CapacitySatoshis / 100)) * 1_000);
 
     /// <summary>
     /// The engine parameters of an opened channel: funder, funding amount, anchors and both parties' announced limits,

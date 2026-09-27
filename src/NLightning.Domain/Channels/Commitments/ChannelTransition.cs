@@ -1,5 +1,7 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Splicing;
+
 /// <summary>
 /// What one engine operation changed, for the persistence layer to write in a single save (decision D3).
 /// </summary>
@@ -14,6 +16,15 @@ namespace NLightning.Domain.Channels.Commitments;
 /// <see cref="ChannelCommitments.ReceiveRevoke"/>): the persistence layer keeps its spec in the revocation log, in the
 /// same save as the <c>revoke_and_ack</c>, so a breach of it can be penalized output by output (BOLT 5 plan O1-T1,
 /// D2).</param>
+/// <param name="FundingsChanged">The fundings changed (a splice added, locked or discarded; splicing plan §3.3): write
+/// <see cref="ChannelCommitments.PendingFundings"/>, the current funding of <see cref="ChannelCommitments.Params"/>
+/// and the per-funding signatures of every commitment.</param>
+/// <param name="RetiredFundings">Fundings that left the active set in this transition, with their final status (the
+/// replaced current funding and the discarded siblings of a lock, or the discarded pending fundings); their revocation
+/// data is kept (SP-I5). Null means none.</param>
+/// <param name="RevokedRemoteCommitFundings">The pending fundings <see cref="RevokedRemoteCommit"/> was also signed on
+/// (the revoked commitment on each is <see cref="ChannelCommitments.SpecFor"/> of its spec; SP-I3, SP-I5). Null means
+/// none (no pending splice).</param>
 public sealed record ChannelTransition(
     IReadOnlyList<HtlcRecord> UpsertedHtlcs,
     IReadOnlyList<HtlcRecord> SettledHtlcs,
@@ -22,9 +33,12 @@ public sealed record ChannelTransition(
     bool LocalCommitChanged,
     bool RemoteCommitChanged,
     bool ScalarsChanged,
-    RemoteCommit? RevokedRemoteCommit = null)
+    RemoteCommit? RevokedRemoteCommit = null,
+    bool FundingsChanged = false,
+    IReadOnlyList<ChannelFunding>? RetiredFundings = null,
+    IReadOnlyList<ChannelFunding>? RevokedRemoteCommitFundings = null)
 {
     public bool IsEmpty => UpsertedHtlcs.Count == 0 && SettledHtlcs.Count == 0 && DroppedHtlcs.Count == 0
                         && !FeeUpdatesChanged && !LocalCommitChanged && !RemoteCommitChanged && !ScalarsChanged
-                        && RevokedRemoteCommit is null;
+                        && RevokedRemoteCommit is null && !FundingsChanged && (RetiredFundings?.Count ?? 0) == 0;
 }
