@@ -2,12 +2,16 @@ using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace NLightning.Integration.Tests.Docker.Utils;
 
+using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Serialization.Interfaces;
-using Infrastructure.Serialization.Messages;
+using Infrastructure.Crypto.Interfaces;
+using Infrastructure.Protocol.Factories;
+using Infrastructure.Transport.Factories;
 
 /// <summary>
 /// Records the raw wire bytes (type prefix included) of every BOLT 4 <c>onion_message</c> (513) a node receives and
@@ -17,8 +21,12 @@ using Infrastructure.Serialization.Messages;
 /// </summary>
 /// <remarks>
 /// Install it with <see cref="Install"/> through <c>NLightningTestNode.ConfigureServices</c>: it replaces the node's
-/// <see cref="IMessageSerializer"/> with a decorator of the production <see cref="MessageSerializer"/>, which every
-/// connection's transport uses for both directions. The bytes are recorded before they are parsed, so a message the
+/// <see cref="ITransportServiceFactory"/> (the transport serializes what it writes) and
+/// <see cref="IMessageServiceFactory"/> (the message service deserializes what the transport read) with the
+/// production factories over a recording decorator of the node's <see cref="IMessageSerializer"/>, so it sees exactly
+/// what every connection writes and reads. The node-wide <see cref="IMessageSerializer"/> is left alone: stored errors and commit diffs that
+/// the channel layer serializes or reloads (<c>ChannelManager</c>, <c>ChannelFailureService</c>,
+/// <c>SentCommitDiffCodec</c>) are never recorded. The bytes are recorded before they are parsed, so a message the
 /// node cannot parse is still recorded, then fails as usual. It does not know the peer, so a proof that needs
 /// per-peer traffic gives the recorded node a single peer. The recorder outlives node restarts.
 /// </remarks>
@@ -70,12 +78,21 @@ public sealed class RawOnionMessageRecorder
 
     public void Install(IServiceCollection services)
     {
-        services.AddSingleton<IMessageSerializer>(sp =>
-                                                      new RecordingMessageSerializer(
-                                                          new MessageSerializer(
-                                                              sp.GetRequiredService<ILogger<MessageSerializer>>(),
-                                                              sp.GetRequiredService<IMessageTypeSerializerFactory>()),
-                                                          this));
+        // One recording serializer for the transport path only: TransportService serializes what it writes, and
+        // MessageService deserializes what the transport read.
+        services.AddKeyedSingleton<IMessageSerializer>(this, (sp, _) =>
+                                                           new RecordingMessageSerializer(
+                                                               sp.GetRequiredService<IMessageSerializer>(), this));
+        services.AddSingleton<ITransportServiceFactory>(sp =>
+                                                            new TransportServiceFactory(
+                                                                sp.GetRequiredService<IEcdh>(),
+                                                                sp.GetRequiredService<ILoggerFactory>(),
+                                                                sp.GetRequiredKeyedService<IMessageSerializer>(this),
+                                                                sp.GetRequiredService<IOptions<NodeOptions>>()));
+        services.AddSingleton<IMessageServiceFactory>(sp =>
+                                                          new MessageServiceFactory(
+                                                              sp.GetRequiredKeyedService<IMessageSerializer>(this),
+                                                              sp.GetRequiredService<ILoggerFactory>()));
     }
 
     /// <summary>
