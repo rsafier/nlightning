@@ -88,19 +88,26 @@ public sealed class GossipSyncOptions
     /// <summary>
     /// How long an unknown channel one sync peer was asked for is not asked from another (NL-415), counted from that
     /// peer's <c>reply_short_channel_ids_end</c>: its announcement is queued in the ingress or waits for its chain
-    /// lookup meanwhile. A failed query frees its channels at once, and what the ingress drops is asked for again by the
-    /// missed-channel retry regardless. Zero turns it off (every sync peer's re-diff sees only the graph, NL-402).
+    /// lookup meanwhile. A failed query, or an end with <c>full_information</c> = 0, frees its channels at once, and
+    /// what the ingress drops is asked for again by the missed-channel retry regardless; a channel still missing from
+    /// the graph when its claim ends goes to that retry too (once). Zero turns it off (every sync peer's re-diff sees
+    /// only the graph, NL-402).
     /// </summary>
     /// <remarks>Configuration key <c>Gossip:QueriedChannelTtl</c>.</remarks>
     public TimeSpan QueriedChannelTtl { get; set; } = TimeSpan.FromMinutes(10);
 
     /// <summary>
     /// Gossip messages (our own and relayed) one peer's <c>PeerOutbox</c> holds unsent at most (NL-360); beyond it
-    /// gossip for that connection is refused (the relay ends that flush or backlog, counted as <c>outbox_full</c> in
-    /// <c>nlightning.gossip.messages.dropped</c>) while channel messages are always queued. Zero means no cap.
+    /// gossip for that connection is refused (counted as <c>outbox_full</c> in <c>nlightning.gossip.messages.dropped</c>)
+    /// while channel messages are always queued. Zero (the default) means no cap.
     /// </summary>
-    /// <remarks>Configuration key <c>Gossip:MaxOutboxGossipPerPeer</c>.</remarks>
-    public int MaxOutboxGossipPerPeer { get; set; } = 10_000;
+    /// <remarks>
+    /// Configuration key <c>Gossip:MaxOutboxGossipPerPeer</c>. Off by default until the relay pauses on a full outbox:
+    /// today it reads a refusal as a gone connection and drops the rest of that flush and of the peer's
+    /// <c>gossip_timestamp_filter</c> backlog, so a peer that reads slower than the backlog pace would lose the graph
+    /// dump it asked for. The <c>outbox_gossip</c> queue gauge is reported either way.
+    /// </remarks>
+    public int MaxOutboxGossipPerPeer { get; set; }
 
     /// <summary>The effective switch: <see cref="SyncEnabled"/> when set, otherwise true on every chain but mainnet.
     /// </summary>
