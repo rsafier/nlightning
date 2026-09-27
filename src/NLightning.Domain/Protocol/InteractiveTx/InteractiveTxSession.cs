@@ -30,8 +30,11 @@ using Tlv;
 /// NOT have already transmitted <c>tx_signatures</c>"): a bad message then leaves it unchanged, with no outbound and
 /// <see cref="InteractiveTxStepResult.RequirementId"/> set, and the driver keeps it until an input of the transaction is
 /// spent (<see cref="MustBeRemembered"/>).</para>
-/// <para>Not yet applied (lane IT-A step 2): the feerate and weight checks of IT-R-04 (IT1-T2) and the RBF rules
-/// IT-RBF-01 over <see cref="InteractiveTxSessionParameters.PreviousAttempts"/> (IT1-T4). Our <c>serial_id</c>s are
+/// <para>At <c>tx_complete</c> it also applies the feerate, common-fields and weight checks of IT-R-04
+/// (<see cref="CollaborativeFeeCalculator"/>) and, for an RBF, the double-spend rule of IT-RBF-01 over
+/// <see cref="InteractiveTxSessionParameters.PreviousAttempts"/> (<see cref="InteractiveTxRbfRules"/>; <see cref="Create"/>
+/// refuses a contribution of ours that breaks it). The RBF feerate rule is checked on <c>tx_init_rbf</c>, before the
+/// session exists (<see cref="InteractiveTxRbfRules.CheckFeerate"/>). Our <c>serial_id</c>s are
 /// deterministic (initiator 0, 2, 4, ...; non-initiator 1, 3, 5, ...) in the order of
 /// <see cref="InteractiveTxSessionParameters.LocalContribution"/>, the shared input and output first.</para>
 /// <para>Immutable: every step returns the next session in <see cref="InteractiveTxStepResult.Next"/>.</para>
@@ -188,6 +191,19 @@ public sealed class InteractiveTxSession
             items.Add(new LocalItem(null, new InteractiveTxOutput(serialId, local, output.Amount, output.ScriptPubKey,
                                                                   false)));
             serialId += 2;
+        }
+
+        // IT-RBF-01 (our side): "If it contributed to previous transactions: MUST ensure that the new transaction
+        // double-spends all other attempts, by sending tx_add_input with at least one input from each previous
+        // transaction construction attempt". A splice's shared input does that by itself.
+        var previousAttempts = parameters.PreviousAttempts ?? [];
+        if (previousAttempts.Count > 0 && shared?.SharedInput is null)
+        {
+            var ourOutpoints = parameters.LocalContribution.Inputs.Select(i => (i.PrevTxId, i.PrevTxVout)).ToHashSet();
+            var violation = InteractiveTxRbfRules.CheckPartyDoubleSpends(ourOutpoints, local, previousAttempts);
+            if (violation is not null)
+                throw new ArgumentException($"Our contribution breaks {violation.RequirementId}: {violation.Reason}.",
+                                            nameof(parameters));
         }
 
         return new InteractiveTxSession(parameters, items);
@@ -668,7 +684,9 @@ public sealed class InteractiveTxSession
 
     private InteractiveTxStepResult Complete(InteractiveTxSession session, IReadOnlyList<IChannelMessage> outbound)
     {
-        var violation = InteractiveTxRules.CheckTxComplete(session.Inputs, session.Outputs, Parameters.SharedFunding);
+        var violation = InteractiveTxRules.CheckTxComplete(session.Inputs, session.Outputs, Parameters.SharedFunding,
+                                                           Parameters.FeeratePerKw, Parameters.IsInitiator,
+                                                           Parameters.PreviousAttempts ?? []);
         if (violation is not null)
             return session.Fail(violation);
 

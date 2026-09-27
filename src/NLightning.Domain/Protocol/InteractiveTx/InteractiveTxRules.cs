@@ -261,9 +261,8 @@ public static class InteractiveTxRules
     /// channel funding output using the funding public keys and funding contributions".
     /// </summary>
     /// <remarks>
-    /// The feerate checks of IT-R-04 ("the peer's paid feerate does not meet or exceed the agreed feerate", the
-    /// initiator's common fields) and the 400,000 weight cap need the collaborative fee calculator (IT1-T2) and are not
-    /// applied here yet.
+    /// The structural part only: counts, the shared funding and the peer's value balance. The feerate, common-fields
+    /// and weight checks of IT-R-04 and the RBF double-spend rule are in the overload that takes the feerate.
     /// </remarks>
     /// <param name="inputs">Every input currently added.</param>
     /// <param name="outputs">Every output currently added.</param>
@@ -314,6 +313,84 @@ public static class InteractiveTxRules
                    ? new InteractiveTxRuleViolation("IT-R-04",
                                                     $"the peer's inputs ({remoteIn / 1_000} sat) are less than its outputs ({remoteOut / 1_000} sat)")
                    : null;
+    }
+
+    /// <summary>
+    /// Every check at the end of the negotiation (two consecutive <c>tx_complete</c>): the structural ones of
+    /// <see cref="CheckTxComplete(IReadOnlyList{InteractiveTxInput}, IReadOnlyList{InteractiveTxOutput}, SharedFundingSpec?)"/>,
+    /// then BOLT 2 (tx_complete receiver) "the peer's paid feerate does not meet or exceed the agreed <c>feerate</c>
+    /// (based on the <c>minimum fee</c>); if is the <i>non-initiator</i>: the <i>initiator</i>'s fees do not cover the
+    /// <c>common</c> fields; [...] the estimated weight of the tx is greater than 400,000 (<c>MAX_STANDARD_TX_WEIGHT</c>)"
+    /// (IT-R-04, through <see cref="CollaborativeFeeCalculator"/>), and for an RBF attempt the double-spend of every
+    /// previous attempt (IT-RBF-01, <see cref="InteractiveTxRbfRules.CheckTxComplete"/>).
+    /// </summary>
+    /// <remarks>
+    /// The peer's fee is what its inputs (and share of the shared input) leave after its outputs (and share of the
+    /// shared output); it must reach <see cref="CollaborativeFeeCalculator.MinimumFeeForWeight"/> of its contribution
+    /// weight, which counts the common fields and the shared input and output when the peer is the initiator, and its
+    /// inputs at the minimum witness estimate.
+    /// </remarks>
+    /// <param name="inputs">Every input currently added.</param>
+    /// <param name="outputs">Every output currently added.</param>
+    /// <param name="sharedFunding">The shared input/output, or null.</param>
+    /// <param name="feeratePerKw">The agreed feerate.</param>
+    /// <param name="isLocalInitiator">Whether we are the initiator (the peer is when false).</param>
+    /// <param name="previousAttempts">The earlier attempts of an RBF, or empty.</param>
+    public static InteractiveTxRuleViolation? CheckTxComplete(IReadOnlyList<InteractiveTxInput> inputs,
+                                                              IReadOnlyList<InteractiveTxOutput> outputs,
+                                                              SharedFundingSpec? sharedFunding, uint feeratePerKw,
+                                                              bool isLocalInitiator,
+                                                              IReadOnlyList<ConstructedInteractiveTx> previousAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(previousAttempts);
+
+        var violation = CheckTxComplete(inputs, outputs, sharedFunding)
+                        ?? CheckRemoteFee(inputs, outputs, sharedFunding, feeratePerKw, !isLocalInitiator);
+        if (violation is not null)
+            return violation;
+
+        var weight = CollaborativeFeeCalculator.EstimateTransactionWeight(inputs, outputs, sharedFunding);
+        if (weight > MaxStandardTxWeight)
+            return new InteractiveTxRuleViolation("IT-R-04",
+                                                  $"the estimated weight {weight} is greater than {MaxStandardTxWeight}");
+
+        return InteractiveTxRbfRules.CheckTxComplete(inputs, previousAttempts);
+    }
+
+    /// <summary>
+    /// IT-R-04: the peer pays at least the agreed feerate for its contribution, and as initiator for the common fields.
+    /// </summary>
+    /// <param name="inputs">Every input currently added.</param>
+    /// <param name="outputs">Every output currently added.</param>
+    /// <param name="sharedFunding">The shared input/output, or null.</param>
+    /// <param name="feeratePerKw">The agreed feerate.</param>
+    /// <param name="isRemoteInitiator">Whether the peer is the initiator.</param>
+    public static InteractiveTxRuleViolation? CheckRemoteFee(IReadOnlyList<InteractiveTxInput> inputs,
+                                                             IReadOnlyList<InteractiveTxOutput> outputs,
+                                                             SharedFundingSpec? sharedFunding, uint feeratePerKw,
+                                                             bool isRemoteInitiator)
+    {
+        const InteractiveTxParty remote = InteractiveTxParty.Remote;
+        var paidMsat = CollaborativeFeeCalculator.GetPaidFeeMsat(inputs, outputs, remote, sharedFunding);
+
+        var weight = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, remote, isRemoteInitiator,
+                                                                      sharedFunding);
+        var required = CollaborativeFeeCalculator.MinimumFeeForWeight(weight, feeratePerKw);
+        if (paidMsat >= (long)required.MilliSatoshi)
+            return null;
+
+        if (isRemoteInitiator)
+        {
+            var withoutCommon = CollaborativeFeeCalculator.GetContributionWeight(inputs, outputs, remote, true,
+                                                                                 sharedFunding, false);
+            var ownRequired = CollaborativeFeeCalculator.MinimumFeeForWeight(withoutCommon, feeratePerKw);
+            if (paidMsat >= (long)ownRequired.MilliSatoshi)
+                return new InteractiveTxRuleViolation("IT-R-04",
+                                                      $"the initiator's fees ({paidMsat / 1_000} sat) do not cover the common fields ({required.Satoshi} sat needed)");
+        }
+
+        return new InteractiveTxRuleViolation("IT-R-04",
+                                              $"the peer pays {paidMsat / 1_000} sat, below the {required.Satoshi} sat of {weight} wu at {feeratePerKw} sat/kw");
     }
 
     private static InteractiveTxRuleViolation? CheckSharedFunding(IReadOnlyList<InteractiveTxInput> inputs,
