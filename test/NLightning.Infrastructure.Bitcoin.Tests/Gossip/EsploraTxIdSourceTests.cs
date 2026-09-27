@@ -64,8 +64,11 @@ public class EsploraTxIdSourceTests
         var result = await lookup.VerifyAsync(FundingScid, Compact(s_bitcoinKey1.PubKey), Compact(s_bitcoinKey2.PubKey),
                                               LightningMoney.Satoshis(FundingSatoshis), ct);
 
-        // Assert: the txid is the funding tx, amount/script/depth from our gettxout; one txid and one proof request
+        // Assert: the txid is the funding tx, amount/script/depth from our gettxout; one txid and one proof request,
+        // the merkle root and nTx from our node's header (the pruned block itself is never read)
         Assert.Equal(FundingOutputStatus.Found, result.Status);
+        Assert.Equal(1, _chain.HeaderSummaryCalls);
+        Assert.Null(await _chain.GetBlockAsync(_chain.Inner[FundingHeight].GetHash()));
         Assert.Equal(_fundingTx.GetHash().ToBytes(), (byte[])result.TransactionId!.Value);
         Assert.Equal(LightningMoney.Satoshis(FundingSatoshis), result.Amount);
         Assert.Equal(_fundingTx.Outputs[1].ScriptPubKey.ToBytes(), result.ScriptPubKey);
@@ -259,6 +262,63 @@ public class EsploraTxIdSourceTests
     }
 
     [Fact]
+    public async Task Given_HeaderWithoutTxCount_When_IndexProvesAnInnerNode_Then_TransientWithoutAskingTheIndex()
+    {
+        // Arrange: our node's header has no nTx (assumeutxo); the index names the inner node over txs 2 and 3 as the
+        // "txid" at index 1 with the shorter branch that reaches the root from there
+        _chain.PrunedHeights.Add(FundingHeight);
+        _chain.UnknownHeaderTxCount = true;
+        var block = _chain.Inner[FundingHeight];
+        var leaves = block.Transactions.Select(t => t.GetHash()).ToList();
+        var fullBranch = FakeEsploraHandler.Branch(leaves, 2);
+        var inner = NBitcoin.Crypto.Hashes.DoubleSHA256(leaves[2].ToBytes().Concat(leaves[3].ToBytes()).ToArray());
+        _esplora.TxIdOverride = (txId, index) => index == 1 ? inner : txId;
+        _esplora.ProofOverride = (txId, proof) => txId == inner ? (fullBranch.Skip(1).ToList(), 1) : proof;
+        Assert.True(EsploraTxIdSource.VerifyMerkleProof(inner, fullBranch.Skip(1).ToList(), 1,
+                                                        block.Header.HashMerkleRoot, 4)); // a real proof one level short
+        using var source = CreateSource();
+        using var lookup = CreateLookup(source);
+
+        // Act
+        var result = await lookup.LookupAsync(new ShortChannelId(FundingHeight, 1, 0),
+                                              TestContext.Current.CancellationToken);
+
+        // Assert: unprovable, so transient; never OutputSpentOrMissing from a gettxout of the fake txid
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, result.Status);
+        Assert.True(result.IsTransient);
+        Assert.Empty(_esplora.Requests);
+        Assert.Equal(0, _chain.UnspentOutputCalls);
+        Assert.False(EsploraTxIdSource.VerifyMerkleProof(inner, fullBranch.Skip(1).ToList(), 1,
+                                                         block.Header.HashMerkleRoot, 0));
+    }
+
+    [Fact]
+    public async Task Given_LongRetryAfter_When_Lookups_Then_TransientAtOnceWithoutHoldingTheSlot()
+    {
+        // Arrange: 429 with Retry-After 60 s, longer than the 5 s the lookup may wait inline
+        var clock = new ManualTimeProvider();
+        _esplora.Scripted.Enqueue(() => FakeEsploraHandler.TooManyRequests(TimeSpan.FromSeconds(60)));
+        using var source = CreateSource(clock);
+        using var lookup = CreateLookup(source);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act: no timer is ever started, so both complete without advancing the clock
+        var first = await lookup.LookupAsync(FundingScid, ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var duringPause = await lookup.LookupAsync(FundingScid, ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var requestsDuringPause = _esplora.Requests.Count;
+        clock.Advance(TimeSpan.FromSeconds(60));
+        var after = await lookup.LookupAsync(FundingScid, ct).WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        // Assert: the refused request only, nothing sent during the pause, then the index again
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, first.Status);
+        Assert.Equal(FundingOutputStatus.ChainUnavailable, duringPause.Status);
+        Assert.Equal(1, requestsDuringPause);
+        Assert.Equal(0, clock.PendingTimers);
+        Assert.Equal(FundingOutputStatus.Found, after.Status);
+        Assert.Equal(3, _esplora.Requests.Count);
+    }
+
+    [Fact]
     public async Task Given_TooManyRequestsBeyondRetries_When_Lookup_Then_DoublingBackoffThenTransient()
     {
         // Arrange: 429s without Retry-After, one retry allowed, initial backoff 2 s
@@ -388,7 +448,7 @@ public class EsploraTxIdSourceTests
 
             // Assert
             Assert.True(valid, $"position {position} of {txCount}");
-            Assert.True(unknownCount, $"position {position} of {txCount} without nTx");
+            Assert.False(unknownCount, $"position {position} of {txCount} without nTx");
             Assert.Equal(txCount == 1, otherTx);
         }
     }

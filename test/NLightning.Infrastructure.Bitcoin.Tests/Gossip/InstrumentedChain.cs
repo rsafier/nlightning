@@ -18,6 +18,7 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
     private int _confirmedUnspentOutputCalls;
     private int _tipCalls;
     private int _blockHashCalls;
+    private int _headerSummaryCalls;
 
     public FakeBitcoinChain Inner => inner;
 
@@ -26,9 +27,16 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
     public int ConfirmedUnspentOutputCalls => Volatile.Read(ref _confirmedUnspentOutputCalls);
     public int TipCalls => Volatile.Read(ref _tipCalls);
     public int BlockHashCalls => Volatile.Read(ref _blockHashCalls);
+    public int HeaderSummaryCalls => Volatile.Read(ref _headerSummaryCalls);
 
-    /// <summary>When set, the txid lists of these heights are unavailable (a pruned node).</summary>
+    /// <summary>
+    /// When set, the blocks of these heights are unavailable (a pruned node): their txid lists and
+    /// <c>GetBlockAsync</c> answer null, only the header (<see cref="GetBlockHeaderSummaryAsync"/>) is kept.
+    /// </summary>
     public HashSet<uint> PrunedHeights { get; } = [];
+
+    /// <summary>When true, headers carry no <c>nTx</c> (0: a block the node never downloaded, e.g. assumeutxo).</summary>
+    public bool UnknownHeaderTxCount { get; set; }
 
     /// <summary>When set, <see cref="GetCurrentBlockHeightAsync"/> throws it (bitcoind down).</summary>
     public Exception? TipFailure { get; set; }
@@ -57,7 +65,8 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
         return await inner.GetCurrentBlockHeightAsync();
     }
 
-    public Task<Block?> GetBlockAsync(uint height) => inner.GetBlockAsync(height);
+    public Task<Block?> GetBlockAsync(uint height) =>
+        PrunedHeights.Contains(height) ? Task.FromResult<Block?>(null) : inner.GetBlockAsync(height);
 
     public Task<uint256> GetBlockHashAsync(uint height)
     {
@@ -67,7 +76,25 @@ internal sealed class InstrumentedChain(FakeBitcoinChain inner) : IBitcoinChainS
 
     public Task<uint> GetTransactionConfirmationsAsync(uint256 txId) => inner.GetTransactionConfirmationsAsync(txId);
 
-    public Task<Block?> GetBlockAsync(uint256 blockHash) => inner.GetBlockAsync(blockHash);
+    public async Task<Block?> GetBlockAsync(uint256 blockHash)
+    {
+        var block = await inner.GetBlockAsync(blockHash);
+        return block is not null && IsPruned(blockHash) ? null : block;
+    }
+
+    /// <summary><c>getblockheader</c>: kept for every block, pruned or not (read here from the fake's full block).</summary>
+    public async Task<(uint256 MerkleRoot, int TxCount)?> GetBlockHeaderSummaryAsync(uint256 blockHash)
+    {
+        Interlocked.Increment(ref _headerSummaryCalls);
+        var block = await inner.GetBlockAsync(blockHash);
+        if (block is null)
+            return null;
+
+        return (block.Header.HashMerkleRoot, UnknownHeaderTxCount ? 0 : block.Transactions.Count);
+    }
+
+    private bool IsPruned(uint256 blockHash) =>
+        PrunedHeights.Any(h => h <= inner.TipHeight && inner[h].GetHash() == blockHash);
 
     public async Task<(TxOut Output, uint Height)?> GetUnspentOutputAsync(OutPoint outPoint)
     {

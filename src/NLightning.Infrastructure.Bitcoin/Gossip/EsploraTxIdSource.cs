@@ -24,7 +24,10 @@ using Wallet.Interfaces;
 /// per second, polite for public servers) and for any pause a 429 started: <c>Retry-After</c> when given, else
 /// <see cref="FundingTxIdSourceOptions.EsploraInitialBackoff"/> doubled per 429 in a row, never over
 /// <see cref="FundingTxIdSourceOptions.EsploraMaxBackoff"/>; the pause holds every request, not just the one refused.
-/// After <see cref="FundingTxIdSourceOptions.EsploraMaxRetries"/> retries the lookup gives up as transient.
+/// A pause up to <see cref="FundingTxIdSourceOptions.EsploraMaxInlineWait"/> (5 s) is waited out inside the lookup; a
+/// longer one fails the requests that meet it as transient at once (the ingress defers and retries the announcement),
+/// so a rate-limiting index never holds the lookup's concurrency slots. After
+/// <see cref="FundingTxIdSourceOptions.EsploraMaxRetries"/> retries the lookup gives up as transient.
 /// </para>
 /// <para>
 /// Out of range is answered only from our node's transaction count (<c>nTx</c>), never from the index. Anything the
@@ -46,6 +49,7 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
     private readonly int _maxRetries;
     private readonly TimeSpan _initialBackoff;
     private readonly TimeSpan _maxBackoff;
+    private readonly TimeSpan _maxInlineWait;
     private readonly int _cacheCapacity;
 
     private readonly Lock _gate = new();
@@ -89,6 +93,7 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
         _maxRetries = settings.EsploraMaxRetries;
         _initialBackoff = settings.EsploraInitialBackoff;
         _maxBackoff = settings.EsploraMaxBackoff;
+        _maxInlineWait = settings.EsploraMaxInlineWait;
         _cacheCapacity = settings.EsploraCacheEntries;
 
         if (_logger.IsEnabled(LogLevel.Information))
@@ -111,7 +116,13 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
 
         var (merkleRoot, txCount) = await _chain.GetBlockHeaderSummaryAsync(blockHash)
                   ?? throw new EsploraUnavailableException($"our node has no header for block {blockHash} at {height}");
-        if (txCount > 0 && index >= txCount)
+        // Without our node's nTx (a header whose block it never downloaded, e.g. below an assumeutxo snapshot) neither
+        // the range nor the proof's depth can be checked, and a shorter branch could pass an inner merkle node off as a
+        // txid: unprovable, so transient
+        if (txCount <= 0)
+            throw new EsploraUnavailableException(
+                $"our node does not know the transaction count of block {blockHash} at {height}; cannot prove a txid");
+        if (index >= txCount)
             return FundingTxIdAtPosition.IndexOutOfRange;
 
         var txIdText = await GetStringAsync($"block/{blockHash}/txid/{index}", cancellationToken)
@@ -148,31 +159,22 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
     /// <summary>
     /// True when <paramref name="branch"/> takes <paramref name="txId"/> at <paramref name="position"/> to
     /// <paramref name="merkleRoot"/> (Bitcoin's merkle tree: double SHA-256 of the two children's internal bytes, an
-    /// odd level's last node paired with itself). With <paramref name="txCount"/> known (non-zero) the position must be
-    /// below it and the branch exactly the tree's depth, so a duplicated (CVE-2012-2459) or inner-node position never
-    /// passes; a right child equal to its left sibling (only the duplicated padding looks like that) is refused
-    /// whatever the count.
+    /// odd level's last node paired with itself). The position must be below <paramref name="txCount"/> and the branch
+    /// exactly the tree's depth, so a duplicated (CVE-2012-2459) or inner-node position never passes; an unknown count
+    /// (zero or less) proves nothing and is refused. A right child equal to its left sibling (only the duplicated
+    /// padding looks like that) is refused too.
     /// </summary>
     internal static bool VerifyMerkleProof(uint256 txId, IReadOnlyList<uint256> branch, uint position,
                                            uint256 merkleRoot, int txCount)
     {
-        if (branch.Count > 32)
+        if (branch.Count > 32 || txCount <= 0 || position >= (uint)txCount)
             return false;
-        if (txCount > 0)
-        {
-            if (position >= (uint)txCount)
-                return false;
 
-            var depth = 0;
-            while ((1L << depth) < txCount)
-                depth++;
-            if (branch.Count != depth)
-                return false;
-        }
-        else if (branch.Count < 32 && position >> branch.Count != 0)
-        {
+        var depth = 0;
+        while ((1L << depth) < txCount)
+            depth++;
+        if (branch.Count != depth)
             return false;
-        }
 
         var buffer = new byte[64];
         var hash = txId;
@@ -234,7 +236,7 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
         var uri = new Uri(_baseUri, path);
         for (var attempt = 0; ; attempt++)
         {
-            await WaitForPauseAsync(cancellationToken);
+            await WaitForPauseAsync(uri, cancellationToken);
             await _rateLimiter.WaitAsync(cancellationToken);
 
             HttpResponseMessage response;
@@ -317,14 +319,26 @@ public sealed class EsploraTxIdSource : IFundingTxIdSource, IDisposable
         return pause;
     }
 
-    private Task WaitForPauseAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Waits out a short 429 pause; a longer one (over <see cref="FundingTxIdSourceOptions.EsploraMaxInlineWait"/>)
+    /// fails the request as transient at once, so the lookup gives its concurrency slot back and the announcement is
+    /// deferred instead of every chain lookup stalling behind the index.
+    /// </summary>
+    private Task WaitForPauseAsync(Uri uri, CancellationToken cancellationToken)
     {
         DateTimeOffset until;
         lock (_gate)
             until = _pausedUntil;
 
         var wait = until - _timeProvider.GetUtcNow();
-        return wait <= TimeSpan.Zero ? Task.CompletedTask : Task.Delay(wait, _timeProvider, cancellationToken);
+        if (wait <= TimeSpan.Zero)
+            return Task.CompletedTask;
+        if (wait > _maxInlineWait)
+            throw new EsploraUnavailableException(
+                $"GET {uri} not sent: the index asked us to pause for another "
+              + $"{wait.ToString("c", CultureInfo.InvariantCulture)} (429)");
+
+        return Task.Delay(wait, _timeProvider, cancellationToken);
     }
 
     private bool TryGetCached(uint256 blockHash, uint index, out uint256 txId)
