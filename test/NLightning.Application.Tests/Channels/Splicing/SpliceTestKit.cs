@@ -290,6 +290,15 @@ internal sealed class SpliceNode(string name)
     /// <summary>The watched transactions the node's unit of work saved.</summary>
     public List<WatchedTransactionModel> Watches { get; } = [];
 
+    /// <summary>The watched outpoints the node's unit of work saved.</summary>
+    public List<WatchedOutpointModel> WatchedOutpoints { get; } = [];
+
+    /// <summary>
+    /// Called at the start of every save with the broadcasts it would store; true makes that save throw with nothing
+    /// committed (a crash or a failed database write).
+    /// </summary>
+    public Func<IReadOnlyList<BroadcastTransactionModel>, bool>? FailSave { get; set; }
+
     /// <summary>(channel, funding txid, number) marks of SP-I1 the signer received.</summary>
     public ConcurrentBag<(ChannelId, TxId, ulong)> PersistedSpliceCommitments { get; } = [];
 
@@ -324,6 +333,15 @@ internal sealed class SpliceNode(string name)
         var unitOfWork = Mock.Get(node.Services.CreateScope().ServiceProvider.GetRequiredService<IUnitOfWork>());
         var stagedBroadcasts = new List<BroadcastTransactionModel>();
         var stagedWatches = new List<WatchedTransactionModel>();
+        var stagedOutpoints = new List<WatchedOutpointModel>();
+        var outpoints = new Mock<IWatchedOutpointDbRepository>();
+        outpoints.Setup(o => o.Add(It.IsAny<WatchedOutpointModel>())).Callback<WatchedOutpointModel>(stagedOutpoints.Add);
+        outpoints.Setup(o => o.GetAsync(It.IsAny<TxId>(), It.IsAny<uint>()))
+                 .ReturnsAsync((TxId txId, uint index) =>
+                                   WatchedOutpoints.FirstOrDefault(w => w.TransactionId == txId
+                                                                     && w.OutputIndex == index));
+        node.WatchedTransactions.Setup(w => w.GetByTransactionIdAsync(It.IsAny<TxId>()))
+            .ReturnsAsync((TxId txId) => Watches.FirstOrDefault(w => w.TransactionId == txId));
         var broadcasts = new Mock<IBroadcastTransactionDbRepository>();
         broadcasts.Setup(b => b.Add(It.IsAny<BroadcastTransactionModel>()))
                   .Callback<BroadcastTransactionModel>(stagedBroadcasts.Add);
@@ -332,10 +350,18 @@ internal sealed class SpliceNode(string name)
         unitOfWork.SetupGet(u => u.InteractiveTxSessionDbRepository).Returns(Sessions);
         unitOfWork.SetupGet(u => u.BroadcastTransactionDbRepository).Returns(broadcasts.Object);
         unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(FundingRows);
+        unitOfWork.SetupGet(u => u.WatchedOutpointDbRepository).Returns(outpoints.Object);
         unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
         {
             try
             {
+                if (FailSave?.Invoke(stagedBroadcasts) == true)
+                {
+                    // The channel state staged by the same save is dropped with it
+                    node.Store.Restart();
+                    throw new InvalidOperationException("Simulated failed save");
+                }
+
                 node.Store.Commit();
             }
             catch
@@ -345,6 +371,7 @@ internal sealed class SpliceNode(string name)
                 FundingRows.DiscardStaged();
                 stagedBroadcasts.Clear();
                 stagedWatches.Clear();
+                stagedOutpoints.Clear();
                 throw;
             }
 
@@ -353,8 +380,10 @@ internal sealed class SpliceNode(string name)
             FundingRows.Commit();
             Broadcasts.AddRange(stagedBroadcasts);
             Watches.AddRange(stagedWatches);
+            WatchedOutpoints.AddRange(stagedOutpoints);
             stagedBroadcasts.Clear();
             stagedWatches.Clear();
+            stagedOutpoints.Clear();
             return Task.CompletedTask;
         });
     }

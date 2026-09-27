@@ -8,6 +8,7 @@ using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
+using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using Interfaces;
 
@@ -21,9 +22,12 @@ using Interfaces;
 /// </summary>
 /// <remarks>
 /// Singleton; subscribes in its constructor. <see cref="SpliceService"/> resolves it in its own constructor (and it
-/// resolves the service lazily), so it runs from the first splice message or operator splice of the process on; a host
-/// that wants it before (splices confirmed after a restart, wave SP2) resolves it at startup. The channel manager also receives the event (a funding confirmation of a channel still being opened); it
-/// ignores an <c>Open</c> channel, and the reorg handler of the funding compares the txid with the channel's funding.
+/// resolves the service lazily), so it runs from the first splice message or operator splice of the process on. The
+/// host resolves it and calls <see cref="CatchUpAsync"/> at startup, after the chain monitor and the peer manager
+/// started: a splice whose watch completed while nothing listened (before the first splice message of the process)
+/// is then handed over too. The channel manager also receives the event (a funding confirmation of a channel still
+/// being opened); it ignores an <c>Open</c> channel, and the reorg handler of the funding compares the txid with the
+/// channel's funding.
 /// </remarks>
 public sealed class SpliceDepthWatcher : IDisposable
 {
@@ -51,6 +55,51 @@ public sealed class SpliceDepthWatcher : IDisposable
     {
         while (!_running.IsEmpty)
             await Task.WhenAll(_running.Keys.ToArray());
+    }
+
+    /// <summary>
+    /// Hands over every pending splice of a loaded channel for which we have not sent <c>splice_locked</c> and whose
+    /// watch already completed (its confirmation was raised while nothing listened, e.g. before the first splice
+    /// message after a restart). <see cref="SpliceService.OnSpliceDepthReachedAsync"/> is idempotent, so a splice
+    /// the event handles at the same time is locked once. Returns how many were handed over.
+    /// </summary>
+    public async Task<int> CatchUpAsync(CancellationToken cancellationToken = default)
+    {
+        var due = new List<(ChannelId ChannelId, TxId TxId)>();
+        foreach (var channel in _channelMemoryRepository.FindChannels(_ => true))
+        {
+            try
+            {
+                due.AddRange(_statePort.GetFundings(channel).Pending
+                                       .Where(f => !f.SpliceLockedSent)
+                                       .Select(f => (channel.ChannelId, f.FundingTxId)));
+            }
+            catch (Exception e) when (e is InvalidOperationException or NotImplementedException)
+            {
+                // A channel without a funding outpoint has no splice
+            }
+        }
+
+        if (due.Count == 0)
+            return 0;
+
+        var handed = 0;
+        using var scope = _serviceProvider.CreateScope();
+        var watches = scope.ServiceProvider.GetRequiredService<IUnitOfWork>().WatchedTransactionDbRepository;
+        foreach (var (channelId, txId) in due)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (await watches.GetByTransactionIdAsync(txId) is not { IsCompleted: true } watch
+             || watch.ChannelId != channelId || watch.FirstSeenAtHeight is not { } height)
+                continue;
+
+            _logger.LogInformation("Splice {TxId} of channel {ChannelId} reached its depth while nothing listened; "
+                                 + "locking it now", txId, channelId);
+            await HandleAsync(channelId, txId, height);
+            handed++;
+        }
+
+        return handed;
     }
 
     /// <inheritdoc />

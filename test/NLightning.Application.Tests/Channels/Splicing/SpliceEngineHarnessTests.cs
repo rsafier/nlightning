@@ -3,6 +3,8 @@ namespace NLightning.Application.Tests.Channels.Splicing;
 using Domain.Channels.Enums;
 using Domain.Channels.Splicing.Enums;
 using Domain.Money;
+using Domain.Onchain.Enums;
+using Domain.Onchain.Models;
 using Domain.Payments.ValueObjects;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
@@ -404,6 +406,79 @@ public class SpliceEngineHarnessTests
                                      new Domain.Bitcoin.Events.OutpointSpentEventArgs(
                                          TwoNodeHarness.ChannelId, spend, height, 1, fundingTx1,
                                          node.Node.Channel.FundingOutput!.Index));
+    }
+
+    #endregion
+
+    #region The locked funding's outpoint, the depth catch-up
+
+    /// <summary>
+    /// The lock moves the channel's funding output to the splice's: that outpoint is watched for a spend from the lock's
+    /// save on (a commitment on the new funding, revoked or not, must reach the on-chain watcher), stored in the same
+    /// save and tracked by the chain monitor after it. Before, nothing watched it until a restart.
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceLocks_When_TheLockIsSaved_Then_TheNewFundingOutpointIsWatched()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var result = await harness.SpliceAsync(harness.Alice, 100_000);
+        var fundingTx2 = result.SpliceTxId!.Value;
+        Assert.All(new[] { harness.Alice, harness.Bob }, node => Assert.Empty(node.WatchedOutpoints));
+
+        // Act
+        await harness.ConfirmAsync(fundingTx2, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);
+
+        // Assert
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            uint index = node.Node.Channel.FundingOutput!.Index!.Value;
+            var watch = Assert.Single(node.WatchedOutpoints);
+            Assert.Equal(fundingTx2, watch.TransactionId);
+            Assert.Equal(index, watch.OutputIndex);
+            Assert.Equal(TwoNodeHarness.ChannelId, watch.ChannelId);
+            Assert.Equal(WatchedOutpointPurpose.FundingOutput, watch.Purpose);
+            node.Node.ChainMonitor.Verify(m => m.TrackWatchedOutpoint(It.Is<WatchedOutpointModel>(
+                                                                         w => w.TransactionId == fundingTx2
+                                                                           && w.OutputIndex == index)),
+                                          Times.Once);
+        }
+    }
+
+    /// <summary>
+    /// A splice whose watch completed while nothing listened (the confirmation came before the depth watcher was
+    /// subscribed, e.g. after a restart and before any splice message) is locked by the startup catch-up: our
+    /// <c>splice_locked</c> goes out and, with the peer's, the funding is locked. A second catch-up does nothing.
+    /// </summary>
+    [Fact]
+    public async Task Given_ASpliceConfirmedWhileNothingListened_When_TheDepthWatcherCatchesUp_Then_SpliceLockedIsSent()
+    {
+        // Arrange: Alice's monitor completed the watch without raising the event
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var result = await harness.SpliceAsync(harness.Alice, 100_000);
+        var fundingTx2 = result.SpliceTxId!.Value;
+        var watch = harness.Alice.Watches.Single(w => w.TransactionId == fundingTx2);
+        watch.SetHeightAndIndex(TwoNodeHarness.BlockHeight + 3, 1);
+        watch.MarkAsCompleted();
+        var mark = harness.Transcript.Count;
+
+        // Act
+        var handed = await harness.Alice.DepthWatcher.CatchUpAsync(TestContext.Current.CancellationToken);
+        await harness.PumpAsync();
+        var again = await harness.Alice.DepthWatcher.CatchUpAsync(TestContext.Current.CancellationToken);
+        await harness.ConfirmAsync(fundingTx2, TwoNodeHarness.BlockHeight + 3, harness.Bob);
+
+        // Assert
+        Assert.Equal(1, handed);
+        Assert.Equal(0, again);
+        Assert.Equal(["Alice:SpliceLocked", "Bob:SpliceLocked"], Describe(harness, mark));
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.Node.State.PendingFundings);
+            Assert.Equal(fundingTx2, node.Node.State.Params.Funding!.FundingTxId);
+        }
     }
 
     #endregion
