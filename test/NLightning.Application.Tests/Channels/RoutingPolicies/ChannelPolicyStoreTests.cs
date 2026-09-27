@@ -1,5 +1,6 @@
 namespace NLightning.Application.Tests.Channels.RoutingPolicies;
 
+using Application.Channels.RoutingPolicies;
 using Domain.Channels.RoutingPolicies;
 
 /// <summary>
@@ -118,5 +119,58 @@ public class ChannelPolicyStoreTests
         // Assert
         Assert.Equal(4_321u, effective.FeeBaseMsat);
         Assert.Equal(77u, effective.FeeProportionalMillionths);
+    }
+
+    [Fact]
+    public async Task Given_ALoadThatFails_When_Read_Then_NotLoadedAndRetriedOnlyAfterTheInterval()
+    {
+        // Arrange: the database is down at the first read
+        var table = new InMemoryChannelPolicyTable { FailReads = true };
+        var clock = new Gossip.Graph.SettableTimeProvider(DateTimeOffset.FromUnixTimeSeconds(1_800_000_000));
+        var channel = ChannelPolicyTestKit.CreateChannel();
+        await using var provider = ChannelPolicyTestKit.CreateProvider(table);
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions, clock);
+
+        // Act
+        store.GetOverride(channel.ChannelId);
+        store.GetOverride(channel.ChannelId);
+        var loadedWhileDown = store.IsLoaded;
+        table.FailReads = false;
+        store.GetOverride(channel.ChannelId);
+        var readsWithinInterval = table.Reads;
+        clock.Now += ChannelPolicyStore.LoadRetryInterval;
+        store.GetOverride(channel.ChannelId);
+
+        // Assert: one read per interval, then loaded
+        Assert.False(loadedWhileDown);
+        Assert.Equal(1, readsWithinInterval);
+        Assert.Equal(2, table.Reads);
+        Assert.True(store.IsLoaded);
+    }
+
+    [Fact]
+    public async Task Given_APolicyChange_When_ReadWithinAndAfterTheGracePeriod_Then_ThePreviousPolicyIsKeptTenMinutes()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var clock = new Gossip.Graph.SettableTimeProvider(DateTimeOffset.FromUnixTimeSeconds(1_800_000_000));
+        var channel = ChannelPolicyTestKit.CreateChannel();
+        await using var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions, clock);
+
+        // Act: Node:Routing (1,000 msat) -> 2,000 msat -> 3,000 msat, a minute apart
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, 2_000), ct);
+        clock.Now += TimeSpan.FromMinutes(1);
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, 3_000), ct);
+        var bothInGrace = store.GetPreviousPolicies(channel.ChannelId).Select(p => p.FeeBaseMsat).ToArray();
+        clock.Now += TimeSpan.FromMinutes(9);
+        var oneInGrace = store.GetPreviousPolicies(channel.ChannelId).Select(p => p.FeeBaseMsat).ToArray();
+        clock.Now += TimeSpan.FromMinutes(1);
+        var noneInGrace = store.GetPreviousPolicies(channel.ChannelId);
+
+        // Assert
+        Assert.Equal([2_000u, 1_000u], bothInGrace);
+        Assert.Equal([2_000u], oneInGrace);
+        Assert.Empty(noneInGrace);
     }
 }

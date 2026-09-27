@@ -4,16 +4,19 @@ namespace NLightning.Application.Tests.Payments.Policy;
 
 using Application.Channels.RoutingPolicies;
 using Application.Payments.Policy;
+using Channels.RoutingPolicies;
+using Domain.Channels.RoutingPolicies;
 using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
+using Gossip.Graph;
 
 /// <summary>
 /// ONION M4-T4: the forwarding policy table (BOLT 4 forwarding-node failures, BOLT 7 fee formula).
 /// </summary>
-public class HtlcForwardingPolicyTests
+public class HtlcForwardingPolicyTests : IAsyncDisposable
 {
     private const uint Height = 1_000;
     private const ushort Delta = 40;
@@ -293,6 +296,8 @@ public class HtlcForwardingPolicyTests
                 .Returns((ChannelId id) => id == s_policyChannelId
                                                ? channelPolicy
                                                : ConfiguredChannelPolicy.From(_nodeOptions.Routing, null));
+        provider.Setup(p => p.GetPreviousPolicies(It.IsAny<ChannelId>())).Returns([]);
+        provider.SetupGet(p => p.IsLoaded).Returns(true);
         return new HtlcForwardingPolicy(Options.Create(_nodeOptions), provider.Object);
     }
 
@@ -403,5 +408,124 @@ public class HtlcForwardingPolicyTests
 
         // Assert
         Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
+    }
+
+    // BOLT 7: the previous parameters are accepted for 10 minutes after a change; a store that cannot load refuses
+
+    [Theory]
+    // Node:Routing asks 1,100 msat on 1,000,000 msat; the channel's new policy 5,000 msat + 2,000 ppm = 7,000 msat
+    [InlineData(0, 1_100UL, true)]
+    [InlineData(9, 1_100UL, true)]
+    [InlineData(10, 1_100UL, false)]
+    [InlineData(10, 7_000UL, true)]
+    [InlineData(0, 1_099UL, false)]
+    public async Task Given_ARaisedFee_When_AnHtlcPaysTheOldFee_Then_ItForwardsOnlyWithinTenMinutes(int minutesLater,
+        ulong feeMsat, bool forwards)
+    {
+        // Arrange
+        var (policy, store, clock, channel) = await CreateStorePolicyAsync();
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, 5_000, 2_000),
+                              TestContext.Current.CancellationToken);
+        clock.Now += TimeSpan.FromMinutes(minutesLater);
+
+        // Act
+        var decision = policy.Evaluate(Request(AmountMsat + feeMsat, channel: StoreChannel(channel)));
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.FeeInsufficient, decision.FailureCode);
+    }
+
+    [Theory]
+    [InlineData(5, true)]
+    [InlineData(10, false)]
+    public async Task Given_ARaisedCltvDelta_When_AnHtlcUsesTheOldDelta_Then_ItForwardsOnlyWithinTenMinutes(
+        int minutesLater, bool forwards)
+    {
+        // Arrange: Delta (40) -> 80
+        var (policy, store, clock, channel) = await CreateStorePolicyAsync();
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, CltvExpiryDelta: 80),
+                              TestContext.Current.CancellationToken);
+        clock.Now += TimeSpan.FromMinutes(minutesLater);
+
+        // Act
+        var decision = policy.Evaluate(Request(incomingCltv: OutgoingCltv + Delta, channel: StoreChannel(channel)));
+
+        // Assert
+        Assert.Equal(forwards, decision.IsForward);
+        if (!forwards)
+            Assert.Equal(FailureCode.IncorrectCltvExpiry, decision.FailureCode);
+    }
+
+    [Fact]
+    public async Task Given_ARaisedFee_When_ABlindedRelayCarriesTheOldFeeWithinTheGrace_Then_Forward()
+    {
+        // Arrange: the blinded path was built with Node:Routing's 1,000 msat + 100 ppm
+        var (policy, store, _, channel) = await CreateStorePolicyAsync();
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, 2_000),
+                              TestContext.Current.CancellationToken);
+        var relay = new Domain.Protocol.Onion.Models.BlindedPaymentRelay(Delta, 100, 1_000);
+
+        // Act
+        var decision = policy.Evaluate(Request(channel: StoreChannel(channel)) with { BlindedRelay = relay });
+
+        // Assert
+        Assert.True(decision.IsForward);
+    }
+
+    [Fact]
+    public async Task Given_ALoweredHtlcMaximum_When_AnHtlcFitsOnlyTheOldOne_Then_ItIsRefusedAtOnce()
+    {
+        // Arrange
+        var (policy, store, _, channel) = await CreateStorePolicyAsync();
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, HtlcMaximumMsat: 500_000),
+                              TestContext.Current.CancellationToken);
+
+        // Act
+        var decision = policy.Evaluate(Request(channel: StoreChannel(channel)));
+
+        // Assert
+        Assert.Equal(FailureCode.TemporaryChannelFailure, decision.FailureCode);
+    }
+
+    [Fact]
+    public async Task Given_OverridesThatCannotBeLoaded_When_Evaluated_Then_TemporaryChannelFailure()
+    {
+        // Arrange: Node:Routing's values would undercut an override we cannot read
+        var table = new InMemoryChannelPolicyTable { FailReads = true };
+        await using var provider = ChannelPolicyTestKit.CreateProvider(table);
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions);
+        var policy = new HtlcForwardingPolicy(Options.Create(_nodeOptions), store);
+
+        // Act
+        var decision = policy.Evaluate(Request());
+
+        // Assert
+        Assert.Equal(FailureCode.TemporaryChannelFailure, decision.FailureCode);
+    }
+
+    private readonly List<IAsyncDisposable> _storeProviders = [];
+
+    private async Task<(HtlcForwardingPolicy Policy, ChannelPolicyStore Store, SettableTimeProvider Clock,
+        Domain.Channels.Models.ChannelModel Channel)> CreateStorePolicyAsync()
+    {
+        var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        _storeProviders.Add(provider);
+        var clock = new SettableTimeProvider(DateTimeOffset.FromUnixTimeSeconds(1_800_000_000));
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions, clock);
+        await store.LoadAsync(TestContext.Current.CancellationToken);
+        return (new HtlcForwardingPolicy(Options.Create(_nodeOptions), store), store, clock,
+                ChannelPolicyTestKit.CreateChannel());
+    }
+
+    private static OutgoingChannelInfo StoreChannel(Domain.Channels.Models.ChannelModel channel) =>
+        new(channel.ChannelId, true, LightningMoney.MilliSatoshis(1), LightningMoney.MilliSatoshis(10_000_000_000));
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var provider in _storeProviders)
+            await provider.DisposeAsync();
+        GC.SuppressFinalize(this);
     }
 }

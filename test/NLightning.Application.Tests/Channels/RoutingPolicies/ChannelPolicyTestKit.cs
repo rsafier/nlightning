@@ -105,9 +105,10 @@ internal static class ChannelPolicyTestKit
         return services.BuildServiceProvider();
     }
 
-    internal static ChannelPolicyStore CreateStore(IServiceProvider provider, NodeOptions nodeOptions) =>
+    internal static ChannelPolicyStore CreateStore(IServiceProvider provider, NodeOptions nodeOptions,
+                                                   TimeProvider? timeProvider = null) =>
         new(provider.GetRequiredService<IServiceScopeFactory>(), Options.Create(nodeOptions),
-            NullLogger<ChannelPolicyStore>.Instance);
+            NullLogger<ChannelPolicyStore>.Instance, timeProvider);
 
     /// <summary>A channel memory repository over <paramref name="channels"/>.</summary>
     internal static Mock<IChannelMemoryRepository> CreateMemory(List<ChannelModel> channels)
@@ -139,6 +140,9 @@ internal sealed class InMemoryChannelPolicyTable
     internal int Saves { get; private set; }
     internal int Reads { get; private set; }
 
+    /// <summary>While true every read of all rows throws, as a database that is down.</summary>
+    internal bool FailReads { get; set; }
+
     internal IReadOnlyDictionary<ChannelId, ChannelPolicyOverride> Rows
     {
         get
@@ -165,6 +169,8 @@ internal sealed class InMemoryChannelPolicyTable
             lock (table._lock)
             {
                 table.Reads++;
+                if (table.FailReads)
+                    throw new InvalidOperationException("The database is down.");
                 return Task.FromResult<IReadOnlyList<ChannelPolicyOverride>>(table._rows.Values.ToList());
             }
         }

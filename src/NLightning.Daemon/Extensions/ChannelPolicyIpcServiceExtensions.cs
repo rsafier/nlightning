@@ -30,7 +30,8 @@ public static class ChannelPolicyIpcServiceExtensions
         services.AddChannelPolicyServices();
         services.TryAddScoped<IClientCommandHandler<SetChannelPolicyClientRequest, ChannelPolicyClientResponse>>(
             sp => new SetChannelPolicyClientHandler(sp.GetRequiredService<IChannelMemoryRepository>(),
-                                                    sp.GetService<IChannelPolicyService>()));
+                                                    sp.GetService<IChannelPolicyService>(),
+                                                    sp.GetService<IChannelPolicyProvider>()));
         services.TryAddScoped<IClientCommandHandler<GetChannelPolicyClientRequest, ChannelPolicyClientResponse>>(
             sp => new GetChannelPolicyClientHandler(sp.GetRequiredService<IChannelMemoryRepository>(),
                                                     sp.GetService<IChannelPolicyService>()));

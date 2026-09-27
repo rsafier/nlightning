@@ -186,6 +186,42 @@ public class ChannelPolicyCommandTests
         Assert.DoesNotContain("Override Set At", output);
     }
 
+    [Fact]
+    public void Given_ANodeThatDoesNotStorePolicies_When_Printed_Then_ItWarnsTheOverrideIsLostOnRestart()
+    {
+        // Arrange
+        var response = new ChannelPolicyIpcResponse
+        {
+            ChannelId = new ChannelId(Enumerable.Repeat((byte)0x07, 32).ToArray()),
+            IsMemoryOnly = true
+        };
+        using var writer = new StringWriter();
+
+        // Act
+        new ChannelPolicyPrinter(writer).Print(response);
+
+        // Assert
+        Assert.Contains("Warning: this node does not store channel policies", writer.ToString());
+    }
+
+    [Fact]
+    public void Given_AStoredPolicy_When_Printed_Then_NoWarning()
+    {
+        // Arrange
+        var response = new ChannelPolicyIpcResponse
+        {
+            ChannelId = new ChannelId(Enumerable.Repeat((byte)0x07, 32).ToArray())
+        };
+        using var writer = new StringWriter();
+
+        // Act
+        new ChannelPolicyPrinter(writer).Print(response);
+
+        // Assert
+        Assert.False(response.IsMemoryOnly);
+        Assert.DoesNotContain("Warning", writer.ToString());
+    }
+
     private static string[] Split(string arguments) =>
         arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 

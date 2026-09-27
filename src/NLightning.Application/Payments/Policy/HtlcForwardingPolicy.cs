@@ -28,6 +28,13 @@ using Domain.Protocol.Onion.Enums;
 /// and accepts), read from the optional <see cref="IChannelPolicyProvider"/> on every call; without one they are
 /// <see cref="NodeOptions.Routing"/>'s. <c>ExpiryTooSoonBlocks</c> and <c>MaxCltvExpiryDistance</c> stay node-wide.
 /// </para>
+/// <para>BOLT 7 grace period: for <c>ChannelPolicyStore.PreviousPolicyGracePeriod</c> (10 minutes) after a change the
+/// fee (or blinded <c>payment_relay</c>) and the <c>cltv_expiry_delta</c> may satisfy any policy the change replaced
+/// instead of the current one (each check on its own, the most lenient of them, as CLN's <c>enforcedelay</c>):
+/// payers route on the old <c>channel_update</c> until the new one propagates. A lower <c>htlc_maximum_msat</c> or
+/// higher <c>htlc_minimum_msat</c> applies at once. While the provider has not loaded the overrides
+/// (<see cref="IChannelPolicyProvider.IsLoaded"/>) every forward is refused with <c>temporary_channel_failure</c>:
+/// <c>Node:Routing</c> could undercut the channel's policy.</para>
 /// <para>"Within <c>ExpiryTooSoonBlocks</c>" is inclusive, as in LND (<c>outgoing - delta &lt;= height</c>): an
 /// outgoing HTLC that expires exactly <c>ExpiryTooSoonBlocks</c> blocks from now is refused.</para>
 /// <para>The options are read on every call, so a reloaded <see cref="IOptions{TOptions}"/> value applies.</para>
@@ -57,6 +64,10 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
 
         var policy = _channelPolicyProvider?.GetConfiguredPolicy(channel.ChannelId)
                   ?? ConfiguredChannelPolicy.From(routing, null);
+        if (_channelPolicyProvider is { IsLoaded: false })
+            return ForwardingDecision.Fail(FailureCode.TemporaryChannelFailure);
+
+        var previous = _channelPolicyProvider?.GetPreviousPolicies(channel.ChannelId) ?? [];
 
         var amountToForwardMsat = request.AmountToForward.MilliSatoshi;
         var htlcMinimumMsat = Math.Max(channel.HtlcMinimum.MilliSatoshi, policy.HtlcMinimumMsat);
@@ -67,18 +78,20 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
         if (request.BlindedRelay is { } relay)
         {
             // Inside a blinded route the recipient set our fee (BOLT 4 payment_relay): it must be at least our policy
-            if (relay.FeeBaseMsat < policy.FeeBaseMsat
-             || relay.FeeProportionalMillionths < policy.FeeProportionalMillionths)
+            if (!RelayCoversFee(relay.FeeBaseMsat, relay.FeeProportionalMillionths, policy)
+             && !previous.Any(p => RelayCoversFee(relay.FeeBaseMsat, relay.FeeProportionalMillionths, p)))
                 return ForwardingDecision.FeeInsufficient(incomingAmountMsat);
         }
-        else if (!ForwardingFee.PaysSufficientFee(policy.FeeBaseMsat, policy.FeeProportionalMillionths,
-                                                  incomingAmountMsat, amountToForwardMsat))
+        else if (!PaysFee(policy, incomingAmountMsat, amountToForwardMsat)
+              && !previous.Any(p => PaysFee(p, incomingAmountMsat, amountToForwardMsat)))
         {
             return ForwardingDecision.FeeInsufficient(incomingAmountMsat);
         }
 
         // cltv_expiry - cltv_expiry_delta >= outgoing_cltv_value, without underflow
-        if ((ulong)request.IncomingCltvExpiry < (ulong)request.OutgoingCltvValue + policy.CltvExpiryDelta)
+        var cltvExpiryDelta = previous.Aggregate(policy.CltvExpiryDelta,
+                                                 (delta, p) => Math.Min(delta, p.CltvExpiryDelta));
+        if ((ulong)request.IncomingCltvExpiry < (ulong)request.OutgoingCltvValue + cltvExpiryDelta)
             return ForwardingDecision.IncorrectCltvExpiry(request.OutgoingCltvValue);
 
         if ((ulong)request.OutgoingCltvValue <= (ulong)request.CurrentBlockHeight + routing.ExpiryTooSoonBlocks)
@@ -95,4 +108,12 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
 
         return ForwardingDecision.Forward;
     }
+
+    private static bool RelayCoversFee(uint relayFeeBaseMsat, uint relayFeeProportionalMillionths,
+                                       ConfiguredChannelPolicy policy) =>
+        relayFeeBaseMsat >= policy.FeeBaseMsat && relayFeeProportionalMillionths >= policy.FeeProportionalMillionths;
+
+    private static bool PaysFee(ConfiguredChannelPolicy policy, ulong incomingAmountMsat, ulong amountToForwardMsat) =>
+        ForwardingFee.PaysSufficientFee(policy.FeeBaseMsat, policy.FeeProportionalMillionths, incomingAmountMsat,
+                                        amountToForwardMsat);
 }

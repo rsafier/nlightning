@@ -1048,6 +1048,28 @@ public class ChannelUpdateServiceTests
     }
 
     [Fact]
+    public async Task Given_PolicyOverridesThatCannotBeLoaded_When_ThePeerReconnects_Then_NoUpdateWithNodeRoutingIsSent()
+    {
+        // Arrange: the database is down, so the channel's override (if any) is unknown
+        var ct = TestContext.Current.CancellationToken;
+        var table = new InMemoryChannelPolicyTable { FailReads = true };
+        await using var provider = ChannelPolicyTestKit.CreateProvider(table);
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions);
+        var service = CreateService(out _, channelPolicyProvider: store);
+        var channel = AddChannel(ChannelState.Open);
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+
+        // Assert
+        Assert.Empty(raised);
+        Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
+        Assert.False(store.IsLoaded);
+    }
+
+    [Fact]
     public async Task Given_APolicyChangedWhileThePeerWasAway_When_ItReconnects_Then_ItGetsANewUpdate()
     {
         // Arrange: the change was saved but not announced (e.g. the peer was not connected)

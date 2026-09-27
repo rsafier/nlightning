@@ -220,6 +220,60 @@ public class ChannelPolicyServiceTests : IAsyncDisposable
                         Times.Never);
     }
 
+    [Fact]
+    public async Task Given_AValueEqualToNodeRouting_When_Set_Then_ItIsSavedButNoRedundantUpdateIsSent()
+    {
+        // Arrange: Node:Routing's base fee is 1,000 msat, so the announced policy stays the same
+        var ct = TestContext.Current.CancellationToken;
+        var (service, store) = CreateService();
+
+        // Act
+        var effective = await service.SetAsync(ChannelId, new ChannelPolicyOverride(ChannelId, 1_000), ct);
+        await service.ResetAsync(ChannelId, ct);
+
+        // Assert: BOLT 7 SHOULD NOT create redundant channel_updates
+        Assert.True(effective.IsFeeBaseMsatOverridden);
+        Assert.Equal(2, _table.Saves);
+        Assert.Null(store.GetOverride(ChannelId));
+        _updates.Verify(u => u.SendChannelUpdateAsync(It.IsAny<ChannelId>(), It.IsAny<CancellationToken>()),
+                        Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AnHtlcMaximumAboveTheChannelsLimits_When_Set_Then_NoRedundantUpdateIsSent()
+    {
+        // Arrange: the peer allows 800,000,000 msat in flight, so a larger maximum announces the same range
+        var ct = TestContext.Current.CancellationToken;
+        var (service, _) = CreateService();
+
+        // Act
+        var effective = await service.SetAsync(ChannelId,
+                                               new ChannelPolicyOverride(ChannelId, HtlcMaximumMsat: 900_000_000), ct);
+
+        // Assert
+        Assert.Equal(800_000_000ul, effective.HtlcMaximumMsat);
+        _updates.Verify(u => u.SendChannelUpdateAsync(It.IsAny<ChannelId>(), It.IsAny<CancellationToken>()),
+                        Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_TheOverridesCannotBeLoaded_When_GetOrSet_Then_TheFailureIsReportedNotNodeRouting()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        _table.FailReads = true;
+        var (service, _) = CreateService();
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.GetAsync(ChannelId, ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.SetAsync(ChannelId, new ChannelPolicyOverride(ChannelId, 2_500), ct));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResetAsync(ChannelId, ct));
+        Assert.Equal(0, _table.Saves);
+        _updates.Verify(u => u.SendChannelUpdateAsync(It.IsAny<ChannelId>(), It.IsAny<CancellationToken>()),
+                        Times.Never);
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var provider in _providers)

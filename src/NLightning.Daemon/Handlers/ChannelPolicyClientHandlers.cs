@@ -1,5 +1,6 @@
 namespace NLightning.Daemon.Handlers;
 
+using Application.Channels.RoutingPolicies;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.RoutingPolicies;
@@ -21,22 +22,27 @@ using Interfaces;
 /// <see cref="ErrorCodes.InvalidChannel"/>; a request without a value, a reset with values, and a value the service
 /// refuses (BOLT 7: <c>htlc_maximum_msat</c> above the capacity or below <c>htlc_minimum_msat</c>; a
 /// <c>cltv_expiry_delta</c> below 34) are <see cref="ErrorCodes.InvalidOperation"/>. A node without the service
-/// answers "not available".
+/// answers "not available". <see cref="ChannelPolicyClientResponse.IsPersisted"/> is false when the policy store keeps
+/// overrides in memory only (<see cref="IChannelPolicyProvider.IsPersistent"/>), so the CLI warns that the override is
+/// lost on restart.
 /// </remarks>
 public sealed class SetChannelPolicyClientHandler
     : IClientCommandHandler<SetChannelPolicyClientRequest, ChannelPolicyClientResponse>
 {
     private readonly IChannelMemoryRepository _channelMemoryRepository;
+    private readonly IChannelPolicyProvider? _channelPolicyProvider;
     private readonly IChannelPolicyService? _channelPolicyService;
 
     /// <inheritdoc/>
     public ClientCommand Command => ClientCommand.SetChannelPolicy;
 
     public SetChannelPolicyClientHandler(IChannelMemoryRepository channelMemoryRepository,
-                                         IChannelPolicyService? channelPolicyService)
+                                         IChannelPolicyService? channelPolicyService,
+                                         IChannelPolicyProvider? channelPolicyProvider = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _channelPolicyService = channelPolicyService;
+        _channelPolicyProvider = channelPolicyProvider;
     }
 
     /// <inheritdoc/>
@@ -70,7 +76,8 @@ public sealed class SetChannelPolicyClientHandler
 
             return new ChannelPolicyClientResponse(policy, ChannelPolicyHandlerHelpers.GetShortChannelId(channel))
             {
-                WasReset = request.Reset
+                WasReset = request.Reset,
+                IsPersisted = _channelPolicyProvider?.IsPersistent ?? true
             };
         }
         catch (KeyNotFoundException e)

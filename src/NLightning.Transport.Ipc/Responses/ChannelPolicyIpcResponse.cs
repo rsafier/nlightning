@@ -34,6 +34,9 @@ public sealed class ChannelPolicyIpcResponse
     /// <summary>True when the request reset the channel to the node-wide values.</summary>
     [Key(13)] public bool WasReset { get; init; }
 
+    /// <summary>True when the node keeps overrides in memory only (forgotten on restart).</summary>
+    [Key(14)] public bool IsMemoryOnly { get; init; }
+
     public static ChannelPolicyIpcResponse FromClientResponse(ChannelPolicyClientResponse response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -58,7 +61,8 @@ public sealed class ChannelPolicyIpcResponse
             OverrideUpdatedAt = policy.Override is { } policyOverride && policyOverride.UpdatedAt != default
                                     ? policyOverride.UpdatedAt.ToUnixTimeSeconds()
                                     : null,
-            WasReset = response.WasReset
+            WasReset = response.WasReset,
+            IsMemoryOnly = !response.IsPersisted
         };
     }
 }

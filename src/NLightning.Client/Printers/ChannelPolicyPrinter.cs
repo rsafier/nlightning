@@ -37,6 +37,9 @@ public sealed class ChannelPolicyPrinter : IPrinter<ChannelPolicyIpcResponse>
             _output.WriteLine("  Override Set At:    {0}",
                               DateTimeOffset.FromUnixTimeSeconds(updatedAt).UtcDateTime
                                             .ToString("yyyy-MM-dd HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+        if (item.IsMemoryOnly)
+            _output.WriteLine("  Warning: this node does not store channel policies; the override applies until the "
+                            + "node restarts and is then lost.");
     }
 
     private static string Source(bool overridden) => overridden ? "(channel)" : "(node)";
