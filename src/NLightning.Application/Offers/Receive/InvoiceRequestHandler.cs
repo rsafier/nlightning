@@ -14,6 +14,7 @@ using Domain.Offers.Constants;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Payments.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -158,7 +159,7 @@ public sealed class InvoiceRequestHandler : IOnionMessageHandler
         if (!InvoiceRequestReader.TryRead(payload.Value, out var request, out var reason))
             return Ignore($"malformed invoice_request: {reason}");
 
-        var merkleRoot = Bolt12Wire.ComputeMerkleRoot(request!.Stream.Records);
+        var merkleRoot = Bolt12MerkleTree.ComputeRoot(request!.Stream);
         if (!_signer.Verify(Bolt12Constants.InvoiceRequestSignatureTag, merkleRoot, request.PayerId,
                             request.Signature))
             return Ignore("invalid invreq_payer_id signature");

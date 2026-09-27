@@ -15,6 +15,7 @@ using Domain.Money;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
+using Domain.Offers;
 using Domain.Offers.Constants;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
@@ -101,7 +102,7 @@ public sealed class OfferServiceTests : IDisposable
         Assert.Equal(OfferStatus.Active, offer.Status);
         Assert.Equal(Bolt12Constants.OurOfferMetadataLength, offer.Metadata.Length);
 
-        Assert.True(Bolt12Wire.TryParse(offer.OfferBytes, out var stream));
+        Assert.True(Bolt12TlvStream.TryParse(offer.OfferBytes, out var stream));
         var view = new Bolt12TlvStreamView(stream!);
         Assert.All(stream!.Records, r => Assert.True(InvoiceRequestReader.IsOfferType(r.Type)));
         Assert.Equal((byte[])ChainConstants.Regtest, view.Get(Bolt12TlvTypes.OfferChains));
@@ -128,7 +129,7 @@ public sealed class OfferServiceTests : IDisposable
         var routeBlinding = _services.GetRequiredService<IRouteBlindingService>();
         var offer = await service.CreateOfferAsync(new CreateOfferRequest(null, null),
                                                    TestContext.Current.CancellationToken);
-        Assert.True(Bolt12Wire.TryParse(offer.OfferBytes, out var stream));
+        Assert.True(Bolt12TlvStream.TryParse(offer.OfferBytes, out var stream));
         Assert.True(stream!.TryGetValue(Bolt12TlvTypes.OfferPaths, out var pathBytes));
         Assert.True(BlindedPathCodec.TryReadList(pathBytes.Span, out var paths, out _));
         var path = paths[0];
@@ -215,7 +216,7 @@ public sealed class OfferServiceTests : IDisposable
                                                            TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.True(Bolt12Wire.TryParse(offer.OfferBytes, out var stream));
+        Assert.True(Bolt12TlvStream.TryParse(offer.OfferBytes, out var stream));
         var view = new Bolt12TlvStreamView(stream!);
         Assert.False(view.Has(Bolt12TlvTypes.OfferChains));
         Assert.False(view.Has(Bolt12TlvTypes.OfferAmount));

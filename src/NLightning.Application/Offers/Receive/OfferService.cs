@@ -14,6 +14,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Enums;
 using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
@@ -111,9 +112,9 @@ public sealed class OfferService : IOfferService
         var nodeOptions = _nodeOptions.Value;
         var records = BuildRecords(request, nodeOptions.BitcoinNetwork, metadata, paths,
                                    _secureKeyManager.GetNodePubKey());
-        var offerBytes = Bolt12Wire.Encode(records);
+        var offerBytes = new Bolt12TlvStream(records).Encode();
         var offer = new OfferModel(new Hash(SHA256.HashData(offerBytes)),
-                                   Bolt12Wire.ToBolt12String(Bolt12Constants.OfferHrp, offerBytes), offerBytes,
+                                   Bolt12Bech32.Encode(Bolt12Constants.OfferHrp, offerBytes), offerBytes,
                                    request.Description, request.Amount, null, request.Issuer, request.QuantityMax,
                                    request.AbsoluteExpiry is { } expiry
                                        ? DateTimeOffset.FromUnixTimeSeconds(expiry.ToUnixTimeSeconds())

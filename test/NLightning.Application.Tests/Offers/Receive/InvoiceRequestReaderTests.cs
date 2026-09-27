@@ -8,6 +8,7 @@ using Application.Offers.Receive;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Offers;
 using Domain.Offers.Constants;
 using Domain.Offers.Enums;
 using Domain.Offers.Models;
@@ -22,9 +23,9 @@ using Domain.Protocol.ValueObjects;
 public class InvoiceRequestReaderTests
 {
     private static readonly byte[] s_offer =
-        Bolt12Wire.Encode(OfferService.BuildRecords(new Domain.Offers.Models.CreateOfferRequest(null, "x"),
-                                                    BitcoinNetwork.Regtest, new byte[16], [],
-                                                    TestPaths.Point(0x02)));
+        new Bolt12TlvStream(OfferService.BuildRecords(new Domain.Offers.Models.CreateOfferRequest(null, "x"),
+                                                      BitcoinNetwork.Regtest, new byte[16], [],
+                                                      TestPaths.Point(0x02))).Encode();
 
     private static InvoiceRequestBuilder Builder() =>
         new InvoiceRequestBuilder(s_offer).Chain((byte[])ChainConstants.Regtest);
@@ -67,7 +68,7 @@ public class InvoiceRequestReaderTests
         {
             "two signatures" => Append(builder.Build(), 242, new byte[64]),
             "short signature" => Replace(builder.Build(), Bolt12TlvTypes.Signature, new byte[63]),
-            "no signature" => Bolt12Wire.Encode(builder.Records),
+            "no signature" => new Bolt12TlvStream(builder.Records).Encode(),
             "payer id not a point" => builder.Set(Bolt12TlvTypes.InvreqPayerId, new byte[33]).Build(),
             "non-minimal amount" => builder.Set(Bolt12TlvTypes.InvreqAmount, new byte[] { 0, 1 }).Build(),
             "chain not 32 bytes" => builder.Set(Bolt12TlvTypes.InvreqChain, new byte[31]).Build(),
@@ -214,13 +215,13 @@ public class InvoiceRequestReaderTests
     }
 
     private static byte[] Append(byte[] stream, ulong type, byte[] value) =>
-        [.. stream, .. Bolt12Wire.EncodeRecord(new Domain.Offers.Bolt12TlvRecord(type, value))];
+        [.. stream, .. Bolt12TlvStream.EncodeRecord(new Domain.Offers.Bolt12TlvRecord(type, value))];
 
     private static byte[] Replace(byte[] stream, ulong type, byte[] value)
     {
-        Assert.True(Bolt12Wire.TryParse(stream, out var parsed));
-        return Bolt12Wire.Encode(parsed!.Records.Select(r => r.Type == type
-                                                                 ? new Domain.Offers.Bolt12TlvRecord(type, value)
-                                                                 : r));
+        Assert.True(Bolt12TlvStream.TryParse(stream, out var parsed));
+        return new Bolt12TlvStream(parsed!.Records.Select(r => r.Type == type
+                                                                   ? new Domain.Offers.Bolt12TlvRecord(type, value)
+                                                                   : r).ToList()).Encode();
     }
 }

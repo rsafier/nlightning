@@ -5,7 +5,9 @@ namespace NLightning.Application.Offers.Receive;
 using Domain.Crypto.ValueObjects;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Interfaces;
+using Domain.Offers.Signing;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.Tlv;
@@ -50,12 +52,12 @@ public static class OfferInvoiceFactory
         if (paths.Count == 0)
             throw new ArgumentException("An invoice needs at least one blinded path.", nameof(paths));
 
-        var records = request.Stream.Records.Where(r => !Bolt12Wire.IsSignatureType(r.Type)).ToList();
+        var records = request.Stream.Records.Where(r => !Bolt12TlvRanges.IsSignatureField(r.Type)).ToList();
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoicePaths,
                                         BlindedPathCodec.EncodeList(
                                             paths.Select(p => WireBlindedPath.FromBlindedPath(p.Path)).ToList())));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceBlindedPay,
-                                        paths.SelectMany(p => Bolt12Wire.EncodePayInfo(p.PayInfo)).ToArray()));
+                                        paths.SelectMany(p => Bolt12FieldCodec.EncodePayInfos([p.PayInfo])).ToArray()));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceCreatedAt,
                                         TruncatedInt.EncodeTu64((ulong)createdAt.ToUnixTimeSeconds())));
         if (relativeExpirySeconds != Bolt12Constants.DefaultInvoiceRelativeExpirySeconds)
@@ -68,11 +70,11 @@ public static class OfferInvoiceFactory
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.InvoiceNodeId, (byte[])nodeId));
 
         records.Sort((a, b) => a.Type.CompareTo(b.Type));
-        var merkleRoot = Bolt12Wire.ComputeMerkleRoot(records);
+        var merkleRoot = Bolt12MerkleTree.ComputeRoot(new Bolt12TlvStream(records));
         var signature = signer.SignAsNode(Bolt12Constants.InvoiceSignatureTag, merkleRoot);
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.Signature, signature));
         records.Sort((a, b) => a.Type.CompareTo(b.Type));
-        return Bolt12Wire.Encode(records);
+        return new Bolt12TlvStream(records).Encode();
     }
 
     /// <summary>
@@ -85,7 +87,7 @@ public static class OfferInvoiceFactory
         if (refusal.ErroneousField is { } field)
             records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.ErroneousField, TruncatedInt.EncodeTu64(field)));
         records.Add(new Bolt12TlvRecord(Bolt12TlvTypes.Error, Encoding.UTF8.GetBytes(refusal.Error)));
-        return Bolt12Wire.Encode(records);
+        return new Bolt12TlvStream(records).Encode();
     }
 
     /// <summary>

@@ -5,6 +5,7 @@ namespace NLightning.Application.Offers.Send;
 using Domain.Crypto.ValueObjects;
 using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Protocol.Constants;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.Tlv;
@@ -78,7 +79,7 @@ public sealed class OfferToPay
         Bolt12TlvStream stream;
         try
         {
-            stream = Bolt12Wire.ParseStream(Bolt12Wire.DecodeString(text, Bolt12Constants.OfferHrp));
+            stream = Bolt12TlvStream.Parse(Bolt12Bech32.Decode(text, Bolt12Constants.OfferHrp));
         }
         catch (FormatException e)
         {

@@ -75,7 +75,22 @@ public static class Bolt12Bech32
     }
 
     /// <summary>
-    /// <see cref="Decode"/> without the exception.
+    /// Decodes a BOLT 12 string whose human-readable part must be <paramref name="expectedHrp"/>.
+    /// </summary>
+    /// <returns>The data bytes.</returns>
+    /// <exception cref="FormatException">The string is not a valid BOLT 12 string, or its prefix is another
+    /// one.</exception>
+    public static byte[] Decode(string text, string expectedHrp)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(expectedHrp);
+        var (hrp, data) = Decode(text);
+        return hrp == expectedHrp
+                   ? data
+                   : throw new FormatException($"The bolt12 string's prefix is '{hrp}', not '{expectedHrp}'.");
+    }
+
+    /// <summary>
+    /// <see cref="Decode(string)"/> without the exception.
     /// </summary>
     /// <param name="text">The string, possibly split with <c>+</c>.</param>
     /// <param name="hrp">The human-readable part, lowercased.</param>

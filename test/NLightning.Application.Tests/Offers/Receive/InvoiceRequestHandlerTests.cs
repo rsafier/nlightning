@@ -11,9 +11,12 @@ using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
+using Domain.Offers;
 using Domain.Offers.Constants;
+using Domain.Offers.Encoding;
 using Domain.Offers.Enums;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Payments.Enums;
 using Domain.Protocol.Constants;
 using Domain.Protocol.OnionMessages;
@@ -72,9 +75,9 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         var request = new CreateOfferRequest(amountMsat is { } a ? LightningMoney.MilliSatoshis(a) : null, "coffee",
                                              QuantityMax: quantityMax, AbsoluteExpiry: expiry);
         IReadOnlyList<WireBlindedPath> paths = withPaths ? [TestPaths.ReplyPath()] : [];
-        var bytes = Bolt12Wire.Encode(OfferService.BuildRecords(request, BitcoinNetwork.Regtest, metadata, paths,
-                                                                _keyManager.NodeId));
-        var offer = new OfferModel(new Hash(SHA256.HashData(bytes)), Bolt12Wire.ToBolt12String("lno", bytes), bytes,
+        var bytes = new Bolt12TlvStream(OfferService.BuildRecords(request, BitcoinNetwork.Regtest, metadata, paths,
+                                                                  _keyManager.NodeId)).Encode();
+        var offer = new OfferModel(new Hash(SHA256.HashData(bytes)), Bolt12Bech32.Encode("lno", bytes), bytes,
                                    request.Description, request.Amount, null, null, quantityMax, expiry, metadata,
                                    OfferIssuerKind.NodeId, withPaths, s_now);
         await _store.Offers.AddAsync(offer);
@@ -103,7 +106,7 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         var (destination, contents) = Assert.Single(_onionMessages.Sent);
         Assert.Same(_replyPath, destination.BlindedPath);
         var record = Assert.Single(contents.Records);
-        Assert.True(Bolt12Wire.TryParse(record.Value, out var stream));
+        Assert.True(Bolt12TlvStream.TryParse(record.Value, out var stream));
         return (record.Type, new Bolt12TlvStreamView(stream!));
     }
 
@@ -135,15 +138,15 @@ public sealed class InvoiceRequestHandlerTests : IDisposable
         Assert.True(BlindedPathCodec.TryReadList(paths, out var pathList, out _));
         Assert.Equal(2, pathList.Count);
         Assert.Equal(TestPaths.PaymentPath(0x21).Path.FirstNodeId, pathList[0].FirstNode.NodeId);
-        Assert.Equal([.. Bolt12Wire.EncodePayInfo(TestPaths.PaymentPath(0x21).PayInfo),
-                      .. Bolt12Wire.EncodePayInfo(TestPaths.PaymentPath(0x31).PayInfo)],
+        Assert.Equal([.. Bolt12FieldCodec.EncodePayInfos([TestPaths.PaymentPath(0x21).PayInfo]),
+                      .. Bolt12FieldCodec.EncodePayInfos([TestPaths.PaymentPath(0x31).PayInfo])],
                      invoice.Get(Bolt12TlvTypes.InvoiceBlindedPay));
         // basic_mpp is on by default: MPP optional (bit 17)
         Assert.Equal(new byte[] { 0x02, 0x00, 0x00 }, invoice.Get(Bolt12TlvTypes.InvoiceFeatures));
         // Exactly one signature, by invoice_node_id over the Merkle root
-        Assert.Single(invoice.Stream.Records, r => Bolt12Wire.IsSignatureType(r.Type));
+        Assert.Single(invoice.Stream.Records, r => Bolt12TlvRanges.IsSignatureField(r.Type));
         Assert.True(Bip340.Verify(Bolt12Constants.InvoiceSignatureTag,
-                                  Bolt12Wire.ComputeMerkleRoot(invoice.Stream.Records), _keyManager.NodeId,
+                                  Bolt12MerkleTree.ComputeRoot(invoice.Stream), _keyManager.NodeId,
                                   invoice.Get(Bolt12TlvTypes.Signature)));
     }
 

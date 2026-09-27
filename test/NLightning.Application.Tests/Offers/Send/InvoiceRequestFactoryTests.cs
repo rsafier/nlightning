@@ -5,6 +5,7 @@ using Domain.Money;
 using Domain.Offers;
 using Domain.Offers.Constants;
 using Domain.Offers.Models;
+using Domain.Offers.Signing;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Tlv;
 using static OfferSendTestData;
@@ -46,9 +47,9 @@ public class InvoiceRequestFactoryTests
         Assert.True(built.Stream.TryGetValue(Bolt12TlvTypes.InvreqPayerNote, out var note));
         Assert.Equal("thanks"u8.ToArray(), note.ToArray());
         Assert.True(built.Stream.TryGetValue(Bolt12TlvTypes.Signature, out var signature));
-        Assert.True(_payer.Verify(Bolt12Constants.InvoiceRequestSignatureTag, Bolt12Wire.MerkleRoot(built.Stream),
+        Assert.True(_payer.Verify(Bolt12Constants.InvoiceRequestSignatureTag, Bolt12MerkleTree.ComputeRoot(built.Stream),
                                   _payer.DerivePayerId(metadata), signature));
-        Assert.Equal(built.Bytes, Bolt12Wire.Encode(Bolt12Wire.ParseStream(built.Bytes)));
+        Assert.Equal(built.Bytes, Bolt12TlvStream.Parse(built.Bytes).Encode());
         Assert.Equal(10_000UL, built.ExpectedAmountMsat);
     }
 
