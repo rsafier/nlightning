@@ -42,6 +42,7 @@ using Reestablish;
 using Safety;
 using Safety.Interfaces;
 using Services;
+using Splicing.Interfaces;
 
 public class ChannelManager : IChannelManager, IChannelMessagePublisher
 {
@@ -1279,6 +1280,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
             case MessageTypes.CommitmentSigned:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                // BOLT 2 splicing (SP-CS-01/02): the commitment_signed for a splice's new funding, sent after the
+                // second tx_complete, is not a commitment update (same number, no revoke_and_ack)
+                if (scope.ServiceProvider.GetService<ISpliceCommitmentReceiver>() is { } spliceReceiver
+                 && spliceReceiver.IsSpliceCommitmentSigned(channelId, Cast<CommitmentSignedMessage>(message)))
+                    return await spliceReceiver.HandleSpliceCommitmentSignedAsync(
+                               Cast<CommitmentSignedMessage>(message), peerPubKey,
+                               scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
+
                 return await GetChannelMessageHandler<CommitmentSignedMessage>(scope)
                           .HandleAsync(Cast<CommitmentSignedMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
@@ -1380,6 +1389,26 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return await DispatchInteractiveTxMessageAsync<TxAbortMessage>(scope, message, channelId,
                                                                                currentState, negotiatedFeatures,
                                                                                peerPubKey);
+
+            // BOLT 2 channel splicing (splicing plan SP1-D-T2): splice_init/splice_ack are exchanged while quiescent
+            // and splice_locked after the splice is signed; like the updates they need the channel reestablished on
+            // this connection (B2-RE-07)
+            case MessageTypes.SpliceInit:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                ThrowIfNotReestablished(channelId, currentState, message.Type);
+                return await GetChannelMessageHandler<SpliceInitMessage>(scope)
+                          .HandleAsync(Cast<SpliceInitMessage>(message), currentState, negotiatedFeatures, peerPubKey);
+            case MessageTypes.SpliceAck:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                ThrowIfNotReestablished(channelId, currentState, message.Type);
+                return await GetChannelMessageHandler<SpliceAckMessage>(scope)
+                          .HandleAsync(Cast<SpliceAckMessage>(message), currentState, negotiatedFeatures, peerPubKey);
+            case MessageTypes.SpliceLocked:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                ThrowIfNotReestablished(channelId, currentState, message.Type);
+                return await GetChannelMessageHandler<SpliceLockedMessage>(scope)
+                          .HandleAsync(Cast<SpliceLockedMessage>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
 
             default:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);

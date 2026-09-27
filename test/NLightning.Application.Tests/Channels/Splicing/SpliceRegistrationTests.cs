@@ -1,0 +1,100 @@
+using Microsoft.Extensions.DependencyInjection;
+
+namespace NLightning.Application.Tests.Channels.Splicing;
+
+using Application.Channels.Handlers.Interfaces;
+using Application.Channels.Splicing;
+using Application.Channels.Splicing.Handlers;
+using Application.Channels.Splicing.Interfaces;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Models;
+using Domain.Channels.Splicing.Interfaces;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
+using Domain.Enums;
+using Domain.Money;
+using Domain.Protocol.Messages;
+
+/// <summary>
+/// Splicing plan SP1-D-T2 wiring: <c>AddSpliceServices</c> (called by <c>AddApplicationServices</c>) and the default
+/// <see cref="UnavailableSpliceStatePort"/> of lanes SP1-B/SP1-C.
+/// </summary>
+public class SpliceRegistrationTests
+{
+    [Fact]
+    public void Given_AddApplicationServices_When_Registered_Then_SplicingAndItsThreeHandlersAreThere()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+
+        // Act
+        services.AddApplicationServices();
+
+        // Assert
+        Assert.Single(services, d => d.ServiceType == typeof(ISpliceService));
+        Assert.Single(services, d => d.ServiceType == typeof(ISpliceCommitmentReceiver));
+        Assert.Single(services, d => d.ServiceType == typeof(SpliceDepthWatcher));
+        Assert.Equal(typeof(UnavailableSpliceStatePort),
+                     Assert.Single(services, d => d.ServiceType == typeof(ISpliceStatePort)).ImplementationType);
+        Assert.Equal(typeof(SpliceInitMessageHandler),
+                     Assert.Single(services, d => d.ServiceType == typeof(IChannelMessageHandler<SpliceInitMessage>))
+                           .ImplementationType);
+        Assert.Equal(typeof(SpliceAckMessageHandler),
+                     Assert.Single(services, d => d.ServiceType == typeof(IChannelMessageHandler<SpliceAckMessage>))
+                           .ImplementationType);
+        Assert.Equal(typeof(SpliceLockedMessageHandler),
+                     Assert.Single(services, d => d.ServiceType == typeof(IChannelMessageHandler<SpliceLockedMessage>))
+                           .ImplementationType);
+    }
+
+    [Fact]
+    public void Given_AStatePortRegisteredFirst_When_SpliceServicesAdded_Then_ItIsKeptAndTheCallIsIdempotent()
+    {
+        // Arrange
+        var services = new ServiceCollection();
+        var port = new Mock<ISpliceStatePort>().Object;
+        services.AddSingleton(port);
+
+        // Act
+        services.AddSpliceServices();
+        services.AddSpliceServices();
+
+        // Assert
+        Assert.Same(port, Assert.Single(services, d => d.ServiceType == typeof(ISpliceStatePort)).ImplementationInstance);
+        Assert.Single(services, d => d.ServiceType == typeof(SpliceService));
+    }
+
+    [Fact]
+    public void Given_TheUnavailablePort_When_Asked_Then_TheChannelWasNeverSplicedAndEveryStepNamesItsLane()
+    {
+        // Arrange
+        var port = new UnavailableSpliceStatePort();
+        var key = new CompactPubKey([0x02, .. Enumerable.Repeat((byte)0x01, 32)]);
+        var other = new CompactPubKey([0x03, .. Enumerable.Repeat((byte)0x02, 32)]);
+        var txId = new TxId(Enumerable.Repeat((byte)0x07, 32).ToArray());
+        var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_000),
+                                     LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(1_000_000), 144);
+        var channel = new ChannelModel(new ChannelParams(party, party, LightningMoney.Satoshis(253), 3, false,
+                                                         FeatureSupport.No),
+                                       new ChannelId(Enumerable.Repeat((byte)0x01, 32).ToArray()), null,
+                                       new FundingOutputInfo(LightningMoney.Satoshis(1_000_000), key, other, txId, 1),
+                                       true, null, null, LightningMoney.Satoshis(1_000_000),
+                                       new ChannelKeySetModel(0, key, key, key, key, key, key), 0, 0,
+                                       LightningMoney.Zero, null, 0, other, 0,
+                                       Domain.Channels.Enums.ChannelState.Open,
+                                       Domain.Channels.Enums.ChannelVersion.V1);
+
+        // Act
+        var fundings = port.GetFundings(channel);
+
+        // Assert
+        Assert.False(fundings.HasPending);
+        Assert.Equal(txId, fundings.Current.FundingTxId);
+        Assert.Equal((ushort)1, fundings.Current.OutputIndex);
+        Assert.Contains("SP1-B", Assert.Throws<NotImplementedException>(
+                                     () => port.AddPending(fundings, fundings.Current)).Message);
+        Assert.Contains("SP1-C", Assert.Throws<NotImplementedException>(
+                                     () => port.OnSpliceCommitmentSaved(channel, fundings.Current)).Message);
+    }
+}

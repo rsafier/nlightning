@@ -15,6 +15,7 @@ using Channels.Quiescence;
 using Channels.Reestablish;
 using Channels.Safety;
 using Channels.Services;
+using Channels.Splicing;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
@@ -128,6 +129,9 @@ public static class DependencyInjection
         // Infrastructure.Bitcoin builder and prevtx inspector, and the driver the tx_* handlers go through
         services.AddInteractiveTxContributorServices();
         services.AddInteractiveTxServices();
+        // BOLT 2 channel splicing (splicing plan wave SP1, lane SP1-D): splice_init/ack/locked over quiescence and the
+        // interactive-tx driver; option_splice stays experimental until Proof SP2 (D13)
+        services.AddSpliceServices();
         services.AddSingleton<IPeerManager>(sp =>
         {
             var peerManager = ActivatorUtilities.CreateInstance<PeerManager>(sp);
