@@ -17,6 +17,7 @@ using Domain.Protocol.Onion.Interfaces;
 using Gossip;
 using Infrastructure.Crypto.Interfaces;
 using Onion;
+using Onion.OnionMessages;
 using Onion.RouteBlinding;
 using Services;
 using Signers;
@@ -62,6 +63,9 @@ public static class DependencyInjection
 
         // BOLT 4 route blinding (onion M5); the switch reads blinded payloads when OptionRouteBlinding is advertised
         services.AddRouteBlindingServices();
+
+        // BOLT 4 onion messages (wave M6 OM1): message paths, the packet builder and the receive-side unwrapper
+        services.AddOnionMessageCryptoServices();
 
         // BOLT 7 gossip signature verification and the funding output lookup of channel announcements (G0-T3, G2-T2)
         services.AddGossipBitcoinServices();
