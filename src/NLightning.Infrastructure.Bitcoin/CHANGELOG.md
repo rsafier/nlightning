@@ -14,6 +14,15 @@ All notable changes to this project will be documented in this file.
 - Key file passwords are hashed as their full UTF-8 encoding on every crypto backend. Files written by the libsodium
   backend with a non-ASCII password (which hashed only the first `password.Length` UTF-8 bytes) still open, and are
   rewritten with the full encoding;
+- New nodes (`SecureKeyManager.CreateNew`, and `FromMnemonic`) get **version 3** key files: a standard BIP32 master key
+  with the node key derived at `m/1017'/0'/6'/0/0` (`SecureKeyManager.NodeKeyPathString`, NL-159), so the node key is
+  no longer the wallet's root key and a mnemonic restores in other BIP32 wallets. Version 1 and 2 files keep the old
+  derivation (node key = master key, genesis hash as chain code) and their node id; a version 1 file is still upgraded
+  to version 2, never to 3. Builds older than this one cannot read a version 3 key file;
+- Key file rewrites (upgrade, index update, backup) never keep group or other permission bits (a key file written by
+  an old build with mode 0644 becomes 0600, with a warning on stderr);
+- Version 1 key files written on Windows with a non-ASCII password (marshalled in the ANSI code page by the old
+  libsodium P/Invoke) open again (NL-212);
 
 ## v1.0.0
 
