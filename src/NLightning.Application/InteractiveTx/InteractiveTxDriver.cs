@@ -781,8 +781,10 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             return;
 
         var transaction = attempt.Negotiation.ConstructedTx!;
-        entry.Completed.Add(new CompletedAttempt(attempt.SessionId, transaction, attempt.Terms.FeeratePerKw,
-                                                 attempt.Contribution) { Model = attempt.Model });
+        var completed = new CompletedAttempt(attempt.SessionId, transaction, attempt.Terms.FeeratePerKw,
+                                             attempt.Contribution)
+        { Model = attempt.Model };
+        entry.Completed.Add(completed);
         entry.Current = null;
         _quiescenceService?.Terminate(attempt.Terms.ChannelId, QuiescenceEndReason.TxSignaturesExchanged);
 
@@ -987,8 +989,11 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
 
     private void RemoveIfIdle(ChannelId channelId, ChannelEntry entry)
     {
-        if (entry is { Current: null, PendingRbf: null, AbortSentAt: null, EchoedWithoutActivity: false,
-                       Completed.Count: 0 })
+        if (entry is
+            {
+                Current: null, PendingRbf: null, AbortSentAt: null, EchoedWithoutActivity: false,
+                Completed.Count: 0
+            })
             _channels.TryRemove(new KeyValuePair<ChannelId, ChannelEntry>(channelId, entry));
     }
 
