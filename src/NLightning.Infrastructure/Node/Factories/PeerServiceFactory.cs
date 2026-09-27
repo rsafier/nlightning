@@ -14,6 +14,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Domain.Protocol.Interfaces;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Services;
 
 /// <summary>
@@ -83,7 +84,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
-                               GetPeerStorageService());
+                               GetPeerStorageService(), _serviceProvider.GetService<IOnionMessageService>());
     }
 
     /// <inheritdoc />
@@ -133,7 +134,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
-                               GetPeerStorageService());
+                               GetPeerStorageService(), _serviceProvider.GetService<IOnionMessageService>());
     }
 
     /// <summary>

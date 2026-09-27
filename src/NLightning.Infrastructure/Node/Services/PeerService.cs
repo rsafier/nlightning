@@ -17,6 +17,7 @@ using Domain.Node.PeerStorage;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.ValueObjects;
 
@@ -55,6 +56,7 @@ public sealed class PeerService : IPeerService
     private readonly IGossipIngress? _gossipIngress;
     private readonly IGossipSyncService? _gossipSync;
     private readonly IPeerStorageService? _peerStorage;
+    private readonly IOnionMessageService? _onionMessages;
     private readonly ChainHash _chainHash;
     private readonly Lock _channelMessageLock = new();
     private readonly Queue<ChannelMessageEventArgs> _pendingChannelMessages = new();
@@ -186,9 +188,14 @@ public sealed class PeerService : IPeerService
     /// Where <c>peer_storage</c>/<c>peer_storage_retrieval</c> (BOLT 1) go, told after init so it sends the peer the
     /// blob we keep for it before anything else; null drops both messages.
     /// </param>
+    /// <param name="onionMessages">
+    /// Where <c>onion_message</c> (BOLT 4, type 513) goes; null, or a service that is not available (the feature is
+    /// not advertised), drops it.
+    /// </param>
     public PeerService(IPeerCommunicationService peerCommunicationService, FeatureOptions features,
                        ILogger<PeerService> logger, TimeSpan networkTimeout, IGossipIngress? gossipIngress = null,
-                       IGossipSyncService? gossipSync = null, IPeerStorageService? peerStorage = null)
+                       IGossipSyncService? gossipSync = null, IPeerStorageService? peerStorage = null,
+                       IOnionMessageService? onionMessages = null)
     {
         _peerCommunicationService = peerCommunicationService;
         Features = features;
@@ -196,6 +203,7 @@ public sealed class PeerService : IPeerService
         _gossipIngress = gossipIngress;
         _gossipSync = gossipSync;
         _peerStorage = peerStorage;
+        _onionMessages = onionMessages;
         _chainHash = features.ChainHashes.Any() ? features.ChainHashes.First() : ChainConstants.Main;
 
         // Nobody has to observe a failed init wait (e.g. a connection that closes before anyone asked)
@@ -286,6 +294,26 @@ public sealed class PeerService : IPeerService
 
         return _peerCommunicationService.SendMessageAsync(message);
     }
+
+    /// <inheritdoc/>
+    /// <exception cref="InvalidOperationException">
+    /// The init exchange is not done, or the peer did not negotiate <c>option_onion_messages</c> (BOLT 9 bits 38/39):
+    /// it would ignore the message.
+    /// </exception>
+    public Task SendOnionMessageAsync(OnionMessageMessage message, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!SupportsOnionMessages)
+            throw new InvalidOperationException(
+                $"Peer {PeerPubKey} did not negotiate option_onion_messages; not sending an onion_message");
+
+        return _peerCommunicationService.SendMessageAsync(message, cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether the init exchange is done and both ends support <c>option_onion_messages</c>.
+    /// </summary>
+    private bool SupportsOnionMessages => _isInitialized && Features.OptionOnionMessages != FeatureSupport.No;
 
     /// <summary>
     /// Handles messages received from the peer.
@@ -401,6 +429,12 @@ public sealed class PeerService : IPeerService
                 _logger.LogTrace("Dropping {messageType} from peer {peer}: peer storage is off",
                                  Enum.GetName(message.Type), PeerPubKey);
         }
+        else if (message is OnionMessageMessage onionMessage)
+        {
+            // BOLT 4 onion messages: rate-limited, peeled and forwarded or delivered by the onion message service,
+            // which only queues here. Never a channel message, and never answered (no error replies)
+            HandleOnionMessage(onionMessage);
+        }
         else if (message is ChannelAnnouncementMessage or NodeAnnouncementMessage)
         {
             // BOLT 7 graph gossip: validated (signatures, funding output) and stored by the graph ingress (G2-T4),
@@ -409,6 +443,30 @@ public sealed class PeerService : IPeerService
             if (_gossipIngress?.TryEnqueue(this, message) != true)
                 _logger.LogTrace("Dropping gossip message ({messageType}) from peer {peer}",
                                  Enum.GetName(message.Type), PeerPubKey);
+        }
+    }
+
+    /// <summary>
+    /// Hands an <c>onion_message</c> to the onion message service, or drops it when there is none or it is off. The
+    /// service must not throw; if it does, the message is dropped and the connection kept (an odd, optional message
+    /// never costs the peer its channels).
+    /// </summary>
+    private void HandleOnionMessage(OnionMessageMessage message)
+    {
+        if (_onionMessages is not { IsAvailable: true })
+        {
+            _logger.LogTrace("Dropping onion_message from peer {peer}: onion messages are off", PeerPubKey);
+            return;
+        }
+
+        try
+        {
+            _onionMessages.HandleIncoming(this, message);
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "The onion message service failed on a message from peer {peer}; dropped",
+                               PeerPubKey);
         }
     }
 

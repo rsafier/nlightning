@@ -13,6 +13,7 @@ using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Constants;
@@ -25,6 +26,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Gossip.Events;
 using Gossip.Interfaces;
@@ -51,9 +53,12 @@ using Services;
 /// A peer with active channels that drops is reconnected with backoff unless we disconnected it on purpose.
 /// With an <see cref="IChannelUpdateService"/>, our <c>channel_update</c>s go out through the peer's outbox and the
 /// peer's are handed to that service (BOLT 7 direct exchange, W1-E).
+/// Onion messages (BOLT 4, wave M6) go out through <see cref="IPeerOnionMessageOutbox"/>: only to a peer that is
+/// connected and negotiated <c>option_onion_messages</c>, on its outbox's bounded low-priority class; a peer that
+/// drops has its <see cref="IOnionMessageRateLimiter"/> bucket released.
 /// </remarks>
 /// <seealso cref="IPeerManager" />
-public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
+public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMessageOutbox
 {
     /// <summary>
     /// Channel messages waiting for the inbound loop of one peer. When full, the transport read loop waits, which
@@ -72,6 +77,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
     private readonly IServiceProvider _serviceProvider;
     private readonly IChannelUpdateService? _channelUpdateService;
     private readonly Lazy<(int MaxQueuedGossip, GossipMetrics? Metrics)> _gossipOutboxSettings;
+    private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
 
@@ -141,6 +147,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
         _channelManager = channelManager;
         _channelMemoryRepository = channelMemoryRepository;
         _logger = logger;
+        _onionMessageRateLimiter = new Lazy<IOnionMessageRateLimiter?>(ResolveOnionMessageRateLimiter);
         _peerServiceFactory = peerServiceFactory;
         _secureKeyManager = secureKeyManager;
         _tcpService = tcpService;
@@ -156,6 +163,15 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
 
     /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
     public long QueuedOutboxGossipCount => _peers.Values.Sum(s => (long)s.Outbox.QueuedGossipCount);
+
+    /// <summary>The onion messages waiting in every current connection's outbox.</summary>
+    public long QueuedOutboxOnionMessageCount => _peers.Values.Sum(s => (long)s.Outbox.QueuedOnionMessageCount);
+
+    /// <summary>
+    /// The onion messages each connection's outbox holds before it drops more (BOLT12 plan §3.4
+    /// <c>OnionMessages:MaxOutboxPerPeer</c>); read when a connection is set up.
+    /// </summary>
+    public int MaxOutboxOnionMessagesPerPeer { get; set; } = PeerOutbox.DefaultMaxQueuedOnionMessages;
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -622,7 +638,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
     {
         var (maxQueuedGossip, metrics) = _gossipOutboxSettings.Value;
         var outbox = new PeerOutbox(peerService, _logger, maxQueuedGossip,
-                                    metrics is null ? null : () => metrics.RecordDropped(OutboxFullReason));
+                                    metrics is null ? null : () => metrics.RecordDropped(OutboxFullReason),
+                                    MaxOutboxOnionMessagesPerPeer);
         var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);
@@ -783,6 +800,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
 
         if (!removed)
             return;
+
+        ReleaseOnionMessageRateLimit(session.Peer.NodeId);
 
         // NL-392: an open that has not reached funding_created (or, as opener, accept_channel) does not survive the
         // connection (BOLT 2), so its temporary channel goes with it
@@ -1083,6 +1102,57 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
         _peers.TryGetValue(connection.PeerPubKey, out var session)
         && ReferenceEquals(session.PeerService, connection)
         && session.Outbox.TryEnqueueGossip(message, capped: true);
+
+    /// <inheritdoc />
+    public bool CanSendOnionMessage(CompactPubKey peerNodeId) =>
+        _peers.TryGetValue(peerNodeId, out var session) && CanSendOnionMessage(session);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Only the peer's current connection; never connects (BOLT12 plan D6). Bounded by
+    /// <see cref="MaxOutboxOnionMessagesPerPeer"/> per connection, behind every other queued message.
+    /// </remarks>
+    public bool TryEnqueueOnionMessage(CompactPubKey peerNodeId, OnionMessageMessage message) =>
+        message is not null
+        && _peers.TryGetValue(peerNodeId, out var session)
+        && CanSendOnionMessage(session)
+        && session.Outbox.TryEnqueueOnionMessage(message);
+
+    private static bool CanSendOnionMessage(PeerSession session) =>
+        !session.IsDisconnected && session.PeerService.Features.OptionOnionMessages != FeatureSupport.No;
+
+    /// <summary>
+    /// Releases a disconnected peer's onion message rate-limit bucket (the limiter keeps one that is still in debt, so
+    /// reconnecting does not refill it).
+    /// </summary>
+    private void ReleaseOnionMessageRateLimit(CompactPubKey peerNodeId)
+    {
+        try
+        {
+            _onionMessageRateLimiter.Value?.RemovePeer(peerNodeId);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not release the onion message rate limit of peer {Peer}", peerNodeId);
+        }
+    }
+
+    /// <summary>
+    /// The registered onion message rate limiter, or null; resolved on first use, as the provider may still be
+    /// building singletons while this one is constructed.
+    /// </summary>
+    private IOnionMessageRateLimiter? ResolveOnionMessageRateLimiter()
+    {
+        try
+        {
+            return _serviceProvider.GetService<IOnionMessageRateLimiter>();
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not resolve the onion message rate limiter");
+            return null;
+        }
+    }
 
     /// <summary>The <c>reason</c> tag of a gossip message a full outbox refused (NL-360).</summary>
     internal const string OutboxFullReason = "outbox_full";
