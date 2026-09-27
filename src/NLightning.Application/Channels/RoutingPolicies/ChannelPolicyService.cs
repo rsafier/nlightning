@@ -22,10 +22,14 @@ using Gossip.Interfaces;
 /// the newest update per channel and direction at its next flush (<c>Gossip:OwnGossipFlushInterval</c>, 60 s): a
 /// burst of changes goes to the network as one update. There is no rate limit of our own on the peer path: each
 /// change is sent to the peer, and peers apply theirs (LND keeps a burst of 10 updates per channel and minute), so an
-/// operator should not change a channel's policy more than a few times a minute. An unchanged policy (a patch that
-/// sets the stored values again, or a reset of a channel without an override) sends nothing. A channel that is not
+/// operator should not change a channel's policy more than a few times a minute. A change that leaves the announced
+/// values as they were (a patch that sets the stored values again, sets a value equal to <c>Node:Routing</c>'s, or a
+/// HTLC range the channel's own limits cap anyway; a reset of a channel without an override) is saved but sends nothing
+/// (BOLT 7: SHOULD NOT create redundant <c>channel_update</c>s). A channel that is not
 /// <c>Open</c>, or whose update cannot be made (no short channel id yet), gets the new policy with its next update.
 /// </para>
+/// <para>Every call first waits for the overrides to load (<see cref="ChannelPolicyStore.LoadAsync"/>), so a database
+/// failure is reported instead of answering with <c>Node:Routing</c>'s values.</para>
 /// <para>Timestamps are kept in memory by the update service: after a restart the first update is stamped with the
 /// clock, so several changes within the same second right before a restart can leave that update not newer than the
 /// last one sent (peers then ignore it until the next change).</para>
@@ -64,13 +68,16 @@ public sealed class ChannelPolicyService : IChannelPolicyService
             throw new ArgumentException($"The policy names channel {patch.ChannelId}, not {channelId}.",
                                         nameof(patch));
 
+        await _store.LoadAsync(cancellationToken);
         EffectiveChannelPolicy effective;
         bool changed;
+        bool announced;
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
             var channel = GetChannel(channelId);
             var routing = _nodeOptions.Value.Routing;
             var current = _store.GetOverride(channelId);
+            var before = ChannelPolicyRules.Resolve(channel, routing, current);
             var merged = ChannelPolicyRules.Merge(current, patch, _timeProvider.GetUtcNow());
 
             var errors = ChannelPolicyRules.GetValidationErrors(channel, routing, merged);
@@ -87,6 +94,7 @@ public sealed class ChannelPolicyService : IChannelPolicyService
             }
 
             effective = ChannelPolicyRules.Resolve(channel, routing, _store.GetOverride(channelId));
+            announced = !HasSameAnnouncedValues(before, effective);
         }
 
         if (changed)
@@ -95,34 +103,43 @@ public sealed class ChannelPolicyService : IChannelPolicyService
                 "Routing policy of channel {ChannelId} set: base {FeeBase} msat, {FeePpm} ppm, cltv delta {Cltv}, "
               + "htlc {Min}-{Max} msat", channelId, effective.FeeBaseMsat, effective.FeeProportionalMillionths,
                 effective.CltvExpiryDelta, effective.HtlcMinimumMsat, effective.HtlcMaximumMsat);
-            await AnnounceAsync(channelId, cancellationToken);
+            if (announced)
+                await AnnounceAsync(channelId, cancellationToken);
         }
 
         return effective;
     }
 
     /// <inheritdoc/>
-    public Task<EffectiveChannelPolicy> GetAsync(ChannelId channelId, CancellationToken cancellationToken = default)
+    public async Task<EffectiveChannelPolicy> GetAsync(ChannelId channelId,
+                                                       CancellationToken cancellationToken = default)
     {
+        await _store.LoadAsync(cancellationToken);
         var channel = GetChannel(channelId);
-        return Task.FromResult(_store.GetEffectivePolicy(channel));
+        return _store.GetEffectivePolicy(channel);
     }
 
     /// <inheritdoc/>
     public async Task ResetAsync(ChannelId channelId, CancellationToken cancellationToken = default)
     {
+        await _store.LoadAsync(cancellationToken);
         bool removed;
+        var announced = false;
         using (await _channelLockProvider.AcquireAsync(channelId, cancellationToken))
         {
-            GetChannel(channelId);
+            var channel = GetChannel(channelId);
+            var before = _store.GetEffectivePolicy(channel);
             removed = await _store.DeleteAsync(channelId, cancellationToken);
+            if (removed)
+                announced = !HasSameAnnouncedValues(before, _store.GetEffectivePolicy(channel));
         }
 
         if (!removed)
             return;
 
         _logger.LogInformation("Routing policy of channel {ChannelId} reset to Node:Routing", channelId);
-        await AnnounceAsync(channelId, cancellationToken);
+        if (announced)
+            await AnnounceAsync(channelId, cancellationToken);
     }
 
     /// <summary>
@@ -144,6 +161,12 @@ public sealed class ChannelPolicyService : IChannelPolicyService
                                 + "{ChannelId}; the next update will carry it", channelId);
         }
     }
+
+    /// <summary>Whether both policies announce the same fee, CLTV delta and HTLC range (their overrides aside).</summary>
+    private static bool HasSameAnnouncedValues(EffectiveChannelPolicy left, EffectiveChannelPolicy right) =>
+        left.FeeBaseMsat == right.FeeBaseMsat && left.FeeProportionalMillionths == right.FeeProportionalMillionths
+     && left.CltvExpiryDelta == right.CltvExpiryDelta && left.HtlcMinimumMsat == right.HtlcMinimumMsat
+     && left.HtlcMaximumMsat == right.HtlcMaximumMsat;
 
     private ChannelModel GetChannel(ChannelId channelId) =>
         _channelMemoryRepository.TryGetChannel(channelId, out var channel) && channel is not null

@@ -112,6 +112,7 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
         Assert.True(response.IsCltvExpiryDeltaOverridden);
         Assert.True(response.IsHtlcMaximumMsatOverridden);
         Assert.NotNull(response.OverrideUpdatedAt);
+        Assert.True(response.IsMemoryOnly); // this fixture's unit of work has no ChannelPolicies table
         _updates.Verify(u => u.SendChannelUpdateAsync(Channel.ChannelId, It.IsAny<CancellationToken>()), Times.Once);
 
         // ... and getchannelpolicy reads it back, by short channel id
@@ -156,6 +157,44 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
         Assert.Equal(2_000ul, channel.HtlcMinimumMsat);
         Assert.Equal(70_000_000ul, channel.HtlcMaximumMsat);
         Assert.True(channel.HasPolicyOverride);
+    }
+
+    [Fact]
+    public async Task Given_AUnitOfWorkWithThePolicyTable_When_Set_Then_TheResponseSaysItIsPersisted()
+    {
+        // Arrange
+        var repository = new Mock<IChannelPolicyDbRepository>();
+        repository.Setup(r => r.GetAllAsync()).ReturnsAsync(Array.Empty<ChannelPolicyOverride>());
+        var services = new ServiceCollection();
+        services.AddSingleton(typeof(ILogger<>), typeof(NullLogger<>));
+        services.AddSingleton(_memory.Object);
+        services.AddSingleton<IChannelLockProvider, ChannelLockProvider>();
+        services.AddSingleton(Options.Create(new NodeOptions()));
+        services.AddSingleton(_updates.Object);
+        services.AddScoped(_ =>
+        {
+            var unitOfWork = new Mock<IUnitOfWork>();
+            unitOfWork.Setup(u => u.ChannelPolicyDbRepository).Returns(repository.Object);
+            return unitOfWork.Object;
+        });
+        services.AddChannelPolicyIpcServices();
+        await using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        var handler = scope.ServiceProvider.GetRequiredService<
+            Daemon.Interfaces.IClientCommandHandler<Domain.Client.Requests.SetChannelPolicyClientRequest,
+                Domain.Client.Responses.ChannelPolicyClientResponse>>();
+
+        // Act
+        var response = await handler.HandleAsync(
+                           new Domain.Client.Requests.SetChannelPolicyClientRequest(
+                               new Domain.Client.Requests.ChannelReference(Channel.ChannelId))
+                           {
+                               FeeBaseMsat = 2_500
+                           }, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(response.IsPersisted);
+        repository.Verify(r => r.UpsertAsync(It.Is<ChannelPolicyOverride>(o => o.FeeBaseMsat == 2_500)), Times.Once);
     }
 
     [Fact]

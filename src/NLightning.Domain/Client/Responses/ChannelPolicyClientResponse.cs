@@ -24,4 +24,10 @@ public sealed class ChannelPolicyClientResponse
 
     /// <summary>True when the request reset the channel to the node-wide values.</summary>
     public bool WasReset { get; init; }
+
+    /// <summary>
+    /// False when the node keeps overrides in memory only (its database has no <c>ChannelPolicies</c> table): the
+    /// override applies now but is forgotten on restart.
+    /// </summary>
+    public bool IsPersisted { get; init; } = true;
 }

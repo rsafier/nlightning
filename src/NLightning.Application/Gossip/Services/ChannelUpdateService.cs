@@ -43,7 +43,8 @@ using Interfaces;
 /// <c>htlc_minimum_msat</c> = the larger of the peer's <c>htlc_minimum_msat</c> and the configured minimum,
 /// <c>htlc_maximum_msat</c> = the smallest of the capacity, the peer's <c>max_htlc_value_in_flight_msat</c> and the
 /// configured maximum. No update is made when the minimum is above that maximum (BOLT 7: the maximum must not exceed
-/// the capacity) or an alias channel has no peer alias yet. A policy change is announced by the policy service through
+/// the capacity), an alias channel has no peer alias yet, or the provider could not load the policy overrides
+/// (<see cref="IChannelPolicyProvider.IsLoaded"/>: <c>Node:Routing</c> would stand in for them). A policy change is announced by the policy service through
 /// <see cref="SendChannelUpdateAsync(ChannelId, CancellationToken)"/> (a fresh update, to the peer and, when the channel
 /// is announced, to the relay).
 /// </para>
@@ -556,6 +557,12 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
 
         var effective = _channelPolicyProvider?.GetEffectivePolicy(channel)
                      ?? ChannelPolicyRules.Resolve(channel, _nodeOptions.Routing, null);
+        if (_channelPolicyProvider is { IsLoaded: false })
+        {
+            // Node:Routing's values are not the channel's policy when it has an override we could not read
+            reason = "the channel routing policy overrides could not be loaded";
+            return false;
+        }
 
         // BOLT 7: htlc_maximum_msat MUST NOT exceed the capacity, so it can't be raised to the minimum
         if (effective.HtlcMinimumMsat > effective.HtlcMaximumMsat)

@@ -14,6 +14,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Money;
 using Fixtures;
+using Gossip;
 using TestCollections;
 using Utils;
 
@@ -311,4 +312,93 @@ public class ChannelPolicyFlowTests : IAsyncLifetime
         node.ChannelMemoryRepository.TryGetChannel(channelId, out var channel)
             ? channel.Commitments?.Htlcs.Count ?? 0
             : 0;
+}
+
+/// <summary>
+/// Wave sp1 lane SP1-G proof against LND 0.20 on an announced channel: a <c>setchannelpolicy</c> change of a public
+/// channel reaches the network, not only the channel peer. bob, who has no channel with us, sees our new policy in his
+/// graph (<c>GetChanInfo</c>) after our own-gossip relay flush (<c>Gossip:OwnGossipFlushInterval</c>, 60 s) and
+/// alice's relay, without a reconnection or restart.
+/// </summary>
+/// <remarks>Public channels change the LND nodes' graph for good, so this runs in the gossip collection
+/// (<c>scripts/run-gossip.sh 1 Release -class NLightning.Integration.Tests.Docker.ChannelPolicyPublicFlowTests</c>).
+/// </remarks>
+[Collection(GossipRegtestCollection.Name)]
+public class ChannelPolicyPublicFlowTests
+{
+    private const uint ChannelFeeBaseMsat = 3_100;
+    private const uint ChannelFeePpm = 1_200;
+    private const ushort ChannelCltvExpiryDelta = 66;
+    private const ulong ChannelHtlcMaximumMsat = 30_000_000;
+
+    private static readonly TimeSpan s_networkTimeout = TimeSpan.FromMinutes(3);
+
+    private readonly LightningRegtestNetworkFixture _fixture;
+
+    public ChannelPolicyPublicFlowTests(LightningRegtestNetworkFixture fixture, ITestOutputHelper output)
+    {
+        _fixture = fixture;
+        Console.SetOut(new TestOutputWriter(output));
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannel_When_ItsPolicyIsSet_Then_ANonPeerLndSeesTheNewPolicy()
+    {
+        // Arrange: a public channel to alice, announced to alice and bob
+        var ct = TestContext.Current.CancellationToken;
+        var alice = _fixture.GetLndNode("alice");
+        var bob = _fixture.GetLndNode("bob");
+        await using var node = await GossipTestNodes.StartGossipNodeAsync(
+                                   _fixture, "policy-public", "nltg-sp1g", ct,
+                                   n => n.ConfigureServices = services => services.AddChannelPolicyIpcServices());
+        var channel = await PublicTopology.OpenPublicChannelToAliceAsync(_fixture, node, null, [alice, bob], ct,
+                                                                         syncGraph: false);
+        var before = await GetOurPolicyAsync(node, bob, channel.ShortChannelId, ct);
+        Assert.NotNull(before);
+        Assert.NotEqual(ChannelFeeBaseMsat, (uint)before.FeeBaseMsat);
+
+        // Act
+        using (var scope = node.Services.CreateScope())
+        {
+            await scope.ServiceProvider
+                       .GetRequiredService<IClientCommandHandler<SetChannelPolicyClientRequest,
+                            ChannelPolicyClientResponse>>()
+                       .HandleAsync(new SetChannelPolicyClientRequest(new ChannelReference(channel.ChannelId))
+                       {
+                           FeeBaseMsat = ChannelFeeBaseMsat,
+                           FeeProportionalMillionths = ChannelFeePpm,
+                           CltvExpiryDelta = ChannelCltvExpiryDelta,
+                           HtlcMaximumMsat = ChannelHtlcMaximumMsat
+                       }, ct);
+        }
+
+        // Assert: bob (no channel with us) has the new policy, through our relay and alice's
+        var after = await Poll.ForAsync(async () => await GetOurPolicyAsync(node, bob, channel.ShortChannelId, ct) is
+        { FeeBaseMsat: ChannelFeeBaseMsat } policy
+                                                        ? policy
+                                                        : null,
+                                        s_networkTimeout, "bob's graph has our new policy", ct,
+                                        GossipGraphProbe.PollInterval);
+        Console.WriteLine($"bob's view of our direction: base {after.FeeBaseMsat}, rate {after.FeeRateMilliMsat}, "
+                        + $"delta {after.TimeLockDelta}, max {after.MaxHtlcMsat}, "
+                        + $"last update {before.LastUpdate} -> {after.LastUpdate}");
+        Assert.True(after.LastUpdate > before.LastUpdate);
+        Assert.Equal(ChannelFeePpm, (uint)after.FeeRateMilliMsat);
+        Assert.Equal(ChannelCltvExpiryDelta, (ushort)after.TimeLockDelta);
+        Assert.Equal(ChannelHtlcMaximumMsat, after.MaxHtlcMsat);
+        Assert.False(after.Disabled);
+    }
+
+    /// <summary>Our direction of the channel in <paramref name="lnd"/>'s graph, or null while it has none.</summary>
+    private static async Task<RoutingPolicy?> GetOurPolicyAsync(NLightningTestNode node, LNDNodeConnection lnd,
+                                                               ulong chanId, CancellationToken ct)
+    {
+        var edge = await GossipGraphProbe.TryGetChanInfoAsync(lnd, chanId, ct);
+        if (edge is null)
+            return null;
+
+        return edge.Node1Pub.Equals(node.NodeIdHex, StringComparison.OrdinalIgnoreCase)
+                   ? edge.Node1Policy
+                   : edge.Node2Policy;
+    }
 }
