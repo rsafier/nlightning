@@ -3,7 +3,8 @@
 Status 2026-09-26, branch `wip/fafo-mainnet-gossip` (from `wip/fafo` @ `f0c2c28`). The first test of NLightning's
 BOLT 7 stack against real mainnet peers and the whole mainnet graph, without a mainnet bitcoind. It found and fixed
 five interop and efficiency problems (two of them cut every CLN and LND peer off), and measured memory, database and
-sync behaviour at mainnet size. Mainnet gossip stays off by default (plan D12); the probe overrides it explicitly.
+sync behaviour at mainnet size. Mainnet gossip was off by default then (plan D12; the graph and the sync were opened on
+mainnet in wave d12, see "D12 runs" at the end); the probe sets every gossip switch explicitly.
 
 Issue IDs: the probe's findings start at NL-400 (NL-379..NL-399 were reserved for the O7 anchors wave's ledger).
 Integrated on `wip/fafo` (2026-09-27, both probe branches cherry-picked with `-x` after wave O7b, last code commit
@@ -350,3 +351,57 @@ gracefully on SIGTERM (a background-started process ignores SIGINT; run1 therefo
   peak, 456 MB after), relay against mainnet peers (untested; a verified node serves `IsChainChecked` channels, so a
   relay run is now possible), the pruned/assumeutxo variant (the Esplora-txid plus local `gettxout` lookup proposed
   above, untested) and the long soaks (NL-376).
+
+## D12 runs (wave d12, 2026-09-27)
+
+The integrated wave d12 build (`wip/fafo` @ `8b97462`: lanes Z1 graph hygiene, Z2 memory budget, Z3 verified-sync
+efficiency, Z4 pruned funding lookup) against the same five peers and the same unpruned mainnet bitcoind, read-only
+RPCs, `Gossip:ChainLookupConcurrency` 3 (at most 4-5 RPCs in flight with the follower and the sampler). Raw data in
+`~/.nltg-gossip-probe/d12-verified/runs/` (console output in `console-*.txt` there). The Docker suites ran on the same
+machine during the verified run (CPU contention; the lookups are RPC-bound, so the timing comparison still holds).
+
+| Run | Duration | Purpose |
+|---|---|---|
+| `20260927T030027Z-d12-verified` (fresh database, `AssumeChannelValid` off) | 30.1 min (99 % at 13.0 min, plateau from 20 min) | the D12 verified measurement |
+| `20260927T033114Z-d12-relay` (relay toward ACINQ) | 3.0 min, stopped | ACINQ (Eclair) sends no `gossip_timestamp_filter` to us: nothing can be relayed to it |
+| `20260927T033500Z-d12-relay-blockstream` (restart of the verified database, relay toward Blockstream Store) | 20.1 min | the relay run |
+
+**Verified run, compared with `20260926T233806Z-verified-run1`:**
+
+| | Verified run1 (before d12) | d12 verified |
+|---|---|---|
+| Graph channels (all `Verified`) | 39,663 (9,091 without any policy) | **30,537**, every one with a policy (23,755 two, 6,782 one); the announcements without update wait in the pending index (NL-406: **9,775** after the restart below, about 4 MB), outside the graph, never looked up, served or relayed |
+| Policies / announced nodes | 54,383 / 9,926 | 54,292 / 9,916 |
+| Time to 50 / 90 / 99 % of the final graph | 9.0 / 17.0 / 19.0 min | **7.0 / 12.0 / 13.0 min** |
+| Funding lookups | 40,262 (184 spent in the mempool, 26 `ChainMoved`) | **30,717** (30,537 found, 180 spent; 0 mempool-spent, 0 `ChainMoved`, 0 unavailable) |
+| HTTP requests (RPCs) / per lookup | 269,394 / 6.7 | **179,210 / 5.8** (13-14.8k per minute during the sync, 5-30 per minute after) |
+| Lookup time p50 / p90 / p99 | 379 / 465 / 592 ms | 352 / 426 / 523 ms |
+| `channel_announcement`s received | 142,240 (3.6x the graph; 79,024 `already_known`) | **92,653** (2.3x the 40,312 announcements known, graph plus pending; 26,672 `already_known`) |
+| … of which from the three queried peers (LND x2, Eclair) | 20,000-25,000 each | 7,651 + 8,804 + 6,802 = 23,257 in all (NL-415) |
+| … unsolicited from the two CLN peers | 18,969 + 9,816 dropped at a full queue | 33,213 + 36,183 received, 25,490 refused at the door; 32,137 dropped at a full peer queue in all |
+| Orphaned `channel_update`s | nearly every update of the sync (NL-408) | **540** (per-scid partitioned workers); 20,876 orphaned `node_announcement`s are nodes whose only channels are pending (replayed on promotion, else expire) |
+| RSS peak / at the end | 630 MB / 456 MB (60 min, after a gen-2 GC) | **610 MB / 610 MB** (30 min; GC heap 426 MB peak, 415 MB at the end); graph estimate 83 MB |
+| `Gossip:MaxMemoryMb` (1,024 MB) | not enforced | never crossed: 0 refusals, no budget warning |
+| CPU | 18-36 % for 18 min | 26-35 % for 13 min, then 1 % |
+| `probe.db` / WAL | 49.7 / 5.2 MiB | 42.6 / 5.2 MiB |
+| Peers | 0 disconnections, 0 bans | **0 disconnections, 0 bans, 0 warnings** in either direction, 0 chain contradictions |
+
+- The RSS at the end is still the verified-sync garbage (NL-416: `getblock` JSON on the LOH, not returned within the
+  30 minutes); it stays 40 % below the budget, and the budget refuses only new channels and nodes, so crossing it
+  would slow the graph's growth, not break the node.
+- The restart (relay run, same database): graph load 0.72 s (114 MB retained heap), 156 lookups (spent channels the
+  peers still serve; the duplicate filter is memory only), 33,601 `already_known` announcements (the CLN peers stream
+  the graph again whatever filter we send), 9,775 announcements back in the pending index, RSS 373-492 MB.
+
+**Relay run.** `tools/NLightning.GossipProbe run --relay-to <peer>` turns `Gossip:RelayEnabled` on with a peer
+directory that lists only that peer (the others stay sync peers), and records every relay send, outbox refusal and
+echo to origin. The node has no channel and announces nothing. Result over 20 min toward Blockstream Store (and
+3 min toward ACINQ): **0 messages relayed**, 0 outbox refusals, 0 echoes, relay backlog (`relay_pending`) at most 192
+and draining, outbox gossip 0, 0 disconnections and 0 warnings from any peer. None of the five peers subscribes to
+our gossip: Eclair and both LND nodes send no `gossip_timestamp_filter` at all (LND only to its few active sync peers),
+and both CLN nodes send `first_timestamp = 0xFFFFFFFF` (nothing matches), which our relay honours (BOLT 7 B7-RL-01:
+nothing before the peer's filter, only messages inside it). So the relay toward mainnet peers is safe but **still
+unexercised**: a leech with no channels is not a gossip source for them. Proving it needs a node the peer has a
+channel with, or a peer we control that asks for everything (NL-417).
+
+**D12 decision:** see the BOLT 7 plan, "D12 wave record".
