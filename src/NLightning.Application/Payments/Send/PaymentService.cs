@@ -938,7 +938,7 @@ public sealed class PaymentService : IPaymentService, IPaymentOutcomeHandler, IR
         var introCltv = checked(height + path.PayInfo.CltvExpiryDelta + HintRouteBuilder.FinalCltvSafetyOffset
                               + session.Constraints.ExtraCltvDelta);
         var finalCltv = introCltv - path.PayInfo.CltvExpiryDelta;
-        if (!self.TryComputeFirstHop(introAmount, introCltv, out var firstAmount, out var firstCltv, out why))
+        if (!self.TryComputeFirstHop(introAmount, introCltv, amountMsat, finalCltv, out var firstAmount, out var firstCltv, out why))
             return false;
 
         var toNext = new PaymentTarget(self.NextNodeId, session.PaymentHash, session.Target.PaymentSecret,

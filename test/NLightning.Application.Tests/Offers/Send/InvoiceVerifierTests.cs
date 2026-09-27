@@ -147,6 +147,22 @@ public class InvoiceVerifierTests
     }
 
     [Fact]
+    public void Given_AnOddSignatureRangeElement_When_Verifying_Then_ItIsIgnored()
+    {
+        // Arrange
+        var (offer, request) = Request();
+        var bytes = _issuer.CreateInvoice(request.Bytes, PaymentHash, [PaymentPath(Key(0x10))], 10_000, Now,
+                                          mutate: r => [.. r, new Bolt12TlvRecord(241, new byte[] { 1, 2, 3 })]);
+
+        // Act
+        var ok = Verify(bytes, request, offer, out var verified, out var reason);
+
+        // Assert
+        Assert.True(ok, reason);
+        Assert.Equal(_issuer.NodeId, verified!.Invoice.NodeId);
+    }
+
+    [Fact]
     public void Given_APathWithAnUnknownIntroduction_When_Verifying_Then_OnlyTheOtherPathIsUsed()
     {
         // Arrange

@@ -209,6 +209,50 @@ public class BlindedRouteComposerTests
                                                                 new Secret(new byte[32])));
     }
 
+    [Theory]
+    [InlineData("valid")]
+    [InlineData("non-blinded first hop")]
+    [InlineData("first hop has current_path_key")]
+    [InlineData("no path key at all")]
+    public void Given_AFirstHopPathKey_When_CreatingARoute_Then_OnlyABlindedFirstHopWithoutCurrentPathKeyIsAccepted(
+        string @case)
+    {
+        // Arrange: B12-PAY-02, our peer is a blinded hop after us (the introduction node)
+        var first = @case switch
+        {
+            "non-blinded first hop" => new RouteHop(s_carol, s_amount, 600, s_scid),
+            "first hop has current_path_key" => new RouteHop(s_blinded1, s_amount, 600, null)
+            {
+                EncryptedRecipientData = new byte[] { 1 },
+                CurrentPathKey = s_pathKey,
+                IsBlindedRelay = true
+            },
+            _ => new RouteHop(s_blinded1, s_amount, 600, null)
+            {
+                EncryptedRecipientData = new byte[] { 1 },
+                IsBlindedRelay = true
+            }
+        };
+        var last = @case == "non-blinded first hop"
+                       ? new RouteHop(s_blinded2, s_amount, 600, null)
+                       : new RouteHop(s_blinded2, s_amount, 600, null) { EncryptedRecipientData = new byte[] { 2 } };
+        RouteHop[] hops = [first, last];
+        var pathKey = @case == "no path key at all" ? (CompactPubKey?)null : s_pathKey;
+        PaymentRoute Create() => new(hops, s_amount, 600, s_hash, new Secret(new byte[32]), null, null, pathKey);
+
+        // Act / Assert
+        if (@case == "valid")
+        {
+            var route = Create();
+            Assert.Equal(s_pathKey, route.FirstHopPathKey);
+            Assert.Equal(0, route.BlindedStartIndex);
+        }
+        else
+        {
+            Assert.Throws<ArgumentException>(Create);
+        }
+    }
+
     [Fact]
     public void Given_AFailureInsideTheBlindedPath_When_Recorded_Then_OnlyTheEdgesBeforeItAreLearnt()
     {
