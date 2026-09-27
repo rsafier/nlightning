@@ -1,16 +1,23 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace NLightning.Application.Tests.Channels.Splicing;
 
 using Application.Channels.Splicing;
 using Application.Payments.Routing;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Commitments.Events;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing;
+using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Enums;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
@@ -58,6 +65,44 @@ public class RetiredScidForwardTests
                                                          ThreeNodeHarness.AliceBobChannelId, 0));
         Assert.Equal(ForwardCircuitStatus.Fulfilled, circuit!.Status);
         Assert.Equal(ThreeNodeHarness.BobCarolChannelId, circuit.OutgoingChannelId);
+    }
+
+    [Fact]
+    public async Task Given_BobRestartsAfterTheLock_When_TheMapIsLoadedAndAnOnionNamesTheOldScid_Then_CarolIsPaid()
+    {
+        // Arrange: Bob's map rebuilds from the ChannelFundings rows a lock leaves (the replaced funding with the old
+        // short channel id, the splice current since the harness tip), as the host's startup LoadAsync does
+        var fundings = CreateLockedFundingRows();
+        await using var harness = await ThreeNodeHarness.CreateAsync(h => h.Bob.ConfigureServices = services =>
+            services.AddSingleton<IRetiredScidMap>(sp => new RetiredScidMap(
+                                                       CreateFundingRowsProvider(sp, fundings),
+                                                       NullLogger<RetiredScidMap>.Instance)));
+        LockBobCarol(harness);
+
+        // Act 1: Bob restarts (the in-memory map is gone) and loads the map before his links come back
+        await harness.RestartAsync(harness.Bob);
+        MoveBobCarolScid(harness);
+        var map = harness.Bob.Services.GetRequiredService<IRetiredScidMap>();
+        Assert.False(map.TryResolve(ThreeNodeHarness.BobCarolScid, out _));
+        await map.LoadAsync(ThreeNodeHarness.BlockHeight, TestContext.Current.CancellationToken);
+        await harness.ReconnectAsync(harness.Bob);
+        await harness.PumpAsync();
+
+        var invoice = await harness.Carol.Invoices.CreateInvoiceAsync(s_amount, "splice", null,
+                                                                      TestContext.Current.CancellationToken);
+        var route = harness.RouteToCarol(s_amount, invoice.PaymentHash, invoice.PaymentSecret,
+                                         bobCarolScid: ThreeNodeHarness.BobCarolScid);
+
+        // Act 2
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+
+        // Assert: the D12 guarantee survives the restart
+        var entry = Assert.Single(map.GetByChannel(ThreeNodeHarness.BobCarolChannelId));
+        Assert.Equal(ThreeNodeHarness.BlockHeight + RetiredShortChannelId.RetentionBlocks, entry.ExpiresAtHeight);
+        var fulfilled = Assert.Single(harness.Alice.PaymentHandler.Fulfilled);
+        Assert.Equal(invoice.Preimage, fulfilled.PaymentPreimage);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
     }
 
     [Fact]
@@ -139,6 +184,41 @@ public class RetiredScidForwardTests
         map.Retire(RetiredScidMap.Create(ThreeNodeHarness.BobCarolScid, ThreeNodeHarness.BobCarolChannelId,
                                          ThreeNodeHarness.BlockHeight));
         return map;
+    }
+
+    /// <summary>The Bob-Carol rows after a lock at the harness tip: the initial funding replaced with its short
+    /// channel id, the splice current at <see cref="s_spliceScid"/>.</summary>
+    private static IReadOnlyList<ChannelFunding> CreateLockedFundingRows()
+    {
+        CompactPubKey key = new(Enumerable.Repeat((byte)0x02, 33).ToArray());
+        return
+        [
+            new ChannelFunding(new TxId(Enumerable.Repeat((byte)0x01, 32).ToArray()), 1, 1_000_000, key, key, 0, 0, 0,
+                               ChannelFundingKind.Initial, ChannelFundingStatus.Replaced,
+                               ShortChannelId: ThreeNodeHarness.BobCarolScid),
+            new ChannelFunding(new TxId(Enumerable.Repeat((byte)0x02, 32).ToArray()), 1, 1_100_000, key, key, 1, 0, 0,
+                               ChannelFundingKind.Splice, ChannelFundingStatus.Current,
+                               ConfirmedHeight: ThreeNodeHarness.BlockHeight, ShortChannelId: s_spliceScid)
+        ];
+    }
+
+    /// <summary>A provider whose unit of work lists Bob's stored channels and <paramref name="fundings"/> as the
+    /// Bob-Carol channel's rows.</summary>
+    private static IServiceProvider CreateFundingRowsProvider(IServiceProvider bob,
+                                                              IReadOnlyList<ChannelFunding> fundings)
+    {
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(r => r.GetReadyChannelsAsync())
+                 .ReturnsAsync(() => bob.GetRequiredService<IChannelMemoryRepository>()
+                                        .FindChannels(c => c.ChannelId == ThreeNodeHarness.BobCarolChannelId));
+        var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetByChannelIdAsync(ThreeNodeHarness.BobCarolChannelId)).ReturnsAsync(fundings);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingDb.Object);
+        var services = new ServiceCollection();
+        services.AddScoped(_ => unitOfWork.Object);
+        return services.BuildServiceProvider();
     }
 
     private static void MoveBobCarolScid(ThreeNodeHarness harness)

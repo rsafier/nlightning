@@ -1,21 +1,25 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Tests.Gossip.Announcements;
 
 using Application.Channels.Handlers;
 using Application.Channels.Handlers.Interfaces;
+using Application.Channels.Splicing;
 using Application.Gossip;
 using Application.Gossip.Announcements;
 using Application.Gossip.Relay.Interfaces;
 using Channels.Harness;
 using Channels.Splicing;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Enums;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Options;
+using Domain.Persistence.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.ValueObjects;
 
@@ -63,6 +67,12 @@ public class SpliceAnnouncementHarnessTests
             var entry = Assert.Single(retired.GetByChannel(TwoNodeHarness.ChannelId));
             Assert.Equal(SpliceHeight + 72, entry.ExpiresAtHeight);
             Assert.Single(Sink(node).ChannelAnnouncements);
+
+            // After a restart the map is empty until the host's LoadAsync: the rows the real lock saved rebuild the
+            // same entry (D12 across restarts)
+            using var reloaded = await LoadFromSavedRowsAsync(node, SpliceHeight);
+            Assert.Equal(entry, Assert.Single(reloaded.GetByChannel(TwoNodeHarness.ChannelId)));
+            Assert.True(reloaded.TryResolve(TwoNodeHarness.ShortChannelId, out _));
         }
 
         var signaturesBefore = CountAnnouncementSignatures(harness);
@@ -145,6 +155,29 @@ public class SpliceAnnouncementHarnessTests
         await harness.Alice.Node.RaiseBlockAsync(height);
         await harness.Bob.Node.RaiseBlockAsync(height);
         await harness.PumpAsync();
+    }
+
+    /// <summary>A new (restarted) map loaded from the node's saved <c>ChannelFundings</c> rows, in creation order as
+    /// the database's <c>Sequence</c> keeps them.</summary>
+    private static async Task<RetiredScidMap> LoadFromSavedRowsAsync(SpliceNode node, uint height)
+    {
+        var channel = node.Node.Channel;
+        var rows = node.FundingRows.Committed.Values
+                       .OrderBy(f => f.Kind == ChannelFundingKind.Initial ? 0 : 1)
+                       .ThenBy(f => f.ConfirmedHeight ?? uint.MaxValue)
+                       .ToList();
+        var channelDb = new Mock<IChannelDbRepository>();
+        channelDb.Setup(r => r.GetReadyChannelsAsync()).ReturnsAsync([channel]);
+        var fundingDb = new Mock<IChannelFundingDbRepository>();
+        fundingDb.Setup(r => r.GetByChannelIdAsync(channel.ChannelId)).ReturnsAsync(rows);
+        var unitOfWork = new Mock<IUnitOfWork>();
+        unitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(channelDb.Object);
+        unitOfWork.SetupGet(u => u.ChannelFundingDbRepository).Returns(fundingDb.Object);
+        var services = new ServiceCollection();
+        services.AddScoped(_ => unitOfWork.Object);
+        var map = new RetiredScidMap(services.BuildServiceProvider(), NullLogger<RetiredScidMap>.Instance);
+        await map.LoadAsync(height, TestContext.Current.CancellationToken);
+        return map;
     }
 
     private static RecordingOwnGossipSink Sink(SpliceNode node) =>

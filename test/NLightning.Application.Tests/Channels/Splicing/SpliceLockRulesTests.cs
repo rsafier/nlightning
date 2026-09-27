@@ -300,6 +300,70 @@ public class SpliceLockRulesTests
     }
 
     [Fact]
+    public async Task Given_APublicAnnouncedChannel_When_TheSpliceLocks_Then_TheHalvesAreForgottenInTheLocksOwnSave()
+    {
+        // Arrange
+        using var fixture = new LockFixture(spliceSent: true, announce: true);
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x01, 64).ToArray());
+        fixture.Channel.SetRemoteAnnouncementSignatures(new ChannelAnnouncementSignatures(signature, signature));
+        fixture.Channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UnixEpoch);
+
+        // Act
+        await fixture.Service.HandleSpliceLockedAsync(fixture.Locked(s_spliceTx), fixture.PeerId,
+                                                      fixture.UnitOfWork.Object, TestContext.Current.CancellationToken);
+
+        // Assert: one save only (the lock's), with the channel row staged before it without either half, so no crash
+        // can leave the new short channel id beside the replaced funding's halves
+        Assert.Equal(1, fixture.Saves);
+        var (savesBefore, remote, sentAt) = Assert.Single(fixture.StagedChannels);
+        Assert.Equal(0, savesBefore);
+        Assert.Null(remote);
+        Assert.Null(sentAt);
+        Assert.Single(fixture.Staged);
+    }
+
+    [Fact]
+    public async Task Given_APublicAnnouncedChannel_When_TheLockSaveFails_Then_TheHalvesStayAndNothingIsRetired()
+    {
+        // Arrange
+        using var fixture = new LockFixture(spliceSent: true, announce: true);
+        var signature = new CompactSignature(Enumerable.Repeat((byte)0x01, 64).ToArray());
+        var halves = new ChannelAnnouncementSignatures(signature, signature);
+        fixture.Channel.SetRemoteAnnouncementSignatures(halves);
+        fixture.Channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UnixEpoch);
+        fixture.FailSave = true;
+
+        // Act
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Service.HandleSpliceLockedAsync(
+                                                                fixture.Locked(s_spliceTx), fixture.PeerId,
+                                                                fixture.UnitOfWork.Object,
+                                                                TestContext.Current.CancellationToken));
+
+        // Assert: the shared model still matches the database (nothing saved, nothing applied)
+        Assert.Same(halves, fixture.Channel.RemoteAnnouncementSignatures);
+        Assert.Equal(DateTimeOffset.UnixEpoch, fixture.Channel.LocalAnnouncementSignaturesSentAt);
+        Assert.Equal(s_oldScid, fixture.Channel.ShortChannelId);
+        Assert.Empty(fixture.RetiredMap.GetByChannel(s_channelId));
+        fixture.Announcements.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Given_AnAliasOnlyChannel_When_TheSpliceLocks_Then_TheOldRealScidIsNotRetired()
+    {
+        // Arrange: option_scid_alias Compulsory (BOLT 2: MUST NOT allow incoming HTLCs by the real scid, NL-348)
+        using var fixture = new LockFixture(spliceSent: true, useScidAlias: FeatureSupport.Compulsory);
+
+        // Act
+        await fixture.Service.HandleSpliceLockedAsync(fixture.Locked(s_spliceTx), fixture.PeerId,
+                                                      fixture.UnitOfWork.Object, TestContext.Current.CancellationToken);
+
+        // Assert: locked, but the replaced real short channel id never resolves
+        Assert.Equal(s_spliceScid, fixture.Channel.ShortChannelId);
+        Assert.False(fixture.RetiredMap.TryResolve(s_oldScid, out _));
+        Assert.Empty(fixture.RetiredMap.GetByChannel(s_channelId));
+    }
+
+    [Fact]
     public async Task Given_APrivateChannel_When_TheSpliceLocks_Then_NoAnnouncementWorkIsDone()
     {
         // Arrange
@@ -325,9 +389,9 @@ public class SpliceLockRulesTests
         private readonly InMemoryChannelRepository _memory = new();
 
         public LockFixture(bool spliceSent, bool withRbfSibling = false, bool spliceReceived = false,
-                           bool announce = false)
+                           bool announce = false, FeatureSupport useScidAlias = FeatureSupport.No)
         {
-            Channel = SpliceLockTestChannels.Create(s_channelId, ChannelState.Open, s_oldScid, announce);
+            Channel = SpliceLockTestChannels.Create(s_channelId, ChannelState.Open, s_oldScid, announce, useScidAlias);
             PeerId = Channel.RemoteNodeId;
             _memory.AddChannel(Channel);
 
@@ -384,9 +448,15 @@ public class SpliceLockRulesTests
             UnitOfWork.SetupGet(u => u.ChannelDbRepository).Returns(ChannelDb.Object);
             UnitOfWork.Setup(u => u.SaveChangesAsync()).Returns(() =>
             {
+                if (FailSave)
+                    throw new InvalidOperationException("Simulated failed save");
                 Saves++;
                 return Task.CompletedTask;
             });
+            ChannelDb.Setup(r => r.UpdateAsync(It.IsAny<ChannelModel>()))
+                     .Callback<ChannelModel>(c => StagedChannels.Add((Saves, c.RemoteAnnouncementSignatures,
+                                                                      c.LocalAnnouncementSignaturesSentAt)))
+                     .Returns(Task.CompletedTask);
 
             var publisher = new Mock<IChannelMessagePublisher>();
             publisher.Setup(p => p.Publish(It.IsAny<CompactPubKey>(), It.IsAny<IReadOnlyList<IChannelMessage>>()))
@@ -421,6 +491,15 @@ public class SpliceLockRulesTests
         public List<IReadOnlyList<IChannelMessage>> Published { get; } = [];
         public int Saves { get; private set; }
 
+        /// <summary>Every save throws, with nothing saved (a crash or a failed database write).</summary>
+        public bool FailSave { get; set; }
+
+        /// <summary>The channel rows staged: (saves before it, the remote half, our sent mark) as staged.</summary>
+        public List<(int SavesBefore, ChannelAnnouncementSignatures? Remote, DateTimeOffset? SentAt)> StagedChannels
+        {
+            get;
+        } = [];
+
         public SpliceLockedMessage Locked(TxId txId) => new(new SpliceLockedPayload(s_channelId, txId));
 
         public void Dispose()
@@ -436,12 +515,11 @@ public class SpliceLockRulesTests
 internal static class SpliceLockTestChannels
 {
     public static ChannelModel Create(ChannelId channelId, ChannelState state, ShortChannelId shortChannelId,
-                                      bool announce = false)
+                                      bool announce = false, FeatureSupport useScidAlias = FeatureSupport.No)
     {
         var party = new ChannelParty(LightningMoney.Satoshis(546), LightningMoney.Satoshis(10_000),
                                      LightningMoney.MilliSatoshis(1_000), 30, LightningMoney.Satoshis(1_000_000), 144);
-        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false,
-                                              FeatureSupport.No)
+        var channelParams = new ChannelParams(party, party, LightningMoney.Satoshis(2_500), 3, false, useScidAlias)
         {
             AnnounceChannel = announce
         };

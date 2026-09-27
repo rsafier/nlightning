@@ -10,6 +10,7 @@ using Domain.Channels.Splicing.Enums;
 using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.Splicing.Models;
 using Domain.Channels.ValueObjects;
+using Domain.Enums;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -113,7 +114,9 @@ public sealed class RetiredScidMap : IRetiredScidMap, IDisposable
         foreach (var channel in channels)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (channel.State is ChannelState.Closed or ChannelState.Stale)
+            // An alias-only channel (option_scid_alias Compulsory) never resolves by a real short channel id (NL-348)
+            if (channel.State is ChannelState.Closed or ChannelState.Stale
+             || channel.ChannelParams.UseScidAlias == FeatureSupport.Compulsory)
                 continue;
 
             var fundings = await unitOfWork.ChannelFundingDbRepository.GetByChannelIdAsync(channel.ChannelId);
