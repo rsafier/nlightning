@@ -101,6 +101,45 @@ public class PeerStorageServiceTests
         Assert.True(await reconnected.NothingSentWithinAsync(s_quiet));
     }
 
+    [Fact]
+    public async Task Given_PeerStorageBeforeTheChannel_When_TheChannelExistsAtTheNextRound_Then_TheBlobIsKept()
+    {
+        // Arrange: CLN sends its blob right after init, before our open_channel (wave rf1 CLN proof)
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(16);
+        context.Service.HandleMessage(peer, new PeerStorageMessage(new PeerStoragePayload(new byte[] { 4, 2 })));
+        await context.Service.LastWork;
+        Assert.Null(await context.Service.GetStoredBlobAsync(peer.PeerPubKey));
+        context.AddChannel(peer.PeerPubKey);
+
+        // Act
+        await context.Service.RunRoundAsync();
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.Equal(new byte[] { 4, 2 }, (await context.Service.GetStoredBlobAsync(peer.PeerPubKey))!.Blob);
+        Assert.Equal(new byte[] { 4, 2 }, context.Store.GetSaved(peer.PeerPubKey)!.Blob);
+    }
+
+    [Fact]
+    public async Task Given_AHeldBlobWhoseChannelNeverCame_When_ItsLifetimePassed_Then_ALaterChannelDoesNotKeepIt()
+    {
+        // Arrange
+        using var context = new PeerStorageTestContext();
+        var peer = new FakeGossipPeer(17);
+        context.Service.HandleMessage(peer, new PeerStorageMessage(new PeerStoragePayload(new byte[] { 9 })));
+        context.Time.Advance(PeerStorageService.PendingWithoutChannelLifetime + TimeSpan.FromSeconds(1));
+        await context.Service.RunRoundAsync();
+        context.AddChannel(peer.PeerPubKey);
+
+        // Act
+        await context.Service.RunRoundAsync();
+        await context.Service.LastWork;
+
+        // Assert
+        Assert.Null(await context.Service.GetStoredBlobAsync(peer.PeerPubKey));
+    }
+
     [Theory]
     [InlineData(ChannelState.Closed)]
     [InlineData(ChannelState.Stale)]

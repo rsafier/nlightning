@@ -65,6 +65,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     private readonly ConcurrentDictionary<CompactPubKey, PeerBackupBlob> _lastSent = new();
     private readonly ConcurrentDictionary<CompactPubKey, PeerBackupRetrieval> _retrievals = new();
     private readonly ConcurrentDictionary<CompactPubKey, TaskCompletionSource> _awaitingRetrieval = new();
+    private readonly ConcurrentDictionary<CompactPubKey, PendingBlob> _pendingWithoutChannel = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly Lock _loadLock = new();
     private readonly Lock _timerLock = new();
@@ -75,6 +76,12 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     private int _roundRunning;
     private volatile bool _disposed;
     private volatile bool _backupsHeld;
+
+    /// <summary>At most this many peers' blobs are held while no channel with the peer exists (64 KiB each).</summary>
+    internal const int MaxPendingWithoutChannel = 64;
+
+    /// <summary>A held blob is forgotten when no channel with its peer appeared within this time.</summary>
+    internal static readonly TimeSpan PendingWithoutChannelLifetime = TimeSpan.FromMinutes(30);
 
     public PeerStorageService(IServiceScopeFactory scopeFactory, IPeerBackupBlobProvider blobProvider,
                               IChannelMemoryRepository channelMemoryRepository, IOptions<NodeOptions> nodeOptions,
@@ -256,9 +263,23 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
         EnsureLoaded();
         if (!_stored.ContainsKey(peerId) && !_options.StoreWithoutChannel && !HasChannelWith(peerId))
         {
-            _logger.LogDebug("Ignoring peer_storage from peer {Peer}: no channel with it", peerId);
+            // A peer sends its blob right after init, often before the channel we are about to open with it exists:
+            // keep the latest one in memory (bounded) and adopt it at a round once a channel with the peer exists
+            var pending = new PendingBlob(blob, _timeProvider.GetUtcNow());
+            if (_pendingWithoutChannel.ContainsKey(peerId) || _pendingWithoutChannel.Count < MaxPendingWithoutChannel)
+            {
+                _pendingWithoutChannel[peerId] = pending;
+                _logger.LogDebug("Holding peer_storage from peer {Peer} until a channel with it exists", peerId);
+            }
+            else
+            {
+                _logger.LogDebug("Ignoring peer_storage from peer {Peer}: no channel with it", peerId);
+            }
+
             return;
         }
+
+        _pendingWithoutChannel.TryRemove(peerId, out _);
 
         var now = _timeProvider.GetUtcNow();
         var entry = _stored.GetOrAdd(peerId, _ => new StoredEntry());
@@ -446,6 +467,7 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
     {
         try
         {
+            AdoptPendingBlobs();
             await FlushAsync(force: false);
 
             if (_storagePeers.IsEmpty || !_options.SendBackups || _backupsHeld)
@@ -579,6 +601,29 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
             _timer = _timeProvider.CreateTimer(_ => _ = RunRoundAsync(), null, interval, interval);
         }
     }
+
+    /// <summary>
+    /// Keeps the held blobs of peers we now have a channel with and forgets the ones held longer than
+    /// <see cref="PendingWithoutChannelLifetime"/>.
+    /// </summary>
+    private void AdoptPendingBlobs()
+    {
+        var now = _timeProvider.GetUtcNow();
+        foreach (var (peerId, pending) in _pendingWithoutChannel)
+        {
+            if (HasChannelWith(peerId))
+            {
+                if (_pendingWithoutChannel.TryRemove(new KeyValuePair<CompactPubKey, PendingBlob>(peerId, pending)))
+                    HandlePeerStorage(peerId, pending.Blob);
+            }
+            else if (now - pending.ReceivedAt > PendingWithoutChannelLifetime)
+            {
+                _pendingWithoutChannel.TryRemove(new KeyValuePair<CompactPubKey, PendingBlob>(peerId, pending));
+            }
+        }
+    }
+
+    private sealed record PendingBlob(byte[] Blob, DateTimeOffset ReceivedAt);
 
     private sealed class StoredEntry
     {
