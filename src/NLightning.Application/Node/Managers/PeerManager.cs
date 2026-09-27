@@ -28,6 +28,8 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Gossip.Events;
 using Gossip.Interfaces;
+using Gossip.Metrics;
+using Gossip.Sync;
 using Infrastructure.Protocol.Models;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
@@ -69,6 +71,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
     private readonly ITcpService _tcpService;
     private readonly IServiceProvider _serviceProvider;
     private readonly IChannelUpdateService? _channelUpdateService;
+    private readonly Lazy<(int MaxQueuedGossip, GossipMetrics? Metrics)> _gossipOutboxSettings;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
 
@@ -148,7 +151,11 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
 
         _channelUpdateService = channelUpdateService;
         _channelUpdateService?.OnChannelUpdateReady += HandleChannelUpdateReady;
+        _gossipOutboxSettings = new Lazy<(int, GossipMetrics?)>(ResolveGossipOutboxSettings);
     }
+
+    /// <summary>The gossip messages waiting in every current connection's outbox (NL-360; the metric's gauge).</summary>
+    public long QueuedOutboxGossipCount => _peers.Values.Sum(s => (long)s.Outbox.QueuedGossipCount);
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -613,7 +620,10 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
     /// </summary>
     private PeerSession CreateSession(PeerModel peer, IPeerService peerService, bool isInbound)
     {
-        var session = new PeerSession(peer, peerService, new PeerOutbox(peerService, _logger), isInbound);
+        var (maxQueuedGossip, metrics) = _gossipOutboxSettings.Value;
+        var outbox = new PeerOutbox(peerService, _logger, maxQueuedGossip,
+                                    metrics is null ? null : () => metrics.RecordDropped(OutboxFullReason));
+        var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);
 
@@ -1058,12 +1068,41 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox
 
     /// <summary>
     /// Queues gossip on the outbox of <paramref name="connection"/> (NL-351): only while it is still the peer's current
-    /// connection, so our own and relayed gossip keeps FIFO order with that connection's channel messages.
+    /// connection, so our own and relayed gossip keeps FIFO order with that connection's channel messages. Capped
+    /// (NL-360): refused while <see cref="GossipSyncOptions.MaxOutboxGossipPerPeer"/> gossip messages wait on that
+    /// outbox (a peer that reads slowly); channel messages are never refused for it.
     /// </summary>
     public bool TryEnqueueGossip(IPeerService connection, IMessage message) =>
         _peers.TryGetValue(connection.PeerPubKey, out var session)
         && ReferenceEquals(session.PeerService, connection)
-        && session.Outbox.TryEnqueueGossip(message);
+        && session.Outbox.TryEnqueueGossip(message, capped: true);
+
+    /// <summary>The <c>reason</c> tag of a gossip message a full outbox refused (NL-360).</summary>
+    internal const string OutboxFullReason = "outbox_full";
+
+    /// <summary>
+    /// The outbox gossip cap from <see cref="GossipSyncOptions"/> (the <c>Gossip</c> section; its default without a
+    /// registration) and the gossip meter, which also gets the <c>outbox_gossip</c> queue gauge. Resolved once, at
+    /// the first session: the provider may still be building singletons while this one is constructed.
+    /// </summary>
+    private (int MaxQueuedGossip, GossipMetrics? Metrics) ResolveGossipOutboxSettings()
+    {
+        var maxQueuedGossip = new GossipSyncOptions().MaxOutboxGossipPerPeer;
+        GossipMetrics? metrics = null;
+        try
+        {
+            if (_serviceProvider.GetService<IOptions<GossipSyncOptions>>() is { } options)
+                maxQueuedGossip = options.Value.MaxOutboxGossipPerPeer;
+            metrics = _serviceProvider.GetService<GossipMetrics>();
+            metrics?.RegisterQueue("outbox_gossip", () => QueuedOutboxGossipCount);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Could not read the outbox gossip settings; using the default cap");
+        }
+
+        return (maxQueuedGossip, metrics);
+    }
 
     /// <summary>
     /// One connection to a peer: its model, its service, its ordered inbound queue and loop, and its outbox.

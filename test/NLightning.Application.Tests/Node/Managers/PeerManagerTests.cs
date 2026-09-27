@@ -14,7 +14,9 @@ using Application.Channels.Services;
 using Application.Gossip;
 using Application.Gossip.Events;
 using Application.Gossip.Interfaces;
+using Application.Gossip.Metrics;
 using Application.Gossip.Services;
+using Application.Gossip.Sync;
 using Application.Node.Managers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
@@ -41,6 +43,7 @@ using Domain.Protocol.ValueObjects;
 using Infrastructure.Node.ValueObjects;
 using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
+using Tests.Gossip.Metrics;
 
 // ReSharper disable AccessToDisposedClosure
 public class PeerManagerTests
@@ -1060,6 +1063,49 @@ public class PeerManagerTests
         Assert.True(queuedOnNew);
         newPeerService.Verify(p => p.SendGossipMessageAsync(gossip), Times.Once);
         oldPeerService.Verify(p => p.SendGossipMessageAsync(gossip), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AnOutboxAtTheGossipCap_When_GossipAndAChannelMessageAreQueued_Then_OnlyTheGossipIsRefused()
+    {
+        // Arrange: NL-360, cap 2 (Gossip:MaxOutboxGossipPerPeer); the peer stops reading at the first gossip message
+        using var metrics = new GossipMetrics();
+        using var recorder = new GossipMetricsRecorder(metrics);
+        _fakeServiceProvider.AddService(typeof(IOptions<GossipSyncOptions>),
+                                        Options.Create(new GossipSyncOptions { MaxOutboxGossipPerPeer = 2 }));
+        _fakeServiceProvider.AddService(typeof(GossipMetrics), metrics);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockPeerService.Setup(p => p.SendGossipMessageAsync(It.IsAny<IMessage>()))
+                        .Returns(() =>
+                         {
+                             sending.TrySetResult();
+                             return release.Task;
+                         });
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        RaiseInboundConnection();
+        IPeerGossipOutbox outbox = peerManager;
+        Assert.True(outbox.TryEnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object));
+        await sending.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        Assert.True(outbox.TryEnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object));
+        Assert.True(outbox.TryEnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object));
+        var reply = CreateMessages(1)[0];
+
+        // Act
+        var refused = !outbox.TryEnqueueGossip(_mockPeerService.Object, new Mock<IMessage>().Object);
+        RaiseResponse(reply);
+        var gauge = recorder.ObserveQueue("outbox_gossip");
+        release.SetResult();
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.True(refused);
+        Assert.Equal(2, gauge);
+        Assert.Equal(1, recorder.Sum("nlightning.gossip.messages.dropped", ("reason", PeerManager.OutboxFullReason)));
+        _mockPeerService.Verify(p => p.SendGossipMessageAsync(It.IsAny<IMessage>()), Times.Exactly(3));
+        _mockPeerService.Verify(p => p.SendMessageAsync(reply), Times.Once);
+        Assert.Equal(0, peerManager.QueuedOutboxGossipCount);
     }
 
     [Theory]
