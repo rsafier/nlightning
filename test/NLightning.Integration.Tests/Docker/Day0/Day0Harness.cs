@@ -6,8 +6,11 @@ using NBitcoin;
 namespace NLightning.Integration.Tests.Docker.Day0;
 
 using Abcd;
+using Application.Channels.Managers;
 using Daemon.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Channels.Events;
+using Domain.Channels.Interfaces;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
@@ -34,6 +37,9 @@ public static class Day0Harness
     /// <summary>The most blocks mined one at a time until both ends are usable or locked a splice.</summary>
     public const int MaxBlocks = 12;
 
+    /// <summary>BOLT 7's delay before a node forgets a channel whose funding output is spent.</summary>
+    public const int SpentChannelPruneDelayBlocks = 72;
+
     public static readonly TimeSpan StepTimeout = TimeSpan.FromMinutes(2);
     public static readonly TimeSpan NetworkTimeout = TimeSpan.FromMinutes(3);
     private static readonly TimeSpan s_blockEvery = TimeSpan.FromSeconds(15);
@@ -55,14 +61,53 @@ public static class Day0Harness
 
     /// <summary>
     /// The feature set of a build from before wave sp1 (no quiescence, splicing or dual funding), for the upgrade test.
+    /// With <paramref name="beforeAnchorsAndPeerStorage"/> also that of a build from before waves O7b and RF1 (no
+    /// <c>option_anchors</c> by default, no <c>option_provide_storage</c>), as the live Mutinynet node's build: its
+    /// channels are <c>option_static_remotekey</c> channels.
     /// </summary>
-    public static void UsePreSp1Features(NLightningTestNode node) =>
+    public static void UsePreSp1Features(NLightningTestNode node, bool beforeAnchorsAndPeerStorage = false) =>
         node.ConfigureServices = services => services.PostConfigure<NodeOptions>(o =>
         {
             o.Features.OptionQuiesce = FeatureSupport.No;
             o.Features.OptionSplice = FeatureSupport.No;
             o.Features.DualFund = FeatureSupport.No;
+            if (!beforeAnchorsAndPeerStorage)
+                return;
+
+            o.Features.OptionAnchors = FeatureSupport.No;
+            o.Features.OptionProvideStorage = FeatureSupport.No;
         });
+
+    /// <summary>
+    /// Calls <paramref name="hook"/> for every channel message <paramref name="node"/> sends, <b>before</b> the peer
+    /// manager puts it into the peer's outbox, on every start of the node (kept across restarts; chained after the
+    /// node's current <see cref="NLightningTestNode.ConfigureServices"/>, so set the feature options first).
+    /// </summary>
+    /// <remarks>
+    /// <c>PeerManager</c> subscribes to <see cref="IChannelManager.OnResponseMessageReady"/> in its constructor and
+    /// its outbox sends on its own task, so a handler added after the node started runs after the enqueue and races
+    /// the send. This one is subscribed when the channel manager singleton is built, before any other subscriber, so
+    /// a hook that resets the node's connections (<see cref="CrashableTcpService.CrashAsync"/>) keeps the message off
+    /// the wire. The hook runs under the channel's lock: it must not wait on the channel.
+    /// </remarks>
+    public static void HookSentChannelMessages(NLightningTestNode node, Action<ChannelResponseMessageEventArgs> hook)
+    {
+        var previous = node.ConfigureServices;
+        node.ConfigureServices = services =>
+        {
+            previous?.Invoke(services);
+            var descriptor = services.Last(d => d.ServiceType == typeof(ChannelManager));
+            var factory = descriptor.ImplementationFactory
+                       ?? throw new InvalidOperationException("ChannelManager is expected to be built by a factory");
+            services.Remove(descriptor);
+            services.AddSingleton(sp =>
+            {
+                var channelManager = (ChannelManager)factory(sp);
+                channelManager.OnResponseMessageReady += (_, args) => hook(args);
+                return channelManager;
+            });
+        };
+    }
 
     /// <summary>The daemon's client handler for <typeparamref name="TRequest"/>, as <c>nltg</c> reaches it.</summary>
     public static async Task<TResponse> HandleAsync<TRequest, TResponse>(NLightningTestNode node, TRequest request,
@@ -293,13 +338,40 @@ public static class Day0Harness
     }
 
     /// <summary>
-    /// Waits until <paramref name="lnd"/>'s graph no longer has <paramref name="scid"/> (its funding output is spent:
-    /// LND prunes the edge at the spending block).
+    /// Waits until <paramref name="lnd"/>'s graph no longer has <paramref name="scid"/>, whose funding output is
+    /// spent in a confirmed block, mining one block at a time; returns (and prints) the blocks mined until LND forgot
+    /// the edge, i.e. the pruning delay the fixture's LND uses.
     /// </summary>
-    public static Task WaitLndForgotChannelAsync(LNDNodeConnection lnd, ulong scid, CancellationToken ct) =>
-        Poll.UntilAsync(async () => await GossipGraphProbe.TryGetChanInfoAsync(lnd, scid, ct) is null,
-                        NetworkTimeout, $"{lnd.LocalAlias} forgot {new ShortChannelId(scid)}", ct,
-                        GossipGraphProbe.PollInterval);
+    /// <remarks>
+    /// BOLT 7: "once its funding output has been spent OR reorganized out: SHOULD forget a channel after a 72-block
+    /// delay", and splice-aware nodes wait on purpose so the new announcement arrives first (our own
+    /// <c>GraphPruner</c> does, splicing plan D12). An LND that prunes at the spending block forgets it at once; one
+    /// that follows the delay forgets it after at most <see cref="SpentChannelPruneDelayBlocks"/> + 1 blocks.
+    /// </remarks>
+    public static async Task<int> WaitLndForgotChannelAsync(LightningRegtestNetworkFixture fixture,
+                                                            LNDNodeConnection lnd, ulong scid, NLightningTestNode a,
+                                                            NLightningTestNode b, CancellationToken ct)
+    {
+        var description = $"{lnd.LocalAlias} forgot {new ShortChannelId(scid)}";
+        for (var mined = 0; ; mined++)
+        {
+            try
+            {
+                // Without a new block give LND longer: it may still be handling the spending block
+                await Poll.UntilAsync(async () => await GossipGraphProbe.TryGetChanInfoAsync(lnd, scid, ct) is null,
+                                      mined == 0 ? TimeSpan.FromSeconds(30) : TimeSpan.FromSeconds(3), description,
+                                      ct, GossipGraphProbe.PollInterval);
+                Console.WriteLine($"[day0] {description} after {mined} more block(s)");
+                return mined;
+            }
+            catch (TimeoutException)
+            {
+                Assert.True(mined <= SpentChannelPruneDelayBlocks,
+                            $"{lnd.LocalAlias} still has {new ShortChannelId(scid)} {mined} blocks later");
+                await ChainSync.MineAndWaitAsync(fixture, 1, fixture.LndNodes, [a, b], ct);
+            }
+        }
+    }
 
     /// <summary>
     /// <c>exportchanbackup</c> then <c>verifychanbackup</c> of the export (runbook: after every step): the backup is

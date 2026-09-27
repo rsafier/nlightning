@@ -6,6 +6,7 @@ namespace NLightning.Integration.Tests.Docker.Day0;
 
 using Abcd;
 using Domain.Channels.Enums;
+using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
@@ -24,8 +25,8 @@ using Utils;
 /// <c>channel_announcement</c> and both policies. (2) Payments A to B, B to A, and alice to B through A. (3) A splices
 /// in; the splice locks, the channel is announced again under its new short channel id and alice forgets the old
 /// one. (4) B splices out to a bitcoind address; the same, and the address holds the amount in a confirmed
-/// transaction. (5) B crashes while it sends its <c>tx_signatures</c> of a third splice and restarts: the splice
-/// completes; then B is stopped while the splice confirms and restarted: the lock completes through
+/// transaction. (5) B crashes before its <c>tx_signatures</c> of a third splice reach the wire and restarts: B
+/// retransmits them on <c>channel_reestablish</c> and the splice completes; then B is stopped while the splice confirms and restarted: the lock completes through
 /// <c>channel_reestablish</c>. (6) <c>setchannelpolicy</c> on A lowers <c>htlc_maximum_msat</c> and alice sees it. (7)
 /// <c>exportchanbackup</c> + <c>verifychanbackup</c> on both nodes after every step, always on the channel's current
 /// funding. (8) A closes cooperatively and alice forgets the channel.
@@ -42,11 +43,17 @@ using Utils;
 /// A also has a public channel to alice (alice gets a push), the only way alice reaches B. B is connected to alice
 /// without a channel, as each day-0 node has other peers: alice learns B's direction of the channel from B's own
 /// gossip (through A alone she did not, see the connect in the test).</para>
+/// <para>After each splice and the close the test waits until alice forgets the spent short channel id, mining one
+/// block at a time up to BOLT 7's 72-block delay (<see cref="Day0Harness.WaitLndForgotChannelAsync"/>, which prints
+/// the delay LND used); the proof itself only needs the new short channel id in alice's graph. B's
+/// <c>tx_signatures</c> in step 5 (a) is kept off the wire by a hook that runs before B's outbox
+/// (<see cref="Day0Harness.HookSentChannelMessages"/>), so the splice can only complete through B's retransmission,
+/// which the test counts.</para>
 /// </remarks>
 [Collection(GossipRegtestCollection.Name)]
 public sealed class Day0FlowTests : IAsyncLifetime
 {
-    private const int TestTimeoutMs = 40 * 60 * 1_000;
+    private const int TestTimeoutMs = 60 * 60 * 1_000;
 
     private const long OpenerContributionSat = 500_000;
     private const long AccepterContributionSat = 300_000;
@@ -58,6 +65,12 @@ public sealed class Day0FlowTests : IAsyncLifetime
 
     private readonly LightningRegtestNetworkFixture _fixture;
     private readonly List<NLightningTestNode> _nodes = [];
+
+    // Step 5 (a): B's hook crashes B on its first tx_signatures once armed, and counts the ones it sends afterwards
+    private TaskCompletionSource? _crashOnTxSignatures;
+    private CrashableTcpService? _tcpB;
+    private ChannelId? _restartSpliceChannel;
+    private int _txSignaturesSentAfterCrash;
 
     public Day0FlowTests(LightningRegtestNetworkFixture fixture, ITestOutputHelper output)
     {
@@ -95,7 +108,8 @@ public sealed class Day0FlowTests : IAsyncLifetime
         // Arrange: A and B with the runbook's features; B contributes to a peer's dual-funded open. A has a public
         // channel to alice (alice gets a push, so she can pay B through A)
         var a = await StartDay0NodeAsync("day0-a", "nltg-day0-a", 0, ct);
-        var b = await StartDay0NodeAsync("day0-b", "nltg-day0-b", AccepterContributionSat, ct);
+        var b = await StartDay0NodeAsync("day0-b", "nltg-day0-b", AccepterContributionSat, ct,
+                                         n => Day0Harness.HookSentChannelMessages(n, OnBSendsChannelMessage));
         var aliceChannel = await PublicTopology.OpenPublicChannelToAliceAsync(
                                _fixture, a, LightningMoney.Satoshis(AliceChannelPushSat), observers, ct,
                                syncGraph: false);
@@ -153,7 +167,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
         Assert.Equal(before3.RemoteBalance, lockedA3.RemoteBalance);
         var scidSplice3 = AssertNewShortChannelId(lockedA3, lockedB3, scidOpen);
         await Day0Harness.WaitLndHasChannelAsync(_fixture, alice, scidSplice3, a, b, ct);
-        await Day0Harness.WaitLndForgotChannelAsync(alice, scidOpen, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidOpen, a, b, ct);
         await Day0Harness.PayAsync(a, b, 25_000, "day0 step 3 a->b", ct);
         await Day0Harness.PayAsync(b, a, 5_000, "day0 step 3 b->a", ct);
         AssertRoutedThroughA(await Day0Harness.LndPaysAsync(alice, b, 15_000, "day0 step 3 alice->a->b", ct), a, b);
@@ -181,34 +195,34 @@ public sealed class Day0FlowTests : IAsyncLifetime
         Assert.True(outInfo.Confirmations >= 1, "the splice-out transaction is not confirmed");
         var scidSplice4 = AssertNewShortChannelId(lockedA4, lockedB4, scidSplice3);
         await Day0Harness.WaitLndHasChannelAsync(_fixture, alice, scidSplice4, a, b, ct);
-        await Day0Harness.WaitLndForgotChannelAsync(alice, scidSplice3, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice3, a, b, ct);
         await Day0Harness.PayAsync(a, b, 12_000, "day0 step 4 a->b", ct);
         await Day0Harness.PayAsync(b, a, 6_000, "day0 step 4 b->a", ct);
         await BackupBothAsync(a, b, channelId, "step 4 (splice out)", ct);
 
         // ---- Step 5: B restarts mid-splice, twice ----
-        // (a) B crashes on the wire as it raises its tx_signatures of A's splice-in and restarts: after
-        // channel_reestablish (next_funding) the missing tx_signatures are retransmitted and the splice is signed
+        // (a) B crashes on the wire as it raises its tx_signatures of A's splice-in (B contributes no input, so it
+        // sends first and A cannot send its own before it has B's): B's hook runs before the peer manager's outbox
+        // takes the message, so it never reaches A. After the restart B must retransmit it on channel_reestablish
+        // (next_funding) and A, which gets it only that way, completes the splice and broadcasts it
         var before5 = await Day0Harness.WaitSettledAsync(a, channelId, ct);
-        var tcpB = Assert.IsType<CrashableTcpService>(b.Services.GetRequiredService<ITcpService>());
+        _tcpB = Assert.IsType<CrashableTcpService>(b.Services.GetRequiredService<ITcpService>());
+        _restartSpliceChannel = channelId;
         var crashed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        b.ChannelManager.OnResponseMessageReady += (_, args) =>
-        {
-            // Raised under the channel lock right after the save; cut every connection before anything else
-            if (args.ResponseMessage is not TxSignaturesMessage || crashed.Task.IsCompleted)
-                return;
-
-            tcpB.CrashAsync().GetAwaiter().GetResult();
-            crashed.TrySetResult();
-        };
+        _crashOnTxSignatures = crashed;
         var restartSplice = Day0Harness.SpliceInAsync(a, channelId, RestartSpliceInSat, ct);
         await crashed.Task.WaitAsync(Day0Harness.StepTimeout, ct);
-        Console.WriteLine("[day0] step 5 (a): B crashed as it sent its tx_signatures");
+        Console.WriteLine("[day0] step 5 (a): B crashed as it raised its tx_signatures, before they reached the wire");
+        Assert.Equal(0, Volatile.Read(ref _txSignaturesSentAfterCrash));
         await b.StopAsync();
         await b.StartAsync(ct);
         await Day0Harness.EnsureConnectedAsync(a, b, ct);
         var restartTxId = Day0Harness.AssertSigned(await restartSplice.WaitAsync(Day0Harness.NetworkTimeout, ct));
         await Day0Harness.WaitInMempoolAsync(_fixture, restartTxId, ct);
+        Assert.True(Volatile.Read(ref _txSignaturesSentAfterCrash) >= 1,
+                    "B never sent its tx_signatures again after the restart, yet the splice completed");
+        Console.WriteLine($"[day0] step 5 (a): B retransmitted its tx_signatures {_txSignaturesSentAfterCrash} "
+                        + $"time(s); the splice {restartTxId} is in the mempool");
 
         // (b) B is down while the splice confirms past its depth, then starts: its catch-up and channel_reestablish
         // (my_current_funding_locked) complete the lock on both ends
@@ -227,7 +241,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
         Assert.False(lockedB5.DataLossDetected);
         var scidSplice5 = AssertNewShortChannelId(lockedA5, lockedB5, scidSplice4);
         await Day0Harness.WaitLndHasChannelAsync(_fixture, alice, scidSplice5, a, b, ct);
-        await Day0Harness.WaitLndForgotChannelAsync(alice, scidSplice4, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice4, a, b, ct);
         await Day0Harness.PayAsync(a, b, 11_000, "day0 step 5 a->b", ct);
         await Day0Harness.PayAsync(b, a, 4_000, "day0 step 5 b->a", ct);
         AssertRoutedThroughA(await Day0Harness.LndPaysAsync(alice, b, 9_000, "day0 step 5 alice->a->b", ct), a, b);
@@ -271,7 +285,7 @@ public sealed class Day0FlowTests : IAsyncLifetime
         foreach (var node in new[] { a, b })
             await Poll.UntilAsync(() => IsClosed(node, channelId), Day0Harness.StepTimeout,
                                   $"{node.Name}: channel {channelId} Closed", ct, TimeSpan.FromMilliseconds(500));
-        await Day0Harness.WaitLndForgotChannelAsync(alice, scidSplice5, ct);
+        await Day0Harness.WaitLndForgotChannelAsync(_fixture, alice, scidSplice5, a, b, ct);
     }
 
     /// <summary>Closed in memory, or no longer loaded (a closed channel may be dropped from memory).</summary>
@@ -280,16 +294,40 @@ public sealed class Day0FlowTests : IAsyncLifetime
      || channel.State == ChannelState.Closed;
 
     private async Task<NLightningTestNode> StartDay0NodeAsync(string name, string alias, long acceptContributionSat,
-                                                              CancellationToken ct)
+                                                              CancellationToken ct,
+                                                              Action<NLightningTestNode>? configure = null)
     {
         var node = await GossipTestNodes.StartGossipNodeAsync(_fixture, name, alias, ct, n =>
         {
             Day0Harness.EnableDay0Features(n);
             n.ExtraConfiguration["Node:DualFund:AcceptContributionSat"] = acceptContributionSat.ToString();
             n.ExtraConfiguration["Gossip:OwnGossipFlushInterval"] = "00:00:05";
+            configure?.Invoke(n);
         });
         _nodes.Add(node);
         return node;
+    }
+
+    /// <summary>
+    /// B's hook (<see cref="Day0Harness.HookSentChannelMessages"/>), run under the channel's lock before B's outbox
+    /// takes the message: once step 5 (a) armed it, the first <c>tx_signatures</c> of the channel crashes B on the
+    /// wire (so it is never sent) and every later one is counted as a retransmission.
+    /// </summary>
+    private void OnBSendsChannelMessage(ChannelResponseMessageEventArgs args)
+    {
+        var crash = _crashOnTxSignatures;
+        if (crash is null || args.ResponseMessage is not TxSignaturesMessage
+         || args.ResponseMessage.Payload.ChannelId != _restartSpliceChannel)
+            return;
+
+        if (crash.Task.IsCompleted)
+        {
+            Interlocked.Increment(ref _txSignaturesSentAfterCrash);
+            return;
+        }
+
+        _tcpB!.CrashAsync().GetAwaiter().GetResult();
+        crash.TrySetResult();
     }
 
     /// <summary><c>exportchanbackup</c> + <c>verifychanbackup</c> on both nodes (runbook: after every step).</summary>
