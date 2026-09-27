@@ -8,6 +8,7 @@ using Domain.Channels.ValueObjects;
 using Domain.Client.Requests;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Enums;
 using Domain.Payments.Enums;
 using Handlers;
 using Ipc;
@@ -163,6 +164,22 @@ internal static class ClientApp
                                                                payOptions.MaxParts, cancellationToken);
                     new PayInvoicePrinter().Print(payment);
                     if (payment.Payment.Status == PaymentStatus.Failed)
+                        return Failure;
+                    break;
+                case "payoffer":
+                case "pay-offer":
+                    var offerPayment = await client.PayOfferAsync(ParsePayOfferOptions(commandArgs, true, out _)!,
+                                                                  cancellationToken);
+                    new PayOfferPrinter().Print(offerPayment);
+                    if (offerPayment.Payment is not { Status: not PaymentStatus.Failed })
+                        return Failure;
+                    break;
+                case "fetchinvoice":
+                case "fetch-invoice":
+                    var fetched = await client.FetchInvoiceAsync(ParsePayOfferOptions(commandArgs, false, out _)!,
+                                                                 cancellationToken);
+                    new PayOfferPrinter().PrintFetch(fetched);
+                    if (fetched.Status != FetchInvoiceStatus.Received)
                         return Failure;
                     break;
                 case "closechannel":
@@ -334,6 +351,16 @@ internal static class ClientApp
                     return $"Missing argument. Usage: {cmd} <bolt11> [amount_msat] [timeout_seconds] "
                          + "[--max-fee-msat <msat>] [--max-parts <n>] [--timeout <seconds>]";
                 return ParsePayInvoiceOptions(commandArgs, out var payError) is null ? payError : null;
+            case "payoffer":
+            case "pay-offer":
+                return ParsePayOfferOptions(commandArgs, true, out var payOfferError) is null
+                           ? $"{payOfferError} Usage: {cmd} {PayOfferUsage}"
+                           : null;
+            case "fetchinvoice":
+            case "fetch-invoice":
+                return ParsePayOfferOptions(commandArgs, false, out var fetchError) is null
+                           ? $"{fetchError} Usage: {cmd} {FetchInvoiceUsage}"
+                           : null;
             case "closechannel":
             case "close-channel":
                 if (commandArgs.Length < 1)
@@ -781,6 +808,135 @@ internal static class ClientApp
         return new PayInvoiceArguments(positional[0], amount, timeout, maxFeeMsat, maxParts);
     }
 
+    /// <summary>The arguments of payoffer.</summary>
+    internal const string PayOfferUsage =
+        "<offer> [amount_msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>] [--max-parts <n>] "
+      + "[--timeout <seconds>]";
+
+    /// <summary>The arguments of fetchinvoice.</summary>
+    internal const string FetchInvoiceUsage = "<offer> [amount_msat] [--quantity <n>] [--note <text>]";
+
+    /// <summary>
+    /// The arguments of payoffer (<paramref name="payment"/>) and fetchinvoice: <c>&lt;offer&gt; [amount_msat]</c>
+    /// positionally and the options <c>--quantity</c>, <c>--note</c> and, for payoffer only,
+    /// <c>--max-fee-msat</c>, <c>--max-parts</c> and <c>--timeout</c> (as for payinvoice), each also as
+    /// <c>--option=value</c>.
+    /// </summary>
+    /// <returns>The arguments, or null with <paramref name="error"/> set.</returns>
+    internal static PayOfferArguments? ParsePayOfferOptions(string[] commandArgs, bool payment, out string? error)
+    {
+        var positional = new List<string>();
+        ulong? quantity = null;
+        string? note = null;
+        ulong? maxFeeMsat = null;
+        uint? maxParts = null;
+        uint? timeout = null;
+        for (var i = 0; i < commandArgs.Length; i++)
+        {
+            var argument = commandArgs[i];
+            if (!argument.StartsWith("--", StringComparison.Ordinal))
+            {
+                positional.Add(argument);
+                continue;
+            }
+
+            var separator = argument.IndexOf('=');
+            var name = (separator < 0 ? argument : argument[..separator]).ToLowerInvariant();
+            string value;
+            if (separator >= 0)
+            {
+                value = argument[(separator + 1)..];
+            }
+            else if (i + 1 < commandArgs.Length)
+            {
+                value = commandArgs[++i];
+            }
+            else
+            {
+                error = $"Missing value for {name}.";
+                return null;
+            }
+
+            switch (name)
+            {
+                case "--quantity":
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var q) || q == 0)
+                    {
+                        error = $"Invalid quantity '{value}': expected a positive number.";
+                        return null;
+                    }
+
+                    quantity = q;
+                    break;
+                case "--note":
+                    if (value.Length == 0)
+                    {
+                        error = "The payer note is empty.";
+                        return null;
+                    }
+
+                    note = value;
+                    break;
+                case "--max-fee-msat" when payment:
+                    if (!ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var fee)
+                     || fee > MaxPayFeeMsat)
+                    {
+                        error = $"Invalid fee limit '{value}': expected a number of msat from 0 to {MaxPayFeeMsat}.";
+                        return null;
+                    }
+
+                    maxFeeMsat = fee;
+                    break;
+                case "--max-parts" when payment:
+                    if (!TryParsePositiveUInt(value, out var parts) || parts > MaxPayParts)
+                    {
+                        error = $"Invalid part limit '{value}': expected 1 to {MaxPayParts}.";
+                        return null;
+                    }
+
+                    maxParts = parts;
+                    break;
+                case "--timeout" when payment:
+                    if (!TryParsePositiveUInt(value, out var seconds) || seconds > MaxPayTimeoutSeconds)
+                    {
+                        error = $"Invalid timeout '{value}': expected 1 to {MaxPayTimeoutSeconds} seconds.";
+                        return null;
+                    }
+
+                    timeout = seconds;
+                    break;
+                default:
+                    error = payment
+                                ? $"Unknown option '{name}': expected --quantity, --note, --max-fee-msat, "
+                                + "--max-parts or --timeout."
+                                : $"Unknown option '{name}': expected --quantity or --note.";
+                    return null;
+            }
+        }
+
+        if (positional.Count is < 1 or > 2)
+        {
+            error = positional.Count == 0 ? "Missing argument: the offer." : $"Unexpected argument '{positional[2]}'.";
+            return null;
+        }
+
+        ulong? amountMsat = null;
+        if (positional.Count > 1)
+        {
+            if (!ulong.TryParse(positional[1], NumberStyles.None, CultureInfo.InvariantCulture, out var amount)
+             || amount == 0)
+            {
+                error = $"Invalid amount '{positional[1]}': expected a positive number of msat.";
+                return null;
+            }
+
+            amountMsat = amount;
+        }
+
+        error = null;
+        return new PayOfferArguments(positional[0], amountMsat, quantity, note, timeout, maxFeeMsat, maxParts);
+    }
+
     /// <summary>
     /// The arguments of getroute: <c>&lt;node_id&gt; &lt;amount_msat&gt;</c> and the options
     /// <c>--max-fee-msat &lt;msat&gt;</c> (0 to <see cref="MaxPayFeeMsat"/>) and <c>--final-cltv &lt;blocks&gt;</c> (the
@@ -1077,6 +1233,18 @@ internal sealed record GetRouteArguments(CompactPubKey NodeId, ulong AmountMsat,
 internal sealed record PayInvoiceArguments(
     string Bolt11,
     LightningMoney? Amount,
+    uint? TimeoutSeconds,
+    ulong? MaxFeeMsat,
+    uint? MaxParts);
+
+/// <summary>
+/// The parsed arguments of payoffer and fetchinvoice (fetchinvoice leaves the payment limits null).
+/// </summary>
+public sealed record PayOfferArguments(
+    string Offer,
+    ulong? AmountMsat,
+    ulong? Quantity,
+    string? PayerNote,
     uint? TimeoutSeconds,
     ulong? MaxFeeMsat,
     uint? MaxParts);

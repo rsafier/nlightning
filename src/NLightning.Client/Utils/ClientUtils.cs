@@ -42,6 +42,16 @@ public static class ClientUtils
         Console.WriteLine("                               retries, then it stays in flight and listpayments shows the");
         Console.WriteLine("                               outcome; fee limit [default: max(0.5%, 5000 msat)]; parts:");
         Console.WriteLine("                               HTLCs in flight at once, 1-128, 1 never splits [default: 16]");
+        Console.WriteLine("  payoffer <offer> [msat] [--quantity <n>] [--note <text>] [--max-fee-msat <msat>]");
+        Console.WriteLine("           [--max-parts <n>] [--timeout <seconds>]");
+        Console.WriteLine("                               Fetch an invoice for a BOLT 12 offer and pay it over its");
+        Console.WriteLine("                               blinded paths (alias: pay-offer); the amount is only for");
+        Console.WriteLine("                               offers without one (or in another currency); exit code 1");
+        Console.WriteLine("                               if nothing was paid or the payment failed; the limits are");
+        Console.WriteLine("                               those of payinvoice");
+        Console.WriteLine("  fetchinvoice <offer> [msat] [--quantity <n>] [--note <text>]");
+        Console.WriteLine("                               Fetch and check an invoice for a BOLT 12 offer without");
+        Console.WriteLine("                               paying it (alias: fetch-invoice)");
         Console.WriteLine("  closechannel <channel_id> [feerate_per_kw|0] [wait_seconds] [nofeerange]");
         Console.WriteLine("                               Cooperatively close a channel (alias: close-channel) and");
         Console.WriteLine("                               wait for the closing transaction [wait 0-300 s, default 30];");

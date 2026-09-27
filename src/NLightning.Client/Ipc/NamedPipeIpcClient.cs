@@ -331,6 +331,35 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Fetches an invoice for a BOLT 12 offer and pays it (ClientCommand 29, provisional).
+    /// </summary>
+    /// <param name="arguments">The parsed <c>payoffer</c> arguments.</param>
+    /// <param name="ct">Cancels the call (a payment already started keeps going in the daemon).</param>
+    public Task<PayOfferIpcResponse> PayOfferAsync(PayOfferArguments arguments, CancellationToken ct = default) =>
+        SendRequestAsync<PayOfferIpcRequest, PayOfferIpcResponse>(ClientCommand.PayOffer, ToRequest(arguments), ct);
+
+    /// <summary>
+    /// Fetches and verifies an invoice for a BOLT 12 offer without paying it (ClientCommand 30, provisional).
+    /// </summary>
+    /// <param name="arguments">The parsed <c>fetchinvoice</c> arguments (the payment limits are ignored).</param>
+    /// <param name="ct">Cancels the call.</param>
+    public Task<FetchInvoiceIpcResponse> FetchInvoiceAsync(PayOfferArguments arguments,
+                                                           CancellationToken ct = default) =>
+        SendRequestAsync<PayOfferIpcRequest, FetchInvoiceIpcResponse>(ClientCommand.FetchInvoice, ToRequest(arguments),
+                                                                      ct);
+
+    private static PayOfferIpcRequest ToRequest(PayOfferArguments arguments) => new()
+    {
+        Offer = arguments.Offer,
+        Amount = arguments.AmountMsat is { } amount ? LightningMoney.MilliSatoshis(amount) : null,
+        Quantity = arguments.Quantity,
+        PayerNote = arguments.PayerNote,
+        TimeoutSeconds = arguments.TimeoutSeconds,
+        MaxFee = arguments.MaxFeeMsat is { } fee ? LightningMoney.MilliSatoshis(fee) : null,
+        MaxParts = arguments.MaxParts
+    };
+
+    /// <summary>
     /// Lists the on-chain resolution of closed channels (ClientCommand 15).
     /// </summary>
     /// <param name="channelId">Only this channel, when set.</param>
