@@ -186,6 +186,37 @@ public class BitcoinChainService : IBitcoinChainService
             ?? throw new InvalidOperationException($"getblockheader {blockHash} returned no height");
     }
 
+    public async Task<(uint256 MerkleRoot, int TxCount)?> GetBlockHeaderSummaryAsync(uint256 blockHash)
+    {
+        try
+        {
+            var response = await _rpcClient.SendCommandAsync("getblockheader", blockHash.ToString(), true);
+            return ParseBlockHeaderSummary(response.Result);
+        }
+        catch (RPCException ex) when (ex.RPCCode == RPCErrorCode.RPC_INVALID_ADDRESS_OR_KEY)
+        {
+            return null; // "Block not found"
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get the header of block {BlockHash}", blockHash);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// <c>merkleroot</c> and <c>nTx</c> of a <c>getblockheader &lt;hash&gt; true</c> answer (<c>nTx</c> missing = 0,
+    /// unknown).
+    /// </summary>
+    internal static (uint256 MerkleRoot, int TxCount) ParseBlockHeaderSummary(JToken? result)
+    {
+        if (result?["merkleroot"]?.Value<string>() is not { } merkleRoot)
+            throw new InvalidOperationException("getblockheader returned no merkleroot");
+
+        var txCount = result["nTx"]?.Value<int>() ?? 0;
+        return (uint256.Parse(merkleRoot), txCount);
+    }
+
     public async Task<(uint256 BlockHash, IReadOnlyList<uint256> TxIds)?> GetBlockTxIdsAsync(uint height)
     {
         uint256 blockHash;
