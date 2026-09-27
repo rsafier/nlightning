@@ -57,6 +57,12 @@ public static class ClientUtils
         Console.WriteLine("                               Show the gossip graph's counts, memory, queues and sync");
         Console.WriteLine("                               peers (alias: describe-graph), with a page of channels");
         Console.WriteLine("                               and/or nodes [limit 1-1000, default 100]");
+        Console.WriteLine("  exportchanbackup [channel_id] [--output <file>]");
+        Console.WriteLine("                               Export the static channel backup, encrypted to the node");
+        Console.WriteLine("                               key (alias: export-chan-backup); hex without --output");
+        Console.WriteLine("  verifychanbackup <file> | verifychanbackup --hex <backup_hex>");
+        Console.WriteLine("                               Check a channel backup against this node's key and chain");
+        Console.WriteLine("                               (alias: verify-chan-backup); exit code 1 if invalid");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

@@ -13,6 +13,8 @@ public class ClientCommandTests
         Assert.Equal(10, (int)ClientCommand.PayInvoice);
         Assert.Equal(11, (int)ClientCommand.ListInvoices);
         Assert.Equal(12, (int)ClientCommand.ListPayments);
+        Assert.Equal(21, (int)ClientCommand.ExportChanBackup);
+        Assert.Equal(22, (int)ClientCommand.VerifyChanBackup);
         Assert.Equal(Enum.GetValues<ClientCommand>().Length, Enum.GetValues<ClientCommand>().Distinct().Count());
     }
 }
