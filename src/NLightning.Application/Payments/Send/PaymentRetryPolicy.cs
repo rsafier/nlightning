@@ -32,7 +32,8 @@ using Routing;
 ///   (and uses the update); every other channel failure (PERM ones, <c>unknown_next_peer</c>,
 ///   <c>channel_disabled</c>, BADONION from downstream) avoids the channel.</item>
 ///   <item>An error no hop authenticated, or <c>update_fail_malformed_htlc</c> from our peer: our channel of that part is
-///   avoided. An HTLC timed out on chain: that channel is closed and avoided.</item>
+///   avoided, unless our peer is a blinded hop of a path we introduced (B12-PAY-02): then that path is avoided. An
+///   HTLC timed out on chain: that channel is closed and avoided.</item>
 /// </list>
 /// <para>Beyond the payment (BOLT 7 plan G4-T2, G3-T5): every attributed failure is also handed to
 /// <see cref="MissionControl"/>, so later payments and this payment's later rounds avoid the failed edge or node for a
@@ -77,6 +78,11 @@ internal sealed class PaymentRetryPolicy
 
         switch (removalKind)
         {
+            case HtlcRemovalKind.FailMalformed when part.Route is { BlindedStartIndex: 0, BlindedPathIndex: { } path }:
+                // Our peer is a blinded hop of a path we introduced (B12-PAY-02): BOLT 4 has it answer every failure
+                // with update_fail_malformed_htlc (invalid_onion_blinding), so the path failed, not our channel
+                constraints.ExcludedBlindedPaths.Add(path);
+                return (true, $"blinded path {path} failed at our peer and is avoided");
             case HtlcRemovalKind.FailMalformed:
                 constraints.ExcludedLocalChannels.Add(part.Channel.ChannelId);
                 return (true, $"our channel {part.Channel.ShortChannelId} is avoided");

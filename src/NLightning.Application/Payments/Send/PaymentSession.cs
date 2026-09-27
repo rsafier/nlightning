@@ -3,6 +3,7 @@ namespace NLightning.Application.Payments.Send;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
+using Domain.Offers.Models;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Models;
@@ -33,6 +34,11 @@ internal sealed class PaymentSession
     /// The recipient's blinded paths for a payment sent through one (ONION M5); null for an invoice payment.
     /// </summary>
     public IReadOnlyList<BlindedPaymentPath>? BlindedPaths { get; init; }
+
+    /// <summary>
+    /// The BOLT 12 offer and invoice the payment is for, stored with every row of the payment; null otherwise.
+    /// </summary>
+    public Bolt12PaymentDetails? Bolt12 { get; init; }
 
     public string? Bolt11 { get; }
     public Hash PaymentHash => Target.PaymentHash;

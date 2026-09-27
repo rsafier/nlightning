@@ -63,6 +63,12 @@ public sealed class PaymentRoute
     public int? BlindedStartIndex { get; }
 
     /// <summary>
+    /// The path_key of our <c>update_add_htlc</c> (<c>BlindedPathTlv</c>), when the route starts inside a blinded path
+    /// whose introduction node was this node; null otherwise.
+    /// </summary>
+    public CompactPubKey? FirstHopPathKey { get; }
+
+    /// <summary>
     /// Which of the payment's blinded paths the route ends in (an index into the request's paths), or null.
     /// </summary>
     public int? BlindedPathIndex { get; init; }
@@ -81,9 +87,12 @@ public sealed class PaymentRoute
     /// <param name="paymentMetadata">The invoice's payment metadata, if any.</param>
     /// <param name="totalAmount">The whole payment's amount for a part of a multi-part payment; null (or the payee's
     /// amount) for a payment in one HTLC. Never below what the payee receives on this route.</param>
+    /// <param name="firstHopPathKey">The route-blinding path_key our <c>update_add_htlc</c> carries, when our peer is
+    /// a blinded hop that is not the introduction node: we were the introduction node of the path and unblinded our
+    /// own hop (BOLT 12 plan B12-PAY-02). The first hop then has no <c>current_path_key</c>.</param>
     public PaymentRoute(IReadOnlyList<RouteHop> hops, LightningMoney firstHopAmount, uint firstHopCltvExpiry,
                         Hash paymentHash, Secret paymentSecret, ReadOnlyMemory<byte>? paymentMetadata = null,
-                        LightningMoney? totalAmount = null)
+                        LightningMoney? totalAmount = null, CompactPubKey? firstHopPathKey = null)
     {
         ArgumentNullException.ThrowIfNull(hops);
         ArgumentNullException.ThrowIfNull(firstHopAmount);
@@ -106,7 +115,10 @@ public sealed class PaymentRoute
                                             nameof(hops));
         }
 
-        if (blindedStart >= 0 && hops[blindedStart].CurrentPathKey is null)
+        if (firstHopPathKey is not null && (blindedStart != 0 || hops[0].CurrentPathKey is not null))
+            throw new ArgumentException("A path_key in update_add_htlc needs a first hop that is a blinded hop "
+                                      + "without current_path_key.", nameof(firstHopPathKey));
+        if (blindedStart >= 0 && firstHopPathKey is null && hops[blindedStart].CurrentPathKey is null)
             throw new ArgumentException("The introduction node of a blinded path gets current_path_key.",
                                         nameof(hops));
         if (firstHopAmount < hops[^1].AmountToForward)
@@ -118,6 +130,7 @@ public sealed class PaymentRoute
                                         nameof(totalAmount));
 
         Hops = hops;
+        FirstHopPathKey = firstHopPathKey;
         BlindedStartIndex = blindedStart >= 0 ? blindedStart : null;
         FirstHopAmount = firstHopAmount;
         TotalAmount = totalAmount ?? hops[^1].AmountToForward;
