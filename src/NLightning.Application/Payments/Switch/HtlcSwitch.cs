@@ -29,6 +29,7 @@ using Domain.Protocol.Onion.Extensions;
 using Domain.Protocol.Onion.Factories;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.Tlv;
 using FinalHop;
 using Gossip.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -299,7 +300,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         OnionReplayOwner? replayOwner =
             storedSecret is null ? new OnionReplayOwner(channelId, htlcId, htlc.CltvExpiry) : null;
         var result = await _onionProcessor.ProcessAsync(htlc.OnionRoutingPacket, htlc.PaymentHash, replayOwner,
-                                                        htlc.PathKey);
+                                                        htlc.PathKey, LightningMoney.MilliSatoshis(htlc.AmountMsat),
+                                                        htlc.CltvExpiry);
 
         // A channel that can no longer carry an update (failed, or its commitment is on chain): its HTLC can only be
         // claimed on chain, and only as our final hop (NL-316, B5-LCL-RO-02). Nothing is forwarded from it, and a
@@ -394,7 +396,8 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             var committed = current.KnownPreimage is { } known && invoice is { Status: InvoiceStatus.Settled }
                          && known == invoice.Preimage;
             decision = _finalHopProcessor.Evaluate(invoice, htlc.PaymentHash, amount, htlc.CltvExpiry,
-                                                   final.Payload, height, _acceptMultiPart, committed);
+                                                   final.Payload, height, _acceptMultiPart, committed,
+                                                   final.Blinded?.RecipientData);
         }
 
         if (decision.InvoiceAlreadySettled)
@@ -887,25 +890,39 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                     CancellationToken cancellationToken)
     {
         var height = CurrentHeight;
+        var introduction = forward.Blinded?.IsIntroduction ?? false;
         if (height == 0)
         {
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret, FailureMessage.TemporaryNodeFailure(),
-                                cancellationToken);
+                                cancellationToken, introduction);
             return;
         }
 
-        var requestedScid = forward.OutgoingShortChannelId;
-        var outgoing = ResolveOutgoingChannel(requestedScid);
+        // Inside a blinded route the recipient names the next hop by short_channel_id or by next_node_id (M5)
+        ChannelModel? outgoing;
+        ShortChannelId requestedScid;
+        if (forward.HasOutgoingShortChannelId)
+        {
+            requestedScid = forward.OutgoingShortChannelId;
+            outgoing = ResolveOutgoingChannel(requestedScid);
+        }
+        else
+        {
+            outgoing = ResolveOutgoingChannel(forward.NextNodeId!.Value);
+            requestedScid = outgoing is null ? default : ScidOf(outgoing);
+        }
+
         var outgoingInfo = outgoing is null ? null : await DescribeAsync(outgoing, cancellationToken);
         var incomingAmount = LightningMoney.MilliSatoshis(htlc.AmountMsat);
         var decision = _forwardingPolicy.Evaluate(new ForwardingRequest(incomingAmount, htlc.CltvExpiry,
                                                                         forward.AmountToForward,
                                                                         forward.OutgoingCltvValue, height,
-                                                                        outgoingInfo));
+                                                                        outgoingInfo,
+                                                                        forward.Blinded?.RecipientData.PaymentRelay));
         if (!decision.IsForward)
         {
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
-                                ToFailureMessage(decision, outgoing, requestedScid), cancellationToken);
+                                ToFailureMessage(decision, outgoing, requestedScid), cancellationToken, introduction);
             return;
         }
 
@@ -924,9 +941,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
         ulong outgoingHtlcId;
         try
         {
+            // Inside a blinded route the next hop gets the next path_key in update_add_htlc (BOLT 2, BOLT 4 M5)
+            var nextPathKey = forward.Blinded is { } blinded ? new BlindedPathTlv(blinded.NextPathKey) : null;
             outgoingHtlcId = await _channelOperations.OfferHtlcAsync(
                 outgoingChannel.ChannelId, forward.AmountToForward, htlc.PaymentHash, forward.OutgoingCltvValue,
-                forward.NextPacket, null, HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), cancellationToken);
+                forward.NextPacket, nextPathKey, HtlcOrigin.Forwarded(incomingChannelId, htlc.Id), cancellationToken);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
@@ -952,7 +971,7 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                      c => c.MarkFailed(_timeProvider.GetUtcNow()));
             await FailBackAsync(incomingChannelId, htlc, forward.SharedSecret,
                                 FailureMessage.TemporaryChannelFailure(UpdateFor(outgoingChannel, requestedScid)),
-                                cancellationToken);
+                                cancellationToken, introduction);
             return;
         }
 
@@ -1141,9 +1160,11 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     }
 
     private async Task FailBackAsync(ChannelId channelId, HtlcRecord htlc, Secret sharedSecret,
-                                     FailureMessage failure, CancellationToken cancellationToken)
+                                     FailureMessage failure, CancellationToken cancellationToken,
+                                     bool? blindedIntroduction = null)
     {
-        await SendFailureAsync(channelId, htlc.Id, htlc, sharedSecret, failure, cancellationToken);
+        await SendFailureAsync(channelId, htlc.Id, htlc, sharedSecret, failure, cancellationToken,
+                               blindedIntroduction);
         LogFailedBack(channelId, htlc, failure.Code.ToString());
     }
 
@@ -1242,7 +1263,13 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     private async Task FailForwardLockedAsync(ChannelId incomingChannelId, ulong incomingHtlcId,
                                               OutgoingHtlcFailed failed, CancellationToken cancellationToken)
     {
-        if (GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId) is { } incoming)
+        var awaiting = GetAwaitingIncomingHtlc(incomingChannelId, incomingHtlcId);
+        if (awaiting is not null && await FailBlindedUpstreamAsync(incomingChannelId, awaiting, failed,
+                                                                   cancellationToken))
+        {
+            // Inside a blinded route the downstream error is never relayed (BOLT 2, BOLT 4 M5)
+        }
+        else if (awaiting is { } incoming)
         {
             var sharedSecret = await GetIncomingSharedSecretAsync(incomingChannelId, incoming);
             var attributed = sharedSecret is not null && AddsAttribution(incoming);
@@ -1467,8 +1494,22 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
     /// time when <see cref="AddsAttribution"/>.
     /// </summary>
     private async Task SendFailureAsync(ChannelId channelId, ulong htlcId, HtlcRecord? incoming, Secret sharedSecret,
-                                        FailureMessage failure, CancellationToken cancellationToken)
+                                        FailureMessage failure, CancellationToken cancellationToken,
+                                        bool? blindedIntroduction = null)
     {
+        // Inside a blinded route (M5): a node that got the path_key in update_add_htlc fails every HTLC with
+        // update_fail_malformed_htlc + invalid_onion_blinding; the introduction node, when it is not the final node,
+        // with update_fail_htlc + invalid_onion_blinding (BOLT 2 "Removing an HTLC", BOLT 4 "Returning Errors")
+        if (incoming is { PathKey: not null })
+        {
+            await _channelOperations.FailMalformedHtlcAsync(channelId, htlcId, FailureCode.InvalidOnionBlinding,
+                                                            Sha256Of(incoming.OnionRoutingPacket), cancellationToken);
+            return;
+        }
+
+        if (incoming is not null && (blindedIntroduction ?? await IsBlindedIntroductionForwardAsync(incoming)))
+            failure = FailureMessage.InvalidOnionBlinding(Sha256Of(incoming.OnionRoutingPacket));
+
         if (AddsAttribution(incoming))
         {
             var holdTime = await _channelOperations.GetHoldTimeAsync(channelId, htlcId, cancellationToken);
@@ -1505,6 +1546,61 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
             await _channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage, cancellationToken);
         else
             await _channelOperations.FulfillHtlcAsync(channelId, htlcId, preimage, stage, cancellationToken);
+    }
+
+    /// <summary>
+    /// A downstream failure of a forward inside a blinded route (M5): never relayed. With a path_key in the incoming
+    /// <c>update_add_htlc</c> we send <c>update_fail_malformed_htlc</c> + <c>invalid_onion_blinding</c>; as the
+    /// introduction node our own <c>invalid_onion_blinding</c> in <c>update_fail_htlc</c>. False when the incoming HTLC
+    /// is not blinded (the caller relays the failure as usual).
+    /// </summary>
+    private async Task<bool> FailBlindedUpstreamAsync(ChannelId incomingChannelId, HtlcRecord incoming,
+                                                      OutgoingHtlcFailed failed, CancellationToken cancellationToken)
+    {
+        if (incoming.PathKey is null && !await IsBlindedIntroductionForwardAsync(incoming))
+            return false;
+
+        try
+        {
+            if (incoming.PathKey is null
+             && await GetIncomingSharedSecretAsync(incomingChannelId, incoming) is { } sharedSecret)
+                await SendFailureAsync(incomingChannelId, incoming.Id, incoming, sharedSecret,
+                                       FailureMessage.InvalidOnionBlinding(Sha256Of(incoming.OnionRoutingPacket)),
+                                       cancellationToken, blindedIntroduction: true);
+            else
+                await _channelOperations.FailMalformedHtlcAsync(incomingChannelId, incoming.Id,
+                                                                FailureCode.InvalidOnionBlinding,
+                                                                Sha256Of(incoming.OnionRoutingPacket),
+                                                                cancellationToken);
+
+            LogFailedBack(incomingChannelId, incoming,
+                          $"downstream {failed.Removal.Kind} on channel {failed.ChannelId} inside a blinded route");
+        }
+        catch (Exception e) when (e is CommitmentRefusedException or KeyNotFoundException)
+        {
+            // The outgoing record is kept until the upstream is resolved: the replayed lock-in fails from it
+            _logger.LogWarning("Could not fail upstream HTLC {HtlcId} of channel {ChannelId} yet: {Reason}",
+                               incoming.Id, incomingChannelId, e.Message);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="incoming"/> came to us as the introduction node of a blinded route and we are not its
+    /// final node: its <c>update_add_htlc</c> had no path_key and its payload a <c>current_path_key</c>. Peels the onion
+    /// again (no replay check), only when we read blinded payloads at all.
+    /// </summary>
+    private async Task<bool> IsBlindedIntroductionForwardAsync(HtlcRecord incoming)
+    {
+        if (!_onionProcessor.ReadsBlindedPayloads || incoming.PathKey is not null
+                                                  || incoming.OnionRoutingPacket.IsEmpty)
+            return false;
+
+        var result = await _onionProcessor.ProcessAsync(incoming.OnionRoutingPacket, incoming.PaymentHash,
+                                                        replayOwner: null);
+        return result is IncomingOnionForward { Blinded.IsIntroduction: true }
+            || result is IncomingOnionFailed { Failure.Code: FailureCode.InvalidOnionBlinding };
     }
 
     private async Task<Secret?> GetIncomingSharedSecretAsync(ChannelId incomingChannelId, HtlcRecord incoming)
@@ -1589,6 +1685,20 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
                                                   && c.ShortChannelId != default
                                                   && c.ShortChannelId == shortChannelId)))
                                 .FirstOrDefault();
+
+    /// <summary>
+    /// Inside a blinded route (M5), an open channel to <paramref name="nextNodeId"/> (the recipient data's
+    /// <c>next_node_id</c>); non-strict forwarding lets us pick any of them (BOLT 4).
+    /// </summary>
+    private ChannelModel? ResolveOutgoingChannel(CompactPubKey nextNodeId) =>
+        _channelMemoryRepository.FindChannels(c => c.State == ChannelState.Open && c.RemoteNodeId == nextNodeId)
+                                .FirstOrDefault(c => c.ShortChannelId != default || c.LocalAliases?.Count > 0);
+
+    /// <summary>The short_channel_id a forward over <paramref name="channel"/> is recorded under.</summary>
+    private static ShortChannelId ScidOf(ChannelModel channel) =>
+        channel.ShortChannelId != default && channel.ChannelParams.UseScidAlias != FeatureSupport.Compulsory
+            ? channel.ShortChannelId
+            : channel.LocalAliases!.First();
 
     /// <summary>A snapshot of the outgoing channel for the policy (the engine checks the offer again).</summary>
     private async Task<OutgoingChannelInfo> DescribeAsync(ChannelModel channel, CancellationToken cancellationToken)

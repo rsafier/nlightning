@@ -75,10 +75,14 @@ public sealed class FinalHopProcessor
     /// payment (<c>total_msat</c> &gt; <c>amt_to_forward</c>).</param>
     /// <param name="committedSetMember">The HTLC carries the invoice's preimage in its record: it is a part of a set the
     /// switch already committed to fulfill (see the class remarks).</param>
+    /// <param name="blindedRecipientData">At the end of a blinded route (ONION M5), our own decrypted
+    /// <c>encrypted_recipient_data</c>: its <c>path_id</c> must be the invoice's (<see cref="BlindedPathId"/>) and
+    /// replaces the <c>payment_secret</c> check, and <c>total_amount_msat</c> replaces <c>payment_data</c>.</param>
     public async Task<FinalHopResult> ProcessAsync(IInvoiceDbRepository invoices, Hash paymentHash,
                                                    LightningMoney htlcAmount, uint htlcCltvExpiry,
                                                    HopPayload payload, uint currentBlockHeight,
-                                                   bool acceptMultiPart = false, bool committedSetMember = false)
+                                                   bool acceptMultiPart = false, bool committedSetMember = false,
+                                                   BlindedRecipientData? blindedRecipientData = null)
     {
         ArgumentNullException.ThrowIfNull(invoices);
 
@@ -88,7 +92,7 @@ public sealed class FinalHopProcessor
 
         var invoice = await invoices.GetByPaymentHashAsync(paymentHash);
         return Evaluate(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                        acceptMultiPart, committedSetMember);
+                        acceptMultiPart, committedSetMember, blindedRecipientData);
     }
 
     /// <summary>
@@ -97,14 +101,15 @@ public sealed class FinalHopProcessor
     /// <inheritdoc cref="ProcessAsync" path="/param"/>
     public FinalHopResult Evaluate(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                    uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
-                                   bool acceptMultiPart = false, bool committedSetMember = false)
+                                   bool acceptMultiPart = false, bool committedSetMember = false,
+                                   BlindedRecipientData? blindedRecipientData = null)
     {
         ArgumentNullException.ThrowIfNull(htlcAmount);
         ArgumentNullException.ThrowIfNull(payload);
 
         var result = CheckHtlcAgainstOnion(htlcAmount, htlcCltvExpiry, payload)
                   ?? CheckInvoice(invoice, paymentHash, htlcAmount, htlcCltvExpiry, payload, currentBlockHeight,
-                                 acceptMultiPart, committedSetMember);
+                                 acceptMultiPart, committedSetMember, blindedRecipientData);
 
         return Log(paymentHash, result);
     }
@@ -127,14 +132,34 @@ public sealed class FinalHopProcessor
 
     private FinalHopResult CheckInvoice(InvoiceModel? invoice, Hash paymentHash, LightningMoney htlcAmount,
                                         uint htlcCltvExpiry, HopPayload payload, uint currentBlockHeight,
-                                        bool acceptMultiPart, bool committedSetMember)
+                                        bool acceptMultiPart, bool committedSetMember,
+                                        BlindedRecipientData? blindedRecipientData)
     {
         FinalHopResult Unknown(string reason) =>
             FinalHopResult.Fail(FailureMessage.IncorrectOrUnknownPaymentDetails(htlcAmount, currentBlockHeight),
                                 reason);
 
-        if (payload.PaymentData is not { } paymentData)
+        // At the end of a blinded route total_amount_msat carries the total and our path_id authenticates the route;
+        // elsewhere payment_data carries both the total and the payment_secret
+        LightningMoney totalMsat;
+        if (payload.IsBlinded)
+        {
+            if (blindedRecipientData is null)
+                return Unknown("The blinded final payload comes without its encrypted_recipient_data.");
+
+            if (payload.TotalAmountMsat is not { } blindedTotal)
+                return Unknown("The blinded final payload has no total_amount_msat.");
+
+            totalMsat = blindedTotal;
+        }
+        else if (payload.PaymentData is { } data)
+        {
+            totalMsat = data.TotalMsat;
+        }
+        else
+        {
             return Unknown("The final payload has no payment_data.");
+        }
 
         if (payload.AmtToForward is not { } amtToForward)
             return Unknown("The final payload has no amt_to_forward.");
@@ -146,7 +171,6 @@ public sealed class FinalHopProcessor
         // skips no check
         committedSetMember &= invoice.Status == InvoiceStatus.Settled;
 
-        var totalMsat = paymentData.TotalMsat;
         var isMultiPart = totalMsat.MilliSatoshi != amtToForward.MilliSatoshi;
         var alreadySettled = false;
         switch (invoice.Status)
@@ -168,8 +192,16 @@ public sealed class FinalHopProcessor
         if (!committedSetMember && invoice.IsExpired(_timeProvider.GetUtcNow()))
             return Unknown("The invoice is expired.");
 
-        if (!paymentData.PaymentSecret.Equals(invoice.PaymentSecret))
+        if (payload.IsBlinded)
+        {
+            // BOLT 4: the recipient MUST ignore a blinded payment whose path_id is not the one it created
+            if (blindedRecipientData!.PathId is not { } pathId || !BlindedPathId.Matches(pathId.Span, invoice.Preimage))
+                return Unknown("The blinded route's path_id is not the invoice's.");
+        }
+        else if (!payload.PaymentData!.PaymentSecret.Equals(invoice.PaymentSecret))
+        {
             return Unknown("The payment_secret does not match.");
+        }
 
         // Without basic_mpp, total_msat must be exactly amt_to_forward (BOLT 4)
         if (isMultiPart && !acceptMultiPart)

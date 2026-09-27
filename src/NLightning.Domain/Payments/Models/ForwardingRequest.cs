@@ -1,6 +1,7 @@
 namespace NLightning.Domain.Payments.Models;
 
 using Money;
+using Protocol.Onion.Models;
 
 /// <summary>
 /// Everything <c>IForwardingPolicy</c> needs to decide whether to forward a locked-in incoming HTLC whose onion names a
@@ -13,10 +14,14 @@ using Money;
 /// <param name="CurrentBlockHeight">Our current chain tip.</param>
 /// <param name="OutgoingChannel">The channel the onion's <c>short_channel_id</c> resolves to, or null when it is
 /// unknown (<c>unknown_next_peer</c>).</param>
+/// <param name="BlindedRelay">Inside a blinded route (ONION M5), the recipient's <c>payment_relay</c> for us:
+/// <see cref="AmountToForward"/> and <see cref="OutgoingCltvValue"/> were computed from it, so the fee check compares
+/// it with our policy instead of the amounts (its rounding may leave the amounts a msat short of our fee).</param>
 public sealed record ForwardingRequest(
     LightningMoney IncomingAmount,
     uint IncomingCltvExpiry,
     LightningMoney AmountToForward,
     uint OutgoingCltvValue,
     uint CurrentBlockHeight,
-    OutgoingChannelInfo? OutgoingChannel);
+    OutgoingChannelInfo? OutgoingChannel,
+    BlindedPaymentRelay? BlindedRelay = null);

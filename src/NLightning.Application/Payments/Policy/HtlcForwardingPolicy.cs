@@ -15,7 +15,8 @@ using Domain.Protocol.Onion.Enums;
 /// <para>The checks and their order are the ones documented on <see cref="IForwardingPolicy"/> (BOLT 4 "Failure
 /// Messages", forwarding node): unknown channel → <c>unknown_next_peer</c>; unusable channel →
 /// <c>temporary_channel_failure</c>; below the channel's or our <c>htlc_minimum_msat</c> →
-/// <c>amount_below_minimum</c>; fee below the BOLT 7 formula (<see cref="ForwardingFee"/>) → <c>fee_insufficient</c>;
+/// <c>amount_below_minimum</c>; fee below the BOLT 7 formula (<see cref="ForwardingFee"/>), or inside a blinded route a
+/// <c>payment_relay</c> below our fee base or rate → <c>fee_insufficient</c>;
 /// <c>cltv_expiry - cltv_expiry_delta &lt; outgoing_cltv_value</c> → <c>incorrect_cltv_expiry</c>;
 /// <c>outgoing_cltv_value &lt;= height + ExpiryTooSoonBlocks</c> → <c>expiry_too_soon</c>;
 /// <c>cltv_expiry &gt; height + MaxCltvExpiryDistance</c> → <c>expiry_too_far</c>; above our
@@ -51,9 +52,18 @@ public sealed class HtlcForwardingPolicy : IForwardingPolicy
             return ForwardingDecision.AmountBelowMinimum(amountToForwardMsat);
 
         var incomingAmountMsat = request.IncomingAmount.MilliSatoshi;
-        if (!ForwardingFee.PaysSufficientFee(routing.FeeBaseMsat, routing.FeeProportionalMillionths,
-                                             incomingAmountMsat, amountToForwardMsat))
+        if (request.BlindedRelay is { } relay)
+        {
+            // Inside a blinded route the recipient set our fee (BOLT 4 payment_relay): it must be at least our policy
+            if (relay.FeeBaseMsat < routing.FeeBaseMsat
+             || relay.FeeProportionalMillionths < routing.FeeProportionalMillionths)
+                return ForwardingDecision.FeeInsufficient(incomingAmountMsat);
+        }
+        else if (!ForwardingFee.PaysSufficientFee(routing.FeeBaseMsat, routing.FeeProportionalMillionths,
+                                                  incomingAmountMsat, amountToForwardMsat))
+        {
             return ForwardingDecision.FeeInsufficient(incomingAmountMsat);
+        }
 
         // cltv_expiry - cltv_expiry_delta >= outgoing_cltv_value, without underflow
         if ((ulong)request.IncomingCltvExpiry < (ulong)request.OutgoingCltvValue + routing.CltvExpiryDelta)
