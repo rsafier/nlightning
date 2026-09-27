@@ -427,6 +427,25 @@ public class InteractiveTxRulesTests
         Assert.Equal("SP-TX-05", violation?.RequirementId);
     }
 
+    [Fact]
+    public void Given_SpliceWithTheFundingOutpointAsAPlainInput_When_CheckingTxComplete_Then_SpTx01()
+    {
+        // Arrange
+        // (BOLT 2 splicing: the initiator "MUST add the current channel input to the splice transaction by sending
+        // tx_add_input with shared_input_txid"; the funding outpoint added with a prevtx is not the shared input)
+        var spec = Splice(false);
+        var plain = new InteractiveTxInput(0, InteractiveTxParty.Remote, FundingTxId, 1, Sequence,
+                                           LightningMoney.Satoshis(1_000_000), FundingScript, PrevTx(9), false);
+        var funding = new InteractiveTxOutput(2, InteractiveTxParty.Remote, spec.SharedOutputAmount, FundingScript,
+                                              true);
+
+        // Act
+        var violation = InteractiveTxRules.CheckTxComplete([plain], [funding], spec);
+
+        // Assert
+        Assert.Equal("SP-TX-01", violation?.RequirementId);
+    }
+
     [Theory]
     [InlineData(0, 1_000_000, "SP-TX-05")]
     [InlineData(2, 1_000_000, "SP-TX-05")]

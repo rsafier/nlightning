@@ -115,13 +115,18 @@ public static class InteractiveTxRbfRules
     }
 
     /// <summary>
-    /// The checks at <c>tx_complete</c> of an RBF attempt: the peer met its double-spend duty, and the transaction
-    /// double-spends every previous attempt. Null without previous attempts.
+    /// The check at <c>tx_complete</c> of an RBF attempt: the transaction double-spends every previous attempt
+    /// (<see cref="CheckDoubleSpendsAllAttempts"/>). Null without previous attempts.
     /// </summary>
     /// <remarks>
-    /// With a shared input (a splice) only the whole-transaction check runs: every attempt spends the same funding
-    /// output, so the attempts double-spend each other whatever each side adds (BOLT 2 splicing rationale), and a peer
-    /// that drops its wallet inputs from an RBF (for example to turn a splice-in into a splice-out) is not refused.
+    /// <para>BOLT 2 states the per-side duty ("If it contributed to previous transactions: MUST ensure that the new
+    /// transaction double-spends all other attempts") only for the sender, and advises a peer facing a large feerate
+    /// change to "stop contributing to the funding output, and decline to participate further in the transaction". So
+    /// the receiver checks only what protects it: that no two attempts can both confirm. A peer that drops its inputs
+    /// from an RBF is accepted as long as the whole transaction still conflicts with every attempt (Eclair does the
+    /// same). <see cref="CheckPartyDoubleSpends"/> stays the sender-side check of our own contribution.</para>
+    /// <para>With a shared input (a splice) every attempt spends the same funding output, so the attempts double-spend
+    /// each other whatever each side adds (BOLT 2 splicing rationale).</para>
     /// </remarks>
     public static InteractiveTxRuleViolation? CheckTxComplete(IReadOnlyList<InteractiveTxInput> inputs,
                                                               IReadOnlyList<ConstructedInteractiveTx> previousAttempts)
@@ -129,18 +134,7 @@ public static class InteractiveTxRbfRules
         ArgumentNullException.ThrowIfNull(inputs);
         ArgumentNullException.ThrowIfNull(previousAttempts);
 
-        if (previousAttempts.Count == 0)
-            return null;
-
-        if (inputs.Any(i => i.IsShared))
-            return CheckDoubleSpendsAllAttempts(inputs, previousAttempts);
-
-        var remoteOutpoints = inputs.Where(i => !i.IsShared && i.AddedBy == InteractiveTxParty.Remote)
-                                    .Select(i => (i.PrevTxId, i.PrevTxVout))
-                                    .ToHashSet();
-
-        return CheckPartyDoubleSpends(remoteOutpoints, InteractiveTxParty.Remote, previousAttempts)
-               ?? CheckDoubleSpendsAllAttempts(inputs, previousAttempts);
+        return previousAttempts.Count == 0 ? null : CheckDoubleSpendsAllAttempts(inputs, previousAttempts);
     }
 
     private static string Describe(InteractiveTxParty party) => party == InteractiveTxParty.Local ? "local side" : "peer";

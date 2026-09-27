@@ -32,11 +32,13 @@ using Tlv;
 /// spent (<see cref="MustBeRemembered"/>).</para>
 /// <para>At <c>tx_complete</c> it also applies the feerate, common-fields and weight checks of IT-R-04
 /// (<see cref="CollaborativeFeeCalculator"/>) and, for an RBF, the double-spend rule of IT-RBF-01 over
-/// <see cref="InteractiveTxSessionParameters.PreviousAttempts"/> (<see cref="InteractiveTxRbfRules"/>; <see cref="Create"/>
+/// <see cref="InteractiveTxSessionParameters.PreviousAttempts"/> (<see cref="InteractiveTxRbfRules"/>; <see cref="Create(InteractiveTxSessionParameters)"/>
 /// refuses a contribution of ours that breaks it). The RBF feerate rule is checked on <c>tx_init_rbf</c>, before the
-/// session exists (<see cref="InteractiveTxRbfRules.CheckFeerate"/>). Our <c>serial_id</c>s are
-/// deterministic (initiator 0, 2, 4, ...; non-initiator 1, 3, 5, ...) in the order of
-/// <see cref="InteractiveTxSessionParameters.LocalContribution"/>, the shared input and output first.</para>
+/// session exists (<see cref="InteractiveTxRbfRules.CheckFeerate"/>). Our <c>serial_id</c>s are random 64-bit numbers
+/// of our parity (even as initiator, odd otherwise; BOLT 2: "<c>serial_id</c> is a randomly chosen number"), so the
+/// order of the final transaction (by <c>serial_id</c>) does not tell which side added which input or output. They are
+/// sent in the order of <see cref="InteractiveTxSessionParameters.LocalContribution"/>, the shared input and output
+/// first.</para>
 /// <para>Immutable: every step returns the next session in <see cref="InteractiveTxStepResult.Next"/>.</para>
 /// </remarks>
 public sealed class InteractiveTxSession
@@ -141,25 +143,37 @@ public sealed class InteractiveTxSession
     /// </summary>
     /// <exception cref="ArgumentException">The parameters are inconsistent (for example a contribution with a sequence
     /// above 0xFFFFFFFD, or a shared input without us being the initiator of a negotiation that has one).</exception>
-    public static InteractiveTxSession Create(InteractiveTxSessionParameters parameters)
+    public static InteractiveTxSession Create(InteractiveTxSessionParameters parameters) =>
+        Create(parameters, RandomSerialIdSource);
+
+    /// <summary>
+    /// <see cref="Create(InteractiveTxSessionParameters)"/> with the source of our <c>serial_id</c>s given: each
+    /// value drawn gets our parity (its lowest bit set to 1 for the non-initiator, 0 for the initiator) and a value
+    /// already used is drawn again. For tests that need predictable serial ids.
+    /// </summary>
+    /// <param name="parameters">The negotiation's terms.</param>
+    /// <param name="serialIdSource">Returns 64-bit numbers; must not keep returning the same value.</param>
+    /// <exception cref="ArgumentException">The parameters are inconsistent.</exception>
+    public static InteractiveTxSession Create(InteractiveTxSessionParameters parameters, Func<ulong> serialIdSource)
     {
         ArgumentNullException.ThrowIfNull(parameters);
         ArgumentNullException.ThrowIfNull(parameters.LocalContribution);
+        ArgumentNullException.ThrowIfNull(serialIdSource);
 
         if (parameters.LocalNodeId == parameters.RemoteNodeId)
             throw new ArgumentException("Both sides have the same node id.", nameof(parameters));
 
         var local = InteractiveTxParty.Local;
-        var serialId = parameters.IsInitiator ? 0UL : 1UL;
+        var parity = parameters.IsInitiator ? 0UL : 1UL;
+        var usedSerialIds = new HashSet<ulong>();
         var items = new List<LocalItem>();
 
         var shared = parameters.SharedFunding;
         if (parameters.IsInitiator && shared?.SharedInput is { } sharedInput)
         {
-            items.Add(new LocalItem(new InteractiveTxInput(serialId, local, sharedInput.TxId, sharedInput.Vout,
+            items.Add(new LocalItem(new InteractiveTxInput(NextSerialId(), local, sharedInput.TxId, sharedInput.Vout,
                                                            SharedInputSequence, sharedInput.Amount,
                                                            sharedInput.ScriptPubKey, null, true), null));
-            serialId += 2;
         }
 
         foreach (var input in parameters.LocalContribution.Inputs)
@@ -173,24 +187,21 @@ public sealed class InteractiveTxSession
                 throw new ArgumentException($"Contributed input {input.PrevTxId}:{input.PrevTxVout} has no prevtx.",
                                             nameof(parameters));
 
-            items.Add(new LocalItem(new InteractiveTxInput(serialId, local, input.PrevTxId, input.PrevTxVout,
+            items.Add(new LocalItem(new InteractiveTxInput(NextSerialId(), local, input.PrevTxId, input.PrevTxVout,
                                                            input.Sequence, input.Amount, input.ScriptPubKey,
                                                            input.PrevTx, false), null));
-            serialId += 2;
         }
 
         if (parameters.IsInitiator && shared is not null)
         {
-            items.Add(new LocalItem(null, new InteractiveTxOutput(serialId, local, shared.SharedOutputAmount,
+            items.Add(new LocalItem(null, new InteractiveTxOutput(NextSerialId(), local, shared.SharedOutputAmount,
                                                                   shared.SharedOutputScript, true)));
-            serialId += 2;
         }
 
         foreach (var output in parameters.LocalContribution.Outputs)
         {
-            items.Add(new LocalItem(null, new InteractiveTxOutput(serialId, local, output.Amount, output.ScriptPubKey,
+            items.Add(new LocalItem(null, new InteractiveTxOutput(NextSerialId(), local, output.Amount, output.ScriptPubKey,
                                                                   false)));
-            serialId += 2;
         }
 
         // IT-RBF-01 (our side): "If it contributed to previous transactions: MUST ensure that the new transaction
@@ -207,6 +218,17 @@ public sealed class InteractiveTxSession
         }
 
         return new InteractiveTxSession(parameters, items);
+
+        ulong NextSerialId()
+        {
+            ulong value;
+            do
+            {
+                value = (serialIdSource() & ~1UL) | parity;
+            } while (!usedSerialIds.Add(value));
+
+            return value;
+        }
     }
 
     /// <summary>
@@ -314,6 +336,12 @@ public sealed class InteractiveTxSession
 
         if (message is TxSignaturesMessage txSignatures)
             return ReceiveTxSignatures(txSignatures);
+
+        // BOLT 2 tx_abort: "A sending node: MUST NOT have already transmitted tx_signatures", and a receiver that sent
+        // it "MUST NOT forget the channel until any inputs to the negotiated tx have been spent": a stray negotiation
+        // message after our tx_signatures is ignored, never answered with tx_abort.
+        if (MustBeRemembered)
+            return Unchanged("IT-ABT-01");
 
         if (State != InteractiveTxSessionState.Negotiating || IsNegotiationComplete)
             return Fail(new InteractiveTxRuleViolation("IT-S-02", $"{message.Type} after the negotiation completed"));
@@ -504,6 +532,14 @@ public sealed class InteractiveTxSession
             violation = InteractiveTxRules.CheckPrevTx(inspection, payload.PrevTxVout, IsOutpointAdded);
             if (violation is not null)
                 return Fail(violation);
+
+            // BOLT 2 splicing: the initiator "MUST add the current channel input to the splice transaction by sending
+            // tx_add_input with shared_input_txid [...] MUST NOT include prevtx for that shared input". The funding
+            // outpoint added with a prevtx would count as the peer's own funds and never get our shared signature.
+            if (Parameters.SharedFunding?.SharedInput is { } fundingInput && inspection.TxId == fundingInput.TxId
+                                                                          && payload.PrevTxVout == fundingInput.Vout)
+                return Fail(new InteractiveTxRuleViolation("SP-TX-01",
+                                                           "the current funding output added with a prevtx instead of shared_input_txid"));
 
             input = new InteractiveTxInput(payload.SerialId, InteractiveTxParty.Remote, inspection.TxId!.Value,
                                            payload.PrevTxVout, payload.Sequence, inspection.Amount!,
@@ -714,12 +750,23 @@ public sealed class InteractiveTxSession
 
     private InteractiveTxStepResult Fail(InteractiveTxRuleViolation violation)
     {
+        // IT-ABT-01: never tx_abort (nor forget the negotiation) once our tx_signatures went out.
+        if (MustBeRemembered)
+            return Unchanged(violation.RequirementId);
+
         var next = new InteractiveTxSession(this) { State = InteractiveTxSessionState.Aborted, IsOurTurn = false };
         return new InteractiveTxStepResult(next, [CreateAbort(violation.Reason)], false, violation.Reason,
                                            violation.RequirementId);
     }
 
     private InteractiveTxStepResult Unchanged(string? requirementId = null) => new(this, [], false, null, requirementId);
+
+    private static ulong RandomSerialIdSource()
+    {
+        Span<byte> bytes = stackalloc byte[sizeof(ulong)];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        return BitConverter.ToUInt64(bytes);
+    }
 
     #endregion
 
