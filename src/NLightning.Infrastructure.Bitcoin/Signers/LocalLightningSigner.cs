@@ -27,7 +27,7 @@ using Domain.Protocol.Models;
 using Domain.Protocol.ValueObjects;
 using Gossip;
 
-public class LocalLightningSigner : ILightningSigner
+public partial class LocalLightningSigner : ILightningSigner
 {
     private const int FundingDerivationIndex = 0; // m/0' is the funding key
     private const int RevocationDerivationIndex = 1; // m/1' is the revocation key
