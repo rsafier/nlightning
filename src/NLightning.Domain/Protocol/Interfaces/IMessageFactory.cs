@@ -60,15 +60,21 @@ public interface IMessageFactory
                                                   ChannelTypeTlv channelTypeTlv,
                                                   UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv);
 
+    /// <summary>
+    /// Creates an <c>open_channel2</c> (BOLT 2 "Channel Establishment v2") announcing <paramref name="localParams"/>
+    /// (dust limit, htlc minimum, max accepted HTLCs, max in flight, to_self_delay; v2 has no reserve field).
+    /// </summary>
     OpenChannel2Message CreateOpenChannel2Message(ChannelId temporaryChannelId, uint fundingFeeRatePerKw,
-                                                  uint commitmentFeeRatePerKw, ulong fundingSatoshis,
-                                                  CompactPubKey fundingPubKey,
-                                                  CompactPubKey revocationBasepoint, CompactPubKey paymentBasepoint,
+                                                  uint commitmentFeeRatePerKw, LightningMoney fundingAmount,
+                                                  ChannelParty localParams, uint locktime,
+                                                  CompactPubKey fundingPubKey, CompactPubKey revocationBasepoint,
+                                                  CompactPubKey paymentBasepoint,
                                                   CompactPubKey delayedPaymentBasepoint, CompactPubKey htlcBasepoint,
                                                   CompactPubKey firstPerCommitmentPoint,
-                                                  CompactPubKey secondPerCommitmentPoint,
-                                                  ChannelFlags channelFlags, BitcoinScript? shutdownScriptPubkey = null,
-                                                  byte[]? channelType = null, bool requireConfirmedInputs = false);
+                                                  CompactPubKey secondPerCommitmentPoint, ChannelFlags channelFlags,
+                                                  ChannelTypeTlv channelTypeTlv,
+                                                  UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                  bool requireConfirmedInputs = false);
 
     /// <summary>
     /// Creates an accept_channel whose dust limit, reserve, htlc minimum, max accepted HTLCs, max in flight and
@@ -82,15 +88,22 @@ public interface IMessageFactory
                                                       CompactPubKey revocationBasepoint, ChannelId temporaryChannelId,
                                                       UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv);
 
-    AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId, LightningMoney fundingSatoshis,
+    /// <summary>
+    /// Creates an <c>accept_channel2</c> echoing the opener's <paramref name="temporaryChannelId"/> and
+    /// <paramref name="channelTypeTlv"/>, with <paramref name="fundingAmount"/> as our contribution (zero for none) and
+    /// the values of <paramref name="localParams"/>.
+    /// </summary>
+    AcceptChannel2Message CreateAcceptChannel2Message(ChannelId temporaryChannelId, LightningMoney fundingAmount,
+                                                      ChannelParty localParams, uint minimumDepth,
                                                       CompactPubKey fundingPubKey, CompactPubKey revocationBasepoint,
                                                       CompactPubKey paymentBasepoint,
                                                       CompactPubKey delayedPaymentBasepoint,
                                                       CompactPubKey htlcBasepoint,
                                                       CompactPubKey firstPerCommitmentPoint,
-                                                      LightningMoney maxHtlcValueInFlight,
-                                                      BitcoinScript? shutdownScriptPubkey = null,
-                                                      byte[]? channelType = null, bool requireConfirmedInputs = false);
+                                                      CompactPubKey secondPerCommitmentPoint,
+                                                      ChannelTypeTlv channelTypeTlv,
+                                                      UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null,
+                                                      bool requireConfirmedInputs = false);
 
     FundingCreatedMessage CreateFundingCreatedMessage(ChannelId temporaryChannelId, TxId fundingTxId,
                                                       ushort fundingOutputIndex, CompactSignature signature);

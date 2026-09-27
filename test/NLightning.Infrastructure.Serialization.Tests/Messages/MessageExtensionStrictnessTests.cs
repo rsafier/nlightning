@@ -86,8 +86,8 @@ public class MessageExtensionStrictnessTests
               + points7 + "00"),
             "accept_channel2" => (
                 new AcceptChannel2MessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
-                // temporary_channel_id, 4 x u64, u32, 2 x u16, 6 points
-                Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + points6),
+                // temporary_channel_id, 4 x u64, u32, 2 x u16, 7 points (BOLT 2: second_per_commitment_point too)
+                Zero32 + new string('0', 4 * 16) + "00000003" + "0090" + "01E3" + points7),
             "tx_init_rbf" => (
                 new TxInitRbfMessageTypeSerializer(payloadFactory, tlvConverterFactory, tlvStreamSerializer),
                 Zero32 + "00000001" + "00000001"),
