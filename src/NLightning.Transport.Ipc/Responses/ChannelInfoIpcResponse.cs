@@ -53,6 +53,26 @@ public sealed class ChannelInfoIpcResponse
     /// </summary>
     [Key(18)] public uint FeePpm { get; init; }
 
+    /// <summary>
+    /// Our <c>cltv_expiry_delta</c> on this channel (wave sp1 lane SP1-G; 0 from a daemon that predates it).
+    /// </summary>
+    [Key(19)] public ushort CltvExpiryDelta { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_minimum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    [Key(20)] public ulong HtlcMinimumMsat { get; init; }
+
+    /// <summary>
+    /// The <c>htlc_maximum_msat</c> this channel announces and our forwarding enforces.
+    /// </summary>
+    [Key(21)] public ulong HtlcMaximumMsat { get; init; }
+
+    /// <summary>
+    /// True when the channel has a <c>setchannelpolicy</c> override.
+    /// </summary>
+    [Key(22)] public bool HasPolicyOverride { get; init; }
+
     public static ChannelInfoIpcResponse FromClientResponse(ChannelInfoClientResponse channel)
     {
         return new ChannelInfoIpcResponse
@@ -78,7 +98,11 @@ public sealed class ChannelInfoIpcResponse
             DataLossDetected = channel.DataLossDetected,
             IsReestablished = channel.IsReestablished,
             FeeBaseMsat = channel.FeeBaseMsat,
-            FeePpm = channel.FeePpm
+            FeePpm = channel.FeePpm,
+            CltvExpiryDelta = channel.CltvExpiryDelta,
+            HtlcMinimumMsat = channel.HtlcMinimumMsat,
+            HtlcMaximumMsat = channel.HtlcMaximumMsat,
+            HasPolicyOverride = channel.HasPolicyOverride
         };
     }
 }

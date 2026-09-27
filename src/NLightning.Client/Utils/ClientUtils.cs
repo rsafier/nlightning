@@ -97,6 +97,15 @@ public static class ClientUtils
         Console.WriteLine("                               with the channels they name that this node does not know,");
         Console.WriteLine("                               and the blobs we keep for peers (alias: list-peer-storage);");
         Console.WriteLine("                               --blob prints each handed-back blob as hex");
+        Console.WriteLine("  setchannelpolicy <channel> [--fee-base-msat <n>] [--fee-ppm <n>] [--cltv-delta <n>]");
+        Console.WriteLine("                   [--htlc-min-msat <n>] [--htlc-max-msat <n>] [--reset]");
+        Console.WriteLine("                               Change one channel's routing policy now (alias:");
+        Console.WriteLine("                               set-channel-policy): signed and sent as a new");
+        Console.WriteLine("                               channel_update, enforced when forwarding; unset values");
+        Console.WriteLine("                               keep Node:Routing, --reset goes back to it; <channel> is a");
+        Console.WriteLine("                               channel id or a short channel id (BLOCKxTXxOUTPUT)");
+        Console.WriteLine("  getchannelpolicy <channel>   Show one channel's routing policy in force (alias:");
+        Console.WriteLine("                               get-channel-policy)");
         Console.WriteLine("  createoffer <msat|any> [description] [--issuer <text>] [--quantity-max <n>]");
         Console.WriteLine("              [--absolute-expiry <unix_seconds>] [--paths]");
         Console.WriteLine("                               Create a BOLT 12 offer (alias: create-offer); an amount");

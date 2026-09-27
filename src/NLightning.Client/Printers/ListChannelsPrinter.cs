@@ -44,8 +44,11 @@ public sealed class ListChannelsPrinter : IPrinter<ListChannelsIpcResponse>
                               Invariant(channel.RemoteCommitmentNumber));
             _output.WriteLine("  HTLCs (out/in):     {0}/{1}", Invariant(channel.OfferedHtlcCount),
                               Invariant(channel.ReceivedHtlcCount));
-            _output.WriteLine("  Fee (base/ppm):     {0} msat/{1}", Invariant(channel.FeeBaseMsat),
-                              Invariant(channel.FeePpm));
+            _output.WriteLine("  Fee (base/ppm):     {0} msat/{1}{2}", Invariant(channel.FeeBaseMsat),
+                              Invariant(channel.FeePpm), channel.HasPolicyOverride ? " (channel policy)" : "");
+            _output.WriteLine("  CLTV Delta:         {0}", Invariant(channel.CltvExpiryDelta));
+            _output.WriteLine("  HTLC (min/max):     {0}/{1} msat", Invariant(channel.HtlcMinimumMsat),
+                              Invariant(channel.HtlcMaximumMsat));
             if (channel.DataLossDetected)
                 _output.WriteLine("  DATA LOSS DETECTED: do not force-close this channel");
             _output.WriteLine(PaymentsPrintFormat.Separator);

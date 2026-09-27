@@ -345,6 +345,28 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     }
 
     /// <summary>
+    /// Sets or resets a channel's routing policy (ClientCommand 35, wave sp1 lane SP1-G).
+    /// </summary>
+    public Task<ChannelPolicyIpcResponse> SetChannelPolicyAsync(SetChannelPolicyIpcRequest request,
+                                                                CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendRequestAsync<SetChannelPolicyIpcRequest, ChannelPolicyIpcResponse>(ClientCommand.SetChannelPolicy,
+                                                                                      request, ct);
+    }
+
+    /// <summary>
+    /// Reads a channel's routing policy in force (ClientCommand 36, wave sp1 lane SP1-G).
+    /// </summary>
+    public Task<ChannelPolicyIpcResponse> GetChannelPolicyAsync(GetChannelPolicyIpcRequest request,
+                                                                CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendRequestAsync<GetChannelPolicyIpcRequest, ChannelPolicyIpcResponse>(ClientCommand.GetChannelPolicy,
+                                                                                      request, ct);
+    }
+
+    /// <summary>
     /// Creates one of our BOLT 12 offers (ClientCommand 26).
     /// </summary>
     public Task<CreateOfferIpcResponse> CreateOfferAsync(CreateOfferIpcRequest request, CancellationToken ct = default)

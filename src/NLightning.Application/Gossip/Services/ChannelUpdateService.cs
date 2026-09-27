@@ -7,6 +7,7 @@ namespace NLightning.Application.Gossip.Services;
 
 using Announcements;
 using Channels.Interfaces;
+using Channels.RoutingPolicies;
 using Domain.Bitcoin.Interfaces;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
@@ -36,11 +37,15 @@ using Interfaces;
 /// <c>announcement_signatures</c> exchanged: <see cref="IsPublic"/>); <c>direction</c> = 1 when our node id is the
 /// greater one; the real short channel id (for an unannounced <c>option_scid_alias</c> channel the alias the peer sent
 /// us instead: BOLT 2 forbids routing into it by the real one; an announced channel always uses the real one, which
-/// its <c>channel_announcement</c> names); the fee and CLTV delta of
-/// <c>NodeOptions.Routing</c>, <c>htlc_minimum_msat</c> = the larger of the peer's <c>htlc_minimum_msat</c> and
-/// <c>Routing.HtlcMinimumMsat</c>, <c>htlc_maximum_msat</c> = the smallest of the capacity, the peer's
-/// <c>max_htlc_value_in_flight_msat</c> and <c>Routing.HtlcMaximumMsat</c>. No update is made when the minimum is
-/// above that maximum (BOLT 7: the maximum must not exceed the capacity) or an alias channel has no peer alias yet.
+/// its <c>channel_announcement</c> names); the channel's routing policy (wave sp1 lane SP1-G,
+/// <see cref="ChannelPolicyRules.Resolve"/>: its <c>setchannelpolicy</c> override where set, <c>NodeOptions.Routing</c>
+/// elsewhere, read from the optional <see cref="IChannelPolicyProvider"/> at every update): fee and CLTV delta,
+/// <c>htlc_minimum_msat</c> = the larger of the peer's <c>htlc_minimum_msat</c> and the configured minimum,
+/// <c>htlc_maximum_msat</c> = the smallest of the capacity, the peer's <c>max_htlc_value_in_flight_msat</c> and the
+/// configured maximum. No update is made when the minimum is above that maximum (BOLT 7: the maximum must not exceed
+/// the capacity) or an alias channel has no peer alias yet. A policy change is announced by the policy service through
+/// <see cref="SendChannelUpdateAsync(ChannelId, CancellationToken)"/> (a fresh update, to the peer and, when the channel
+/// is announced, to the relay).
 /// </para>
 /// <para>
 /// Receiving: the peer's update must be for our chain, a channel we have with it (real scid or an alias), its own
@@ -91,6 +96,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly NodeOptions _nodeOptions;
     private readonly TimeProvider _timeProvider;
     private readonly OwnGossipPublisher? _ownGossipPublisher;
+    private readonly IChannelPolicyProvider? _channelPolicyProvider;
 
     private readonly ConcurrentDictionary<ChannelId, byte> _sentOnOpen = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdateMessage> _localUpdates = new();
@@ -113,7 +119,8 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                                 ILogger<ChannelUpdateService> logger, TimeProvider? timeProvider = null,
                                 OwnGossipPublisher? ownGossipPublisher = null,
                                 IOptions<GossipOptions>? gossipOptions = null,
-                                IServiceProvider? serviceProvider = null)
+                                IServiceProvider? serviceProvider = null,
+                                IChannelPolicyProvider? channelPolicyProvider = null)
     {
         _channelMemoryRepository = channelMemoryRepository;
         _channelLockProvider = channelLockProvider;
@@ -124,6 +131,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
         _timeProvider = timeProvider ?? TimeProvider.System;
         _ownGossipPublisher = ownGossipPublisher;
         _serviceProvider = serviceProvider;
+        _channelPolicyProvider = channelPolicyProvider;
         _disableAfter = (gossipOptions?.Value ?? new GossipOptions()).DisableAfter;
 
         _channelMemoryRepository.OnChannelUpdated += HandleChannelUpdated;
@@ -546,37 +554,31 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             return false;
         }
 
-        var capacityMsat = channel.FundingOutput.Amount.MilliSatoshi;
-        var routing = _nodeOptions.Routing;
-        var htlcMinimumMsat = Math.Max(channel.ChannelParams.Remote.HtlcMinimumAmount.MilliSatoshi,
-                                       routing.HtlcMinimumMsat);
-        var htlcMaximumMsat = capacityMsat;
-        var remoteMaxInFlight = channel.ChannelParams.Remote.MaxHtlcValueInFlight.MilliSatoshi;
-        if (remoteMaxInFlight > 0)
-            htlcMaximumMsat = Math.Min(htlcMaximumMsat, remoteMaxInFlight);
-        if (routing.HtlcMaximumMsat is { } configuredMaximum)
-            htlcMaximumMsat = Math.Min(htlcMaximumMsat, configuredMaximum);
+        var effective = _channelPolicyProvider?.GetEffectivePolicy(channel)
+                     ?? ChannelPolicyRules.Resolve(channel, _nodeOptions.Routing, null);
 
         // BOLT 7: htlc_maximum_msat MUST NOT exceed the capacity, so it can't be raised to the minimum
-        if (htlcMinimumMsat > htlcMaximumMsat)
+        if (effective.HtlcMinimumMsat > effective.HtlcMaximumMsat)
         {
-            reason = $"htlc_minimum_msat {htlcMinimumMsat} is above the largest HTLC it can carry ({htlcMaximumMsat} "
-                   + "msat: capacity, the peer's max_htlc_value_in_flight_msat, Routing.HtlcMaximumMsat)";
+            reason = $"htlc_minimum_msat {effective.HtlcMinimumMsat} is above the largest HTLC it can carry "
+                   + $"({effective.HtlcMaximumMsat} msat: capacity, the peer's max_htlc_value_in_flight_msat, the "
+                   + "channel's or Routing's HtlcMaximumMsat)";
             return false;
         }
 
-        policy = new UpdatePolicy(shortChannelId, htlcMinimumMsat, htlcMaximumMsat);
+        policy = new UpdatePolicy(shortChannelId, effective.HtlcMinimumMsat, effective.HtlcMaximumMsat,
+                                  effective.FeeBaseMsat, effective.FeeProportionalMillionths,
+                                  effective.CltvExpiryDelta);
         reason = string.Empty;
         return true;
     }
 
     /// <summary>
-    /// Our (unsigned) update for the channel with the current routing options (field rules in the class remarks).
+    /// Our (unsigned) update for the channel with its current routing policy (field rules in the class remarks).
     /// </summary>
     private ChannelUpdatePayload BuildUnsignedUpdate(ChannelModel channel, UpdatePolicy policy, bool disabled,
                                                      uint timestamp)
     {
-        var routing = _nodeOptions.Routing;
         var channelFlags = IsNode2(_secureKeyManager.GetNodePubKey(), channel.RemoteNodeId)
                                ? ChannelUpdatePayload.ChannelFlagDirection
                                : (byte)0;
@@ -590,8 +592,8 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
                                       | ChannelUpdatePayload.MessageFlagDontForward);
         return new ChannelUpdatePayload(ChannelUpdatePayload.EmptySignature, _nodeOptions.BitcoinNetwork.ChainHash,
                                         policy.ShortChannelId, timestamp, messageFlags, channelFlags,
-                                        routing.CltvExpiryDelta, policy.HtlcMinimumMsat, routing.FeeBaseMsat,
-                                        routing.FeeProportionalMillionths, policy.HtlcMaximumMsat);
+                                        policy.CltvExpiryDelta, policy.HtlcMinimumMsat, policy.FeeBaseMsat,
+                                        policy.FeeProportionalMillionths, policy.HtlcMaximumMsat);
     }
 
     /// <summary>
@@ -645,8 +647,9 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     }
 
     /// <summary>
-    /// The short channel id and HTLC limits our update for a channel carries.
+    /// The short channel id, HTLC limits, fee and CLTV delta our update for a channel carries.
     /// </summary>
     private readonly record struct UpdatePolicy(ShortChannelId ShortChannelId, ulong HtlcMinimumMsat,
-                                                ulong HtlcMaximumMsat);
+                                                ulong HtlcMaximumMsat, uint FeeBaseMsat,
+                                                uint FeeProportionalMillionths, ushort CltvExpiryDelta);
 }

@@ -10,16 +10,20 @@ namespace NLightning.Application.Tests.Gossip;
 using Announcements;
 
 using Application.Channels.Interfaces;
+using Application.Channels.RoutingPolicies;
 using Application.Channels.Services;
 using Application.Gossip.Announcements;
 using Application.Gossip.Events;
+using Application.Gossip.Interfaces;
 using Application.Gossip.Services;
+using Channels.RoutingPolicies;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Enums;
 using Domain.Channels.Events;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
+using Domain.Channels.RoutingPolicies;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
@@ -948,6 +952,124 @@ public class ChannelUpdateServiceTests
         Assert.False(service.TryGetLocalChannelUpdate(channel.ChannelId, out _));
     }
 
+    // Wave sp1 lane SP1-G: the per-channel routing policy (setchannelpolicy)
+
+    [Fact]
+    public async Task Given_AChannelPolicyOverride_When_CreatingUpdate_Then_ItsValuesAreAnnounced()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        var (store, _) = CreatePolicyServices(provider, null);
+        var service = CreateService(out var ourSigner, channelPolicyProvider: store);
+        var channel = AddChannel(ChannelState.Open);
+        var other = AddChannel(ChannelState.Open);
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, 7_000, 1_500, 90, 50_000, 250_000_000), ct);
+
+        // Act
+        var update = service.CreateChannelUpdate(channel).Payload;
+        var otherUpdate = service.CreateChannelUpdate(other).Payload;
+
+        // Assert
+        Assert.Equal(7_000u, update.FeeBaseMsat);
+        Assert.Equal(1_500u, update.FeeProportionalMillionths);
+        Assert.Equal(90, update.CltvExpiryDelta);
+        Assert.Equal(50_000ul, update.HtlcMinimumMsat);
+        Assert.Equal(250_000_000ul, update.HtlcMaximumMsat);
+        Assert.True(ourSigner.VerifyNodeMessage(update.GetSignatureHash(), update.Signature, OurNodeId));
+
+        // The other channel keeps Node:Routing
+        Assert.Equal(2_000u, otherUpdate.FeeBaseMsat);
+        Assert.Equal(500u, otherUpdate.FeeProportionalMillionths);
+        Assert.Equal(40, otherUpdate.CltvExpiryDelta);
+        Assert.Equal(800_000_000ul, otherUpdate.HtlcMaximumMsat);
+    }
+
+    [Fact]
+    public async Task Given_AnAnnouncedChannel_When_ItsPolicyIsSet_Then_ANewerSignedUpdateGoesToThePeerAndTheRelayAtOnce()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var relay = new RecordingRelayScheduler();
+        await using var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions);
+        var service = CreateService(out var ourSigner, new OwnGossipPublisher(new RecordingOwnGossipSink(), relay),
+                                    channelPolicyProvider: store);
+        var (_, policies) = CreatePolicyServicesOver(store, service);
+        var channel = AddAnnouncedChannel();
+        var before = service.CreateChannelUpdate(channel).Payload;
+        var raised = new List<ChannelUpdateReadyEventArgs>();
+        service.OnChannelUpdateReady += (_, args) => raised.Add(args);
+
+        // Act: no restart, no reconnection
+        await policies.SetAsync(channel.ChannelId, new ChannelPolicyOverride(channel.ChannelId, 3_333, 44, 60,
+                                    HtlcMaximumMsat: 100_000_000), ct);
+
+        // Assert: one update for the peer, with the new policy and a newer timestamp (BOLT 7)
+        var sent = Assert.Single(raised);
+        Assert.Equal(PeerNodeId, sent.PeerPubKey);
+        var update = sent.Message.Payload;
+        Assert.True(update.Timestamp > before.Timestamp);
+        Assert.Equal(3_333u, update.FeeBaseMsat);
+        Assert.Equal(44u, update.FeeProportionalMillionths);
+        Assert.Equal(60, update.CltvExpiryDelta);
+        Assert.Equal(5_000ul, update.HtlcMinimumMsat);
+        Assert.Equal(100_000_000ul, update.HtlcMaximumMsat);
+        Assert.False(update.DontForward);
+        Assert.True(ourSigner.VerifyNodeMessage(update.GetSignatureHash(), update.Signature, OurNodeId));
+
+        // ... and the same update to the relay (announced channel)
+        Assert.Same(update, relay.Queued.Last());
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var latest));
+        Assert.Same(update, latest!.Payload);
+    }
+
+    [Fact]
+    public async Task Given_AnOverride_When_Reset_Then_ANewerUpdateCarriesNodeRoutingAgain()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions);
+        var service = CreateService(out _, channelPolicyProvider: store);
+        var (_, policies) = CreatePolicyServicesOver(store, service);
+        var channel = AddChannel(ChannelState.Open);
+        await policies.SetAsync(channel.ChannelId, new ChannelPolicyOverride(channel.ChannelId, 9_999), ct);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var overridden));
+
+        // Act
+        await policies.ResetAsync(channel.ChannelId, ct);
+
+        // Assert
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var reset));
+        Assert.Equal(9_999u, overridden!.Payload.FeeBaseMsat);
+        Assert.Equal(2_000u, reset!.Payload.FeeBaseMsat);
+        Assert.True(reset.Payload.Timestamp > overridden.Payload.Timestamp);
+    }
+
+    [Fact]
+    public async Task Given_APolicyChangedWhileThePeerWasAway_When_ItReconnects_Then_ItGetsANewUpdate()
+    {
+        // Arrange: the change was saved but not announced (e.g. the peer was not connected)
+        var ct = TestContext.Current.CancellationToken;
+        await using var provider = ChannelPolicyTestKit.CreateProvider(new InMemoryChannelPolicyTable());
+        var store = ChannelPolicyTestKit.CreateStore(provider, _nodeOptions);
+        var service = CreateService(out _, channelPolicyProvider: store);
+        var channel = AddChannel(ChannelState.Open);
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var first));
+        await store.SaveAsync(new ChannelPolicyOverride(channel.ChannelId, CltvExpiryDelta: 100), ct);
+
+        // Act
+        await service.SendChannelUpdatesToPeerAsync(PeerNodeId, ct);
+
+        // Assert: the reconnection does not reuse the old update (its policy is no longer current)
+        Assert.True(service.TryGetLocalChannelUpdate(channel.ChannelId, out var second));
+        Assert.NotSame(first, second);
+        Assert.Equal(100, second!.Payload.CltvExpiryDelta);
+        Assert.True(second.Payload.Timestamp > first!.Payload.Timestamp);
+    }
+
     [Theory]
     [InlineData(20 * 60, 60)]
     [InlineData(2 * 60, 30)]
@@ -962,7 +1084,8 @@ public class ChannelUpdateServiceTests
 
     private ChannelUpdateService CreateService(out ILightningSigner ourSigner, OwnGossipPublisher? publisher = null,
                                                GossipOptions? gossipOptions = null,
-                                               IServiceProvider? serviceProvider = null)
+                                               IServiceProvider? serviceProvider = null,
+                                               IChannelPolicyProvider? channelPolicyProvider = null)
     {
         ourSigner = CreateSigner(_ourKey);
         var keyManager = CreateKeyManager(_ourKey);
@@ -970,7 +1093,24 @@ public class ChannelUpdateServiceTests
                                         keyManager.Object, Options.Create(_nodeOptions),
                                         NullLogger<ChannelUpdateService>.Instance, _timeProvider, publisher,
                                         gossipOptions is null ? null : Options.Create(gossipOptions),
-                                        serviceProvider);
+                                        serviceProvider, channelPolicyProvider);
+    }
+
+    /// <summary>
+    /// The per-channel policy store and service (wave sp1 lane SP1-G) over an in-memory table, announcing through
+    /// <paramref name="updates"/>.
+    /// </summary>
+    private (ChannelPolicyStore Store, ChannelPolicyService Service) CreatePolicyServices(
+        ServiceProvider provider, IChannelUpdateService? updates) =>
+        CreatePolicyServicesOver(ChannelPolicyTestKit.CreateStore(provider, _nodeOptions), updates);
+
+    private (ChannelPolicyStore Store, ChannelPolicyService Service) CreatePolicyServicesOver(
+        ChannelPolicyStore store, IChannelUpdateService? updates)
+    {
+        var service = new ChannelPolicyService(store, _channelMemoryRepository.Object, _channelLockProvider,
+                                               Options.Create(_nodeOptions), NullLogger<ChannelPolicyService>.Instance,
+                                               updates, _timeProvider);
+        return (store, service);
     }
 
     /// <summary>A service provider holding only a liveness probe whose answer the test sets.</summary>
