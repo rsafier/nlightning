@@ -629,7 +629,12 @@ public sealed class ClnOnionMessageTests : IAsyncLifetime
         var data = new List<byte[]>();
         for (var i = 0; i < nodeIds.Count - 1; i++)
             data.Add(blinding.EncodeRecipientData(new BlindedRecipientData { NextNodeId = nodeIds[i + 1] }));
-        data.Add(blinding.EncodeRecipientData(new BlindedRecipientData { PathId = pathId }));
+        // A null byte[] (or a bare null in a conditional with a ReadOnlyMemory<byte> arm) converts to an empty,
+        // non-null ReadOnlyMemory<byte>?, which would encode an empty path_id
+        ReadOnlyMemory<byte>? finalPathId = null;
+        if (pathId is not null)
+            finalPathId = pathId;
+        data.Add(blinding.EncodeRecipientData(new BlindedRecipientData { PathId = finalPathId }));
 
         return blinding.CreateBlindedPath(nodeIds, data, NewSessionKey());
     }
