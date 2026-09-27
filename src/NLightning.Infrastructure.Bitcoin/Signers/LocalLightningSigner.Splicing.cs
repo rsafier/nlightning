@@ -230,14 +230,22 @@ public partial class LocalLightningSigner
     }
 
     /// <inheritdoc />
-    public void LockFunding(ChannelId channelId, TxId fundingTxId)
+    public void LockFunding(ChannelId channelId, TxId fundingTxId) => LockFunding(channelId, fundingTxId, null);
+
+    /// <inheritdoc />
+    public void LockFunding(ChannelId channelId, TxId fundingTxId, ShortChannelId? shortChannelId)
     {
         _ = GetRegisteredSigningInfo(channelId);
         lock (GetCommitmentLock(channelId))
         {
             var signingInfo = GetRegisteredSigningInfo(channelId);
             if (signingInfo.FundingTxId == fundingTxId)
+            {
+                // A repeated lock may bring the short channel id the first one did not have
+                if (shortChannelId is not null && signingInfo.ShortChannelId is null)
+                    _channelSigningInfo[channelId] = signingInfo with { ShortChannelId = shortChannelId };
                 return;
+            }
 
             var state = GetSpliceState(channelId);
             if (!state.Fundings.TryGetValue(fundingTxId, out var locked)
@@ -271,7 +279,7 @@ public partial class LocalLightningSigner
                 LocalFundingPubKey = locked.LocalFundingPubKey,
                 RemoteFundingPubKey = locked.RemoteFundingPubKey,
                 LocalFundingKeyIndex = locked.LocalFundingKeyIndex,
-                ShortChannelId = locked.ShortChannelId
+                ShortChannelId = shortChannelId ?? locked.ShortChannelId
             };
         }
 
@@ -368,6 +376,14 @@ public partial class LocalLightningSigner
             if (!IsSameFunding(known, funding))
                 throw new SignerException($"Funding {funding.FundingTxId} is already registered with other data",
                                           channelId, "Internal error");
+
+            // The same funding registered again once it confirmed: keep what it learned, never its keys or status
+            if (known.ShortChannelId is null && funding.ShortChannelId is not null)
+                state.Fundings[funding.FundingTxId] = known with
+                {
+                    ShortChannelId = funding.ShortChannelId,
+                    ConfirmedHeight = known.ConfirmedHeight ?? funding.ConfirmedHeight
+                };
 
             return;
         }

@@ -143,7 +143,7 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var keptColumns = await HasSnapshotAsync(channelModel)
                                               ? s_stateOnlyColumns.Concat(s_snapshotColumns)
                                               : s_stateOnlyColumns;
-        if (await IsSplicedAsync(channelModel.ChannelId))
+        if (await HasLockedSpliceAsync(channelModel.ChannelId))
             keptColumns = keptColumns.Concat(s_currentFundingColumns);
         UpdateExcept(channelEntity, keptColumns.ToArray());
 
@@ -324,18 +324,23 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
     }
 
     /// <summary>
-    /// Whether the channel has a funding other than its initial one (staged in this unit of work or stored).
+    /// Whether a splice of the channel was locked (staged in this unit of work or stored): its current funding is not
+    /// the initial one, or a funding was replaced. A pending or discarded splice does not count: until a lock the channel
+    /// row's funding columns still follow the model (a confirmation, a reorg).
     /// </summary>
-    private async Task<bool> IsSplicedAsync(ChannelId channelId)
+    private async Task<bool> HasLockedSpliceAsync(ChannelId channelId)
     {
         var fundings = await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelId);
-        return fundings.Any(f => f.Kind != (byte)ChannelFundingKind.Initial);
+        return fundings.Any(f => f.Status == (byte)ChannelFundingStatus.Replaced
+                              || (f.Status == (byte)ChannelFundingStatus.Current
+                               && f.Kind != (byte)ChannelFundingKind.Initial));
     }
 
     /// <summary>
     /// Stages the channel's <see cref="ChannelFundingKind.Initial"/>, <see cref="ChannelFundingStatus.Current"/>
     /// funding row (splicing plan §3.8) once its funding outpoint is known, and keeps it in step with the channel while
-    /// the channel was never spliced (the funding keys are the key sets', as the migration's data step writes them).
+    /// it is still the current funding, whatever pending or discarded splices are stored beside it (the funding keys are
+    /// the key sets', as the migration's data step writes them).
     /// </summary>
     private async Task EnsureInitialFundingAsync(ChannelModel channelModel)
     {
@@ -353,18 +358,17 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
                                                              : (ShortChannelId?)null);
 
         var fundings = await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelModel.ChannelId);
-        switch (fundings)
+        if (fundings.Count == 0)
         {
-            case []:
-                _context.ChannelFundings.Add(ChannelFundingDbRepository.CreateEntity(channelModel.ChannelId, initial,
-                                                                                     0));
-                break;
-
-            // A channel never spliced: its initial funding follows the channel (the confirmation, a reorg)
-            case [{ Kind: (byte)ChannelFundingKind.Initial } row] when row.FundingTxId == txId:
-                ChannelFundingDbRepository.CopyFields(initial, row);
-                break;
+            _context.ChannelFundings.Add(ChannelFundingDbRepository.CreateEntity(channelModel.ChannelId, initial, 0));
+            return;
         }
+
+        // No splice locked yet: the initial funding follows the channel (the confirmation, a reorg)
+        var row = fundings.FirstOrDefault(f => f.Kind == (byte)ChannelFundingKind.Initial
+                                             && f.Status == (byte)ChannelFundingStatus.Current);
+        if (row is not null && row.FundingTxId == txId)
+            ChannelFundingDbRepository.CopyFields(initial, row);
     }
 
     /// <summary>

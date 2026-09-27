@@ -18,6 +18,13 @@ internal sealed class MigrationSqlDialect(DatabaseType databaseType)
         $"INSERT INTO {Name(table)} ({string.Join(", ", values.Select(v => Name(v.Column)))}) " +
         $"VALUES ({string.Join(", ", values.Select(v => v.Value))})";
 
+    public string Update(string table, (string Column, string Value) set, params (string Column, string Value)[] where) =>
+        $"UPDATE {Name(table)} SET {Name(set.Column)} = {set.Value} " +
+        $"WHERE {string.Join(" AND ", where.Select(w => $"{Name(w.Column)} = {w.Value}"))}";
+
+    public string Delete(string table, params (string Column, string Value)[] where) =>
+        $"DELETE FROM {Name(table)} WHERE {string.Join(" AND ", where.Select(w => $"{Name(w.Column)} = {w.Value}"))}";
+
     private string Name(string pascalCase) => databaseType switch
     {
         DatabaseType.PostgreSql => $"\"{SnakeCase(pascalCase)}\"",

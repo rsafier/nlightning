@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace NLightning.Integration.Tests.Persistence;
 
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Splicing.Enums;
 using Domain.Channels.ValueObjects;
@@ -13,7 +14,7 @@ using Infrastructure.Repositories.Database.Channel;
 
 /// <summary>
 /// Provider-agnostic proof of the data step of migration <c>AddSpliceFundings</c> (splicing plan §3.8, SP1-C-T4),
-/// usable by the SQLite test and the Docker Postgres/SQL Server tests: the commitment slots and revocation-log rows of
+/// run by the SQLite test and the Docker Postgres/SQL Server tests: the commitment slots and revocation-log rows of
 /// channels stored before it move under their channel's funding txid, and every channel with a known funding outpoint
 /// gets its <see cref="ChannelFundingKind.Initial"/>, <see cref="ChannelFundingStatus.Current"/> funding row with the
 /// key sets' funding keys.
@@ -99,6 +100,77 @@ internal static class SpliceFundingsSchemaRoundTrip
             Assert.NotNull(set);
             Assert.Equal(fundedTxId, set.Current.FundingTxId);
             Assert.Empty(set.Pending);
+        }
+
+        await AssertDownRefusedOnALockedSpliceAsync(contextFactory, databaseType, funded, fundedTxId, cancellationToken);
+    }
+
+    /// <summary>
+    /// The hand-written guard of the migration's Down step: while a channel runs on a locked splice (its current funding
+    /// is not the initial one, and its rotated funding keys live only in <c>ChannelFundings</c>) the rollback is refused
+    /// and nothing is dropped; once no such channel is left it rolls back, and the migration applies again.
+    /// </summary>
+    private static async Task AssertDownRefusedOnALockedSpliceAsync(Func<NLightningDbContext> contextFactory,
+                                                                    DatabaseType databaseType, ChannelId channelId,
+                                                                    TxId initialTxId,
+                                                                    CancellationToken cancellationToken)
+    {
+        var spliceTxId = ChainWatchSchemaRoundTrip.TxIdOf(0x6a);
+        var sql = new MigrationSqlDialect(databaseType);
+        await using (var context = contextFactory())
+        {
+            await context.Database.ExecuteSqlRawAsync(
+                sql.Update("ChannelFundings", ("Status", $"{(byte)ChannelFundingStatus.Replaced}"),
+                           ("ChannelId", "{0}"), ("FundingTxId", "{1}")),
+                [(byte[])channelId, (byte[])initialTxId], cancellationToken);
+            await context.Database.ExecuteSqlRawAsync(
+                sql.Insert("ChannelFundings",
+                           ("ChannelId", "{0}"), ("FundingTxId", "{1}"), ("OutputIndex", "0"),
+                           ("CapacitySatoshis", "1200000"), ("LocalFundingPubKey", "{2}"),
+                           ("RemoteFundingPubKey", "{3}"), ("LocalFundingKeyIndex", "1"),
+                           ("LocalBalanceDeltaMsat", "200000000"), ("RemoteBalanceDeltaMsat", "0"),
+                           ("Kind", $"{(byte)ChannelFundingKind.Splice}"),
+                           ("Status", $"{(byte)ChannelFundingStatus.Current}"),
+                           ("SpliceLockedSent", sql.Bool(true)), ("SpliceLockedReceived", sql.Bool(true)),
+                           ("AnnouncementSignaturesReceived", sql.Bool(false)), ("Sequence", "1")),
+                [(byte[])channelId, (byte[])spliceTxId, Key(0x71), Key(0x81)], cancellationToken);
+        }
+
+        string previous;
+        await using (var context = contextFactory())
+        {
+            var migrations = context.Database.GetMigrations().ToList();
+            var target = migrations.Single(m => m.EndsWith(MigrationName, StringComparison.Ordinal));
+            previous = migrations[migrations.IndexOf(target) - 1];
+
+            // Act
+            var refusal = await Record.ExceptionAsync(() => context.GetService<IMigrator>()
+                                                                     .MigrateAsync(previous, cancellationToken));
+
+            // Assert
+            Assert.NotNull(refusal);
+        }
+
+        await using (var context = contextFactory())
+        {
+            Assert.Empty(await context.Database.GetPendingMigrationsAsync(cancellationToken));
+            Assert.Equal(2, await context.ChannelFundings.CountAsync(f => f.ChannelId == channelId,
+                                                                     cancellationToken));
+            Assert.NotEmpty(await context.Commitments.AsNoTracking().ToListAsync(cancellationToken));
+
+            // Without a locked splice the rollback runs, and the migration applies again
+            await context.Database.ExecuteSqlRawAsync(
+                sql.Delete("ChannelFundings", ("ChannelId", "{0}"), ("FundingTxId", "{1}")),
+                [(byte[])channelId, (byte[])spliceTxId], cancellationToken);
+            await context.Database.ExecuteSqlRawAsync(
+                sql.Update("ChannelFundings", ("Status", $"{(byte)ChannelFundingStatus.Current}"),
+                           ("ChannelId", "{0}"), ("FundingTxId", "{1}")),
+                [(byte[])channelId, (byte[])initialTxId], cancellationToken);
+
+            var migrator = context.GetService<IMigrator>();
+            await migrator.MigrateAsync(previous, cancellationToken);
+            await migrator.MigrateAsync(cancellationToken: cancellationToken);
+            Assert.Empty(await context.Database.GetPendingMigrationsAsync(cancellationToken));
         }
     }
 

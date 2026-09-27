@@ -396,6 +396,36 @@ public class SpliceFundingsPersistenceTests
     }
 
     [Fact]
+    public async Task Given_ADiscardedSplice_When_TheModelsShortChannelIdChanges_Then_TheChannelAndItsInitialFundingFollow()
+    {
+        // Arrange (regression: any non-initial funding row, even a splice that never locked, froze the channel's
+        // funding columns and its initial funding row)
+        await using var harness = await SpliceHarness.CreateAsync();
+        var splice = harness.Splice(0x9e);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, splice));
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(
+                                    harness.ChannelId, splice with { Status = ChannelFundingStatus.Discarded }));
+        var pending = harness.Splice(0x9f);
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, pending));
+        var model = await harness.ReloadChannelAsync();
+        var scid = new ShortChannelId(900_100, 7, 0);
+
+        // Act: a reorg (or a first confirmation) moves the initial funding's SCID
+        model.ShortChannelId = scid;
+        await harness.SaveAsync(uow => uow.ChannelDbRepository.UpdateAsync(model));
+
+        // Assert
+        var channel = await harness.ReloadChannelAsync();
+        Assert.Equal(scid, channel.ShortChannelId);
+        Assert.Equal(harness.CurrentFunding.FundingTxId, channel.FundingOutput!.TransactionId);
+        using var reader = harness.CreateUnitOfWork();
+        var set = await reader.ChannelFundingDbRepository.GetFundingSetAsync(harness.ChannelId);
+        Assert.Equal(ChannelFundingKind.Initial, set!.Current.Kind);
+        Assert.Equal(scid, set.Current.ShortChannelId);
+        Assert.Equal(pending.FundingTxId, Assert.Single(set.Pending).FundingTxId);
+    }
+
+    [Fact]
     public async Task Given_RevokedCommitmentsOnTwoFundings_When_Read_Then_TheCurrentFundingsRowComesFirst()
     {
         // Arrange (SP-I5: the same number is logged per funding)
@@ -424,6 +454,41 @@ public class SpliceFundingsPersistenceTests
         var current = await reader.RevokedCommitmentDbRepository.GetAsync(harness.ChannelId, 5);
         Assert.Equal(10UL, current!.Spec.LocalMsat);
         Assert.Equal(2, (await reader.RevokedCommitmentDbRepository.GetByChannelIdAsync(harness.ChannelId)).Count);
+    }
+
+    [Fact]
+    public async Task Given_ARevokedNumberOnTwoNonCurrentFundings_When_Read_Then_EachFundingsOwnRowIsReturned()
+    {
+        // Arrange (a breach spending a pending splice: the current funding has no entry for the number)
+        await using var harness = await SpliceHarness.CreateAsync();
+        var first = harness.Splice(0x9c);
+        var second = harness.Splice(0x9d);
+        var htlc = new SpecHtlc(HtlcDirection.Incoming, 0, 7_000_000, CommitmentDanceDriver.PaymentHash(3), 600);
+        var point = harness.Driver.Us.RemoteCommit.PerCommitmentPoint;
+        var onFirst = new RemoteCommit(7, new CommitmentSpec(CommitmentSide.Remote, 253, 50, 60, [htlc]), point);
+        var onSecond = new RemoteCommit(7, new CommitmentSpec(CommitmentSide.Remote, 253, 70, 80, [htlc]), point);
+
+        // Act: the funding with the higher txid is created first, so the fallback cannot be the txid order
+        await harness.SaveAsync(uow => uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, second));
+        await harness.SaveAsync(async uow =>
+        {
+            await uow.ChannelFundingDbRepository.UpsertAsync(harness.ChannelId, first);
+            Assert.True(await uow.ChannelFundingDbRepository.StageRevokedCommitmentAsync(
+                            harness.ChannelId, second.FundingTxId, onSecond));
+            Assert.True(await uow.ChannelFundingDbRepository.StageRevokedCommitmentAsync(
+                            harness.ChannelId, first.FundingTxId, onFirst));
+        });
+
+        // Assert
+        using var reader = harness.CreateUnitOfWork();
+        var bySecond = await reader.RevokedCommitmentDbRepository.GetAsync(harness.ChannelId, second.FundingTxId, 7);
+        Assert.Equal(70UL, bySecond!.Spec.LocalMsat);
+        var byFirst = await reader.RevokedCommitmentDbRepository.GetAsync(harness.ChannelId, first.FundingTxId, 7);
+        Assert.Equal(50UL, byFirst!.Spec.LocalMsat);
+        Assert.Null(await reader.RevokedCommitmentDbRepository.GetAsync(
+                        harness.ChannelId, harness.CurrentFunding.FundingTxId, 7));
+        var fallback = await reader.RevokedCommitmentDbRepository.GetAsync(harness.ChannelId, 7);
+        Assert.Equal(70UL, fallback!.Spec.LocalMsat);
     }
 
     [Fact]
