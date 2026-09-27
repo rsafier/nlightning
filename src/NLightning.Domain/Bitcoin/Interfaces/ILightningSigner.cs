@@ -336,4 +336,34 @@ public interface ILightningSigner
     /// has no such input, or the amount is not 330 sat.</exception>
     CompactSignature SignAnchorInput(ChannelId channelId, SignedTransaction unsignedTransaction, int inputIndex,
                                      LightningMoney amount);
+
+    /// <summary>
+    /// The public key of the transient BOLT 12 payer key of an invoice_request with
+    /// <paramref name="invoiceRequestMetadata"/> (its <c>invreq_payer_id</c>; BOLT 12 plan §3.6, D3).
+    /// </summary>
+    /// <remarks>
+    /// The secret is <c>HMAC-SHA256(offers_secret, "nltg_bolt12_payer" || invreq_metadata)</c> as a scalar, with
+    /// <c>offers_secret = HMAC-SHA256(node_key, "nltg_bolt12")</c>: deterministic per metadata, unrelated across
+    /// metadata, never the node key, never stored and never returned.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The metadata is empty.</exception>
+    CompactPubKey GetBolt12PayerId(ReadOnlyMemory<byte> invoiceRequestMetadata) =>
+        throw new NotSupportedException("This signer does not sign BOLT 12 messages.");
+
+    /// <summary>
+    /// A BIP-340 Schnorr signature of the BOLT 12 digest <c>H(tag, merkleRoot)</c>,
+    /// <c>H(tag, msg) = SHA256(SHA256(tag) || SHA256(tag) || msg)</c>, with the key <paramref name="key"/> names (the
+    /// node key, a transient payer key or our blinded key for a path_key).
+    /// </summary>
+    /// <remarks>
+    /// The signer computes the tagged hash itself and only accepts BOLT 12 signature tags
+    /// (<c>"lightning" || messagename || "signature"</c>), so the keys never sign an arbitrary digest. The auxiliary
+    /// randomness is 32 zero bytes (as CLN, whose <c>signature-test.json</c> signature this reproduces), so the
+    /// signature is deterministic.
+    /// </remarks>
+    /// <returns>The 64-byte signature.</returns>
+    /// <exception cref="ArgumentException">The tag is not a BOLT 12 signature tag, or a path_key is not a point.
+    /// </exception>
+    byte[] SignBolt12(Offers.Models.Bolt12SigningKey key, string tag, Hash merkleRoot) =>
+        throw new NotSupportedException("This signer does not sign BOLT 12 messages.");
 }
