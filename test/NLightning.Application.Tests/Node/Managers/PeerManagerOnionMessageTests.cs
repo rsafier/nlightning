@@ -23,6 +23,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 using Infrastructure.Node.ValueObjects;
+using Infrastructure.Transport.Events;
 using Infrastructure.Transport.Interfaces;
 
 /// <summary>
@@ -152,6 +153,7 @@ public class PeerManagerOnionMessageTests
         // Assert
         Assert.Equal([true, true, false], results);
         Assert.Equal(2, peerManager.QueuedOutboxOnionMessageCount);
+        Assert.Equal(1, peerManager.DroppedOutboxOnionMessageCount);
         release.SetResult();
     }
 
@@ -169,6 +171,40 @@ public class PeerManagerOnionMessageTests
         _rateLimiter.Verify(l => l.RemovePeer(_peerId), Times.Once);
         Assert.False(peerManager.CanSendOnionMessage(_peerId));
         Assert.False(peerManager.TryEnqueueOnionMessage(_peerId, CreateOnionMessage()));
+    }
+
+    [Fact]
+    public async Task Given_AConnectionReplacedByANewerOne_When_TheOldOneDisconnects_Then_TheRateLimitIsKept()
+    {
+        // Arrange: the peer connects inbound twice (it restarted); the old connection reports its disconnect
+        _serviceProvider.AddService(typeof(IOnionMessageRateLimiter), _rateLimiter.Object);
+        var oldPeerService = CreateInboundPeerService();
+        oldPeerService.Setup(p => p.Disconnect(It.IsAny<Exception?>()))
+                      .Callback(() => oldPeerService.Raise(p => p.OnDisconnect += null, oldPeerService.Object,
+                                                           new PeerDisconnectedEventArgs(_peerId)));
+        var newPeerService = CreateInboundPeerService();
+        var sent = new TaskCompletionSource<OnionMessageMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        newPeerService.Setup(p => p.SendOnionMessageAsync(It.IsAny<OnionMessageMessage>(),
+                                                          It.IsAny<CancellationToken>()))
+                      .Callback((OnionMessageMessage m, CancellationToken _) => sent.TrySetResult(m))
+                      .Returns(Task.CompletedTask);
+        var peerManager = CreatePeerManager();
+        await peerManager.StartAsync(TestContext.Current.CancellationToken);
+        await ConnectInboundAsync(peerManager, oldPeerService);
+
+        // Act
+        await ConnectInboundAsync(peerManager, newPeerService);
+        var message = CreateOnionMessage();
+        var queued = peerManager.TryEnqueueOnionMessage(_peerId, message);
+
+        // Assert
+        oldPeerService.Verify(p => p.Disconnect(It.IsAny<Exception?>()), Times.Once);
+        _rateLimiter.Verify(l => l.RemovePeer(It.IsAny<CompactPubKey>()), Times.Never);
+        Assert.True(queued);
+        Assert.Same(message, await sent.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken));
+        oldPeerService.Verify(p => p.SendOnionMessageAsync(It.IsAny<OnionMessageMessage>(),
+                                                           It.IsAny<CancellationToken>()), Times.Never);
+        await peerManager.StopAsync();
     }
 
     [Fact]
@@ -209,6 +245,32 @@ public class PeerManagerOnionMessageTests
     {
         await peerManager.ConnectToPeerAsync(new PeerAddressInfo($"{_peerId}@127.0.0.1:9735"));
         Assert.NotNull(peerManager.GetPeer(_peerId));
+    }
+
+    private Mock<IPeerService> CreateInboundPeerService()
+    {
+        var peerService = new Mock<IPeerService>();
+        peerService.SetupGet(p => p.PeerPubKey).Returns(_peerId);
+        peerService.SetupGet(p => p.Features)
+                   .Returns(new FeatureOptions { OptionOnionMessages = FeatureSupport.Optional });
+        peerService.Setup(p => p.SendMessageAsync(It.IsAny<IChannelMessage>())).Returns(Task.CompletedTask);
+        peerService.Setup(p => p.SendWarningAsync(It.IsAny<WarningException>())).Returns(Task.CompletedTask);
+        return peerService;
+    }
+
+    private async Task ConnectInboundAsync(PeerManager peerManager, Mock<IPeerService> peerService)
+    {
+        _peerServiceFactory.Setup(f => f.CreateConnectingPeerAsync(It.IsAny<TcpClient>()))
+                           .ReturnsAsync(peerService.Object);
+        _tcpService.Raise(t => t.OnNewPeerConnected += null, _tcpService.Object,
+                          new NewPeerConnectedEventArgs("127.0.0.1", 9735, new Mock<TcpClient>().Object));
+        var deadline = DateTime.UtcNow + s_timeout;
+        while (!(peerManager.GetPeer(_peerId) is { } peer && peer.TryGetPeerService(out var current)
+                                                        && ReferenceEquals(current, peerService.Object)))
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Timed out waiting for the inbound connection");
+            await Task.Delay(5, TestContext.Current.CancellationToken);
+        }
     }
 
     private static OnionMessageMessage CreateOnionMessage()
