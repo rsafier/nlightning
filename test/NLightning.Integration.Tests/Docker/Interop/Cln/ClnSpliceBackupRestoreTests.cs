@@ -170,7 +170,13 @@ public sealed class ClnSpliceBackupRestoreTests : IAsyncLifetime
                                 && r.Descriptor == OutputDescriptorKind.PaymentToRemote,
                               "our to_remote row", ct);
         var toRemote = clnCommitment.Outputs[(int)toRemoteRow.OutputIndex];
-        Assert.Equal(ourBalanceSat, toRemote.Value.Satoshi);
+
+        // We funded the channel: the commitment fee and both anchors come out of our balance
+        var commitmentFee = spliced.FundingOutput.Amount.Satoshi - clnCommitment.TotalOut.Satoshi;
+        var anchors = spliced.ChannelParams.OptionAnchorOutputs ? 2 * 330 : 0;
+        Console.WriteLine($"to_remote {toRemote.Value}, our balance {ourBalanceSat} sat, commitment fee "
+                        + $"{commitmentFee} sat, anchors {anchors} sat");
+        Assert.Equal(ourBalanceSat - commitmentFee - anchors, toRemote.Value.Satoshi);
         var sweepTxId = await MineUntilResolvingTxAsync(node, commitmentTxId, toRemoteRow.OutputIndex, ct);
         await MineUntilConfirmedAsync(node, new uint256((byte[])sweepTxId), ct);
         await Poll.UntilAsync(() => AnchorsHarness.WalletBalance(node).Satoshi - walletBefore.Satoshi
