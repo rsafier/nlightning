@@ -29,8 +29,9 @@ public sealed class EngineCommitmentSignerPort : ICommitmentSigner
     /// <inheritdoc />
     /// <exception cref="ArgumentException"><paramref name="spec"/> is not a remote commitment.</exception>
     /// <exception cref="InvalidOperationException">The channel is not in memory.</exception>
-    /// <remarks>Signs against the channel's registered funding: <paramref name="funding"/> is not used until lane
-    /// SP1-C signs per funding.</remarks>
+    /// <remarks>A null <paramref name="funding"/>, or the channel's current one, signs against the channel's funding
+    /// output exactly as before splicing; a pending splice funding is signed against its own outpoint and keys
+    /// (splicing plan SP1-C).</remarks>
     public CommitmentSignatures SignRemoteCommitment(ChannelId channelId, ChannelFunding? funding, ulong number,
                                                      CommitmentSpec spec, CompactPubKey remotePerCommitmentPoint)
     {
@@ -43,7 +44,7 @@ public sealed class EngineCommitmentSignerPort : ICommitmentSigner
             throw new InvalidOperationException($"Channel {channelId} is not in memory");
 
         return _commitmentSigningService
-              .SignRemoteCommitment(channel, CommitmentTxSpec.FromCommitmentSpec(spec), number,
+              .SignRemoteCommitment(channel, funding, CommitmentTxSpec.FromCommitmentSpec(spec), number,
                                     remotePerCommitmentPoint)
               .ToCommitmentSignatures();
     }

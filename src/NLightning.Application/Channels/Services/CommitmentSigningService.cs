@@ -5,9 +5,12 @@ using Domain.Bitcoin.Transactions.Enums;
 using Domain.Bitcoin.Transactions.Factories;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Transactions.Models;
+using Domain.Bitcoin.Transactions.Outputs;
 using Domain.Channels.Commitments;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Crypto.ValueObjects;
+using Domain.Money;
 using Infrastructure.Bitcoin.Builders.Interfaces;
 
 /// <summary>
@@ -48,6 +51,22 @@ public sealed class CommitmentSigningService
     /// <param name="remotePerCommitmentPoint">The peer's per-commitment point for that commitment.</param>
     public CommitmentTxSignatures SignRemoteCommitment(ChannelModel channel, CommitmentTxSpec spec,
                                                      ulong remoteCommitmentNumber,
+                                                     CompactPubKey remotePerCommitmentPoint) =>
+        SignRemoteCommitment(channel, null, spec, remoteCommitmentNumber, remotePerCommitmentPoint);
+
+    /// <summary>
+    /// <see cref="SignRemoteCommitment(ChannelModel, CommitmentTxSpec, ulong, CompactPubKey)"/> for the commitment
+    /// spending <paramref name="funding"/> (splicing plan SP1-C: one commitment per active funding, SP-OP-03).
+    /// </summary>
+    /// <param name="channel">The channel (static data).</param>
+    /// <param name="funding">The funding the commitment spends; null, or the channel's current funding, signs exactly
+    /// as the single-funding path. A pending splice is signed against its own outpoint, capacity and funding keys (the
+    /// anchors too), with the signer's per-funding <c>SignChannelTransaction</c>.</param>
+    /// <param name="spec">The commitment content for that funding (its balances already shifted by the engine).</param>
+    /// <param name="remoteCommitmentNumber">The number of the remote commitment being signed.</param>
+    /// <param name="remotePerCommitmentPoint">The peer's per-commitment point for that commitment.</param>
+    public CommitmentTxSignatures SignRemoteCommitment(ChannelModel channel, ChannelFunding? funding,
+                                                     CommitmentTxSpec spec, ulong remoteCommitmentNumber,
                                                      CompactPubKey remotePerCommitmentPoint)
     {
         ArgumentNullException.ThrowIfNull(channel);
@@ -55,9 +74,15 @@ public sealed class CommitmentSigningService
 
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Remote, remoteCommitmentNumber, remotePerCommitmentPoint);
+        var otherFunding = GetOtherFunding(channel, funding);
+        if (otherFunding is not null)
+            model = WithFunding(model, otherFunding, CommitmentSide.Remote);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
 
-        var signature = _lightningSigner.SignChannelTransaction(channel.ChannelId, built.Transaction);
+        var signature = otherFunding is null
+                            ? _lightningSigner.SignChannelTransaction(channel.ChannelId, built.Transaction)
+                            : _lightningSigner.SignChannelTransaction(channel.ChannelId, otherFunding.FundingTxId,
+                                                                      built.Transaction);
         var htlcSignatures =
             _lightningSigner.SignRemoteHtlcTransactions(channel.ChannelId, BuildHtlcSigningContexts(model, built));
 
@@ -73,6 +98,18 @@ public sealed class CommitmentSigningService
     /// invalid.</exception>
     public CommitmentTxSignatures VerifyLocalCommitment(ChannelModel channel, CommitmentTxSpec spec,
                                                       ulong localCommitmentNumber, CompactSignature signature,
+                                                      IReadOnlyList<CompactSignature> htlcSignatures) =>
+        VerifyLocalCommitment(channel, null, spec, localCommitmentNumber, signature, htlcSignatures);
+
+    /// <summary>
+    /// <see cref="VerifyLocalCommitment(ChannelModel, CommitmentTxSpec, ulong, CompactSignature, IReadOnlyList{CompactSignature})"/>
+    /// for our commitment spending <paramref name="funding"/> (null or the current funding: the single-funding path).
+    /// </summary>
+    /// <exception cref="Domain.Exceptions.SignerException">A signature is missing, malformed, high-S or invalid, or
+    /// the funding is not one the signer knows.</exception>
+    public CommitmentTxSignatures VerifyLocalCommitment(ChannelModel channel, ChannelFunding? funding,
+                                                      CommitmentTxSpec spec, ulong localCommitmentNumber,
+                                                      CompactSignature signature,
                                                       IReadOnlyList<CompactSignature> htlcSignatures)
     {
         ArgumentNullException.ThrowIfNull(channel);
@@ -82,13 +119,66 @@ public sealed class CommitmentSigningService
 
         var model = _commitmentTransactionModelFactory.CreateCommitmentTransactionModel(
             channel, spec, CommitmentSide.Local, localCommitmentNumber);
+        var otherFunding = GetOtherFunding(channel, funding);
+        if (otherFunding is not null)
+            model = WithFunding(model, otherFunding, CommitmentSide.Local);
         var built = _commitmentTransactionBuilder.BuildWithOutputMap(model);
 
-        _lightningSigner.ValidateSignature(channel.ChannelId, signature, built.Transaction);
+        if (otherFunding is null)
+            _lightningSigner.ValidateSignature(channel.ChannelId, signature, built.Transaction);
+        else
+            _lightningSigner.ValidateSignature(channel.ChannelId, otherFunding.FundingTxId, signature,
+                                               built.Transaction);
         _lightningSigner.ValidateLocalHtlcSignatures(channel.ChannelId, BuildHtlcSigningContexts(model, built),
                                                      htlcSignatures);
 
         return new CommitmentTxSignatures(built.Transaction.TxId, signature, htlcSignatures.ToList());
+    }
+
+    /// <summary>
+    /// The funding to sign for when it is not the channel's current one (the model factory builds on
+    /// <see cref="ChannelModel.FundingOutput"/>), else null.
+    /// </summary>
+    private static ChannelFunding? GetOtherFunding(ChannelModel channel, ChannelFunding? funding)
+    {
+        if (funding is null)
+            return null;
+
+        var current = channel.FundingOutput;
+        return current?.TransactionId is { } currentTxId && currentTxId == funding.FundingTxId
+                                                         && current.Index == funding.OutputIndex
+                   ? null
+                   : funding;
+    }
+
+    /// <summary>
+    /// The same commitment spending <paramref name="funding"/> instead: its outpoint, capacity and funding keys (the
+    /// 2-of-2 input script and, with anchors, both anchor outputs, which are keyed to the funding keys, BOLT 3). The
+    /// other outputs do not depend on the funding.
+    /// </summary>
+    internal static CommitmentTransactionModel WithFunding(CommitmentTransactionModel model, ChannelFunding funding,
+                                                           CommitmentSide holder)
+    {
+        var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(funding.CapacitySatoshis),
+                                                  funding.LocalFundingPubKey, funding.RemoteFundingPubKey,
+                                                  funding.FundingTxId, funding.OutputIndex);
+        var (holderKey, counterpartyKey) = holder == CommitmentSide.Local
+                                               ? (funding.LocalFundingPubKey, funding.RemoteFundingPubKey)
+                                               : (funding.RemoteFundingPubKey, funding.LocalFundingPubKey);
+        var localAnchor = model.LocalAnchorOutput is null ? null : new AnchorOutputInfo(holderKey, true);
+        var remoteAnchor = model.RemoteAnchorOutput is null ? null : new AnchorOutputInfo(counterpartyKey, false);
+
+        return new CommitmentTransactionModel(model.CommitmentNumber, model.Number, model.Fee, fundingOutput,
+                                              localAnchor, remoteAnchor, model.ToLocalOutput, model.ToRemoteOutput,
+                                              model.OfferedHtlcOutputs, model.ReceivedHtlcOutputs)
+        {
+            FeeRatePerKw = model.FeeRatePerKw,
+            HasAnchors = model.HasAnchors,
+            ToSelfDelay = model.ToSelfDelay,
+            LocalDelayedPubKey = model.LocalDelayedPubKey,
+            RevocationPubKey = model.RevocationPubKey,
+            PerCommitmentPoint = model.PerCommitmentPoint
+        };
     }
 
     private List<HtlcSigningContext> BuildHtlcSigningContexts(CommitmentTransactionModel model,
