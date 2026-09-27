@@ -47,7 +47,8 @@ using Reestablish;
 /// quiescent, <c>ChannelOperationsService</c> refuses our updates with <see cref="ChannelQuiescentException"/>; when
 /// the quiescence ends (<see cref="Terminate"/>), the channel's pending HTLC events are replayed into the switch
 /// (<see cref="LinkUpEventReplayer"/>), so a fulfill or fail refused meanwhile is sent then (never lost), and the
-/// commit scheduler signs whatever is pending.</para>
+/// commit scheduler signs whatever is pending. A timed-out quiescence is the exception: it keeps blocking our updates
+/// until its connection is closed, and the reestablish on the next connection replays them.</para>
 /// <para>The BOLT 2 rules are applied by private helpers here (<see cref="HasPendingLocalUpdates"/>,
 /// <see cref="ResolveInitiator"/>) until lane Q-A's Domain <c>QuiescenceRules</c> replaces them.</para>
 /// </remarks>
@@ -153,18 +154,37 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 
         lock (_sync)
         {
-            if (!TryGetCurrent(channelId, out var entry))
+            var existing = TryGetCurrent(channelId, out var current) ? current : null;
+            if (existing is { TerminatedAt: not null })
             {
-                entry = CreateEntry(channel, QuiescenceState.None, withWaiter: false);
-                _entries[channelId] = entry;
+                // The quiescence timed out and its connection is being closed: nothing more is exchanged on it
+                _logger.LogInformation("Ignoring stfu on channel {ChannelId}: its quiescence timed out", channelId);
+                return null;
             }
 
-            if (entry.State.StfuReceived)
+            var state = existing?.State ?? QuiescenceState.None;
+            if (state.StfuReceived)
                 throw new ChannelWarningException($"[Q-S-03] second stfu on channel {channelId}", channelId,
                                                   "stfu sent twice")
                 {
                     CloseConnection = true
                 };
+
+            // Q-S-03: initiator = 0 only replies to our stfu; a reply to nothing would leave no initiator at all
+            if (!stfu.Initiator && !state.StfuSent)
+                throw new ChannelWarningException(
+                    $"[Q-S-03] stfu with initiator=0 on channel {channelId} but we sent no stfu", channelId,
+                    "stfu with initiator=0 but we sent no stfu")
+                {
+                    CloseConnection = true
+                };
+
+            var entry = existing;
+            if (entry is null)
+            {
+                entry = CreateEntry(channel, QuiescenceState.None, withWaiter: false);
+                _entries[channelId] = entry;
+            }
 
             entry.Negotiated = true;
             entry.StartedAt ??= _timeProvider.GetUtcNow();
@@ -191,7 +211,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
         var channelId = channel.ChannelId;
         lock (_sync)
         {
-            if (!TryGetCurrent(channelId, out var entry) || entry.State.StfuSent)
+            if (!TryGetCurrent(channelId, out var entry) || entry.State.StfuSent || entry.TerminatedAt.HasValue)
                 return null;
 
             if (entry.State is { PendingRequest: null, StfuReceived: false })
@@ -215,17 +235,34 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <see cref="QuiescenceEndReason.Timeout"/> does not remove the entry: the connection is closed right after
+    /// (Q-R-03), and until it is (its <c>OnDisconnect</c>, a replacement, or <see cref="OnPeerDisconnected"/>) the
+    /// channel is still quiescent for the peer, which only a disconnection ends (Q-R-04). The entry is kept, marked
+    /// terminated: it still blocks our updates (<see cref="GetState"/> is unchanged), a waiting request fails at once,
+    /// no <c>stfu</c> goes out and nothing is resumed (the reestablish on the next connection replays the channel's
+    /// pending events). Another <see cref="QuiescenceEndReason.Timeout"/> only renews the mark (the monitor closes the
+    /// connection again); any other reason but <see cref="QuiescenceEndReason.Disconnected"/> leaves a terminated entry
+    /// alone.
+    /// </remarks>
     public void Terminate(ChannelId channelId, QuiescenceEndReason reason)
     {
         Entry? entry;
         lock (_sync)
         {
-            if (!_entries.TryRemove(channelId, out entry))
+            if (!_entries.TryGetValue(channelId, out entry))
                 return;
+
+            if (reason == QuiescenceEndReason.Timeout)
+                entry.TerminatedAt = _timeProvider.GetUtcNow();
+            else if (entry.TerminatedAt.HasValue && reason != QuiescenceEndReason.Disconnected)
+                return;
+            else
+                _entries.TryRemove(channelId, out _);
         }
 
         EndEntry(entry, reason);
-        if (reason != QuiescenceEndReason.Disconnected)
+        if (reason is not (QuiescenceEndReason.Disconnected or QuiescenceEndReason.Timeout))
             ScheduleResume(channelId);
     }
 
@@ -251,7 +288,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
     /// <inheritdoc />
     public void ScheduleRelease(ChannelId channelId)
     {
-        if (!_entries.TryGetValue(channelId, out var entry) || entry.State.StfuSent
+        if (!_entries.TryGetValue(channelId, out var entry) || entry.State.StfuSent || entry.TerminatedAt.HasValue
          || entry.State is { PendingRequest: null, StfuReceived: false })
             return;
 
@@ -343,7 +380,9 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
             lock (_sync)
             {
                 // A stfu already sent can't be withdrawn: then only the dependent protocol or a disconnection ends it
-                if (!_entries.TryGetValue(channelId, out var current) || current != entry || entry.State.StfuSent)
+                // A timed-out quiescence waits for its disconnection, which alone resumes the channel
+                if (!_entries.TryGetValue(channelId, out var current) || current != entry || entry.State.StfuSent
+                 || entry.TerminatedAt.HasValue)
                     return;
 
                 if (entry.State.StfuReceived)
@@ -378,7 +417,10 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
     public IReadOnlyList<QuiescenceSnapshot> GetActive() =>
         _entries.Where(pair => IsCurrent(pair.Value))
                 .Select(pair => new QuiescenceSnapshot(pair.Key, pair.Value.Peer, pair.Value.State,
-                                                       pair.Value.StartedAt ?? pair.Value.CreatedAt))
+                                                       pair.Value.StartedAt ?? pair.Value.CreatedAt)
+                {
+                    TerminatedAt = pair.Value.TerminatedAt
+                })
                 .ToList();
 
     #endregion
@@ -406,12 +448,17 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
     /// Who is the initiator once both <c>stfu</c> are exchanged: the side that sent <c>initiator</c> = 1 first; both
     /// 1 (simultaneous) → the channel funder, the sender of <c>open_channel</c> (Q-R-05).
     /// </summary>
+    /// <exception cref="ArgumentException">Both flags are 0: nobody initiated (<see cref="OnStfuReceived"/> refuses a
+    /// <c>stfu</c> with <c>initiator</c> = 0 that replies to nothing).</exception>
     internal static QuiescenceInitiator ResolveInitiator(bool sentInitiator, bool receivedInitiator, bool weAreFunder)
     {
-        if (sentInitiator && receivedInitiator)
-            return weAreFunder ? QuiescenceInitiator.Local : QuiescenceInitiator.Remote;
-
-        return sentInitiator ? QuiescenceInitiator.Local : QuiescenceInitiator.Remote;
+        return (sentInitiator, receivedInitiator) switch
+        {
+            (true, false) => QuiescenceInitiator.Local,
+            (false, true) => QuiescenceInitiator.Remote,
+            (true, true) => weAreFunder ? QuiescenceInitiator.Local : QuiescenceInitiator.Remote,
+            _ => throw new ArgumentException("Neither stfu set initiator = 1")
+        };
     }
 
     private bool CanSendStfu(ChannelModel channel, Entry entry)
@@ -491,6 +538,10 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 
     private void EndEntry(Entry entry, QuiescenceEndReason reason)
     {
+        // A timed-out entry was ended (logged, waiter faulted) when it timed out: its removal says nothing new
+        if (entry.Ended)
+            return;
+        entry.Ended = true;
         _logger.LogInformation("Quiescence of the channel with {Peer} ended: {Reason} ({State})", entry.Peer, reason,
                                Describe(entry.State));
         entry.Waiter?.TrySetException(new InvalidOperationException(
@@ -568,6 +619,12 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
         public bool Negotiated { get; set; }
         public DateTimeOffset? StartedAt { get; set; }
         public TaskCompletionSource<QuiescenceInitiator>? Waiter { get; init; }
+
+        /// <summary>When the quiescence timed out; the entry then waits for its disconnection (see <c>Terminate</c>).</summary>
+        public DateTimeOffset? TerminatedAt { get; set; }
+
+        /// <summary>Whether the end was logged and the waiter faulted already.</summary>
+        public bool Ended { get; set; }
     }
 
     #endregion
@@ -579,4 +636,11 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 /// <param name="State">Its quiescence state.</param>
 /// <param name="Since">When it started quiescing (our request, or the first <c>stfu</c>).</param>
 public sealed record QuiescenceSnapshot(ChannelId ChannelId, CompactPubKey PeerPubKey, QuiescenceState State,
-                                        DateTimeOffset Since);
+                                        DateTimeOffset Since)
+{
+    /// <summary>
+    /// When the quiescence timed out while its connection is still being closed (see
+    /// <see cref="QuiescenceService.Terminate"/>); null before.
+    /// </summary>
+    public DateTimeOffset? TerminatedAt { get; init; }
+}

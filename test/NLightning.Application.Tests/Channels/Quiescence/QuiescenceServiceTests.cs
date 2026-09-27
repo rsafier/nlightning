@@ -32,7 +32,6 @@ public class QuiescenceServiceTests
     [InlineData(true, false, false, QuiescenceInitiator.Local)]
     [InlineData(true, false, true, QuiescenceInitiator.Local)]
     [InlineData(false, true, true, QuiescenceInitiator.Remote)]
-    [InlineData(false, false, true, QuiescenceInitiator.Remote)]
     public void Given_TheStfuFlags_When_ResolvingTheInitiator_Then_FirstInitiatorOrTheFunderWins(
         bool sent, bool received, bool weAreFunder, QuiescenceInitiator expected)
     {
@@ -41,6 +40,59 @@ public class QuiescenceServiceTests
 
         // Assert (Q-R-05 when both are 1)
         Assert.Equal(expected, initiator);
+    }
+
+    [Fact]
+    public void Given_BothFlagsZero_When_ResolvingTheInitiator_Then_Throws()
+    {
+        // Act / Assert: nobody initiated
+        Assert.Throws<ArgumentException>(() => QuiescenceService.ResolveInitiator(false, false, true));
+    }
+
+    [Fact]
+    public void Given_WeSentNoStfu_When_ThePeerSendsStfuWithInitiatorZero_Then_WarningAndCloseAndNoQuiescence()
+    {
+        // Arrange
+        using var pair = new QuiescenceTestPair();
+        var service = CreateStandalone(pair.Alice.Channel, peerManager: null);
+
+        // Act
+        var warning = Assert.Throws<ChannelWarningException>(
+            () => service.OnStfuReceived(pair.Alice.Channel, new StfuPayload(TwoNodeHarness.ChannelId, false),
+                                         QuiescenceTestPair.QuiesceFeatures));
+
+        // Assert (Q-S-03: initiator = 0 only replies to our stfu); nothing left for the timeout monitor
+        Assert.True(warning.CloseConnection);
+        Assert.Contains("Q-S-03", warning.Message);
+        Assert.Equal(QuiescenceState.None, service.GetState(TwoNodeHarness.ChannelId));
+        Assert.Empty(service.GetActive());
+    }
+
+    [Fact]
+    public async Task Given_OurRequestNotSentYet_When_ThePeerSendsStfuWithInitiatorZero_Then_WarningAndTheRequestIsKept()
+    {
+        // Arrange: our request waits for its drain (our add is pending)
+        using var pair = new QuiescenceTestPair();
+        var ct = TestContext.Current.CancellationToken;
+        pair.HoldFulfills["Bob"] = true;
+        await pair.OfferAsync(pair.Alice, 30_000_000, 1);
+        pair.Alice.PeerAlive = false;
+        var request = pair.Quiescence(pair.Alice).RequestAsync(TwoNodeHarness.ChannelId, QuiescencePurpose.Probe, ct);
+        await pair.WhenIdleAsync();
+        Assert.False(pair.State(pair.Alice).StfuSent);
+
+        // Act
+        var warning = Assert.Throws<ChannelWarningException>(
+            () => pair.Quiescence(pair.Alice).OnStfuReceived(pair.Alice.Channel,
+                                                             new StfuPayload(TwoNodeHarness.ChannelId, false),
+                                                             QuiescenceTestPair.QuiesceFeatures));
+
+        // Assert: refused without touching our request (the disconnection ends it)
+        Assert.True(warning.CloseConnection);
+        Assert.False(pair.State(pair.Alice).StfuReceived);
+        Assert.False(request.IsCompleted);
+        await pair.DisconnectAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => request.WaitAsync(TimeSpan.FromSeconds(10), ct));
     }
 
     [Fact]
