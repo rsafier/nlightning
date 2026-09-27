@@ -6,6 +6,7 @@ using NLightning.Domain.Channels.ValueObjects;
 namespace NLightning.Client.Ipc;
 
 using Domain.Bitcoin.Enums;
+using Domain.Client.Constants;
 using Domain.Client.Enums;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
@@ -328,6 +329,36 @@ public sealed class NamedPipeIpcClient : IAsyncDisposable
     {
         var req = new WithdrawIpcRequest { Address = address, AmountSat = amountSat, SatPerVbyte = satPerVbyte };
         return SendRequestAsync<WithdrawIpcRequest, WithdrawIpcResponse>(ClientCommand.Withdraw, req, ct);
+    }
+
+    /// <summary>
+    /// Creates one of our BOLT 12 offers (provisional ClientCommand 26, <c>OfferClientCommands.CreateOffer</c>).
+    /// </summary>
+    public Task<CreateOfferIpcResponse> CreateOfferAsync(CreateOfferIpcRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return SendRequestAsync<CreateOfferIpcRequest, CreateOfferIpcResponse>(OfferClientCommands.CreateOffer,
+                                                                               request, ct);
+    }
+
+    /// <summary>
+    /// Lists our BOLT 12 offers, newest first (provisional ClientCommand 27).
+    /// </summary>
+    public Task<ListOffersIpcResponse> ListOffersAsync(bool activeOnly, int skip, int take,
+                                                       CancellationToken ct = default)
+    {
+        var req = new ListOffersIpcRequest { ActiveOnly = activeOnly, Skip = skip, Take = take };
+        return SendRequestAsync<ListOffersIpcRequest, ListOffersIpcResponse>(OfferClientCommands.ListOffers, req, ct);
+    }
+
+    /// <summary>
+    /// Disables one of our BOLT 12 offers (provisional ClientCommand 28).
+    /// </summary>
+    public Task<DisableOfferIpcResponse> DisableOfferAsync(Hash offerId, CancellationToken ct = default)
+    {
+        var req = new DisableOfferIpcRequest { OfferId = offerId };
+        return SendRequestAsync<DisableOfferIpcRequest, DisableOfferIpcResponse>(OfferClientCommands.DisableOffer,
+                                                                                 req, ct);
     }
 
     /// <summary>

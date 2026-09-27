@@ -244,6 +244,14 @@ internal static class ClientApp
                     if (restore.Channels.Any(c => c.Outcome is "Failed" or "KeysMismatch"))
                         return Failure;
                     break;
+                case "createoffer":
+                case "create-offer":
+                case "listoffers":
+                case "list-offers":
+                case "disableoffer":
+                case "disable-offer":
+                    await OfferCommands.RunAsync(cmd, commandArgs, MaxListCount, client, cancellationToken);
+                    break;
                 case "listinvoices":
                 case "list-invoices":
                     var (invoiceTake, invoiceSkip) = ParsePage(commandArgs);
@@ -405,6 +413,13 @@ internal static class ClientApp
                                ? null
                                : $"Invalid hex '{commandArgs[1]}': expected the backup as hex characters.";
                 return $"Missing or invalid arguments. Usage: {cmd} <file> | {cmd} --hex <backup_hex>";
+            case "createoffer":
+            case "create-offer":
+            case "listoffers":
+            case "list-offers":
+            case "disableoffer":
+            case "disable-offer":
+                return OfferCommands.Validate(cmd, commandArgs, MaxListCount);
             case "listinvoices":
             case "list-invoices":
             case "listpayments":

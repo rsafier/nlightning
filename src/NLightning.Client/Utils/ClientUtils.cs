@@ -76,6 +76,16 @@ public static class ClientUtils
         Console.WriteLine("                               After losing the channel database: ask each backed-up");
         Console.WriteLine("                               channel's peer to force close and sweep our funds");
         Console.WriteLine("                               (alias: restore-chan-backup); exit code 1 on a failure");
+        Console.WriteLine("  createoffer <msat|any> [description] [--issuer <text>] [--quantity-max <n>]");
+        Console.WriteLine("              [--absolute-expiry <unix_seconds>] [--paths]");
+        Console.WriteLine("                               Create a BOLT 12 offer (alias: create-offer); an amount");
+        Console.WriteLine("                               needs a description; --quantity-max 0 is unlimited; --paths");
+        Console.WriteLine("                               adds blinded paths even with a public channel");
+        Console.WriteLine("  listoffers [--active] [count] [skip]");
+        Console.WriteLine("                               List our offers with their invoices, newest first (alias:");
+        Console.WriteLine("                               list-offers) [count 1-1000, default 100]");
+        Console.WriteLine("  disableoffer <offer_id>      Stop answering an offer's invoice requests (alias:");
+        Console.WriteLine("                               disable-offer); issued invoices stay payable");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");
