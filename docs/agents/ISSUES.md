@@ -36,6 +36,8 @@ Updated 2026-09-26 after wave O7 (X1 wallet signing and fee-input reservations (
 
 Updated 2026-09-26 after wave O7b (Y1 anchors on-chain reserve and funding selection, Y2 package relay and the peer-anchor bump, Y3 anchors gap Docker proofs; no migration) was integrated into `wip/fafo` (at `c16d6e1`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `d4cc3f8` and `c16d6e1` are `integrate:` commits), O7-T4 is done (`option_anchors` advertised Optional by default, d4cc3f8), and NL-388..NL-394 record the lanes' open items (NL-388 is lane Y2's proposal that its own review step fixed; the lanes' step-1 proposals that their review steps fixed (the reserve not counting in-flight opens or the funding fee) are not filed). The Docker suites ran from SDK containers on net10.0 (SQL Server container tests skipped).
 
+Updated 2026-09-27 after the mainnet gossip probe (branches `wip/fafo-mainnet-gossip` and `wip/fafo-mainnet-gossip-verified`, `docs/agents/MAINNET_GOSSIP_PROBE.md`: `Gossip:AssumeChannelValid`, the harness `tools/NLightning.GossipProbe`, the whole mainnet graph synced assumed and verified against an unpruned mainnet bitcoind) was integrated into `wip/fafo` (at `bc3a2c3`, no conflicts, no `integrate:` commit needed): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`), and NL-400..NL-408 (first run) and NL-410..NL-416 (verified run) record the probe's findings; NL-409 was never assigned and is a wontfix placeholder. NL-395..NL-399 (reserved for the O7 waves) are still unassigned. Docker on net10.0 (in-container runner): gossip 24/24, CLN 22/22.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -70,12 +72,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 5 | 21 | 104 | 130 |
+| open | 0 | 5 | 23 | 109 | 137 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 49 | 116 | 78 | 257 |
-| wontfix | 0 | 0 | 2 | 4 | 6 |
+| fixed | 14 | 52 | 119 | 81 | 266 |
+| wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **54** | **140** | **186** | **394** |
+| **Total** | **14** | **57** | **145** | **195** | **411** |
 
 ### Epics
 
@@ -87,7 +89,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (open, medium)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
-- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder; gossip wave G-B: G1 public channels and our own announcements relayed, G2 graph ingress/store/pruner and IPC 17/18, Docker Proofs G0-G2 green; gossip wave G-C: G3 sync, query answers and relay, G4 graph routing in `PaymentService` and `getroute` (IPC 19), the goal proofs against LND and CLN green, NL-348..NL-356 fixed; gossip wave G-D: G5-T2..T4 done (rate limits, misbehaviour ban, graph caps, relay backlog bound, `NLightning.Gossip` meter, batched store, 200k-channel measurement, `describegraph` IPC 20), G5-T1/T5 partial; next: interned node ids and `Gossip:MaxMemoryMb` (NL-373), the 24 h soak evaluation before D12 (NL-376), follow-ups NL-357, NL-360..NL-377)
+- NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder; gossip wave G-B: G1 public channels and our own announcements relayed, G2 graph ingress/store/pruner and IPC 17/18, Docker Proofs G0-G2 green; gossip wave G-C: G3 sync, query answers and relay, G4 graph routing in `PaymentService` and `getroute` (IPC 19), the goal proofs against LND and CLN green, NL-348..NL-356 fixed; gossip wave G-D: G5-T2..T4 done (rate limits, misbehaviour ban, graph caps, relay backlog bound, `NLightning.Gossip` meter, batched store, 200k-channel measurement, `describegraph` IPC 20), G5-T1/T5 partial; mainnet gossip probe: `Gossip:AssumeChannelValid`, `tools/NLightning.GossipProbe`, the full mainnet graph synced assumed and verified against a real bitcoind, NL-400..NL-405 and NL-410..NL-412 fixed; next: interned node ids and `Gossip:MaxMemoryMb` (NL-373, NL-416), the 24 h soak evaluation before D12 (NL-376), announcements without updates (NL-406), redundant verified-sync downloads (NL-415), follow-ups NL-357, NL-360..NL-377, NL-407, NL-408, NL-413, NL-414)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
 - NL-137: Payment/forwarding persistence: shared secrets, circuits, invoices, attempts, replay set, SCID map (open, high; partial: shared secrets, circuits with replay, invoices, payments, HTLC origins and the persistent replay set (wave 6, NL-078) done; forward failure reasons, SCID map and per-part MPP send rows (NL-321) remain)
 
@@ -2330,11 +2332,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 7: Gossip
 
 ### NL-099 [EPIC] BOLT 7 gossip: announcements, channel_update, queries, graph
-- **Status:** open (partial: e7b5269, 3ba2e4f, b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed, 5f2a3ee, a49e166, 709030c, 910d085, 57bb15b, 7d318b5, 0c6a9c3, c5c7b5d, 79debc3, c1bb630, 70744d6, 78e5b23, fd92d5d, caf8ee7, 0bf7baf, b515155, 4115b34, f6e76c2, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda, 7501ad6, 2635956, 675f54c, f252d68, d3dda72, 0e0f85c, 9d288bf, 8ecbb2e, 27f8822, fd71c07, 66e773c, 717bd97, bca66aa, 7b21464, c16edf0, 607a91f, 89110b9, 4b4f7b6, b5de7be, a34c9b5, e08e20b, 5673e78, 91cde4c, a70d6c0, f27340c, 2638eff, 072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5, 0325ef3, b334442, 485a9aa, 4dc0f77, 66b4dbc, 4860494, 2abbec2, 97cdc27, b77d1c1, ff09f96, 1d561f2, 70411ac, e7c628e, aadb9d4, d31cd2f)
+- **Status:** open (partial: e7b5269, 3ba2e4f, b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed, 5f2a3ee, a49e166, 709030c, 910d085, 57bb15b, 7d318b5, 0c6a9c3, c5c7b5d, 79debc3, c1bb630, 70744d6, 78e5b23, fd92d5d, caf8ee7, 0bf7baf, b515155, 4115b34, f6e76c2, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda, 7501ad6, 2635956, 675f54c, f252d68, d3dda72, 0e0f85c, 9d288bf, 8ecbb2e, 27f8822, fd71c07, 66e773c, 717bd97, bca66aa, 7b21464, c16edf0, 607a91f, 89110b9, 4b4f7b6, b5de7be, a34c9b5, e08e20b, 5673e78, 91cde4c, a70d6c0, f27340c, 2638eff, 072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5, 0325ef3, b334442, 485a9aa, 4dc0f77, 66b4dbc, 4860494, 2abbec2, 97cdc27, b77d1c1, ff09f96, 1d561f2, 70411ac, e7c628e, aadb9d4, d31cd2f, 0e63795, df56139, b4d0e1c, 41d2e45, e64b5f4, 63ecfbe, 73ba0b7, 0ff9025, 30049c0, 1a77f88, 788d2d3, e2ddd3b)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs` (256-259 enum only; 261-265 absent)
-- **Evidence:** No messages, no validation, no graph storage, no pathfinding; `channel_update` in failure messages must be empty. Sub-issues: NL-100, NL-101, NL-102, NL-103, NL-008. Update: 256-259 parse as raw `GossipMessage` and are dropped (156c375, NL-100); 261/263/265 are typed and queries get empty `reply_channel_range`/`reply_short_channel_ids_end` (9e17af2, NL-205). Remaining: announcements, channel_update, graph. Update (ABCD wave 0, `0b7e617`): `channel_update` (258) is typed (`ChannelUpdateMessage`/`ChannelUpdatePayload`, unknown trailing fields kept for the signature) and signed/verified with the node key (`ILightningSigner.SignNodeMessage`/`VerifyNodeMessage`); an LND-captured update parses byte-exact and verifies; `FailureChannelUpdateFactory` takes the typed update (e7b5269, 3ba2e4f). Remaining: sending/storing updates (ABCD W1-E), announcements, graph. Update (ABCD wave 1, `342d22e`): direct `channel_update` exchange with the channel peer (W1-E): `Application/Gossip/ChannelUpdateService` sends our signed update once a channel with a scid turns Open (under the channel lock, so it follows channel_ready) and again, unchanged, on every new connection to that peer; option_scid_alias channels use the peer's alias, no update when htlc_minimum exceeds capacity; inbound 258 is kept only if it is for our chain, names a channel with that peer, has the peer's direction, verifies with the peer's node key, is newer, not far in the future and not above capacity (b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed). Docker `ChannelUpdateExchangeTests`: LND `GetChanInfo` shows our fee/CLTV policy and we store alice's. Remaining: announcements, graph, relay; LND never puts us into `addinvoice --private` hints without a node_announcement (NL-255). Update (gossip wave G-A, `164289a`): the library half of G0-G4 landed, nothing is wired into the node yet. G0-T1/T2: 256/257 are typed Domain codecs (`ChannelAnnouncementPayload`, `NodeAnnouncementPayload`; `GossipMessage`/`GossipPayload` deleted) and dropped in `PeerService`; 259 is a typed `AnnouncementSignaturesMessage` on the channel path that gets a channel-scoped "not supported yet" warning until G1-T3 (57bb15b, 0c6a9c3). G0-T3 `IGossipSignatureVerifier`/`GossipSignatureVerifier` (c5c7b5d). G0-T4 address descriptors (NL-008). G0-T5 LND 0.20 and CLN v26.06.8 captures in `Tests.Utils/Vectors/Bolt7Vectors.cs`, byte-exact with every signature verified (7d318b5). G1-T1 storage half (NL-341). G1-T2 `ILightningSigner.SignChannelAnnouncement` with refusals (709030c, 910d085). G2-T1 Domain graph model and `GossipValidator` (78e5b23, caf8ee7). G2-T2 `IFundingOutputLookup` (79debc3, c1bb630). G2-T3 migration `AddGossipGraph` and `IGraphDbRepository` (a49e166). G4-T1 `GraphPathfinder` (fd92d5d, 0bf7baf). Registration of the Bitcoin gossip services and `Gossip` options binding: b515155. Remaining: G1-T1 handlers/IPC, G1-T3..T7, G2-T4..T6, G3, G4-T2..T4, G5. Update (gossip wave G-B, `5bbfbb5`): G1 and G2 are done and proven against LND in Docker. G1 (lane B1): public channels (NL-341, NL-236), `AnnouncementSignaturesMessageHandler` (NL-342), our half sent at depth and after `channel_reestablish` on reconnection with the mainnet gate `CanSendAnnouncementSignatures` (G1-T4), the public `channel_update` (dont_forward clear, real SCID) through `OwnGossipPublisher` (G1-T5), `NodeAnnouncementService` (`Node:Alias`/`Node:Color`, `Gossip:AnnounceAddresses`, timestamp saved before publishing; G1-T6) and `GossipRelayScheduler` (own 256 -> 258 -> 257 to every connected peer of our chain every `Gossip:OwnGossipFlushInterval`, our 257 only after one of our 256s went out on the connection; G1-T7) (4115b34, f6e76c2, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda); in-process proof `Gossip/Announcements/AnnouncementHarnessTests` on `TwoNodeHarness(announceChannel: true)`. G2 (lane B2): `GossipIngress` (bounded queues, duplicate filter, validator, signature verifier, funding lookup at 6 confirmations, orphan replay, B7-CA-04 ban) and write-behind `GraphStore` (7501ad6, 9d288bf); `PeerService` sends 256/257/258 to the ingress and `gossip_timestamp_filter(0, 0xFFFFFFFF)` after our init to `gossip_queries` peers (2635956, 675f54c); `GraphPruner` from the chain monitor's `OnBlockInputs` (spent +72, stale after `DeleteStaleAfter`, lonely nodes, reorgs, funding blocks reorged out; f252d68, 0e0f85c); IPC `listnodes` (17) / `listgraphchannels` (18) (d3dda72); `Gossip:Enabled` unset means on everywhere but mainnet (D12); `GossipGraphHostedService` starts the graph. Lane B3: Docker `Docker/Gossip/` Proofs G0, G1 (a)-(c), G2 (a)-(c) (8ecbb2e, 27f8822, fd71c07; integrated by 66e773c, 717bd97), 16/16 green. New follow-ups: NL-348..NL-356. Remaining: G3 (gossip_queries sync, relay of others' gossip, re-query of dropped SCIDs NL-353), G4-T2..T4 (pathfinding in payments), G5, Proofs G1 (d) (NL-255) and G2 (d) (NL-356). Update (gossip wave G-C, `4dc0f77`): G3 and G4 are done and the BOLT 7 goal proofs are green against LND 0.20 and CLN v26.06.8. G3 (lane C1): strict query codec, CRC32C checksums and the timestamp filter (7b21464); `QueryResponder` answers from the graph and `GossipSyncManager` syncs by range query → SCID batches → `gossip_timestamp_filter`, re-querying dropped SCIDs (c16edf0; NL-205, NL-353); relay of other nodes' gossip with per-peer filters, staggered flushes, origin suppression and a paced backlog, through the outbox port (607a91f; NL-351); `gossip_queries_ex` checked against CLN and advertised Optional (89110b9); review fixes (4b4f7b6). G4 (lane C2): `MissionControl`, graph paths in `PaymentRoutePlanner` (a third candidate source after direct and hint paths, MPP over all three), shadow CLTV on graph routes, G3-T5 refresh on UPDATE failures (a34c9b5, f27340c, 2638eff), invoice hint policy (e08e20b; NL-245), `getroute` = `ClientCommand` 19 (91cde4c), in-process `GraphPaymentHarnessTests` (5673e78). NL-348, NL-349, NL-350, NL-352, NL-354, NL-355 fixed by lane M3; the integrator bound `GossipSyncScidRefresher` and `PeerManager` as `IPeerGossipOutbox` (b5de7be). Docker (lane C3 and integration): goal proofs (b) we pay carol's hint-free invoice, (c) carol pays ours, (d) `getroute` equals LND's `QueryRoutes` and the paid fee, G3 (a)-(c) sync by queries, re-sync after a restart, relay without echo (`PublicPaymentFlowTests`, `GossipSyncFlowTests`), G1 (d) (NL-255), G2 (d) (NL-356), and CLN Proof G3 (d) plus goal proof (e) (`ClnGossipTests`) (072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5, 0325ef3, b334442, 485a9aa, 4dc0f77); gossip 24/24, CLN 22/22. Not written: Docker Proof G4 (b) and (c) (NL-367). New follow-ups: NL-357..NL-369. Remaining: G5 (limits, spam, performance, `describegraph`, metrics, the mainnet gate D12: sync and relay stay off on mainnet by default). Update (gossip wave G-D, `48a8951`): G5-T2, G5-T3 and G5-T4 are done, G5-T1 and G5-T5 partial. D1 (97cdc27, b77d1c1, ff09f96): `GossipRateLimiter` (channel_update burst 4 then 1 per 60 s per (SCID, direction), node_announcement 1 per 10 min, keep-alive only when >24 h newer; the newest refused validly signed message per key kept and replayed), `GossipMisbehaviourTracker` (invalid signatures, bad encodings and funding mismatches: 5 in 10 min give a warning, a disconnect and a 1 h ban, persisted in `GraphBannedNodes` only for graph nodes, in-memory bans capped at 10,000), `MaxChannels` 200,000 / `MaxNodes` 100,000 enforced before the signature check, future-timestamp drop, relay backlog bound `Gossip:MaxRelayPendingPerPeer` (5,000, evicted by channel group; NL-360 partial), and `Meter("NLightning.Gossip")` (`GossipMetrics`: received/accepted/rejected/orphaned/dropped/relayed/chain lookups/bans, sync duration, queue depth gauge, snake_case tags); proof `GossipFloodTests` (400-message fuzz flood: flooder banned and disconnected once, the honest peer's 30 channels all applied). D2 (66b4dbc, 4860494, 2abbec2): batched write-behind (5,000 rows per save), streamed bulk load, O(1) `IGraphStore.GetMemoryEstimate()`, 200k channels on SQLite load in 1.55 s (target 10 s), store 475 MiB + 39 MiB per snapshot (NL-373); no `AddGossipIndexes` migration needed; `describegraph` = `ClientCommand` 20. D3 (1d561f2, 70411ac, e7c628e, aadb9d4): the template writes the D12 gossip gate per network (off on mainnet), the Docker runner scripts and per-process test ports (NL-358, NL-359), `scripts/mutinynet/soak-gossip.sh` and the first 20 min of the Mutinynet soak in `MUTINYNET.md` (895 channels / 194 nodes synced in under 5 min, 3.2 RPC/min steady, 0 errors). Integration d31cd2f: `GraphStore` records load/flush durations and its write-behind depth in the meter. Docker gossip 3 x 24/24 (Proof G5 regression). Remaining: G5-T1 interned node ids and `Gossip:MaxMemoryMb` enforcement (NL-373), G5-T5 the 24 h soak evaluation (NL-376) before D12 opens; follow-ups NL-370..NL-377, NL-345, NL-346, NL-357, NL-360..NL-369.
+- **Evidence:** No messages, no validation, no graph storage, no pathfinding; `channel_update` in failure messages must be empty. Sub-issues: NL-100, NL-101, NL-102, NL-103, NL-008. Update: 256-259 parse as raw `GossipMessage` and are dropped (156c375, NL-100); 261/263/265 are typed and queries get empty `reply_channel_range`/`reply_short_channel_ids_end` (9e17af2, NL-205). Remaining: announcements, channel_update, graph. Update (ABCD wave 0, `0b7e617`): `channel_update` (258) is typed (`ChannelUpdateMessage`/`ChannelUpdatePayload`, unknown trailing fields kept for the signature) and signed/verified with the node key (`ILightningSigner.SignNodeMessage`/`VerifyNodeMessage`); an LND-captured update parses byte-exact and verifies; `FailureChannelUpdateFactory` takes the typed update (e7b5269, 3ba2e4f). Remaining: sending/storing updates (ABCD W1-E), announcements, graph. Update (ABCD wave 1, `342d22e`): direct `channel_update` exchange with the channel peer (W1-E): `Application/Gossip/ChannelUpdateService` sends our signed update once a channel with a scid turns Open (under the channel lock, so it follows channel_ready) and again, unchanged, on every new connection to that peer; option_scid_alias channels use the peer's alias, no update when htlc_minimum exceeds capacity; inbound 258 is kept only if it is for our chain, names a channel with that peer, has the peer's direction, verifies with the peer's node key, is newer, not far in the future and not above capacity (b93dd05, f9c54cc, 7c1ed4c, 5d1a9ed). Docker `ChannelUpdateExchangeTests`: LND `GetChanInfo` shows our fee/CLTV policy and we store alice's. Remaining: announcements, graph, relay; LND never puts us into `addinvoice --private` hints without a node_announcement (NL-255). Update (gossip wave G-A, `164289a`): the library half of G0-G4 landed, nothing is wired into the node yet. G0-T1/T2: 256/257 are typed Domain codecs (`ChannelAnnouncementPayload`, `NodeAnnouncementPayload`; `GossipMessage`/`GossipPayload` deleted) and dropped in `PeerService`; 259 is a typed `AnnouncementSignaturesMessage` on the channel path that gets a channel-scoped "not supported yet" warning until G1-T3 (57bb15b, 0c6a9c3). G0-T3 `IGossipSignatureVerifier`/`GossipSignatureVerifier` (c5c7b5d). G0-T4 address descriptors (NL-008). G0-T5 LND 0.20 and CLN v26.06.8 captures in `Tests.Utils/Vectors/Bolt7Vectors.cs`, byte-exact with every signature verified (7d318b5). G1-T1 storage half (NL-341). G1-T2 `ILightningSigner.SignChannelAnnouncement` with refusals (709030c, 910d085). G2-T1 Domain graph model and `GossipValidator` (78e5b23, caf8ee7). G2-T2 `IFundingOutputLookup` (79debc3, c1bb630). G2-T3 migration `AddGossipGraph` and `IGraphDbRepository` (a49e166). G4-T1 `GraphPathfinder` (fd92d5d, 0bf7baf). Registration of the Bitcoin gossip services and `Gossip` options binding: b515155. Remaining: G1-T1 handlers/IPC, G1-T3..T7, G2-T4..T6, G3, G4-T2..T4, G5. Update (gossip wave G-B, `5bbfbb5`): G1 and G2 are done and proven against LND in Docker. G1 (lane B1): public channels (NL-341, NL-236), `AnnouncementSignaturesMessageHandler` (NL-342), our half sent at depth and after `channel_reestablish` on reconnection with the mainnet gate `CanSendAnnouncementSignatures` (G1-T4), the public `channel_update` (dont_forward clear, real SCID) through `OwnGossipPublisher` (G1-T5), `NodeAnnouncementService` (`Node:Alias`/`Node:Color`, `Gossip:AnnounceAddresses`, timestamp saved before publishing; G1-T6) and `GossipRelayScheduler` (own 256 -> 258 -> 257 to every connected peer of our chain every `Gossip:OwnGossipFlushInterval`, our 257 only after one of our 256s went out on the connection; G1-T7) (4115b34, f6e76c2, 7fdc993, 2cc2ee0, d77de7f, dd5c4a1, 367fdda); in-process proof `Gossip/Announcements/AnnouncementHarnessTests` on `TwoNodeHarness(announceChannel: true)`. G2 (lane B2): `GossipIngress` (bounded queues, duplicate filter, validator, signature verifier, funding lookup at 6 confirmations, orphan replay, B7-CA-04 ban) and write-behind `GraphStore` (7501ad6, 9d288bf); `PeerService` sends 256/257/258 to the ingress and `gossip_timestamp_filter(0, 0xFFFFFFFF)` after our init to `gossip_queries` peers (2635956, 675f54c); `GraphPruner` from the chain monitor's `OnBlockInputs` (spent +72, stale after `DeleteStaleAfter`, lonely nodes, reorgs, funding blocks reorged out; f252d68, 0e0f85c); IPC `listnodes` (17) / `listgraphchannels` (18) (d3dda72); `Gossip:Enabled` unset means on everywhere but mainnet (D12); `GossipGraphHostedService` starts the graph. Lane B3: Docker `Docker/Gossip/` Proofs G0, G1 (a)-(c), G2 (a)-(c) (8ecbb2e, 27f8822, fd71c07; integrated by 66e773c, 717bd97), 16/16 green. New follow-ups: NL-348..NL-356. Remaining: G3 (gossip_queries sync, relay of others' gossip, re-query of dropped SCIDs NL-353), G4-T2..T4 (pathfinding in payments), G5, Proofs G1 (d) (NL-255) and G2 (d) (NL-356). Update (gossip wave G-C, `4dc0f77`): G3 and G4 are done and the BOLT 7 goal proofs are green against LND 0.20 and CLN v26.06.8. G3 (lane C1): strict query codec, CRC32C checksums and the timestamp filter (7b21464); `QueryResponder` answers from the graph and `GossipSyncManager` syncs by range query → SCID batches → `gossip_timestamp_filter`, re-querying dropped SCIDs (c16edf0; NL-205, NL-353); relay of other nodes' gossip with per-peer filters, staggered flushes, origin suppression and a paced backlog, through the outbox port (607a91f; NL-351); `gossip_queries_ex` checked against CLN and advertised Optional (89110b9); review fixes (4b4f7b6). G4 (lane C2): `MissionControl`, graph paths in `PaymentRoutePlanner` (a third candidate source after direct and hint paths, MPP over all three), shadow CLTV on graph routes, G3-T5 refresh on UPDATE failures (a34c9b5, f27340c, 2638eff), invoice hint policy (e08e20b; NL-245), `getroute` = `ClientCommand` 19 (91cde4c), in-process `GraphPaymentHarnessTests` (5673e78). NL-348, NL-349, NL-350, NL-352, NL-354, NL-355 fixed by lane M3; the integrator bound `GossipSyncScidRefresher` and `PeerManager` as `IPeerGossipOutbox` (b5de7be). Docker (lane C3 and integration): goal proofs (b) we pay carol's hint-free invoice, (c) carol pays ours, (d) `getroute` equals LND's `QueryRoutes` and the paid fee, G3 (a)-(c) sync by queries, re-sync after a restart, relay without echo (`PublicPaymentFlowTests`, `GossipSyncFlowTests`), G1 (d) (NL-255), G2 (d) (NL-356), and CLN Proof G3 (d) plus goal proof (e) (`ClnGossipTests`) (072be5a, 3dbc8be, 7399b83, 412f1d5, deda1a5, 0325ef3, b334442, 485a9aa, 4dc0f77); gossip 24/24, CLN 22/22. Not written: Docker Proof G4 (b) and (c) (NL-367). New follow-ups: NL-357..NL-369. Remaining: G5 (limits, spam, performance, `describegraph`, metrics, the mainnet gate D12: sync and relay stay off on mainnet by default). Update (gossip wave G-D, `48a8951`): G5-T2, G5-T3 and G5-T4 are done, G5-T1 and G5-T5 partial. D1 (97cdc27, b77d1c1, ff09f96): `GossipRateLimiter` (channel_update burst 4 then 1 per 60 s per (SCID, direction), node_announcement 1 per 10 min, keep-alive only when >24 h newer; the newest refused validly signed message per key kept and replayed), `GossipMisbehaviourTracker` (invalid signatures, bad encodings and funding mismatches: 5 in 10 min give a warning, a disconnect and a 1 h ban, persisted in `GraphBannedNodes` only for graph nodes, in-memory bans capped at 10,000), `MaxChannels` 200,000 / `MaxNodes` 100,000 enforced before the signature check, future-timestamp drop, relay backlog bound `Gossip:MaxRelayPendingPerPeer` (5,000, evicted by channel group; NL-360 partial), and `Meter("NLightning.Gossip")` (`GossipMetrics`: received/accepted/rejected/orphaned/dropped/relayed/chain lookups/bans, sync duration, queue depth gauge, snake_case tags); proof `GossipFloodTests` (400-message fuzz flood: flooder banned and disconnected once, the honest peer's 30 channels all applied). D2 (66b4dbc, 4860494, 2abbec2): batched write-behind (5,000 rows per save), streamed bulk load, O(1) `IGraphStore.GetMemoryEstimate()`, 200k channels on SQLite load in 1.55 s (target 10 s), store 475 MiB + 39 MiB per snapshot (NL-373); no `AddGossipIndexes` migration needed; `describegraph` = `ClientCommand` 20. D3 (1d561f2, 70411ac, e7c628e, aadb9d4): the template writes the D12 gossip gate per network (off on mainnet), the Docker runner scripts and per-process test ports (NL-358, NL-359), `scripts/mutinynet/soak-gossip.sh` and the first 20 min of the Mutinynet soak in `MUTINYNET.md` (895 channels / 194 nodes synced in under 5 min, 3.2 RPC/min steady, 0 errors). Integration d31cd2f: `GraphStore` records load/flush durations and its write-behind depth in the meter. Docker gossip 3 x 24/24 (Proof G5 regression). Remaining: G5-T1 interned node ids and `Gossip:MaxMemoryMb` enforcement (NL-373), G5-T5 the 24 h soak evaluation (NL-376) before D12 opens; follow-ups NL-370..NL-377, NL-345, NL-346, NL-357, NL-360..NL-369. Update (mainnet gossip probe, integrated on `wip/fafo` at the docs commit after `bc3a2c3`): `tools/NLightning.GossipProbe` ran the node's gossip stack against five mainnet peers (Eclair, two LND, two CLN) and the whole mainnet graph, first with `Gossip:AssumeChannelValid` (new, 0e63795: signed announcements stored `Assumed` without the funding lookup, never relayed or served; refused on mainnet while HTLCs are enabled or public channels are allowed) and then verified against an unpruned mainnet bitcoind (`--chain rpc`, 73ba0b7, 30049c0): about 40,000 channels in 2 min assumed and in about 18 min verified (270,000 read-only RPCs, 0 script/amount/index mismatches), 115 MB live heap, RSS 400 MB (630 MB peak verified), graph reload 0.55 s. Fixed on the way: NL-400..NL-405, NL-410..NL-412; open: NL-406..NL-408, NL-413..NL-416. D12 stays closed; `docs/agents/MAINNET_GOSSIP_PROBE.md` lists what remains.
 - **Fix sketch:** Wire types first (so they stop killing peers), then announcement_signatures for public channels, graph store, gossip_queries.
 - **Blocks/Blocked-by:** Blocks multi-hop sending in NL-073
 - **Plan ref:** `docs/agents/BOLT7_GOSSIP_PLAN.md` (milestones G0-G5, waves G-A..G-D); BOLT_COVERAGE roadmap steps 2, 12
@@ -2626,7 +2628,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Gossip/Graph/GraphStore.cs`, `GraphMemoryAccounting.cs`, `GossipGraphOptions`
-- **Evidence:** Measured by lane D2 (66b4dbc): 200k channels hold 475 MiB of managed heap in the store (about 2.5 KB per channel, per-channel copies of node ids and bitcoin keys and four dictionaries per channel) plus 39 MiB per snapshot; the store, one snapshot and a second one during a rebuild come to about 553 MiB at the `MaxChannels` cap, above the plan's `Gossip:MaxMemoryMb` default of 512 (lane D2 proposes 768). `IGraphStore.GetMemoryEstimate()` exists but nothing enforces a memory budget; only `MaxChannels`/`MaxNodes` are enforced (D1). A mainnet-sized graph (about 50k channels) estimates at about 130 MiB (reported by lanes D1 and D2, gossip wave G-D).
+- **Evidence:** Measured by lane D2 (66b4dbc): 200k channels hold 475 MiB of managed heap in the store (about 2.5 KB per channel, per-channel copies of node ids and bitcoin keys and four dictionaries per channel) plus 39 MiB per snapshot; the store, one snapshot and a second one during a rebuild come to about 553 MiB at the `MaxChannels` cap, above the plan's `Gossip:MaxMemoryMb` default of 512 (lane D2 proposes 768). `IGraphStore.GetMemoryEstimate()` exists but nothing enforces a memory budget; only `MaxChannels`/`MaxNodes` are enforced (D1). A mainnet-sized graph (about 50k channels) estimates at about 130 MiB (reported by lanes D1 and D2, gossip wave G-D). Update (mainnet gossip probe, `docs/agents/MAINNET_GOSSIP_PROBE.md`): the mainnet graph (about 40,000 channels) holds 115 MB of live heap (`dotnet-gcdump`; the store estimate 99 MB, G-D's 2.5 KB per channel holds) but 200-230 MB of GC heap and 400 MB RSS steady; a verified sync peaks at 425 MB GC heap and 630 MB RSS from `getblock` JSON (NL-416). The budget should cover the GC heap, not only the store; the relay's origin tracker (NL-405, fixed) no longer holds 15 MB while the relay is off.
 - **Fix sketch:** Intern node ids and bitcoin keys (G5-T1), then enforce `Gossip:MaxMemoryMb` from the estimate in the ingress (refuse new channels over budget) with a default set from a re-measurement.
 - **Blocks/Blocked-by:** Part of NL-099; blocks D12 on mainnet
 - **Plan ref:** BOLT7 G5-T1
@@ -2656,10 +2658,170 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `scripts/mutinynet/soak-gossip.sh`, `docs/agents/MUTINYNET.md` ("Gossip soak (G5-T5)")
-- **Evidence:** The soak started 2026-09-26 19:10:53 UTC (log `~/.nltg/mutinynet/soak/soak-20260926.log`, one sync peer, the faucet LND). In the first 20 min RSS went 178 -> 207 MB (flattening) and `nltg.db`'s WAL grew about 130 KB per 5 min with no checkpoint seen (e7c628e) (reported by lane D3, gossip wave G-D). D12 stays closed until the 24 h results are recorded. Update (wave O7, `8364a01`): the soak sampler sets its trap flags before its traps and `start` runs from the staged copy (lane X5, ddcc598; the script bug found during the soak); the Mutinynet public channel is recorded in `MUTINYNET.md`. The 24 h evaluation is still pending.
+- **Evidence:** The soak started 2026-09-26 19:10:53 UTC (log `~/.nltg/mutinynet/soak/soak-20260926.log`, one sync peer, the faucet LND). In the first 20 min RSS went 178 -> 207 MB (flattening) and `nltg.db`'s WAL grew about 130 KB per 5 min with no checkpoint seen (e7c628e) (reported by lane D3, gossip wave G-D). D12 stays closed until the 24 h results are recorded. Update (wave O7, `8364a01`): the soak sampler sets its trap flags before its traps and `start` runs from the staged copy (lane X5, ddcc598; the script bug found during the soak); the Mutinynet public channel is recorded in `MUTINYNET.md`. The 24 h evaluation is still pending. Update (mainnet gossip probe, `docs/agents/MAINNET_GOSSIP_PROBE.md`): over a 60-minute mainnet run (about 40,000 channels) and a restart, the SQLite WAL stayed bounded (5.8 MiB, checkpointed; 5.2 MiB verified) and RSS flat at 400 MB after the sync, so the WAL concern does not reproduce at mainnet scale on a busy graph; the 24 h Mutinynet evaluation and a multi-day mainnet run are still pending.
 - **Fix sketch:** Record the 24 h samples in `MUTINYNET.md`; check RSS and WAL trends (add a periodic `wal_checkpoint` if the WAL keeps growing); repeat with a second sync peer to exercise rotation.
 - **Blocks/Blocked-by:** Part of NL-099; blocks D12
 - **Plan ref:** BOLT7 G5-T5
+
+### NL-400 Core Lightning's wrapping reply_channel_range sequence ended every CLN range sync
+- **Status:** fixed (df56139)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/RangeReplyCollector.cs`
+- **Evidence:** CLN's `reply_channel_range` sequence has unsorted ids and a `number_of_blocks` that wraps in 32 bits (`918664 + 4294956303`), the next reply starting at the wrapped end, below the previous `first_blocknum`; `RangeReplyCollector` rejected it with a warning, so the sync with every CLN mainnet peer (Blockstream Store, noserver4u) ended at the first reply (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: LND's continuity rule (a reply may start at the previous reply's u32 end or the block before it) is accepted and ids inside the query are kept even outside their own reply's claimed blocks. Upstream CLN issue worth reporting.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G3, D12
+
+### NL-401 A pre-2022 channel_update without htlc_maximum_msat closed the connection
+- **Status:** fixed (b4d0e1c)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure/Protocol/Services/MessageService.cs`
+- **Evidence:** LND answers queries with old 128-byte `channel_update`s without `htlc_maximum_msat`; the payload parser rejected them and `MessageService` warned and closed the connection, so every LND peer that stored one was cut about 15 s into the sync (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: a malformed 256/257/258 is ignored with one warning per connection, the connection is kept.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G2, D12
+
+### NL-402 Each range-sync peer asked for everything the other peers had already delivered
+- **Status:** fixed (41d2e45)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
+- **Evidence:** Each sync peer diffed its range reply against the graph once, at the start: with five sync peers 4.9x the graph was downloaded and an LND sync took 11 min (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: every `query_short_channel_ids` batch is diffed again right before it goes out (1.9x, 67 s). With the chain check the store lags the queue and the re-diff sees too little (NL-415).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-415
+- **Plan ref:** BOLT7 G3-T2
+
+### NL-404 Range sync asked for unknown channels whose updates the peer reports stale
+- **Status:** fixed (e64b5f4)
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`, `GossipSyncOptions.cs`
+- **Evidence:** With `gossip_queries_ex` timestamps, unknown channels whose both update timestamps are stale or missing were queried anyway (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: they are skipped (`Gossip:SkipChannelsStaleFor`, 14 days; LND's zombie rule); the probe logs the peers' range timestamps (0ff9025). Mainnet peers mark almost no channel stale today (0-2 per reply), so the zombies of NL-406 are not removed by this.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-406
+- **Plan ref:** BOLT7 G3-T2
+
+### NL-405 OriginTrackingGossipIngress recorded origins while the relay was off
+- **Status:** fixed (63ecfbe)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Relay/OriginTrackingGossipIngress.cs`, `RelayServiceCollectionExtensions.cs`
+- **Evidence:** The relay's origin tracker kept up to 100,000 origins (about 15 MB in the `dotnet-gcdump` at 18 min) while the relay of others' gossip was off (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: nothing is recorded while the relay is off.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-373
+- **Plan ref:** BOLT7 G5-T1
+
+### NL-406 Core Lightning floods channel_announcements without any channel_update; we store them
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs`, `GraphStore.cs`, `GraphPruner.cs`
+- **Evidence:** 24 % of the mainnet graph (9,774 of 40,457 channels in the first run, 9,091 of 39,663 verified) are announcements without any update, sent by the CLN peers mostly right after our `gossip_timestamp_filter`, against BOLT 7's "MUST NOT send the `channel_announcement`" without updates; their funding outputs are unspent on chain (verified run), their nodes long gone. We store them; the pruner removes them only by the stale rule (28 days, only while blocks come) and CLN re-sends them on every connection (32,022 re-sent in the restart; in the verified run 28,785 dropped at the CLN peers' full queues) (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`; confirmed by the verified run).
+- **Fix sketch:** Keep an announcement without update in a bounded pending cache (TTL, like the orphan cache) and store it only with its first update, or keep a zombie index (LND) of pruned SCIDs. Report upstream to CLN. Needed before relay is enabled on mainnet.
+- **Blocks/Blocked-by:** Part of NL-099; blocks D12 relay on mainnet; related NL-373
+- **Plan ref:** BOLT7 D12, G5-T1
+
+### NL-407 Eclair stops answering query_short_channel_ids after four queries
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`
+- **Evidence:** In every first-run probe ACINQ (Eclair) answered 4 queries of 200 channels, then the fifth got no `reply_short_channel_ids_end` within `SyncReplyTimeout` (2 min) and we ended the querying of that connection (live gossip kept flowing) (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Not diagnosed. The verified run did **not** reproduce it at its slower, paced rate: Eclair answered 109 queries in run1 (one later query and one in the restart timed out).
+- **Fix sketch:** Check Eclair's per-peer query budget in its source and with a peer we have a channel with; pace queries to Eclair if a budget exists.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G3-T2
+
+### NL-408 The initial sync orphans nearly every channel_update
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs`
+- **Evidence:** Announcements and updates of one channel are validated by different workers in parallel (12 on the probe machine), so the update usually wins the race and is orphaned, then replayed once the announcement is stored: 53,593 orphaned updates in the first run, 56,093 in the verified run (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Correct, but a second pass per update.
+- **Fix sketch:** Partition the ingress queue by short channel id so a channel's messages stay on one worker.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G5-T3
+
+### NL-409 (unused number)
+- **Status:** wontfix
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** n/a
+- **Evidence:** Not assigned: the mainnet gossip probe numbered its first run NL-400..NL-408 and its verified run from NL-410, leaving NL-409 free. Kept as a placeholder so IDs have no gap.
+- **Fix sketch:** None.
+- **Blocks/Blocked-by:** None
+- **Plan ref:** n/a
+
+### NL-410 A dropped channel_update of a stored channel was never asked for again
+- **Status:** fixed (788d2d3)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs` (`RetryMissedShortChannelIds`)
+- **Evidence:** `RetryMissedShortChannelIds` dropped every missed SCID already in the graph, and a peer without `gossip_queries_ex` never offers the update again; with the chain check the store lags the queue, so updates were orphaned or dropped far more often (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: a stored channel stays in the retry until it has both policies (or is spent); one query per miss.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 G3-T2
+
+### NL-411 FundingOutputLookup called getblockhash before every txid-list fetch
+- **Status:** fixed (1a77f88)
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Gossip/FundingOutputLookup.cs`
+- **Evidence:** `GetBlockTxIdsAsync` reads the block hash itself, so the extra `getblockhash` made 7 RPCs per lookup on a cache miss (84 % of mainnet lookups) instead of 6 (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: about 14 % fewer RPCs for a full sync; a cached list is still checked against `getblockhash` first.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 D3
+
+### NL-412 The sync backpressure waited on the whole ingress queue, with a time limit
+- **Status:** fixed (788d2d3)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`, `Gossip/Graph/GossipIngress.cs` (`QueuedCountOf`)
+- **Evidence:** The NL-353 backpressure waited for the whole ingress queue to fall to half of one peer's capacity, at most `SyncReplyTimeout` (2 min), then queried anyway: with the chain check one CLN flood held every other sync peer back 2 min per batch and the answer then went into a queue that could drop it (IBD smoke: every peer, every batch) (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: the querier waits for the queried peer's own queue, without a time limit (logged once after the timeout).
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-353
+- **Plan ref:** BOLT7 G3-T2
+
+### NL-413 GetUnspentOutputAsync derives the output height from a separate getblockcount
+- **Status:** open
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`GetUnspentOutputAsync`)
+- **Evidence:** The height is `getblockcount - confirmations + 1` with the `getblockcount` after `gettxout`: a block connected in between shifts it by one and the lookup answers `ChainMoved` (transient, deferred). 0.8 % of lookups while bitcoind connected ~8 blocks/s in IBD, none once synced (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`).
+- **Fix sketch:** Use the height of `gettxout`'s `bestblock` (`getblockheader`), the same RPC count.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 D3
+
+### NL-414 A channel whose funding output a mempool transaction spends is looked up again and again
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Gossip/Graph/GossipIngress.cs` (`OutputSpentInMempool` retries), `Gossip/Sync/GossipSyncManager.cs`
+- **Evidence:** Looked up every `RetryDelay` for `MaxRetries`, then dropped as missed, re-queried and looked up again for as long as the close stays unconfirmed: 184 lookups (about 1,200 RPCs) for one channel (`968539x658x1`) in the hour (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`).
+- **Fix sketch:** Keep mempool-spent SCIDs aside and look them up again once per new block.
+- **Blocks/Blocked-by:** Part of NL-099
+- **Plan ref:** BOLT7 D3
+
+### NL-415 With the chain check, concurrent range syncs download the graph 3.6 times
+- **Status:** open
+- **Severity:** medium
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Gossip/Sync/GossipSyncManager.cs`, `Gossip/Graph/GossipIngress.cs`
+- **Evidence:** 142,240 `channel_announcement`s for 39,663 channels (1.9x with AssumeChannelValid): NL-402's per-batch re-diff skips only stored channels while thousands wait in the ingress for their lookup, so each of five sync peers was asked for 20,000-25,000 channels (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Costs bandwidth and ingress work, not lookups.
+- **Fix sketch:** Have the ingress keep the SCIDs whose announcement is queued, deferred or being looked up and let the re-diff skip them, or run fewer concurrent range syncs while the chain is checked.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-402; blocks D12
+- **Plan ref:** BOLT7 G3-T2, D12
+
+### NL-416 A verified sync peaks at 630 MB RSS from getblock JSON on the large object heap
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Wallet/BitcoinChainService.cs` (`GetBlockTxIdsAsync`)
+- **Evidence:** Each `getblock <hash> 1` answer (100-400 KB) is parsed into a Newtonsoft `JToken` tree on the LOH: RSS peak 630 MB (GC heap 425 MB) against 425 MB with AssumeChannelValid, back to 456 MB / 255 MB after the sync (reported by the mainnet gossip probe, verified run against a real bitcoind, `docs/agents/MAINNET_GOSSIP_PROBE.md`).
+- **Fix sketch:** Read the txids with a streaming `JsonReader` (or `getblock <hash> 0`), or budget the sync's garbage in NL-373.
+- **Blocks/Blocked-by:** Part of NL-099; related NL-373
+- **Plan ref:** BOLT7 G5-T1, D3
 
 ## BOLT 8: Transport
 
@@ -3638,6 +3800,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ---
+
+### NL-403 A mainnet node could not read its own key file
+- **Status:** fixed (7f72785)
+- **Severity:** high
+- **Kind:** bug
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (`FromFilePath`)
+- **Evidence:** `SecureKeyManager.FromFilePath` compared NBitcoin's network name (`Main`) with `mainnet`, so a mainnet key file was refused after the first start (reported by the mainnet gossip probe, first run, `docs/agents/MAINNET_GOSSIP_PROBE.md`). Fixed: the names are mapped; test in `SecureKeyManagerTests`.
+- **Fix sketch:** Done.
+- **Blocks/Blocked-by:** Blocks any mainnet node
+- **Plan ref:** n/a
 
 ## Tests / CI / Build
 
