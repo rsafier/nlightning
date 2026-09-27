@@ -19,7 +19,7 @@ public static class PaymentsServiceCollectionExtensions
     /// <summary>
     /// Adds <see cref="IncomingOnionProcessor"/>, <see cref="FinalHopProcessor"/>, <see cref="IForwardingPolicy"/>
     /// (<see cref="HtlcForwardingPolicy"/>), <see cref="HintRouteBuilder"/>, <see cref="PaymentOnionFactory"/> and
-    /// <see cref="IInvoiceService"/> (<see cref="InvoiceService"/>), all singletons.
+    /// <see cref="IInvoiceService"/> (<see cref="InvoiceService"/>) and <see cref="BlindedPathBuilder"/>, all singletons.
     /// </summary>
     /// <remarks>
     /// Needs, from the other layers: <c>ISphinxService</c> (<c>AddBitcoinInfrastructure</c>),
@@ -38,6 +38,10 @@ public static class PaymentsServiceCollectionExtensions
         services.AddSingleton<HintRouteBuilder>();
         services.AddSingleton<PaymentOnionFactory>();
         services.AddSingleton<IInvoiceService, InvoiceService>();
+
+        // ONION M5: blinded paths to us (needs IRouteBlindingService, IChannelMemoryRepository and
+        // IChannelUpdateService, resolved only when the builder is)
+        services.TryAddSingleton(sp => ActivatorUtilities.CreateInstance<BlindedPathBuilder>(sp));
 
         return services;
     }

@@ -67,6 +67,26 @@ public interface IPaymentService
                                            CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Pays a recipient through one of its blinded paths (BOLT 4 "Route Blinding", sender side; ONION M5) and waits for
+    /// the outcome.
+    /// </summary>
+    /// <remarks>
+    /// The route runs to the path's introduction node like any other payment, for the amount plus the path's fee
+    /// (<see cref="Protocol.Onion.Models.BlindedPayInfo.ComputeFeeMsat"/>) and with the path's CLTV delta as the final
+    /// delta; the blinded hops follow with their <c>encrypted_recipient_data</c> (the introduction node also gets
+    /// <c>current_path_key</c>) and the final one with <c>amt_to_forward</c>, <c>outgoing_cltv_value</c> and
+    /// <c>total_amount_msat</c>. The payment is sent in one HTLC (no split); a failure from inside a blinded path moves
+    /// to the next usable path. Persistence and outcome are those of
+    /// <see cref="PayInvoiceAsync(string, LightningMoney?, PayInvoiceOptions, CancellationToken)"/>.
+    /// </remarks>
+    /// <exception cref="ArgumentException">No path, an invalid amount, or an option out of range. Nothing is persisted.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A payment for the hash is already in flight or succeeded. Nothing
+    /// is persisted.</exception>
+    Task<PayInvoiceResult> PayBlindedAsync(PayBlindedRequest request, PayInvoiceOptions options,
+                                           CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// The payment for <paramref name="paymentHash"/>, or null.
     /// </summary>
     Task<PaymentModel?> GetPaymentAsync(Hash paymentHash, CancellationToken cancellationToken = default);

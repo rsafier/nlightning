@@ -5,6 +5,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Payments.Models;
 using Domain.Protocol.Onion.Enums;
+using Domain.Protocol.Onion.Models;
 using Routing;
 
 /// <summary>
@@ -13,7 +14,7 @@ using Routing;
 /// </summary>
 internal sealed class PaymentSession
 {
-    public PaymentSession(PaymentTarget target, string bolt11, LightningMoney amount, LightningMoney maxFee,
+    public PaymentSession(PaymentTarget target, string? bolt11, LightningMoney amount, LightningMoney maxFee,
                           int maxParts, int maxAttempts, DateTimeOffset? deadline, DateTimeOffset createdAt)
     {
         Target = target;
@@ -27,7 +28,13 @@ internal sealed class PaymentSession
     }
 
     public PaymentTarget Target { get; }
-    public string Bolt11 { get; }
+
+    /// <summary>
+    /// The recipient's blinded paths for a payment sent through one (ONION M5); null for an invoice payment.
+    /// </summary>
+    public IReadOnlyList<BlindedPaymentPath>? BlindedPaths { get; init; }
+
+    public string? Bolt11 { get; }
     public Hash PaymentHash => Target.PaymentHash;
 
     /// <summary>What the payee must receive, all parts together.</summary>

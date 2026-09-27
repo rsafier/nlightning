@@ -54,6 +54,12 @@ public sealed class RouteConstraints
     public Dictionary<ChannelId, ulong> LocalLiquidityBoundsMsat { get; } = [];
 
     /// <summary>
+    /// The blinded paths (by their index in the payment's paths) not used again: a failure came from inside them
+    /// (BOLT 4: <c>invalid_onion_blinding</c> from the introduction node).
+    /// </summary>
+    public HashSet<int> ExcludedBlindedPaths { get; } = [];
+
+    /// <summary>
     /// Blocks added to the final <c>outgoing_cltv_value</c> (after an <c>expiry_too_soon</c>: a hop's chain tip was
     /// ahead of ours).
     /// </summary>
