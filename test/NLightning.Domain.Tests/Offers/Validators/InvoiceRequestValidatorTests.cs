@@ -42,10 +42,6 @@ public class InvoiceRequestValidatorTests
                 Bolt12RequirementIds.Signature, "no signature on an offer response",
                 b => b.Remove(Bolt12TlvTypes.Signature)
             },
-            {
-                Bolt12RequirementIds.Signature, "a second signature element",
-                b => b.Set(241, new byte[] { 1 })
-            },
             // B12-IRQ-04, response to an offer
             {
                 Bolt12RequirementIds.InvoiceRequestAmounts, "quantity missing with quantity_max",
@@ -71,6 +67,19 @@ public class InvoiceRequestValidatorTests
                 Bolt12RequirementIds.InvoiceRequestAmounts, "amount below offer_amount x quantity",
                 b => b.SetTu64(Bolt12TlvTypes.OfferQuantityMax, 0).SetTu64(Bolt12TlvTypes.InvreqQuantity, 3)
                       .SetTu64(Bolt12TlvTypes.InvreqAmount, 29_999)
+            },
+            {
+                Bolt12RequirementIds.InvoiceRequestAmounts, "currency offer without a converter",
+                b => b.SetUtf8(Bolt12TlvTypes.OfferCurrency, "USD").SetTu64(Bolt12TlvTypes.InvreqAmount, 1)
+            },
+            {
+                Bolt12RequirementIds.InvoiceRequestAmounts, "offer_amount x quantity overflows u64, tiny amount",
+                b => b.SetTu64(Bolt12TlvTypes.OfferQuantityMax, 0).SetTu64(Bolt12TlvTypes.InvreqQuantity, 1UL << 54)
+                      .SetTu64(Bolt12TlvTypes.InvreqAmount, 1)
+            },
+            {
+                Bolt12RequirementIds.InvoiceRequestAmounts, "offer_amount x quantity overflows u64, no amount",
+                b => b.SetTu64(Bolt12TlvTypes.OfferQuantityMax, 0).SetTu64(Bolt12TlvTypes.InvreqQuantity, 1UL << 54)
             },
             {
                 Bolt12RequirementIds.InvoiceRequestAmounts, "no amount anywhere",
@@ -137,10 +146,7 @@ public class InvoiceRequestValidatorTests
             "amountless offer with invreq_amount",
             b => b.Remove(Bolt12TlvTypes.OfferAmount).SetTu64(Bolt12TlvTypes.InvreqAmount, 1)
         },
-        {
-            "currency offer without a converter",
-            b => b.SetUtf8(Bolt12TlvTypes.OfferCurrency, "USD").SetTu64(Bolt12TlvTypes.InvreqAmount, 1)
-        },
+        { "odd signature element besides signature", b => b.Set(241, new byte[] { 1 }) },
         { "unknown odd invreq feature", b => b.Set(Bolt12TlvTypes.InvreqFeatures, new byte[] { 0x08 }) },
         { "mainnet invreq_chain", b => b.SetChains(Bolt12TlvTypes.InvreqChain, [ChainConstants.Main]) },
         {
@@ -189,6 +195,44 @@ public class InvoiceRequestValidatorTests
         Assert.Equal(20_000_000UL, InvoiceRequestValidator.GetExpectedAmountMsat(10_000, "USD", 2, (_, c) => c * 1_000));
         Assert.Null(InvoiceRequestValidator.GetExpectedAmountMsat(10_000, "USD", 2));
         Assert.Null(InvoiceRequestValidator.GetExpectedAmountMsat(ulong.MaxValue, null, 2));
+    }
+
+    [Fact]
+    public void Given_CurrencyOfferAndConverterThatCannotConvert_When_Validating_Then_ItIsRejected()
+    {
+        // Arrange
+        var request = InvoiceRequest.Parse(Bolt12TestData.InvoiceRequestBuilder()
+                                                         .SetUtf8(Bolt12TlvTypes.OfferCurrency, "XYZ")
+                                                         .SetTu64(Bolt12TlvTypes.InvreqAmount, 50_000_000)
+                                                         .Build());
+
+        // Act
+        var rejected = InvoiceRequestValidator.Validate(request, convertToMsat: (_, _) => null);
+        var accepted = InvoiceRequestValidator.Validate(request, convertToMsat: (_, cents) => cents * 1_000);
+
+        // Assert
+        Assert.Equal(Bolt12RequirementIds.InvoiceRequestAmounts, rejected!.RequirementId);
+        Assert.Equal(Bolt12TlvTypes.OfferCurrency, rejected.Field);
+        Assert.Null(accepted);
+    }
+
+    [Fact]
+    public void Given_ExpectedAmountOverflowingU64_When_Validating_Then_ItIsRejected()
+    {
+        // Arrange: 10,000 msat x 2^54 > 2^64 - 1, while invreq_amount is 1 msat
+        var request = InvoiceRequest.Parse(Bolt12TestData.InvoiceRequestBuilder()
+                                                         .SetTu64(Bolt12TlvTypes.OfferQuantityMax, 0)
+                                                         .SetTu64(Bolt12TlvTypes.InvreqQuantity, 1UL << 54)
+                                                         .SetTu64(Bolt12TlvTypes.InvreqAmount, 1)
+                                                         .Build());
+
+        // Act
+        var violation = InvoiceRequestValidator.Validate(request, [ChainConstants.Main]);
+
+        // Assert
+        Assert.Equal(Bolt12RequirementIds.InvoiceRequestAmounts, violation!.RequirementId);
+        Assert.Equal(Bolt12TlvTypes.InvreqQuantity, violation.Field);
+        Assert.Null(InvoiceRequestValidator.GetExpectedAmountMsat(10_000, null, 1UL << 54));
     }
 
     [Theory]

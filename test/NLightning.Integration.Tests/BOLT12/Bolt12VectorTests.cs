@@ -248,7 +248,10 @@ public class Bolt12VectorTests
         var digest = Bolt12MerkleTree.GetSignatureDigest(vector.SignatureTag!, root);
 
         // Assert
-        Assert.Null(InvoiceRequestValidator.Validate(invoiceRequest));
+        // A USD offer: valid with a conversion, rejected (fail closed) without one
+        Assert.Null(InvoiceRequestValidator.Validate(invoiceRequest, convertToMsat: (_, cents) => cents));
+        Assert.Equal(Bolt12RequirementIds.InvoiceRequestAmounts,
+                     InvoiceRequestValidator.Validate(invoiceRequest)!.RequirementId);
         Assert.Equal(Bolt12Constants.InvoiceRequestSignatureTag, vector.SignatureTag);
         Assert.Equal(vector.SignatureDigest, (byte[])digest);
         Assert.Equal(vector.Signature, invoiceRequest.Signature!.Value.ToArray());
