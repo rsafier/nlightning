@@ -202,6 +202,56 @@ public class GossipMemoryBudgetTests : IDisposable
     }
 
     [Fact]
+    public void Given_OverTheBudget_When_TheReaderReportsZero_Then_TheLastDecisionIsKept()
+    {
+        // Arrange
+        var budget = CreateBudget();
+        _reader.WorkingSet = 2_000 * MiB;
+        Assert.True(budget.IsOverBudget);
+
+        // Act
+        _reader.WorkingSet = 0;
+        _clock.Now += TimeSpan.FromSeconds(1);
+        var over = budget.IsOverBudget;
+
+        // Assert
+        Assert.True(over);
+        Assert.Equal(2_000 * MiB, budget.GetState().WorkingSetBytes);
+        Assert.Equal(1, budget.Crossings);
+    }
+
+    [Fact]
+    public void Given_NoAdmissionCheck_When_TheGaugeIsObservedAfterTheInterval_Then_ItReadsTheProcessAgain()
+    {
+        // Arrange
+        var budget = CreateBudget();
+        _reader.WorkingSet = 400 * MiB;
+        Assert.False(budget.IsOverBudget);
+
+        // Act
+        _reader.WorkingSet = 700 * MiB;
+        var withinInterval = _recorder.Observe("nlightning.gossip.memory.working_set");
+        _clock.Now += TimeSpan.FromSeconds(1);
+        var afterInterval = _recorder.Observe("nlightning.gossip.memory.working_set");
+
+        // Assert
+        Assert.Equal(400 * MiB, withinInterval);
+        Assert.Equal(700 * MiB, afterInterval);
+        Assert.Equal(2, _reader.Reads);
+    }
+
+    [Fact]
+    public void Given_TheRealProcess_When_Read_Then_TheWorkingSetAndGcCommittedBytesArePositive()
+    {
+        // Act
+        var usage = ProcessMemoryReader.Instance.Read();
+
+        // Assert
+        Assert.True(usage.WorkingSetBytes > 0);
+        Assert.True(usage.ManagedHeapBytes > 0);
+    }
+
+    [Fact]
     public void Given_AReading_When_StateAndGaugeAreRead_Then_TheyReportIt()
     {
         // Arrange

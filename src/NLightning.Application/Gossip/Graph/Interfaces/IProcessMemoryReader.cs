@@ -12,5 +12,5 @@ public interface IProcessMemoryReader
 
 /// <summary>One reading of the process's memory.</summary>
 /// <param name="WorkingSetBytes">The resident set (RSS) of the whole process: what the budget is checked against.</param>
-/// <param name="ManagedHeapBytes">The managed heap the GC holds (reported, not budgeted on its own).</param>
+/// <param name="ManagedHeapBytes">The memory the GC has committed for the managed heap (reported, not budgeted on its own).</param>
 public readonly record struct ProcessMemoryUsage(long WorkingSetBytes, long ManagedHeapBytes);

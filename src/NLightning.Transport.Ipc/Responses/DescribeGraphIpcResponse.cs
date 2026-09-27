@@ -59,7 +59,7 @@ public sealed class DescribeGraphIpcResponse
     /// <summary>The process's resident set at the budget's last reading.</summary>
     [Key(24)] public long? ProcessWorkingSetBytes { get; init; }
 
-    /// <summary>The managed heap at the budget's last reading.</summary>
+    /// <summary>The memory the GC had committed at the budget's last reading.</summary>
     [Key(25)] public long? ProcessManagedHeapBytes { get; init; }
 
     /// <summary>New channels and nodes from gossip are refused (the process is over the budget).</summary>
