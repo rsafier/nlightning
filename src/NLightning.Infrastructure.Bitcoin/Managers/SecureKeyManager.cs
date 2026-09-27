@@ -206,17 +206,16 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         {
             _lastUsedIndex++;
             index = _lastUsedIndex;
+
+            // Persist the index before the key is handed out, under the lock: the old fire-and-forget write could be
+            // lost in a crash or land after a later one, and after a restart a new channel would get the index (and
+            // so the keys) of an existing channel. A failed write throws, so the key is never used.
+            PersistLastUsedIndex();
         }
 
         // Derive the key at m/6425'/0'/0'/0/index
         var masterKey = GetMasterKey();
         var derivedKey = masterKey.Derive(_channelKeyPath.Derive(index));
-
-        _ = UpdateLastUsedChannelIndexOnFile().ContinueWith(task =>
-        {
-            if (task.IsFaulted)
-                Console.Error.WriteLine($"Failed to update last used index on file: {task.Exception.Message}");
-        }, TaskContinuationOptions.OnlyOnFaulted);
 
         return derivedKey.ToBytes();
     }
@@ -267,20 +266,18 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
     }
 
-    public async Task UpdateLastUsedChannelIndexOnFile()
+    /// <summary>
+    /// Writes the last used channel key index to the key file (<see cref="GetNextChannelKey"/> already does it before
+    /// it returns).
+    /// </summary>
+    public Task UpdateLastUsedChannelIndexOnFile()
     {
-        var jsonString = await File.ReadAllTextAsync(_filePath);
-        var data = JsonSerializer.Deserialize<KeyFileData>(jsonString)
-                ?? throw new SerializationException("Invalid key file");
-
         lock (_lastUsedIndexLock)
         {
-            data.LastUsedIndex = _lastUsedIndex;
+            PersistLastUsedIndex();
         }
 
-        jsonString = JsonSerializer.Serialize(data);
-
-        await WriteFileAtomicallyAsync(_filePath, jsonString);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -666,28 +663,6 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         }
     }
 
-    private static async Task WriteFileAtomicallyAsync(string path, string contents)
-    {
-        var targetPath = ResolveFinalPath(path);
-        var tempPath = CreateTempPath(targetPath);
-        try
-        {
-            await using (var stream = new FileStream(tempPath, CreateTempFileOptions()))
-            {
-                await stream.WriteAsync(Encoding.UTF8.GetBytes(contents));
-                await stream.FlushAsync();
-            }
-
-            CopyOwnerFileMode(targetPath, tempPath);
-            File.Move(tempPath, targetPath, true);
-        }
-        catch
-        {
-            TryDeleteFile(tempPath);
-            throw;
-        }
-    }
-
     /// <summary>
     /// Follows symlinks so an atomic replace swaps the real file, not the link.
     /// </summary>
@@ -795,6 +770,25 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var bytes = new byte[length];
         Marshal.Copy(ptr, bytes, 0, (int)length);
         return bytes;
+    }
+
+    /// <summary>
+    /// Writes <see cref="_lastUsedIndex"/> into the key file (atomically, flushed). The caller holds
+    /// <see cref="_lastUsedIndexLock"/>. Never lowers the stored index, and does nothing while there is no key file (a
+    /// key manager that was never saved).
+    /// </summary>
+    private void PersistLastUsedIndex()
+    {
+        if (!File.Exists(_filePath))
+            return;
+
+        var data = JsonSerializer.Deserialize<KeyFileData>(File.ReadAllText(_filePath))
+                ?? throw new SerializationException("Invalid key file");
+        if (data.LastUsedIndex > _lastUsedIndex)
+            return;
+
+        data.LastUsedIndex = _lastUsedIndex;
+        WriteFileAtomically(_filePath, JsonSerializer.Serialize(data));
     }
 
     private ExtKey GetMasterKey()

@@ -649,6 +649,61 @@ public sealed class SecureKeyManagerTests : IDisposable
         Assert.Equal(Encoding.ASCII.GetBytes(password), bytes);
     }
 
+    [Fact]
+    public void Given_ASavedKeyFile_When_GetNextChannelKey_Then_TheIndexIsOnFileBeforeItReturns()
+    {
+        // Arrange: the index used to be written fire-and-forget, so a crash could lose it and a restart reuse it
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+
+        // Act
+        keyManager.GetNextChannelKey(out var index);
+
+        // Assert: read right away, no waiting for a background write
+        Assert.Equal(1u, index);
+        Assert.Equal(1u, ReadKeyFile().LastUsedIndex);
+    }
+
+    [Fact]
+    public async Task Given_ConcurrentChannelOpens_When_GetNextChannelKey_Then_IndexesAreUniqueAndTheFileHasTheHighest()
+    {
+        // Arrange
+        const int opens = 16;
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+
+        // Act
+        var indexes = await Task.WhenAll(Enumerable.Range(0, opens).Select(_ => Task.Run(() =>
+        {
+            keyManager.GetNextChannelKey(out var index);
+            return index;
+        }, TestContext.Current.CancellationToken)));
+
+        // Assert: a late write never overwrites a higher index
+        Assert.Equal(opens, indexes.Distinct().Count());
+        Assert.Equal((uint)opens, ReadKeyFile().LastUsedIndex);
+        using var reloaded = SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password);
+        reloaded.GetNextChannelKey(out var next);
+        Assert.Equal((uint)opens + 1, next);
+    }
+
+    [Fact]
+    public async Task Given_AKeyFileWithAHigherIndex_When_UpdateLastUsedChannelIndexOnFile_Then_ItIsNotLowered()
+    {
+        // Arrange
+        using var keyManager = NewKeyManager();
+        keyManager.SaveToFile(Password);
+        var data = ReadKeyFile();
+        data.LastUsedIndex = 50;
+        File.WriteAllText(_filePath, JsonSerializer.Serialize(data));
+
+        // Act
+        await keyManager.UpdateLastUsedChannelIndexOnFile();
+
+        // Assert
+        Assert.Equal(50u, ReadKeyFile().LastUsedIndex);
+    }
+
     private static ExtKey DecryptMasterKey(KeyFileData data, Network network)
     {
         var key = new byte[32];
