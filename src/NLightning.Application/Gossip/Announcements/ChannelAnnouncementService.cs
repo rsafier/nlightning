@@ -4,9 +4,12 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Gossip.Announcements;
 
+using Channels.Splicing.Interfaces;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Channels.Splicing;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Gossip.Interfaces;
@@ -22,8 +25,16 @@ using Interfaces;
 
 /// <inheritdoc cref="IChannelAnnouncementService"/>
 /// <remarks>
-/// A singleton. The per-connection record of what was sent lives in memory only: a restart or a new connection sends
-/// again, as BOLT 7 asks.
+/// <para>A singleton. The per-connection record of what was sent lives in memory only: a restart or a new connection
+/// sends again, as BOLT 7 asks.</para>
+/// <para>Splices (splicing plan §3.7, SP2-B-T3, SP-G-01): the announcement always names the channel's current funding
+/// (its short channel id and funding keys, NL-478), so a splice locked both ways is announced by the same path as the
+/// original funding once its block has the announcement depth; the lock forgets the halves of the replaced funding
+/// (<see cref="OnShortChannelIdChanged"/>, <see cref="ChannelModel.ResetAnnouncementSignatures"/>). A peer's half for a
+/// pending splice we have not sent <c>splice_locked</c> for is deferred in memory
+/// (<see cref="DeferRemoteAnnouncementSignatures"/>) and taken after the lock
+/// (<see cref="ProcessDeferredRemoteAnnouncementSignaturesAsync"/>). The pending fundings and their <c>splice_locked</c>
+/// flags come from the optional <see cref="ISpliceStatePort"/> (the engine's fundings without it).</para>
 /// </remarks>
 public sealed class ChannelAnnouncementService : IChannelAnnouncementService
 {
@@ -38,6 +49,11 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
     private readonly TimeProvider _timeProvider;
+    private readonly ISpliceStatePort? _spliceStatePort;
+
+    // Channel id -> the peer's announcement_signatures for a splice we have not sent splice_locked for (BOLT 7 SHOULD)
+    private readonly ConcurrentDictionary<ChannelId, (ShortChannelId ShortChannelId, ChannelAnnouncementSignatures
+        Signatures)> _deferred = new();
 
     // Channel id -> the peer whose current connection got our announcement_signatures
     private readonly ConcurrentDictionary<ChannelId, CompactPubKey> _sentOnConnection = new();
@@ -52,7 +68,8 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
                                       IOptions<GossipOptions>? gossipOptions = null,
                                       IChannelUpdateService? channelUpdateService = null,
                                       INodeAnnouncementService? nodeAnnouncementService = null,
-                                      TimeProvider? timeProvider = null)
+                                      TimeProvider? timeProvider = null,
+                                      ISpliceStatePort? spliceStatePort = null)
     {
         _blockchainMonitor = blockchainMonitor;
         _signatureVerifier = signatureVerifier;
@@ -65,6 +82,7 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         _nodeOptions = nodeOptions.Value;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _spliceStatePort = spliceStatePort;
     }
 
     /// <summary>
@@ -245,7 +263,95 @@ public sealed class ChannelAnnouncementService : IChannelAnnouncementService
         }
     }
 
+    /// <inheritdoc />
+    public bool IsReadyForAnnouncementSignatures(ChannelModel channel, TxId fundingTxId)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+
+        // SP-G-01: a splice is announced only once locked both ways, when it became the current funding; a pending one
+        // (at most one side's splice_locked) or a replaced one never is
+        return channel.FundingOutput?.TransactionId is { } current && current == fundingTxId
+            && CanSendAnnouncementSignatures(channel);
+    }
+
+    /// <inheritdoc />
+    public bool ShouldDeferRemoteAnnouncementSignatures(ChannelModel channel, ShortChannelId shortChannelId)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        if (!channel.AnnounceChannel || (HasShortChannelId(channel) && channel.ShortChannelId == shortChannelId))
+            return false;
+
+        // BOLT 7: SHOULD defer a splice's announcement_signatures until we sent splice_locked for it. Before our own
+        // depth the splice's short channel id is not known to us, so the funding output index is all we can match
+        return GetPendingFundings(channel)
+           .Any(f => !f.SpliceLockedSent
+                  && (f.ShortChannelId is { } known
+                          ? known == shortChannelId
+                          : f.OutputIndex == shortChannelId.OutputIndex));
+    }
+
+    /// <inheritdoc />
+    public void DeferRemoteAnnouncementSignatures(ChannelId channelId, ShortChannelId shortChannelId,
+                                                  ChannelAnnouncementSignatures signatures)
+    {
+        ArgumentNullException.ThrowIfNull(signatures);
+        _deferred[channelId] = (shortChannelId, signatures);
+        _logger.LogInformation("Deferring the announcement_signatures of channel {ChannelId} for splice "
+                             + "{ShortChannelId} until our splice_locked", channelId, shortChannelId);
+    }
+
+    /// <inheritdoc />
+    public async Task<AnnouncementSignaturesMessage?> ProcessDeferredRemoteAnnouncementSignaturesAsync(
+        ChannelModel channel, CompactPubKey peerPubKey, IUnitOfWork unitOfWork)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+        if (!_deferred.TryRemove(channel.ChannelId, out var deferred))
+            return null;
+
+        if (!HasShortChannelId(channel) || deferred.ShortChannelId != channel.ShortChannelId
+         || !VerifyRemoteSignatures(channel, deferred.ShortChannelId, deferred.Signatures))
+        {
+            _logger.LogWarning("Dropping the deferred announcement_signatures of channel {ChannelId} for "
+                             + "{ShortChannelId}: they do not sign the announcement of {Current}", channel.ChannelId,
+                               deferred.ShortChannelId, channel.ShortChannelId);
+            return null;
+        }
+
+        channel.SetRemoteAnnouncementSignatures(deferred.Signatures);
+        AnnouncementSignaturesMessage? reply = null;
+        if (CanSendAnnouncementSignatures(channel) && !WasSentOnConnection(channel.ChannelId))
+        {
+            reply = CreateAnnouncementSignatures(channel);
+            channel.MarkAnnouncementSignaturesSent(_timeProvider.GetUtcNow());
+        }
+
+        await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await unitOfWork.SaveChangesAsync();
+        if (reply is not null)
+            MarkSentOnConnection(channel.ChannelId, peerPubKey);
+
+        _logger.LogInformation("Stored the deferred announcement_signatures of channel {ChannelId} ({ShortChannelId})",
+                               channel.ChannelId, channel.ShortChannelId);
+        if (TryAssembleAnnouncement(channel) is { } announcement)
+            OnChannelAnnounced(channel, announcement);
+        return reply;
+    }
+
     private ChainHash ChainHash => _nodeOptions.BitcoinNetwork.ChainHash;
+
+    private IReadOnlyList<ChannelFunding> GetPendingFundings(ChannelModel channel)
+    {
+        try
+        {
+            return (_spliceStatePort?.GetFundings(channel) ?? channel.Commitments?.Fundings)?.Pending ?? [];
+        }
+        catch (InvalidOperationException)
+        {
+            // No funding outpoint yet: no splice either
+            return [];
+        }
+    }
 
     /// <summary>Forgets the peer's half and keeps when ours was sent (the model resets both together).</summary>
     private static void DiscardRemoteHalf(ChannelModel channel)

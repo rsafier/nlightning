@@ -80,10 +80,20 @@ internal sealed class SpliceHarness : IDisposable
     /// <see cref="EngineSpliceStatePort"/> over the several-funding engine, the real <c>LocalLightningSigner</c>
     /// splice members (funding key rotation, SP-I1, the 2-of-2 shared input) and an in-memory
     /// <see cref="InMemoryChannelFundingRepository"/> committed with each save.</param>
-    public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false)
+    /// <param name="announceChannel">A public channel (<see cref="TwoNodeHarness"/>'s <c>announceChannel</c>; lane SP2-B).</param>
+    /// <param name="configureServices">Adds or replaces services of each node after the splice services (last
+    /// registration wins; lane SP2-B).</param>
+    public SpliceHarness(Action<string, SpliceOptions>? configureSplice = null, bool realEngine = false,
+                         bool announceChannel = false,
+                         Action<HarnessNode, IServiceCollection>? configureServices = null)
     {
         RealEngine = realEngine;
-        Harness = new TwoNodeHarness(configureServices: (node, services) => Configure(node, services, configureSplice));
+        Harness = new TwoNodeHarness(announceChannel: announceChannel,
+                                     configureServices: (node, services) =>
+                                     {
+                                         Configure(node, services, configureSplice);
+                                         configureServices?.Invoke(node, services);
+                                     });
         foreach (var node in new[] { Harness.Alice, Harness.Bob })
         {
             var spliceNode = _nodes[node.Name];

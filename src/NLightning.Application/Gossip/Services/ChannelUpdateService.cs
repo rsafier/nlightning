@@ -78,6 +78,11 @@ using Interfaces;
 /// The offline time is counted from the first check that finds the link down, in memory: a restart starts it again.
 /// </para>
 /// <para>
+/// Short channel id switch (splicing plan D12, SP2-B-T2): the service remembers the short channel id of each open
+/// channel it sees; when it moves after our first update (a splice lock, or a reorg) a new update for the new one goes
+/// to the peer (<see cref="ScheduleShortChannelIdSwitch"/>). The old one's update is left alone.
+/// </para>
+/// <para>
 /// Everything is in memory: the peer's update is forgotten on restart until it sends a new one.
 /// </para>
 /// </remarks>
@@ -100,6 +105,7 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
     private readonly IChannelPolicyProvider? _channelPolicyProvider;
 
     private readonly ConcurrentDictionary<ChannelId, byte> _sentOnOpen = new();
+    private readonly ConcurrentDictionary<ChannelId, ShortChannelId> _knownShortChannelIds = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdateMessage> _localUpdates = new();
     private readonly ConcurrentDictionary<ChannelId, ChannelUpdatePayload> _remoteUpdates = new();
     private readonly ConcurrentDictionary<ChannelId, uint> _lastLocalTimestamps = new();
@@ -471,11 +477,21 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             return;
         }
 
-        if (channel.State != ChannelState.Open || channel.ShortChannelId == default
-                                               || !_sentOnOpen.TryAdd(channel.ChannelId, 0))
+        if (channel.State != ChannelState.Open || channel.ShortChannelId == default)
             return;
 
         var channelId = channel.ChannelId;
+        var current = channel.ShortChannelId;
+        var hadPrevious = _knownShortChannelIds.TryGetValue(channelId, out var previous);
+        _knownShortChannelIds[channelId] = current;
+        if (!_sentOnOpen.TryAdd(channelId, 0))
+        {
+            // A splice lock (or a reorg, NL-350) moved the short channel id of a channel we already sent an update for
+            if (hadPrevious && previous != current)
+                ScheduleShortChannelIdSwitch(channelId, previous, current);
+            return;
+        }
+
         _ = Task.Run(async () =>
         {
             try
@@ -485,6 +501,33 @@ public sealed class ChannelUpdateService : IChannelUpdateService, IDisposable
             catch (Exception e)
             {
                 _logger.LogError(e, "Failed to send the channel_update for channel {ChannelId}", channelId);
+            }
+        });
+    }
+
+    /// <summary>
+    /// The channel's short channel id moved while it is open (splicing plan D12, SP2-B-T2: a splice lock; also a reorg
+    /// that confirmed the funding elsewhere, NL-350): a new update for the new short channel id goes to the peer once the
+    /// caller released the channel's lock (it waits for it, so it follows the lock's own messages and sees the
+    /// announcement state the lock reset). It is private (<c>dont_forward</c>) until the splice is announced, which
+    /// signs the public one (<see cref="OnChannelAnnounced"/>). Our update for the old short channel id is neither
+    /// disabled nor withdrawn: the network forgets that channel 72 blocks after its funding output was spent (BOLT 7),
+    /// and payers that still use it are forwarded through the retired short channel id map for as long.
+    /// </summary>
+    private void ScheduleShortChannelIdSwitch(ChannelId channelId, ShortChannelId previous, ShortChannelId current)
+    {
+        _logger.LogInformation("The short channel id of channel {ChannelId} moved from {Previous} to {Current}; "
+                             + "sending a channel_update for the new one", channelId, previous, current);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await SendChannelUpdateAsync(channelId);
+            }
+            catch (Exception e)
+            {
+                _logger.LogError(e, "Failed to send the channel_update of channel {ChannelId} for {ShortChannelId}",
+                                 channelId, current);
             }
         });
     }

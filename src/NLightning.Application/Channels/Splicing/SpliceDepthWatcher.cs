@@ -15,11 +15,13 @@ using Interfaces;
 
 /// <summary>
 /// Sends <c>splice_locked</c> when a pending splice transaction reaches acceptable depth (BOLT 2 SP-LK-01; D8: the
-/// channel's <c>minimum_depth</c>). Minimal SP1 version: the completion of a splice watches its transaction with that
-/// depth (<c>WatchedTransactions</c>), and the chain monitor's <see cref="IBlockchainMonitor.OnTransactionConfirmed"/>
-/// for a pending splice of the channel hands it to <see cref="SpliceService.OnSpliceDepthReachedAsync"/>, off the event
-/// thread. Reorgs of a splice and the startup catch-up of splices confirmed while we were down are wave SP2
-/// (SP2-B-T1, SP2-C-T4).
+/// channel's <c>minimum_depth</c>): the completion of a splice watches its transaction with that depth
+/// (<c>WatchedTransactions</c>), and the chain monitor's <see cref="IBlockchainMonitor.OnTransactionConfirmed"/> for a
+/// pending splice of the channel hands it, with its block and index (the splice's short channel id), to
+/// <see cref="SpliceService.OnSpliceDepthReachedAsync"/>, off the event thread; <see cref="CatchUpAsync"/> does the same
+/// at startup for splices confirmed while nothing listened. The announcement depth of a locked splice needs no watch:
+/// the lock gives the channel the splice's short channel id, and the channel manager's block-driven announcement round
+/// sends <c>announcement_signatures</c> at its 6th confirmation (SP-G-01). Reorgs of a splice are SP2-C-T4.
 /// </summary>
 /// <remarks>
 /// Singleton; subscribes in its constructor. <see cref="SpliceService"/> resolves it in its own constructor (and it

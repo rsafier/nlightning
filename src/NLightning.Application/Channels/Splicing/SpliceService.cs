@@ -34,6 +34,7 @@ using Domain.Protocol.InteractiveTx.Models;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Exceptions;
+using Gossip.Announcements.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 using InteractiveTx;
 using InteractiveTx.Interfaces;
@@ -44,8 +45,9 @@ using Quiescence;
 /// <summary>
 /// Runs splices (BOLT 2 "Channel Splicing"; splicing plan §3.5, lane SP1-D-T2): the operator's splice-in/splice-out
 /// (<see cref="StartAsync"/>), the peer's <c>splice_init</c>/<c>splice_ack</c>, the splice <c>commitment_signed</c>,
-/// the completion and a minimal <c>splice_locked</c> exchange (the new funding locked at acceptable depth, D8; the SCID
-/// switch and announcements are wave SP2).
+/// the completion and the <c>splice_locked</c> exchange (the new funding locked at acceptable depth, D8, when both
+/// sides named the same txid; wave SP2 lane SP2-B: the short channel id switch with the old one retired for 72 blocks,
+/// D12, and the announcement of a public channel restarted on the splice, SP-G-01).
 /// </summary>
 /// <remarks>
 /// <para>Singleton. The negotiations live in memory, keyed by channel id, and change under the channel's lock (every
@@ -579,12 +581,15 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
 
     #endregion
 
-    #region splice_locked (minimal, SP-LK-01/02; the SCID switch and announcements are wave SP2)
+    #region splice_locked (SP2-B-T1: lock rules; SP2-B-T2: short channel id switch; SP2-B-T3: announcement)
 
     /// <summary>
-    /// Under the lock: the peer's <c>splice_locked</c>. SP-LK-02: a <c>splice_txid</c> that is none of our pending
-    /// splices is a <c>warning</c> and close (a retransmission for the funding we already locked is ignored). When we
-    /// sent ours for the same txid, the funding is locked (SP-LK-03); otherwise the peer's is remembered.
+    /// Under the lock: the peer's <c>splice_locked</c> (BOLT 2 "Splice Completion"). SP-LK-02: a <c>splice_txid</c> that
+    /// is none of our pending splices is a <c>warning</c> and close (a retransmission for the funding we already locked
+    /// is ignored, as is a duplicate for a pending one). When we sent ours for the same txid, the funding is locked
+    /// (SP-LK-03: its RBF siblings and ancestors discarded, the short channel id switched and, for a public channel, our
+    /// <c>announcement_signatures</c> for the splice returned once it has the announcement depth); when ours named another
+    /// RBF candidate (the nodes are on different forks) the message is only remembered and nothing is failed (D11).
     /// </summary>
     public async Task<IReadOnlyList<IChannelMessage>> HandleSpliceLockedAsync(SpliceLockedMessage message,
                                                                               CompactPubKey peerPubKey,
@@ -596,8 +601,8 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         ArgumentNullException.ThrowIfNull(unitOfWork);
         var channelId = message.Payload.ChannelId;
         var channel = GetPeerChannel(channelId, peerPubKey, "splice_locked");
-        var fundings = _statePort.GetFundings(channel);
         var txId = message.Payload.SpliceTxId;
+        var fundings = _statePort.GetFundings(channel);
         if (fundings.Current.FundingTxId == txId)
         {
             _logger.LogDebug("splice_locked for the current funding {TxId} of channel {ChannelId}; already locked",
@@ -605,25 +610,49 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
             return [];
         }
 
-        var funding = fundings.Pending.FirstOrDefault(f => f.FundingTxId == txId)
-                   ?? throw new ChannelWarningException(
-                          $"[SP-LK-02] splice_locked for {txId}, which is no pending splice of channel {channelId}",
-                          channelId, "splice_locked for an unknown splice transaction")
-                   {
-                       CloseConnection = true
-                   };
-        if (funding.SpliceLockedReceived)
+        if (fundings.Pending.All(f => f.FundingTxId != txId))
+            throw new ChannelWarningException(
+                $"[SP-LK-02] splice_locked for {txId}, which is no pending splice of channel {channelId}",
+                channelId, "splice_locked for an unknown splice transaction")
+            {
+                CloseConnection = true
+            };
+
+        return await ReceiveSpliceLockedAsync(channel, fundings, txId, unitOfWork, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<IChannelMessage>> HandlePeerFundingLockedAsync(ChannelModel channel,
+        TxId fundingTxId, IUnitOfWork unitOfWork, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(unitOfWork);
+
+        // SP-RE-04: only a pending splice whose splice_locked we have not received is processed; anything else
+        // (the current funding, an unknown txid) is no splice_locked retransmission
+        FundingSet fundings;
+        try
+        {
+            fundings = _statePort.GetFundings(channel);
+        }
+        catch (InvalidOperationException)
+        {
+            return [];
+        }
+
+        if (fundings.Pending.FirstOrDefault(f => f.FundingTxId == fundingTxId) is not { SpliceLockedReceived: false })
             return [];
 
-        await AdvanceLockAsync(channel, fundings, funding with { SpliceLockedReceived = true }, unitOfWork,
-                               cancellationToken);
-        return [];
+        _logger.LogInformation("my_current_funding_locked of channel {ChannelId} names pending splice {TxId}: "
+                             + "processed as its splice_locked", channel.ChannelId, fundingTxId);
+        return await ReceiveSpliceLockedAsync(channel, fundings, fundingTxId, unitOfWork, cancellationToken);
     }
 
     /// <summary>
     /// A pending splice transaction reached acceptable depth (D8: the channel's <c>minimum_depth</c>; the depth
     /// watcher calls it off any lock): we send <c>splice_locked</c> (SP-LK-01), after saving that we did, and lock the
-    /// funding when the peer's arrived for the same txid (SP-LK-03).
+    /// funding when the peer's arrived for the same txid (SP-LK-03). Idempotent: a splice we already sent ours for is
+    /// left alone.
     /// </summary>
     public async Task OnSpliceDepthReachedAsync(ChannelId channelId, TxId spliceTxId, uint height,
                                                 uint? transactionIndex = null,
@@ -644,22 +673,54 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         var shortChannelId = transactionIndex is { } txIndex
                                  ? new ShortChannelId(height, txIndex, funding.OutputIndex)
                                  : funding.ShortChannelId;
-        await AdvanceLockAsync(channel, fundings,
-                               funding with
-                               {
-                                   SpliceLockedSent = true,
-                                   ConfirmedHeight = height,
-                                   ShortChannelId = shortChannelId
-                               },
-                               unitOfWork, cancellationToken);
+        var followUps = await AdvanceLockAsync(channel, fundings,
+                                               funding with
+                                               {
+                                                   SpliceLockedSent = true,
+                                                   ConfirmedHeight = height,
+                                                   ShortChannelId = shortChannelId
+                                               },
+                                               unitOfWork, cancellationToken);
 
         _logger.LogInformation("Splice {TxId} of channel {ChannelId} reached its depth at {Height}; sending "
                              + "splice_locked", spliceTxId, channelId, height);
-        GetPublisher()?.Publish(channel.RemoteNodeId, [_messageFactory.CreateSpliceLockedMessage(channelId, spliceTxId)]);
+        GetPublisher()?.Publish(channel.RemoteNodeId,
+                                [_messageFactory.CreateSpliceLockedMessage(channelId, spliceTxId), .. followUps]);
     }
 
-    private async Task AdvanceLockAsync(ChannelModel channel, FundingSet fundings, ChannelFunding updated,
-                                        IUnitOfWork unitOfWork, CancellationToken cancellationToken)
+    /// <summary>The peer's <c>splice_locked</c> (or <c>my_current_funding_locked</c>) for the pending funding
+    /// <paramref name="txId"/>: remembered, and the funding locked when ours named it too.</summary>
+    private async Task<IReadOnlyList<IChannelMessage>> ReceiveSpliceLockedAsync(ChannelModel channel,
+                                                                                FundingSet fundings, TxId txId,
+                                                                                IUnitOfWork unitOfWork,
+                                                                                CancellationToken cancellationToken)
+    {
+        var funding = fundings.Pending.First(f => f.FundingTxId == txId);
+        if (funding.SpliceLockedReceived)
+        {
+            _logger.LogDebug("Duplicate splice_locked for {TxId} of channel {ChannelId}; ignored", txId,
+                             channel.ChannelId);
+            return [];
+        }
+
+        // SP-LK-03 / D11: ours named another RBF candidate (different forks): remember theirs and wait for the chain
+        if (fundings.Pending.FirstOrDefault(f => f.SpliceLockedSent) is { } ours && ours.FundingTxId != txId)
+            _logger.LogWarning("splice_locked of channel {ChannelId} names {TheirTxId} while ours named {OurTxId} "
+                             + "(different forks); waiting for the chain to settle", channel.ChannelId, txId,
+                               ours.FundingTxId);
+
+        return await AdvanceLockAsync(channel, fundings, funding with { SpliceLockedReceived = true }, unitOfWork,
+                                      cancellationToken);
+    }
+
+    /// <summary>
+    /// Stages and saves the pending funding's new flags; when <paramref name="updated"/> is now locked both ways, the
+    /// lock itself (SP-LK-03) and what follows it (<see cref="AfterLockAsync"/>). Returns the messages due after the
+    /// caller's own (our <c>announcement_signatures</c> for the splice).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AdvanceLockAsync(ChannelModel channel, FundingSet fundings,
+                                                                        ChannelFunding updated, IUnitOfWork unitOfWork,
+                                                                        CancellationToken cancellationToken)
     {
         var withFlags = new FundingSet(fundings.Current,
                                        fundings.Pending
@@ -667,10 +728,21 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
                                                .ToList());
         FundingSet next;
         IReadOnlyList<ChannelFunding> retired = [];
+        var previousShortChannelId = channel.ShortChannelId;
         if (updated is { SpliceLockedSent: true, SpliceLockedReceived: true })
+        {
+            // The replaced funding keeps its short channel id in its row, which rebuilds the retired map (D12)
+            if (withFlags.Current.ShortChannelId is null && IsSet(previousShortChannelId))
+                withFlags = withFlags with
+                {
+                    Current = withFlags.Current with { ShortChannelId = previousShortChannelId }
+                };
             (next, retired) = _statePort.Lock(withFlags, updated.FundingTxId);
+        }
         else
+        {
             next = withFlags;
+        }
 
         await _statePort.StageFundingsAsync(channel, next, retired, unitOfWork, cancellationToken);
 
@@ -692,13 +764,67 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         if (fundingWatch is not null)
             _serviceProvider.GetService<IBlockchainMonitor>()?.TrackWatchedOutpoint(fundingWatch);
 
-        if (retired.Count > 0)
+        if (retired.Count == 0)
+            return [];
+
+        _lastSigned.TryRemove(channel.ChannelId, out _);
+        _logger.LogInformation("Splice {TxId} of channel {ChannelId} locked: {Capacity} sat", updated.FundingTxId,
+                               channel.ChannelId, updated.CapacitySatoshis);
+        return await AfterLockAsync(channel, previousShortChannelId, next.Current, unitOfWork);
+    }
+
+    /// <summary>
+    /// After the lock's save, under the channel's lock: the short channel id switch (D12: the replaced one keeps
+    /// resolving in the switch for <see cref="RetiredShortChannelId.RetentionBlocks"/> blocks; our <c>channel_update</c>
+    /// follows the channel's new short channel id through the channel update service) and, for a public channel, the
+    /// announcement of the splice (SP-G-01, BOLT 7): the announcement of the replaced funding is void, so both halves of
+    /// <c>announcement_signatures</c> are forgotten (saved), a half of the peer's that waited for our
+    /// <c>splice_locked</c> is taken now, and ours is returned when the splice already has the announcement depth
+    /// (otherwise the block-driven announcement round of the channel manager sends it at that depth).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> AfterLockAsync(ChannelModel channel,
+                                                                      ShortChannelId previousShortChannelId,
+                                                                      ChannelFunding locked, IUnitOfWork unitOfWork)
+    {
+        if (IsSet(previousShortChannelId) && previousShortChannelId != channel.ShortChannelId)
         {
-            _lastSigned.TryRemove(channel.ChannelId, out _);
-            _logger.LogInformation("Splice {TxId} of channel {ChannelId} locked: {Capacity} sat", updated.FundingTxId,
-                                   channel.ChannelId, updated.CapacitySatoshis);
+            var retiredAt = locked.ConfirmedHeight ?? locked.ShortChannelId?.BlockHeight ?? GetTip();
+            _serviceProvider.GetService<IRetiredScidMap>()
+                           ?.Retire(RetiredScidMap.Create(previousShortChannelId, channel.ChannelId, retiredAt));
+        }
+
+        if (!channel.AnnounceChannel
+         || _serviceProvider.GetService<IChannelAnnouncementService>() is not { } announcements)
+            return [];
+
+        try
+        {
+            channel.ResetAnnouncementSignatures();
+            announcements.OnShortChannelIdChanged(channel.ChannelId);
+            await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+            await unitOfWork.SaveChangesAsync();
+            _channelMemoryRepository.UpdateChannel(channel);
+
+            var replies = new List<IChannelMessage>();
+            if (await announcements.ProcessDeferredRemoteAnnouncementSignaturesAsync(channel, channel.RemoteNodeId,
+                                                                                    unitOfWork) is { } reply)
+                replies.Add(reply);
+            else if (await announcements.PrepareOwnAnnouncementSignaturesAsync(channel, channel.RemoteNodeId,
+                                                                              unitOfWork) is { } own)
+                replies.Add(own);
+            await announcements.CompleteAnnouncementAsync(channel, unitOfWork);
+            return replies;
+        }
+        catch (Exception e)
+        {
+            // The lock is saved; the announcement round of the next block or reconnection retries
+            _logger.LogError(e, "Could not start the announcement of the splice of channel {ChannelId}",
+                             channel.ChannelId);
+            return [];
         }
     }
+
+    private static bool IsSet(ShortChannelId shortChannelId) => ((byte[]?)shortChannelId) is not null;
 
     #endregion
 
