@@ -462,13 +462,15 @@ public sealed class PeerStorageService : IPeerStorageService, IDisposable
                     });
 
                 _logger.LogDebug("Loaded {Count} peer storage blob(s)", rows.Count);
+                _loaded = true;
             }
             catch (Exception e)
             {
-                _logger.LogError(e, "Failed to load the stored peer storage blobs");
+                // Retried at the next connection or message: marking it loaded would lose the stored blobs until the
+                // restart (no retrieval for their peers, a channel-less peer's next blob refused). A blob received in
+                // between is newer than the stored one and is kept (TryAdd)
+                _logger.LogError(e, "Failed to load the stored peer storage blobs; retrying at the next connection");
             }
-
-            _loaded = true;
         }
     }
 

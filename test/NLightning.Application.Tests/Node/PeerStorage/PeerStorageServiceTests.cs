@@ -58,6 +58,30 @@ public class PeerStorageServiceTests
     }
 
     [Fact]
+    public async Task Given_AFailedLoad_When_ThePeerReconnects_Then_TheLoadIsRetriedAndTheBlobHandedBack()
+    {
+        // Arrange: a blob stored by an earlier process, and a database that fails the first load
+        var store = new InMemoryPeerStorageDbRepository();
+        var peer = new FakeGossipPeer(12);
+        peer.Features.OptionProvideStorage = FeatureSupport.No;
+        await store.UpsertAsync(new StoredPeerBlob(peer.PeerPubKey, [7, 7], DateTimeOffset.UnixEpoch));
+        await store.SaveAsync();
+        store.FailNextLoads = 1;
+        using var context = new PeerStorageTestContext(store: store);
+        context.Service.OnPeerInitialized(peer);
+
+        // Act
+        var reconnected = new FakeGossipPeer(12);
+        reconnected.Features.OptionProvideStorage = FeatureSupport.No;
+        context.Service.OnPeerInitialized(reconnected);
+
+        // Assert
+        var retrieval = await reconnected.NextAsync<PeerStorageRetrievalMessage>();
+        Assert.Equal(new byte[] { 7, 7 }, retrieval.Payload.Blob.ToArray());
+        Assert.NotNull(await context.Service.GetStoredBlobAsync(peer.PeerPubKey));
+    }
+
+    [Fact]
     public async Task Given_NoChannelWithThePeer_When_PeerStorageArrives_Then_ItIsIgnored()
     {
         // Arrange
