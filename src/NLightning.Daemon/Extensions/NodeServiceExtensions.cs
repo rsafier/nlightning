@@ -81,6 +81,9 @@ public static class NodeServiceExtensions
             // daemon service loaded the channels and stopped before it
             services.AddChannelBackupFile(configPath);
 
+            // Expired unpaid BOLT 12 invoice rows pruned on a timer (NL-448)
+            services.AddExpiredBolt12InvoicePruning();
+
             // IPC server pieces that need the config path
             services.AddSingleton<INamedPipeIpcService>(sp =>
             {
@@ -217,6 +220,8 @@ public static class NodeServiceExtensions
         // fetchinvoice (29-30); the Application registers the offer services themselves (AddApplicationServices)
         services.AddOfferIpcServices();
         services.AddOfferSendIpcServices();
+        // Keysend (wave lh1 L3, ClientCommand 31)
+        services.AddKeysendIpcServices();
         services.Configure<OfferOptions>(configuration.GetSection(OfferOptions.SectionName));
 
         // BOLT 4 onion messages (wave M6): the service, rate limiter and outbox cap read this section
@@ -226,6 +231,8 @@ public static class NodeServiceExtensions
         // provider registered there would win over the default channel list (TryAdd keeps the first)
         services.Configure<PeerStorageOptions>(configuration.GetSection(PeerStorageOptions.SectionName));
         services.AddPeerStorageServices();
+        // listpeerstorage (wave lh1 L4, ClientCommand 32, NL-432)
+        services.AddPeerStorageIpcServices();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

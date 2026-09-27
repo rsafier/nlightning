@@ -359,6 +359,10 @@ public static class NodeConfigurationExtensions
                      "InvoiceMinFinalCltvExpiry": {{INVOICE_MIN_FINAL_CLTV_EXPIRY}},
                      "InvoiceExpirySeconds": {{INVOICE_EXPIRY_SECONDS}},
                      "HtlcMinimumMsat": {{HTLC_MINIMUM_MSAT}}
+                   },
+                   "Keysend": {
+                     "Accept": true,
+                     "FinalCltvExpiryDelta": 40
                    }
                  },
                  "Gossip": {

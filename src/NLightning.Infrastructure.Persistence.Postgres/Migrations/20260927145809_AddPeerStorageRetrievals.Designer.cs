@@ -294,6 +294,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                         .HasColumnType("text")
                         .HasColumnName("address");
 
+                    b.Property<bool>("IsReserved")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_reserved");
+
                     b.HasKey("Index", "IsChange", "AddressType")
                         .HasName("pk_wallet_addresses");
 
@@ -516,6 +520,10 @@ namespace NLightning.Infrastructure.Persistence.Postgres.Migrations
                     b.Property<byte[]>("ErrorSent")
                         .HasColumnType("bytea")
                         .HasColumnName("error_sent");
+
+                    b.Property<decimal?>("FirstRemoteHtlcIdAfterLocalShutdown")
+                        .HasColumnType("numeric(20,0)")
+                        .HasColumnName("first_remote_htlc_id_after_local_shutdown");
 
                     b.Property<long>("FundingAmountSatoshis")
                         .HasColumnType("bigint")

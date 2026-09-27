@@ -47,8 +47,6 @@ public sealed class InvoiceInfoIpcResponse
     /// </summary>
     [Key(10)] public InvoiceKind Kind { get; init; }
 
-    // Key 11 is reserved for the BOLT 12 offer id (lane lh1-l2, NL-454): never reuse it with another type
-
     /// <summary>
     /// The offer a BOLT 12 invoice was issued for; null for a BOLT 11 invoice.
     /// </summary>
