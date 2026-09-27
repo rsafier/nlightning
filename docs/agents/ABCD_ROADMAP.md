@@ -1,6 +1,31 @@
-> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave d12 @ `aa1cc10`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
+> Execution roadmap for the ABCD goal (LND Alice → NLightning Bob → NLightning Carol → LND David). Written 2026-09-25 against wip/fafo @ 3c625e1. Decisions in §4 adopted with the recommended defaults (route hints, NLightning-funded channels, in-process Bob/Carol, extended shared fixture). Status per wave is tracked below as waves land (latest: wave rf1 @ `be9fd000`; the ABCD goal itself was reached in wave 2 and the later waves harden it).
 
 ## Status
+
+### Wave rf1 (operations before real funds + route blinding M5): integrated into `wip/fafo` @ `be9fd000` (2026-09-27), gates GREEN
+
+Five lanes, each with review/fix steps; R2 was the migration owner (`AddPeerStorage`, all three providers). Lane commits cherry-picked with `-x` onto `88d046c7` in the order R2 → R1 → R3 → R4 → M5; integrator commits aa9d67e0 (wires `AddChannelBackupNodeServices`, `AddChannelBackupFile`, `AddOperatorIpcServices`, `AddPeerStorageServices` + `PeerStorageOptions`; `option_provide_storage` Optional; `IPeerStorageService.StopAsync` after the peers stop; `disconnect` renumbered 21 → **24** because R1 took 21-23, next free ClientCommand **25**; SR-19 startup reconciliation of the channel key index with `GetHighestLocalKeyIndexAsync`; the reserver loop fix NL-427) and be9fd000 (a peer_storage blob sent before the channel exists is held, NL-428).
+
+| Lane | Result | `wip/fafo` SHAs | Ledger |
+|---|---|---|---|
+| R1 static channel backup and restore | done: encrypted SCB, atomic `channel.backup`, IPC `exportchanbackup` 21 / `verifychanbackup` 22 / `restorechanbackup` 23, recovery channels + data-loss reestablish, spend found before restore, to_remote swept; Docker `BackupRestoreFlowTests` 4/4 | 781fe96a, 38742d78, 6fb5326c, 958304ad | new NL-426 fixed (commits cite NL-417, renumbered); new NL-430, NL-431, NL-435 |
+| R2 peer storage (migration owner) | done: messages 7/9, `PeerStorageBlobs`, provider and client sides, data-loss hold; Docker `ClnPeerStorageTests` | 136a4cf5, 2769b615, 34d48a9d, b5dee649, 0b13c1b8, ae5d3389 (+ be9fd000) | NL-010 fixed; new NL-428 fixed, NL-432, NL-433, NL-434 |
+| R3 security review | done: `docs/agents/SECURITY_REVIEW.md`, v3 key files (BIP32 master, node key on its own path), key-file/config permissions, persisted key index, IPC hardening, password over stdin, descriptors | db262e2a, 4a9a6362, d941a084, 65090183, 5cf52897, 7e1a44ae, 3fba3e6c, 9cb306e5, 8c66499b | NL-148, NL-159, NL-212 fixed; NL-224 open; new NL-436, NL-437, NL-438, NL-439 |
+| R4 operator IPC | done: `disconnect` (24), channel/HTLC counts in `listpeers`/`info`, temp-channel cleanup, `not_enough_balance` mapping | bdfc90c0, d60c4be5, c74d3173 | NL-152, NL-392, NL-393 fixed |
+| M5 route blinding | done: crypto + codec byte-exact, blinded forward/receive/send, own blinded paths, `option_route_blinding` Optional; Docker `RouteBlindingFlowTests` 4/4 against LND 0.20 | 6b2c3d61, 5d6e9770, f696e3bd, 01aff502, 8675ca37, 2be510fc, eaeb2797 | NL-079, NL-077, NL-026, NL-339 fixed; new NL-440 |
+| Integration | wiring, renumbering, SR-19, NL-427, NL-428 | aa9d67e0, be9fd000 | new NL-427, NL-428 fixed, NL-429 |
+
+Gates at `be9fd000`:
+- Build: Release and Release.Native, net10.0 and net11.0 (compile check at aa9d67e0; be9fd000 touches Application code and tests only), 0 errors, the same **5** CS86xx warnings (NL-171). `dotnet format --verify-no-changes` clean. Schema: `AddPeerStorage` on all three providers, `HasPendingModelChanges` false.
+- Tests (net10.0, Release and Release.Native): **7889** non-Docker, all pass, no skips (Domain 2431, Application 1963, Integration 726, Serialization 531, Infrastructure 424, Infrastructure.Bitcoin 1066, Bolt11 278, Daemon 470). Long simulator 1/1.
+- Docker (net10.0, in-container runner with `--network host`, SQL Server skipped): LND suite **64/64** (incl. `BackupRestoreFlowTests`, Postgres round trips, `MultiNodeHarness`), CLN **23/23** (incl. `ClnPeerStorageTests`; 1 failure before be9fd000), gossip **28/28** (incl. `RouteBlindingFlowTests`), on-chain legacy **24** (2 `Explicit` not run), anchors **18/18**, ABCD **3 x 10/10**. Not run: `MultiNodeHarnessTests.Given_ServerDatabase_*` Postgres row (NL-429).
+
+### Carried into the next wave (after rf1)
+
+- **Goal (BOLT 7, pay and get paid over public channels without hints) and the mainnet gate:** the relay proof from a node with a public channel and the mainnet relay default (NL-417); the outbox relay pause (NL-360); the 24 h Mutinynet and multi-day mainnet soaks (NL-376); NL-416; d12 follow-ups NL-418..NL-425; earlier BOLT 7 follow-ups NL-345, NL-346 (partial), NL-357, NL-361..NL-372, NL-374, NL-375, NL-377, NL-378, NL-407; `AllowPublicChannelsOnMainnet` decision.
+- **rf1 follow-ups:** restore rescan of an old funding spend (NL-430, medium), graph addresses at restore (NL-431), height-0 data-loss proof (NL-435), peer-storage retrievals over IPC and persisted (NL-432), NL-433; security NL-224 (SR-14), NL-436 (SR-17 BOLT 8 ECDH through `ISecureKeyManager`), NL-437 (SR-09), NL-438, NL-439; blinded-payment limits NL-440; test infra NL-429, flakes NL-434, NL-382, NL-394.
+- **Anchors and BOLT 5 follow-ups** (unchanged): NL-384 (partial), NL-386, NL-387, NL-389..NL-391; NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336.
+- **Beyond:** BOLT 12 (offers use the M5 blinded paths), dual funding (NL-037), attribution_data out of experimental (NL-332), the rest of `REMAINING_WORK.md`.
 
 ### Wave d12 (BOLT 7 D12: mainnet gossip gate): integrated into `wip/fafo` @ `aa1cc10` (2026-09-27), gates GREEN, D12 decided
 

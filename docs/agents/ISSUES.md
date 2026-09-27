@@ -40,6 +40,8 @@ Updated 2026-09-27 after the mainnet gossip probe (branches `wip/fafo-mainnet-go
 
 Updated 2026-09-27 after wave d12 (Z1 graph hygiene, Z2 memory budget, Z3 verified-sync efficiency, Z4 pruned funding lookup; no migration) was integrated into `wip/fafo` (at `aa1cc10`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `3736a39`, `4dc261f`, `8b97462` and `73a1acd` are `integrate:` commits), D12 is decided (graph and sync on by default on mainnet, relay of others' gossip still off there), and NL-417..NL-425 record the lanes' and the integrator's open items (NL-417 keeps the ID the integrator cited). Docker on net10.0 (in-container runner, SQL Server container tests skipped): gossip 24/24, CLN 22/22, LND 59/59, ABCD 3 x 10/10, on-chain legacy 24 (+2 Explicit), anchors 18/18.
 
+Updated 2026-09-27 after wave rf1 (R1 static channel backup and restore, R2 peer storage (migration owner, `AddPeerStorage`), R3 key material and local attack surface security review (`docs/agents/SECURITY_REVIEW.md`), R4 operator IPC and open cleanup, M5 route blinding) was integrated into `wip/fafo` (at `be9fd000`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `aa9d67e0` and `be9fd000` are `integrate:` commits). NL-010, NL-026, NL-077, NL-079, NL-152, NL-159, NL-212, NL-339, NL-392 and NL-393 are fixed and NL-148 gained its last fix. Lane R1's commits cite NL-417, which is the D12 relay entry: static channel backup and restore is recorded as NL-426. NL-426..NL-440 record the lanes' and the integrator's new findings (the lanes' proposed IDs and the integrator's NL-430..NL-433 were renumbered from the next free ID); the security review's SR-## IDs stay local to `SECURITY_REVIEW.md`, and its open ones are NL-224 (SR-14), NL-436 (SR-17) and NL-437 (SR-09). Docker on net10.0 (in-container runner, SQL Server container tests skipped): LND 64/64, CLN 23/23, gossip 28/28, on-chain legacy 24 (+2 Explicit), anchors 18/18, ABCD 3 x 10/10.
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -74,22 +76,23 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 5 | 20 | 115 | 140 |
+| open | 0 | 4 | 17 | 121 | 142 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 52 | 122 | 84 | 272 |
+| fixed | 14 | 54 | 126 | 91 | 285 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **57** | **145** | **204** | **420** |
+| **Total** | **14** | **58** | **146** | **217** | **435** |
 
 ### Epics
 
+- NL-426: Static channel backup and restore (fixed, high; wave rf1: encrypted SCB, export/verify/restore IPC 21-23, recovery channels and the data-loss reestablish, proven against LND; follow-ups NL-430, NL-431, NL-435)
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); remaining: NL-279, NL-285, NL-286, NL-045)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
 - NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 partial: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
-- NL-079: Route blinding payload handling (ONION M5) (open, medium)
+- NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440)
 - NL-094: On-chain handling: unilateral close sweeps, HTLC resolution, penalty/justice (fixed, critical; fail-the-channel broadcast in wave 3; O0/O1 plumbing and the O2-O6 building blocks in wave 4; O2-O5 wired and proven against LND in wave 5; wave 6: O6-T1 `SweepScheduler` (NL-317, NL-296) and O6-T3 reorg re-resolution (NL-292, NL-293, NL-096) with Docker Proof O6; wave 7: final-hop HTLCs claimed on chain (NL-316, NL-322, Docker `OnchainFinalHopTests`); gossip wave G-A: O8 mempool (NL-098) and the halt gate (NL-216); gossip wave G-B: the O6-T4 blockers NL-311, NL-320, NL-337 fixed and Proofs O3-O6 green; gossip wave G-D: O6-T4 done, HTLCs on for every network by default (6de56ad, kept by the integrator in 48a8951), NL-315 fixed; wave O7: O7-T1..T3 done (NL-067, NL-314 fixed), anchors Docker proofs 12/12; wave O7b: NL-379, NL-380, NL-381, NL-385 fixed and O7-T4 done (`option_anchors` Optional by default, d4cc3f8), anchors Docker proofs 18/18; carried: follow-ups NL-307..NL-309, NL-312, NL-313, NL-318, NL-329, NL-330, NL-335, NL-336, NL-384 (partial), NL-386, NL-387, NL-389..NL-393)
 - NL-099: BOLT 7 gossip: announcements, channel_update, queries, graph (open, high; typed and signed channel_update, direct exchange with the channel peer done; gossip wave G-A: typed 256/257/259, captured LND/CLN vectors, signature verifier, funding output lookup, graph schema, `SignChannelAnnouncement`, Domain graph, validator and pathfinder; gossip wave G-B: G1 public channels and our own announcements relayed, G2 graph ingress/store/pruner and IPC 17/18, Docker Proofs G0-G2 green; gossip wave G-C: G3 sync, query answers and relay, G4 graph routing in `PaymentService` and `getroute` (IPC 19), the goal proofs against LND and CLN green, NL-348..NL-356 fixed; gossip wave G-D: G5-T2..T4 done (rate limits, misbehaviour ban, graph caps, relay backlog bound, `NLightning.Gossip` meter, batched store, 200k-channel measurement, `describegraph` IPC 20), G5-T1/T5 partial; mainnet gossip probe: `Gossip:AssumeChannelValid`, `tools/NLightning.GossipProbe`, the full mainnet graph synced assumed and verified against a real bitcoind, NL-400..NL-405 and NL-410..NL-412 fixed; next: interned node ids and `Gossip:MaxMemoryMb` (NL-373, NL-416), the 24 h soak evaluation before D12 (NL-376), announcements without updates (NL-406), redundant verified-sync downloads (NL-415), follow-ups NL-357, NL-360..NL-377, NL-407, NL-408, NL-413, NL-414)
 - NL-114: Invoices not wired into the node: invoice store, create/pay commands, final-hop checks (fixed, high; receive, route hints and pay done in wave 2)
@@ -200,11 +203,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G1-T6 (announced addresses)
 
 ### NL-010 peer_storage / peer_storage_retrieval messages missing
-- **Status:** open
+- **Status:** fixed (136a4cf5, 2769b615, 34d48a9d, b5dee649, 0b13c1b8, ae5d3389, aa9d67e0, be9fd000)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs`
-- **Evidence:** No message types, yet `option_provide_storage` is advertised Optional (see NL-109). Update: `option_provide_storage` now defaults to No and is in `FeatureOptions.ExperimentalFeatures` (not advertised without `AllowExperimentalFeatures`, e93eb41).
+- **Evidence:** No message types, yet `option_provide_storage` is advertised Optional (see NL-109). Update: `option_provide_storage` now defaults to No and is in `FeatureOptions.ExperimentalFeatures` (not advertised without `AllowExperimentalFeatures`, e93eb41). Update (wave rf1, `wip/fafo` at `be9fd000`): BOLT 1 peer storage both ways (lane R2): `peer_storage` (7) / `peer_storage_retrieval` (9) with strict trailing TLVs, `PeerStorageBlobs` table (migration `AddPeerStorage`, all three providers), `Application/Node/PeerStorage/PeerStorageService` keeps the latest blob per peer with a channel (rate-limited writes, retrieval after every init) and sends our encrypted, 65531-byte padded channel list to storing peers; a retrieval naming unknown channels holds our backups (never overwrites the evidence); `StopAsync` flushes delayed writes. The integrator wired `AddPeerStorageServices` and flipped `option_provide_storage` to Optional (aa9d67e0) and kept a blob that arrives before the channel exists (be9fd000, NL-428). Docker `Interop/Cln/ClnPeerStorageTests` green against CLN v26.06.8. Follow-ups NL-432, NL-433.
 - **Fix sketch:** Stop advertising, or implement types 7/9 with storage limits.
 - **Blocks/Blocked-by:** Related NL-109
 - **Plan ref:** —
@@ -311,6 +314,36 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ---
 
+### NL-428 A peer_storage blob sent right after init, before the channel exists, is dropped
+- **Status:** fixed (be9fd000)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs`
+- **Evidence:** CLN sends its `peer_storage` right after init, before our `open_channel`, so the blob was refused (no channel yet) and `ClnPeerStorageTests` failed in the full CLN suite but passed alone (found by the rf1 integrator). Fixed: such a blob is held in memory (at most 64 peers, 30 min) and kept at the next round once a channel with the peer exists; regression tests added.
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-010
+- **Plan ref:** —
+
+### NL-432 Peer-storage data-loss retrievals live in memory only and have no IPC
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (`GetRetrievals`)
+- **Evidence:** A retrieval that names channels we do not know is only logged and exposed through `IPeerStorageService.GetRetrievals()`/`GetStoredBlobAsync`; it is not persisted, there is no `ClientCommand` for it, and the hold on sending our backups lasts until the process restarts with no operator command to lift it (reported by lane R2).
+- **Fix sketch:** Persist the retrieval, add an IPC command (next free ClientCommand) for the restore flow and one to lift the hold.
+- **Blocks/Blocked-by:** Related NL-010, NL-426
+- **Plan ref:** —
+
+### NL-433 Our peer-storage blob is sent only when option_provide_storage is negotiated by both sides
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Node/PeerStorage/PeerStorageService.cs` (client side)
+- **Evidence:** A node configured with `OptionProvideStorage=No` sends no backups even to peers that store them; BOLT 1 lets a node send `peer_storage` to any peer that offers the feature (reported by lane R2).
+- **Fix sketch:** Check only the peer's bit for the client side.
+- **Blocks/Blocked-by:** Related NL-010
+- **Plan ref:** —
+
 ## BOLT 2: Wire layer
 
 ### NL-019 stfu is not a channel message and is silently dropped
@@ -384,11 +417,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M1-T9 open item; BOLT2 N5-T1
 
 ### NL-026 MessageFactory.CreateUpdateAddHtlcMessage cannot attach a BlindedPathTlv
-- **Status:** open
+- **Status:** fixed (5d6e9770)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` (`CreateUpdateAddHtlcMessage`)
-- **Evidence:** No path_key parameter.
+- **Evidence:** No path_key parameter. Update (wave rf1, `wip/fafo` at `be9fd000`): the switch offers blinded forwards with `BlindedPathTlv(NextPathKey)` built in `ChannelStateTransitionService`; `MessageFactory.CreateUpdateAddHtlcMessage` itself still has no path_key parameter, which no caller needs.
 - **Fix sketch:** Add `BlindedPathTlv?` parameter.
 - **Blocks/Blocked-by:** Part of NL-079
 - **Plan ref:** ONION M5
@@ -1130,23 +1163,63 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ---
 
 ### NL-392 Temporary channels of failed or abandoned opens are never removed from ChannelMemoryRepository
-- **Status:** open
+- **Status:** fixed (bdfc90c0, c74d3173)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Memory/ChannelMemoryRepository.cs`, `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs`, the accept path
-- **Evidence:** A temporary channel stays in memory after its open fails or the peer abandons it (predates wave O7b; a slow leak). Since NL-379 the anchors reserve counts an admitted open while its temporary channel is stored, capped by `Node:Anchors:PendingOpenTimeout` (10 min), so the leak cannot hold the reserve forever (reported by lane Y1).
+- **Evidence:** A temporary channel stays in memory after its open fails or the peer abandons it (predates wave O7b; a slow leak). Since NL-379 the anchors reserve counts an admitted open while its temporary channel is stored, capped by `Node:Anchors:PendingOpenTimeout` (10 min), so the leak cannot hold the reserve forever (reported by lane Y1). Update (wave rf1, `wip/fafo` at `be9fd000`): temporary channels of failed, timed-out and disconnected opens are forgotten, the failed-open cleanup runs under the temporary channel's lock (lane R4).
 - **Fix sketch:** Remove the temporary channel when an open fails, is refused, or times out (funding_created/funding_signed never arrives), and on disconnect before funding.
 - **Blocks/Blocked-by:** Related NL-379
 - **Plan ref:** BOLT2 N0
 
 ### NL-393 A funding lock that fails for too few funds (not the reserve) is not answered as not_enough_balance
-- **Status:** open
+- **Status:** fixed (bdfc90c0, c74d3173)
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Repositories/Memory/UtxoMemoryRepository.cs` (`LockUtxosToSpendOnChannel`), `src/NLightning.Daemon/Handlers/OpenChannelClientHandler.cs`
-- **Evidence:** When the funding selection itself finds too few UTXOs it throws `InvalidOperationException`, which `OpenChannelClientHandler` does not map to `not_enough_balance` (only `AnchorReserveException`/the pre-check are); the pre-check usually catches the case first, so it shows only in races (predates wave O7b; reported by lane Y1).
+- **Evidence:** When the funding selection itself finds too few UTXOs it throws `InvalidOperationException`, which `OpenChannelClientHandler` does not map to `not_enough_balance` (only `AnchorReserveException`/the pre-check are); the pre-check usually catches the case first, so it shows only in races (predates wave O7b; reported by lane Y1). Update (wave rf1, `wip/fafo` at `be9fd000`): a funding lock that fails for too few funds is answered as `not_enough_balance`; only the lock's own failure is mapped (lane R4).
 - **Fix sketch:** Throw `InsufficientFundsException` from the selection and map it to `not_enough_balance`.
 - **Blocks/Blocked-by:** Related NL-379
+- **Plan ref:** —
+
+### NL-426 [EPIC] Static channel backup and restore
+- **Status:** fixed (781fe96a, 38742d78, 6fb5326c, 958304ad, aa9d67e0)
+- **Severity:** high
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/`, `src/NLightning.Daemon/Handlers/{ExportChanBackup,VerifyChanBackup,RestoreChanBackup}ClientHandler.cs`
+- **Evidence:** Wave rf1, lane R1 (commits cite NL-417, which is the D12 relay entry; this is the backup/restore ID). Versioned, XChaCha20-Poly1305 encrypted SCB (key from HKDF of the node key, no private keys stored), atomic `channel.backup` written by `ChannelBackupMonitor` (a file with channels missing from the database is moved aside as `.superseded`, the directory is fsynced), IPC `exportchanbackup` (21), `verifychanbackup` (22), `restorechanbackup` (23). Restore writes recovery channels (Failed + DataLossDetected, no snapshot), reserves the restored key indexes, sends the data-loss `channel_reestablish` (next_commitment_number 0) so the peer force-closes, never signs or broadcasts our commitment, finds a funding spend mined before the restore within `Node:Backup:RestoreSpendSearchDepth` (4032), and `RemoteCommitResolver` sweeps to_remote. The integrator wired `AddChannelBackupNodeServices`/`AddChannelBackupFile` and fixed the reserver loop (NL-427). Docker `BackupRestoreFlowTests` (anchors and legacy, LND force close after or before the restore) 4/4. A restore disconnects an already connected peer first, which interrupts its other live channels. Follow-ups NL-430, NL-431, NL-435.
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-010, NL-035
+- **Plan ref:** —
+
+### NL-430 Restore only reports a funding spend older than RestoreSpendSearchDepth or on a backup without a SCID
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/ChannelRestoreService.cs`, `ChainFundingSpendLocator`
+- **Evidence:** A peer force close mined more than `Node:Backup:RestoreSpendSearchDepth` (4032) blocks before the restore, or a backup entry without a SCID, yields `FundingAlreadySpent: ... rescan from height N` and an error log; our to_remote is not swept automatically (reported by lane R1 review).
+- **Fix sketch:** Add an operator rescan-from-height (or search from `ChannelBackupEntry.FundingHeight`) and resolve the spend through `IOnchainChannelWatcher`.
+- **Blocks/Blocked-by:** Part of NL-426
+- **Plan ref:** —
+
+### NL-431 Restore reconnects only through the backup's single peer address
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Channels/Backup/ChannelBackupCodec.cs`, `ChannelRestoreService.cs`
+- **Evidence:** The backup holds one host:port per peer from the peers table; node_announcement addresses from the gossip graph are neither backed up nor tried at restore time, so a peer whose address changed reconnects only if it connects to us (reported by lane R1).
+- **Fix sketch:** At restore, also try the peer's addresses from the graph; optionally store several addresses in the backup.
+- **Blocks/Blocked-by:** Part of NL-426; related NL-099
+- **Plan ref:** —
+
+### NL-435 The data-loss reestablish of a restored channel is unproven for a channel at commitment height 0
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/BackupRestoreFlowTests.cs`
+- **Evidence:** LND force-closes on `next_commitment_number = 0` at commitment height 4 (proven); a channel that never carried a payment is not covered, and LND 0.20 does not force close on a remote `error`, so if LND reads 0 as "retransmit" there the restore does not get the channel closed (reported by lane R1).
+- **Fix sketch:** Add a Docker case that restores a channel with no updates and check LND's reaction; fall back to asking the operator to close from the peer.
+- **Blocks/Blocked-by:** Part of NL-426
 - **Plan ref:** —
 
 ## BOLT 3: Transactions and scripts
@@ -1446,11 +1519,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** M2 payload open item
 
 ### NL-077 current_path_key (TLV 12) is not curve-validated
-- **Status:** open
+- **Status:** fixed (6b2c3d61)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Tlv/Converters/Onion/CurrentPathKeyTlvConverter.cs`
-- **Evidence:** Length/prefix only; `0x02||ff×32` passes (test documents it). The update_add path_key is validated by the peeler.
+- **Evidence:** Length/prefix only; `0x02||ff×32` passes (test documents it). The update_add path_key is validated by the peeler. Update (wave rf1, `wip/fafo` at `be9fd000`): `RouteBlindingService` curve-checks every path_key, including a payload's `current_path_key`, and the processor maps a failure to `invalid_onion_blinding` (`RouteBlindingServiceTests`).
 - **Fix sketch:** Validate via `ISecp256K1Math` in M5 and map to `invalid_onion_blinding`.
 - **Blocks/Blocked-by:** Part of NL-079
 - **Plan ref:** ONION M5
@@ -1466,11 +1539,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M4-T2/T7; M2 review issue 9 (partial)
 
 ### NL-079 [EPIC] Route blinding payload handling (ONION M5)
-- **Status:** open
+- **Status:** fixed (6b2c3d61, 5d6e9770, f696e3bd, 01aff502, 8675ca37, 2be510fc, eaeb2797)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** planned `src/NLightning.Infrastructure.Bitcoin/Onion/RouteBlinding/`
-- **Evidence:** Peel applies the path_key tweak and exposes `PathKeySharedSecret`, but no `encrypted_recipient_data` decrypt, no blinded path builder, no `invalid_onion_blinding` remap in the validator. `route-blinding-test.json` is only loaded.
+- **Evidence:** Peel applies the path_key tweak and exposes `PathKeySharedSecret`, but no `encrypted_recipient_data` decrypt, no blinded path builder, no `invalid_onion_blinding` remap in the validator. `route-blinding-test.json` is only loaded. Update (wave rf1, `wip/fafo` at `be9fd000`): M5 done (lane rf1-m5): route-blinding crypto and `encrypted_data_tlv` codec byte-exact against `route-blinding-test.json` and `blinded-payment-onion-test.json`; `IncomingOnionProcessor`/`HtlcSwitch` forward and receive blinded payments with the `invalid_onion_blinding` rules (introduction-node errors delayed, malformed inside the path); `PaymentService.PayBlindedAsync` sends to blinded paths and `BlindedPathBuilder` builds ours; `option_route_blinding` advertised Optional (2be510fc); Docker `Docker/Gossip/RouteBlindingFlowTests` against LND 0.20 (4/4). Limits: NL-440.
 - **Fix sketch:** M5 per plan. Sub-issues: NL-077, NL-026.
 - **Blocks/Blocked-by:** Blocked-by NL-073
 - **Plan ref:** ONION M5
@@ -1776,11 +1849,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** ONION M3b
 
 ### NL-339 A blinded forward drops the downstream fulfillment_payload
-- **Status:** open
+- **Status:** fixed (eaeb2797)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Application/Payments/Switch/HtlcSwitch.cs` (forwarded fulfill)
-- **Evidence:** BOLT 4: a forwarding node passes the downstream fulfillment_payload on (obfuscated) even when it adds no attribution. When the incoming add had a `path_key` the switch adds no attribution and drops the payload. Unreachable until route blinding is enabled (M5) (reported by the W7 integrator).
+- **Evidence:** BOLT 4: a forwarding node passes the downstream fulfillment_payload on (obfuscated) even when it adds no attribution. When the incoming add had a `path_key` the switch adds no attribution and drops the payload. Unreachable until route blinding is enabled (M5) (reported by the W7 integrator). Update (wave rf1, `wip/fafo` at `be9fd000`): blinded forwards never relay a downstream error or payload and fail upstream with `invalid_onion_blinding` per BOLT 4; the blinded failure rules also apply in the dust and expiry fail-backs.
 - **Fix sketch:** Pass the payload through the blinded branch as BOLT 4 describes when M5 lands.
 - **Blocks/Blocked-by:** Related NL-079, NL-326
 - **Plan ref:** ONION M3b, M5
@@ -1806,6 +1879,16 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT7 G1-T5, G4
 
 ---
+
+### NL-440 Blinded payments: no MPP, no own-introduction paths, no BOLT 11 blinded paths, no dummy hops
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Payments/Send/PaymentService.cs` (`PayBlindedAsync`), `Invoices/BlindedPathBuilder.cs`
+- **Evidence:** M5 sends one part per blinded payment, cannot pay a path whose introduction node is us, does not decode BOLT 11 blinded paths (LND's field 20; the Docker proof reads them through `DecodePayReq`), and our own paths have no dummy hops (reported by lane M5).
+- **Fix sketch:** Add these with BOLT 12 (offers carry blinded paths) or earlier if an interop case needs them.
+- **Blocks/Blocked-by:** Follow-up of NL-079
+- **Plan ref:** ONION M5
 
 ## BOLT 5: On-chain handling
 
@@ -3578,11 +3661,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-148 `--password` visible in the process list; IPC cookie never rotated
-- **Status:** fixed (76b67cf, d91b1ad, 45c1e74)
+- **Status:** fixed (76b67cf, d91b1ad, 45c1e74, 7e1a44ae)
 - **Severity:** high
 - **Kind:** bug
 - **Location:** `src/NLightning.Daemon/Program.cs`, `src/NLightning.Daemon/Services/Ipc/CookieFileAuthenticator.cs`
-- **Evidence:** Wallet password on the command line leaks via `ps`; the cookie at `{configPath}/nltg.cookie` is static.
+- **Evidence:** Wallet password on the command line leaks via `ps`; the cookie at `{configPath}/nltg.cookie` is static. Update (wave rf1, `wip/fafo` at `be9fd000`): the `--daemon` child now reads the password from its stdin (`--password-stdin`) and `NLTG_PASSWORD` is removed from its environment (SECURITY_REVIEW SR-11).
 - **Fix sketch:** Read the password from stdin/file/env; rotate the cookie per start.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -3618,11 +3701,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-152 Missing IPC commands: close, list channels, invoice, pay, disconnect
-- **Status:** open (partial: 5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a)
+- **Status:** fixed (5611156, 2ede2ee, 6cfbcd1, c10a78e, c50fc7b, f2f1ef6, 6d81ecd, c2ae40a, d60c4be5, aa9d67e0)
 - **Severity:** high
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Client/Enums/ClientCommand.cs`
-- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C). Update (ABCD wave 2, `a5675cb`): `payinvoice` and `listpayments` work end to end now that `IPaymentService` is registered (f2f1ef6; `PaymentSendIpcTests`, ABCD c-send). The daemon binds `Node:Payments` (`PaymentSendOptions`). Remaining: close and disconnect commands. Update (ABCD wave 3, `c92d837`): `closechannel` (ClientCommand.CloseChannel = 13, next free 14) with daemon handler, CLI and `Node:Close` options (6d81ecd). Remaining: disconnect. Update (ABCD wave 5, `1a5ab49`): `forceclosechannel` (ClientCommand.ForceCloseChannel = 14) and `pendingsweeps` (PendingSweeps = 15, next free 16) with daemon handlers, CLI and printers (c2ae40a); `openchannel` takes an optional push amount as key 3 of the existing request (NL-301). Remaining: disconnect.
+- **Evidence:** Only NodeInfo, ConnectPeer, ListPeers, GetAddress, WalletBalance, OpenChannel(+Subscription). A user can't close a channel or pay. Update: `ClientCommand.ListChannels = 8` with the `listchannels [peer_id]` CLI (5611156; local/remote commitment numbers since 3c625e1). Close, invoice, pay and disconnect remain. Update (ABCD wave 0, `0b7e617`): Domain side of invoice/payment IPC: `ClientCommand` CreateInvoice=9, PayInvoice=10, ListInvoices=11, ListPayments=12 (next free 13), their request/response DTOs, and `ChannelInfoClientResponse.IsReestablished`/`FeeBaseMsat`/`FeePpm` (2ede2ee, 1390027). Handlers, IPC registration and CLI remain (ABCD W1-D); close and disconnect remain. Update (ABCD wave 1, `342d22e`): CreateInvoice (9), PayInvoice (10), ListInvoices (11) and ListPayments (12) have MessagePack DTOs, daemon IPC handlers on a shared `ClientCommandIpcHandler` base ("not available" while a payment service is unregistered), scoped client handlers and CLI commands with snapshot-tested printers; `RoutingOptions` is bound and the default config writes `Node:EnableHtlcs` (true on regtest) and the `Node:Routing` defaults; hardening after review: exact error mapping, pipe cap 64, payinvoice wait ≤ 300 s, list count ≤ 1000 (6cfbcd1, c10a78e, c50fc7b). Remaining: close and disconnect commands; PayInvoice/ListPayments need `IPaymentService` (W2-C). Update (ABCD wave 2, `a5675cb`): `payinvoice` and `listpayments` work end to end now that `IPaymentService` is registered (f2f1ef6; `PaymentSendIpcTests`, ABCD c-send). The daemon binds `Node:Payments` (`PaymentSendOptions`). Remaining: close and disconnect commands. Update (ABCD wave 3, `c92d837`): `closechannel` (ClientCommand.CloseChannel = 13, next free 14) with daemon handler, CLI and `Node:Close` options (6d81ecd). Remaining: disconnect. Update (ABCD wave 5, `1a5ab49`): `forceclosechannel` (ClientCommand.ForceCloseChannel = 14) and `pendingsweeps` (PendingSweeps = 15, next free 16) with daemon handlers, CLI and printers (c2ae40a); `openchannel` takes an optional push amount as key 3 of the existing request (NL-301). Remaining: disconnect. Update (wave rf1, `wip/fafo` at `be9fd000`): `disconnect` (ClientCommand 24; refused with HTLCs in flight unless forced) and channel/HTLC counts in `listpeers`/`info` (lane R4); the integrator renumbered it from 21 (taken by the backup commands). Next free ClientCommand: 25.
 - **Fix sketch:** Append commands per the recipe as each epic lands.
 - **Blocks/Blocked-by:** Blocked-by NL-034, NL-114
 - **Plan ref:** ONION M4-T6; BOLT2 N0-T8, N8-T2, N8-T3, N10-T3
@@ -3772,11 +3855,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-159 Node key is the BIP32 master key; non-standard master derivation from mnemonic
-- **Status:** open
+- **Status:** fixed (db262e2a)
 - **Severity:** medium
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs:85,141-143`
-- **Evidence:** `GetNodeKeyPair` returns the master key itself; the master is not derived the standard BIP32 way, so the seed can't be restored in other wallets.
+- **Evidence:** `GetNodeKeyPair` returns the master key itself; the master is not derived the standard BIP32 way, so the seed can't be restored in other wallets. Update (wave rf1, `wip/fafo` at `be9fd000`): new nodes get v3 key files: a standard BIP32 master with the node key at m/1017'/0'/6'/0/0 (tested against the BIP84 mnemonic vector); v1/v2 files keep their derivation and node id by design (moving an existing node needs a new node); builds before this one cannot read v3.
 - **Fix sketch:** Derive the node key on a dedicated path; document/migrate.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
@@ -3862,11 +3945,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-212 Legacy key-file password fallback misses Windows ANSI-codepage files
-- **Status:** open
+- **Status:** fixed (db262e2a)
 - **Severity:** medium
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (legacy retry), libsodium P/Invoke
-- **Evidence:** The old libsodium path marshalled the password as LPStr: UTF-8 on Unix (covered by the truncated-UTF-8 retry) but the ANSI codepage on Windows. A non-ASCII password on a Windows v1 file will not decrypt.
+- **Evidence:** The old libsodium path marshalled the password as LPStr: UTF-8 on Unix (covered by the truncated-UTF-8 retry) but the ANSI codepage on Windows. A non-ASCII password on a Windows v1 file will not decrypt. Update (wave rf1, `wip/fafo` at `be9fd000`): v1 files only: the password is retried as the exact LPStr (ANSI) marshalling, with a known-answer test.
 - **Fix sketch:** On Windows also retry with `Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.ANSICodePage)` truncated to the char count; test with a known-answer vector.
 - **Blocks/Blocked-by:** Related NL-158, NL-211
 - **Plan ref:** —
@@ -3876,7 +3959,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** bug
 - **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs` (atomic write)
-- **Evidence:** The temp file copies the Unix mode before the move; no chown and no ACL copy (crypto-security batch).
+- **Evidence:** The temp file copies the Unix mode before the move; no chown and no ACL copy (crypto-security batch). Update (wave rf1, `wip/fafo` at `be9fd000`): rewrites and the `.v1.bak` now drop group/other bits (SR-02, db262e2a) and the directory is fsynced (8c66499b); owner preservation when root rewrites the file and the Windows ACL remain (SECURITY_REVIEW SR-14).
 - **Fix sketch:** Copy owner/group where permitted; copy the ACL on Windows.
 - **Blocks/Blocked-by:** Related NL-158
 - **Plan ref:** —
@@ -3902,6 +3985,56 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Done.
 - **Blocks/Blocked-by:** Blocks any mainnet node
 - **Plan ref:** n/a
+
+### NL-427 The restore's channel key index reserver looped forever with a key manager that does not advance
+- **Status:** fixed (aa9d67e0)
+- **Severity:** low
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Backup/SecureKeyManagerKeyIndexReserver.cs`
+- **Evidence:** It called `GetNextChannelKey` until the index reached the highest restored one; with a key manager that does not advance (a mock) it never ended and hung Daemon.Tests `RestoredOverIpc` (found by the rf1 integrator). Fixed: it uses `EnsureLastUsedChannelIndexAtLeast` for the file-backed manager and throws otherwise; startup also reconciles the index with `IChannelDbRepository.GetHighestLocalKeyIndexAsync` (SR-19).
+- **Fix sketch:** —
+- **Blocks/Blocked-by:** Related NL-426
+- **Plan ref:** —
+
+### NL-436 The BOLT 8 handshake keeps an unwiped copy of the node private key per connection
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure/Node/Factories/PeerServiceFactory.cs`
+- **Evidence:** `GetNodeKeyPair()` copies the node private key for each connection's handshake and never wipes it (SECURITY_REVIEW SR-17, lane R3).
+- **Fix sketch:** Do the handshake ECDH through `ISecureKeyManager`, as the onion peel does.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-437 Plaintext key copies in managed strings and NBitcoin objects cannot be wiped
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Infrastructure.Bitcoin/Managers/SecureKeyManager.cs`
+- **Evidence:** The xprv and password strings and NBitcoin `Key`/`ExtKey` objects stay in managed memory until collected (SECURITY_REVIEW SR-09, lane R3).
+- **Fix sketch:** Keep secrets in pinned byte arrays and wipe them; minimise NBitcoin key objects.
+- **Blocks/Blocked-by:** —
+- **Plan ref:** —
+
+### NL-438 GossipProbe still creates v2 key files with the legacy constructor
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `tools/NLightning.GossipProbe/ProbeNode.cs`
+- **Evidence:** New nodes get v3 key files since db262e2a, the probe still uses the legacy constructor (reported by lane R3).
+- **Fix sketch:** Switch the probe to `SecureKeyManager.CreateNew`.
+- **Blocks/Blocked-by:** Related NL-159
+- **Plan ref:** —
+
+### NL-439 Security review did not cover the Windows named-pipe ACL or a database file outside the config directory
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `src/NLightning.Daemon/Services/Ipc/NamedPipeIpcService.cs`, `Database` connection string
+- **Evidence:** Wave rf1 security review (SECURITY_REVIEW.md) checked the Unix socket mode and `CurrentUserOnly`, not the Windows pipe ACL end to end, and not the file mode of a database whose path is outside `~/.nltg/<network>` (reported by the rf1 integrator).
+- **Fix sketch:** Review both; warn at start when the database file is group/world readable.
+- **Blocks/Blocked-by:** Related NL-224
+- **Plan ref:** —
 
 ## Tests / CI / Build
 
@@ -4306,6 +4439,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Replace fixed waits and timeouts with awaited conditions and a fake time provider.
 - **Blocks/Blocked-by:** Related NL-382, NL-099
 - **Plan ref:** BOLT7 G3
+
+### NL-429 The MultiNodeHarness restart theory's Postgres case cannot run without its SQL Server case
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/MultiNodeHarnessTests.cs` (`Given_ServerDatabase_When_NodeRestarts...`)
+- **Evidence:** xunit cannot filter out one data row, so skipping SQL Server (standard test cycle) also skips the Postgres restart case; it was not run in waves d12 and rf1 (reported by the rf1 integrator).
+- **Fix sketch:** Split the theory into one test per provider, or add a trait per row.
+- **Blocks/Blocked-by:** Related NL-347
+- **Plan ref:** —
+
+### NL-434 Timing-bound tests in MissionControl and GraphPathfinder fail under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Payments/Routing/MissionControlTests.cs`, `test/NLightning.Domain.Tests/Routing/GraphPathfinderTests.cs` (50 ms budget)
+- **Evidence:** Both failed once in a full run under load and passed alone: a lower-bound assertion affected by clock decay and a 50 ms search budget (reported by lane R2).
+- **Fix sketch:** Use the fake clock in the MissionControl assertion and a generous or count-based budget in the pathfinder test.
+- **Blocks/Blocked-by:** Related NL-382
+- **Plan ref:** —
 
 ## Docs
 

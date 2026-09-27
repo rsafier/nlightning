@@ -34,9 +34,9 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Signer and key persistence.** Done for channel signing data: the signer reloads it from the DB on first use (NL-067 first half, gossip wave G-A); `ChannelManager` no longer registers by hand (NL-343, gossip wave G-B). Wallet signing landed in wave O7 (NL-067 fixed).
 - **Operational hardening.**
   - Watchtower-free safety review.
-  - Backup and restore story for channel state.
+  - Backup and restore story for channel state: **done in wave rf1** (static channel backup export/verify/restore, IPC 21-23, NL-426; BOLT 1 peer storage, NL-010). Left: rescan of an old funding spend (NL-430), graph addresses at restore (NL-431), height-0 proof (NL-435), peer-storage retrievals over IPC (NL-432).
   - Real mainnet soak.
-- **Security review** of key-file handling and the IPC cookie (NL-148 remainder, NL-212 Windows ANSI key-file fallback).
+- **Security review** of key-file handling and the IPC cookie: **done in wave rf1** (`docs/agents/SECURITY_REVIEW.md`; NL-148, NL-159, NL-212 fixed). Left: NL-224 (SR-14), NL-436 (SR-17), NL-437 (SR-09), NL-439 (Windows pipe ACL, database file mode).
 
 ## Protocol features
 
@@ -56,7 +56,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Attribution data** (M3b). Wired end to end but kept experimental: LND 0.20 does not implement it, so it can't be proven against LND (NL-332). Follow-ups:
   - the retry policy ignores attribution blame (NL-333);
   - a fulfill reverted on disconnect loses its attribution (NL-334).
-- **Route blinding** (ONION M5): blinded payment paths when receiving and forwarding (NL-079). Includes passing on a `fulfillment_payload` for blinded incoming adds.
+- **Route blinding** (ONION M5): **done in wave rf1** (NL-079, NL-339). Left: MPP over blinded paths, BOLT 11 blinded paths, dummy hops (NL-440).
 - **Onion messages** (ONION M6, optional).
 - **BOLT 12 offers** (needs onion messages and blinded paths).
 - **Dual funding / interactive-tx** (v2 open, NL-037). Messages and validators exist; no handlers.
@@ -83,7 +83,7 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 ## Tech debt worth scheduling
 
 - `ChannelModel` legacy HTLC collections and the remaining clean-architecture violations (Application → Infrastructure) (NL-032, NL-157).
-- The IPC surface: disconnect, peer management, richer channel and payment queries (NL-152 remainder).
+- The IPC surface: `disconnect` done in wave rf1 (ClientCommand 24, NL-152 fixed; next free 25); richer channel and payment queries remain.
 - The binary naming: `nltg` in the usage text vs the `NLightning.Client` assembly (NL-185).
 
 ## Standard test cycle
