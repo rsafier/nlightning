@@ -12,6 +12,7 @@ using Domain.Client.Requests;
 using Domain.Client.Responses;
 using Domain.Exceptions;
 using Domain.Money;
+using Infrastructure.Bitcoin.Services;
 using Interfaces;
 
 /// <summary>
@@ -21,7 +22,8 @@ using Interfaces;
 /// <remarks>
 /// Errors: an invalid or wrong-network address is <see cref="ErrorCodes.InvalidAddress"/>; too little confirmed
 /// money or a spend that would break the anchors reserve is <see cref="ErrorCodes.NotEnoughBalance"/>; a dust amount, a
-/// fee rate out of bounds or halted chain processing is <see cref="ErrorCodes.InvalidOperation"/>.
+/// fee rate out of bounds or halted chain processing is <see cref="ErrorCodes.InvalidOperation"/>. A fee rate in sat/vB
+/// is converted with <see cref="FeeRateConverter"/> (x 250, floored at 253 sat/kw), so 1 sat/vB is 253 sat/kw.
 /// </remarks>
 public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClientRequest, WithdrawClientResponse>
 {
@@ -64,7 +66,9 @@ public sealed class WithdrawClientHandler : IClientCommandHandler<WithdrawClient
         var spendRequest = new WalletWithdrawRequest(
             request.Address,
             request.AmountSat is { } amount ? LightningMoney.Satoshis((long)amount) : null,
-            request.SatPerVbyte is { } satPerVbyte ? LightningMoney.Satoshis((long)satPerVbyte * 250) : null);
+            request.SatPerVbyte is { } satPerVbyte
+                ? LightningMoney.Satoshis(FeeRateConverter.SatPerVByteToSatPerKw(satPerVbyte))
+                : null);
 
         WalletWithdrawResult result;
         try

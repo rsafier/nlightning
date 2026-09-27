@@ -78,11 +78,23 @@ public sealed class AnchorReserveService : IAnchorReserveService
     /// <inheritdoc />
     public async Task<AnchorReserveStatus> GetStatusAsync(CancellationToken cancellationToken = default)
     {
-        var count = CountAnchorsChannels();
-        var reserve = _options.GetRequiredReserve(count);
-        var available = LightningMoney.Satoshis((await GetReserveBackingOutputsAsync()).Sum(u => u.Amount.Satoshi));
-        var spendable = available > reserve ? available - reserve : LightningMoney.Zero;
-        return new AnchorReserveStatus(count, reserve, available, spendable);
+        // Under the admission gate: a caller that reserved outputs and then checks the reserve (withdraw) either runs
+        // before an accept's check (which then no longer counts those outputs) or after its admission (and counts the
+        // channel), never in between
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var count = CountAnchorsChannels();
+            var reserve = _options.GetRequiredReserve(count);
+            var available = LightningMoney.Satoshis((await GetReserveBackingOutputsAsync())
+                                                       .Sum(u => u.Amount.Satoshi));
+            var spendable = available > reserve ? available - reserve : LightningMoney.Zero;
+            return new AnchorReserveStatus(count, reserve, available, spendable);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /// <inheritdoc />

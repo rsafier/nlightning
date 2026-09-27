@@ -79,6 +79,27 @@ public class WithdrawIpcHandlerTests
     }
 
     [Fact]
+    public async Task Given_OneSatPerVbyte_When_Withdrawing_Then_TheServiceGetsTheRelayFloorOf253SatPerKw()
+    {
+        // Arrange: 1 sat/vB x 250 is 250 sat/kw, below the 253 sat/kw the service accepts
+        var handler = GetHandler();
+
+        // Act
+        var response = await handler.HandleAsync(
+                           CreateEnvelope(new WithdrawIpcRequest
+                           {
+                               Address = Address,
+                               AmountSat = 40_000,
+                               SatPerVbyte = 1
+                           }), TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(IpcEnvelopeKind.Response, response.Kind);
+        Assert.NotNull(_request);
+        Assert.Equal(253, _request.FeeRatePerKw!.Satoshi);
+    }
+
+    [Fact]
     public async Task Given_AllWithoutAFeeRate_When_Withdrawing_Then_TheServiceSendsAllAtTheEstimate()
     {
         // Arrange

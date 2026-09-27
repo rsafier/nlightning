@@ -27,4 +27,15 @@ public interface IWalletSpendService
     /// the fee; nothing was reserved.</exception>
     Task<WalletWithdrawResult> WithdrawAsync(WalletWithdrawRequest request,
                                              CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Ends the <c>withdraw</c> reservations that no longer hold a spend: those none of whose inputs is still in the
+    /// wallet (their spend was processed in a block) are confirmed, and those none of whose inputs a pending
+    /// <c>BroadcastTransactions</c> row spends (a crash or a failed save between the reservation and the row) are
+    /// released, so their outputs are selectable again. Withdrawals are serialized with it, so an in-flight one is never
+    /// touched. <see cref="WithdrawAsync"/> runs it first; the host also runs it once at startup, after the chain monitor
+    /// has loaded the wallet's outputs and reservations. When the pending broadcasts cannot be read, nothing is released.
+    /// </summary>
+    /// <returns>How many reservations were released as orphans.</returns>
+    Task<int> ReleaseOrphanedReservationsAsync(CancellationToken cancellationToken = default);
 }

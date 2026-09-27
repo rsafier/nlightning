@@ -54,6 +54,9 @@ public class WalletSpendServiceTests
     private readonly BitcoinAddress _changeAddress;
     private readonly FeeInputSelector _selector;
     private readonly WalletSpendService _service;
+    private readonly LocalLightningSigner _signer;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly NodeOptions _nodeOptions;
     private long _reserveSat;
 
     public WalletSpendServiceTests()
@@ -63,7 +66,8 @@ public class WalletSpendServiceTests
         _unitOfWork.Setup(u => u.FeeInputReservationDbRepository).Returns(_reservations.Object);
         _unitOfWork.Setup(u => u.BroadcastTransactionDbRepository).Returns(_broadcasts.Object);
         _unitOfWork.Setup(u => u.SaveChangesAsync()).Returns(Task.CompletedTask);
-        _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync([]);
+        // The stored withdrawals are the pending broadcasts, as in the chain monitor's table
+        _broadcasts.Setup(b => b.GetPendingAsync()).ReturnsAsync(() => _published.ToList());
         _reservations.Setup(r => r.Add(It.IsAny<FeeInputReservation>(), It.IsAny<DateTimeOffset>()))
                      .Callback<FeeInputReservation, DateTimeOffset>((r, _) => _stored.Add(r));
         _reservations.Setup(r => r.GetAllAsync()).ReturnsAsync(() => _stored.ToList());
@@ -107,14 +111,18 @@ public class WalletSpendServiceTests
 
         _selector = new FeeInputSelector(_utxos, scopeFactory, Microsoft.Extensions.Options.Options.Create(nodeOptions),
                                          NullLogger<FeeInputSelector>.Instance);
-        var signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
-                                              NullLogger<LocalLightningSigner>.Instance, nodeOptions,
-                                              _keyManager.Object, _utxos);
-        _service = new WalletSpendService(_selector, _anchorReserve.Object, _utxos, signer, _monitor.Object,
-                                          _feeService.Object, scopeFactory,
-                                          Microsoft.Extensions.Options.Options.Create(nodeOptions),
-                                          NullLogger<WalletSpendService>.Instance);
+        _signer = new LocalLightningSigner(Mock.Of<IFundingOutputBuilder>(), Mock.Of<IKeyDerivationService>(),
+                                           NullLogger<LocalLightningSigner>.Instance, nodeOptions,
+                                           _keyManager.Object, _utxos);
+        _scopeFactory = scopeFactory;
+        _nodeOptions = nodeOptions;
+        _service = CreateService();
     }
+
+    /// <summary>A service over the same wallet and database: a restarted node's.</summary>
+    private WalletSpendService CreateService() =>
+        new(_selector, _anchorReserve.Object, _utxos, _signer, _monitor.Object, _feeService.Object, _scopeFactory,
+            Microsoft.Extensions.Options.Options.Create(_nodeOptions), NullLogger<WalletSpendService>.Instance);
 
     [Fact]
     public async Task Given_OneP2WpkhOutput_When_WithdrawingAnAmount_Then_TheSignedSpendPaysTheAddressAndTheChange()
@@ -443,6 +451,97 @@ public class WalletSpendServiceTests
         // Assert
         Assert.DoesNotContain(_stored, r => r.Id == firstReservation.Id);
         Assert.Single(_stored);
+    }
+
+    [Fact]
+    public async Task Given_AWithdrawReservationACrashLeftWithoutItsRow_When_TheNodeStarts_Then_ItIsReleased()
+    {
+        // Arrange: the reservation was persisted, the process died before the WalletSend row was saved
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        await _selector.ReserveAsync(LightningMoney.Satoshis(10_000), LightningMoney.Satoshis(FeeRatePerKw), 200,
+                                     WalletSpendService.ReservationPurpose, TestContext.Current.CancellationToken);
+        Assert.True(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+        var restarted = CreateService();
+
+        // Act
+        var released = await restarted.ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert: the output is selectable again (for fundings, CPFP and the reserve too)
+        Assert.Equal(1, released);
+        Assert.Empty(_stored);
+        Assert.False(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+        Assert.Contains(_utxos.GetUnreservedUtxos(), u => u.TxId.Equals(utxo.Model.TxId));
+    }
+
+    [Fact]
+    public async Task Given_AnOrphanedWithdrawReservationOnTheOnlyOutput_When_WithdrawingAgain_Then_ItSpendsThatOutput()
+    {
+        // Arrange: a failed save that could not be verified (IsStoredAsync kept the reservation) left no row
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        var orphan = await _selector.ReserveAsync(LightningMoney.Satoshis(10_000),
+                                                  LightningMoney.Satoshis(FeeRatePerKw), 200,
+                                                  WalletSpendService.ReservationPurpose,
+                                                  TestContext.Current.CancellationToken);
+
+        // Act
+        await _service.WithdrawAsync(Request(20_000), TestContext.Current.CancellationToken);
+
+        // Assert
+        var tx = AssertPublishedAndValid(utxo.TxOut);
+        Assert.Equal(utxo.OutPoint, Assert.Single(tx.Inputs).PrevOut);
+        Assert.DoesNotContain(_stored, r => r.Id == orphan.Id);
+        Assert.Single(_stored);
+    }
+
+    [Fact]
+    public async Task Given_AStoredPendingWithdrawal_When_OrphansAreReleased_Then_ItsReservationIsKept()
+    {
+        // Arrange
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        await _service.WithdrawAsync(Request(10_000), TestContext.Current.CancellationToken);
+        var reservation = Assert.Single(_stored);
+
+        // Act
+        var released = await CreateService().ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, released);
+        Assert.Equal(reservation.Id, Assert.Single(_stored).Id);
+        Assert.True(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_ThePendingBroadcastsCannotBeRead_When_OrphansAreReleased_Then_NothingIsReleased()
+    {
+        // Arrange
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        await _selector.ReserveAsync(LightningMoney.Satoshis(10_000), LightningMoney.Satoshis(FeeRatePerKw), 200,
+                                     WalletSpendService.ReservationPurpose, TestContext.Current.CancellationToken);
+        _broadcasts.Setup(b => b.GetPendingAsync()).ThrowsAsync(new InvalidOperationException("database is locked"));
+
+        // Act
+        var released = await _service.ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert: unknown, so the reservation stays (it never double-spends)
+        Assert.Equal(0, released);
+        Assert.Single(_stored);
+        Assert.True(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
+    }
+
+    [Fact]
+    public async Task Given_AReservationOfAnotherPurpose_When_OrphansAreReleased_Then_ItIsLeftAlone()
+    {
+        // Arrange: a CPFP child's reservation is its own service's business
+        var utxo = AddWalletUtxo(AddressType.P2Wpkh, 0, 100_000);
+        await _selector.ReserveAsync(LightningMoney.Satoshis(10_000), LightningMoney.Satoshis(FeeRatePerKw), 200,
+                                     "cpfp:test", TestContext.Current.CancellationToken);
+
+        // Act
+        var released = await _service.ReleaseOrphanedReservationsAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, released);
+        Assert.True(_utxos.TryGetFeeReservation(utxo.Model.TxId, utxo.Model.Index, out _));
     }
 
     [Theory]

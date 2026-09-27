@@ -116,9 +116,10 @@ public class WithdrawCommandTests
         new WithdrawPrinter(output).Print(response);
 
         // Assert
-        var text = output.ToString();
+        var text = output.ToString().ReplaceLineEndings(" ");
         Assert.StartsWith("Withdrawal stored, broadcast refused", text);
-        Assert.Contains("sends it again after every block", text);
+        Assert.Contains("sends it again   after every block", text);
+        Assert.Contains("could confirm and pay twice", text);
         Assert.DoesNotContain("Anchor reserve", text);
     }
 }
