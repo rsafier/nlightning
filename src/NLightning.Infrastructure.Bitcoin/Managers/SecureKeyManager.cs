@@ -142,16 +142,19 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             chainCode?.CopyTo(masterMaterial, privateKey.Length);
             _secureMasterKeyPtr = AllocateSecure(masterMaterial, out _masterKeyLength);
 
-            // Get Output Descriptor
+            // Output descriptors: each names the xpub at its own key origin (SR-13; they used to put the master xpub
+            // behind the account's origin, which describes other keys than ours)
             var extKey = GetMasterKey();
-            var xpub = extKey.Neuter().ToString(_network);
             var fingerprint = extKey.GetPublicKey().GetHDFingerPrint();
+            var channelXpub = extKey.Derive(_channelKeyPath).Neuter().ToString(_network);
+            var p2TrXpub = extKey.Derive(_depositP2TrKeyPath).Neuter().ToString(_network);
+            var p2WpkhXpub = extKey.Derive(_depositP2WpkhKeyPath).Neuter().ToString(_network);
 
-            OutputChannelDescriptor = $"wpkh([{fingerprint}/{ChannelKeyPath}/*]{xpub}/0/*)";
-            OutputDepositP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/0/*)";
-            OutputChangeP2TrDescriptor = $"tr([{fingerprint}/{DepositP2TrKeyPath}]{xpub}/1/*)";
-            OutputDepositP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/0/*)";
-            OutputChangeP2WshDescriptor = $"wpkh([{fingerprint}/{DepositP2WpkhKeyPath}]{xpub}/1/*)";
+            OutputChannelDescriptor = $"wpkh([{fingerprint}/{_channelKeyPath}]{channelXpub}/*)";
+            OutputDepositP2TrDescriptor = $"tr([{fingerprint}/{_depositP2TrKeyPath}]{p2TrXpub}/0/*)";
+            OutputChangeP2TrDescriptor = $"tr([{fingerprint}/{_depositP2TrKeyPath}]{p2TrXpub}/1/*)";
+            OutputDepositP2WshDescriptor = $"wpkh([{fingerprint}/{_depositP2WpkhKeyPath}]{p2WpkhXpub}/0/*)";
+            OutputChangeP2WshDescriptor = $"wpkh([{fingerprint}/{_depositP2WpkhKeyPath}]{p2WpkhXpub}/1/*)";
 
             var nodePrivateKey = DerivationScheme == KeyDerivationScheme.Bip32
                                      ? extKey.Derive(new KeyPath(NodeKeyPathString)).PrivateKey
@@ -407,8 +410,8 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
         var keyManager =
             new SecureKeyManager(extKey.PrivateKey.ToBytes(), chainCode, expectedNetwork, filePath, data.HeightOfBirth)
             {
-                _lastUsedIndex = data.LastUsedIndex,
-                OutputChannelDescriptor = data.Descriptor
+                // The descriptor is recomputed from the key, not read back: files written before SR-13 hold a wrong one
+                _lastUsedIndex = data.LastUsedIndex
             };
 
         if (data.Version < KeyFileData.GenesisChainCodeVersion || usedLegacyPasswordEncoding)
@@ -431,7 +434,26 @@ public class SecureKeyManager : ISecureKeyManager, IDisposable
             }
         }
 
+        if (GetWeakBackupWarning(filePath) is { } warning)
+            Console.Error.WriteLine(warning);
+
         return keyManager;
+    }
+
+    /// <summary>
+    /// Gets the warning about the <c>.v1.bak</c> copy an upgrade left next to a key file, or null when there is
+    /// none. The copy holds the same key under the version 1 encryption (fixed salt, 64 KiB Argon2id), so whoever
+    /// gets the directory attacks it rather than the upgraded file (SR-18).
+    /// </summary>
+    internal static string? GetWeakBackupWarning(string filePath)
+    {
+        var backupPath = $"{filePath}.v{KeyFileData.LegacyVersion}.bak";
+        if (!File.Exists(backupPath))
+            return null;
+
+        return $"{backupPath} holds this node's key under the weak version 1 encryption. Keep it only while you may " +
+               "need to go back to a build older than the key file upgrade, then delete it (and any copy of it, such " +
+               "as in backups).";
     }
 
     /// <summary>

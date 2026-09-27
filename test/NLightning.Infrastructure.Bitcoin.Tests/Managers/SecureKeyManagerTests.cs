@@ -484,6 +484,66 @@ public sealed class SecureKeyManagerTests : IDisposable
     }
 
     [Fact]
+    public void Given_TheBip84TestMnemonic_When_ReadingTheDescriptors_Then_EachNamesTheAccountXpubAtItsOrigin()
+    {
+        // Arrange: the BIP84 test vector; its account xpub (m/84'/0'/0') is the vector's zpub in xpub encoding
+        const string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon " +
+                                "abandon about";
+        const string bip84AccountXpub = "xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvqAQY3rAPshW" +
+                                        "cMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V";
+
+        // Act
+        using var keyManager = SecureKeyManager.FromMnemonic(mnemonic, string.Empty, BitcoinNetwork.Mainnet,
+                                                             _filePath);
+
+        // Assert (SR-13): the descriptor's xpub derives the wallet's keys, and its origin is the account path
+        Assert.Equal($"wpkh([73c5da0a/84'/0'/0']{bip84AccountXpub}/0/*)", keyManager.OutputDepositP2WshDescriptor);
+        Assert.Equal($"wpkh([73c5da0a/84'/0'/0']{bip84AccountXpub}/1/*)", keyManager.OutputChangeP2WshDescriptor);
+        AssertDescriptorDerives(keyManager.OutputDepositP2TrDescriptor, "86'/0'/0'", "/0/*)",
+                                keyManager.GetDepositP2TrKeyAtIndex(4, false));
+        AssertDescriptorDerives(keyManager.OutputChangeP2TrDescriptor, "86'/0'/0'", "/1/*)",
+                                keyManager.GetDepositP2TrKeyAtIndex(4, true));
+        AssertDescriptorDerives(keyManager.OutputChannelDescriptor, "6425'/0'/0'/0", "/*)",
+                                keyManager.GetChannelKeyAtIndex(4));
+        AssertDescriptorDerives(keyManager.OutputDepositP2WshDescriptor, "84'/0'/0'", "/0/*)",
+                                keyManager.GetDepositP2WpkhKeyAtIndex(4, false));
+
+        return;
+
+        static void AssertDescriptorDerives(string descriptor, string origin, string suffix, byte[] expectedKey)
+        {
+            var prefixEnd = descriptor.IndexOf(']');
+            Assert.EndsWith($"/{origin}", descriptor[..prefixEnd]);
+            Assert.EndsWith(suffix, descriptor);
+            var xpub = descriptor[(prefixEnd + 1)..descriptor.LastIndexOf(suffix, StringComparison.Ordinal)];
+            var branch = suffix == "/*)" ? string.Empty : suffix[1..2] + "/";
+            var derived = ExtPubKey.Parse(xpub, Network.Main).Derive(new KeyPath(branch + "4"));
+            Assert.Equal(ExtKey.CreateFromBytes(expectedKey).Neuter().PubKey, derived.PubKey);
+        }
+    }
+
+    [Fact]
+    public void Given_AnUpgradedVersion1KeyFile_When_Loaded_Then_WarnsAboutTheWeakBackup()
+    {
+        // Arrange
+        File.WriteAllText(_filePath, CreateLegacyKeyFileJson(Password));
+        Assert.Null(SecureKeyManager.GetWeakBackupWarning(_filePath));
+
+        // Act
+        using (SecureKeyManager.FromFilePath(_filePath, BitcoinNetwork.Regtest, Password))
+        {
+        }
+
+        var warning = SecureKeyManager.GetWeakBackupWarning(_filePath);
+        File.Delete(_filePath + ".v1.bak");
+
+        // Assert (SR-18): the notice names the backup until it is deleted
+        Assert.NotNull(warning);
+        Assert.Contains(_filePath + ".v1.bak", warning);
+        Assert.Null(SecureKeyManager.GetWeakBackupWarning(_filePath));
+    }
+
+    [Fact]
     public void Given_Version1KeyFile_When_Upgraded_Then_KeepsTheNodeIdAndTheLegacyDerivation()
     {
         // Arrange
@@ -594,8 +654,6 @@ public sealed class SecureKeyManagerTests : IDisposable
                      firstReceiveKey.GetWif(Network.Main).ToString());
         Assert.Equal("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu",
                      firstReceiveKey.PubKey.GetAddress(ScriptPubKeyType.Segwit, Network.Main).ToString());
-        Assert.Contains("xpub661MyMwAqRbcFkPHucMnrGNzDwb6teAX1RbKQmqtEF8kK3Z7LZ59qafCjB9eCRLiTVG3uxBxgKvRgbubRhqSKXnGGb" +
-                        "1aoaqLrpMBDrVxga8", keyManager.OutputDepositP2WshDescriptor);
         var root = ExtKey.Parse("xprv9s21ZrQH143K3GJpoapnV8SFfukcVBSfeCficPSGfubmSFDxo1kuHnLisriDvSnRRuL2Qrg5ggqHK" +
                                 "NVpxR86QEC8w35uxmGoggxtQTPvfUu", Network.Main);
         Assert.Equal(root.Derive(new KeyPath(SecureKeyManager.NodeKeyPathString)).PrivateKey.PubKey.ToBytes(),
