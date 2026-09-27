@@ -188,6 +188,14 @@ public partial class ChannelRestoreServiceTests
         Assert.Contains(_storedWatches, w => w.TransactionId == kit.SpliceTxId);
         var spend = Assert.Single(handed);
         Assert.Equal(kit.SpliceTxId, spend.SpentTransactionId);
+
+        // ...and a third run with the same (older) backup moves nothing again
+        var third = await service.RestoreAsync(backup, ct);
+        Assert.Equal(ChannelRestoreAction.AlreadyExists, Assert.Single(third.Channels).Action);
+        Assert.Single(_fundingLocks);
+        AssertAtSplice(kit, channel, kit.SpliceRemoteKey);
+        Assert.Equal(ChannelFundingStatus.Current,
+                     _storedFundings[channel.ChannelId].Single(f => f.FundingTxId == kit.SpliceTxId).Status);
     }
 
     [Fact]

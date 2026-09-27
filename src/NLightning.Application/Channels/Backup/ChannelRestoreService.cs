@@ -602,6 +602,11 @@ public sealed class ChannelRestoreService : IChannelRestoreService, IDisposable
                     return false;
                 }
 
+                // Moved already (a restore run again with a backup older than the move): nothing to write
+                if (stored.FundingOutput is { TransactionId: { } storedTxId, Index: { } storedIndex }
+                 && storedTxId == to.FundingTxId && storedIndex == to.FundingOutputIndex)
+                    return true;
+
                 if (GetFundingRepository(unitOfWork) is not { } fundings)
                 {
                     _logger.LogError("Recovery channel {ChannelId} was spliced to {FundingTxId}:{Index}, but this "
