@@ -13,8 +13,8 @@ using Protocol.ValueObjects;
 /// Not here: "the offer fields exactly match a valid, unexpired offer" and the arrival-path rules (B12-IRQ-03, the
 /// handler's, against our offer store), and the signature (<see cref="Interfaces.IBolt12Signer.Verify"/> over
 /// <see cref="Signing.Bolt12MerkleTree.ComputeRoot"/>, by <c>invreq_payer_id</c>). The amount check converts an
-/// <c>offer_currency</c> amount only when a converter is given; without one, a currency offer's expected amount is
-/// not checked here.
+/// <c>offer_currency</c> amount with the given converter; without one (or when it returns null), or when
+/// <c>offer_amount</c> x <c>invreq_quantity</c> overflows 64 bits, the request is rejected (B12-IRQ-04, fail closed).
 /// </remarks>
 public static class InvoiceRequestValidator
 {
@@ -25,7 +25,7 @@ public static class InvoiceRequestValidator
     /// <param name="supportedChains">The chains we accept, or null to skip the chain check (no <c>invreq_chain</c>
     /// means bitcoin mainnet).</param>
     /// <param name="convertToMsat">Converts an <c>offer_currency</c> amount (currency, minor units) to msat, or
-    /// returns null when it cannot.</param>
+    /// returns null when it cannot. Without it, every request for a currency offer is rejected.</param>
     public static Bolt12Violation? Validate(InvoiceRequest invoiceRequest,
                                             IReadOnlyCollection<ChainHash>? supportedChains = null,
                                             Func<string, ulong, ulong?>? convertToMsat = null)
@@ -67,11 +67,9 @@ public static class InvoiceRequestValidator
 
             if (offer.Amount is { } offerAmount)
             {
-                if (request.Amount is { } requestAmount
-                 && GetExpectedAmountMsat(offerAmount, offer.Currency, request.Quantity, convertToMsat) is { } expected
-                 && requestAmount < expected)
-                    return Amounts($"invreq_amount {requestAmount} is below the expected {expected} msat.",
-                                   Bolt12TlvTypes.InvreqAmount);
+                if (CheckExpectedAmount(offerAmount, offer.Currency, request.Quantity, request.Amount,
+                                        convertToMsat) is { } amountViolation)
+                    return amountViolation;
             }
             else if (request.Amount is null)
             {
@@ -121,18 +119,49 @@ public static class InvoiceRequestValidator
     }
 
     /// <summary>
-    /// B12-SIG-03: a <c>signature</c> when <paramref name="required"/>, and no other signature element.
+    /// B12-SIG-03: a <c>signature</c> when <paramref name="required"/>.
     /// </summary>
+    /// <remarks>
+    /// Other signature-range elements (241-1000) are not rejected here: "exactly one signature TLV element" is a
+    /// writer rule, the readers bound only the non-signature ranges, and BOLT 1 ignores unknown odd types. An unknown
+    /// even one is already refused by the strict TLV parse (B12-ENC-03). They stay outside the merkle root.
+    /// </remarks>
     internal static Bolt12Violation? CheckSignatureElements(Bolt12TlvStream stream, bool required)
     {
         if (required && !stream.Contains(Bolt12TlvTypes.Signature))
             return new Bolt12Violation(Bolt12RequirementIds.Signature, "signature is missing.",
                                        Bolt12TlvTypes.Signature);
 
-        foreach (var record in stream.Records)
-            if (Bolt12TlvRanges.IsSignatureField(record.Type) && record.Type != Bolt12TlvTypes.Signature)
-                return new Bolt12Violation(Bolt12RequirementIds.Signature,
-                                           $"Signature element {record.Type} besides signature.", record.Type);
+        return null;
+    }
+
+    /// <summary>
+    /// B12-IRQ-04 for a response to an offer with <c>offer_amount</c>: the expected amount must be computable (a
+    /// currency needs a conversion, and <c>offer_amount</c> x <c>invreq_quantity</c> must fit 64 bits) and
+    /// <c>invreq_amount</c>, when set, must not be below it. Fails closed: an amount we cannot compute is a violation.
+    /// </summary>
+    private static Bolt12Violation? CheckExpectedAmount(ulong offerAmount, string? currency, ulong? quantity,
+                                                        ulong? requestAmount,
+                                                        Func<string, ulong, ulong?>? convertToMsat)
+    {
+        var perItem = offerAmount;
+        if (currency is not null)
+        {
+            if (convertToMsat?.Invoke(currency, offerAmount) is not { } converted)
+                return Amounts($"The expected amount cannot be computed: no conversion of offer_currency {currency}.",
+                               Bolt12TlvTypes.OfferCurrency);
+            perItem = converted;
+        }
+
+        var total = (UInt128)perItem * (quantity ?? 1);
+        if (total > ulong.MaxValue)
+            return Amounts("The expected amount (offer_amount x invreq_quantity) overflows 64 bits.",
+                           Bolt12TlvTypes.InvreqQuantity);
+
+        var expected = (ulong)total;
+        if (requestAmount is { } amount && amount < expected)
+            return Amounts($"invreq_amount {amount} is below the expected {expected} msat.",
+                           Bolt12TlvTypes.InvreqAmount);
 
         return null;
     }

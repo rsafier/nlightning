@@ -86,7 +86,8 @@ public static class InvoiceValidator
     /// <param name="invoice">The invoice.</param>
     /// <param name="request">The invoice_request we sent.</param>
     /// <param name="expectedNodeId">For a request to an offer without <c>offer_issuer_id</c>: the final
-    /// <c>blinded_node_id</c> of the path we sent it to. Ignored when the offer has <c>offer_issuer_id</c>.</param>
+    /// <c>blinded_node_id</c> of the path we sent it to; required there (the invoice is rejected without it). Ignored
+    /// when the offer has <c>offer_issuer_id</c>.</param>
     public static Bolt12Violation? ValidateAgainstRequest(Bolt12Invoice invoice, InvoiceRequest request,
                                                           CompactPubKey? expectedNodeId = null)
     {
@@ -103,10 +104,15 @@ public static class InvoiceValidator
             if (nodeId != issuerId)
                 return Match("invoice_node_id is not offer_issuer_id.", Bolt12TlvTypes.InvoiceNodeId);
         }
-        else if (request.OfferFields.Paths is not null && expectedNodeId is { } expected && nodeId != expected)
+        else if (request.OfferFields.Paths is not null)
         {
-            return Match("invoice_node_id is not the final blinded_node_id we sent the request to.",
-                         Bolt12TlvTypes.InvoiceNodeId);
+            // Fail closed: without the blinded node id we sent the request to, any node could have signed.
+            if (expectedNodeId is not { } expected)
+                return Match("The offer has only offer_paths and no expected final blinded_node_id was given.",
+                             Bolt12TlvTypes.InvoiceNodeId);
+            if (nodeId != expected)
+                return Match("invoice_node_id is not the final blinded_node_id we sent the request to.",
+                             Bolt12TlvTypes.InvoiceNodeId);
         }
 
         if (request.Fields.Amount is { } requested && invoice.Fields.Amount != requested)

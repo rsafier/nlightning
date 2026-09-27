@@ -30,7 +30,8 @@ public static class Bolt12RequirementIds
     public const string TlvRange = "B12-ENC-04";
 
     /// <summary>
-    /// Signatures: exactly one <c>signature</c> in an invoice_request or invoice, and no other signature element.
+    /// Signatures: a <c>signature</c> in an invoice and in an invoice_request that answers an offer (other odd
+    /// signature-range elements are ignored, unknown even ones fail the TLV parse).
     /// </summary>
     public const string Signature = "B12-SIG-03";
 

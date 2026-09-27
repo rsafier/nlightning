@@ -47,9 +47,24 @@ public class InvoiceValidatorTests
             "no usable path",
             b => b.SetPayInfos(Bolt12TlvTypes.InvoiceBlindedPay, [Bolt12TestData.PayInfo([0x01])])
         },
-        { "no signature", b => b.Remove(Bolt12TlvTypes.Signature) },
-        { "extra signature element", b => b.Set(999, new byte[] { 1 }) }
+        { "no signature", b => b.Remove(Bolt12TlvTypes.Signature) }
     };
+
+    [Theory]
+    [InlineData(241UL)]
+    [InlineData(999UL)]
+    public void Given_OddSignatureElementBesidesSignature_When_Validating_Then_ItIsIgnored(ulong type)
+    {
+        // Arrange: BOLT 1 ignores unknown odd types; "exactly one signature" binds the writer only
+        var invoice = Bolt12Invoice.Parse(Bolt12TestData.InvoiceBuilder().Set(type, new byte[] { 1 }).Build());
+
+        // Act
+        var violation = InvoiceValidator.Validate(invoice, s_now, [ChainConstants.Main]);
+
+        // Assert
+        Assert.Null(violation);
+        Assert.True(invoice.Stream.Contains(type));
+    }
 
     [Theory]
     [MemberData(nameof(InvalidInvoices))]
@@ -247,6 +262,28 @@ public class InvoiceValidatorTests
         // Act & Assert
         Assert.Null(InvoiceValidator.ValidateAgainstRequest(invoice, request, Bolt12TestData.PathKey));
         Assert.NotNull(InvoiceValidator.ValidateAgainstRequest(invoice, request, Bolt12TestData.IssuerId));
+    }
+
+    [Fact]
+    public void Given_OfferWithPathsOnlyAndNoExpectedNodeId_When_Matching_Then_TheInvoiceIsRejected()
+    {
+        // Arrange: an invoice signed by any other node must not pass because the caller gave no expected node id
+        var offer = Bolt12TestData.OfferBuilder()
+                                  .Remove(Bolt12TlvTypes.OfferIssuerId)
+                                  .SetPaths(Bolt12TlvTypes.OfferPaths, [Bolt12TestData.Path()]);
+        var requestBuilder = Bolt12TestData.InvoiceRequestBuilder(offer);
+        var request = InvoiceRequest.Parse(requestBuilder.Build());
+        var invoice = Bolt12Invoice.Parse(Bolt12TestData.InvoiceBuilder(requestBuilder)
+                                                        .SetPoint(Bolt12TlvTypes.InvoiceNodeId, Bolt12TestData.PayerId)
+                                                        .Build());
+
+        // Act
+        var violation = InvoiceValidator.ValidateAgainstRequest(invoice, request);
+
+        // Assert
+        Assert.NotNull(violation);
+        Assert.Equal(Bolt12RequirementIds.InvoiceMatchesRequest, violation.RequirementId);
+        Assert.Equal(Bolt12TlvTypes.InvoiceNodeId, violation.Field);
     }
 
     [Fact]
