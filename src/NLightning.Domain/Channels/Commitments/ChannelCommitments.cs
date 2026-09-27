@@ -309,11 +309,13 @@ public sealed record ChannelCommitments
     internal IEnumerable<FundingView> ActiveFundingViews()
     {
         yield return new FundingView(Params.Funding, true, 0, 0, (long)Params.LocalReserveMsatOn(Params.Funding),
-                                     (long)Params.RemoteReserveMsatOn(Params.Funding));
+                                     (long)Params.RemoteReserveMsatOn(Params.Funding),
+                                     (long)Params.RemoteReceiveReserveMsatOn(Params.Funding));
         foreach (var funding in PendingFundings)
             yield return new FundingView(funding, false, funding.LocalBalanceDeltaMsat, funding.RemoteBalanceDeltaMsat,
                                          (long)Params.LocalReserveMsatOn(funding),
-                                         (long)Params.RemoteReserveMsatOn(funding));
+                                         (long)Params.RemoteReserveMsatOn(funding),
+                                         (long)Params.RemoteReceiveReserveMsatOn(funding));
     }
 
     /// <summary>
@@ -702,16 +704,24 @@ public sealed record ChannelCommitments
                                            f.FundingTxId,
                                            SignRemote(signer, f, number, SpecFor(spec, f), point)))
                                .ToList();
+        // Every funding the commitment is signed on (the current one first) stays with it until it is revoked, so the
+        // revocation log covers a funding discarded or replaced before the revoke_and_ack (SP-I5)
+        var commit = new RemoteCommit(number, spec, point)
+        {
+            SignedOnFundings = PendingFundings.IsEmpty ? null : [Params.Funding!, .. PendingFundings]
+        };
         var next = advanced with
         {
-            RemoteNextCommit = new RemoteNextCommit(new RemoteCommit(number, spec, point), signatures)
+            RemoteNextCommit = new RemoteNextCommit(commit, signatures)
             {
                 PendingFundingSignatures = pendingSignatures
             }
         };
 
+        // The funding_txid TLV names the engine's current funding, which a lock moves (byte-identical before a splice)
         if (pendingSignatures.Count == 0)
-            return Result(next, [new OutboundCommitmentSigned(number, signatures)], settled);
+            return Result(next, [new OutboundCommitmentSigned(number, signatures, Params.Funding?.FundingTxId)],
+                          settled);
 
         var outbound = new List<CommitmentOutbound>(pendingSignatures.Count + 2)
         {
@@ -896,9 +906,24 @@ public sealed record ChannelCommitments
             Transition = result.Transition with
             {
                 RevokedRemoteCommit = RemoteCommit,
-                RevokedRemoteCommitFundings = PendingFundings.IsEmpty ? null : PendingFundings
+                RevokedRemoteCommitFundings = FundingsToRevokeOn(RemoteCommit)
             }
         };
+    }
+
+    /// <summary>
+    /// The fundings other than the current one that <paramref name="revoked"/> was signed on: the ones recorded when it
+    /// was signed (a sibling discarded or a funding replaced by a lock since then included, SP-I5), else, for a
+    /// commitment restored without that record, the pending fundings. Null means none.
+    /// </summary>
+    private IReadOnlyList<ChannelFunding>? FundingsToRevokeOn(RemoteCommit revoked)
+    {
+        if (revoked.SignedOnFundings is not { } signedOn)
+            return PendingFundings.IsEmpty ? null : PendingFundings;
+
+        var current = Params.Funding?.FundingTxId;
+        var others = signedOn.Where(f => f.FundingTxId != current).ToList();
+        return others.Count == 0 ? null : others;
     }
 
     /// <summary>
@@ -1081,6 +1106,11 @@ public sealed record ChannelCommitments
                            LocalCommit = LocalCommit with
                            {
                                PendingFundingSignatures = [.. LocalCommit.PendingFundingSignatures, entry]
+                           },
+                           // Our splice commitment_signed signed the peer's current commitment on it too (SP-CS-01)
+                           RemoteCommit = RemoteCommit with
+                           {
+                               SignedOnFundings = [.. RemoteCommit.SignedOnFundings ?? [Params.Funding!], funding]
                            }
                        };
         return Result(next, []);
@@ -1106,7 +1136,7 @@ public sealed record ChannelCommitments
                                        ?? throw new InvalidOperationException(
                                               $"No signatures of our commitment on funding {fundingTxId}"));
         var remoteNext = RemoteNextCommit is { } unacked
-                             ? new RemoteNextCommit(unacked.Commit with { Spec = SpecFor(unacked.Commit.Spec, locked) },
+                             ? new RemoteNextCommit(RebaseOn(unacked.Commit, locked),
                                                     unacked.SignaturesFor(fundingTxId)
                                                  ?? throw new InvalidOperationException(
                                                         $"No sent signatures on funding {fundingTxId}"))
@@ -1118,11 +1148,31 @@ public sealed record ChannelCommitments
             LocalBalanceMsat = checked((ulong)((long)LocalBalanceMsat + locked.LocalBalanceDeltaMsat)),
             RemoteBalanceMsat = checked((ulong)((long)RemoteBalanceMsat + locked.RemoteBalanceDeltaMsat)),
             LocalCommit = localCommit,
-            RemoteCommit = RemoteCommit with { Spec = SpecFor(RemoteCommit.Spec, locked) },
+            RemoteCommit = RebaseOn(RemoteCommit, locked),
             RemoteNextCommit = remoteNext
         };
         return Result(next, [], retired: retired);
     }
+
+    /// <summary>
+    /// A remote commitment moved to the locked funding: its spec, and the deltas of the fundings it was signed on
+    /// rebased on the locked one, so <see cref="SpecFor"/> still gives the commitment on each of them (the replaced
+    /// funding gets the opposite of the locked delta).
+    /// </summary>
+    private static RemoteCommit RebaseOn(RemoteCommit commit, ChannelFunding locked) =>
+        commit with
+        {
+            Spec = SpecFor(commit.Spec, locked),
+            SignedOnFundings = commit.SignedOnFundings?
+                                     .Select(f => f with
+                                     {
+                                         LocalBalanceDeltaMsat =
+                                         checked(f.LocalBalanceDeltaMsat - locked.LocalBalanceDeltaMsat),
+                                         RemoteBalanceDeltaMsat =
+                                         checked(f.RemoteBalanceDeltaMsat - locked.RemoteBalanceDeltaMsat)
+                                     })
+                                     .ToList()
+        };
 
     /// <summary>
     /// Discards pending fundings: the one named by <paramref name="fundingTxId"/> (an aborted negotiation or RBF

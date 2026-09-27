@@ -26,7 +26,7 @@ public class SpliceCommitmentsTests
     #region Single funding (byte-identical)
 
     [Fact]
-    public void Given_NoPendingSplice_When_SendCommit_Then_OneCommitmentSignedWithoutFundingTxId()
+    public void Given_NoPendingSplice_When_SendCommit_Then_OneCommitmentSignedNamingTheCurrentFunding()
     {
         // Arrange
         var alice = SpliceTestKit.Create(600_000, 400_000).Add(10_000 * Sat).Next;
@@ -38,9 +38,10 @@ public class SpliceCommitmentsTests
         var result = alice.SendCommit(signer);
         var reference = withoutFundingData.SendCommit(referenceSigner);
 
-        // Assert: the same single outbound as an engine without any funding data (no start_batch, no txid)
+        // Assert: the same single outbound as an engine without any funding data (no start_batch), with the current
+        // funding's txid (the channel's funding output before any splice)
         var cs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(result.Outbound));
-        Assert.Null(cs.FundingTxId);
+        Assert.Equal(InitialTxId, cs.FundingTxId);
         var referenceCs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(reference.Outbound));
         Assert.Equal(referenceCs.RemoteCommitmentNumber, cs.RemoteCommitmentNumber);
         Assert.Equal(referenceCs.Signatures.Signature, cs.Signatures.Signature);
@@ -419,6 +420,72 @@ public class SpliceCommitmentsTests
     }
 
     [Fact]
+    public void Given_ASiblingDiscardedBeforeTheRevoke_When_TheRevokeAndAckArrives_Then_ItIsStillListed()
+    {
+        // Arrange: regression, the revoked commitment was signed on an RBF attempt discarded before the RAA (SP-I5)
+        var pair = SplicedIn();
+        pair.Splice(Splice(0x23, 1_500_000, 500_000, 0, kind: ChannelFundingKind.SpliceRbf, rbfOf: TxIdOf(0x22)));
+        pair.AliceAdd(10_000 * Sat);
+        var sent = pair.Alice.SendCommit(new BindingCommitmentSigner(546, false));
+        var received = pair.Bob.ReceiveCommitBatch(ToBatch(sent.Outbound), new BindingCommitmentVerifier());
+        var raa = Assert.IsType<OutboundRevokeAndAck>(Assert.Single(received.Outbound));
+        var discarded = sent.Next.DiscardPendingFundings(TxIdOf(0x23)).Next;
+
+        // Act
+        var revoked = discarded.ReceiveRevoke(CommitmentsTestKit.SecretFor(CommitmentsTestKit.BobTag, raa.RevokedCommitmentNumber),
+                                              CommitmentsTestKit.Point(CommitmentsTestKit.BobTag, raa.NextCommitmentNumber),
+                                              new FakeRevocationVerifier());
+
+        // Assert: both attempts keep the revoked number in the log, and the new remote commitment remembers both
+        Assert.Equal([TxIdOf(0x22), TxIdOf(0x23)],
+                     revoked.Transition.RevokedRemoteCommitFundings!.Select(f => f.FundingTxId));
+        Assert.Equal([InitialTxId, TxIdOf(0x22), TxIdOf(0x23)],
+                     revoked.Next.RemoteCommit.SignedOnFundings!.Select(f => f.FundingTxId));
+        Assert.Equal([TxIdOf(0x22)], revoked.Next.PendingFundings.Select(f => f.FundingTxId));
+    }
+
+    [Fact]
+    public void Given_ALockBeforeTheRevoke_When_TheRevokeAndAckArrives_Then_TheReplacedFundingIsListedWithItsSpec()
+    {
+        // Arrange: the splice locks between our batch and the peer's revoke_and_ack
+        var pair = SplicedIn();
+        pair.AliceAdd(10_000 * Sat);
+        var sent = pair.Alice.SendCommit(new BindingCommitmentSigner(546, false));
+        var received = pair.Bob.ReceiveCommitBatch(ToBatch(sent.Outbound), new BindingCommitmentVerifier());
+        var raa = Assert.IsType<OutboundRevokeAndAck>(Assert.Single(received.Outbound));
+        var locked = sent.Next.LockFunding(TxIdOf(0x22)).Next;
+
+        // Act
+        var revoked = locked.ReceiveRevoke(CommitmentsTestKit.SecretFor(CommitmentsTestKit.BobTag, raa.RevokedCommitmentNumber),
+                                           CommitmentsTestKit.Point(CommitmentsTestKit.BobTag, raa.NextCommitmentNumber),
+                                           new FakeRevocationVerifier());
+
+        // Assert: the replaced initial funding, with deltas rebased so SpecFor still gives its 1,000,000 sat commitment
+        var replaced = Assert.Single(revoked.Transition.RevokedRemoteCommitFundings!);
+        Assert.Equal(InitialTxId, replaced.FundingTxId);
+        var spec = ChannelCommitments.SpecFor(revoked.Transition.RevokedRemoteCommit!.Spec, replaced);
+        Assert.Equal(1_000_000 * Sat, spec.TotalMsat);
+        Assert.Equal(1_500_000 * Sat, revoked.Transition.RevokedRemoteCommit.Spec.TotalMsat);
+    }
+
+    [Fact]
+    public void Given_ALockedSplice_When_SendCommit_Then_TheSingleCommitmentSignedNamesTheSpliceFunding()
+    {
+        // Arrange: regression, the funding_txid came from the channel's funding output, which the lock does not move
+        var pair = SplicedIn();
+        pair.Alice = pair.Alice.LockFunding(TxIdOf(0x22)).Next;
+        pair.Bob = pair.Bob.LockFunding(TxIdOf(0x22)).Next;
+        pair.AliceAdd(10_000 * Sat);
+
+        // Act
+        var result = pair.Alice.SendCommit(new BindingCommitmentSigner(546, false));
+
+        // Assert
+        var cs = Assert.IsType<OutboundCommitmentSigned>(Assert.Single(result.Outbound));
+        Assert.Equal(TxIdOf(0x22), cs.FundingTxId);
+    }
+
+    [Fact]
     public void Given_NoPendingSplice_When_ABatchWithObsoleteMembersArrives_Then_TheyAreIgnored()
     {
         // Arrange: SP-OP-06, the peer signed a funding we no longer have (sent before our splice_locked arrived)
@@ -518,6 +585,32 @@ public class SpliceCommitmentsTests
         Assert.Equal(10_000 * Sat, onCurrent);
         Assert.Throws<CommitmentRefusedException>(() => pair.Bob.Add(300_000 * Sat));
         pair.Bob.Add(290_000 * Sat);
+    }
+
+    [Fact]
+    public void Given_ASpliceOutBelowTheAnnouncedReserve_When_ThePeerKeepsOnePercent_Then_Accepted()
+    {
+        // Arrange: regression (D9, Q3), the capacity goes from 1,000,000 to 500,000 sat with a 10,000 sat announced
+        // reserve; Eclair lets the peer go down to 1 % (5,000 sat) there, so we must not fail it for keeping 7,000 sat
+        var pair = new SplicePair(600_000, 400_000);
+        pair.Splice(Splice(0x22, 500_000, -300_000, -200_000));
+        var splice = pair.Alice.PendingFundings[0];
+
+        // Act
+        var accepted = pair.Alice.ReceiveAdd(0, 193_000 * Sat, CommitmentsTestKit.PaymentHash(2), 600,
+                                             CommitmentsTestKit.Onion);
+
+        // Assert: the receive reserve is the smaller reading, our own sends keep the larger one
+        Assert.Single(accepted.Next.Htlcs);
+        Assert.Equal(5_000 * Sat, pair.Alice.Params.RemoteReceiveReserveMsatOn(splice));
+        Assert.Equal(10_000 * Sat, pair.Alice.Params.RemoteReserveMsatOn(splice));
+        Assert.Equal(10_000 * Sat, pair.Alice.Params.RemoteReceiveReserveMsatOn(pair.Alice.Params.Funding));
+        Assert.Equal("B2-ADD-S01",
+                     Assert.Throws<CommitmentRefusedException>(() => pair.Bob.Add(193_000 * Sat)).RequirementId);
+        var e = Assert.Throws<CommitmentViolationException>(
+            () => pair.Alice.ReceiveAdd(0, 196_000 * Sat, CommitmentsTestKit.PaymentHash(2), 600,
+                                        CommitmentsTestKit.Onion));
+        Assert.Equal("B2-ADD-R02", e.RequirementId);
     }
 
     [Fact]

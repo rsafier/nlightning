@@ -21,6 +21,7 @@ using Domain.Channels.Models;
 using Domain.Channels.Quiescence;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Node.Options;
 using Domain.Onchain.Enums;
@@ -503,6 +504,14 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 IReadOnlyList<IChannelMessage> replies;
                 try
                 {
+                    // Batches carry splice commitments, whose persistence lands with SP1-C (splicing plan SP1-C-T4):
+                    // until option_splice (experimental) is negotiated nothing a batch holds is accepted
+                    if (negotiatedFeatures.OptionSplice == FeatureSupport.No)
+                        throw new ChannelWarningException(
+                            $"[SP-OP-05] commitment_signed batch for {channelId} without option_splice",
+                            channelId, "start_batch of commitment_signed without option_splice")
+                        { CloseConnection = true };
+
                     if (batch.Messages.Count == 0 || batch.Messages.Any(m => m.Payload.ChannelId != channelId))
                         throw new ChannelWarningException(
                             $"[SP-OP-04] commitment_signed batch for {channelId} holds another channel's message",
@@ -1474,7 +1483,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     private static bool IsNormalOperationMessage(MessageTypes messageType) =>
         messageType is MessageTypes.UpdateAddHtlc or MessageTypes.UpdateFulfillHtlc or MessageTypes.UpdateFailHtlc
                     or MessageTypes.UpdateFailMalformedHtlc or MessageTypes.CommitmentSigned
-                    or MessageTypes.RevokeAndAck or MessageTypes.UpdateFee;
+                    or MessageTypes.RevokeAndAck or MessageTypes.UpdateFee
+                    // start_batch announces the commitment_signed batch after it (SP-OP-03): it is dropped with them,
+                    // never sent alone before channel_reestablish (B2-RE-07)
+                    or MessageTypes.StartBatch;
 
     /// <summary>
     /// BOLT 2: after a reconnection nothing but channel_reestablish is exchanged for a channel until both were

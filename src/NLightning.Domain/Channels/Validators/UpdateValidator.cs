@@ -150,7 +150,8 @@ internal static class UpdateValidator
                            ? 0
                            : (long)CommitmentFeeCalculator.FunderCostMsat(view.ToSpec(), p.Local.DustLimitSatoshis,
                                                                           p.OptionAnchors);
-            var remoteReserve = enforceLimits ? funding.RemoteReserveMsat : 0;
+            // The lenient reserve on spliced fundings (D9, Q3): Eclair keeps 1 % of the capacity there
+            var remoteReserve = enforceLimits ? funding.RemoteReceiveReserveMsat : 0;
             if (view.RemoteMsat - cost < remoteReserve)
                 throw Violation(commitments, "B2-ADD-R02",
                                 $"The peer cannot afford this HTLC (and the fee it pays) above its channel reserve{funding.Label}");
