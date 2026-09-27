@@ -56,8 +56,9 @@ public sealed class OfferServiceTests : IDisposable
         services.AddSingleton<ISecureKeyManager>(_keyManager);
         services.AddSingleton<IOnionMessageService>(_onionMessages);
         services.AddSingleton(_outbox.Object);
-        services.AddSingleton<IBolt12Signer>(new TestBolt12Signer(Enumerable.Repeat((byte)0x07, 32).ToArray()));
         services.AddBitcoinInfrastructure();
+        // After AddBitcoinInfrastructure, which registers the real signer (lane B12-B) over the node's ILightningSigner
+        services.AddSingleton<IBolt12Signer>(new TestBolt12Signer(Enumerable.Repeat((byte)0x07, 32).ToArray()));
         _services = services.BuildServiceProvider();
 
         _peerManager.Setup(p => p.ListPeers()).Returns([new PeerModel(_peer, "127.0.0.1", 9735, "IPv4")]);
