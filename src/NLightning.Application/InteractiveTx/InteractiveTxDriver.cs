@@ -561,6 +561,12 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
             // BOLT 2: fail the negotiation when we cannot provide (confirmed) inputs
             return RejectRbf(channelId, entry, $"cannot fund the rbf attempt: {e.Message}");
         }
+        catch (ArgumentException e)
+        {
+            // The engine refused our own terms (e.g. IT-RBF-01: our contribution does not double-spend an earlier
+            // attempt); the reservation was released by CreateAttemptAsync
+            return RejectRbf(channelId, entry, $"cannot build the rbf attempt: {e.Message}");
+        }
 
         entry.Current = attempt;
         entry.EchoedWithoutActivity = false;
@@ -596,6 +602,10 @@ public sealed class InteractiveTxDriver : IInteractiveTxDriver
         catch (InsufficientFundsException e)
         {
             return RejectRbf(channelId, entry, $"cannot fund the rbf attempt: {e.Message}");
+        }
+        catch (ArgumentException e)
+        {
+            return RejectRbf(channelId, entry, $"cannot build the rbf attempt: {e.Message}");
         }
 
         entry.Current = attempt;
