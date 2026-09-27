@@ -198,12 +198,11 @@ public class CommitmentTransactionModelFactory : ICommitmentTransactionModelFact
         {
             // to_local_anchor belongs to the commitment holder, to_remote_anchor to the other side. Each exists only
             // if its side's balance output exists or there are untrimmed HTLCs.
-            var holderFundingPubKey = side == CommitmentSide.Local
-                                          ? channel.LocalKeySet.FundingCompactPubKey
-                                          : channel.RemoteKeySet.FundingCompactPubKey;
-            var counterpartyFundingPubKey = side == CommitmentSide.Local
-                                                ? channel.RemoteKeySet.FundingCompactPubKey
-                                                : channel.LocalKeySet.FundingCompactPubKey;
+            // The current funding's keys: a locked splice moves them off the key sets (splicing plan D5)
+            var localFundingPubKey = channel.LocalFundingPubKey;
+            var remoteFundingPubKey = channel.RemoteFundingPubKey ?? channel.RemoteKeySet.FundingCompactPubKey;
+            var holderFundingPubKey = side == CommitmentSide.Local ? localFundingPubKey : remoteFundingPubKey;
+            var counterpartyFundingPubKey = side == CommitmentSide.Local ? remoteFundingPubKey : localFundingPubKey;
             if (toLocalOutput is not null || untrimmedHtlcCount > 0)
                 localAnchorOutput = new AnchorOutputInfo(holderFundingPubKey, true);
             if (toRemoteOutput is not null || untrimmedHtlcCount > 0)

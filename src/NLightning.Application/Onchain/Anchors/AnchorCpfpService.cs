@@ -418,7 +418,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
                                                                     channel.ChannelId, commitment.TransactionId,
                                                                     _builder.FindAnchorOutput(
                                                                         commitment.RawTransaction,
-                                                                        channel.LocalKeySet.FundingCompactPubKey),
+                                                                        channel.LocalFundingPubKey),
                                                                     commitment.ConfirmedHeight, height))
                 return PathState.Active;
 
@@ -718,7 +718,7 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
             return null;
         }
 
-        var fundingPubKey = channel.LocalKeySet.FundingCompactPubKey;
+        var fundingPubKey = channel.LocalFundingPubKey;
         var commitmentTx = Transaction.Load(parent.RawTransaction, Network.Main);
         if (_builder.FindAnchorOutput(parent.RawTransaction, fundingPubKey) is not { } anchorVout)
         {
@@ -1012,10 +1012,10 @@ public sealed partial class AnchorCpfpService : IAnchorCpfpService, IDisposable
         }
 
         var anchors = new List<AnchorOutpoint>();
-        var ours = channel.LocalKeySet.FundingCompactPubKey;
+        var ours = channel.LocalFundingPubKey;
         if (_builder.FindAnchorOutput(commitmentTransaction, ours) is { } ourVout)
             anchors.Add(new AnchorOutpoint(commitmentTxId, ourVout, ours));
-        if (channel.RemoteKeySet?.FundingCompactPubKey is { } theirs
+        if (channel.RemoteFundingPubKey is { } theirs
          && _builder.FindAnchorOutput(commitmentTransaction, theirs) is { } theirVout)
             anchors.Add(new AnchorOutpoint(commitmentTxId, theirVout, theirs));
 

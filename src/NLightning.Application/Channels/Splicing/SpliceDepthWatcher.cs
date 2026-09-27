@@ -95,7 +95,7 @@ public sealed class SpliceDepthWatcher : IDisposable
 
             _logger.LogInformation("Splice {TxId} of channel {ChannelId} reached its depth while nothing listened; "
                                  + "locking it now", txId, channelId);
-            await HandleAsync(channelId, txId, height);
+            await HandleAsync(channelId, txId, height, watch.TransactionIndex);
             handed++;
         }
 
@@ -123,7 +123,7 @@ public sealed class SpliceDepthWatcher : IDisposable
         Task round;
         using (ExecutionContext.SuppressFlow())
             round = Task.Run(() => HandleAsync(watch.ChannelId, watch.TransactionId,
-                                               watch.FirstSeenAtHeight ?? args.Height));
+                                               watch.FirstSeenAtHeight ?? args.Height, watch.TransactionIndex));
         _running[round] = 0;
         round.ContinueWith(t => _running.TryRemove(t, out _), CancellationToken.None,
                            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
@@ -131,12 +131,12 @@ public sealed class SpliceDepthWatcher : IDisposable
             _running.TryRemove(round, out _);
     }
 
-    private async Task HandleAsync(ChannelId channelId, TxId txId, uint height)
+    private async Task HandleAsync(ChannelId channelId, TxId txId, uint height, uint? transactionIndex)
     {
         try
         {
             await _serviceProvider.GetRequiredService<SpliceService>()
-                                  .OnSpliceDepthReachedAsync(channelId, txId, height);
+                                  .OnSpliceDepthReachedAsync(channelId, txId, height, transactionIndex);
         }
         catch (Exception e)
         {

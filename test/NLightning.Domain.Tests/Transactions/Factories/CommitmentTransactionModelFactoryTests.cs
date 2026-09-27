@@ -552,6 +552,36 @@ public class CommitmentTransactionModelFactoryTests
         Assert.Equal((ushort)144, transactionModel.ToLocalOutput.ToSelfDelay);
     }
 
+    [Fact]
+    public void Given_ALockedSpliceWithRotatedFundingKeys_When_CreatingBothCommitments_Then_AnchorsUseTheNewFundingKeys()
+    {
+        // Arrange: a splice locked with new funding keys on both sides (splicing plan D5); the key sets keep the
+        // original ones
+        var channel = CreateChannel(true, LightningMoney.Satoshis(546), LightningMoney.Satoshis(546),
+                                    LightningMoney.Satoshis(7_000_000), LightningMoney.Satoshis(3_000_000));
+        var ourNewKey = Bolt3AppendixCVectors.NodeAPaymentBasepoint.ToBytes();
+        var theirNewKey = Bolt3AppendixCVectors.NodeBPaymentBasepoint.ToBytes();
+        channel.ReplaceFundingOutput(new FundingOutputInfo(Bolt3AppendixBVectors.FundingSatoshis, ourNewKey,
+                                                           theirNewKey)
+        {
+            TransactionId = Bolt3AppendixBVectors.ExpectedTxId.ToBytes(),
+            Index = 1
+        });
+        var factory = CreateFactory();
+
+        // Act
+        var local = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Local,
+                                                             channel.LocalCommitmentNumber);
+        var remote = factory.CreateCommitmentTransactionModel(channel, CommitmentSide.Remote,
+                                                              channel.RemoteCommitmentNumber);
+
+        // Assert: to_local_anchor is the holder's current funding key, to_remote_anchor the other side's (BOLT 3)
+        Assert.Equal(ourNewKey, (byte[])local.LocalAnchorOutput!.FundingPubKey);
+        Assert.Equal(theirNewKey, (byte[])local.RemoteAnchorOutput!.FundingPubKey);
+        Assert.Equal(theirNewKey, (byte[])remote.LocalAnchorOutput!.FundingPubKey);
+        Assert.Equal(ourNewKey, (byte[])remote.RemoteAnchorOutput!.FundingPubKey);
+    }
+
     private static CommitmentTransactionModelFactory CreateFactory()
     {
         return new CommitmentTransactionModelFactory(new Mock<ICommitmentKeyDerivationService>().Object,

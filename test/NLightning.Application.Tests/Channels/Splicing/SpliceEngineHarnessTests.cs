@@ -2,6 +2,7 @@ namespace NLightning.Application.Tests.Channels.Splicing;
 
 using Domain.Channels.Enums;
 using Domain.Channels.Splicing.Enums;
+using Domain.Channels.ValueObjects;
 using Domain.Money;
 using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
@@ -123,6 +124,11 @@ public class SpliceEngineHarnessTests
                          state.LocalBalanceMsat + state.RemoteBalanceMsat);
             Assert.Equal(fundingTx2, node.FundingRows.LockedCurrent!.FundingTxId);
             Assert.Equal(ChannelFundingStatus.Replaced, node.FundingRows.Committed[fundingTx1].Status);
+
+            // The channel and the locked funding row take the splice's short channel id (block, index 1, output)
+            var spliceScid = new ShortChannelId(TwoNodeHarness.BlockHeight + 3, 1, state.Params.Funding.OutputIndex);
+            Assert.Equal(spliceScid, node.FundingRows.LockedCurrent.ShortChannelId);
+            Assert.Equal(spliceScid, node.Node.Channel.ShortChannelId);
         }
 
         // Act: Alice and Bob use the channel and forget FundingTx1

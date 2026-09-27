@@ -29,6 +29,20 @@ public class ChannelModel
     public CommitmentNumber? CommitmentNumber { get; private set; }
     public uint FundingCreatedAtBlockHeight { get; set; }
     public FundingOutputInfo? FundingOutput { get; private set; }
+
+    /// <summary>
+    /// Our funding pubkey of the current funding: the funding output's (a locked splice rotates it, splicing plan D5),
+    /// else the key set's. The 2-of-2 script and both anchor outputs of a commitment use the current funding's keys
+    /// (BOLT 3), never the key set's once a splice locked.
+    /// </summary>
+    public CompactPubKey LocalFundingPubKey => FundingOutput?.LocalFundingPubKey ?? LocalKeySet.FundingCompactPubKey;
+
+    /// <summary>
+    /// The peer's funding pubkey of the current funding (see <see cref="LocalFundingPubKey"/>); null before the peer's
+    /// key set is known.
+    /// </summary>
+    public CompactPubKey? RemoteFundingPubKey =>
+        FundingOutput?.RemoteFundingPubKey ?? RemoteKeySet?.FundingCompactPubKey;
     public bool IsInitiator { get; }
     public CompactPubKey RemoteNodeId { get; }
     public ChannelState State { get; private set; }

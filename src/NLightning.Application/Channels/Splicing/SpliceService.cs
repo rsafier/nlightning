@@ -626,6 +626,7 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
     /// funding when the peer's arrived for the same txid (SP-LK-03).
     /// </summary>
     public async Task OnSpliceDepthReachedAsync(ChannelId channelId, TxId spliceTxId, uint height,
+                                                uint? transactionIndex = null,
                                                 CancellationToken cancellationToken = default)
     {
         using var channelLock = await _channelLockProvider.AcquireAsync(channelId, cancellationToken);
@@ -638,7 +639,18 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
 
         using var scope = _serviceProvider.CreateScope();
         var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
-        await AdvanceLockAsync(channel, fundings, funding with { SpliceLockedSent = true, ConfirmedHeight = height },
+        // The splice's real short channel id (its block, its index in the block and the funding output), which the
+        // channel takes when the funding locks (listchannels, forwarding, the new announcement)
+        var shortChannelId = transactionIndex is { } txIndex
+                                 ? new ShortChannelId(height, txIndex, funding.OutputIndex)
+                                 : funding.ShortChannelId;
+        await AdvanceLockAsync(channel, fundings,
+                               funding with
+                               {
+                                   SpliceLockedSent = true,
+                                   ConfirmedHeight = height,
+                                   ShortChannelId = shortChannelId
+                               },
                                unitOfWork, cancellationToken);
 
         _logger.LogInformation("Splice {TxId} of channel {ChannelId} reached its depth at {Height}; sending "

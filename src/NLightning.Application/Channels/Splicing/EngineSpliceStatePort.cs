@@ -300,8 +300,12 @@ public sealed class EngineSpliceStatePort : ISpliceStatePort
             channel.ReplaceFundingOutput(new FundingOutputInfo(LightningMoney.Satoshis(locked.CapacitySatoshis),
                                                                locked.LocalFundingPubKey, locked.RemoteFundingPubKey,
                                                                locked.FundingTxId, locked.OutputIndex));
+            // The channel's short channel id follows the lock too (the ChannelFundings save wrote it to the channel
+            // row); the signer needs it to sign the new channel_announcement
+            if (locked.ShortChannelId is { } shortChannelId)
+                channel.ShortChannelId = shortChannelId;
             _channelMemoryRepository.UpdateChannel(channel);
-            _signer.LockFunding(channel.ChannelId, next.Current.FundingTxId);
+            _signer.LockFunding(channel.ChannelId, next.Current.FundingTxId, locked.ShortChannelId);
             _logger.LogInformation("Channel {ChannelId} now runs on funding {FundingTxId} ({Capacity} sat); {Retired} "
                                  + "funding(s) retired", channel.ChannelId, next.Current.FundingTxId,
                                    next.Current.CapacitySatoshis, retired.Count);
