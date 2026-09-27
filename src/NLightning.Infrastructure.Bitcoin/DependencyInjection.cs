@@ -11,11 +11,13 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Crypto.Interfaces;
 using Domain.Node.Options;
+using Domain.Offers.Interfaces;
 using Domain.Onchain.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Gossip;
 using Infrastructure.Crypto.Interfaces;
+using Offers;
 using Onion;
 using Onion.OnionMessages;
 using Onion.RouteBlinding;
@@ -83,6 +85,9 @@ public static class DependencyInjection
                                             secureKeyManager, utxoMemoryRepository,
                                             sp.GetService<IChannelSigningInfoSource>());
         });
+
+        // BOLT 12 BIP-340 signatures; the keys stay in ILightningSigner (BOLT 12 plan B1)
+        services.AddSingleton<IBolt12Signer, Bolt12Signer>();
 
         // Fee inputs for CPFP and anchor HTLC transactions (BOLT 5 plan O7-T1)
         services.AddSingleton<IFeeInputSelector, FeeInputSelector>();

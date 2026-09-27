@@ -52,4 +52,9 @@
     <Content Include="..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-c.txt;..\NLightning.Integration.Tests\BOLT3\Vectors\appendix-f.json" Link="BOLT3\Vectors\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"/>
   </ItemGroup>
 
+  <!-- BOLT 12 signature vector (lightning/bolts bolt12/signature-test.json, verbatim) -->
+  <ItemGroup>
+    <Content Include="Offers\Vectors\*.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+
 </Project>
