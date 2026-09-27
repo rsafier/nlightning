@@ -9,6 +9,7 @@ using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Constants;
+using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.Payloads;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Onion.OnionMessages;
@@ -44,7 +45,7 @@ public class OnionMessageUnwrapperTests
     public void Given_ANonFinalHopWithAReplyPath_When_Unwrapping_Then_Ignored()
     {
         // Arrange
-        var replyPath = OnionMessagePayloadCodec.EncodeBlindedPath(
+        var replyPath = BlindedPathCodec.Encode(
             WireBlindedPath.FromBlindedPath(_kit.PathBuilder.CreateMessagePath(_kit.NodeIds[..1])));
         var message = _kit.BuildRaw([_kit.NextNodeData(1), s_pathIdData],
                                     (i, erd) => i == 0
@@ -87,6 +88,7 @@ public class OnionMessageUnwrapperTests
 
         // Assert
         AssertIgnored(result, "no next hop");
+        Assert.Equal(OnionMessageIgnoreReason.NoNextHop, result.IgnoreKind);
     }
 
     [Fact]
@@ -108,6 +110,28 @@ public class OnionMessageUnwrapperTests
         Assert.Equal(OnionMessageUnwrapStatus.Deliver, next.Status);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Given_RecipientDataWithPaymentRelayOrConstraints_When_Unwrapping_Then_IgnoredAsForbidden(bool relay)
+    {
+        // Arrange (NL-442: the service's message-path rule, now the unwrapper's; a creator MUST NOT include them)
+        var data = _kit.RouteBlinding.EncodeRecipientData(new BlindedRecipientData
+        {
+            PathId = new byte[] { 1 },
+            PaymentRelay = relay ? new BlindedPaymentRelay(40, 100, 1000) : null,
+            PaymentConstraints = relay ? null : new BlindedPaymentConstraints(800_000, 1)
+        });
+        var message = _kit.BuildRaw([data], (_, erd) => Erd(erd));
+
+        // Act
+        var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
+
+        // Assert
+        AssertIgnored(result, "payment_relay or payment_constraints");
+        Assert.Equal(OnionMessageIgnoreReason.ForbiddenRecipientData, result.IgnoreKind);
+    }
+
     [Fact]
     public void Given_AllowedFeaturesWithABit_When_Unwrapping_Then_Ignored()
     {
@@ -124,6 +148,7 @@ public class OnionMessageUnwrapperTests
 
         // Assert
         AssertIgnored(result, "allowed_features");
+        Assert.Equal(OnionMessageIgnoreReason.ForbiddenRecipientData, result.IgnoreKind);
     }
 
     [Fact]
@@ -160,6 +185,7 @@ public class OnionMessageUnwrapperTests
 
         // Assert
         AssertIgnored(result, "more than one payload field");
+        Assert.Equal(OnionMessageIgnoreReason.MultiplePayloadFields, result.IgnoreKind);
     }
 
     [Fact]
@@ -205,7 +231,7 @@ public class OnionMessageUnwrapperTests
         var result = _kit.Unwrapper.Unwrap(message, _kit.NodeKeys[0]);
 
         // Assert
-        AssertIgnored(result, "strictly increasing");
+        AssertIgnored(result, "increasing order");
     }
 
     [Fact]

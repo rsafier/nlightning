@@ -2,6 +2,7 @@ namespace NLightning.Application.OnionMessages;
 
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.OnionMessages.Interfaces;
 
 /// <summary>
 /// Builds the <c>reply_path</c> of our own messages (BOLT 4 writer: <c>first_node_id</c> is the unblinded
@@ -15,14 +16,14 @@ using Domain.Protocol.Onion.Models;
 /// </remarks>
 public sealed class ReplyPathFactory
 {
-    private readonly MessagePathFactory _messagePathFactory;
+    private readonly IBlindedMessagePathBuilder _pathBuilder;
     private readonly OnionMessagePathFinder _pathFinder;
     private readonly CompactPubKey _ourNodeId;
 
-    public ReplyPathFactory(MessagePathFactory messagePathFactory, OnionMessagePathFinder pathFinder,
+    public ReplyPathFactory(IBlindedMessagePathBuilder pathBuilder, OnionMessagePathFinder pathFinder,
                             CompactPubKey ourNodeId)
     {
-        _messagePathFactory = messagePathFactory;
+        _pathBuilder = pathBuilder;
         _pathFinder = pathFinder;
         _ourNodeId = ourNodeId;
     }
@@ -35,6 +36,6 @@ public sealed class ReplyPathFactory
     {
         var peers = _pathFinder.ListOnionMessagePeers();
         IReadOnlyList<CompactPubKey> nodeIds = peers.Count > 0 ? [peers[0], _ourNodeId] : [_ourNodeId];
-        return _messagePathFactory.Create(nodeIds, pathId);
+        return _pathBuilder.CreateMessagePath(nodeIds, pathId);
     }
 }

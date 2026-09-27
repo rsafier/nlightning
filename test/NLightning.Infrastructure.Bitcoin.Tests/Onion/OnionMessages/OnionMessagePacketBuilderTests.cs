@@ -5,6 +5,7 @@ using Domain.Protocol.Onion.Constants;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Constants;
+using Domain.Protocol.OnionMessages.Enums;
 using Infrastructure.Bitcoin.Onion.OnionMessages;
 
 /// <summary>

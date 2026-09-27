@@ -11,16 +11,12 @@ using Domain.Node.Interfaces;
 using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
-using Domain.Protocol.Onion.Constants;
-using Domain.Protocol.Onion.Enums;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
-using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Constants;
 using Domain.Protocol.OnionMessages.Enums;
 using Domain.Protocol.OnionMessages.Interfaces;
-using Domain.Protocol.Payloads;
 using Gossip.Graph.Interfaces;
 
 /// <summary>
@@ -29,8 +25,9 @@ using Gossip.Graph.Interfaces;
 /// </summary>
 /// <remarks>
 /// <para>Receive: <see cref="HandleIncoming"/> applies the rate limit and queues (never blocks the peer's read loop). A
-/// worker peels with an empty associated data and the message's path_key, reads the <c>onionmsg_tlv</c> strictly and
-/// unblinds the <c>encrypted_recipient_data</c>; then it forwards (a non-final hop that carries only
+/// worker hands the message to <see cref="IOnionMessageUnwrapper"/> (peel with an empty associated data and the
+/// message's path_key, the strict Domain <c>onionmsg_tlv</c> codec, unblind, the BOLT 4 reader rules); then it
+/// forwards (a non-final hop that carries only
 /// <c>encrypted_recipient_data</c>, no <c>path_id</c>, and names the next node by id or by a SCID of ours) to the next
 /// peer if it is connected, negotiated onion messages and is not the sender, with the next path key
 /// (<c>next_path_key_override</c> or the derived one), queued on that peer's capped outbox
@@ -39,7 +36,8 @@ using Gossip.Graph.Interfaces;
 /// the waiting <see cref="SendAndWaitForReplyAsync"/> caller (a <c>path_id</c> of one of our reply paths) or to the
 /// <see cref="IOnionMessageHandler"/> of its payload type, on a second bounded queue. Anything else is ignored and
 /// counted in <see cref="OnionMessageMetrics"/>: onion messages have no error replies.</para>
-/// <para>Send: a node id is reached through a blinded path we create over the unblinded hops to it (a direct peer, or
+/// <para>Send: a node id is reached through a blinded path we create (<see cref="IBlindedMessagePathBuilder"/>) over
+/// the unblinded hops to it (a direct peer, or
 /// a graph path); a blinded path through its introduction node, after unblinding our own hops when the introduction
 /// node is us, with the unblinded prefix ending in <c>next_path_key_override = first_path_key</c> (the packet builder
 /// writes it). We only send to connected peers (plan D6), through the same outbox; a full one is
@@ -53,7 +51,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 {
     private static readonly TimeSpan s_stopTimeout = TimeSpan.FromSeconds(5);
 
-    private readonly ISphinxService _sphinxService;
+    private readonly IOnionMessageUnwrapper _unwrapper;
+    private readonly IBlindedMessagePathBuilder _pathBuilder;
     private readonly IRouteBlindingService _routeBlindingService;
     private readonly IOnionMessagePacketBuilder? _packetBuilder;
     private readonly IOnionMessageRateLimiter? _rateLimiter;
@@ -61,7 +60,6 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private readonly OnionMessageMetrics _metrics;
     private readonly OnionMessageDispatcher _dispatcher;
     private readonly OnionMessagePathFinder _pathFinder;
-    private readonly MessagePathFactory _messagePathFactory;
     private readonly ReplyPathFactory _replyPathFactory;
     private readonly PendingReplyRegistry _pendingReplies;
     private readonly TimeProvider _timeProvider;
@@ -75,7 +73,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private int _disposed;
 
     public OnionMessageService(IOptions<NodeOptions> nodeOptions, ISecureKeyManager secureKeyManager,
-                               ISphinxService sphinxService, IRouteBlindingService routeBlindingService,
+                               IOnionMessageUnwrapper unwrapper, IBlindedMessagePathBuilder pathBuilder,
+                               IRouteBlindingService routeBlindingService,
                                IPeerManager peerManager, IChannelMemoryRepository channelMemoryRepository,
                                IEnumerable<IOnionMessageHandler> handlers, OnionMessageMetrics metrics,
                                ILogger<OnionMessageService> logger, IOptions<OnionMessageOptions>? options = null,
@@ -90,7 +89,8 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         if (errors.Count > 0)
             settings = new OnionMessageOptions();
 
-        _sphinxService = sphinxService;
+        _unwrapper = unwrapper;
+        _pathBuilder = pathBuilder;
         _routeBlindingService = routeBlindingService;
         _packetBuilder = packetBuilder;
         _rateLimiter = rateLimiter;
@@ -103,8 +103,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         _dispatcher = new OnionMessageDispatcher(handlers);
         _pathFinder = new OnionMessagePathFinder(peerManager, channelMemoryRepository, _ourNodeId,
                                                  settings.MaxPathHops, graphStore, outbox);
-        _messagePathFactory = new MessagePathFactory(routeBlindingService);
-        _replyPathFactory = new ReplyPathFactory(_messagePathFactory, _pathFinder, _ourNodeId);
+        _replyPathFactory = new ReplyPathFactory(pathBuilder, _pathFinder, _ourNodeId);
         _pendingReplies = new PendingReplyRegistry(settings.MaxPendingReplies);
         _incoming = Channel.CreateBounded<IncomingOnionMessage>(
             new BoundedChannelOptions(settings.MaxQueuedMessages)
@@ -238,57 +237,52 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     /// <summary>
     /// Processes one received message (the worker's body; tests call it directly).
     /// </summary>
+    /// <remarks>
+    /// The packet is read by <see cref="IOnionMessageUnwrapper"/> (peel, strict <c>onionmsg_tlv</c>, unblind and the
+    /// BOLT 4 reader rules, NL-442); the service only decides where a forward goes and who gets a delivery.
+    /// </remarks>
     internal void ProcessIncoming(CompactPubKey fromPeer, OnionMessageMessage message)
     {
-        var packetBytes = message.Payload.OnionMessagePacket;
-        PeeledOnion peeled;
+        OnionMessageUnwrapResult result;
         try
         {
-            var packet = new OnionPacket(packetBytes.Span, packetBytes.Length - OnionConstants.PacketOverheadLength);
-            peeled = _sphinxService.PeelAsLocalNode(packet, [], message.Payload.PathKey, OnionPacketKind.OnionMessage);
+            result = _unwrapper.UnwrapAsLocalNode(message);
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
+            // Only local faults throw (no key manager); a message is never worth more than a drop
             Drop(OnionMessageDropReasons.Undecryptable, fromPeer, e);
             return;
         }
 
-        if (!OnionMessageTlvsCodec.TryDecode(peeled.Payload.Span, out var tlvs, out _))
+        switch (result.Status)
         {
-            Drop(OnionMessageDropReasons.InvalidPayload, fromPeer);
-            return;
+            case OnionMessageUnwrapStatus.Forward:
+                Forward(fromPeer, result);
+                break;
+            case OnionMessageUnwrapStatus.Deliver:
+                Deliver(fromPeer, result.Payload!, result.RecipientData!);
+                break;
+            default:
+                Drop(ToDropReason(result.IgnoreKind), fromPeer, reason: result.IgnoreReason);
+                break;
         }
-
-        if (tlvs.EncryptedRecipientData is not { } encryptedRecipientData)
-        {
-            Drop(OnionMessageDropReasons.InvalidRecipientData, fromPeer);
-            return;
-        }
-
-        BlindedHopUnblinding unblinding;
-        try
-        {
-            unblinding = _routeBlindingService.UnblindAsLocalNode(message.Payload.PathKey, encryptedRecipientData,
-                                                                  peeled.PathKeySharedSecret);
-        }
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            Drop(OnionMessageDropReasons.InvalidRecipientData, fromPeer, e);
-            return;
-        }
-
-        var recipientData = unblinding.RecipientData;
-        if (!IsValidMessagePathData(recipientData))
-        {
-            Drop(OnionMessageDropReasons.ForbiddenRecipientData, fromPeer);
-            return;
-        }
-
-        if (peeled.NextPacket is { } nextPacket)
-            Forward(fromPeer, tlvs, recipientData, unblinding.NextPathKey, nextPacket);
-        else
-            Deliver(fromPeer, tlvs, recipientData);
     }
+
+    /// <summary>
+    /// The metric tag of a reader rule of <see cref="IOnionMessageUnwrapper"/>.
+    /// </summary>
+    internal static string ToDropReason(OnionMessageIgnoreReason? kind) => kind switch
+    {
+        OnionMessageIgnoreReason.InvalidPayload => OnionMessageDropReasons.InvalidPayload,
+        OnionMessageIgnoreReason.InvalidRecipientData => OnionMessageDropReasons.InvalidRecipientData,
+        OnionMessageIgnoreReason.ForbiddenRecipientData => OnionMessageDropReasons.ForbiddenRecipientData,
+        OnionMessageIgnoreReason.NonFinalExtraFields => OnionMessageDropReasons.NonFinalExtraFields,
+        OnionMessageIgnoreReason.NonFinalPathId => OnionMessageDropReasons.NonFinalPathId,
+        OnionMessageIgnoreReason.NoNextHop => OnionMessageDropReasons.NoNextHop,
+        OnionMessageIgnoreReason.MultiplePayloadFields => OnionMessageDropReasons.MultiplePayloadFields,
+        _ => OnionMessageDropReasons.Undecryptable
+    };
 
     public void Dispose()
     {
@@ -318,22 +312,10 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
     private static bool IsValidMessagePathData(BlindedRecipientData data) =>
         !data.HasAnyAllowedFeature && data.PaymentRelay is null && data.PaymentConstraints is null;
 
-    private void Forward(CompactPubKey fromPeer, OnionMessageTlvs tlvs, BlindedRecipientData recipientData,
-                         CompactPubKey nextPathKey, OnionPacket nextPacket)
+    private void Forward(CompactPubKey fromPeer, OnionMessageUnwrapResult result)
     {
-        // BOLT 4 reader, non-final hop: only encrypted_recipient_data, and no path_id
-        if (tlvs.ReplyPath is not null || tlvs.OtherRecords.Count > 0)
-        {
-            Drop(OnionMessageDropReasons.NonFinalExtraFields, fromPeer);
-            return;
-        }
-
-        if (recipientData.PathId is not null)
-        {
-            Drop(OnionMessageDropReasons.NonFinalPathId, fromPeer);
-            return;
-        }
-
+        // The unwrapper applied the non-final reader rules (only encrypted_recipient_data, no path_id, a next hop)
+        var recipientData = result.RecipientData!;
         var nextNode = recipientData.NextNodeId
                     ?? (recipientData.ShortChannelId is { } shortChannelId
                             ? _pathFinder.ResolveOurChannel(shortChannelId)
@@ -364,8 +346,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 
         // Queue only: a peer that stops reading fills its own capped outbox and loses onion messages, it never stalls
         // this worker and so every other peer's messages (plan §3.4)
-        var forwarded = new OnionMessageMessage(new OnionMessagePayload(nextPathKey, nextPacket.ToBytes()));
-        if (!_outbox!.TryEnqueueOnionMessage(next, forwarded))
+        if (!_outbox!.TryEnqueueOnionMessage(next, result.NextMessage!))
         {
             Drop(OnionMessageDropReasons.OutboxFull, fromPeer);
             return;
@@ -378,12 +359,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
 
     private void Deliver(CompactPubKey fromPeer, OnionMessageTlvs tlvs, BlindedRecipientData recipientData)
     {
-        if (OnionMessageTlvsCodec.CountPayloadFields(tlvs.OtherRecords) > 1)
-        {
-            Drop(OnionMessageDropReasons.MultiplePayloadFields, fromPeer);
-            return;
-        }
-
+        // The unwrapper refused a final hop with more than one payload field
         var contents = new OnionMessageContents(tlvs.OtherRecords);
         var received = new ReceivedOnionMessage(contents, tlvs.ReplyPath, recipientData.PathId, fromPeer);
 
@@ -472,7 +448,7 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
             if (prefix is null)
                 return null;
 
-            var path = _messagePathFactory.Create([.. prefix, nodeId]);
+            var path = _pathBuilder.CreateMessagePath([.. prefix, nodeId]);
             return new SendRoute([], path);
         }
 
@@ -575,11 +551,12 @@ public sealed class OnionMessageService : IOnionMessageService, IDisposable
         }
     }
 
-    private void Drop(string reason, CompactPubKey fromPeer, Exception? exception = null)
+    private void Drop(string tag, CompactPubKey fromPeer, Exception? exception = null, string? reason = null)
     {
-        _metrics.RecordDropped(reason);
+        _metrics.RecordDropped(tag);
         if (_logger.IsEnabled(LogLevel.Trace))
-            _logger.LogTrace(exception, "Dropped an onion message from {Peer}: {Reason}", fromPeer, reason);
+            _logger.LogTrace(exception, "Dropped an onion message from {Peer}: {Tag} {Reason}", fromPeer, tag,
+                             reason);
     }
 
     private sealed record IncomingOnionMessage(CompactPubKey FromPeer, OnionMessageMessage Message);

@@ -1,31 +1,10 @@
-namespace NLightning.Infrastructure.Bitcoin.Onion.OnionMessages;
+namespace NLightning.Domain.Protocol.OnionMessages;
 
-using Domain.Channels.ValueObjects;
-using Domain.Crypto.ValueObjects;
-using Domain.Protocol.Messages;
-using Domain.Protocol.Onion.Models;
-using Domain.Protocol.OnionMessages;
-
-/// <summary>
-/// What a node does with a received <c>onion_message</c> after <see cref="IOnionMessageUnwrapper"/>.
-/// </summary>
-public enum OnionMessageUnwrapStatus
-{
-    /// <summary>
-    /// Ignore the message (BOLT 4 reader "MUST ignore"); nothing is sent back.
-    /// </summary>
-    Ignored,
-
-    /// <summary>
-    /// Forward <see cref="OnionMessageUnwrapResult.NextMessage"/> to the next peer.
-    /// </summary>
-    Forward,
-
-    /// <summary>
-    /// We are the final hop: deliver <see cref="OnionMessageUnwrapResult.Payload"/>.
-    /// </summary>
-    Deliver
-}
+using Channels.ValueObjects;
+using Crypto.ValueObjects;
+using Enums;
+using Messages;
+using Onion.Models;
 
 /// <summary>
 /// The result of unwrapping one received <c>onion_message</c> (BOLT 4 "Onion Messages", reader).
@@ -44,8 +23,11 @@ public sealed record OnionMessageUnwrapResult
     /// <summary>What to do with the message.</summary>
     public OnionMessageUnwrapStatus Status { get; private init; }
 
-    /// <summary>Why the message is ignored (for logs and metrics), or null.</summary>
+    /// <summary>Why the message is ignored (for logs), or null.</summary>
     public string? IgnoreReason { get; private init; }
+
+    /// <summary>Which reader rule ignored the message (for metrics), or null when it is not ignored.</summary>
+    public OnionMessageIgnoreReason? IgnoreKind { get; private init; }
 
     /// <summary>The decrypted <c>encrypted_data_tlv</c> of this hop, or null when ignored.</summary>
     public BlindedRecipientData? RecipientData { get; private init; }
@@ -65,8 +47,8 @@ public sealed record OnionMessageUnwrapResult
     /// <summary>Deliver: the <c>path_id</c> of our data, or null.</summary>
     public ReadOnlyMemory<byte>? PathId => Status == OnionMessageUnwrapStatus.Deliver ? RecipientData?.PathId : null;
 
-    internal static OnionMessageUnwrapResult Ignore(string reason) =>
-        new() { Status = OnionMessageUnwrapStatus.Ignored, IgnoreReason = reason };
+    internal static OnionMessageUnwrapResult Ignore(OnionMessageIgnoreReason kind, string reason) =>
+        new() { Status = OnionMessageUnwrapStatus.Ignored, IgnoreKind = kind, IgnoreReason = reason };
 
     internal static OnionMessageUnwrapResult Forward(BlindedRecipientData recipientData, OnionMessageMessage next) =>
         new()

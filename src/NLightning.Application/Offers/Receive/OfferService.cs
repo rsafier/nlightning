@@ -20,7 +20,6 @@ using Domain.Offers.Interfaces;
 using Domain.Offers.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
-using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.OnionMessages;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Tlv;
@@ -51,7 +50,7 @@ public sealed class OfferService : IOfferService
     private readonly IOptions<NodeOptions> _nodeOptions;
     private readonly OfferOptions _offerOptions;
     private readonly OfferPathIds _pathIds;
-    private readonly MessagePathFactory _messagePathFactory;
+    private readonly IBlindedMessagePathBuilder _pathBuilder;
     private readonly IPeerManager _peerManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IServiceProvider _serviceProvider;
@@ -60,7 +59,7 @@ public sealed class OfferService : IOfferService
 
     public OfferService(IServiceScopeFactory serviceScopeFactory, ISecureKeyManager secureKeyManager,
                         IOptions<NodeOptions> nodeOptions, OfferPathIds pathIds,
-                        IRouteBlindingService routeBlindingService, IPeerManager peerManager,
+                        IBlindedMessagePathBuilder pathBuilder, IPeerManager peerManager,
                         IChannelMemoryRepository channelMemoryRepository, IServiceProvider serviceProvider,
                         ILogger<OfferService> logger, IOptions<OfferOptions>? offerOptions = null,
                         TimeProvider? timeProvider = null)
@@ -69,7 +68,7 @@ public sealed class OfferService : IOfferService
         _secureKeyManager = secureKeyManager;
         _nodeOptions = nodeOptions;
         _pathIds = pathIds;
-        _messagePathFactory = new MessagePathFactory(routeBlindingService);
+        _pathBuilder = pathBuilder;
         _peerManager = peerManager;
         _channelMemoryRepository = channelMemoryRepository;
         _serviceProvider = serviceProvider;
@@ -261,7 +260,7 @@ public sealed class OfferService : IOfferService
 
         var pathId = _pathIds.Compute(metadata);
         return introductionNodes.Select(peer => WireBlindedPath.FromBlindedPath(
-                                            _messagePathFactory.Create([peer, ourNodeId], pathId)))
+                                            _pathBuilder.CreateMessagePath([peer, ourNodeId], pathId)))
                                 .ToList();
     }
 

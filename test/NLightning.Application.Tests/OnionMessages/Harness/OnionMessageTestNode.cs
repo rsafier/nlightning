@@ -23,7 +23,8 @@ using Infrastructure.Bitcoin;
 /// <summary>
 /// One in-process onion-message node: the production <see cref="OnionMessageService"/> built by
 /// <see cref="OnionMessageServiceCollectionExtensions.AddOnionMessageServices"/> over the real Sphinx and route
-/// blinding (<c>AddBitcoinInfrastructure</c>) with its own node key, the harness packet builder, and a peer manager
+/// blinding (<c>AddBitcoinInfrastructure</c>, whose production packet builder, path builder and unwrapper it uses) with its
+/// own node key, and a peer manager
 /// that holds <see cref="LinkedPeerService"/> connections.
 /// </summary>
 internal sealed class OnionMessageTestNode : IDisposable, IPeerOnionMessageOutbox
@@ -64,10 +65,8 @@ internal sealed class OnionMessageTestNode : IDisposable, IPeerOnionMessageOutbo
             services.AddSingleton<IPeerOnionMessageOutbox>(this);
         services.AddSingleton(peerManager.Object);
         services.AddSingleton(channels.Object);
+        // The production onion-message crypto (packet builder, path builder, unwrapper) from AddBitcoinInfrastructure
         services.AddBitcoinInfrastructure();
-        services.AddSingleton<IOnionMessagePacketBuilder>(sp => new HarnessOnionMessagePacketBuilder(
-                                                              sp.GetRequiredService<ISphinxService>(),
-                                                              sp.GetRequiredService<IRouteBlindingService>()));
         if (rateLimiter is not null)
             services.AddSingleton(rateLimiter);
         if (graphStore is not null)
@@ -97,10 +96,15 @@ internal sealed class OnionMessageTestNode : IDisposable, IPeerOnionMessageOutbo
     public OnionMessageMetrics Metrics => _provider.GetRequiredService<OnionMessageMetrics>();
     public IRouteBlindingService RouteBlinding => _provider.GetRequiredService<IRouteBlindingService>();
     public ISphinxService Sphinx => _provider.GetRequiredService<ISphinxService>();
-    public MessagePathFactory PathFactory => new(RouteBlinding);
 
-    public HarnessOnionMessagePacketBuilder Builder =>
-        (HarnessOnionMessagePacketBuilder)_provider.GetRequiredService<IOnionMessagePacketBuilder>();
+    /// <summary>The production message-path builder (<c>BlindedMessagePathBuilder</c>).</summary>
+    public IBlindedMessagePathBuilder PathBuilder => _provider.GetRequiredService<IBlindedMessagePathBuilder>();
+
+    /// <summary>The production packet builder (<c>OnionMessagePacketBuilder</c>).</summary>
+    public IOnionMessagePacketBuilder PacketBuilder => _provider.GetRequiredService<IOnionMessagePacketBuilder>();
+
+    /// <summary>Raw packets and paths that break the writer rules, for the reader-rule tests.</summary>
+    public RawOnionMessageWriter Raw => new(Sphinx, RouteBlinding);
 
     /// <summary>Our end of the connection to <paramref name="other"/>.</summary>
     public LinkedPeerService LinkTo(OnionMessageTestNode other)

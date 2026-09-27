@@ -11,13 +11,15 @@ using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
 using Domain.Protocol.Onion.ValueObjects;
 using Domain.Protocol.OnionMessages;
-using Domain.Protocol.OnionMessages.Constants;
+using Domain.Protocol.OnionMessages.Enums;
+using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.Payloads;
 
 /// <summary>
 /// <see cref="IOnionMessageUnwrapper"/>: peel via <see cref="ISphinxService"/>, then unblind via
 /// <see cref="IRouteBlindingService"/> with the path_key shared secret the peel already computed (one node-key ECDH
-/// for both).
+/// for both). The <c>onionmsg_tlv</c> is read by the Domain <see cref="OnionMessageTlvsCodec"/> (the node's only
+/// reader, NL-442), plus a curve check of the <c>reply_path</c> points the Domain codec leaves out.
 /// </summary>
 internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
 {
@@ -59,7 +61,7 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
         }
         catch (ArgumentException e)
         {
-            return OnionMessageUnwrapResult.Ignore(e.Message);
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.Undecryptable, e.Message);
         }
 
         PeeledOnion peeled;
@@ -69,25 +71,36 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
         }
         catch (OnionException e)
         {
-            return OnionMessageUnwrapResult.Ignore($"{e.FailureCode}: {e.Message}");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.Undecryptable,
+                                                   $"{e.FailureCode}: {e.Message}");
         }
 
         BlindedHopUnblinding unblinding;
         OnionMessageTlvs? tlvs;
         try
         {
-            if (!OnionMessagePayloadCodec.TryDecode(peeled.Payload.Span, out tlvs, out var reason))
-                return OnionMessageUnwrapResult.Ignore(reason!);
+            if (!OnionMessageTlvsCodec.TryDecode(peeled.Payload.Span, out tlvs, out var reason))
+                return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.InvalidPayload, reason);
 
-            if (tlvs!.EncryptedRecipientData is not { } encryptedRecipientData)
-                return OnionMessageUnwrapResult.Ignore("no encrypted_recipient_data");
+            if (tlvs.ReplyPath is { } replyPath && !HasValidPoints(replyPath))
+                return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.InvalidPayload,
+                                                       "reply_path holds a key that is not a valid point");
+
+            if (tlvs.EncryptedRecipientData is not { } encryptedRecipientData)
+                return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.InvalidRecipientData,
+                                                       "no encrypted_recipient_data");
 
             unblinding = _routeBlindingService.UnblindAsLocalNode(pathKey, encryptedRecipientData,
                                                                   peeled.PathKeySharedSecret);
         }
         catch (OnionException e)
         {
-            return OnionMessageUnwrapResult.Ignore($"{e.FailureCode}: {e.Message}");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.InvalidRecipientData,
+                                                   $"{e.FailureCode}: {e.Message}");
+        }
+        catch (Exception e) when (e is ArgumentException or FormatException)
+        {
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.InvalidRecipientData, e.Message);
         }
         finally
         {
@@ -97,9 +110,14 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
 
         var data = unblinding.RecipientData;
 
-        // BOLT 4 reader: allowed_features with an unknown bit (every bit: none is defined) → ignore
+        // BOLT 4 reader: allowed_features with an unknown bit (every bit: none is defined) → ignore; a message path's
+        // creator MUST NOT include payment_relay or payment_constraints, so data that has them is not ours to follow
         if (data.HasAnyAllowedFeature)
-            return OnionMessageUnwrapResult.Ignore("allowed_features has an unknown bit");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.ForbiddenRecipientData,
+                                                   "allowed_features has an unknown bit");
+        if (data.PaymentRelay is not null || data.PaymentConstraints is not null)
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.ForbiddenRecipientData,
+                                                   "a message path carries payment_relay or payment_constraints");
 
         return peeled.IsFinal ? UnwrapFinal(data, tlvs) : UnwrapNonFinal(data, tlvs, peeled, unblinding);
     }
@@ -115,11 +133,15 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
                                                            PeeledOnion peeled, BlindedHopUnblinding unblinding)
     {
         if (tlvs.ReplyPath is not null || tlvs.OtherRecords.Count > 0)
-            return OnionMessageUnwrapResult.Ignore("a non-final onionmsg_tlv carries more than encrypted_recipient_data");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.NonFinalExtraFields,
+                                                   "a non-final onionmsg_tlv carries more than "
+                                                 + "encrypted_recipient_data");
         if (data.PathId is not null)
-            return OnionMessageUnwrapResult.Ignore("a non-final encrypted_data_tlv carries a path_id");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.NonFinalPathId,
+                                                   "a non-final encrypted_data_tlv carries a path_id");
         if (data.NextNodeId is null && data.ShortChannelId is null)
-            return OnionMessageUnwrapResult.Ignore("a non-final encrypted_data_tlv names no next hop");
+            return OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.NoNextHop,
+                                                   "a non-final encrypted_data_tlv names no next hop");
 
         var next = new OnionMessageMessage(new OnionMessagePayload(unblinding.NextPathKey,
                                                                    peeled.NextPacket!.Value.ToBytes()));
@@ -128,9 +150,23 @@ internal sealed class OnionMessageUnwrapper : IOnionMessageUnwrapper
 
     private static OnionMessageUnwrapResult UnwrapFinal(BlindedRecipientData data, OnionMessageTlvs tlvs)
     {
-        var payloadFields = tlvs.OtherRecords.Count(r => r.Type >= OnionMessageConstants.FirstPayloadFieldType);
-        return payloadFields > 1
-                   ? OnionMessageUnwrapResult.Ignore("the final onionmsg_tlv has more than one payload field")
+        return OnionMessageTlvsCodec.CountPayloadFields(tlvs) > 1
+                   ? OnionMessageUnwrapResult.Ignore(OnionMessageIgnoreReason.MultiplePayloadFields,
+                                                     "the final onionmsg_tlv has more than one payload field")
                    : OnionMessageUnwrapResult.Deliver(data, tlvs);
+    }
+
+    /// <summary>
+    /// Whether every key of a received <c>reply_path</c> is a point on the curve (the Domain codec checks only the
+    /// 02/03 prefix): a path we could never send to is not a valid <c>blinded_path</c>.
+    /// </summary>
+    private static bool HasValidPoints(WireBlindedPath path)
+    {
+        if (path.FirstNode.NodeId is { } firstNodeId && !SphinxKeyGenerator.IsValidPublicKey((byte[])firstNodeId))
+            return false;
+        if (!SphinxKeyGenerator.IsValidPublicKey((byte[])path.FirstPathKey))
+            return false;
+
+        return path.Hops.All(hop => SphinxKeyGenerator.IsValidPublicKey((byte[])hop.BlindedNodeId));
     }
 }

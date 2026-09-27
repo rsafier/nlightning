@@ -36,7 +36,7 @@ public sealed class OnionMessageHarnessTests
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
         byte[] pathId = [1, 2, 3, 4];
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId], pathId);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId], pathId);
 
         // Act
         var result = await alice.Service.SendAsync(
@@ -74,7 +74,7 @@ public sealed class OnionMessageHarnessTests
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
 
         // Act
         var result = await alice.Service.SendAndWaitForReplyAsync(
@@ -110,7 +110,7 @@ public sealed class OnionMessageHarnessTests
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
         var payload = RandomNumberGenerator.GetBytes(30_000);
 
         // Act
@@ -162,7 +162,7 @@ public sealed class OnionMessageHarnessTests
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
         var destination = OnionMessageDestination.ToBlindedPath(
-            WireBlindedPath.FromBlindedPath(carol.PathFactory.Create([bob.NodeId, carol.NodeId])));
+            WireBlindedPath.FromBlindedPath(carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId])));
 
         // Act
         for (var i = 0; i < 25; i++)
@@ -226,7 +226,7 @@ public sealed class OnionMessageHarnessTests
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([alice.NodeId, bob.NodeId, carol.NodeId], new byte[] { 9 });
+        var path = carol.PathBuilder.CreateMessagePath([alice.NodeId, bob.NodeId, carol.NodeId], new byte[] { 9 });
 
         // Act
         var result = await alice.Service.SendAsync(
@@ -298,7 +298,7 @@ public sealed class OnionMessageHarnessTests
                                                    graphStore: GraphOf(scid, bob.NodeId, carol.NodeId, true));
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
         var bobDirection = (byte)(GraphChannel.CompareNodeIds(bob.NodeId, carol.NodeId) < 0 ? 0 : 1);
         var wirePath = new WireBlindedPath(SciddirOrPubkey.FromShortChannelId(scid, bobDirection), path.FirstPathKey,
                                            path.Hops);
@@ -328,7 +328,7 @@ public sealed class OnionMessageHarnessTests
                                                                      true));
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create(
+        var path = carol.PathBuilder.CreatePath(
             [bob.NodeId, carol.NodeId],
             [
                 new Domain.Protocol.Onion.Models.BlindedRecipientData { ShortChannelId = scid },
@@ -358,7 +358,7 @@ public sealed class OnionMessageHarnessTests
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
 
         // Act
         var pending = alice.Service.SendAndWaitForReplyAsync(
@@ -396,7 +396,7 @@ public sealed class OnionMessageHarnessTests
         using var carol = new OnionMessageTestNode("carol", 3, [handler]);
         OnionMessageTestNode.Connect(alice, bob);
         OnionMessageTestNode.Connect(bob, carol);
-        var path = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var path = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
 
         // Act
         var pending = alice.Service.SendAndWaitForReplyAsync(
@@ -452,7 +452,7 @@ public sealed class OnionMessageHarnessTests
         using var bob = new OnionMessageTestNode("bob", 2);
         using var carol = new OnionMessageTestNode("carol", 3);
         OnionMessageTestNode.Connect(alice, bob, onionMessages: false);
-        var viaBob = carol.PathFactory.Create([bob.NodeId, carol.NodeId]);
+        var viaBob = carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]);
         var unknownScid = new WireBlindedPath(SciddirOrPubkey.FromShortChannelId(new ShortChannelId(1, 2, 3), 0),
                                               viaBob.FirstPathKey, viaBob.Hops);
 
@@ -516,8 +516,8 @@ public sealed class OnionMessageHarnessTests
         OnionMessageTestNode.Connect(bob, carol);
         OnionMessageTestNode.Connect(bob, dave);
         bob.LinkTo(carol).Stalled = true;
-        var carolPath = WireBlindedPath.FromBlindedPath(carol.PathFactory.Create([bob.NodeId, carol.NodeId]));
-        var davePath = WireBlindedPath.FromBlindedPath(dave.PathFactory.Create([bob.NodeId, dave.NodeId]));
+        var carolPath = WireBlindedPath.FromBlindedPath(carol.PathBuilder.CreateMessagePath([bob.NodeId, carol.NodeId]));
+        var davePath = WireBlindedPath.FromBlindedPath(dave.PathBuilder.CreateMessagePath([bob.NodeId, dave.NodeId]));
 
         // Act: fill Carol's outbox at Bob and beyond (one message in the stalled write, the cap queued, the rest
         // refused), then send to Dave through the same Bob

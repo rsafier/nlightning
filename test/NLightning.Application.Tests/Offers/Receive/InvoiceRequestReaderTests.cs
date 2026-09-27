@@ -198,6 +198,7 @@ public class InvoiceRequestReaderTests
         services.AddSingleton(Options.Create(new NodeOptions()));
         services.AddSingleton<IBlindedPaymentPathSource>(new Moq.Mock<IBlindedPaymentPathSource>().Object);
         services.AddSingleton(new Moq.Mock<Domain.Protocol.Onion.Interfaces.IRouteBlindingService>().Object);
+        services.AddSingleton(new Moq.Mock<Domain.Protocol.OnionMessages.Interfaces.IBlindedMessagePathBuilder>().Object);
         services.AddSingleton(new Moq.Mock<Domain.Node.Interfaces.IPeerManager>().Object);
         services.AddSingleton(new Moq.Mock<Domain.Channels.Interfaces.IChannelMemoryRepository>().Object);
         services.AddOffersServices();

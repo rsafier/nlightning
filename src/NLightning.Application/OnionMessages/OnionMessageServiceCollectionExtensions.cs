@@ -20,7 +20,9 @@ public static class OnionMessageServiceCollectionExtensions
 {
     /// <summary>
     /// Registers <see cref="OnionMessageService"/> as the <see cref="IOnionMessageService"/> singleton (the peer
-    /// services hand it every <c>onion_message</c>) and <see cref="OnionMessageMetrics"/>. Bind
+    /// services hand it every <c>onion_message</c>) and <see cref="OnionMessageMetrics"/>. It needs the
+    /// <see cref="IOnionMessageUnwrapper"/> and <see cref="IBlindedMessagePathBuilder"/> of
+    /// <c>AddOnionMessageCryptoServices</c> (Infrastructure.Bitcoin, part of <c>AddBitcoinInfrastructure</c>). Bind
     /// <see cref="OnionMessageOptions"/> from <see cref="OnionMessageOptions.SectionName"/>; the defaults apply
     /// otherwise (invalid options keep the service off with an error log, they never fail its resolution). Optional
     /// collaborators are taken when registered: the <see cref="IOnionMessagePacketBuilder"/> and the
@@ -44,7 +46,8 @@ public static class OnionMessageServiceCollectionExtensions
         services.TryAddSingleton(sp => new OnionMessageService(
                                      sp.GetRequiredService<IOptions<NodeOptions>>(),
                                      sp.GetRequiredService<ISecureKeyManager>(),
-                                     sp.GetRequiredService<ISphinxService>(),
+                                     sp.GetRequiredService<IOnionMessageUnwrapper>(),
+                                     sp.GetRequiredService<IBlindedMessagePathBuilder>(),
                                      sp.GetRequiredService<IRouteBlindingService>(),
                                      sp.GetRequiredService<IPeerManager>(),
                                      sp.GetRequiredService<IChannelMemoryRepository>(),

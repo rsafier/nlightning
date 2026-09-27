@@ -3,6 +3,7 @@ namespace NLightning.Infrastructure.Bitcoin.Onion.OnionMessages;
 using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.Onion.Models;
+using Domain.Protocol.OnionMessages.Interfaces;
 
 /// <summary>
 /// <see cref="IBlindedMessagePathBuilder"/> on M5's <see cref="IRouteBlindingService.CreateBlindedPath"/>.

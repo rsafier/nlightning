@@ -1,7 +1,7 @@
-namespace NLightning.Infrastructure.Bitcoin.Onion.OnionMessages;
+namespace NLightning.Domain.Protocol.OnionMessages.Interfaces;
 
-using Domain.Crypto.ValueObjects;
-using Domain.Protocol.Onion.Models;
+using Crypto.ValueObjects;
+using Onion.Models;
 
 /// <summary>
 /// Creates blinded paths for onion messages (BOLT 4 "Onion Messages", creator of <c>encrypted_recipient_data</c>):
@@ -14,6 +14,9 @@ using Domain.Protocol.Onion.Models;
 /// of 1, 255 or 256 bytes cannot be filled exactly), in which case every hop gets one.</para>
 /// <para>Writer rules enforced: no <c>payment_relay</c> or <c>payment_constraints</c> anywhere, every non-final hop
 /// names its next hop (<c>next_node_id</c> or <c>short_channel_id</c>) and carries no <c>path_id</c>.</para>
+/// <para>The node's one message-path builder (NL-442): the packet builder's prefix, the service's paths to a node id
+/// and its reply paths, and the offer paths. Implemented by <c>Infrastructure.Bitcoin/Onion/OnionMessages/
+/// BlindedMessagePathBuilder</c> (byte-exact against <c>blinded-onion-message-onion-test.json</c>).</para>
 /// <para>Stateless and thread-safe.</para>
 /// </remarks>
 public interface IBlindedMessagePathBuilder
