@@ -25,8 +25,8 @@ public sealed class OpenChannelClientRequest
 
     /// <summary>
     /// Open a dual-funded (v2) channel with <c>open_channel2</c> (BOLT 2 "Channel Establishment v2",
-    /// <c>IDualFundedOpenService</c>, wave DF lane SP1-F). Not acted on until that lane; <c>option_dual_fund</c> stays
-    /// experimental.
+    /// <c>IDualFundedOpenService</c>, wave DF): <see cref="FundingAmount"/> is our contribution and the peer may add
+    /// its own; no push. <c>option_dual_fund</c> stays experimental until Proof DF.
     /// </summary>
     public bool IsDualFunded { get; set; }
 

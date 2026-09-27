@@ -11,6 +11,7 @@ using Domain.Crypto.ValueObjects;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
+using DualFunding;
 using Services;
 
 /// <summary>
@@ -24,11 +25,14 @@ public sealed class ReestablishService
     private readonly IMessageFactory _messageFactory;
     private readonly IRevocationVerifier _revocationVerifier;
     private readonly ChannelStateTransitionService _transitions;
+    private readonly DualFundReestablish? _dualFundReestablish;
 
     public ReestablishService(ILightningSigner lightningSigner, ILogger<ReestablishService> logger,
                               IMessageFactory messageFactory, IRevocationVerifier revocationVerifier,
-                              ChannelStateTransitionService transitions)
+                              ChannelStateTransitionService transitions,
+                              DualFundReestablish? dualFundReestablish = null)
     {
+        _dualFundReestablish = dualFundReestablish;
         _lightningSigner = lightningSigner;
         _logger = logger;
         _messageFactory = messageFactory;
@@ -83,8 +87,14 @@ public sealed class ReestablishService
                 "channel_reestablish for {ChannelId}: next_commitment_number {Next}, next_revocation_number {Revocation}",
                 channel.ChannelId, own.NextCommitmentNumber, own.NextRevocationNumber);
 
-        return _messageFactory.CreateChannelReestablishMessage(channel.ChannelId, own.NextCommitmentNumber,
-                                                              own.NextRevocationNumber, secret, point);
+        var reestablish = _messageFactory.CreateChannelReestablishMessage(channel.ChannelId, own.NextCommitmentNumber,
+                                                                         own.NextRevocationNumber, secret, point);
+
+        // A dual-funded open whose signatures are not all exchanged asks for them again (wave DF, next_funding)
+        return _dualFundReestablish is not null
+            && await _dualFundReestablish.GetOwnNextFundingAsync(channel) is { } nextFunding
+                   ? new ChannelReestablishMessage(reestablish.Payload, nextFunding)
+                   : reestablish;
     }
 
     /// <summary>

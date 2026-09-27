@@ -1231,6 +1231,18 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                 return await GetChannelMessageHandler<ChannelReadyMessage>(scope)
                           .HandleAsync(channelReadyMessage, currentState, negotiatedFeatures, peerPubKey);
 
+            // BOLT 2 channel establishment v2 (splicing plan wave DF): the accepter's and the opener's side
+            case MessageTypes.OpenChannel2:
+                return await GetChannelMessageHandler<OpenChannel2Message>(scope)
+                          .HandleAsync(Cast<OpenChannel2Message>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
+            case MessageTypes.AcceptChannel2:
+                await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                return await GetChannelMessageHandler<AcceptChannel2Message>(scope)
+                          .HandleAsync(Cast<AcceptChannel2Message>(message), currentState, negotiatedFeatures,
+                                       peerPubKey);
+
             case MessageTypes.FundingSigned:
                 // Handle funding signed message
                 var fundingSignedMessage = message as FundingSignedMessage
@@ -1269,6 +1281,9 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
 
             case MessageTypes.CommitmentSigned:
                 await ThrowIfUnknownChannelAsync(scope, channelId, peerPubKey);
+                // The first commitment_signed of a dual-funded open (wave DF) belongs to its negotiation
+                if (await TryHandleDualFundCommitmentSignedAsync(scope, message, peerPubKey) is { } dualFundReplies)
+                    return dualFundReplies;
                 return await GetChannelMessageHandler<CommitmentSignedMessage>(scope)
                           .HandleAsync(Cast<CommitmentSignedMessage>(message), currentState, negotiatedFeatures,
                                        peerPubKey);
@@ -1390,6 +1405,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
                   .HandleAsync(Cast<T>(message), currentState, negotiatedFeatures, peerPubKey);
     }
 
+    /// <summary>
+    /// A <c>commitment_signed</c> for the first commitment of a dual-funded open goes to
+    /// <see cref="DualFunding.DualFundedOpenService"/>; null when the channel has no such negotiation (normal operation).
+    /// </summary>
+    private static async Task<IReadOnlyList<IChannelMessage>?> TryHandleDualFundCommitmentSignedAsync(
+        IServiceScope scope, IChannelMessage message, CompactPubKey peerPubKey) =>
+        scope.ServiceProvider.GetService<DualFunding.DualFundedOpenService>() is { } dualFund
+            ? await dualFund.TryHandleCommitmentSignedAsync(Cast<CommitmentSignedMessage>(message), peerPubKey,
+                                                            scope.ServiceProvider.GetRequiredService<IUnitOfWork>())
+            : null;
+
     private static bool IsCloseMessage(MessageTypes messageType) =>
         messageType is MessageTypes.Shutdown or MessageTypes.ClosingSigned or MessageTypes.ClosingComplete
                     or MessageTypes.ClosingSig;
@@ -1455,10 +1481,10 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
     }
 
     /// <summary>
-    /// Interim behavior for channel messages we can't process yet: the dual-funding opens (<c>open_channel2</c>,
-    /// <c>accept_channel2</c>). The HTLC and fee updates, commitment_signed and revoke_and_ack have handlers since
-    /// N6-T1, shutdown and closing_signed since N10, closing_complete/closing_sig since N11 and the interactive-tx
-    /// messages 66-74 since IT4-T2. Only for channels we know: an unknown channel gets an `error` (see
+    /// Interim behavior for channel messages we can't process yet (the splicing messages until wave sp1 routes them).
+    /// The HTLC and fee updates, commitment_signed and revoke_and_ack have handlers since N6-T1, shutdown and
+    /// closing_signed since N10, closing_complete/closing_sig since N11, the interactive-tx messages 66-74 since IT4-T2
+    /// and open_channel2/accept_channel2 since wave DF. Only for channels we know: an unknown channel gets an `error` (see
     /// <see cref="ThrowIfUnknownChannelAsync"/>).
     /// </summary>
     /// <remarks>
