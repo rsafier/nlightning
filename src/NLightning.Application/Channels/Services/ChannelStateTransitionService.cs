@@ -20,6 +20,7 @@ using Domain.Protocol.Messages;
 using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Domain.Serialization.Interfaces;
+using Quiescence;
 
 /// <summary>
 /// Runs commitment state machine transitions for the BOLT 2 normal-operation handlers (plan N6-T1, decision D3):
@@ -54,6 +55,7 @@ public sealed class ChannelStateTransitionService
     private readonly IMessageSerializer _messageSerializer;
     private readonly NodeOptions _nodeOptions;
     private readonly ISecretStorageServiceFactory _secretStorageServiceFactory;
+    private readonly IStfuReleaseScheduler? _stfuReleaseScheduler;
     private readonly IUnitOfWork _unitOfWork;
 
     public ChannelStateTransitionService(IChannelMemoryRepository channelMemoryRepository,
@@ -62,8 +64,9 @@ public sealed class ChannelStateTransitionService
                                          ILogger<ChannelStateTransitionService> logger, IMessageFactory messageFactory,
                                          IMessageSerializer messageSerializer, IOptions<NodeOptions> nodeOptions,
                                          ISecretStorageServiceFactory secretStorageServiceFactory,
-                                         IUnitOfWork unitOfWork)
+                                         IUnitOfWork unitOfWork, IStfuReleaseScheduler? stfuReleaseScheduler = null)
     {
+        _stfuReleaseScheduler = stfuReleaseScheduler;
         _channelMemoryRepository = channelMemoryRepository;
         _eventQueue = eventQueue;
         _commitmentSigner = commitmentSigner;
@@ -169,6 +172,13 @@ public sealed class ChannelStateTransitionService
     /// <param name="stageWithTransition">Stages more writes on the same unit of work after the transition is staged and
     /// before the one save (for example the <c>HtlcOrigin</c> of an offered HTLC, NL-250), so they commit or fail
     /// together with it.</param>
+    /// <remarks>
+    /// Quiescence (splicing plan Q1-T3): after the swap, a <c>stfu</c> this channel owes (our request, or our reply to
+    /// the peer's) is scheduled for release (<see cref="IStfuReleaseScheduler"/>): the <c>commitment_signed</c> /
+    /// <c>revoke_and_ack</c> transitions are what drain our pending updates (Q-S-02). The release runs after the lock
+    /// is released, so the <c>stfu</c> follows this transition's own messages (the <c>revoke_and_ack</c> the handler
+    /// returns) on the wire.
+    /// </remarks>
     public async Task CommitAsync(ChannelModel channel, CommitmentsResult result, ChannelStateExtras? extras = null,
                                   Func<IUnitOfWork, Task>? stageWithTransition = null)
     {
@@ -183,6 +193,7 @@ public sealed class ChannelStateTransitionService
         channel.UpdateCommitments(result.Next, extras);
         _channelMemoryRepository.UpdateChannel(channel);
         _eventQueue.Enqueue(result.Events);
+        _stfuReleaseScheduler?.ScheduleRelease(channel.ChannelId);
     }
 
     /// <summary>

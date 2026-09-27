@@ -121,6 +121,12 @@ public class NodeOptions
     /// <see cref="KeysendOptions"/>
     public KeysendOptions Keysend { get; set; } = new();
 
+    /// <summary>
+    /// The quiescence timeouts (BOLT 2 "Channel Quiescence"; splicing plan Q1-T5), from <c>Node:Quiescence</c>.
+    /// </summary>
+    /// <see cref="QuiescenceOptions"/>
+    public QuiescenceOptions Quiescence { get; set; } = new();
+
     /// <summary>The longest <see cref="Alias"/> in UTF-8 bytes (the <c>alias</c> field of <c>node_announcement</c>).</summary>
     public const int AliasMaxBytes = 32;
 
@@ -203,8 +209,49 @@ public class NodeOptions
         errors.AddRange(FeeUpdates.GetValidationErrors());
         errors.AddRange(Anchors.GetValidationErrors());
         errors.AddRange(Keysend.GetValidationErrors());
+        errors.AddRange(Quiescence.GetValidationErrors());
         if (CustomSignet is not null)
             errors.AddRange(CustomSignet.GetValidationErrors(BitcoinNetwork));
+        return errors;
+    }
+}
+
+/// <summary>
+/// How long a channel may stay quiescing or quiescent (BOLT 2 "Channel Quiescence"; splicing plan §3.2, Q1-T5). Bound
+/// from the <c>Node:Quiescence</c> configuration section (it is <see cref="NodeOptions.Quiescence"/>).
+/// </summary>
+/// <remarks>
+/// Both are counted from the moment the channel started quiescing (the first <c>stfu</c> sent or received, or our own
+/// request queued before it). When they pass, the connection is closed (a <c>warning</c>, then a disconnect; our
+/// reconnect loop brings it back and the reconnection ends the quiescence, Q-R-04).
+/// </remarks>
+public class QuiescenceOptions
+{
+    /// <summary>
+    /// BOLT 2 Q-R-03: "MUST disconnect after 60 seconds of quiescence if the HTLCs are pending". The default is the
+    /// spec's 60 s (LND's <c>htlcswitch.quiescencetimeout</c> has the same default).
+    /// </summary>
+    public TimeSpan Timeout { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Without HTLCs pending BOLT 2 sets no limit; we still disconnect after this long so a peer that never finishes
+    /// (or never answers our <c>stfu</c>) cannot freeze the channel (a MAY of ours, not in the spec). Default 5 min.
+    /// </summary>
+    public TimeSpan IdleTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// The configuration errors, empty when valid (<see cref="NodeOptions.GetValidationErrors"/>).
+    /// </summary>
+    public IReadOnlyList<string> GetValidationErrors()
+    {
+        var errors = new List<string>();
+        if (Timeout <= TimeSpan.Zero)
+            errors.Add($"Quiescence:{nameof(Timeout)} must be positive.");
+        else if (Timeout > TimeSpan.FromSeconds(60))
+            errors.Add($"Quiescence:{nameof(Timeout)} is {Timeout}; BOLT 2 requires a disconnect after at most 60 "
+                     + "seconds of quiescence with HTLCs pending.");
+        if (IdleTimeout < Timeout)
+            errors.Add($"Quiescence:{nameof(IdleTimeout)} must be at least {nameof(Timeout)}.");
         return errors;
     }
 }
