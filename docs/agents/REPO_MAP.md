@@ -150,7 +150,7 @@ graph TD
 | `AddNltgNodeServices` (Daemon) | `NodeServiceExtensions.cs` | All of the above, plus `IConfiguration`, the `ISecureKeyManager` instance, `FeeService` (HttpClient), options, client handlers, IPC router and command handlers. Used by `ConfigureNltgServices` and by the Docker tests (`NLightningTestNode`) |
 | Daemon host only | `NodeServiceExtensions.ConfigureNltgServices` | `NltgDaemonService`, `NamedPipeIpcService`, `CookieFileAuthenticator` (need `configPath`) |
 
-Not registered anywhere: `DustService`, `InteractiveTransactionService`, `PluginLoaderService`, `RevocationWatchDbRepository`. Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
+Not registered anywhere: `DustService`, `PluginLoaderService`, `RevocationWatchDbRepository`. Individual `*DbRepository` classes are also not registered; reach them only through `IUnitOfWork`.
 
 ---
 
@@ -198,7 +198,7 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 | Crypto backends | `Crypto/Interfaces/ICryptoProvider.cs` (internal: SHA256, AEAD ChaCha20-Poly1305 IETF/X, raw ChaCha20 IETF keystream `StreamChaCha20IetfXor`, secure memory, Argon2 (password bytes), RandomBytes; HMAC is `Crypto/Functions/HmacSha256.cs`). `Crypto/Factories/CryptoFactory.cs` selects the backend at compile time. `Providers/Libsodium/*` (default), `Providers/Native/*` (BouncyCastle/BCL, AOT), `Providers/JS/*` (libsodium.js via JSImport and a Vite bundle) |
 | Crypto wrappers | `Crypto/Hashes/Sha256.cs` (implements `ISha256`), `Crypto/Hashes/Argon2Id.cs`, `Crypto/Ciphers/ChaCha20Poly1305.cs`, `Crypto/Ciphers/XChaCha20Poly1305.cs`, `Crypto/Functions/Hkdf.cs` (internal; its HMAC is private and asserts a 32-byte key), `Crypto/Primitives/SecureMemory.cs`, `Crypto/Interfaces/IEcdh.cs` (the port; the implementation is in Bitcoin) |
 | BOLT 8 | `Transport/Handshake/States/{HandshakeState,SymmetricState,CipherState}.cs`, `Transport/Handshake/MessagePatterns/*`, `Transport/Encryption/Transport.cs` (framing, rekey handled in CipherState at 1000 nonces), `Transport/Services/{HandshakeService,TransportService,TcpService}.cs`, `Transport/Factories/TransportServiceFactory.cs` |
-| Per-peer | `Node/Factories/PeerServiceFactory.cs`, `Node/Services/PeerCommunicationService.cs` (init send, ping/pong, error/warning emission), `Node/Services/PeerService.cs` (init validation, dispatch incl. gossip and stfu; TODO to move it to Application), `Node/ValueObjects/ConnectedPeer.cs`, `Node/Models/KeyFileData.cs` |
+| Per-peer | `Node/Factories/PeerServiceFactory.cs`, `Node/Services/PeerCommunicationService.cs` (init send, ping/pong, error/warning emission), `Node/Services/PeerService.cs` (init validation, dispatch incl. gossip; `stfu` is a channel message since wave qit; TODO to move it to Application), `Node/ValueObjects/ConnectedPeer.cs`, `Node/Models/KeyFileData.cs` |
 | Protocol | `Protocol/Services/MessageService.cs` (transport bytes to `IMessage`), `PingPongService.cs`, `SecretStorageService.cs` (BOLT 3 shachain), `DnsSeedClient.cs` (fully commented out). `Protocol/Factories/{ChannelIdFactory,MessageServiceFactory,TlvConverterFactory}.cs`. `Protocol/Tlv/Converters/*` (10 converters). `Protocol/Validators/Tx*Validator.cs` (interactive-tx, partly stubbed). `Protocol/Models/PeerAddress.cs`. `Protocol/Constants/ProtocolConstants.cs` |
 | Misc | `Converters/EndianBitConverter.cs` (LE trim/pad semantics are suspect; prefer `BinaryPrimitives`), `Exceptions/*` |
 
@@ -216,10 +216,10 @@ Not registered anywhere: `DustService`, `InteractiveTransactionService`, `Plugin
 | Signer | `Signers/LocalLightningSigner.cs` (`ILightningSigner`; per-channel info loaded from the DB on first use; HTLC, sweep, anchor (`SignAnchorInput`) and wallet (`SignWalletTransaction`, reserved inputs only) signing) |
 | Crypto | `Crypto/Functions/Ecdh.cs` (`IEcdh` = SHA256(compressed(k*P)), which is the BOLT 4 shared-secret definition), `Crypto/Contexts/NLightningCryptoContext.cs`, `Crypto/Hashes/Ripemd160.cs` |
 | Wallet/chain | `Wallet/BitcoinChainService.cs` (RPC; its constructor makes a **blocking** RPC call), `Wallet/BitcoinWalletService.cs`, `Wallet/BlockchainMonitorService.cs` (ZMQ `rawblock`) |
-| Other | `Services/FeeService.cs`, `DustService.cs`, `InteractiveTransactionService.cs` (not wired). `Encoders/Bech32Encoder.cs` (internal, used by Bolt11). `Options/{BitcoinOptions,FeeEstimationOptions}.cs` |
+| Other | `Services/FeeService.cs`, `DustService.cs`. `InteractiveTx/{PrevTxInspector,InteractiveTxBuilder}` (wave qit; the old `InteractiveTransactionService` is deleted). `Encoders/Bech32Encoder.cs` (internal, used by Bolt11). `Options/{BitcoinOptions,FeeEstimationOptions}.cs` |
 | Dead code | `Transactions/*` (commented out; `PenaltyTransaction` is empty). `Adapters/OutputAdapters/*` (interfaces with no implementations) |
 
-**Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (247 tests: builders, outputs, signer, onion, blockchain monitor, interactive-tx service). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
+**Tests:** `test/NLightning.Infrastructure.Bitcoin.Tests` (247 tests: builders, outputs, signer, onion, blockchain monitor, interactive-tx inspector and builder). BOLT 3 vectors are in `test/NLightning.Integration.Tests/BOLT3/Bolt3IntegrationTests.cs`.
 
 ### 3.4 NLightning.Infrastructure.Serialization (`src/NLightning.Infrastructure.Serialization`)
 
@@ -542,7 +542,7 @@ Register it in the layer's `DependencyInjection.cs` (`AddApplicationServices`, `
 |---|---|---|---|
 | `test/NLightning.Domain.Tests` | Money, FeatureSet/FeatureOptions, TLV stream, CommitmentNumber, value objects, BitReader/Writer, commitment model factory, channel factory/validator, onion model | 545 | VSTest |
 | `test/NLightning.Infrastructure.Tests` | Crypto providers (`#if` per backend), SHA256 NIST vectors, transport, TLV converters, MessageService, PeerService (incl. gossip dispatch)/PeerCommunicationService, PeerAddress (hermetic) | 308 | VSTest |
-| `test/NLightning.Infrastructure.Bitcoin.Tests` | Builders, outputs, comparer, ECDH, signer, key manager, onion, blockchain monitor, interactive-tx service | 247 | VSTest |
+| `test/NLightning.Infrastructure.Bitcoin.Tests` | Builders, outputs, comparer, ECDH, signer, key manager, onion, blockchain monitor, interactive-tx inspector and builder | 1317 (wave qit) | VSTest |
 | `test/NLightning.Infrastructure.Serialization.Tests` | Message round trips (incl. v1 open and gossip queries), strict TLV, BigSize vectors, FeatureSet, hop payloads | 352 | VSTest |
 | `test/NLightning.Bolt11.Tests` | Invoice, tagged fields, validation | 252 | VSTest |
 | `test/NLightning.Integration.Tests` | BOLT 3 (App. B-F), BOLT 4, BOLT 8 (App. A), BOLT 11 vectors; `Persistence/` (SQLite in-memory); `Docker/` E2E with bitcoind + 3 LND and Postgres/SqlServer containers | 255 non-Docker (1 skipped) + 10 Docker | VSTest; Docker tests excluded by filter |

@@ -50,6 +50,8 @@ Updated 2026-09-27 by ledger hygiene lane lh1-l5 (docs only, from `wip/fafo` at 
 
 Updated 2026-09-27 after wave lh1 (l1 channel safety fixes (shipped migration `AddShutdownHtlcBoundaryAndAddressReservation`), l2 BOLT 12 and onion-message tidy, l3 keysend, l4 restore hardening (migration owner, `AddPeerStorageRetrievals`), l5 ledger hygiene) was integrated into `wip/fafo` (at `a6c633f9`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `a6c633f9` is the `integrate:` commit, which registered keysend (ClientCommand 31), `listpeerstorage` (32) and the BOLT 12 invoice pruner and synced the peer-storage migration Designers with lane l1's columns). Fixed: NL-045, NL-259, NL-279, NL-280, NL-294 (l1), NL-442, NL-444, NL-448, NL-450, NL-453, NL-454, NL-455 and the NL-449 follow-up (l2), NL-430, NL-431, NL-432 (l4); the BOLT 12 epic NL-447 is closed. Keysend (l3 cited no ID) is NL-459. NL-460..NL-466 record the lanes' and the integrator's open items (the integrator's proposed NL-459/NL-460 for two flakes and lane l3's proposed NL-457..NL-459 were renumbered from the next free ID: the flakes are NL-465 and NL-466). Docker on net10.0 (in-container runner, SQL Server container tests skipped): LND 66/66 (incl. `KeysendFlowTests` 2, `BackupRestoreFlowTests` 3), CLN 42/42 (+1 Explicit capture), `MultiNodeHarnessTests` 5/5 facts (server-database theory not run, NL-429), Docker.Utils 2/2, ABCD 3 x 10/10, on-chain legacy + anchors 42/42 (+2 Explicit), gossip 28/28.
 
+Updated 2026-09-27 after wave qit (quiescence and interactive-tx, `SPLICING_PLAN.md` waves Q and IT run as one wave: Q-A wire and rules, Q-B service, gate and timeout, Q-C Docker Proof Q against CLN, IT-A engine, IT-B Bitcoin side, IT-C wire and schema (migration owner, `AddInteractiveTxSessions`), IT-D driver and handlers; contracts Q-0/IT-0 at `9355ad92`) was integrated into `wip/fafo` (at `b7d14056`): statuses carry the `wip/fafo` SHAs (lane commits cherry-picked with `-x`; `ef806980`, `c502fdb6` and `b7d14056` are `integrate:` commits). Fixed: NL-219 (IT-A) and NL-041 (IT-A with IT-B's `PrevTxInspector`; the integrator reported it partial, the ledger closes it because its fix sketch is met); NL-019 gained the channel-message routing. Partial: NL-042 (quiescence done, `OptionQuiesce` stays experimental until splicing) and the epic NL-037 (interactive-tx layer done, dual funding itself remains). NL-467..NL-474 record the integrator's and the lanes' open items (the integrator's NL-467..NL-470 keep their IDs; the lanes' unnumbered flake reports and deviations follow). Docker on net10.0 (SQL Server container tests skipped): CLN 44/44 (incl. `ClnQuiescenceTests` 5, Proof Q), LND 73/74 in the full run (the `ReestablishFlowTests` miss is NL-469; the class alone 3/3), ABCD 3 x 10/10, gossip 28/28, on-chain legacy + anchors 40/40 (+2 Explicit).
+
 ## How to use this file
 
 - **Fixing something:** in the **same commit** as the fix, set `Status: fixed (<short SHA>)` (or `fixed (partial, <SHA>)` and say what remains in Evidence). Do not delete the entry.
@@ -84,12 +86,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 10 | 132 | 142 |
+| open | 0 | 0 | 9 | 139 | 148 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 57 | 137 | 103 | 311 |
+| fixed | 14 | 57 | 138 | 104 | 313 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **57** | **150** | **240** | **461** |
+| **Total** | **14** | **57** | **150** | **248** | **469** |
 
 ### Epics
 
@@ -97,7 +99,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; remaining: NL-285, NL-286)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
-- NL-037: Dual funding / interactive-tx (v2 open) (open, medium)
+- NL-037: Dual funding / interactive-tx (v2 open) (open (partial), medium; wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; remaining: the v2 open itself (plan wave DF) and an interop proof; follow-ups NL-473, NL-474)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 fixed: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 (MPP over blinded paths and own-introduction paths done in wave B12); onion messages (M6) are NL-080, fixed in wave M6)
@@ -357,11 +359,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 ## BOLT 2: Wire layer
 
 ### NL-019 stfu is not a channel message and is silently dropped
-- **Status:** fixed (76f8f8c, a6f1f9a, e93eb41)
+- **Status:** fixed (76f8f8c, a6f1f9a, e93eb41, 3380b680, 3f230897)
 - **Severity:** high
 - **Kind:** bug
-- **Location:** `src/NLightning.Domain/Protocol/Messages/StfuMessage.cs:15`, `src/NLightning.Infrastructure/Node/Services/PeerService.cs:100-160`
-- **Evidence:** `StfuMessage : BaseMessage`, and `PeerService.HandleMessage` only dispatches `IChannelMessage`/error/warning. `option_quiesce` is advertised Optional, so a peer that starts quiescence waits forever. stfu now gets a channel-scoped `warning` and the connection is closed (quiescence only ends on disconnect), and `option_quiesce` defaults to No and is experimental-gated. Real quiescence is NL-042.
+- **Location:** `src/NLightning.Domain/Protocol/Messages/StfuMessage.cs:15`, `src/NLightning.Infrastructure/Node/Services/PeerService.cs:100-160`, `src/NLightning.Application/Channels/Handlers/StfuMessageHandler.cs`
+- **Evidence:** `StfuMessage : BaseMessage`, and `PeerService.HandleMessage` only dispatches `IChannelMessage`/error/warning. `option_quiesce` is advertised Optional, so a peer that starts quiescence waits forever. stfu now gets a channel-scoped `warning` and the connection is closed (quiescence only ends on disconnect), and `option_quiesce` defaults to No and is experimental-gated. Real quiescence is NL-042. Wave qit (Q1-T1): `stfu` is a channel message routed by `ChannelManager` (`case MessageTypes.Stfu` after the unknown-channel and B2-RE-07 reestablish gates) to the single `StfuMessageHandler` under the channel lock, which delegates to `IQuiescenceService` (3380b680; reestablish gate and single-handler registration tests 3f230897); the `PeerService` warning arm is gone.
 - **Fix sketch:** Make stfu channel-scoped (or add a dispatch branch), and stop advertising `option_quiesce` until NL-042 is done.
 - **Blocks/Blocked-by:** Blocks NL-042
 - **Plan ref:** BOLT_COVERAGE roadmap step 2; BOLT2 N0-T4 (stop advertising quiesce)
@@ -382,9 +384,9 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs`
 - **Evidence:** No splice_init/ack/locked or start_batch types.
-- **Fix sketch:** Later; after NL-042 and NL-037.
+- **Fix sketch:** Later; after NL-042 and NL-037. Wave qit landed the quiescence and interactive-tx layers splicing builds on; the shared-input TLVs (`shared_input_txid`, `shared_input_signature`) are serialized (940baca2), but the session checks `shared_input_signature` for presence only (its ECDSA validity and low-S, SP-SIG-01, are the splice host's job).
 - **Blocks/Blocked-by:** Blocked-by NL-042, NL-037
-- **Plan ref:** —
+- **Plan ref:** `SPLICING_PLAN.md` waves SP1, SP2, SPR (gaps SG3..SG10 in §2.2)
 
 ### NL-022 update_fail_htlc / update_fulfill_htlc lack attribution_data and fulfillment TLVs
 - **Status:** fixed (6d7e480, 3a54e11)
@@ -591,12 +593,13 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T5, N10-T3 (partial)
 
 ### NL-037 [EPIC] Dual funding / interactive-tx (v2 open)
-- **Status:** open
+- **Status:** open (partial: 9355ad92, 081d599f, 8ee516c5, 21be3935, 8ed3aaa8, acd0f711, 940baca2, 99be2451, f513a369, 471d7e6b, 633980df, 65fb5b21, f03470fb, ef806980, c502fdb6)
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** `src/NLightning.Infrastructure.Bitcoin/Services/InteractiveTransactionService.cs`, `src/NLightning.Infrastructure/Protocol/Validators/Tx*Validator.cs`
+- **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/`, `src/NLightning.Infrastructure.Bitcoin/InteractiveTx/`, `src/NLightning.Application/InteractiveTx/`, `src/NLightning.Application/Channels/Handlers/Tx*MessageHandler.cs` (the old `InteractiveTransactionService` and `Tx*Validator` are deleted)
 - **Evidence:** Messages and serializers exist; service not in DI, no handlers. `option_dual_fund` is advertised Optional but `ChannelFactory.cs:52,147` only rejects a Compulsory DualFund, so peers may attempt v2 opens we disconnect on.
 - **Fix sketch:** Stop advertising (NL-109) until implemented; then handlers + validators. Sub-issues: NL-038, NL-039, NL-040, NL-041.
+- **Update (wave qit, `SPLICING_PLAN.md` wave IT):** the interactive-tx layer is done: the pure `InteractiveTxSession` with `InteractiveTxRules`, `TxSignaturesOrder`, `CollaborativeFeeCalculator` and `InteractiveTxRbfRules` (IT1, lane IT-A: 081d599f, 8ee516c5, 21be3935); `PrevTxInspector`, `InteractiveTxBuilder` (BOLT 3 Appendix G byte-exact) and `WalletInteractiveTxContributor` over fee-input reservations (IT2, IT-B: 8ed3aaa8, acd0f711); the shared-input TLVs and the `InteractiveTxSessions` table (migration `AddInteractiveTxSessions`, all three providers; IT3, IT-C: 940baca2, 99be2451, f513a369); `InteractiveTxDriver`, the nine `tx_*` handlers and their `ChannelManager` cases, `InteractiveTxHarnessTests` on the real engine (IT4, IT-D: 471d7e6b, 633980df, 65fb5b21, f03470fb); registered and orphaned reservations released at startup (ef806980), negotiations ended on disconnection (c502fdb6). Remaining for this epic: dual funding itself (`open_channel2`/`accept_channel2` still get the "not supported yet" warning; `OptionDualFund` stays No and experimental; plan wave DF) and an interop proof of the interactive-tx layer (Proof DF or Proof SP1). Follow-ups NL-473, NL-474.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
@@ -631,24 +634,24 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** —
 
 ### NL-041 Interactive-tx prevTx and script validation are TODOs
-- **Status:** open
+- **Status:** fixed (081d599f, 8ed3aaa8, acd0f711)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Infrastructure/Protocol/Validators/TxAddInputValidator.cs:49,57`, `InteractiveTransactionService.cs:48,69`
-- **Evidence:** Output count and scriptPubKey of prevTx are not parsed.
+- **Evidence:** Output count and scriptPubKey of prevTx are not parsed. Wave qit: the session enforces the prevtx result through `IPrevTxInspector` (valid tx, vout in range, witness program checked by the inspector and again by the session) and output standardness and dust (081d599f, lane IT-A); `Infrastructure.Bitcoin/InteractiveTx/PrevTxInspector` parses prevtx strictly (one tx, no trailing bytes), accepts only witness programs (P2WPKH/P2WSH/P2TR and future versions; P2PKH, P2SH, P2SH-wrapped, bare and OP_RETURN refused) and checks confirmations through bitcoind, `gettxout` first so no `-txindex` is needed (8ed3aaa8, acd0f711, lane IT-B). The old validators are deleted. The integrator's report called this partial; the ledger closes it because the fix sketch is fully met (the remaining interactive-tx work is NL-037).
 - **Fix sketch:** Parse prevTx with NBitcoin; require segwit spend.
 - **Blocks/Blocked-by:** Part of NL-037
 - **Plan ref:** —
 
 ### NL-042 Quiescence (stfu) behaviour missing
-- **Status:** open
+- **Status:** open (partial: 9355ad92, 9303e6d4, 3380b680, 3f230897, 6534018d, 5614a07f, 5b9d079e, ac3a1aa8, 34664a14, 65a20108, ef806980, b7d14056)
 - **Severity:** medium
 - **Kind:** gap
-- **Location:** `src/NLightning.Application/Channels/`
-- **Evidence:** No handler or state; `option_quiesce` advertised Optional. Update: `option_quiesce` now defaults to No and is experimental-gated (e93eb41); stfu gets warning + disconnect (NL-019).
+- **Location:** `src/NLightning.Domain/Channels/Quiescence/`, `src/NLightning.Application/Channels/Quiescence/`
+- **Evidence:** No handler or state; `option_quiesce` advertised Optional. Update: `option_quiesce` now defaults to No and is experimental-gated (e93eb41); stfu gets warning + disconnect (NL-019). Wave qit (`SPLICING_PLAN.md` wave Q, Q1-T1..T6 and Proof Q): the pure `QuiescenceRules` (9303e6d4), `stfu` routed as a channel message (3380b680, 3f230897), `QuiescenceService` with the owed-`stfu` release after each transition and the 60 s / idle `QuiescenceTimeoutMonitor` (6534018d, ac3a1aa8), the update gate `ChannelQuiescentException` (5614a07f), the harness proof on `TwoNodeHarness` and the production switch (5b9d079e), registration and `QuiescenceRules` in the service (ef806980), our probe ended with `tx_abort` through the interactive-tx driver and a peer `update_*` after its `stfu` answered with warning + close (Q-S-04 receive, b7d14056); Docker Proof Q against CLN v26.06.8, `ClnQuiescenceTests` 5/5 (34664a14, 65a20108, b7d14056). Remaining: `OptionQuiesce` stays No and experimental until a dependent protocol exists (splicing, plan D2/D13), proof (d) against LND 0.20 not attempted, and the seams in NL-470; CLN findings NL-467, NL-468.
 - **Fix sketch:** Stop advertising until implemented; then stfu handling per BOLT 2.
-- **Blocks/Blocked-by:** Blocked-by NL-019, NL-031
-- **Plan ref:** BOLT2 N0-T4 (advertising only)
+- **Blocks/Blocked-by:** Blocked-by NL-019, NL-031; blocks NL-021
+- **Plan ref:** BOLT2 N0-T4 (advertising only); `SPLICING_PLAN.md` wave Q
 
 ### NL-043 open_channel push_msat check is 1000x too lenient
 - **Status:** fixed (f73a634, 1153f13)
@@ -881,11 +884,11 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N11 (anchors)
 
 ### NL-219 Interactive-tx input/output caps can be bypassed; input uniqueness compares raw prevtx bytes
-- **Status:** open
+- **Status:** fixed (081d599f)
 - **Severity:** low
 - **Kind:** spec-violation
 - **Location:** `src/NLightning.Infrastructure/Protocol/Validators/TxAddInputValidator.cs`, `TxAddOutputValidator.cs`, `src/NLightning.Infrastructure.Bitcoin/Services/InteractiveTransactionService.cs` (`IsUniqueInput`)
-- **Evidence:** BOLT 2 caps tx_add_input/tx_add_output messages received per negotiation (4096), but the validators count the inputs/outputs currently held, so remove + re-add gets around it; uniqueness compares prevtx bytes, not txid. Reported by the interactive-tx batch (unverified).
+- **Evidence:** BOLT 2 caps tx_add_input/tx_add_output messages received per negotiation (4096), but the validators count the inputs/outputs currently held, so remove + re-add gets around it; uniqueness compares prevtx bytes, not txid. Reported by the interactive-tx batch (unverified). Fixed in wave qit (lane IT-A): `InteractiveTxSession` counts received `tx_add_input`/`tx_add_output` messages per negotiation (removals do not lower the count) and compares inputs by outpoint; the old validators and service are deleted.
 - **Fix sketch:** Count received messages per negotiation; compare by (txid, vout).
 - **Blocks/Blocked-by:** Part of NL-037; related NL-041
 - **Plan ref:** —
@@ -1250,6 +1253,56 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Funding inputs are locked to a channel only in memory, so after a restart the inputs of a V1FundingSigned funder channel are protected only by the pending-broadcast exclusion (NL-385), not by a lock; the NL-259 release paths therefore only touch memory (reported by lane l1, wave lh1).
 - **Fix sketch:** Persist the lock with the funding save, or restore it at startup for V1FundingSigned funder channels.
 - **Blocks/Blocked-by:** Related NL-259, NL-385
+- **Plan ref:** —
+
+### NL-467 CLN v26.06.8 holds back a fulfill queued while quiescent until the next reestablish
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (Proof Q (c))
+- **Evidence:** CLN restarts channeld in place after our `tx_abort` and marks an HTLC it had queued a fulfill for while quiescent as already fulfilled (`SENT_REMOVE_HTLC`), so it never sends `update_fulfill` until the next `channel_reestablish`; Proof Q (c) reconnects when the payment is still in flight 20 s after `tx_abort` (b7d14056, reported by the wave qit integrator). The HTLC is not lost, but it stays pending until a reconnection, or until its deadline forces a close.
+- **Fix sketch:** Ask CLN's splicing lead (`SPLICING_PLAN.md` §10) whether this is a CLN bug; until then consider a reconnection when a peer that ended a quiescence leaves an HTLC it can settle unanswered.
+- **Blocks/Blocked-by:** Related NL-042, NL-468
+- **Plan ref:** `SPLICING_PLAN.md` Proof Q, §7, §10
+
+### NL-468 CLN v26.06.8 quiescence RPCs need option_splice; CLN's tx_abort and our echo are unproven on the wire
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs`
+- **Evidence:** `stfu_channels` and `abort_channels` return error 354 ("Peer does not support splicing") because we advertise no splice bit, so Proof Q (a) starts CLN's quiescence with `dev-quiesce` and ends it with our own `tx_abort`, which CLN acks and resumes (b7d14056). The path where CLN sends `tx_abort` and we echo it is proven only in-process (IT4-T2 handler and driver tests); plan Proof Q (a) as written is not run (reported by the wave qit integrator).
+- **Fix sketch:** Re-run Proof Q (a) with `abort_channels` once `OptionSplice` is advertised (SP1/SP2 integration, D13).
+- **Blocks/Blocked-by:** Related NL-042, NL-021
+- **Plan ref:** `SPLICING_PLAN.md` Proof Q (a), §7
+
+### NL-470 Quiescence and interactive-tx seams left open by wave qit
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Quiescence/QuiescenceService.cs` (`OnPeerDisconnected`), `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceTestPair.cs:43`, `src/NLightning.Infrastructure.Repositories/Database/Channel/InteractiveTxSessionDbRepository.cs:112` (`DeleteByChannelIdAsync`)
+- **Evidence:** (1) `IQuiescenceService.OnPeerDisconnected` has no caller in `PeerManager`/`ChannelManager`; the service ends each quiescence through its own connection binding (`IPeerService.OnDisconnect`, replacement check in `GetState`), so behavior is correct but the explicit Q-R-04 hook is dead. (2) `QuiescenceTestPair` still routes `stfu` by reflection over `HarnessNode._outbox` straight into `OnStfuReceived`, not through `ChannelManager`/`StfuMessageHandler`, although the manager case exists now (lane Q-B F6). (3) Not covered on the wire by Proof Q: a CLN add not yet revoked at our request, the Q-R-03 60 s timeout with HTLCs pending, and a CLN fulfill queued while quiescent (in-process only). (4) A released owed `stfu` goes through `ChannelManager.Publish`, which drops normal-operation messages of a channel not yet reestablished on the connection; that `stfu` is regenerated by the next `TryReleaseStfu`, not retransmitted. (5) `InteractiveTxSessions` has no FK to `Channels` and `DeleteByChannelIdAsync` has no caller, so rows of a forgotten or closed channel stay until something deletes them (lane IT-C; harmless while nothing dependent opens negotiations) (reported by lanes Q-A, Q-B, Q-C, IT-C and the integrator).
+- **Fix sketch:** Call `OnPeerDisconnected` from `ChannelManager.OnPeerDisconnectedAsync` (or delete it from the contract); deliver `stfu` through `ChannelManager` in `QuiescenceTestPair` and re-run the quiescence harness with both ends quiescent; record the uncovered cases in the Proof Q record; call `DeleteByChannelIdAsync` where channels are forgotten or reach Closed.
+- **Blocks/Blocked-by:** Part of NL-042, NL-037
+- **Plan ref:** `SPLICING_PLAN.md` Q1-T3, Q1-T6, IT3-T2, "Seams to reconcile"
+
+### NL-473 Interactive-tx dust check uses Bitcoin Core's thresholds, not a negotiated dust_limit
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/InteractiveTxRules.cs:50,198,604` (`GetDustThreshold`)
+- **Evidence:** BOLT 2 says the receiver of `tx_add_output` fails the negotiation when `sats` is below the `dust_limit`; `InteractiveTxSessionParameters` carries no dust limit, so the rules use Bitcoin Core's per-script dust threshold at 3000 sat/kvB (294 sat P2WPKH, 330 P2WSH/P2TR, 546 P2PKH, 540 P2SH, 0 OP_RETURN) (reported by lane IT-A, wave qit).
+- **Fix sketch:** Add the channel's dust limit to the session parameters (a contract change for the DF/SP1 contracts) and check against the larger of the two.
+- **Blocks/Blocked-by:** Part of NL-037
+- **Plan ref:** `SPLICING_PLAN.md` IT1-T1
+
+### NL-474 InteractiveTransactionConstants is mostly dead code
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Domain/Protocol/Constants/InteractiveTransactionConstants.cs`
+- **Evidence:** Since the old validators were deleted (081d599f) only `MaxSequence` is used (`TxAddInputPayload`); `MaxInputsAllowed`, `MaxOutputsAllowed`, `MaxMoney` and `MaxStandardTxWeight` duplicate the limits `InteractiveTxRules` now owns (reported by lane IT-A, wave qit).
+- **Fix sketch:** Delete the unused constants or point `InteractiveTxRules` at them.
+- **Blocks/Blocked-by:** Part of NL-037
 - **Plan ref:** —
 
 ## BOLT 3: Transactions and scripts
@@ -4715,19 +4768,49 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Application.Tests/Payments/Send/PaymentHarnessTests.cs` (`Given_ShortTimeout_When_TheOutcomeIsLate_*`)
-- **Evidence:** Failed once in the wave lh1 integration (Release.Native, full run): the outcome was Failed instead of InFlight with its 50 ms timeout under load; 5 reruns passed (reported by the integrator).
+- **Evidence:** Failed once in the wave lh1 integration (Release.Native, full run): the outcome was Failed instead of InFlight with its 50 ms timeout under load; 5 reruns passed (reported by the integrator). Seen again in wave qit by lane IT-A (a loaded full Release run; passed alone).
 - **Fix sketch:** Drive the timeout from a controllable clock or widen the gap between the timeout and the late outcome.
 - **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
-### NL-466 GossipGraphReloadTests failed once in a full Release run
+### NL-466 GossipGraphReloadTests fail under a loaded full run (Release and Release.Native)
 - **Status:** open
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Persistence/GossipGraphReloadTests.cs` (`Given_GraphWithKnownFundingTxIds_*`)
-- **Evidence:** Failed once in the first Release run of the wave lh1 integration and passed on 3 reruns and in the final full run; the error message was not captured, so it needs a repro (reported by the integrator).
+- **Evidence:** Failed once in the first Release run of the wave lh1 integration and passed on 3 reruns and in the final full run; the error message was not captured, so it needs a repro (reported by the integrator). Wave qit: `Given_ASpentChannel_When_TheNodeRestartsAndBlocksPass_Then_ThePrunerRemovesItFromTheDatabase` (the pruner case, line 109) failed in both full Release.Native runs and passed 11/11 alone (reported by the integrator).
 - **Fix sketch:** Loop the class under load to reproduce and capture the failure.
 - **Blocks/Blocked-by:** Related NL-434, NL-445
+- **Plan ref:** —
+
+### NL-469 ReestablishFlowTests could not find alice among the ready LND nodes in a full LND suite run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/ReestablishFlowTests.cs:64` (`Given_OurNodeRestarts_*`, `GetAlice`)
+- **Evidence:** In the wave qit full LND suite run (73/74) `GetAlice` found no alice among the fixture's ready LND nodes; the class alone passed 3/3 (reported by the integrator). Likely a shared-fixture ordering issue after another class restarted or replaced a container.
+- **Fix sketch:** Have `GetAlice` wait for alice to be ready (bounded) or re-resolve it from the fixture instead of failing at once.
+- **Blocks/Blocked-by:** Related NL-262, NL-276
+- **Plan ref:** —
+
+### NL-471 OnionMessageServiceTests next-path-key override case failed once in a full solution run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/OnionMessages/OnionMessageServiceTests.cs` (`Given_ANextPathKeyOverride_When_BobForwards_Then_HeSendsThatPathKey`)
+- **Evidence:** Failed once in a full solution run of lane Q-A (wave qit) and passed alone and on a project re-run; the failure text was not captured.
+- **Fix sketch:** Loop the class under load to reproduce; look for a wait on the forwarded message without a bounded, event-driven condition.
+- **Blocks/Blocked-by:** Related NL-449
+- **Plan ref:** —
+
+### NL-472 ChannelRestoreServiceTests connect-budget case fails under a loaded Application.Tests run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Channels/Backup/ChannelRestoreServiceTests.cs` (`Given_TheConnectBudgetSpent_When_Restored_Then_TheOtherAddressesAreTriedInTheBackgroundAtOnce`)
+- **Evidence:** Failed under a loaded full Application.Tests run of lane Q-B (wave qit) and passed alone.
+- **Fix sketch:** Drive the connect budget from a controllable `TimeProvider` instead of wall-clock waits.
+- **Blocks/Blocked-by:** Related NL-434, NL-465
 - **Plan ref:** —
 
 ## Docs

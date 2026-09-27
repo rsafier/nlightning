@@ -424,6 +424,28 @@ Before the lanes fork, the integrator lands one commit with interfaces, records 
 
 **Estimate:** one wave, **~3 h, 4 lanes** (IT-A engine, IT-B Bitcoin side, IT-C wire+schema, IT-D driver+handlers).
 
+### Wave qit record (waves Q and IT run as one wave; integrated at `b7d14056`, 2026-09-27)
+
+Contracts Q-0/IT-0 at `9355ad92`. Seven lanes, each with a review/fix step; IT-C shipped `AddInteractiveTxSessions` (all three providers). Ledger: NL-019 and NL-219 fixed, NL-041 fixed, NL-042 and NL-037 partial, new NL-467..NL-474. Full gate record in `ABCD_ROADMAP.md` "Wave qit".
+
+| Task | Status | `wip/fafo` SHAs |
+|---|---|---|
+| Q-0, IT-0 contracts | done | 9355ad92 |
+| Q1-T1 route `stfu` | done (`StfuMessageHandler` lives in `Application/Channels/Handlers/`, not `Channels/Quiescence/`, owned by Q-A; it is the only `IChannelMessageHandler<StfuMessage>`, a registration test pins it) | 3380b680, 3f230897 |
+| Q1-T2 `QuiescenceRules` | done (78 table cases; an unsolicited `stfu(0)` is a violation, as CLN) | 9303e6d4 |
+| Q1-T3 `QuiescenceService` | done; deviation: `ChannelStateTransitionService.CommitAsync` schedules the owed `stfu` (`IStfuReleaseScheduler.ScheduleRelease`) instead of publishing it inline, so it goes out after the `revoke_and_ack` the handler returns; `QuiescenceRules` applied at integration | 6534018d, ac3a1aa8, ef806980 |
+| Q1-T4 update gate | done: send side in `ChannelOperationsService` (`ChannelQuiescentException`), receive side (peer `update_*` after its `stfu` → warning + close) wired by the integrator in `ChannelManager` | 5614a07f, b7d14056 |
+| Q1-T5 timeout | done: a timed-out quiescence keeps blocking updates until its disconnection (Q-R-04), the close is repeated every `Timeout` | 6534018d, ac3a1aa8 |
+| Q1-T6 harness | done (`QuiescenceHarnessTests` 9, `QuiescenceSwitchTests` 2); `stfu` still routed by reflection in `QuiescenceTestPair` (NL-470) | 5b9d079e |
+| D2 probe exit | done: a `Probe` we started is ended with our `tx_abort` through `IInteractiveTxDriver.AbortQuiescence` | b7d14056 |
+| Proof Q (a)-(c) | done, adapted (below); (d) LND not attempted | 34664a14, 65a20108, b7d14056 |
+| IT1-T1..T4 engine | done; deviations: dust from Bitcoin Core thresholds (NL-473), separate serial-id namespaces for inputs and outputs (as CLN, Eclair, LDK), random serial ids, a peer's P2TR key-path input charged a 66 WU witness, after our `tx_signatures` a peer `tx_abort` is neither echoed nor forgotten | 081d599f, 8ee516c5, 21be3935 |
+| IT2-T1..T3 Bitcoin side | done (Appendix G byte-exact; durable IT-ABT-01 guard; startup sweep of orphaned `itx:` reservations) | 8ed3aaa8, acd0f711, ef806980 |
+| IT3-T1, T2 wire + schema | done (`InteractiveTxSessions` has no FK to `Channels`; `DeleteByChannelIdAsync` must be called by whoever forgets a channel) | 940baca2, 99be2451, f513a369 |
+| IT4-T1..T3 driver + handlers | done; negotiations ended on disconnection under each channel's lock at integration | 471d7e6b, 633980df, 65fb5b21, f03470fb, c502fdb6 |
+
+Proof Q against CLN v26.06.8 (`ClnQuiescenceTests`, 5/5): `stfu_channels`/`abort_channels` answer error 354 ("Peer does not support splicing") while we advertise no splice bit, so (a) starts CLN's quiescence with `dev-quiesce` and ends it with our `tx_abort`; CLN acks, restarts channeld in place and resumes on the same connection without `channel_reestablish`; the case of CLN's `tx_abort` and our echo is proven in-process only (NL-468). (c) CLN holds back a fulfill queued while quiescent until the next reestablish (NL-467); the proof reconnects if the payment is still in flight 20 s after `tx_abort`. (c) also covers an HTLC held by our `basic_mpp` switch across the quiescence. CLN has no idle quiescence timeout (120 s idle, still connected). Not covered on the wire: a CLN add not yet revoked at our request, the Q-R-03 timeout with HTLCs pending (in-process only; NL-470).
+
 ### Optional wave DF: dual-funded open (reuses IT)
 DF1 v2 channel id + `open_channel2`/`accept_channel2` handlers; DF2 first commitment (zero HTLCs) + `tx_signatures` + funding confirmation + reestablish `next_funding` for opens; DF3 `option_dual_fund` out of experimental after **Proof DF**: CLN opens a dual-funded channel to us (`fundchannel` against a v2 peer; CLN's dual funding may need `--experimental-dual-fund`, **unverified** for v26.06.8) and we open one to CLN; RBF of an unconfirmed open. **~3 h, 4 lanes.** Not a splicing prerequisite; it is listed because it proves IT against CLN before SP1 depends on it.
 
@@ -556,6 +578,8 @@ DF1 v2 channel id + `open_channel2`/`accept_channel2` handlers; DF2 first commit
 - `ICommitmentSigner`/`ICommitmentVerifier`: SP1-0 changes the signatures; SP1-B and SP1-C meet there.
 - `FeatureOptions`: flipped by the integrator only (D2, D13).
 - `ClientCommand`: the integrator appends (31+).
+- (wave qit, accepted) `ChannelStateTransitionService.CommitAsync` → `IStfuReleaseScheduler.ScheduleRelease`: the owed `stfu` is published after the transition's replies, never inline.
+- (wave qit) `IQuiescenceService.OnPeerDisconnected` has no caller; the service binds each quiescence to its connection instead. `IInteractiveTxSessionDbRepository.DeleteByChannelIdAsync` has no caller yet (NL-470).
 
 ### Effort summary
 | Wave | Lanes | Estimate (wall-clock, same units as the recent waves) | Gate |
@@ -636,7 +660,7 @@ Everything below is **MISSING** at `d929b879` except where noted. Prefixes: `DT/
 - **Core Lightning** (the only splicing peer in our fixtures, and the likely interop peer):
   - **Splicing is on by default since v26.04** (CHANGELOG 26.04 "Changed: Protocol: Splicing is enabled by default"; `experimental-splicing` deprecated, #9021). v26.04 added `splicein`/`spliceout` RPCs (#8857, #8856) and a `splice` feerate name (#8450). v26.06.x fixed `splicein`/`spliceout` aborting on high fees (#9109) and partial-sat balances (#9097). **Our fixture v26.06.8 therefore needs no extra flag** (verified from the changelog; the CHANGELOG on master lists up to 26.06.6, so 26.06.8's own notes are **unverified**).
   - **Spec compatibility:** CLN moved to spec message numbers in 24.11 (#7719, also funding-key rotation), became Eclair-compatible in 25.05 (#8021: "compatible with Eclair, incompatible with previous CLN versions"; a splice on a channel with a pending splice becomes an RBF), added `start_batch` in 25.09 ("support for `start_batch` in splicing makes us Eclair compatible!", #8335) and old-SCID routing (#8387, also 25.09), and made a breaking change to "`commitment_signed`s splice_info tlv's and `channel_reestablish`" in 25.12 (#8646, #8506) with "stricter conformance to Bolt spec for splice commitments" (#8463). That 25.12 change matches the final spec's `funding_txid` TLV and TLV 1/5 reestablish shape, and 26.04 turned splicing on by default after the 2026-03-23 merge, so **CLN v26.06.8 is expected to be spec-final**, but we have not run it: **(unverified until Proof SP1)**. The version-to-PR mapping above is read from the CHANGELOG section each entry sits in (verified 2026-09-27).
-  - Quiescence: `option_quiesce` on by default since 24.11 (#7586); the flag was removed in 25.12 (#8523). CLN exposes `stfu_channels`/`abort_channels` (#6980) **(unverified whether dev-only)**.
+  - Quiescence: `option_quiesce` on by default since 24.11 (#7586); the flag was removed in 25.12 (#8523). CLN exposes `stfu_channels`/`abort_channels` (#6980) without `--developer` (verified in wave qit), but v26.06.8 refuses both with error 354 unless the peer supports splicing; `dev-quiesce` (developer only) works with any peer. As non-initiator CLN answers `stfu(0)`; on `tx_abort` it acks with `tx_abort` and restarts channeld in place (no disconnect, no reestablish); a disconnect also ends quiescence; no idle timeout. A fulfill CLN queued while quiescent is only sent after the next reestablish (NL-467).
   - Dual funding: supported, **(unverified)** whether on by default in 26.06 or still behind `--experimental-dual-fund`.
 - **Eclair:** **v0.14.0** "contains the final version of channel splicing" (release notes: "support for the final version of splicing (#1160) that was recently added to the BOLTs"; APIs `splicein`, `spliceout`, `rbfsplice`), removed its prototype, and **dropped non-anchor channels**. Phoenix uses Eclair's splicing (lightning-kmp; its spec-final status **unverified**). Eclair used 8 confirmations by default since v0.13 (not scaled by amount "because it doesn't work with splicing"). Our Eclair suite is deferred by the owner, so Eclair is not a proof peer in this plan.
 - **LDK:** splicing since **0.2** (2025-12-02, "Natively Asynchronous Splicing"; `ChannelManager::splice_channel`, inbound gated by `UserConfig::reject_inbound_splices`); **0.2.2** (2026-02-06) moved its prototype flag to bit 63 ("resolves a compatibility issue with eclair nodes due to the use of the same splicing feature flag (155)"); 0.2.3-0.2.6 carry splice fixes, including a **fee-inflation vulnerability when we initiate a splice** (0.2.6, #4905: "A malicious splice peer can no longer cause us to somewhat over-allocate fee when we contribute to a splice, with the over-allocation going to their output") and a reserve bypass on zero-fee-commitment channels (#4580). Both are lessons for our `tx_complete` checks (§9 risk 5). Our LDK suite is deferred.
@@ -689,7 +713,7 @@ Everything below is **MISSING** at `d929b879` except where noted. Prefixes: `DT/
 
 Concrete questions for CLN's splicing lead (via the owner), each tied to CLN **v26.06.8** as pinned in `ClnFixture`. Answers go into §7 and the proofs.
 
-1. **Ending quiescence without a splice:** after CLN and we exchange `stfu`, does CLN resume normal operation when it receives our `tx_abort` (no `splice_init` sent), and what does CLN send to end a quiescence it started with `stfu_channels` when no splice follows (`abort_channels` → `tx_abort`? a disconnect?) Is `stfu_channels` available without `--developer` in v26.06.8?
+1. **(answered empirically in wave qit, see §7: yes, CLN resumes on our `tx_abort`; `stfu_channels` needs no `--developer` but needs a splicing peer)** **Ending quiescence without a splice:** after CLN and we exchange `stfu`, does CLN resume normal operation when it receives our `tx_abort` (no `splice_init` sent), and what does CLN send to end a quiescence it started with `stfu_channels` when no splice follows (`abort_channels` → `tx_abort`? a disconnect?) Is `stfu_channels` available without `--developer` in v26.06.8?
 2. **Splice-out fees:** when CLN initiates a `spliceout` without wallet inputs, how is `funding_contribution_satoshis` computed: is it exactly `-amount_out` with the fee then taken from CLN's channel balance on top, or does it already include the fee (`-(amount_out + fee)`)? And as the non-initiator, what fee share does CLN expect from us when we contribute 0?
 3. **Reserve after a splice of a v1 channel:** which reserve does CLN enforce at `tx_complete` and afterwards for a channel opened with v1 `channel_reserve_satoshis`: the original absolute value, 1 % of the new capacity, or the larger? Is it per active funding while the splice is pending?
 4. **Depth for `splice_locked`:** which depth does CLN v26.06 use before sending `splice_locked`: the channel's `minimum_depth`, a fixed 6 (as lightningsplice.com says), or something else? And when does it send `announcement_signatures` for the spliced SCID (6 blocks)?
@@ -703,6 +727,7 @@ Concrete questions for CLN's splicing lead (via the owner), each tied to CLN **v
 12. **`require_confirmed_inputs`:** does CLN set it by default in `splice_init`/`splice_ack`, and does it reject unconfirmed inputs from us?
 13. **Gossip of spliced channels:** does CLN relay the new `channel_announcement` immediately after 6 blocks while keeping the old SCID in its graph for 72 blocks, and does it forward over the old SCID after the lock (the #8387 behaviour) for how long?
 14. **Disconnect before `tx_signatures` with CS exchanged:** if we reconnect with `next_funding` for a splice whose `tx_signatures` CLN already sent but never got ours, does CLN retransmit `tx_signatures` and expect ours, exactly as SP-RE-03, or does it abort?
+15. **(wave qit) Fulfill queued while quiescent:** after our `tx_abort` ends a quiescence, CLN v26.06.8 treats an `update_fulfill_htlc` it queued while quiescent as sent (`SENT_REMOVE_HTLC`) and sends it only after the next `channel_reestablish` (NL-467). Is that a known CLN bug? And should `stfu_channels`/`abort_channels` work with a peer that negotiated only `option_quiesce` (error 354 today, NL-468)?
 
 ---
 

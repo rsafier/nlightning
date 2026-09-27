@@ -1,6 +1,6 @@
 # Remaining work
 
-This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`), and wave B12 (BOLT 12 offers, `a3445f3f`), and wave lh1 (close and wallet safety fixes, BOLT 12 closed, keysend, restore hardening, `a6c633f9`).
+This is a high-level list of what NLightning still needs to be a full, real-funds BOLT node. It was written on 2026-09-26 at the end of the "safe channels + BOLT 5 + Mutinynet" goal (`wip/fafo`, ABCD waves 0–7), and updated after gossip waves G-A (`164289a`), G-B (`5bbfbb5`), G-C (`4dc0f77`), G-D (`48a8951`), anchors waves O7 (`897f032`) and O7b (`f9fad19`), and the mainnet gossip probe (`fbb113b`), and wave M6 (onion messages and on-chain `withdraw`, `641a5fff`), and wave B12 (BOLT 12 offers, `a3445f3f`), and wave lh1 (close and wallet safety fixes, BOLT 12 closed, keysend, restore hardening, `a6c633f9`), and wave qit (quiescence and the interactive-tx layer, `b7d14056`).
 - Detailed status per item lives in [`ISSUES.md`](ISSUES.md) (NL IDs) and [`BOLT_COVERAGE.md`](BOLT_COVERAGE.md).
 - Designs live in the plan files linked below.
 - Update this file when a line item lands or a new one is found.
@@ -62,8 +62,8 @@ This is a high-level list of what NLightning still needs to be a full, real-fund
 - **Route blinding** (ONION M5): **done in wave rf1** (NL-079, NL-339); MPP over blinded paths and introduction = us added in wave B12. Left: BOLT 11 blinded paths, dummy hops (NL-440).
 - **Onion messages** (ONION M6): **done in wave M6** (NL-080; proven against CLN v26.06.8, `option_onion_messages` Optional by default). NL-442 and NL-444 fixed in wave lh1. Left: NL-446 (tuning, queue gauge), NL-464.
 - **BOLT 12 offers** (NL-447, wave B12 of [`BOLT12_PLAN.md`](BOLT12_PLAN.md)): **integrated in wave B12** (`a3445f3f`), **closed in wave lh1** (`a6c633f9`: prune timer NL-448, CLN-captured vectors NL-450, NL-453..NL-455). Left: reachability (NL-452), NL-451; out of scope: refunds, recurrence, payer proofs, blinded issuer ids (D2).
-- **Dual funding / interactive-tx** (v2 open, NL-037). Messages and validators exist; no handlers.
-- **Splicing and quiescence** (`stfu` is only answered with a warning). Plan: [`SPLICING_PLAN.md`](SPLICING_PLAN.md) (quiescence, interactive-tx, splicing; user priority after wave lh1).
+- **Dual funding** (v2 open, NL-037). The interactive-tx layer it needs is done (wave qit: session, prevtx inspector, builder, wallet contributor, schema, driver and the 66-74 handlers); left: `open_channel2`/`accept_channel2` and Proof DF (optional wave DF of [`SPLICING_PLAN.md`](SPLICING_PLAN.md)); follow-ups NL-473, NL-474.
+- **Splicing** (NL-021; user priority). Quiescence is **done in wave qit** (NL-042 partial: `OptionQuiesce` stays experimental until a dependent protocol exists; Proof Q against CLN green; follow-ups NL-467, NL-468, NL-470). Next: waves SP1, SP2, SPR of [`SPLICING_PLAN.md`](SPLICING_PLAN.md).
 - **Zero-conf and scid-alias channels** as first-class options (low priority per the user, 2026-09-27).
 - ~~**Keysend / spontaneous payments, custom TLV records.**~~ **Done in wave lh1** (NL-459). Left: a dedicated custom-records column (NL-460).
 - **Peer storage** (`option_provide_storage`) and **DNS bootstrap** (BOLT 10).
