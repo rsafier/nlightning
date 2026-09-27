@@ -908,6 +908,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
               || args.SpentOutputIndex != channel.FundingOutput.Index))
                 return SpendHandOver.ResolutionOutput;
 
+            // A splice transaction of this channel spends the funding output without closing it (splicing plan §3.6,
+            // FundingSpendKind.Splice): the channel stays open on its fundings and the lock moves it (SP1); the
+            // classification and the new funding's watch are wave SP2
+            if (_serviceProvider.GetService<Splicing.Interfaces.ISpliceStatePort>() is { } splicePort
+             && splicePort.GetFundings(channel).Find(spend.TxId) is not null)
+            {
+                _logger.LogInformation("The funding output of channel {ChannelId} was spent by its splice {TxId}",
+                                       channelId, spend.TxId);
+                return SpendHandOver.None;
+            }
+
             if (channel.State is not (ChannelState.ShuttingDown or ChannelState.Negotiating or ChannelState.Closing)
              || !IsMutualCloseOf(channel, spend))
                 return SpendHandOver.FundingSpend;
