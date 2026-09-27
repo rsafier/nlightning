@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Handlers;
 
+using Application.Channels.Close;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -43,6 +44,7 @@ public sealed class OpenChannelClientHandler
     private readonly IUtxoMemoryRepository _utxoMemoryRepository;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
+    private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
 
     private ChannelId _channelId = ChannelId.Zero;
     private ChannelId? _upgradedChannelId;
@@ -67,8 +69,10 @@ public sealed class OpenChannelClientHandler
                                     IOptions<GossipOptions>? gossipOptions = null,
                                     IOptions<NodeOptions>? nodeOptions = null,
                                     IAnchorReserveService? anchorReserveService = null,
-                                    IChannelLockProvider? channelLockProvider = null)
+                                    IChannelLockProvider? channelLockProvider = null,
+                                    UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null)
     {
+        _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _channelLockProvider = channelLockProvider;
         _anchorReserveService = anchorReserveService;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
@@ -182,6 +186,11 @@ public sealed class OpenChannelClientHandler
         {
             // Create the channel type Tlv; accept_channel must echo exactly this type
             var channelTypeTlv = new ChannelTypeTlv(channel.ChannelParams.ToChannelType());
+
+            // NL-045: when option_upfront_shutdown_script is negotiated, a reserved wallet address becomes our upfront
+            // shutdown script (after the funds are locked, so a refused open reserves nothing)
+            if (_upfrontShutdownScriptSource is not null)
+                await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, peer.NegotiatedFeatures);
 
             // Create UpfrontShutdownScriptTlv if needed
             var upfrontShutdownScriptTlv = channel.LocalUpfrontShutdownScript is not null

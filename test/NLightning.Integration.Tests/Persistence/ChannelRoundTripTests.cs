@@ -307,6 +307,7 @@ public class ChannelRoundTripTests
         // Close state (N10, migration AddShutdownState)
         channel.SetLocalShutdownScript(Convert.FromHexString("0014" + new string('a', 40)));
         channel.SetRemoteShutdownScript(Convert.FromHexString("0020" + new string('b', 64)));
+        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(0x1_0000_0007UL); // NL-279
         channel.SetClosingTransaction(new SignedTransaction(new TxId(Enumerable.Repeat((byte)0x5c, 32).ToArray()),
                                                             [0x02, 0x00, 0x00, 0x00, 0x01]));
         // Announcement state (BOLT 7 plan G1, migration AddGossipGraph)
@@ -380,6 +381,7 @@ public class ChannelRoundTripTests
         // Close state (N10)
         Assert.Equal(expected.LocalShutdownScript, actual.LocalShutdownScript);
         Assert.Equal(expected.RemoteShutdownScript, actual.RemoteShutdownScript);
+        Assert.Equal(expected.FirstRemoteHtlcIdAfterLocalShutdown, actual.FirstRemoteHtlcIdAfterLocalShutdown);
         Assert.NotNull(actual.ClosingTransaction);
         Assert.Equal(expected.ClosingTransaction!.TxId, actual.ClosingTransaction.TxId);
         Assert.Equal(expected.ClosingTransaction.RawTxBytes, actual.ClosingTransaction.RawTxBytes);

@@ -153,6 +153,8 @@ public sealed class ChannelCloseCoordinator
     {
         var script = await _shutdownScriptProvider.GetLocalScriptAsync(channel);
         channel.SetLocalShutdownScript(script);
+        // NL-279 (B2-SHUT-S08): every add the peer sends from now on (it may not have our shutdown yet) is failed back
+        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(channel.Commitments?.RemoteNextHtlcId ?? channel.RemoteNextHtlcId);
         if (channel.State < ChannelState.ShuttingDown)
             channel.UpdateState(ChannelState.ShuttingDown);
         await PersistAsync(channel);

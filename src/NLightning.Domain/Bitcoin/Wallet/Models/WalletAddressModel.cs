@@ -9,6 +9,12 @@ public sealed class WalletAddressModel
     public bool IsChange { get; }
     public string Address { get; }
 
+    /// <summary>
+    /// Reserved for a use that owns it (a channel's <c>upfront_shutdown_script</c>, NL-045): the wallet never hands it
+    /// out as an unused address again.
+    /// </summary>
+    public bool IsReserved { get; init; }
+
     public WalletAddressModel(AddressType addressType, uint index, bool isChange, string address)
     {
         AddressType = addressType;

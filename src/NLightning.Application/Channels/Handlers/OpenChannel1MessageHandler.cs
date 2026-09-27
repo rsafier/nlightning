@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Handlers;
 
+using Close;
 using Domain.Bitcoin.Constants;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Enums;
@@ -26,6 +27,7 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     private readonly IMessageFactory _messageFactory;
     private readonly GossipOptions _gossipOptions;
     private readonly NodeOptions _nodeOptions;
+    private readonly UpfrontShutdownScriptSource? _upfrontShutdownScriptSource;
 
     /// <param name="gossipOptions">Whether public channels are accepted (<see cref="GossipOptions.AcceptPublicChannels"/>,
     /// default yes, and on mainnet only with <see cref="GossipOptions.AllowPublicChannelsOnMainnet"/>).</param>
@@ -33,13 +35,17 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
     /// mainnet, the safe default.</param>
     /// <param name="anchorReserveService">Refuses an <c>option_anchors</c> channel the wallet could not back with its
     /// anchors reserve (NL-379); registered by <c>AddBitcoinInfrastructure</c>.</param>
+    /// <param name="upfrontShutdownScriptSource">Our <c>upfront_shutdown_script</c> when
+    /// <c>option_upfront_shutdown_script</c> is negotiated (NL-045); without it a zero-length script is sent.</param>
     public OpenChannel1MessageHandler(IChannelFactory channelFactory, IChannelMemoryRepository channelMemoryRepository,
                                       ILogger<OpenChannel1MessageHandler> logger, IMessageFactory messageFactory,
                                       IBlockchainMonitor? blockchainMonitor = null,
                                       IOptions<GossipOptions>? gossipOptions = null,
                                       IOptions<NodeOptions>? nodeOptions = null,
-                                      IAnchorReserveService? anchorReserveService = null)
+                                      IAnchorReserveService? anchorReserveService = null,
+                                      UpfrontShutdownScriptSource? upfrontShutdownScriptSource = null)
     {
+        _upfrontShutdownScriptSource = upfrontShutdownScriptSource;
         _anchorReserveService = anchorReserveService;
         _blockchainMonitor = blockchainMonitor;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
@@ -116,6 +122,10 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
                                               + "channel");
             }
         }
+
+        // NL-045: once the channel is admitted, a reserved wallet address becomes our upfront shutdown script
+        if (_upfrontShutdownScriptSource is not null)
+            await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, negotiatedFeatures);
 
         // Add the channel to dictionaries
         _channelMemoryRepository.AddTemporaryChannel(peerPubKey, channel);

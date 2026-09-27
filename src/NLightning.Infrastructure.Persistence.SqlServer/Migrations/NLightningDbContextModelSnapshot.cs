@@ -232,6 +232,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<bool>("IsReserved")
+                        .HasColumnType("bit");
+
                     b.HasKey("Index", "IsChange", "AddressType");
 
                     b.ToTable("WalletAddresses");
@@ -402,6 +405,9 @@ namespace NLightning.Infrastructure.Persistence.SqlServer.Migrations
 
                     b.Property<byte[]>("ErrorSent")
                         .HasColumnType("varbinary(max)");
+
+                    b.Property<decimal?>("FirstRemoteHtlcIdAfterLocalShutdown")
+                        .HasColumnType("decimal(20,0)");
 
                     b.Property<long>("FundingAmountSatoshis")
                         .HasColumnType("bigint");

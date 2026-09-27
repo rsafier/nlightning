@@ -70,6 +70,8 @@ public static class ChannelEntityConfiguration
             // Mutual close (migration AddShutdownState, BOLT2 plan N10)
             entity.Property(e => e.LocalShutdownScript).IsRequired(false);
             entity.Property(e => e.RemoteShutdownScript).IsRequired(false);
+            // NL-279 (migration AddShutdownHtlcBoundaryAndAddressReservation)
+            entity.Property(e => e.FirstRemoteHtlcIdAfterLocalShutdown).IsRequired(false);
             entity.Property(e => e.ClosingTxId)
                   .HasConversion<TxIdConverter>()
                   .IsRequired(false);

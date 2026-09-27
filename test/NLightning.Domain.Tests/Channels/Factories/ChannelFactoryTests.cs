@@ -3,6 +3,7 @@ using NLightning.Tests.Utils.Mocks;
 namespace NLightning.Domain.Tests.Channels.Factories;
 
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Enums;
 using Domain.Channels.Factories;
 using Domain.Channels.Interfaces;
@@ -158,6 +159,103 @@ public class ChannelFactoryTests
         // Assert
         Assert.Contains("Upfront shutdown script", exception.Message);
         Assert.Equal(s_temporaryChannelId, exception.ChannelId);
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.Compulsory)]
+    public async Task Given_UpfrontShutdownScriptNegotiated_When_CreatingChannelAsInitiator_Then_ChannelIsCreatedWithoutScript(
+        FeatureSupport upfrontShutdownScript)
+    {
+        // Arrange (NL-045: BOLT 2 allows a zero-length script, so a compulsory peer no longer refuses the open; the
+        // caller sets a reserved wallet script before open_channel goes out)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var request = CreateRequest(LightningMoney.Satoshis(100_000));
+        var negotiatedFeatures = new FeatureOptions { UpfrontShutdownScript = upfrontShutdownScript };
+
+        // Act
+        var channel = await channelFactory.CreateChannelV1AsInitiatorAsync(request, negotiatedFeatures,
+                                                                           s_remoteNodeId);
+
+        // Assert
+        Assert.Null(channel.LocalUpfrontShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_OpeningChannel_When_LocalUpfrontShutdownScriptSet_Then_OnlyOurParamsCarryItOnce()
+    {
+        // Arrange (NL-045)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+        var before = channel.ChannelParams;
+        BitcoinScript script = Convert.FromHexString("0014" + new string('c', 40));
+
+        // Act
+        channel.SetLocalUpfrontShutdownScript(script);
+
+        // Assert: every other parameter is kept
+        Assert.Equal(script, channel.LocalUpfrontShutdownScript);
+        Assert.Equal(before.Local.WithUpfrontShutdownScript(script), channel.ChannelParams.Local);
+        Assert.Equal(before.Remote, channel.ChannelParams.Remote);
+        Assert.Equal(before.AnnounceChannel, channel.ChannelParams.AnnounceChannel);
+        Assert.Equal(before.MinimumDepth, channel.ChannelParams.MinimumDepth);
+        Assert.Throws<InvalidOperationException>(() => channel.SetLocalUpfrontShutdownScript(script));
+    }
+
+    [Fact]
+    public async Task Given_ChannelPastOpening_When_LocalUpfrontShutdownScriptSet_Then_Throws()
+    {
+        // Arrange (NL-045: the script is announced in open_channel/accept_channel, never later)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+        channel.UpdateState(ChannelState.Open);
+
+        // Act / Assert
+        Assert.Throws<InvalidOperationException>(
+            () => channel.SetLocalUpfrontShutdownScript(Convert.FromHexString("0014" + new string('c', 40))));
+        Assert.Null(channel.LocalUpfrontShutdownScript);
+    }
+
+    [Fact]
+    public async Task Given_OurShutdownRecordedAtPeerHtlcIdThree_When_CheckingIncomingHtlcs_Then_IdsFromThreeAreAfterIt()
+    {
+        // Arrange (NL-279, B2-SHUT-S08)
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+        Assert.False(channel.IsRemoteHtlcAddedAfterLocalShutdown(7));
+
+        // Act
+        channel.SetLocalShutdownScript(Convert.FromHexString("0014" + new string('a', 40)));
+        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(3);
+        channel.SetFirstRemoteHtlcIdAfterLocalShutdown(5);
+
+        // Assert: set once; 0-2 were added before our shutdown
+        Assert.Equal(3UL, channel.FirstRemoteHtlcIdAfterLocalShutdown);
+        Assert.False(channel.IsRemoteHtlcAddedAfterLocalShutdown(2));
+        Assert.True(channel.IsRemoteHtlcAddedAfterLocalShutdown(3));
+        Assert.True(channel.IsRemoteHtlcAddedAfterLocalShutdown(4));
+    }
+
+    [Fact]
+    public async Task Given_OurShutdownWithoutRecordedBoundary_When_CheckingIncomingHtlcs_Then_NoneIsAfterIt()
+    {
+        // Arrange: a shutdown persisted by an older build keeps the old behavior
+        var channelFactory = CreateNonInitiatorChannelFactory();
+        var message = CreateOpenChannel1Message(new ChannelTypeTlv(FeatureSet.NewBasicChannelType()));
+        var channel = await channelFactory.CreateChannelV1AsNonInitiatorAsync(message, new FeatureOptions(),
+                                                                              s_remoteNodeId);
+
+        // Act
+        channel.SetLocalShutdownScript(Convert.FromHexString("0014" + new string('a', 40)));
+
+        // Assert
+        Assert.False(channel.IsRemoteHtlcAddedAfterLocalShutdown(0));
     }
 
     [Fact]

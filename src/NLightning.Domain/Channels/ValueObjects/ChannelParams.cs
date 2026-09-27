@@ -67,6 +67,14 @@ public readonly record struct ChannelParams
     /// <summary>
     /// Returns a copy with the peer's parameters replaced (the initiator learns them from <c>accept_channel</c>).
     /// </summary>
+    /// <summary>These parameters with <paramref name="local"/> as ours.</summary>
+    public ChannelParams WithLocal(ChannelParty local) =>
+        new(local, Remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
+        {
+            HasInferredParams = HasInferredParams,
+            AnnounceChannel = AnnounceChannel
+        };
+
     public ChannelParams WithRemote(ChannelParty remote) =>
         new(Local, remote, FeeRateAmountPerKw, MinimumDepth, OptionAnchorOutputs, UseScidAlias)
         {

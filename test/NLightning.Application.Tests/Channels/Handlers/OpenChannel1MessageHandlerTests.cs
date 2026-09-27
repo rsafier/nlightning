@@ -1,5 +1,7 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NLightning.Application.Channels.Close;
 using NLightning.Application.Channels.Handlers;
 using NLightning.Domain.Bitcoin.Transactions.Outputs;
 using NLightning.Domain.Bitcoin.ValueObjects;
@@ -465,5 +467,85 @@ public class OpenChannel1MessageHandlerTests
 
         // Assert
         Assert.IsType<AcceptChannel1Message>(Assert.Single(result));
+    }
+
+    [Theory]
+    [InlineData(FeatureSupport.Optional)]
+    [InlineData(FeatureSupport.Compulsory)]
+    public async Task Given_UpfrontShutdownScriptNegotiated_When_OpenChannelArrives_Then_AcceptCarriesAReservedWalletScript(
+        FeatureSupport negotiated)
+    {
+        // Arrange (NL-045, B2-SHUT-S09)
+        BitcoinScript reserved = Convert.FromHexString("0014" + new string('d', 40));
+        var source = new FixedUpfrontShutdownScriptSource(reserved);
+        UpfrontShutdownScriptTlv? sent = null;
+        CaptureUpfrontShutdownScript(tlv => sent = tlv);
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeOptions: s_regtestOptions,
+                                                     upfrontShutdownScriptSource: source);
+
+        // Act
+        await handler.HandleAsync(_validMessage, ChannelState.None,
+                                  new FeatureOptions { UpfrontShutdownScript = negotiated }, _peerPubKey);
+
+        // Assert: reserved once, stored with our parameters (persisted with the channel config) and announced
+        Assert.Equal(1, source.Reservations);
+        Assert.Equal(reserved, _channel.LocalUpfrontShutdownScript);
+        Assert.NotNull(sent);
+        Assert.Equal(reserved, sent.ShutdownScriptPubkey);
+    }
+
+    [Fact]
+    public async Task Given_UpfrontShutdownScriptNotNegotiated_When_OpenChannelArrives_Then_NoAddressIsReservedAndAnEmptyScriptIsSent()
+    {
+        // Arrange (NL-045: without the feature on both sides no address is spent on the channel)
+        var source = new FixedUpfrontShutdownScriptSource(Convert.FromHexString("0014" + new string('d', 40)));
+        UpfrontShutdownScriptTlv? sent = null;
+        CaptureUpfrontShutdownScript(tlv => sent = tlv);
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeOptions: s_regtestOptions,
+                                                     upfrontShutdownScriptSource: source);
+
+        // Act
+        await handler.HandleAsync(_validMessage, ChannelState.None, new FeatureOptions(), _peerPubKey);
+
+        // Assert
+        Assert.Equal(0, source.Reservations);
+        Assert.Null(_channel.LocalUpfrontShutdownScript);
+        Assert.NotNull(sent);
+        Assert.Equal(0, sent.ShutdownScriptPubkey.Length);
+    }
+
+    private void CaptureUpfrontShutdownScript(Action<UpfrontShutdownScriptTlv?> capture) =>
+        _mockMessageFactory
+           .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<uint>(), It.IsAny<CompactPubKey>(),
+                                                     It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                     It.IsAny<UpfrontShutdownScriptTlv>()))
+           .Callback((ChannelParty _, ChannelTypeTlv _, CompactPubKey _, CompactPubKey _, CompactPubKey _,
+                      CompactPubKey _, uint _, CompactPubKey _, CompactPubKey _, ChannelId _,
+                      UpfrontShutdownScriptTlv? tlv) => capture(tlv))
+           .Returns(new AcceptChannel1Message(
+                        new AcceptChannel1Payload(ChannelId.Zero, LightningMoney.Satoshis(1_000), _peerPubKey,
+                                                  LightningMoney.Satoshis(354), _peerPubKey, _peerPubKey, _peerPubKey,
+                                                  LightningMoney.Satoshis(1), 10, LightningMoney.Satoshis(10_000), 3,
+                                                  _peerPubKey, _peerPubKey, 144),
+                        new ChannelTypeTlv(FeatureSet.NewBasicChannelType())));
+
+    /// <summary>A reservation that hands out a fixed script and counts the calls.</summary>
+    private sealed class FixedUpfrontShutdownScriptSource(BitcoinScript script)
+        : UpfrontShutdownScriptSource(s_regtestOptions, new Mock<IServiceScopeFactory>().Object)
+    {
+        public int Reservations { get; private set; }
+
+        public override Task<BitcoinScript> ReserveAsync()
+        {
+            Reservations++;
+            return Task.FromResult(script);
+        }
     }
 }
