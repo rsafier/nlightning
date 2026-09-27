@@ -23,6 +23,16 @@ public sealed class DualFundingOptions
     /// <summary>How long <c>OpenAsync</c>/<c>BumpAsync</c> wait for the negotiation to end (default 2 minutes).</summary>
     public TimeSpan OpenTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
+    /// <summary>
+    /// Whether an unconfirmed dual-funded open may be replaced by RBF (<c>BumpAsync</c> and the peer's
+    /// <c>tx_init_rbf</c>); default false: the peer's <c>tx_init_rbf</c> gets <c>tx_abort</c> (BOLT 2: "MAY send
+    /// tx_abort for any reason"). The channel keeps the commitment signatures of one attempt only, so while an RBF is
+    /// allowed an earlier attempt that confirms instead leaves the channel on the wrong outpoint (no unilateral close;
+    /// per-funding commitments come with splicing's <c>FundingSet</c>). Even when allowed, an RBF is refused for a
+    /// public channel (the signer keeps the first attempt's outpoint) and once an attempt has a confirmation.
+    /// </summary>
+    public bool AllowRbf { get; set; }
+
     /// <summary>The configuration problems, empty when valid.</summary>
     public IReadOnlyList<string> GetValidationErrors()
     {

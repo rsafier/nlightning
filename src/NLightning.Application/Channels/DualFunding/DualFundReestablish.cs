@@ -5,6 +5,7 @@ namespace NLightning.Application.Channels.DualFunding;
 
 using Domain.Channels.Enums;
 using Domain.Channels.Models;
+using Domain.Exceptions;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
@@ -76,8 +77,21 @@ public sealed class DualFundReestablish
          || message.NextFundingTlv is not { } nextFunding)
             return null;
 
-        var negotiation = await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None);
         var requested = new Domain.Bitcoin.ValueObjects.TxId(nextFunding.NextFundingTxId);
+
+        // BOLT 2: "if it also sets next_funding in its own channel_reestablish, but the values don't match: MUST send
+        // an error and fail the channel". No commitment is broadcast: we have not received tx_signatures for our
+        // next_funding, so we cannot broadcast its funding transaction
+        if (await GetOwnNextFundingAsync(channel) is { } own)
+        {
+            var ours = new Domain.Bitcoin.ValueObjects.TxId(own.NextFundingTxId);
+            if (!ours.Equals(requested))
+                throw new ChannelFailedException(channel.ChannelId,
+                                                 $"The peer's next_funding {requested} differs from ours {ours}",
+                                                 "next_funding_txid does not match ours");
+        }
+
+        var negotiation = await _service.GetOrLoadAsync(channel.ChannelId, _unitOfWork, CancellationToken.None);
         var isPending = negotiation?.PendingTxId is { } pending && pending.Equals(requested);
         var isSigned = negotiation?.CompletedTxIds.Count > 0 && negotiation.CompletedTxIds[^1].Equals(requested);
         if (negotiation is null || (!isPending && !isSigned))

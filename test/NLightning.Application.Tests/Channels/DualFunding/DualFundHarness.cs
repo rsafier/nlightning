@@ -37,6 +37,8 @@ using Domain.Crypto.Hashes;
 using Domain.Crypto.ValueObjects;
 using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Interfaces;
+using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Onchain.Models;
 using Domain.Payments.Interfaces;
@@ -90,21 +92,37 @@ internal sealed class DualFundHarness : IAsyncDisposable
     /// <summary>How long <c>OpenAsync</c>/<c>BumpAsync</c> wait (the nodes' <c>Node:DualFund:OpenTimeout</c>).</summary>
     public TimeSpan OpenTimeout { get; }
 
-    private DualFundHarness(string directory, long bobContributionSat, TimeSpan openTimeout)
+    /// <summary>The nodes' <c>Node:DualFund:AllowRbf</c>.</summary>
+    public bool AllowRbf { get; }
+
+    /// <summary>
+    /// Whether each node has a mocked peer manager whose peer is a mocked <c>IPeerService</c>
+    /// (<see cref="DualFundNode.PeerService"/>), so a test can raise the peer's error or warning.
+    /// </summary>
+    public bool WithPeerServices { get; }
+
+    private DualFundHarness(string directory, long bobContributionSat, TimeSpan openTimeout, bool allowRbf,
+                            bool withPeerServices)
     {
         _directory = directory;
         OpenTimeout = openTimeout;
+        AllowRbf = allowRbf;
+        WithPeerServices = withPeerServices;
         Alice = new DualFundNode(this, "Alice", 0xA1, Path.Combine(directory, "alice.db"), 0);
         Bob = new DualFundNode(this, "Bob", 0xB0, Path.Combine(directory, "bob.db"), bobContributionSat);
     }
 
     /// <param name="bobContributionSat">What Bob (the accepter) contributes to Alice's opens.</param>
     /// <param name="openTimeout">The nodes' open timeout (default 10 s).</param>
-    public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null)
+    /// <param name="allowRbf">The nodes' <c>Node:DualFund:AllowRbf</c> (default false, as in production).</param>
+    /// <param name="withPeerServices">See <see cref="WithPeerServices"/>.</param>
+    public static async Task<DualFundHarness> CreateAsync(long bobContributionSat, TimeSpan? openTimeout = null,
+                                                          bool allowRbf = false, bool withPeerServices = false)
     {
         var directory = Path.Combine(Path.GetTempPath(), $"nltg-dual-fund-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
-        var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? TimeSpan.FromSeconds(10));
+        var harness = new DualFundHarness(directory, bobContributionSat, openTimeout ?? TimeSpan.FromSeconds(10),
+                                          allowRbf, withPeerServices);
         foreach (var node in harness.Nodes)
             await node.StartAsync(migrate: true);
         return harness;
@@ -293,6 +311,9 @@ internal sealed class DualFundNode
     public HarnessLinkProbe Probe { get; } = new();
     public RecordingPaymentHandler PaymentHandler { get; } = new();
 
+    /// <summary>This node's connection to the other node, with <see cref="DualFundHarness.WithPeerServices"/>.</summary>
+    public Mock<IPeerService> PeerService { get; } = new();
+
     /// <summary>The wallet of the interactive-tx negotiations (kept across restarts, like the node's wallet).</summary>
     public FakeInteractiveTxContributor Wallet { get; } = new();
 
@@ -438,8 +459,21 @@ internal sealed class DualFundNode
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new DualFundingOptions
         {
             AcceptContributionSat = _acceptContributionSat,
-            OpenTimeout = _harness.OpenTimeout
+            OpenTimeout = _harness.OpenTimeout,
+            AllowRbf = _harness.AllowRbf
         }));
+        if (_harness.WithPeerServices)
+        {
+            PeerService.SetupGet(p => p.Features).Returns(() => _harness.NegotiatedFeatures);
+            var peerManager = new Mock<IPeerManager>();
+            peerManager.Setup(m => m.GetPeer(It.IsAny<CompactPubKey>())).Returns((CompactPubKey nodeId) =>
+            {
+                var peer = new PeerModel(nodeId, "127.0.0.1", 9735, "harness");
+                peer.SetPeerService(PeerService.Object);
+                return peer;
+            });
+            services.AddSingleton(peerManager.Object);
+        }
         services.AddSingleton<ISecureKeyManager>(KeyManager);
         services.AddPersistentOnionReplayStore();
         services.AddTransient<ISha256, Sha256>();

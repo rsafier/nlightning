@@ -120,7 +120,7 @@ public class DualFundHarnessTests
     public async Task Given_AnUnconfirmedOpen_When_AliceBumpsItWithRbf_Then_TheReplacementConfirmsAndCarriesPayments()
     {
         // Arrange
-        await using var harness = await DualFundHarness.CreateAsync(BobShareSat);
+        await using var harness = await DualFundHarness.CreateAsync(BobShareSat, allowRbf: true);
         harness.Alice.Wallet.Utxos.Add(WalletUtxo.Create(1_000_000));
         harness.Bob.Wallet.Utxos.Add(WalletUtxo.Create(700_000));
         var first = await OpenAsync(harness);

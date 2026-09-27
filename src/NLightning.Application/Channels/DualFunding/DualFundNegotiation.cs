@@ -73,6 +73,13 @@ internal sealed class DualFundNegotiation
     /// <summary>What <c>BumpAsync</c> waits for.</summary>
     public TaskCompletionSource<DualFundedOpenResult>? BumpCompletion { get; set; }
 
+    /// <summary>
+    /// The channel's funding outpoint and commitment signatures of the last fully signed attempt, kept while an RBF
+    /// attempt has replaced them on the channel and is not fully signed: restored when that attempt ends without
+    /// both <c>tx_signatures</c>. Memory only.
+    /// </summary>
+    public SignedFunding? LastSignedFunding { get; set; }
+
     /// <summary>Whether an anchors channel counts toward the anchors reserve while it is being opened.</summary>
     public bool HoldsAnchorReserve { get; set; }
 
@@ -85,6 +92,13 @@ internal sealed class DualFundNegotiation
         BumpCompletion = null;
         OpenCompletion?.TrySetResult(result);
     }
+
+    /// <summary>A fully signed attempt's funding outpoint and first-commitment signatures.</summary>
+    internal sealed record SignedFunding(
+        TxId TransactionId,
+        ushort Index,
+        CompactSignature? LastSentSignature,
+        CompactSignature? LastReceivedSignature);
 
     /// <summary>What the opener chose before the peer answered.</summary>
     internal sealed record PendingOpen(
