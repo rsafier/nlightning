@@ -42,14 +42,14 @@ public interface IOfferDbRepository
     Task<IReadOnlyList<OfferModel>> ListAsync(bool activeOnly, int skip, int take);
 
     /// <summary>
-    /// How many BOLT 12 invoices of the offer are settled, and how many are open and unexpired at
-    /// <paramref name="now"/> (the per-offer cap, plan D11).
+    /// How many BOLT 12 invoices of the offer are settled, and how many are unpaid at <paramref name="now"/>: open and
+    /// unexpired, or accepted (an HTLC set is held for them) (the per-offer cap, plan D11).
     /// </summary>
     Task<OfferInvoiceCounts> GetInvoiceCountsAsync(Hash offerId, DateTimeOffset now);
 
     /// <summary>
-    /// How many BOLT 12 invoices of any offer are open and unexpired at <paramref name="now"/> (the node-wide cap, plan
-    /// D11).
+    /// How many BOLT 12 invoices of any offer are unpaid at <paramref name="now"/>: open and unexpired, or accepted (the
+    /// node-wide cap, plan D11).
     /// </summary>
     Task<int> CountUnpaidInvoicesAsync(DateTimeOffset now);
 }

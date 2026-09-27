@@ -43,6 +43,7 @@ using Domain.Node.Interfaces;
 using Domain.Node.Models;
 using Domain.Node.Options;
 using Domain.Node.PeerStorage;
+using Domain.Offers.Interfaces;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Payments.Models;
@@ -750,6 +751,7 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IPeerStorageDbRepository PeerStorageDbRepository => inner.PeerStorageDbRepository;
     public IInvoiceDbRepository InvoiceDbRepository => new HookedInvoiceRepository(inner.InvoiceDbRepository, node);
     public IPaymentDbRepository PaymentDbRepository => inner.PaymentDbRepository;
+    public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
 
@@ -815,6 +817,9 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
         }
 
         public Task<IReadOnlyList<InvoiceModel>> ListAsync(int skip, int take) => inner.ListAsync(skip, take);
+
+        public Task<int> PruneExpiredBolt12InvoicesAsync(DateTimeOffset now, int max) =>
+            inner.PruneExpiredBolt12InvoicesAsync(now, max);
     }
 }
 

@@ -20,7 +20,8 @@ using Infrastructure.Repositories.Database.Payment;
 /// and the Docker Postgres/SQL Server tests: a BOLT 11 invoice and a payment written with the schema before the
 /// migration load after it unchanged (<c>Kind</c> 0, their BOLT 11 string kept, no BOLT 12 side); then offers, BOLT 12
 /// invoices (no BOLT 11 string) and BOLT 12 payments round-trip every field, an offer is found by its exact bytes,
-/// disabled and listed, and the per-offer and node-wide invoice counts see only open, unexpired BOLT 12 rows.
+/// disabled and listed, the per-offer and node-wide invoice counts see only open, unexpired and accepted BOLT 12 rows,
+/// and the expired open BOLT 12 rows are pruned, oldest expiry first and at most the given number.
 /// </summary>
 internal static class Bolt12SchemaRoundTrip
 {
@@ -145,21 +146,26 @@ internal static class Bolt12SchemaRoundTrip
     private static async Task AssertBolt12InvoicesAsync(Func<NLightningDbContext> contextFactory, OfferModel offer,
                                                         OfferModel otherOffer, CancellationToken cancellationToken)
     {
-        // Arrange: for the offer one settled, one open, one expired and one canceled BOLT 12 invoice; one open for
-        // the other offer; one BOLT 11 invoice (never counted)
+        // Arrange: for the offer one settled, one open, one expired, one canceled and one accepted (an HTLC set held,
+        // past its expiry) BOLT 12 invoice; one open and one short-lived for the other offer; one BOLT 11 invoice
+        // (never counted)
         var invoiceBytes = Enumerable.Range(0, 1_500).Select(i => (byte)(i * 7)).ToArray();
         var open = CreateBolt12Invoice(0x10, offer.OfferId, invoiceBytes, ulong.MaxValue, "for the café ☕", s_now);
         var settled = CreateBolt12Invoice(0x20, offer.OfferId, [0x01], null, null, s_now.AddMinutes(-10));
         var expired = CreateBolt12Invoice(0x30, offer.OfferId, [0x02], 2, null, s_now.AddHours(-2));
         var canceled = CreateBolt12Invoice(0x40, offer.OfferId, [0x03], null, null, s_now.AddMinutes(-5));
         var otherOpen = CreateBolt12Invoice(0x50, otherOffer.OfferId, [0x04], null, null, s_now.AddMinutes(-1));
+        var accepted = CreateBolt12Invoice(0x15, offer.OfferId, [0x06], null, null, s_now.AddHours(-3));
+        var shortLived = CreateBolt12Invoice(0x16, otherOffer.OfferId, [0x07], null, null, s_now.AddSeconds(-59), 60);
         var bolt11 = PaymentSchemaRoundTrip.CreateInvoice(0x60, null, s_now);
         settled.Accept(LightningMoney.MilliSatoshis(123_456_789));
         canceled.Cancel();
+        accepted.Accept(LightningMoney.MilliSatoshis(1_000));
+        var all = new[] { open, settled, expired, canceled, accepted, otherOpen, shortLived, bolt11 };
         await using (var context = contextFactory())
         {
             var repository = new InvoiceDbRepository(context);
-            foreach (var invoice in new[] { open, settled, expired, canceled, otherOpen, bolt11 })
+            foreach (var invoice in all)
                 await repository.AddAsync(invoice);
             await context.SaveChangesAsync(cancellationToken);
         }
@@ -181,22 +187,28 @@ internal static class Bolt12SchemaRoundTrip
         await using (var context = contextFactory())
         {
             var repository = new InvoiceDbRepository(context);
-            foreach (var expected in new[] { open, settled, expired, canceled, otherOpen, bolt11 })
+            foreach (var expected in all)
                 AssertInvoice(expected, await repository.GetByPaymentHashAsync(expected.PaymentHash));
 
             var listed = await repository.ListAsync(0, 100);
             Assert.Null(listed.Single(i => i.PaymentHash == open.PaymentHash).Bolt11);
 
             var offers = new OfferDbRepository(context);
-            Assert.Equal(new OfferInvoiceCounts(1, 1), await offers.GetInvoiceCountsAsync(offer.OfferId, s_now));
-            Assert.Equal(new OfferInvoiceCounts(0, 1), await offers.GetInvoiceCountsAsync(otherOffer.OfferId, s_now));
-            Assert.Equal(2, await offers.CountUnpaidInvoicesAsync(s_now));
+            Assert.Equal(new OfferInvoiceCounts(1, 2), await offers.GetInvoiceCountsAsync(offer.OfferId, s_now));
+            Assert.Equal(new OfferInvoiceCounts(0, 2), await offers.GetInvoiceCountsAsync(otherOffer.OfferId, s_now));
+            Assert.Equal(4, await offers.CountUnpaidInvoicesAsync(s_now));
 
-            // An invoice counts as unpaid until the instant it expires
-            Assert.Equal(new OfferInvoiceCounts(1, 0),
+            // An open invoice counts as unpaid until the instant it expires (per expiry length); an accepted one always
+            Assert.Equal(new OfferInvoiceCounts(1, 1),
                          await offers.GetInvoiceCountsAsync(offer.OfferId, open.ExpiresAt));
-            Assert.Equal(1, await offers.CountUnpaidInvoicesAsync(open.ExpiresAt.AddTicks(-1)));
+            Assert.Equal(2, await offers.CountUnpaidInvoicesAsync(open.ExpiresAt.AddTicks(-1)));
+            Assert.Equal(new OfferInvoiceCounts(0, 2),
+                         await offers.GetInvoiceCountsAsync(otherOffer.OfferId, shortLived.ExpiresAt.AddTicks(-1)));
+            Assert.Equal(new OfferInvoiceCounts(0, 1),
+                         await offers.GetInvoiceCountsAsync(otherOffer.OfferId, shortLived.ExpiresAt));
         }
+
+        await AssertPruneAsync(contextFactory, offer, otherOffer, all, cancellationToken);
 
         // Assert: a BOLT 12 invoice needs an offer we stored (foreign key)
         await using (var context = contextFactory())
@@ -205,6 +217,72 @@ internal static class Bolt12SchemaRoundTrip
                                              null, null, s_now);
             await new InvoiceDbRepository(context).AddAsync(orphan);
             await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync(cancellationToken));
+        }
+    }
+
+    /// <summary>
+    /// The expired open BOLT 12 invoices are pruned (staged, oldest expiry first, at most the given number); BOLT 11,
+    /// accepted, settled and canceled rows stay, and so does a row this unit of work already accepted.
+    /// </summary>
+    private static async Task AssertPruneAsync(Func<NLightningDbContext> contextFactory, OfferModel offer,
+                                               OfferModel otherOffer, InvoiceModel[] all,
+                                               CancellationToken cancellationToken)
+    {
+        // all: open, settled, expired, canceled, accepted, otherOpen, shortLived, bolt11
+        var (open, expired, otherOpen, shortLived) = (all[0], all[2], all[5], all[6]);
+
+        // Act: at shortLived's expiry both it and `expired` (which expired at s_now) are expired; prune one
+        var at = shortLived.ExpiresAt;
+        await using (var context = contextFactory())
+        {
+            var repository = new InvoiceDbRepository(context);
+            Assert.Equal(0, await repository.PruneExpiredBolt12InvoicesAsync(at, 0));
+            Assert.Equal(1, await repository.PruneExpiredBolt12InvoicesAsync(at, 1));
+
+            // Staged only
+            await using (var other = contextFactory())
+                Assert.NotNull(await new InvoiceDbRepository(other).GetByPaymentHashAsync(expired.PaymentHash));
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        // Assert: the oldest expiry went first
+        await using (var context = contextFactory())
+        {
+            var repository = new InvoiceDbRepository(context);
+            Assert.Null(await repository.GetByPaymentHashAsync(expired.PaymentHash));
+            Assert.NotNull(await repository.GetByPaymentHashAsync(shortLived.PaymentHash));
+            Assert.Equal(0, await repository.PruneExpiredBolt12InvoicesAsync(at.AddTicks(-1), 10));
+            Assert.Equal(1, await repository.PruneExpiredBolt12InvoicesAsync(at, 10));
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        // Act: a day later every open BOLT 12 row is expired; accept one in this unit of work before pruning
+        var later = open.ExpiresAt.AddDays(1);
+        await using (var context = contextFactory())
+        {
+            var repository = new InvoiceDbRepository(context);
+            var stillOpen = await repository.GetByPaymentHashAsync(otherOpen.PaymentHash);
+            stillOpen!.Accept(LightningMoney.MilliSatoshis(2_000));
+            await repository.UpdateAsync(stillOpen);
+            Assert.Equal(1, await repository.PruneExpiredBolt12InvoicesAsync(later, 10));
+            await context.SaveChangesAsync(cancellationToken);
+        }
+
+        // Assert: only the open one went; the rest stays and counts
+        await using (var context = contextFactory())
+        {
+            var repository = new InvoiceDbRepository(context);
+            Assert.Null(await repository.GetByPaymentHashAsync(open.PaymentHash));
+            Assert.Null(await repository.GetByPaymentHashAsync(shortLived.PaymentHash));
+            var remaining = (await repository.ListAsync(0, 100)).Select(i => i.PaymentHash).ToHashSet();
+            foreach (var kept in new[] { all[1], all[3], all[4], otherOpen, all[7] })
+                Assert.Contains(kept.PaymentHash, remaining);
+            Assert.Equal(0, await repository.PruneExpiredBolt12InvoicesAsync(later, 10));
+
+            var offers = new OfferDbRepository(context);
+            Assert.Equal(new OfferInvoiceCounts(1, 1), await offers.GetInvoiceCountsAsync(offer.OfferId, later));
+            Assert.Equal(new OfferInvoiceCounts(0, 1), await offers.GetInvoiceCountsAsync(otherOffer.OfferId, later));
+            Assert.Equal(2, await offers.CountUnpaidInvoicesAsync(later));
         }
     }
 
@@ -310,10 +388,11 @@ internal static class Bolt12SchemaRoundTrip
     }
 
     internal static InvoiceModel CreateBolt12Invoice(byte seed, Hash offerId, byte[] invoiceBytes, ulong? quantity,
-                                                     string? payerNote, DateTimeOffset createdAt) =>
+                                                     string? payerNote, DateTimeOffset createdAt,
+                                                     uint expirySeconds = 7_200) =>
         new(new Hash(Enumerable.Repeat(seed, 32).ToArray()), PaymentSchemaRoundTrip.SecretOf((byte)(seed + 1)),
             PaymentSchemaRoundTrip.SecretOf((byte)(seed + 2)), LightningMoney.MilliSatoshis(123_456_789), "coffee",
-            null, createdAt, 7_200, 40, bolt12: new Bolt12InvoiceDetails(offerId, invoiceBytes, s_payerId, quantity,
+            null, createdAt, expirySeconds, 40, bolt12: new Bolt12InvoiceDetails(offerId, invoiceBytes, s_payerId, quantity,
                                                                            payerNote));
 
     private static PaymentModel CreateBolt12Payment(byte seed, string offer, byte[] invoiceBytes, byte[] metadata,
