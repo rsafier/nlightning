@@ -256,6 +256,14 @@ internal sealed class InMemoryInteractiveTxSessionRepository : IInteractiveTxSes
     public Task<bool> DeleteAsync(ChannelId channelId, Guid sessionId) =>
         Task.FromResult(Committed.Remove((channelId, sessionId)));
 
+    public Task<int> DeleteByChannelIdAsync(ChannelId channelId)
+    {
+        var keys = Committed.Keys.Where(k => k.Item1 == channelId).ToList();
+        foreach (var key in keys)
+            Committed.Remove(key);
+        return Task.FromResult(keys.Count);
+    }
+
     public void Commit()
     {
         foreach (var session in _staged)

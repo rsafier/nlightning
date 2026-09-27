@@ -11,6 +11,7 @@ using Channels.Handlers;
 using Channels.Handlers.Interfaces;
 using Channels.Interfaces;
 using Channels.Managers;
+using Channels.Quiescence;
 using Channels.Reestablish;
 using Channels.Safety;
 using Channels.Services;
@@ -27,6 +28,7 @@ using Domain.Node.Options;
 using Domain.Protocol.Interfaces;
 using Gossip;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using InteractiveTx;
 using Node.Managers;
 using Offers;
 using Offers.Send;
@@ -119,6 +121,13 @@ public static class DependencyInjection
         // stay unavailable without an IBolt12Signer, onion messages and route blinding
         services.AddOffersServices();
         services.AddOfferSendServices();
+        // BOLT 2 channel quiescence (splicing plan wave Q): stfu handling, owed-stfu release and the timeout monitor;
+        // option_quiesce stays experimental, so it is only used when the feature is negotiated
+        services.AddQuiescenceServices();
+        // BOLT 2 interactive transaction construction (splicing plan wave IT): the wallet contributor over the
+        // Infrastructure.Bitcoin builder and prevtx inspector, and the driver the tx_* handlers go through
+        services.AddInteractiveTxContributorServices();
+        services.AddInteractiveTxServices();
         services.AddSingleton<IPeerManager>(sp =>
         {
             var peerManager = ActivatorUtilities.CreateInstance<PeerManager>(sp);

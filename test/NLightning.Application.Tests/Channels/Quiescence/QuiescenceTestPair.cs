@@ -83,7 +83,7 @@ internal sealed class QuiescenceTestPair : IDisposable
             {
                 if (args.ResponseMessage is StfuMessage stfu)
                     StfuSent.Enqueue((name, stfu.Payload.Initiator,
-                                      QuiescenceService.HasPendingLocalUpdates(nodeRef.State)));
+                                      QuiescenceRules.HasPendingLocalUpdates(nodeRef.State)));
             };
         }
     }

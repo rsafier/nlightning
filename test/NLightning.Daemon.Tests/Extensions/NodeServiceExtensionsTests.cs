@@ -7,6 +7,7 @@ namespace NLightning.Daemon.Tests.Extensions;
 
 using Application.Channels.Fees;
 using Application.Channels.Interfaces;
+using Application.Channels.Quiescence;
 using Application.Channels.Reestablish;
 using Application.Channels.Safety.Interfaces;
 using Application.Gossip.Announcements;
@@ -18,6 +19,8 @@ using Application.Gossip.Relay.Interfaces;
 using Application.Gossip.Services;
 using Application.Gossip.Sync;
 using Application.Gossip.Sync.Interfaces;
+using Application.InteractiveTx;
+using Application.InteractiveTx.Interfaces;
 using Application.Node.Managers;
 using Application.Offers.Receive;
 using Application.OnionMessages;
@@ -34,6 +37,7 @@ using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Transactions.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Quiescence;
 using Domain.Channels.Reestablish;
 using Domain.Client.Enums;
 using Domain.Client.Requests;
@@ -47,11 +51,13 @@ using Domain.Offers.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Constants;
+using Domain.Protocol.InteractiveTx.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Domain.Protocol.OnionMessages.Interfaces;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Gossip;
+using Infrastructure.Bitcoin.InteractiveTx;
 using Infrastructure.Bitcoin.Onion;
 using Infrastructure.Bitcoin.Options;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -145,6 +151,33 @@ public class NodeServiceExtensionsTests
                            .GetField("_memoryBudget", System.Reflection.BindingFlags.Instance
                                                     | System.Reflection.BindingFlags.NonPublic)!
                            .GetValue(provider.GetRequiredService<GossipIngress>()));
+    }
+
+    [Fact]
+    public void Given_NodeServices_When_Composed_Then_QuiescenceAndInteractiveTxUseTheRealComponents()
+    {
+        // Arrange: wave qit registers quiescence (Q-B) and the interactive-tx driver (IT-D) over the Domain session
+        // (IT-A), the Bitcoin builder and prevtx inspector (IT-B) and the wallet contributor (IT-B)
+        var services = new ServiceCollection();
+        services.AddNltgNodeServices(BuildConfiguration(), new Mock<ISecureKeyManager>().Object);
+        services.AddSingleton(new Mock<IBitcoinChainService>().Object);
+        services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
+        using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+
+        // Act
+        var quiescenceService = provider.GetRequiredService<IQuiescenceService>();
+        var driver = provider.GetRequiredService<IInteractiveTxDriver>();
+
+        // Assert
+        Assert.Same(provider.GetRequiredService<QuiescenceService>(), quiescenceService);
+        Assert.Same(provider.GetRequiredService<InteractiveTxDriver>(), driver);
+        Assert.IsType<DomainInteractiveTxEngine>(provider.GetRequiredService<IInteractiveTxEngine>());
+        Assert.IsType<InteractiveTxBuilder>(provider.GetRequiredService<IInteractiveTxBuilder>());
+        Assert.IsType<PrevTxInspector>(provider.GetRequiredService<IPrevTxInspector>());
+        Assert.Same(provider.GetRequiredService<WalletInteractiveTxContributor>(),
+                    provider.GetRequiredService<IInteractiveTxContributor>());
+        Assert.Single(services, d => d.ServiceType == typeof(IInteractiveTxDriver));
+        Assert.Single(services, d => d.ServiceType == typeof(IQuiescenceService));
     }
 
     [Fact]

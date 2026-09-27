@@ -15,6 +15,7 @@ namespace NLightning.Integration.Tests.Docker.Utils;
 
 using Application.Channels.Fees;
 using Application.Channels.Safety.Interfaces;
+using Application.InteractiveTx;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
 using Daemon.Extensions;
@@ -322,6 +323,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             var walletSpendService = Services.GetService<IWalletSpendService>();
             if (walletSpendService is not null)
                 await walletSpendService.ReleaseOrphanedReservationsAsync(cancellationToken);
+            // As the daemon does: release interactive-tx reservations no stored negotiation holds (splicing plan IT2)
+            var interactiveTxContributor = Services.GetService<WalletInteractiveTxContributor>();
+            if (interactiveTxContributor is not null)
+                await interactiveTxContributor.ReleaseOrphanedReservationsAsync(cancellationToken);
             // As the daemon does: prune the onion replay set on every block (NL-327)
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
             _started = true;

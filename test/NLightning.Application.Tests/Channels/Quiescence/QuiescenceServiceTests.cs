@@ -36,7 +36,7 @@ public class QuiescenceServiceTests
         bool sent, bool received, bool weAreFunder, QuiescenceInitiator expected)
     {
         // Act
-        var initiator = QuiescenceService.ResolveInitiator(sent, received, weAreFunder);
+        var initiator = QuiescenceRules.ResolveInitiator(sent, received, weAreFunder);
 
         // Assert (Q-R-05 when both are 1)
         Assert.Equal(expected, initiator);
@@ -46,7 +46,7 @@ public class QuiescenceServiceTests
     public void Given_BothFlagsZero_When_ResolvingTheInitiator_Then_Throws()
     {
         // Act / Assert: nobody initiated
-        Assert.Throws<ArgumentException>(() => QuiescenceService.ResolveInitiator(false, false, true));
+        Assert.Throws<ArgumentException>(() => QuiescenceRules.ResolveInitiator(false, false, true));
     }
 
     [Fact]
@@ -108,20 +108,20 @@ public class QuiescenceServiceTests
         Assert.True(await pair.Alice.DeliverNextAsync());
 
         // Assert 1
-        Assert.True(QuiescenceService.HasPendingLocalUpdates(pair.Alice.State));
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Bob.State));
+        Assert.True(QuiescenceRules.HasPendingLocalUpdates(pair.Alice.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Bob.State));
 
         // Act 2: all committed; then Bob removes it (35 at Bob, 15 at Alice)
         await pair.PumpAsync();
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Alice.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Alice.State));
         await pair.Bob.Operations.FailHtlcAsync(TwoNodeHarness.ChannelId, 0, new byte[292],
                                                 TestContext.Current.CancellationToken);
 
         // Assert 2
-        Assert.True(QuiescenceService.HasPendingLocalUpdates(pair.Bob.State));
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Alice.State));
+        Assert.True(QuiescenceRules.HasPendingLocalUpdates(pair.Bob.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Alice.State));
         await pair.PumpAsync();
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Bob.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Bob.State));
     }
 
     [Fact]
@@ -135,10 +135,10 @@ public class QuiescenceServiceTests
                                                    TestContext.Current.CancellationToken);
 
         // Assert
-        Assert.True(QuiescenceService.HasPendingLocalUpdates(pair.Alice.State));
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Bob.State));
+        Assert.True(QuiescenceRules.HasPendingLocalUpdates(pair.Alice.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Bob.State));
         await pair.PumpAsync();
-        Assert.False(QuiescenceService.HasPendingLocalUpdates(pair.Alice.State));
+        Assert.False(QuiescenceRules.HasPendingLocalUpdates(pair.Alice.State));
     }
 
     [Fact]

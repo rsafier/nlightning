@@ -7,7 +7,6 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Application.Channels.Quiescence;
 
-using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
@@ -41,16 +40,16 @@ using Reestablish;
 /// connection closes (its <c>OnDisconnect</c>) or another one replaces it, the entry is gone (Q-R-04), even if
 /// <see cref="OnPeerDisconnected"/> is never called. Without a peer manager (in-process harnesses) only
 /// <see cref="OnPeerDisconnected"/> ends it.</para>
-/// <para>Our <c>stfu</c> goes out only when none of our updates is pending for either side (Q-S-02, checked by
-/// <see cref="HasPendingLocalUpdates"/>): an owed one is released after each commitment transition through
-/// <see cref="IStfuReleaseScheduler"/>, behind the transition's own messages. While a channel quiesces or is
+/// <para>Our <c>stfu</c> goes out only when none of our updates is pending for either side (Q-S-02,
+/// <see cref="QuiescenceRules.HasPendingLocalUpdates"/>): an owed one is released after each commitment transition
+/// through <see cref="IStfuReleaseScheduler"/>, behind the transition's own messages. While a channel quiesces or is
 /// quiescent, <c>ChannelOperationsService</c> refuses our updates with <see cref="ChannelQuiescentException"/>; when
 /// the quiescence ends (<see cref="Terminate"/>), the channel's pending HTLC events are replayed into the switch
 /// (<see cref="LinkUpEventReplayer"/>), so a fulfill or fail refused meanwhile is sent then (never lost), and the
 /// commit scheduler signs whatever is pending. A timed-out quiescence is the exception: it keeps blocking our updates
 /// until its connection is closed, and the reestablish on the next connection replays them.</para>
-/// <para>The BOLT 2 rules are applied by private helpers here (<see cref="HasPendingLocalUpdates"/>,
-/// <see cref="ResolveInitiator"/>) until lane Q-A's Domain <c>QuiescenceRules</c> replaces them.</para>
+/// <para>The BOLT 2 rules come from the pure Domain <see cref="QuiescenceRules"/> (Q-S-01..Q-S-03, Q-R-05); this
+/// service applies them under the channel's lock.</para>
 /// </remarks>
 public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseScheduler, IDisposable
 {
@@ -137,12 +136,8 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
         ArgumentNullException.ThrowIfNull(negotiatedFeatures);
         var channelId = channel.ChannelId;
 
-        if (!negotiatedFeatures.IsFeatureSet(Feature.OptionQuiesce))
-            throw new ChannelWarningException($"[Q-S-01] stfu on channel {channelId} without option_quiesce",
-                                              channelId, "stfu without option_quiesce negotiated")
-            {
-                CloseConnection = true
-            };
+        if (!QuiescenceRules.IsNegotiated(negotiatedFeatures))
+            throw QuiescenceRules.CreateWarning(QuiescenceViolation.NotNegotiated, channelId);
 
         if (channel.State != ChannelState.Open)
             throw new ChannelWarningException(
@@ -162,22 +157,11 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
                 return null;
             }
 
+            // Q-S-01 (checked above), Q-S-03: a second stfu, or initiator = 0 replying to nothing
             var state = existing?.State ?? QuiescenceState.None;
-            if (state.StfuReceived)
-                throw new ChannelWarningException($"[Q-S-03] second stfu on channel {channelId}", channelId,
-                                                  "stfu sent twice")
-                {
-                    CloseConnection = true
-                };
-
-            // Q-S-03: initiator = 0 only replies to our stfu; a reply to nothing would leave no initiator at all
-            if (!stfu.Initiator && !state.StfuSent)
-                throw new ChannelWarningException(
-                    $"[Q-S-03] stfu with initiator=0 on channel {channelId} but we sent no stfu", channelId,
-                    "stfu with initiator=0 but we sent no stfu")
-                {
-                    CloseConnection = true
-                };
+            if (QuiescenceRules.Receive(state, stfu.Initiator, true, channel.IsInitiator, _timeProvider.GetUtcNow())
+                    .Violation is { } violation)
+                throw QuiescenceRules.CreateWarning(violation, channelId);
 
             var entry = existing;
             if (entry is null)
@@ -221,7 +205,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
                 return null;
 
             // Q-S-03: a reply sets initiator = 0, our own request 1
-            var initiator = !entry.State.StfuReceived;
+            var initiator = QuiescenceRules.InitiatorFlagToSend(entry.State);
             entry.StartedAt ??= _timeProvider.GetUtcNow();
             entry.State = entry.State with { SentStfuInitiator = initiator };
             _logger.LogInformation("Sending stfu (initiator {Initiator}) on channel {ChannelId}", initiator ? 1 : 0,
@@ -430,37 +414,6 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 
     #region Rules
 
-    /// <summary>
-    /// Q-S-02: one of <b>our</b> HTLC additions, removals or fee updates is pending for either side: our add not yet in
-    /// both commitments with both revoked (states 10-13), our removal of the peer's HTLC not final (35-38), or our fee
-    /// update not final. The peer's updates never block our <c>stfu</c>.
-    /// </summary>
-    internal static bool HasPendingLocalUpdates(ChannelCommitments commitments)
-    {
-        ArgumentNullException.ThrowIfNull(commitments);
-        return commitments.Htlcs.Values.Any(h => h.State is >= HtlcState.SentAddHtlc and <= HtlcState.RcvdAddAckCommit
-                                                         or >= HtlcState.SentRemoveHtlc
-                                                            and <= HtlcState.RcvdRemoveAckCommit)
-            || commitments.FeeUpdates.Any(f => !f.IsFinal && f.Owner == HtlcDirection.Outgoing);
-    }
-
-    /// <summary>
-    /// Who is the initiator once both <c>stfu</c> are exchanged: the side that sent <c>initiator</c> = 1 first; both
-    /// 1 (simultaneous) → the channel funder, the sender of <c>open_channel</c> (Q-R-05).
-    /// </summary>
-    /// <exception cref="ArgumentException">Both flags are 0: nobody initiated (<see cref="OnStfuReceived"/> refuses a
-    /// <c>stfu</c> with <c>initiator</c> = 0 that replies to nothing).</exception>
-    internal static QuiescenceInitiator ResolveInitiator(bool sentInitiator, bool receivedInitiator, bool weAreFunder)
-    {
-        return (sentInitiator, receivedInitiator) switch
-        {
-            (true, false) => QuiescenceInitiator.Local,
-            (false, true) => QuiescenceInitiator.Remote,
-            (true, true) => weAreFunder ? QuiescenceInitiator.Local : QuiescenceInitiator.Remote,
-            _ => throw new ArgumentException("Neither stfu set initiator = 1")
-        };
-    }
-
     private bool CanSendStfu(ChannelModel channel, Entry entry)
     {
         if (!entry.Negotiated || channel.State != ChannelState.Open || channel.Commitments is not { } commitments)
@@ -471,7 +424,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
          && !tracker.IsReestablished(channel.ChannelId))
             return false;
 
-        return !HasPendingLocalUpdates(commitments);
+        return !QuiescenceRules.HasPendingLocalUpdates(commitments);
     }
 
     #endregion
@@ -480,7 +433,7 @@ public sealed class QuiescenceService : IQuiescenceService, IStfuReleaseSchedule
 
     private void BecomeQuiescent(ChannelModel channel, Entry entry)
     {
-        var initiator = ResolveInitiator(entry.State.SentStfuInitiator!.Value, entry.State.ReceivedStfuInitiator!.Value,
+        var initiator = QuiescenceRules.ResolveInitiator(entry.State.SentStfuInitiator!.Value, entry.State.ReceivedStfuInitiator!.Value,
                                          channel.IsInitiator);
         entry.State = entry.State with { Initiator = initiator, QuiescentSince = _timeProvider.GetUtcNow() };
         _logger.LogInformation("Channel {ChannelId} is quiescent (initiator: {Initiator})", channel.ChannelId,

@@ -17,6 +17,7 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Interfaces;
 using Gossip;
 using Infrastructure.Crypto.Interfaces;
+using InteractiveTx;
 using Offers;
 using Onion;
 using Onion.OnionMessages;
@@ -71,6 +72,9 @@ public static class DependencyInjection
 
         // BOLT 7 gossip signature verification and the funding output lookup of channel announcements (G0-T3, G2-T2)
         services.AddGossipBitcoinServices();
+
+        // BOLT 2 interactive transaction construction (splicing plan IT2): prevtx inspector, builder, wallet prevtx source
+        services.AddInteractiveTxBitcoinServices();
 
         // The signer holds the node's secrets; ISecureKeyManager is registered by the host
         services.AddSingleton<ILightningSigner>(sp =>
