@@ -11,7 +11,7 @@ This plan covers four waves, each a prerequisite of the next:
 
 An optional **wave DF** (dual-funded v2 open) reuses wave IT and can run in parallel with SP1 or later. It is not needed for splicing.
 
-**Status (2026-09-27, `wip/fafo` @ `d929b879`): nothing started.** Every repo claim cites a repo-relative path verified at `d929b879`; line numbers drift, so re-check before editing. Claims marked **(unverified)** were not checked against the spec, the code or a running peer. Confirm them before relying on them.
+**Status (2026-09-27, `wip/fafo` @ `3660bff2`): waves Q and IT done (wave qit, "Wave qit record"), wave SP1 done with Proof SP1 green against CLN v26.06.8 and wave DF's DF1/DF2 done with Proof DF green (wave sp1, "Wave SP1 record"); `OptionQuiesce`, `OptionSplice` and `OptionDualFund` stay experimental (default No). Next: wave SP2, then SPR and D13.** The design text below was written at `d929b879` (plan written, nothing started); every repo claim cites a repo-relative path verified at `d929b879`; line numbers drift, so re-check before editing. Claims marked **(unverified)** were not checked against the spec, the code or a running peer. Confirm them before relying on them.
 
 - **Spec source:** `lightning/bolts` master, fetched 2026-09-27 (raw files):
   - `02-peer-protocol.md`: §Interactive Transaction Construction (lines ~100-628), §Channel Establishment v2 (~1137-1490), §Channel Quiescence (~1491-1557), §Channel Splicing (~1559-2046), §Batching channel messages (`start_batch`, ~3040-3097), §`commitment_signed` (~3099-3206), §`channel_reestablish` (~3372-3560);
@@ -496,6 +496,30 @@ DF1 v2 channel id + `open_channel2`/`accept_channel2` handlers; DF2 first commit
 - (f) The splice tx is a valid 2-of-2 spend in bitcoind; the fee paid matches IT-S-03 within one vbyte.
 
 **Estimate:** **~3 h, 5 lanes** (SP1-A..E). This is the heaviest wave; if a lane runs long, SP1-E's Docker proof moves to the start of SP2.
+
+### Wave SP1 record (wave sp1, integrated at `3660bff2`, 2026-09-27)
+
+Contracts SP1-0/DF-0 at `52338a14` (lane `5ad7acb4`). Seven lanes (SP1-A..E, plus SP1-F = wave DF's DF1/DF2 and SP1-G = per-channel routing policies), each with a review/fix step; SP1-C was the migration owner (`AddSpliceFundings`, all three providers, with the dual-funding columns and the `ChannelPolicies` table). Lane commits cherry-picked with `-x` in the order contracts → SP1-C → SP1-A → SP1-B → SP1-D → SP1-F → SP1-G → SP1-E. Ledger: NL-021 and NL-037 partial, NL-470 partial, new NL-475..NL-483 (NL-475, NL-476 fixed). Full gate record in `ABCD_ROADMAP.md` "Wave sp1".
+
+| Task | Status | `wip/fafo` SHAs |
+|---|---|---|
+| SP1-0, DF-0 contracts | done | 52338a14 |
+| SP1-A-T1 wire 77/80/81/127 | done; also fixed the `tx_init_rbf` locktime/feerate swap (NL-475) and made `funding_output_contribution` an s64 in satoshis (NL-476) | 830610fc, e9f17f6b |
+| SP1-A-T2 TLV 5 on `channel_reestablish` | done (strict set {1,5}; parsed, processed in SP2-A) | e9f17f6b |
+| SP1-A-T3 inbound batch grouping | done; grouping only with negotiated `option_splice` (else `start_batch` is dropped as before); a partial batch ends with its connection; we always take warning + close, never error + fail | 15099a4c, acbab68b |
+| SP1-B-T1..T5 engine | done: `FundingSet`, per-funding specs, batched CS + one RAA, splice commitment step, `LockFunding`/`DiscardPendingFundings`, validation on every active funding, simulator splicing mode (500 seeds in CI, 10k `Category=Long` green). Deviation (SP-OP-06): members for a funding that is no longer active are ignored also while a splice is pending (BOLT 2 rationale, Eclair). Review: `start_batch` gated before reestablish, our shutdown held while a splice is unlocked, lenient receive reserve on a spliced funding (D9/Q3 open, NL-480), revoked fundings survive a discard or lock | c2ff9279, d37427ae, b50bdfbc, c7936b7e, 1cd7515d, 29b4ae25 |
+| SP1-C-T1..T3 signer | done: funding key `m/0'` for i = 0 and `m/0'/i'` after (restorable from the index), per-funding signing, SP-I1 shared-input guard, per-funding S1; Appendix C/F still byte-exact | be14108b |
+| SP1-C-T4 migration + repositories | done: `AddSpliceFundings` ×3 with a hand-written data step and a guarded `Down`; `ChannelFundingDbRepository`, `ChannelPolicyDbRepository`; revocation log read per funding; Postgres round trip in `Docker/PostgresTests` (SQL Server not run). Revocation rows for pending fundings are not written yet and the on-chain readers are unscoped (NL-479) | 01b70bf1, e33ae3d2, 48b0339f |
+| SP1-D-T1 `SpliceRules` | done (65 table rows) | 7410e221 |
+| SP1-D-T2 `SpliceService` + handlers | done: initiator and acceptor (contribution 0) over the IT driver, quiescence requested and ended, splice tx stored as a broadcast row with its watch, discard after `tx_abort`, our own splice tx left to the splice by the funding-spend routing; minimal `splice_locked` and `SpliceDepthWatcher` (ahead of SP2-B-T1) | 940da49c, 4577c997, c7badd17, cf4db235, 11eeced9, df9a869a, ccb98862, 9cbd7bac |
+| SP1-D-T3 splice harness | done: SP-T-01 and SP-T-02 on the real engine, splice-in and splice-out each side initiating, batched CS both ways, the lock | 957c1519, a00b8cbe |
+| SP1-E-T1 `splicein`/`spliceout` | done (`ClientCommand` 33/34) | 03691f28, d7c77659 |
+| SP1-E-T2 **Proof SP1** | done: `ClnSpliceTests` 5/5 against CLN v26.06.8 on the integrated branch; it first failed 5/5 and found two integration bugs, fixed in 2ba4fe09: the locked splice never got its SCID (now from the confirmation's block and index) and the anchors were built on the original funding keys (CLN: "Bad commit_sig" after the lock). (d) CLN splices out to its own wallet (v26.06.8 refuses an external address) | b22e204e, d7c77659, 2ba4fe09 |
+| DF1, DF2 (lane SP1-F) | done: `ChannelIdV2`, `DualFundingRules`, `open_channel2`/`accept_channel2`, `DualFundedOpenService`/`DualFundHost`, first commitment, `tx_signatures`, `channel_ready`, `next_funding` retransmission, RBF of an unconfirmed open (off by default, `Node:DualFund:AllowRbf`; refused for public or confirmed opens); `openchannel --dual-fund`; **Proof DF** (`ClnDualFundTests`) green. DF3 not done (`OptionDualFund` stays experimental) | 966cad6e, c9603fb9, 27cca704, 7b325699, 5e49fdc3, d90dd68c, d618dbf3, 7c109ca2, d934a566, 01bc76e0, e45b61b4, c6a4a779, 17066201 |
+| Channel policies (lane SP1-G) | done: `setchannelpolicy`/`getchannelpolicy` (`ClientCommand` 35/36), a fresh `channel_update` on change, per-channel forwarding checks, the effective policy in `listchannels`, replaced policies honoured for 10 minutes; Docker `ChannelPolicyFlowTests`/`ChannelPolicyPublicFlowTests` against LND | af9efdd7, 2859dfb1, 24d3a08e |
+| Integration | registrations (`AddDualFundingServices`, splice/dual-fund options, splice and policy IPC), `ChannelPolicyStore.LoadAsync` before `PeerManager` and `SpliceDepthWatcher.CatchUpAsync` after the chain monitor (daemon and `NLightningTestNode`), the SCID at the lock and anchors on the current funding keys | d778d100, 2ba4fe09, 3660bff2 |
+
+Carried to SP2: SG7 reestablish (SP-RE, TLV 5 processing, retransmission of splice CS/`tx_signatures`), the full `splice_locked` rules, announcement and SCID map (SG10, NL-478 for the announcement keys), BOLT 5 across fundings (SG6 classifier, NL-479), `listchannels` fundings, Proof SP2; follow-ups NL-480, NL-483; NL-481 goes with SPR.
 
 ### Wave SP2: reestablish, lock, gossip, on-chain
 **SP2-A: Reestablish** (lane SP2-A)

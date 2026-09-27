@@ -86,12 +86,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 | Status | critical | high | medium | low | Total |
 |---|---|---|---|---|---|
-| open | 0 | 0 | 9 | 139 | 148 |
+| open | 0 | 0 | 11 | 144 | 155 |
 | in-progress | 0 | 0 | 0 | 0 | 0 |
-| fixed | 14 | 57 | 138 | 104 | 313 |
+| fixed | 14 | 57 | 140 | 104 | 315 |
 | wontfix | 0 | 0 | 2 | 5 | 7 |
 | duplicate | 0 | 0 | 1 | 0 | 1 |
-| **Total** | **14** | **57** | **150** | **248** | **469** |
+| **Total** | **14** | **57** | **154** | **253** | **478** |
 
 ### Epics
 
@@ -99,7 +99,8 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - NL-031: HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee) (fixed, critical; N6 in wave 1, reestablish and switch in wave 2; the fail-the-channel broadcast is N9-T4 under NL-094)
 - NL-034: Channel close (shutdown / closing_signed / option_simple_close) (fixed, critical; legacy close in wave 3 W3-B, Docker proof against LND and CLN close in wave 4, option_simple_close NL-020 in wave 6 (default No); NL-279 and NL-045 fixed in wave lh1; remaining: NL-285, NL-286)
 - NL-035: channel_reestablish / option_data_loss_protect (fixed, critical; ABCD wave 2 W2-A; shutdown re-send is N10, Closing resumption NL-036)
-- NL-037: Dual funding / interactive-tx (v2 open) (open (partial), medium; wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; remaining: the v2 open itself (plan wave DF) and an interop proof; follow-ups NL-473, NL-474)
+- NL-037: Dual funding / interactive-tx (v2 open) (open (partial), medium; wave qit: the interactive-tx layer (engine, Bitcoin side, wire and `AddInteractiveTxSessions`, driver and handlers; NL-041, NL-219 fixed) is done and registered; wave sp1 lane SP1-F: the v2 open (DF1, DF2) behind experimental `OptionDualFund` with Proof DF green against CLN v26.06.8, which also proves the interactive-tx layer on the wire; tx_init_rbf bugs NL-475, NL-476 fixed; remaining: DF3 (out of experimental, not scheduled), follow-ups NL-473, NL-474)
+- NL-021: Splicing (open (partial), low; wave sp1 at `3660bff2`: wire, several-funding engine, per-funding signer, `AddSpliceFundings`, negotiation, `splicein`/`spliceout` (33/34), Proof SP1 green against CLN v26.06.8; `OptionSplice` experimental; remaining: waves SP2 and SPR, D13; follow-ups NL-477..NL-481, NL-483)
 - NL-070: Error onions: failure messages, create / wrap / decrypt (ONION M3) (fixed, high; attribution_data NL-072 fixed: library done in wave 6, persisted and wired into the switch and send paths in wave 7 (NL-326); `OptionAttributionData` stays experimental (NL-332))
 - NL-073: Onion integration with HTLC flow: peel after lock-in, forward, final hop, send (ONION M4) (fixed, high; `HtlcSwitch` W2-B and `PaymentService` W2-C; wave 6: persistent replay set NL-078, basic_mpp receive NL-081, retries and MPP send NL-270; wave 7: HTLC-set commitment NL-323, attribution_data NL-326, block-driven replay pruning NL-327)
 - NL-079: Route blinding payload handling (ONION M5) (fixed, medium; wave rf1: send, receive and forward, advertised Optional, proven against LND 0.20; limits NL-440 (MPP over blinded paths and own-introduction paths done in wave B12); onion messages (M6) are NL-080, fixed in wave M6)
@@ -379,11 +380,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N11-T1
 
 ### NL-021 Splicing and start_batch messages missing
-- **Status:** open
+- **Status:** open (partial: 52338a14, be14108b, 01b70bf1, e33ae3d2, 48b0339f, e9f17f6b, 15099a4c, acbab68b, c2ff9279, d37427ae, b50bdfbc, 1cd7515d, 29b4ae25, 7410e221, 4577c997, c7badd17, a00b8cbe, 957c1519, 11eeced9, df9a869a, ccb98862, 9cbd7bac, 03691f28, b22e204e, d7c77659, d778d100, 2ba4fe09)
 - **Severity:** low
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/Constants/MessageTypes.cs`
 - **Evidence:** No splice_init/ack/locked or start_batch types.
+- **Update (wave sp1, `SPLICING_PLAN.md` "Wave SP1 record", integrated at `3660bff2`):** the splicing core is in, behind experimental `OptionSplice`/`OptionQuiesce` (default No). Wire 77/80/81/127, `channel_reestablish` TLV 5 and inbound `start_batch` grouping gated on negotiated `option_splice` (SP1-A: e9f17f6b, 15099a4c, acbab68b); several fundings in the commitment engine, batched `commitment_signed` with one `revoke_and_ack`, the splice commitment step, lock/discard, validation on every funding and the splicing simulator (500 seeds in CI, 10k `Category=Long`) (SP1-B: c2ff9279, d37427ae, b50bdfbc, 1cd7515d, 29b4ae25); per-funding signer keys `m/0'/i'`, the SP-I1 shared-input guard, per-funding S1, migration `AddSpliceFundings` on all three providers and the funding/policy repositories (SP1-C: be14108b, 01b70bf1, e33ae3d2, 48b0339f); `SpliceRules`, `SpliceService` with the `splice_init`/`splice_ack`/minimal `splice_locked` handlers, `SpliceDepthWatcher`, the splice harness on the real engine (SP-T-01/02) and the funding-spend routing of our own splice tx (SP1-D: 7410e221, 4577c997, c7badd17, a00b8cbe, 957c1519, 11eeced9, df9a869a, ccb98862, 9cbd7bac); `splicein` (33) / `spliceout` (34) and **Proof SP1 green against CLN v26.06.8** (`ClnSpliceTests` 5/5: CLN and we splice in and out, payments with batches while pending, the 2-of-2 spend and our fee; SP1-E: 03691f28, b22e204e, d7c77659); integration: registrations and startup catch-up (d778d100), the locked splice's SCID from the confirmation and anchors on the current funding keys, which CLN rejected as "Bad commit_sig" after a splice (2ba4fe09). Plan gaps: SG3, SG5, SG8 done; SG4 done in the engine, signer and persistence (gossip is SP2-B); SG6 partial (our own splice tx is left to the splice, 11eeced9; `FundingSpendClassifier` is SP2-C); SG9 partial (`listchannels` fundings is SP2-D); SG7 and SG10 open (SP2-A, SP2-B). Remaining: wave SP2 (reestablish SP-RE, lock/announcement/SCID map, BOLT 5 across fundings, Proof SP2), wave SPR, then D13; follow-ups NL-477..NL-481, NL-483.
 - **Fix sketch:** Later; after NL-042 and NL-037. Wave qit landed the quiescence and interactive-tx layers splicing builds on; the shared-input TLVs (`shared_input_txid`, `shared_input_signature`) are serialized (940baca2), but the session checks `shared_input_signature` for presence only (its ECDSA validity and low-S, SP-SIG-01, are the splice host's job).
 - **Blocks/Blocked-by:** Blocked-by NL-042, NL-037
 - **Plan ref:** `SPLICING_PLAN.md` waves SP1, SP2, SPR (gaps SG3..SG10 in §2.2)
@@ -530,6 +532,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 
 ---
 
+### NL-475 tx_init_rbf locktime and feerate were swapped on both ends
+- **Status:** fixed (830610fc)
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Protocol/Factories/MessageFactory.cs` (`CreateTxInitRbfMessage`), `src/NLightning.Infrastructure.Serialization/Payloads/TxInitRbfPayloadSerializer.cs` (`DeserializeAsync`)
+- **Evidence:** Both passed (locktime, feerate) to the `TxInitRbfPayload(channelId, feerate, locktime)` constructor, so a received `tx_init_rbf` had its feerate and locktime exchanged and `InteractiveTxDriver`'s IT-RBF-01 minimum-feerate check used the peer's locktime; the old tests used 1 for both values and the in-memory qit harness never serializes (found by lane SP1-A, wave sp1; lane SHA 725e3811). Regression tests `MessageFactoryRbfTests.Given_LocktimeAndFeerate_When_CreatingTxInitRbf_Then_TheyAreNotSwapped`, `SpliceMessagesTests.Given_TxInitRbfWithDistinctLocktimeAndFeerate_When_Deserialized_Then_TheyAreNotSwapped`.
+- **Fix sketch:** Pass the arguments in constructor order (done).
+- **Blocks/Blocked-by:** Part of NL-037
+- **Plan ref:** `SPLICING_PLAN.md` SP1-A-T1
+
+### NL-476 funding_output_contribution was not an s64 and was read as msat
+- **Status:** fixed (830610fc)
+- **Severity:** medium
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Protocol/Tlv/FundingOutputContributionTlv.cs`, its converter, `MessageFactory.CreateTxInitRbf`/`CreateTxAckRbf`
+- **Evidence:** BOLT 2 defines `tx_init_rbf`/`tx_ack_rbf` TLV 0 as `[s64:satoshis]`. The Domain TLV held a `LightningMoney` (never negative) and `MessageFactory` built it from a `long` through the implicit msat conversion, so 10 sat became 10 msat and was written as 0, and a negative (splice-out) contribution could not be expressed (lane SP1-A, wave sp1; lane SHA 725e3811). The TLV now has `long Satoshis` with the wire bytes in `Value`; the converter reads and writes signed big-endian; `MessageFactory` keeps a negative contribution. `FundingOutputContributionTlvConverterTests`, `MessageFactoryRbfTests`. The driver still builds only positive contributions (NL-481).
+- **Fix sketch:** Signed satoshi TLV (done).
+- **Blocks/Blocked-by:** Part of NL-037, NL-021
+- **Plan ref:** `SPLICING_PLAN.md` SP1-A-T1
+
 ## BOLT 2: Behaviour layer
 
 ### NL-031 [EPIC] HTLC normal operation (add / fulfill / fail / malformed / commitment_signed / revoke_and_ack / update_fee)
@@ -593,13 +615,14 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** BOLT2 N7-T5, N10-T3 (partial)
 
 ### NL-037 [EPIC] Dual funding / interactive-tx (v2 open)
-- **Status:** open (partial: 9355ad92, 081d599f, 8ee516c5, 21be3935, 8ed3aaa8, acd0f711, 940baca2, 99be2451, f513a369, 471d7e6b, 633980df, 65fb5b21, f03470fb, ef806980, c502fdb6)
+- **Status:** open (partial: 9355ad92, 081d599f, 8ee516c5, 21be3935, 8ed3aaa8, acd0f711, 940baca2, 99be2451, f513a369, 471d7e6b, 633980df, 65fb5b21, f03470fb, ef806980, c502fdb6, 830610fc, 01b70bf1, 966cad6e, c9603fb9, 27cca704, 7b325699, 5e49fdc3, d90dd68c, d618dbf3, e45b61b4, c6a4a779, 17066201, d778d100)
 - **Severity:** medium
 - **Kind:** gap
 - **Location:** `src/NLightning.Domain/Protocol/InteractiveTx/`, `src/NLightning.Infrastructure.Bitcoin/InteractiveTx/`, `src/NLightning.Application/InteractiveTx/`, `src/NLightning.Application/Channels/Handlers/Tx*MessageHandler.cs` (the old `InteractiveTransactionService` and `Tx*Validator` are deleted)
 - **Evidence:** Messages and serializers exist; service not in DI, no handlers. `option_dual_fund` is advertised Optional but `ChannelFactory.cs:52,147` only rejects a Compulsory DualFund, so peers may attempt v2 opens we disconnect on.
 - **Fix sketch:** Stop advertising (NL-109) until implemented; then handlers + validators. Sub-issues: NL-038, NL-039, NL-040, NL-041.
 - **Update (wave qit, `SPLICING_PLAN.md` wave IT):** the interactive-tx layer is done: the pure `InteractiveTxSession` with `InteractiveTxRules`, `TxSignaturesOrder`, `CollaborativeFeeCalculator` and `InteractiveTxRbfRules` (IT1, lane IT-A: 081d599f, 8ee516c5, 21be3935); `PrevTxInspector`, `InteractiveTxBuilder` (BOLT 3 Appendix G byte-exact) and `WalletInteractiveTxContributor` over fee-input reservations (IT2, IT-B: 8ed3aaa8, acd0f711); the shared-input TLVs and the `InteractiveTxSessions` table (migration `AddInteractiveTxSessions`, all three providers; IT3, IT-C: 940baca2, 99be2451, f513a369); `InteractiveTxDriver`, the nine `tx_*` handlers and their `ChannelManager` cases, `InteractiveTxHarnessTests` on the real engine (IT4, IT-D: 471d7e6b, 633980df, 65fb5b21, f03470fb); registered and orphaned reservations released at startup (ef806980), negotiations ended on disconnection (c502fdb6). Remaining for this epic: dual funding itself (`open_channel2`/`accept_channel2` still get the "not supported yet" warning; `OptionDualFund` stays No and experimental; plan wave DF) and an interop proof of the interactive-tx layer (Proof DF or Proof SP1). Follow-ups NL-473, NL-474.
+- **Update (wave sp1, lane SP1-F, plan wave DF; integrated at `3660bff2`):** the dual-funded open is implemented behind experimental `OptionDualFund` (default No): `ChannelIdV2` and `DualFundingRules` (966cad6e), `open_channel2`/`accept_channel2` in satoshis with `second_per_commitment_point` (c9603fb9), `DualFundedOpenService`, `DualFundHost` over the interactive-tx driver, `openchannel --dual-fund` (27cca704, e45b61b4), the first commitment, `tx_signatures`, confirmation and `channel_ready` in process (7b325699), RBF of an unconfirmed open and `next_funding` retransmission after a restart (5e49fdc3), the refusals (d90dd68c), review fixes (keep the open once our `tx_signatures` went out, RBF off by default (`Node:DualFund:AllowRbf`) and refused for public or confirmed opens, the accepter's reserve from the announced share, accepter timeout, mismatched `next_funding` fails the channel; 17066201); the dual-funding columns ship in `AddSpliceFundings` (01b70bf1); `AddDualFundingServices()` registered and `Node:DualFund` bound by the integrator (d778d100, which also reads `tx_init_rbf`'s s64 contribution in the dual-funded RBF). **Proof DF green against CLN v26.06.8** (`ClnDualFundTests`: CLN opens v2 to us with our contribution, we open v2 and CLN matches, RBF of our unconfirmed open; d618dbf3, c6a4a779). This also proves the interactive-tx layer on the wire. The splice wire fixed two tx_init_rbf bugs (NL-475, NL-476). Remaining: DF3 (`option_dual_fund` out of the experimental set; not scheduled), a dual-fund RBF of a public channel (the signer keeps the first attempt's outpoint; SP1-C's per-funding registration could lift it), NL-473, NL-474.
 - **Blocks/Blocked-by:** —
 - **Plan ref:** —
 
@@ -1276,11 +1299,12 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Plan ref:** `SPLICING_PLAN.md` Proof Q (a), §7
 
 ### NL-470 Quiescence and interactive-tx seams left open by wave qit
-- **Status:** open
+- **Status:** open (partial: 940da49c, df9a869a, d778d100)
 - **Severity:** low
 - **Kind:** tech-debt
 - **Location:** `src/NLightning.Application/Channels/Quiescence/QuiescenceService.cs` (`OnPeerDisconnected`), `test/NLightning.Application.Tests/Channels/Quiescence/QuiescenceTestPair.cs:43`, `src/NLightning.Infrastructure.Repositories/Database/Channel/InteractiveTxSessionDbRepository.cs:112` (`DeleteByChannelIdAsync`)
 - **Evidence:** (1) `IQuiescenceService.OnPeerDisconnected` has no caller in `PeerManager`/`ChannelManager`; the service ends each quiescence through its own connection binding (`IPeerService.OnDisconnect`, replacement check in `GetState`), so behavior is correct but the explicit Q-R-04 hook is dead. (2) `QuiescenceTestPair` still routes `stfu` by reflection over `HarnessNode._outbox` straight into `OnStfuReceived`, not through `ChannelManager`/`StfuMessageHandler`, although the manager case exists now (lane Q-B F6). (3) Not covered on the wire by Proof Q: a CLN add not yet revoked at our request, the Q-R-03 60 s timeout with HTLCs pending, and a CLN fulfill queued while quiescent (in-process only). (4) A released owed `stfu` goes through `ChannelManager.Publish`, which drops normal-operation messages of a channel not yet reestablished on the connection; that `stfu` is regenerated by the next `TryReleaseStfu`, not retransmitted. (5) `InteractiveTxSessions` has no FK to `Channels` and `DeleteByChannelIdAsync` has no caller, so rows of a forgotten or closed channel stay until something deletes them (lane IT-C; harmless while nothing dependent opens negotiations) (reported by lanes Q-A, Q-B, Q-C, IT-C and the integrator).
+- **Update (wave sp1):** (1) fixed: `ChannelManager.OnPeerDisconnectedAsync` calls `IQuiescenceService.OnPeerDisconnected` (Q-R-04), and `QuiescenceService` raises `QuiescenceEnded` for its dependent protocol (940da49c). (4) fixed: `CompleteReestablishAsync` calls `IStfuReleaseScheduler.ScheduleRelease`, so an owed `stfu` goes out after the reestablish (940da49c). The splice's `SpliceDepthWatcher` is started with the splice service and caught up at host startup (df9a869a, d778d100). Still open: (2) `QuiescenceTestPair` reflection routing, (3) the uncovered Proof Q cases (the in-flight case now fails against CLN, NL-477), (5) the `InteractiveTxSessions` cleanup.
 - **Fix sketch:** Call `OnPeerDisconnected` from `ChannelManager.OnPeerDisconnectedAsync` (or delete it from the contract); deliver `stfu` through `ChannelManager` in `QuiescenceTestPair` and re-run the quiescence harness with both ends quiescent; record the uncovered cases in the Proof Q record; call `DeleteByChannelIdAsync` where channels are forgotten or reach Closed.
 - **Blocks/Blocked-by:** Part of NL-042, NL-037
 - **Plan ref:** `SPLICING_PLAN.md` Q1-T3, Q1-T6, IT3-T2, "Seams to reconcile"
@@ -1304,6 +1328,57 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Fix sketch:** Delete the unused constants or point `InteractiveTxRules` at them.
 - **Blocks/Blocked-by:** Part of NL-037
 - **Plan ref:** —
+
+
+### NL-478 Several readers still use the original funding keys after a splice
+- **Status:** open
+- **Severity:** medium
+- **Kind:** bug
+- **Location:** `src/NLightning.Application/Channels/Backup/ChannelBackupService.cs`, `src/NLightning.Application/Gossip/Announcements/ChannelAnnouncementBuilder.cs`, `src/NLightning.Domain/Channels/Models/ChannelModel.cs` (`GetSigningInfo`)
+- **Evidence:** A splice rotates our funding key (`m/0'/i'`, SP1-C). 2ba4fe09 moved `ChannelModel.LocalFundingPubKey`/`RemoteFundingPubKey` to the current funding (the anchors were built on the old keys and CLN rejected our first post-lock `commitment_signed`), but static channel backups still record the key sets' original funding keys and carry neither the funding key index nor the current funding outpoint, the announcement builder would announce a spliced public channel with the old keys (SP2-B scope), and `GetSigningInfo` reports `LocalKeySet.FundingCompactPubKey` (safe today only because the signer treats a re-registration of a known splice funding as a refresh) (reported by lane SP1-C and the wave sp1 integrator).
+- **Fix sketch:** Read the current funding everywhere (`ChannelModel.LocalFundingPubKey`, `FundingOutput`); add the funding key index and current outpoint to the SCB entry and rewrite the backup at the lock (`LocalLightningSigner.GetFundingPubKey(channelKeyIndex, i)` needs only the index).
+- **Blocks/Blocked-by:** Part of NL-021; related NL-426
+- **Plan ref:** `SPLICING_PLAN.md` D5, SP2-B-T3
+
+### NL-479 The revocation log is not written or read per funding for splices (SP-I5)
+- **Status:** open
+- **Severity:** medium
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/Onchain/OnchainChannelWatcher.cs:469` (`MapRevokedAsync`), `src/NLightning.Application/Onchain/Resolvers/Revoked/RevokedCommitDataSource.cs:110`, `IChannelFundingDbRepository.StageRevokedCommitmentAsync`
+- **Evidence:** `ChannelStateDbRepository.ApplyAsync` logs a revoked commitment only for the current funding; `StageRevokedCommitmentAsync` (per pending funding) exists but has no caller in the `revoke_and_ack` save. The on-chain callers use the unscoped `GetAsync(channelId, n)` and `channel.FundingOutput`, so a breach of a pending or retired splice funding would find the wrong row and capacity; the repository has the scoped `GetAsync(channelId, fundingTxId, n)` since 48b0339f (reported by lane SP1-C, wave sp1). Harmless while `OptionSplice` is experimental.
+- **Fix sketch:** In the `revoke_and_ack` save stage a revocation row per active funding (the engine lists them in `RevokedRemoteCommitFundings`); in the watcher and the revoked data source pass the spent outpoint's txid and take that funding's capacity; a resolver test that punishes a revoked commitment of a discarded funding.
+- **Blocks/Blocked-by:** Part of NL-021, NL-094; blocks D13
+- **Plan ref:** `SPLICING_PLAN.md` SP2-C-T3
+
+### NL-480 The receive reserve on a spliced funding (D9/Q3) is not confirmed against the peers
+- **Status:** open
+- **Severity:** low
+- **Kind:** spec-violation
+- **Location:** `src/NLightning.Domain/Channels/Commitments/CommitmentParams.cs` (`RemoteReceiveReserveMsatOn`, `LocalReserveMsatOn`), `src/NLightning.Domain/Channels/Splicing/SpliceRules.cs` (`GetReserveSatoshis`)
+- **Evidence:** We send with reserve = max(announced, 1 % of the new capacity) on every non-initial funding and accept the peer's adds down to min(announced, 1 % of capacity) on a spliced funding (SP1-B review F4, 29b4ae25); the reading of BOLT 2 is plan question Q3 and was not checked against the CLN, LND or Eclair splice code; Proof SP1 did not hit the boundary (reported by lane SP1-B).
+- **Fix sketch:** Read CLN's and Eclair's splice reserve code (or ask CLN's splicing lead, plan §10) and add a Docker case that adds to the reserve boundary on a spliced-out channel.
+- **Blocks/Blocked-by:** Part of NL-021
+- **Plan ref:** `SPLICING_PLAN.md` D9, §10 Q3
+
+### NL-481 InteractiveTxDriver can only send positive funding contributions
+- **Status:** open
+- **Severity:** low
+- **Kind:** gap
+- **Location:** `src/NLightning.Application/InteractiveTx/InteractiveTxDriver.cs:1048` (`CreateContributionTlv(LightningMoney)`)
+- **Evidence:** It emits `funding_output_contribution` only when the amount is above zero, from a `LightningMoney`, so the `tx_init_rbf`/`tx_ack_rbf` of a splice-out RBF cannot carry its negative contribution although the TLV is an s64 since NL-476 (reported by lanes SP1-A and SP1-B, wave sp1).
+- **Fix sketch:** Build the TLV from the signed contribution with `new FundingOutputContributionTlv(long)` when the splice-out RBF lands.
+- **Blocks/Blocked-by:** Part of NL-021
+- **Plan ref:** `SPLICING_PLAN.md` SPR-T1
+
+### NL-483 commitment_signed and revoke_and_ack handlers defer their follow-up signature while a splice is pending
+- **Status:** open
+- **Severity:** low
+- **Kind:** tech-debt
+- **Location:** `src/NLightning.Application/Channels/Handlers/CommitmentSignedMessageHandler.cs`, `RevokeAndAckMessageHandler.cs`
+- **Evidence:** Both still call the single-message `SignIfPendingAsync`, which with a pending splice signs nothing and schedules `ICommitScheduler`, so their follow-up batch goes out after the lock is released instead of in the handler's reply (one extra round trip; correct but slower). `ChannelCloseCoordinator` was switched to the list form `SignPendingAsync` in 29b4ae25 (reported by lane SP1-B, wave sp1).
+- **Fix sketch:** Switch both handlers to `SignPendingAsync` and return the whole batch in wire order.
+- **Blocks/Blocked-by:** Part of NL-021
+- **Plan ref:** `SPLICING_PLAN.md` SP1-B-T2
 
 ## BOLT 3: Transactions and scripts
 
@@ -4778,7 +4853,7 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Severity:** low
 - **Kind:** test
 - **Location:** `test/NLightning.Integration.Tests/Persistence/GossipGraphReloadTests.cs` (`Given_GraphWithKnownFundingTxIds_*`)
-- **Evidence:** Failed once in the first Release run of the wave lh1 integration and passed on 3 reruns and in the final full run; the error message was not captured, so it needs a repro (reported by the integrator). Wave qit: `Given_ASpentChannel_When_TheNodeRestartsAndBlocksPass_Then_ThePrunerRemovesItFromTheDatabase` (the pruner case, line 109) failed in both full Release.Native runs and passed 11/11 alone (reported by the integrator).
+- **Evidence:** Failed once in the first Release run of the wave lh1 integration and passed on 3 reruns and in the final full run; the error message was not captured, so it needs a repro (reported by the integrator). Wave qit: `Given_ASpentChannel_When_TheNodeRestartsAndBlocksPass_Then_ThePrunerRemovesItFromTheDatabase` (the pruner case, line 109) failed in both full Release.Native runs and passed 11/11 alone (reported by the integrator). Wave sp1: failed again in a loaded full run and passed with its class alone (reported by the integrator).
 - **Fix sketch:** Loop the class under load to reproduce and capture the failure.
 - **Blocks/Blocked-by:** Related NL-434, NL-445
 - **Plan ref:** —
@@ -4811,6 +4886,26 @@ Kinds: `bug`, `gap` (missing feature; `[EPIC]` in the title marks a large one), 
 - **Evidence:** Failed under a loaded full Application.Tests run of lane Q-B (wave qit) and passed alone.
 - **Fix sketch:** Drive the connect budget from a controllable `TimeProvider` instead of wall-clock waits.
 - **Blocks/Blocked-by:** Related NL-434, NL-465
+- **Plan ref:** —
+
+### NL-477 ClnQuiescenceTests in-flight case fails: CLN errors on our stfu when its fulfill crosses it
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Integration.Tests/Docker/Interop/Cln/ClnQuiescenceTests.cs` (`Given_OurHtlcInFlight_*`)
+- **Evidence:** Fails every run in the wave sp1 integration and also on the pre-wave `03b9a664`, so not a sp1 regression: we send `stfu` only after our add is committed and revoked both ways, CLN's `update_fulfill_htlc` crosses it, and CLN answers with the error "STFU but you still have updates pending?" although its own fulfill is the only pending update (reported by the integrator). Looks like CLN behaviour (compare NL-467).
+- **Fix sketch:** Capture the message order; if our `stfu` is valid per BOLT 2, ask CLN's splicing lead (plan §10) and adapt the proof; otherwise delay our `stfu` until no update of the peer is pending.
+- **Blocks/Blocked-by:** Related NL-042, NL-467, NL-470
+- **Plan ref:** `SPLICING_PLAN.md` Proof Q
+
+### NL-482 PeerManagerConnectTests two-node connect case fails under a loaded full run
+- **Status:** open
+- **Severity:** low
+- **Kind:** test
+- **Location:** `test/NLightning.Application.Tests/Node/Managers/PeerManagerConnectTests.cs` (`Given_TwoNodes_When_OneConnectsToTheOther_*`)
+- **Evidence:** Failed once in a full run of the wave sp1 integration with "Expected init as the first message" and passed with its class alone (reported by the integrator).
+- **Fix sketch:** Loop the class under load; look for a read that races the init exchange.
+- **Blocks/Blocked-by:** Related NL-434
 - **Plan ref:** —
 
 ## Docs
