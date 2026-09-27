@@ -108,6 +108,8 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
         Assert.True(decodedOffer["valid"]!.GetValue<bool>());
         Assert.Equal(Node.NodeIdHex, decodedOffer["offer_issuer_id"]!.GetValue<string>());
 
+        var balanceBefore = await GetOurBalanceAsync(ct);
+
         // Act
         var fetched = await Cln.CallAsync("fetchinvoice", ct, ("offer", offer.Bolt12), ("timeout", 60));
         var invoice = fetched["invoice"]!.GetValue<string>();
@@ -122,7 +124,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
         var paths = decoded["invoice_paths"]!.AsArray();
         Assert.NotEmpty(paths);
         Assert.All(paths, p => Assert.Equal(_fixture.ClnNodeId, p!["first_node_id"]!.GetValue<string>()));
-        await AssertSettledAsync(decoded, paid, 10_000_000UL, ct);
+        await AssertSettledAsync(decoded, paid, 10_000_000UL, balanceBefore, ct);
     }
 
     /// <summary>
@@ -134,6 +136,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
         // Arrange
         var ct = TestContext.Current.CancellationToken;
         var offer = await CreateOfferAsync(new CreateOfferClientRequest { Description = "nltg-b12-b" }, ct);
+        var balanceBefore = await GetOurBalanceAsync(ct);
 
         // Act
         var fetched = await Cln.CallAsync("fetchinvoice", ct, ("offer", offer.Bolt12), ("amount_msat", 7_777_000),
@@ -144,7 +147,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
 
         // Assert
         Assert.Equal(7_777_000L, decoded["invoice_amount_msat"]!.GetValue<long>());
-        await AssertSettledAsync(decoded, paid, 7_777_000UL, ct);
+        await AssertSettledAsync(decoded, paid, 7_777_000UL, balanceBefore, ct);
     }
 
     /// <summary>
@@ -161,6 +164,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
             Description = "nltg-b12-d"
         }, ct);
         var before = await ListOfferAsync(offer.OfferId, ct);
+        var balanceBefore = await GetOurBalanceAsync(ct);
 
         // Act
         var paid = await Cln.CallAsync("xpay", ct, ("invstring", offer.Bolt12));
@@ -176,6 +180,7 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
         Assert.Equal(3_000_000UL, ours.AmountReceived!.MilliSatoshi);
         var after = await ListOfferAsync(offer.OfferId, ct);
         Assert.Equal(before.PaidInvoices + 1, after.PaidInvoices);
+        await AssertBalanceGrewByAsync(balanceBefore, 3_000_000UL, ct);
     }
 
     /// <summary>
@@ -219,7 +224,8 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
         return paid;
     }
 
-    private async Task AssertSettledAsync(JsonNode decoded, JsonNode paid, ulong amountMsat, CancellationToken ct)
+    private async Task AssertSettledAsync(JsonNode decoded, JsonNode paid, ulong amountMsat,
+                                          LightningMoney balanceBefore, CancellationToken ct)
     {
         var hash = new Hash(Convert.FromHexString(decoded["invoice_payment_hash"]!.GetValue<string>()));
         var preimage = Convert.FromHexString(paid["payment_preimage"]!.GetValue<string>());
@@ -230,6 +236,32 @@ public sealed class ClnOfferReceiveTests : IAsyncLifetime
                                        TimeSpan.FromSeconds(30), "our invoice settled", ct);
         Assert.Equal(amountMsat, ours.AmountReceived!.MilliSatoshi);
         Assert.Equal((long)amountMsat, paid["amount_msat"]!.GetValue<long>());
+        await AssertBalanceGrewByAsync(balanceBefore, amountMsat, ct);
+    }
+
+    private async Task<LightningMoney> GetOurBalanceAsync(CancellationToken ct) =>
+        (await Session.GetOurChannelAsync(ct)).LocalBalance;
+
+    /// <summary>
+    /// Our side of the channel grew by exactly the invoice amount once the fulfill is irrevocably committed (CLN is
+    /// both the payer and the introduction node of our blinded paths, so no routing fee lands on our side).
+    /// </summary>
+    private async Task AssertBalanceGrewByAsync(LightningMoney balanceBefore, ulong amountMsat, CancellationToken ct)
+    {
+        var expected = balanceBefore.MilliSatoshi + amountMsat;
+        var last = balanceBefore.MilliSatoshi;
+        try
+        {
+            await Poll.UntilAsync(async () =>
+            {
+                last = (await GetOurBalanceAsync(ct)).MilliSatoshi;
+                return last == expected;
+            }, TimeSpan.FromSeconds(30), "our channel balance grown by the invoice amount", ct);
+        }
+        catch (TimeoutException e)
+        {
+            throw new TimeoutException($"{e.Message}: expected {expected} msat, last {last} msat", e);
+        }
     }
 
     private async Task<OfferInfoClientResponse> CreateOfferAsync(CreateOfferClientRequest request,
