@@ -396,7 +396,8 @@ public static class NodeConfigurationExtensions
                    "InvoiceRequestsPerSecond": {{OF_IRQ}},
                    "PathLifetimeMarginBlocks": {{OF_PATH_MARGIN}},
                    "ExpiredInvoicePruneInterval": "{{OF_PRUNE_INTERVAL}}",
-                   "ExpiredInvoicePruneBatchSize": {{OF_PRUNE_BATCH}}
+                   "ExpiredInvoicePruneBatchSize": {{OF_PRUNE_BATCH}},
+                   "ExpiredInvoicePruneGrace": "{{OF_PRUNE_GRACE}}"
                  },
                  "FeeEstimation": {
                    "Source": "{{FEE_SOURCE}}",
@@ -465,6 +466,7 @@ public static class NodeConfigurationExtensions
                   .Replace("{{OF_PATH_MARGIN}}", Invariant(offers.PathLifetimeMarginBlocks))
                   .Replace("{{OF_PRUNE_INTERVAL}}", Invariant(offers.ExpiredInvoicePruneInterval))
                   .Replace("{{OF_PRUNE_BATCH}}", Invariant(offers.ExpiredInvoicePruneBatchSize))
+                  .Replace("{{OF_PRUNE_GRACE}}", Invariant(offers.ExpiredInvoicePruneGrace))
                   .Replace("{{FEE_SOURCE}}", feeSource)
                   .Replace("{{FEE_URL}}", feeUrl)
                   .Replace("{{FEE_RATE_UNIT}}", FeeRateConverter.SatPerVByte)

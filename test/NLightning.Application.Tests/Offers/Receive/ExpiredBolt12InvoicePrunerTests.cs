@@ -6,6 +6,7 @@ namespace NLightning.Application.Tests.Offers.Receive;
 
 using Application.Offers.Receive;
 using Application.Payments.FinalHop;
+using Application.Payments.Switch;
 using Domain.Crypto.ValueObjects;
 using Domain.Money;
 using Domain.Offers.Models;
@@ -22,6 +23,8 @@ using Domain.Protocol.Onion.Tlv;
 public class ExpiredBolt12InvoicePrunerTests
 {
     private const uint ExpirySeconds = 7_200;
+
+    private static readonly TimeSpan s_grace = new OfferOptions().ExpiredInvoicePruneGrace;
 
     private static readonly DateTimeOffset s_createdAt = new(2026, 9, 27, 12, 0, 0, TimeSpan.Zero);
 
@@ -71,7 +74,7 @@ public class ExpiredBolt12InvoicePrunerTests
         await store.Invoices.AddAsync(expired);
         await store.Invoices.AddAsync(accepted);
         await store.Invoices.AddAsync(bolt11);
-        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds));
+        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds) + s_grace);
         var live = new InvoiceModel(SHA256.HashData(new byte[32]), new byte[32], new byte[32], null, null, null,
                                     clock.GetUtcNow(), ExpirySeconds, 40,
                                     bolt12: new Bolt12InvoiceDetails(new Hash(new byte[32]), new byte[] { 1 },
@@ -194,7 +197,7 @@ public class ExpiredBolt12InvoicePrunerTests
         using var store = new OfferTestStore();
         var invoice = Bolt12Invoice(0xB1);
         await store.Invoices.AddAsync(invoice);
-        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds + 1));
+        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds + 1) + s_grace);
         var processor = new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance, clock);
         var amount = LightningMoney.MilliSatoshis(1_000);
         var payload = new HopPayload(new AmtToForwardTlv(amount), new OutgoingCltvValueTlv(900),
@@ -219,16 +222,93 @@ public class ExpiredBolt12InvoicePrunerTests
         Assert.Equal(beforePrune.Failure.Data.ToArray(), afterPrune.Failure.Data.ToArray());
     }
 
+    [Fact]
+    public async Task Given_AnHtlcSetAcceptedBeforeExpiry_When_APruneRoundRunsAfterExpiry_Then_TheSetStillSettles()
+    {
+        // Arrange: NL-448 review, the final hop checks the expiry only when each part arrives, so a set whose parts
+        // passed the check before the expiry but completes after it (held up to the MPP timeout) must still find its
+        // Open invoice at the settle, even when a prune round ran in between
+        using var store = new OfferTestStore();
+        var invoice = Bolt12Invoice(0xC1);
+        await store.Invoices.AddAsync(invoice);
+        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds - 1));
+        var processor = new FinalHopProcessor(NullLogger<FinalHopProcessor>.Instance, clock);
+        var amount = LightningMoney.MilliSatoshis(1_000);
+        var payload = new HopPayload(new AmtToForwardTlv(amount), new OutgoingCltvValueTlv(900),
+                                     new EncryptedRecipientDataTlv(new byte[20]), new TotalAmountMsatTlv(amount));
+        var recipientData = new BlindedRecipientData { PathId = BlindedPathId.Compute(invoice.Preimage) };
+        var atArrival = processor.Evaluate(await store.Invoices.GetByPaymentHashAsync(invoice.PaymentHash),
+                                           invoice.PaymentHash, amount, 900, payload, 800,
+                                           blindedRecipientData: recipientData);
+        await using var pruner = CreatePruner(store, clock);
+
+        // Act: the set completes one MPP timeout after the expiry, with a prune round just before the settle
+        clock.Advance(TimeSpan.FromSeconds(1) + HtlcSwitchOptions.DefaultMppTimeout);
+        var pruned = await pruner.PruneOnceAsync(TestContext.Current.CancellationToken);
+        var atSettle = await store.Invoices.GetByPaymentHashAsync(invoice.PaymentHash);
+
+        // Assert
+        Assert.True(atArrival.IsAccepted);
+        Assert.Equal(0, pruned);
+        Assert.NotNull(atSettle);
+        Assert.Equal(InvoiceStatus.Open, atSettle.Status);
+        atSettle.Accept(amount);
+        atSettle.Settle(clock.GetUtcNow());
+        Assert.Equal(InvoiceStatus.Settled, atSettle.Status);
+    }
+
+    [Fact]
+    public async Task Given_AnInvoiceExpiredWithinTheGrace_When_PrunedOnce_Then_KeptUntilTheGraceHasPassed()
+    {
+        // Arrange
+        using var store = new OfferTestStore();
+        await AddExpiredBolt12InvoicesAsync(store, 1);
+        var clock = new ManualClock(s_createdAt.AddSeconds(ExpirySeconds) + s_grace - TimeSpan.FromSeconds(1));
+        await using var pruner = CreatePruner(store, clock);
+
+        // Act
+        var withinGrace = await pruner.PruneOnceAsync(TestContext.Current.CancellationToken);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var afterGrace = await pruner.PruneOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(0, withinGrace);
+        Assert.Equal(1, afterGrace);
+        Assert.Empty(store.Invoices.Invoices);
+    }
+
+    [Fact]
+    public void Given_AGraceShorterThanTheMppTimeout_When_Created_Then_TheMppTimeoutIsUsed()
+    {
+        // Arrange
+        using var store = new OfferTestStore();
+        var mppTimeout = TimeSpan.FromMinutes(5);
+
+        // Act
+        var pruner = new ExpiredBolt12InvoicePruner(store.ScopeFactory, NullLogger<ExpiredBolt12InvoicePruner>.Instance,
+                                                    Options.Create(new OfferOptions
+                                                    {
+                                                        ExpiredInvoicePruneGrace = TimeSpan.Zero
+                                                    }), TimeProvider.System,
+                                                    Options.Create(new HtlcSwitchOptions { MppTimeout = mppTimeout }));
+
+        // Assert
+        Assert.Equal(mppTimeout, pruner.EffectiveGrace);
+    }
+
     [Theory]
-    [InlineData(-1, 500)]
-    [InlineData(600, 0)]
-    public void Given_InvalidPruneOptions_When_Validated_Then_Errors(int intervalSeconds, int batchSize)
+    [InlineData(-1, 500, 3600)]
+    [InlineData(600, 0, 3600)]
+    [InlineData(600, 500, -1)]
+    public void Given_InvalidPruneOptions_When_Validated_Then_Errors(int intervalSeconds, int batchSize,
+                                                                    int graceSeconds)
     {
         // Arrange
         var options = new OfferOptions
         {
             ExpiredInvoicePruneInterval = TimeSpan.FromSeconds(intervalSeconds),
-            ExpiredInvoicePruneBatchSize = batchSize
+            ExpiredInvoicePruneBatchSize = batchSize,
+            ExpiredInvoicePruneGrace = TimeSpan.FromSeconds(graceSeconds)
         };
 
         // Act
