@@ -334,37 +334,37 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
 
     /// <summary>
     /// Stages the channel's <see cref="ChannelFundingKind.Initial"/>, <see cref="ChannelFundingStatus.Current"/>
-    /// funding row (splicing plan §3.8) once its funding outpoint is known and while it has no funding row at all.
+    /// funding row (splicing plan §3.8) once its funding outpoint is known, and keeps it in step with the channel while
+    /// the channel was never spliced (the funding keys are the key sets', as the migration's data step writes them).
     /// </summary>
     private async Task EnsureInitialFundingAsync(ChannelModel channelModel)
     {
         var fundingOutput = channelModel.FundingOutput;
-        if (fundingOutput?.TransactionId is not { IsZero: false } || fundingOutput.Index is null
-                                                                  || channelModel.RemoteKeySet is null)
+        if (fundingOutput?.TransactionId is not { IsZero: false } txId || fundingOutput.Index is not { } index
+                                                                       || channelModel.RemoteKeySet is null)
             return;
+
+        var initial = new ChannelFunding(txId, index, (ulong)fundingOutput.Amount.Satoshi,
+                                         channelModel.LocalKeySet.FundingCompactPubKey,
+                                         channelModel.RemoteKeySet.FundingCompactPubKey, 0, 0, 0,
+                                         ChannelFundingKind.Initial, ChannelFundingStatus.Current,
+                                         ShortChannelId: IsSet(channelModel.ShortChannelId)
+                                                             ? channelModel.ShortChannelId
+                                                             : (ShortChannelId?)null);
 
         var fundings = await ChannelFundingDbRepository.GetEntitiesAsync(_context, channelModel.ChannelId);
-        if (fundings.Count > 0)
+        switch (fundings)
         {
-            // A channel never spliced: its initial funding follows the funding confirmation (and a reorg)
-            if (fundings is [{ Kind: (byte)ChannelFundingKind.Initial } initial]
-             && initial.FundingTxId == fundingOutput.TransactionId.Value)
-                initial.ShortChannelId = IsSet(channelModel.ShortChannelId)
-                                             ? channelModel.ShortChannelId
-                                             : (ShortChannelId?)null;
+            case []:
+                _context.ChannelFundings.Add(ChannelFundingDbRepository.CreateEntity(channelModel.ChannelId, initial,
+                                                                                     0));
+                break;
 
-            return;
+            // A channel never spliced: its initial funding follows the channel (the confirmation, a reorg)
+            case [{ Kind: (byte)ChannelFundingKind.Initial } row] when row.FundingTxId == txId:
+                ChannelFundingDbRepository.CopyFields(initial, row);
+                break;
         }
-
-        var funding = ChannelFunding.FromFundingOutput(fundingOutput)!;
-        _context.ChannelFundings.Add(ChannelFundingDbRepository.CreateEntity(
-                                         channelModel.ChannelId,
-                                         funding with
-                                         {
-                                             ShortChannelId = IsSet(channelModel.ShortChannelId)
-                                                                  ? channelModel.ShortChannelId
-                                                                  : (ShortChannelId?)null
-                                         }, 0));
     }
 
     /// <summary>
@@ -490,9 +490,12 @@ public class ChannelDbRepository : BaseDbRepository<ChannelEntity>, IChannelDbRe
         var localKeySet = ChannelKeySetDbRepository.MapEntityToDomain(localKeySetEntity);
         var remoteKeySet = ChannelKeySetDbRepository.MapEntityToDomain(remoteKeySetEntity);
 
+        // After a splice the current funding's keys are its row's (our key rotates per splice, D5); the initial
+        // funding's are the key sets'
+        var splicedFunding = currentFunding is { Kind: not (byte)ChannelFundingKind.Initial } ? currentFunding : null;
         var fundingOutput = new FundingOutputInfo(LightningMoney.Satoshis(channelEntity.FundingAmountSatoshis),
-                                                  currentFunding?.LocalFundingPubKey ?? localKeySet.FundingCompactPubKey,
-                                                  currentFunding?.RemoteFundingPubKey
+                                                  splicedFunding?.LocalFundingPubKey ?? localKeySet.FundingCompactPubKey,
+                                                  splicedFunding?.RemoteFundingPubKey
                                                ?? remoteKeySet.FundingCompactPubKey)
         {
             Index = channelEntity.FundingOutputIndex,

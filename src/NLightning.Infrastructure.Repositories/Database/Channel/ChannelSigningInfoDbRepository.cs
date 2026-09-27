@@ -119,7 +119,9 @@ public class ChannelSigningInfoDbRepository : IChannelSigningInfoDbRepository
         if (local is null || remote is null)
             return null;
 
-        var current = fundings.FirstOrDefault(f => f.FundingTxId == channel.FundingTxId);
+        // After a splice the current funding's keys are its row's; the initial funding's are the key sets'
+        var current = fundings.FirstOrDefault(f => f.FundingTxId == channel.FundingTxId
+                                                && f.Kind != (byte)ChannelFundingKind.Initial);
         var localFundingPubKey = current?.LocalFundingPubKey ?? local.FundingPubKey;
         var remoteFundingPubKey = current?.RemoteFundingPubKey ?? remote.FundingPubKey;
         CompactPubKey remoteHtlcBasepoint = remote.HtlcBasepoint;
