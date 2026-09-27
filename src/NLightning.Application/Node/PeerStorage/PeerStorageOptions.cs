@@ -32,4 +32,11 @@ public sealed class PeerStorageOptions
     /// stores it (default 1 minute). Each new connection gets it at once.
     /// </summary>
     public TimeSpan BackupInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// At the first connection of the process to a peer that stores our backup, how long our backup waits for the
+    /// peer's <c>peer_storage_retrieval</c> before it is sent (default 30 seconds): the copy the peer keeps may name
+    /// channels we lost and must be read before it is replaced. Zero sends at once.
+    /// </summary>
+    public TimeSpan RetrievalWait { get; set; } = TimeSpan.FromSeconds(30);
 }

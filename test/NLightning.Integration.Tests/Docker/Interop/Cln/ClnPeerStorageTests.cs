@@ -4,7 +4,9 @@ using Microsoft.Extensions.DependencyInjection;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Application.Node.PeerStorage;
+using Domain.Enums;
 using Domain.Money;
+using Domain.Node.Options;
 using Domain.Node.PeerStorage;
 using Fixtures;
 using Utils;
@@ -63,6 +65,8 @@ public sealed class ClnPeerStorageTests : IAsyncLifetime
                        node => node.ConfigureServices = services =>
                        {
                            services.AddPeerStorageServices();
+                           services.PostConfigure<NodeOptions>(o => o.Features.OptionProvideStorage =
+                                                                        FeatureSupport.Optional);
                            services.Configure<PeerStorageOptions>(o => o.BackupInterval = TimeSpan.FromSeconds(2));
                        });
         var node = _session.Node;

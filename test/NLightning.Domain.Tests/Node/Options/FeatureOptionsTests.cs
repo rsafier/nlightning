@@ -70,6 +70,7 @@ public class FeatureOptionsTests
     [InlineData(Feature.OptionDualFund)]
     [InlineData(Feature.OptionQuiesce)]
     [InlineData(Feature.OptionAttributionData)]
+    [InlineData(Feature.OptionProvideStorage)]
     [InlineData(Feature.OptionScidAlias)]
     [InlineData(Feature.OptionUpfrontShutdownScript)]
     public void Given_DefaultOptions_When_GetNodeFeatures_Then_UnimplementedFeatureIsNotAdvertised(Feature feature)

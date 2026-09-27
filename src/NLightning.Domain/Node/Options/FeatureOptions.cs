@@ -159,10 +159,12 @@ public class FeatureOptions
     /// it back with <c>peer_storage_retrieval</c> after every init.
     /// </summary>
     /// <remarks>
-    /// Defaults to Optional (the Application <c>PeerStorageService</c>). Negotiated with a peer, it also makes us send
-    /// that peer our own encrypted backup blob.
+    /// Implemented by the Application <c>PeerStorageService</c> (<c>AddPeerStorageServices</c>). Defaults to No until
+    /// the node composition registers that service: advertised without it, every <c>peer_storage</c> would be dropped,
+    /// against the BOLT 1 MUST (the peer factory logs that misconfiguration). Negotiated with a peer, it also makes us
+    /// send that peer our own encrypted backup blob.
     /// </remarks>
-    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.Optional;
+    public FeatureSupport OptionProvideStorage { get; set; } = FeatureSupport.No;
 
     public FeatureSupport OptionChannelType { get; private set; } = FeatureSupport.Compulsory;
 

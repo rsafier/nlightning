@@ -65,7 +65,8 @@ internal sealed class PeerStorageTestContext : IDisposable
         Service = new PeerStorageService(_provider.GetRequiredService<IServiceScopeFactory>(), BlobProvider,
                                          _channelMemory.Object, Options.Create(nodeOptions),
                                          NullLogger<PeerStorageService>.Instance,
-                                         Options.Create(options ?? new PeerStorageOptions()), Time);
+                                         Options.Create(options ?? new PeerStorageOptions { RetrievalWait = TimeSpan.Zero }),
+                                         Time);
     }
 
     public ManualTimeProvider Time { get; } = new();

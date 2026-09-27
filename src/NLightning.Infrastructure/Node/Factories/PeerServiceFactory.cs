@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Infrastructure.Node.Factories;
 
 using Domain.Crypto.ValueObjects;
+using Domain.Enums;
 using Domain.Exceptions;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
@@ -27,6 +28,8 @@ public class PeerServiceFactory : IPeerServiceFactory
     private readonly ITransportServiceFactory _transportServiceFactory;
     private readonly IServiceProvider _serviceProvider;
     private readonly NodeOptions _nodeOptions;
+
+    private int _missingPeerStorageLogged;
 
     public PeerServiceFactory(ILoggerFactory loggerFactory, IMessageFactory messageFactory,
                               IMessageServiceFactory messageServiceFactory, ISecureKeyManager secureKeyManager,
@@ -80,7 +83,7 @@ public class PeerServiceFactory : IPeerServiceFactory
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
-                               _serviceProvider.GetService<IPeerStorageService>());
+                               GetPeerStorageService());
     }
 
     /// <inheritdoc />
@@ -130,6 +133,23 @@ public class PeerServiceFactory : IPeerServiceFactory
         return new PeerService(communicationService, _nodeOptions.Features, appLogger, _nodeOptions.NetworkTimeout,
                                _serviceProvider.GetService<IGossipIngress>(),
                                _serviceProvider.GetService<IGossipSyncService>(),
-                               _serviceProvider.GetService<IPeerStorageService>());
+                               GetPeerStorageService());
+    }
+
+    /// <summary>
+    /// The registered peer storage service, or null. Offering <c>option_provide_storage</c> without one breaks BOLT 1
+    /// (a peer with a channel MUST get its blob stored), so that misconfiguration is logged as an error once.
+    /// </summary>
+    private IPeerStorageService? GetPeerStorageService()
+    {
+        var peerStorage = _serviceProvider.GetService<IPeerStorageService>();
+        if (peerStorage is null && _nodeOptions.Features.OptionProvideStorage != FeatureSupport.No
+                                && Interlocked.Exchange(ref _missingPeerStorageLogged, 1) == 0)
+            _loggerFactory.CreateLogger<PeerServiceFactory>().LogError(
+                "option_provide_storage is advertised but no peer storage service is registered: peer_storage "
+              + "messages are dropped. Register AddPeerStorageServices() or set "
+              + "Node:Features:OptionProvideStorage to No");
+
+        return peerStorage;
     }
 }
