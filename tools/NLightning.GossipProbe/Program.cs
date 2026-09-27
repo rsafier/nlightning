@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace NLightning.GossipProbe;
 
 /// <summary>The probe's entry point: <c>run</c> (the mainnet gossip probe) or <c>verify</c> (the Esplora cross-check).</summary>
@@ -20,6 +22,13 @@ public static class Program
             e.Cancel = true;
             cts.Cancel();
         };
+
+        // SIGTERM too: a probe started in the background of a non-interactive shell ignores SIGINT
+        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
+        {
+            context.Cancel = true;
+            cts.Cancel();
+        });
 
         return options.Command switch
         {
