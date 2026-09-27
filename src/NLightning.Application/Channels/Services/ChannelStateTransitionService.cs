@@ -448,7 +448,10 @@ public sealed class ChannelStateTransitionService
             OutboundCommitmentSigned signed =>
                 _messageFactory.CreateCommitmentSignedMessage(channelId, signed.Signatures.Signature,
                                                               signed.Signatures.HtlcSignatures,
+                                                              // After a splice lock the engine's current funding
+                                                              // is the new one; ChannelModel.FundingOutput is not
                                                               signed.FundingTxId
+                                                           ?? channel.Commitments?.Params.Funding?.FundingTxId
                                                            ?? channel.FundingOutput?.TransactionId
                                                            ?? throw new InvalidOperationException(
                                                                   $"Channel {channelId} has no funding txid")),
