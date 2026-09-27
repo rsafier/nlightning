@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
@@ -9,7 +10,10 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Integration.Tests.Docker.Interop.Cln;
 
 using Abcd;
+using Application.Payments.Switch;
 using Domain.Channels.Quiescence;
+using Domain.Channels.ValueObjects;
+using Domain.Client.Responses;
 using Domain.Enums;
 using Domain.Money;
 using Domain.Node.Options;
@@ -53,9 +57,14 @@ using Utils;
 /// <item>A CLN payment attempted while the channel is quiescent is held inside channeld and dies with
 /// <c>temporary_channel_failure (Outgoing subdaemon died)</c> when <c>abort_channels</c> restarts channeld; xpay then
 /// remembers the channel as unable to carry that amount. These tests therefore never let CLN pay while quiescent.</item>
-/// <item>CLN has no hold invoices in the image (no plugin, no Python), so (c) keeps our HTLC in flight by calling
-/// <see cref="IQuiescenceService.RequestAsync"/> the moment our <c>update_add_htlc</c> is written, before its
-/// <c>commitment_signed</c>/<c>revoke_and_ack</c> round.</item>
+/// <item>CLN has no hold invoices in the image (no plugin, no Python), so (c) is proven twice: our HTLC in flight
+/// (<see cref="IQuiescenceService.RequestAsync"/> started the moment our <c>update_add_htlc</c> is written; only an
+/// attempt whose request was seen queued before CLN revoked for the add counts, so the Q-S-02 wait is really
+/// exercised), and CLN's HTLC held by us (one part of a <c>basic_mpp</c> payment sent with <c>sendpay</c>, which our
+/// switch holds until the set is complete: committed but unresolved during the quiescence). Not covered on the wire:
+/// a CLN add not yet revoked for at our request (Q1-T2: a received but unrevoked peer add does not block our
+/// <c>stfu</c>), the Q-R-03 60 s timeout with HTLCs pending, and a CLN fulfill queued while quiescent; lanes Q-A and
+/// Q-B cover those in unit and harness tests.</item>
 /// </list>
 /// <para>Each test funds its own private channel to CLN (<see cref="ClnChannelSession.BuildOurFundedAsync"/>) and
 /// records our channel traffic with <see cref="QuiescenceWireRecorder"/> (both directions, in wire order). They need
@@ -69,10 +78,16 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
 {
     private const int TestTimeoutMs = 8 * 60 * 1_000;
 
+    /// <summary>
+    /// How many payments Proof Q (c), our side, may make before it gives up on queuing the request in time.
+    /// </summary>
+    private const int InFlightAttempts = 3;
+
     private static readonly LightningMoney s_capacity = LightningMoney.Satoshis(1_000_000);
     private static readonly LightningMoney s_push = LightningMoney.Satoshis(300_000);
     private static readonly TimeSpan s_quiescenceTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan s_settleTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan s_heldSetTimeout = TimeSpan.FromMinutes(5);
 
     private readonly ClnFixture _fixture;
     private ClnChannelSession? _session;
@@ -252,10 +267,13 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Proof Q (c): our HTLC is in flight when we ask for quiescence (the request is made the moment our
-    /// <c>update_add_htlc</c> is written): our <c>stfu</c> waits until that add is committed and revoked both ways
-    /// (Q-S-02), we send no update after it (Q-S-04), and the payment completes once the probe ends with
-    /// <c>tx_abort</c>.
+    /// Proof Q (c), our HTLC: our add is in flight when we ask for quiescence. The request is started the moment our
+    /// <c>update_add_htlc</c> is written, and an attempt counts only when the request was seen queued
+    /// (<see cref="QuiescenceState.PendingRequest"/> set, our <c>stfu</c> not sent) before CLN's
+    /// <c>revoke_and_ack</c> for our <c>commitment_signed</c> reached us: our <c>stfu</c> then had to wait until the
+    /// add was committed and revoked both ways (Q-S-02). An attempt whose request was queued later proves no wait and
+    /// is retried (up to <see cref="InFlightAttempts"/>), never counted. Every attempt checks that we send no update
+    /// after our <c>stfu</c> (Q-S-04) and that the payment completes once the probe ends with <c>tx_abort</c>.
     /// </summary>
     [Fact(Timeout = TestTimeoutMs)]
     public async Task Given_OurHtlcInFlight_When_WeRequestQuiescence_Then_OurStfuWaitsUntilItIsCommitted()
@@ -264,60 +282,103 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         var ct = TestContext.Current.CancellationToken;
         var (session, wire) = await BuildAsync("nltg-quiesce-c", ct);
         var quiescence = GetQuiescenceService(session);
-        var amount = LightningMoney.Satoshis(40_000);
-        var label = $"nltg-quiesce-c-{Guid.NewGuid():N}";
-        var clnInvoice = await session.Cln.CallAsync("invoice", ct, ("amount_msat", (long)amount.MilliSatoshi),
-                                                     ("label", label), ("description", "htlc in flight"));
-        var requested = new TaskCompletionSource<(DateTimeOffset At, Task<QuiescenceInitiator> Request)>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        wire.OnFirstOutbound(MessageTypes.UpdateAddHtlc,
-                             () => requested.TrySetResult(
-                                 (DateTimeOffset.UtcNow,
-                                  Task.Run(() => quiescence.RequestAsync(session.ChannelId, QuiescencePurpose.Probe,
-                                                                         ct), ct))));
 
-        // Act: pay CLN; the request goes out while our add is pending
-        var payment = session.Node.PayInvoiceAsync(clnInvoice["bolt11"]!.GetValue<string>(), ct, 120);
-        var (requestedAt, request) = await requested.Task.WaitAsync(s_quiescenceTimeout, ct);
-        var initiator = await request.WaitAsync(s_quiescenceTimeout, ct);
+        // Act: pay CLN and request quiescence while our add is pending, until the request was queued in time
+        InFlightAttempt? exercised = null;
+        for (var attempt = 1; attempt <= InFlightAttempts && exercised is null; attempt++)
+        {
+            var result = await RunOurHtlcInFlightAttemptAsync(session, wire, quiescence, attempt, ct);
+            Console.WriteLine($"[proof] {result.Describe()}");
+            if (result.WaitExercised)
+                exercised = result;
+        }
 
-        // Assert: we are the initiator, and our stfu came only after our add was irrevocably committed both ways
-        Assert.Equal(QuiescenceInitiator.Local, initiator);
-        var traffic = wire.Snapshot();
-        var ourStfu = Assert.Single(traffic, m => !m.Inbound && m.Type == (ushort)MessageTypes.Stfu);
-        Assert.True(ourStfu.StfuInitiator);
-        var ourAdd = traffic.First(m => !m.Inbound && m.Type == (ushort)MessageTypes.UpdateAddHtlc);
-        Assert.True(ourAdd.At <= requestedAt, "the request was not made while our add was pending");
-        var ourCommit = traffic.First(m => !m.Inbound && m.Type == (ushort)MessageTypes.CommitmentSigned
-                                        && m.Sequence > ourAdd.Sequence);
-        var theirRevoke = traffic.First(m => m.Inbound && m.Type == (ushort)MessageTypes.RevokeAndAck
-                                          && m.Sequence > ourCommit.Sequence);
-        Assert.True(requestedAt < theirRevoke.At,
-                    "the add was already locked in when we asked; the wait was not exercised");
-        AssertOurUpdatesSettledBefore(traffic, ourStfu.Sequence);
-        Assert.True(theirRevoke.Sequence < ourStfu.Sequence, "our stfu went out before CLN revoked for our add");
-
-        // ...the probe ends with tx_abort, with no update of ours in between, and the payment completes
-        var ourAbort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAbort),
-                                           s_quiescenceTimeout, "our tx_abort ending the probe", ct);
-        await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxAbort), s_quiescenceTimeout,
-                            "CLN's tx_abort ack", ct);
-        AssertNoUpdateFromUsBetween(wire, ourStfu.Sequence, ourAbort.Sequence);
-        var paid = await payment.WaitAsync(TimeSpan.FromSeconds(150), ct);
-        Console.WriteLine($"[cln] our payment: {paid.Status}, failure {paid.FailureCode}: {paid.FailureReason}");
-        Assert.Equal(PaymentStatus.Succeeded, paid.Status);
-        var listed = (await session.Cln.CallAsync("listinvoices", ct, ("label", label)))["invoices"]!.AsArray()
-                                                                                             .Single()!;
-        Assert.Equal("paid", listed["status"]!.GetValue<string>());
-        await Poll.UntilAsync(() => !quiescence.GetState(session.ChannelId).BlocksNewLocalUpdates,
-                              s_quiescenceTimeout, "our quiescence ended", ct);
+        // Assert: one attempt queued the request before CLN revoked for our add, so our stfu waited for it
+        Assert.True(exercised is not null,
+                    $"in {InFlightAttempts} attempts our request was never queued before CLN's revoke_and_ack for our "
+                  + "add; the Q-S-02 wait was not exercised");
+        Assert.True(exercised.OurAddSequence < exercised.QueuedAt, "the request was queued before our add");
+        Assert.True(exercised.QueuedAt <= exercised.TheirRevokeSequence
+                 && exercised.TheirRevokeSequence < exercised.OurStfuSequence,
+                    "our stfu did not wait for CLN's revoke_and_ack of our add");
         await session.WaitUsableAsync(ct, requireNoHtlcs: true);
         await AssertClnPaysUsAsync(session, LightningMoney.Satoshis(14_000), ct);
         AssertNoWarningOrError(wire);
     }
 
+    /// <summary>
+    /// Proof Q (c), CLN's HTLC held by us (plan §5 "a held invoice on CLN"; the CLN image has no hold invoices, so our
+    /// node holds instead): CLN sends one part of a two-part <c>basic_mpp</c> payment to our invoice with
+    /// <c>sendpay</c>; our switch holds the incomplete set (<c>MppTimeout</c> 5 min here), so the HTLC is irrevocably
+    /// committed on both commitments and unresolved. We request quiescence: our <c>stfu</c> goes out with it pending
+    /// (Q-S-02 counts only uncommitted updates), we neither fulfill nor fail it while quiescing, the probe ends with
+    /// <c>tx_abort</c>, and then CLN's second part completes the set: both parts are fulfilled and our invoice is
+    /// settled for the total.
+    /// </summary>
+    [Fact(Timeout = TestTimeoutMs)]
+    public async Task Given_ClnHtlcHeldByUs_When_WeRequestQuiescence_Then_OurStfuGoesOutAndItSettlesAfterTxAbort()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        var (session, wire) = await BuildAsync("nltg-quiesce-c2", ct,
+                                               services => services.PostConfigure<HtlcSwitchOptions>(
+                                                   o => o.MppTimeout = s_heldSetTimeout));
+        var quiescence = GetQuiescenceService(session);
+        var total = LightningMoney.Satoshis(30_000);
+        var firstPart = LightningMoney.Satoshis(18_000);
+        var secondPart = LightningMoney.Satoshis(12_000);
+        var invoice = await session.Node.CreateInvoiceAsync(total, $"quiesce held {Guid.NewGuid():N}", ct);
+        var payment = await HeldPayment.CreateAsync(session, invoice, ct);
+        var from = wire.CurrentSequence;
+
+        // Act: CLN's first part; we hold the incomplete set once the add is irrevocably committed
+        await payment.SendPartAsync(firstPart, partId: 1, ct);
+        var theirAdd = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.UpdateAddHtlc, from),
+                                           s_quiescenceTimeout, "CLN's update_add_htlc", ct);
+        var committedAt = await Poll.ForAsync(() => IrrevocablyCommittedAt(wire.Snapshot(), theirAdd.Sequence),
+                                              s_quiescenceTimeout, "CLN's add committed and revoked both ways", ct);
+        await Poll.UntilAsync(async () => (await session.GetOurChannelAsync(ct)).ReceivedHtlcCount == 1,
+                              s_quiescenceTimeout, "our channel lists CLN's HTLC", ct);
+        var initiator = await quiescence.RequestAsync(session.ChannelId, QuiescencePurpose.Probe, ct)
+                                        .WaitAsync(s_quiescenceTimeout, ct);
+
+        // Assert: we are the initiator and our stfu went out with CLN's HTLC still pending, after its commitment
+        Assert.Equal(QuiescenceInitiator.Local, initiator);
+        var ourStfu = wire.Single(inbound: false, MessageTypes.Stfu);
+        Assert.True(ourStfu.StfuInitiator);
+        Assert.True(committedAt.Value < ourStfu.Sequence, "our stfu went out before CLN's add was committed");
+        AssertNoUpdateFromUsBetween(wire, theirAdd.Sequence, ourStfu.Sequence);
+        Assert.Equal(1, (await session.GetOurChannelAsync(ct)).ReceivedHtlcCount);
+        Assert.Single((await session.GetClnChannelAsync(ct))["htlcs"]!.AsArray());
+
+        // ...the probe ends with tx_abort (no update of ours in between) and CLN resumes with the HTLC in place
+        var ourAbort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAbort),
+                                           s_quiescenceTimeout, "our tx_abort ending the probe", ct);
+        await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxAbort, ourAbort.Sequence),
+                            s_quiescenceTimeout, "CLN's tx_abort ack", ct);
+        AssertNoUpdateFromUsBetween(wire, ourStfu.Sequence, ourAbort.Sequence);
+        await AssertClnLogsAsync(session, ct, "Send ack of tx_abort", "Restarting channeld after tx_abort");
+        await Poll.UntilAsync(() => !quiescence.GetState(session.ChannelId).BlocksNewLocalUpdates,
+                              s_quiescenceTimeout, "our quiescence ended by tx_abort", ct);
+        await session.WaitUsableAsync(ct);
+        Assert.Equal(1, (await session.GetOurChannelAsync(ct)).ReceivedHtlcCount);
+
+        // ...and CLN's second part completes the set: both parts fulfilled, our invoice settled for the total
+        await payment.SendPartAsync(secondPart, partId: 2, ct);
+        await payment.AssertPartCompleteAsync(partId: 1, ct);
+        await payment.AssertPartCompleteAsync(partId: 2, ct);
+        var settled = await Poll.ForAsync(async () => await session.Node.GetInvoiceAsync(invoice.PaymentHash, ct)
+                                                          is { Status: InvoiceStatus.Settled } i
+                                                          ? i
+                                                          : null, s_settleTimeout, "our invoice settled", ct);
+        Assert.Equal(total, settled.AmountReceived);
+        await session.WaitUsableAsync(ct, requireNoHtlcs: true);
+        await AssertWePayClnAsync(session, LightningMoney.Satoshis(24_000), ct);
+        AssertNoWarningOrError(wire);
+    }
+
     private async Task<(ClnChannelSession Session, QuiescenceWireRecorder Wire)> BuildAsync(
-        string nodeName, CancellationToken ct)
+        string nodeName, CancellationToken ct, Action<IServiceCollection>? configureServices = null)
     {
         var wire = new QuiescenceWireRecorder();
         _wire = wire;
@@ -330,6 +391,7 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
                                o.Features.AllowExperimentalFeatures = true;
                                o.Features.OptionQuiesce = FeatureSupport.Optional;
                            });
+                           configureServices?.Invoke(services);
                            wire.Install(services);
                        });
 
@@ -349,6 +411,222 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
         session.Node.Services.GetService<IQuiescenceService>()
      ?? throw new InvalidOperationException("IQuiescenceService is not registered in the node's composition "
                                           + "(lane Q-B's AddQuiescenceServices)");
+
+    /// <summary>
+    /// One attempt of Proof Q (c), our side: pays a CLN invoice and starts <see cref="IQuiescenceService.RequestAsync"/>
+    /// the moment our <c>update_add_htlc</c> is written, while a watcher records the wire position at which the request
+    /// is first seen queued without our <c>stfu</c>. Checks what every attempt must show (our <c>stfu(1)</c> only after
+    /// our add was committed and revoked both ways, no update of ours until our <c>tx_abort</c>, the payment paid) and
+    /// leaves the channel idle for the next attempt.
+    /// </summary>
+    private static async Task<InFlightAttempt> RunOurHtlcInFlightAttemptAsync(
+        ClnChannelSession session, QuiescenceWireRecorder wire, IQuiescenceService quiescence, int attempt,
+        CancellationToken ct)
+    {
+        var from = wire.CurrentSequence;
+        var amount = LightningMoney.Satoshis(40_000 + attempt * 1_000);
+        var label = $"nltg-quiesce-c-{attempt}-{Guid.NewGuid():N}";
+        var clnInvoice = await session.Cln.CallAsync("invoice", ct, ("amount_msat", (long)amount.MilliSatoshi),
+                                                     ("label", label), ("description", "htlc in flight"));
+        var started = new TaskCompletionSource<(Task<QuiescenceInitiator> Request, Task<long?> QueuedAt)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        wire.OnFirstOutbound(MessageTypes.UpdateAddHtlc, () =>
+        {
+            var request = Task.Run(() => quiescence.RequestAsync(session.ChannelId, QuiescencePurpose.Probe, ct), ct);
+            var queuedAt = Task.Factory.StartNew(() => WatchQueuedRequest(quiescence, session.ChannelId, wire, request),
+                                                 ct, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            started.TrySetResult((request, queuedAt));
+        });
+
+        var payment = session.Node.PayInvoiceAsync(clnInvoice["bolt11"]!.GetValue<string>(), ct, 120);
+        var (requestTask, queuedAtTask) = await started.Task.WaitAsync(s_quiescenceTimeout, ct);
+        var initiator = await requestTask.WaitAsync(s_quiescenceTimeout, ct);
+        var queuedAt = await queuedAtTask.WaitAsync(s_quiescenceTimeout, ct);
+        Assert.Equal(QuiescenceInitiator.Local, initiator);
+
+        var ourStfu = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.Stfu, from),
+                                          s_quiescenceTimeout, "our stfu", ct);
+        Assert.True(ourStfu.StfuInitiator);
+        var ourAbort = await Poll.ForAsync(() => wire.FirstOrDefault(inbound: false, MessageTypes.TxAbort, from),
+                                           s_quiescenceTimeout, "our tx_abort ending the probe", ct);
+        await Poll.ForAsync(() => wire.FirstOrDefault(inbound: true, MessageTypes.TxAbort, ourAbort.Sequence),
+                            s_quiescenceTimeout, "CLN's tx_abort ack", ct);
+        var paid = await payment.WaitAsync(TimeSpan.FromSeconds(150), ct);
+        Console.WriteLine($"[cln] our payment: {paid.Status}, failure {paid.FailureCode}: {paid.FailureReason}");
+        Assert.Equal(PaymentStatus.Succeeded, paid.Status);
+        var listed = (await session.Cln.CallAsync("listinvoices", ct, ("label", label)))["invoices"]!.AsArray()
+                                                                                             .Single()!;
+        Assert.Equal("paid", listed["status"]!.GetValue<string>());
+        await Poll.UntilAsync(() => !quiescence.GetState(session.ChannelId).BlocksNewLocalUpdates,
+                              s_quiescenceTimeout, "our quiescence ended", ct);
+        await session.WaitUsableAsync(ct, requireNoHtlcs: true);
+
+        var traffic = wire.Snapshot().Where(m => m.Sequence >= from).ToList();
+        Assert.Single(traffic, m => !m.Inbound && m.Type == (ushort)MessageTypes.Stfu);
+        var ourAdd = traffic.First(m => !m.Inbound && m.Type == (ushort)MessageTypes.UpdateAddHtlc);
+        var ourCommit = traffic.First(m => !m.Inbound && m.Type == (ushort)MessageTypes.CommitmentSigned
+                                        && m.Sequence > ourAdd.Sequence);
+        var theirRevoke = traffic.First(m => m.Inbound && m.Type == (ushort)MessageTypes.RevokeAndAck
+                                          && m.Sequence > ourCommit.Sequence);
+        AssertOurUpdatesSettledBefore(traffic, ourStfu.Sequence);
+        Assert.True(theirRevoke.Sequence < ourStfu.Sequence, "our stfu went out before CLN revoked for our add");
+        AssertNoUpdateFromUsBetween(wire, ourStfu.Sequence, ourAbort.Sequence);
+        return new InFlightAttempt(attempt, ourAdd.Sequence, queuedAt, theirRevoke.Sequence, ourStfu.Sequence);
+    }
+
+    /// <summary>
+    /// Spins until <paramref name="request"/> is seen queued (<see cref="QuiescenceState.PendingRequest"/> set, our
+    /// <c>stfu</c> not sent) and returns <see cref="QuiescenceWireRecorder.CurrentSequence"/> read after that
+    /// observation: every message recorded at or after it was recorded after the request was queued. Null when our
+    /// <c>stfu</c> was seen first or the request finished without being seen queued (the attempt proves no wait).
+    /// </summary>
+    private static long? WatchQueuedRequest(IQuiescenceService quiescence, ChannelId channelId,
+                                            QuiescenceWireRecorder wire, Task request)
+    {
+        var deadline = DateTime.UtcNow + s_quiescenceTimeout;
+        var spinner = new SpinWait();
+        while (DateTime.UtcNow < deadline)
+        {
+            var finished = request.IsCompleted;
+            var state = quiescence.GetState(channelId);
+            if (state.StfuSent)
+                return null;
+
+            if (state.PendingRequest.HasValue)
+                return wire.CurrentSequence;
+
+            if (finished)
+                return null;
+
+            spinner.SpinOnce();
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The sequence of the last message that made the inbound <c>update_add_htlc</c> at
+    /// <paramref name="addSequence"/> irrevocably committed on both sides (CLN's <c>commitment_signed</c> and our
+    /// <c>revoke_and_ack</c>, our <c>commitment_signed</c> and CLN's <c>revoke_and_ack</c>), or null before that.
+    /// </summary>
+    private static StrongBox<long>? IrrevocablyCommittedAt(IReadOnlyList<WireMessage> traffic, long addSequence)
+    {
+        WireMessage? First(bool inbound, MessageTypes type, long after) =>
+            traffic.FirstOrDefault(m => m.Inbound == inbound && m.Type == (ushort)type && m.Sequence > after);
+
+        var theirCommit = First(true, MessageTypes.CommitmentSigned, addSequence);
+        var ourRevoke = theirCommit is null ? null : First(false, MessageTypes.RevokeAndAck, theirCommit.Sequence);
+        var ourCommit = First(false, MessageTypes.CommitmentSigned, addSequence);
+        var theirRevoke = ourCommit is null ? null : First(true, MessageTypes.RevokeAndAck, ourCommit.Sequence);
+        return ourRevoke is null || theirRevoke is null
+                   ? null
+                   : new StrongBox<long>(Math.Max(ourRevoke.Sequence, theirRevoke.Sequence));
+    }
+
+    /// <summary>
+    /// One attempt of Proof Q (c), our side, as positions in the recording.
+    /// </summary>
+    /// <param name="Attempt">The attempt number.</param>
+    /// <param name="OurAddSequence">Our <c>update_add_htlc</c>.</param>
+    /// <param name="QueuedAt">The wire position at which the request was first seen queued, or null if never.</param>
+    /// <param name="TheirRevokeSequence">CLN's <c>revoke_and_ack</c> for our <c>commitment_signed</c> of the add.</param>
+    /// <param name="OurStfuSequence">Our <c>stfu</c>.</param>
+    private sealed record InFlightAttempt(int Attempt, long OurAddSequence, long? QueuedAt, long TheirRevokeSequence,
+                                          long OurStfuSequence)
+    {
+        /// <summary>
+        /// The request was queued before CLN's <c>revoke_and_ack</c> for our add was even read, so our <c>stfu</c> had
+        /// to wait for it (Q-S-02).
+        /// </summary>
+        public bool WaitExercised => QueuedAt is { } queued && queued <= TheirRevokeSequence;
+
+        public string Describe() =>
+            $"attempt {Attempt}: our add #{OurAddSequence}, request queued at "
+          + $"{(QueuedAt is { } q ? $"#{q}" : "(not seen queued)")}, CLN's revoke_and_ack #{TheirRevokeSequence}, "
+          + $"our stfu #{OurStfuSequence}: wait {(WaitExercised ? "exercised" : "not exercised")}";
+    }
+
+    /// <summary>
+    /// A multi-part payment CLN sends to our invoice part by part with <c>sendpay</c> over the direct channel (all
+    /// parts share one <c>groupid</c> and carry the invoice total as <c>amount_msat</c>, BOLT 4 <c>basic_mpp</c>).
+    /// </summary>
+    private sealed class HeldPayment
+    {
+        private const int GroupId = 1;
+
+        private readonly ClnChannelSession _session;
+        private readonly string _bolt11;
+        private readonly string _paymentHashHex;
+        private readonly string _paymentSecretHex;
+        private readonly string _scid;
+        private readonly long _totalMsat;
+        private readonly int _finalCltvDelta;
+
+        private HeldPayment(ClnChannelSession session, string bolt11, string paymentHashHex, string paymentSecretHex,
+                            string scid, long totalMsat, int finalCltvDelta)
+        {
+            _session = session;
+            _bolt11 = bolt11;
+            _paymentHashHex = paymentHashHex;
+            _paymentSecretHex = paymentSecretHex;
+            _scid = scid;
+            _totalMsat = totalMsat;
+            _finalCltvDelta = finalCltvDelta;
+        }
+
+        public static async Task<HeldPayment> CreateAsync(ClnChannelSession session,
+                                                          InvoiceInfoClientResponse invoice, CancellationToken ct)
+        {
+            var bolt11 = invoice.Bolt11!;
+            var decoded = await session.Cln.CallAsync("decode", ct, ("string", bolt11));
+            Console.WriteLine($"[cln] decode of our invoice: {decoded.ToJsonString()}");
+            Assert.NotNull(decoded["payment_secret"]);
+            var scid = (await session.GetClnChannelAsync(ct))["short_channel_id"]!.GetValue<string>();
+            return new HeldPayment(session, bolt11, Convert.ToHexStringLower((byte[])invoice.PaymentHash),
+                                   decoded["payment_secret"]!.GetValue<string>(), scid,
+                                   (long)invoice.Amount!.MilliSatoshi,
+                                   decoded["min_final_cltv_expiry"]!.GetValue<int>());
+        }
+
+        /// <summary>
+        /// <c>sendpay</c> of one part over the direct channel (CLN adds the route's <c>delay</c> to its next block).
+        /// </summary>
+        public async Task SendPartAsync(LightningMoney part, int partId, CancellationToken ct)
+        {
+            var route = new JsonArray(new JsonObject
+            {
+                ["id"] = _session.Node.NodeIdHex,
+                ["channel"] = _scid,
+                ["amount_msat"] = (long)part.MilliSatoshi,
+                ["delay"] = _finalCltvDelta + 6
+            });
+            var sent = await _session.Cln.CallAsync("sendpay", ct, ("route", route),
+                                                    ("payment_hash", _paymentHashHex), ("amount_msat", _totalMsat),
+                                                    ("bolt11", _bolt11), ("payment_secret", _paymentSecretHex),
+                                                    ("partid", partId), ("groupid", GroupId));
+            Console.WriteLine($"[cln] sendpay part {partId}: {sent.ToJsonString()}");
+        }
+
+        /// <summary>
+        /// <c>waitsendpay</c> of one part: it completed (we fulfilled it).
+        /// </summary>
+        public async Task AssertPartCompleteAsync(int partId, CancellationToken ct)
+        {
+            JsonNode result;
+            try
+            {
+                result = await _session.Cln.CallAsync("waitsendpay", ct, ("payment_hash", _paymentHashHex),
+                                                      ("timeout", 60), ("partid", partId), ("groupid", GroupId));
+            }
+            catch (ClnRpcException e)
+            {
+                Assert.Fail($"CLN's part {partId} did not complete: {e.Message}");
+                throw;
+            }
+
+            Assert.Equal("complete", result["status"]!.GetValue<string>());
+        }
+    }
 
     /// <summary>
     /// Waits until CLN's log for our node's peer holds every <paramref name="fragments"/>.
@@ -545,6 +823,25 @@ public sealed class ClnQuiescenceTests : IAsyncLifetime
 
         public WireMessage? FirstOrDefault(bool inbound, MessageTypes type) =>
             _traffic.FirstOrDefault(m => m.Inbound == inbound && m.Type == (ushort)type);
+
+        /// <summary>
+        /// The first recorded message of <paramref name="type"/> at or after <paramref name="fromSequence"/>.
+        /// </summary>
+        public WireMessage? FirstOrDefault(bool inbound, MessageTypes type, long fromSequence) =>
+            _traffic.FirstOrDefault(m => m.Inbound == inbound && m.Type == (ushort)type
+                                      && m.Sequence >= fromSequence);
+
+        /// <summary>
+        /// The sequence the next recorded message gets: every message recorded so far is below it.
+        /// </summary>
+        public long CurrentSequence
+        {
+            get
+            {
+                lock (_sequenceLock)
+                    return _sequence;
+            }
+        }
 
         public WireMessage Single(bool inbound, MessageTypes type) =>
             Assert.Single(_traffic, m => m.Inbound == inbound && m.Type == (ushort)type);
