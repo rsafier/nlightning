@@ -162,6 +162,19 @@ public class PostgresTests
     }
 
     [Fact]
+    public async Task Given_PostgresSchemaFromBeforeAddPeerStorage_When_Migrated_Then_BlobsRoundTrip()
+    {
+        // Arrange (BOLT 1 option_provide_storage: a 65531-byte blob round-trips, replaced and deleted, on a real
+        // server)
+        var options = await CreateOwnDatabaseOptionsAsync("nltg_peer_storage");
+        var databaseTypeProvider = new DatabaseTypeProvider(DatabaseType.PostgreSql);
+
+        // Act & Assert
+        await PeerStorageSchemaRoundTrip.AssertAsync(() => new NLightningDbContext(options, databaseTypeProvider),
+                                                     TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task Given_PostgresSchemaFromBeforeAddFeeInputReservations_When_Migrated_Then_ReservationsRoundTrip()
     {
         // Arrange (BOLT 5 plan O7-T1: fee input reservations round-trip, the outpoint key refuses a second

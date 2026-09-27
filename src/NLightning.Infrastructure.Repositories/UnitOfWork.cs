@@ -18,6 +18,7 @@ using Domain.Crypto.Hashes;
 using Domain.Gossip.Interfaces;
 using Domain.Node.Interfaces;
 using Domain.Node.Models;
+using Domain.Node.PeerStorage;
 using Domain.Onchain.Interfaces;
 using Domain.Payments.Interfaces;
 using Domain.Persistence.Interfaces;
@@ -60,6 +61,7 @@ public class UnitOfWork : IUnitOfWork
 
     // Node repositories
     private PeerDbRepository? _peerDbRepository;
+    private PeerStorageDbRepository? _peerStorageDbRepository;
 
     // Payment repositories
     private InvoiceDbRepository? _invoiceDbRepository;
@@ -120,6 +122,9 @@ public class UnitOfWork : IUnitOfWork
 
     public IPeerDbRepository PeerDbRepository =>
         _peerDbRepository ??= new PeerDbRepository(_context);
+
+    public IPeerStorageDbRepository PeerStorageDbRepository =>
+        _peerStorageDbRepository ??= new PeerStorageDbRepository(_context);
 
     public IInvoiceDbRepository InvoiceDbRepository => _invoiceDbRepository ??= new InvoiceDbRepository(_context);
 
