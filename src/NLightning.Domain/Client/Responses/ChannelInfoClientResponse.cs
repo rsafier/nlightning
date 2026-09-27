@@ -98,4 +98,15 @@ public sealed class ChannelInfoClientResponse
     /// True when the channel has a <c>setchannelpolicy</c> override (some of its values are not <c>Node:Routing</c>'s).
     /// </summary>
     public bool HasPolicyOverride { get; init; }
+
+    /// <summary>
+    /// The channel's fundings: current first, then the pending splices (splicing plan §3.10, SP2-0; lane SP2-D). Empty
+    /// until filled.
+    /// </summary>
+    public IReadOnlyList<ChannelFundingInfoClientResponse> Fundings { get; init; } = [];
+
+    /// <summary>
+    /// Short channel ids retired by splice locks that still resolve (D12), oldest first (SP2-0; lane SP2-D).
+    /// </summary>
+    public IReadOnlyList<RetiredScidInfoClientResponse> RetiredShortChannelIds { get; init; } = [];
 }

@@ -103,6 +103,18 @@ public static class FundingSpendClassifier
                          $"Peer commitment {n} is newer than any we know: we lost data");
     }
 
+    /// <summary>
+    /// Classifies a spend of any of a channel's fundings (splicing plan §3.6, SP2-0; lane SP2-C, SP2-C-T1): the current
+    /// one, a pending splice (a commitment on it once the splice confirmed) or a replaced/discarded one (SP-I5). The
+    /// context whose outpoint the transaction spends decides; a spender listed in its
+    /// <see cref="FundingSpendContext.SpliceTxIds"/> is <see cref="FundingSpendKind.Splice"/>. Null when the transaction
+    /// spends none of them.
+    /// </summary>
+    /// <param name="spender">The transaction.</param>
+    /// <param name="contexts">One context per funding of the channel, each with that funding's commitments.</param>
+    public static FundingSpendMatch? ClassifyAny(ChainTx spender, IReadOnlyList<FundingSpendContext> contexts) =>
+        throw new NotImplementedException("Lane SP2-C (SP2-C-T1)");
+
     private static bool Matches(CommitmentCandidate? candidate, ChainTx spender) =>
         candidate is { } c && c.TxId == spender.TxId;
 

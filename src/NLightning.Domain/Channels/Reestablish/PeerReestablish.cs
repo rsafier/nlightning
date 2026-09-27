@@ -9,9 +9,15 @@ namespace NLightning.Domain.Channels.Reestablish;
 /// number of the commitment of ours it expects to see revoked).</param>
 /// <param name="YourLastPerCommitmentSecret">S: the last per-commitment secret of ours the peer received (32 bytes;
 /// all zeroes when <paramref name="NextRevocationNumber"/> is 0).</param>
-/// <param name="HasNextFunding">The message carries the <c>next_funding</c> TLV (interactive funding only).</param>
+/// <param name="HasNextFunding">The message carries the <c>next_funding</c> TLV (interactive funding only). Kept for
+/// the v1 callers; <see cref="NextFunding"/> carries its value (lane SP2-A may fold the two).</param>
+/// <param name="NextFunding">The peer's <c>next_funding</c> (type 1), or null (SP-RE-03; splicing plan SP2-0).</param>
+/// <param name="MyCurrentFundingLocked">The peer's <c>my_current_funding_locked</c> (type 5), or null (SP-RE-04,
+/// SP-RE-05; splicing plan SP2-0).</param>
 public sealed record PeerReestablish(
     ulong NextCommitmentNumber,
     ulong NextRevocationNumber,
     ReadOnlyMemory<byte> YourLastPerCommitmentSecret,
-    bool HasNextFunding = false);
+    bool HasNextFunding = false,
+    ReestablishFundingField? NextFunding = null,
+    ReestablishFundingField? MyCurrentFundingLocked = null);

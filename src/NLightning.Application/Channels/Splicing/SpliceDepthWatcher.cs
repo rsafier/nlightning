@@ -7,6 +7,7 @@ namespace NLightning.Application.Channels.Splicing;
 using Domain.Bitcoin.Events;
 using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Interfaces;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Persistence.Interfaces;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
@@ -29,7 +30,7 @@ using Interfaces;
 /// being opened); it ignores an <c>Open</c> channel, and the reorg handler of the funding compares the txid with the
 /// channel's funding.
 /// </remarks>
-public sealed class SpliceDepthWatcher : IDisposable
+public sealed class SpliceDepthWatcher : ISpliceDepthWatcher, IDisposable
 {
     private readonly IBlockchainMonitor _blockchainMonitor;
     private readonly IChannelMemoryRepository _channelMemoryRepository;

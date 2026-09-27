@@ -29,6 +29,14 @@ public interface IRevokedCommitmentDbRepository
     Task<IReadOnlyList<RevokedCommitmentModel>> GetByChannelIdAsync(ChannelId channelId);
 
     /// <summary>
+    /// Every entry logged for the funding <paramref name="fundingTxId"/> of the channel, by number (SP-I5: the
+    /// classifier and the revoked resolver judge a breach of a pending, replaced or discarded funding against that
+    /// funding's log). Splicing plan SP2-0; implemented by lane SP2-C (NL-479).
+    /// </summary>
+    Task<IReadOnlyList<RevokedCommitmentModel>> GetByFundingAsync(ChannelId channelId, TxId fundingTxId) =>
+        throw new NotImplementedException("Lane SP2-C (SP2-C-T3, NL-479)");
+
+    /// <summary>
     /// The first revoked commitment number the log covers for the channel: 0 for channels created after migration
     /// <c>AddOnchainResolution</c>; for older channels the peer's commitment number at migration time. An older revoked
     /// commitment on chain has HTLC outputs that cannot be rebuilt (plan §8 risk 5).

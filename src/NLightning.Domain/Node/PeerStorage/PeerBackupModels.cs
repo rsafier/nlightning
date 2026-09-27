@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Node.PeerStorage;
 
+using Bitcoin.ValueObjects;
 using Channels.ValueObjects;
 using Crypto.ValueObjects;
 
@@ -16,7 +17,20 @@ public sealed record PeerBackupBlob(byte[] Blob, string Fingerprint);
 /// <summary>
 /// One channel named in a backup blob.
 /// </summary>
-public sealed record PeerBackupChannel(ChannelId ChannelId, CompactPubKey PeerNodeId);
+/// <param name="ChannelId">The channel id.</param>
+/// <param name="PeerNodeId">The peer's node id.</param>
+/// <param name="FundingTxId">The channel's current funding outpoint's txid (it moves with a locked splice, and with the
+/// RBF of an unconfirmed dual-funded open), or null in a blob that predates it (version 1). Splicing plan SP2-0; written
+/// by lane SP2-E in blob version 2, so the blob's fingerprint changes and it is sent again after a splice.</param>
+/// <param name="FundingOutputIndex">The current funding output index, with <paramref name="FundingTxId"/>.</param>
+/// <param name="LocalFundingKeyIndex">Our funding key index of the current funding (splicing plan D5: 0 before any
+/// splice), with <paramref name="FundingTxId"/>.</param>
+public sealed record PeerBackupChannel(
+    ChannelId ChannelId,
+    CompactPubKey PeerNodeId,
+    TxId? FundingTxId = null,
+    ushort? FundingOutputIndex = null,
+    uint? LocalFundingKeyIndex = null);
 
 /// <summary>
 /// What one of our backup blobs holds.

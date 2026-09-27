@@ -29,6 +29,15 @@ using Models;
 /// </code>
 /// A reader skips bytes it does not know at the end of a record (added fields of a later minor revision) and ignores
 /// unknown flag bits; anything else that does not fit is refused.
+/// <para>
+/// Splicing (plan SP2-0, lane SP2-E; NL-478): the funding fields of a record are the channel's <b>current</b> funding
+/// (its outpoint, capacity and both funding keys), and a minor revision appends, after the addresses,
+/// <c>u32 local_funding_key_index | u8 pending_count | pending_count x (32 txid | u16 output_index | u64 capacity_sat
+/// | u32 local_funding_key_index | 33 local_funding_pubkey | 33 remote_funding_pubkey)</c>
+/// (<see cref="ChannelBackupEntry.LocalFundingKeyIndex"/>, <see cref="ChannelBackupEntry.PendingFundings"/>), so the
+/// version stays 1: an older reader skips them, and its key check refuses a spliced channel's rotated funding key
+/// rather than restoring it with the wrong one.
+/// </para>
 /// </summary>
 public static class ChannelBackupCodec
 {

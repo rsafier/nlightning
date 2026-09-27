@@ -47,6 +47,25 @@ public static class ReestablishPlanner
     }
 
     /// <summary>
+    /// Our <c>next_funding</c> (SP-RE-01): the latest interactive transaction when we sent <c>commitment_signed</c> for
+    /// it and did not receive <c>tx_signatures</c>, with the <c>commitment_signed</c> bit set when we did not receive
+    /// the peer's; null otherwise. <see cref="CreateOwn"/> fills <see cref="OwnReestablish.NextFunding"/> with it once
+    /// implemented.
+    /// </summary>
+    public static ReestablishFundingField? GetOwnNextFunding(ReestablishLocalState local) =>
+        throw new NotImplementedException("Lane SP2-A (SP2-A-T1, SP-RE-01)");
+
+    /// <summary>
+    /// Our <c>my_current_funding_locked</c> (SP-RE-02), with <c>option_splice</c> only: the last splice we sent
+    /// <c>splice_locked</c> for (a splice that reached its depth while disconnected is marked sent by the depth watcher),
+    /// else the funding when we sent <c>channel_ready</c>, else null; bit 0 set on a public channel when we hold no
+    /// <c>announcement_signatures</c> of the peer for that txid. <see cref="CreateOwn"/> fills
+    /// <see cref="OwnReestablish.MyCurrentFundingLocked"/> with it once implemented.
+    /// </summary>
+    public static ReestablishFundingField? GetOwnFundingLocked(ReestablishLocalState local) =>
+        throw new NotImplementedException("Lane SP2-A (SP2-A-T1, SP-RE-02)");
+
+    /// <summary>
     /// Judges the peer's <c>channel_reestablish</c>.
     /// </summary>
     /// <param name="local">Our side (after <c>RevertUncommitted</c>).</param>
@@ -169,8 +188,13 @@ public static class ReestablishPlanner
 /// <param name="LastReceivedSecretNumber">R - 1: the peer's commitment whose secret we send back, or null for zeroes.
 /// </param>
 /// <param name="CurrentPointNumber">L: the commitment whose per-commitment point we send.</param>
+/// <param name="NextFunding">Our <c>next_funding</c> TLV (SP-RE-01), or null (splicing plan SP2-0).</param>
+/// <param name="MyCurrentFundingLocked">Our <c>my_current_funding_locked</c> TLV (SP-RE-02), or null (splicing plan
+/// SP2-0).</param>
 public sealed record OwnReestablish(
     ulong NextCommitmentNumber,
     ulong NextRevocationNumber,
     ulong? LastReceivedSecretNumber,
-    ulong CurrentPointNumber);
+    ulong CurrentPointNumber,
+    ReestablishFundingField? NextFunding = null,
+    ReestablishFundingField? MyCurrentFundingLocked = null);
