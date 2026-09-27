@@ -42,9 +42,12 @@ internal static class InteractiveTxTestData
                                                             InteractiveTxContribution? contribution = null,
                                                             SharedFundingSpec? shared = null,
                                                             CompactPubKey? localNodeId = null,
-                                                            CompactPubKey? remoteNodeId = null) =>
-        new(TestChannelId, isInitiator, 253, 120, contribution ?? InteractiveTxContribution.Empty, shared, false, false,
-            localNodeId ?? LowNodeId, remoteNodeId ?? HighNodeId, []);
+                                                            CompactPubKey? remoteNodeId = null,
+                                                            uint feeratePerKw = 253,
+                                                            IReadOnlyList<ConstructedInteractiveTx>? previousAttempts =
+                                                                null) =>
+        new(TestChannelId, isInitiator, feeratePerKw, 120, contribution ?? InteractiveTxContribution.Empty, shared,
+            false, false, localNodeId ?? LowNodeId, remoteNodeId ?? HighNodeId, previousAttempts ?? []);
 
     public static ContributedInput Input(int seed, long sats = 100_000, uint sequence = Sequence) =>
         new(PrevTxId(PrevTx(seed)), 0, PrevTx(seed), sequence, LightningMoney.Satoshis(sats), P2Wpkh, 272);

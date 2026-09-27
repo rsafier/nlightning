@@ -13,9 +13,10 @@ using Domain.Protocol.Payloads;
 using static InteractiveTxTestData;
 
 /// <summary>
-/// <see cref="InteractiveTxSession"/> (IT1-T1, IT1-T3): turn-taking, consecutive <c>tx_complete</c>, the receiver rules
-/// as the session applies them (IT-S-01/02, IT-R-01..04, NL-219), <c>tx_signatures</c> (IT-SIG-01..03) and
-/// <c>tx_abort</c> (IT-ABT-01). Migrated from the deleted <c>InteractiveTransactionServiceTests</c>.
+/// <see cref="InteractiveTxSession"/> (IT1-T1..T4): turn-taking, consecutive <c>tx_complete</c>, the receiver rules
+/// as the session applies them (IT-S-01/02, IT-R-01..04 incl. the agreed feerate, NL-219), the double-spend of previous
+/// RBF attempts (IT-RBF-01), <c>tx_signatures</c> (IT-SIG-01..03) and <c>tx_abort</c> (IT-ABT-01). Migrated from the
+/// deleted <c>InteractiveTransactionServiceTests</c>.
 /// </summary>
 public class InteractiveTxSessionTests
 {
@@ -69,8 +70,8 @@ public class InteractiveTxSessionTests
         string.Join(",", log.Select(e => (e.FromInitiator ? "A:" : "B:") + e.Message.Type));
 
     private static InteractiveTxSession NonInitiator(InteractiveTxContribution? contribution = null,
-                                                     SharedFundingSpec? shared = null) =>
-        InteractiveTxSession.Create(Parameters(false, contribution, shared));
+                                                     SharedFundingSpec? shared = null, uint feeratePerKw = 253) =>
+        InteractiveTxSession.Create(Parameters(false, contribution, shared, feeratePerKw: feeratePerKw));
 
     /// <summary>Our non-initiator session after the peer's first message.</summary>
     private InteractiveTxStepResult Receive(InteractiveTxSession session, IChannelMessage message) =>
@@ -255,8 +256,9 @@ public class InteractiveTxSessionTests
     [Fact]
     public void Given_PeersCompleteFirst_When_WeHaveNothing_Then_OurCompleteEndsTheNegotiation()
     {
-        // Arrange: the peer (initiator) starts with tx_complete; we have nothing either
-        var session = NonInitiator();
+        // Arrange: the peer (initiator) starts with tx_complete; we have nothing either (at feerate 0, so the empty
+        // transaction owes no fee for its common fields)
+        var session = NonInitiator(feeratePerKw: 0);
 
         // Act
         var result = Receive(session, Complete());
@@ -297,7 +299,7 @@ public class InteractiveTxSessionTests
     public void Given_CompletedNegotiation_When_PeerAddsAnInput_Then_Abort()
     {
         // Arrange
-        var completed = Receive(NonInitiator(), Complete()).Next;
+        var completed = Receive(NonInitiator(feeratePerKw: 0), Complete()).Next;
 
         // Act
         var result = Receive(completed, AddInput(0, 1));
@@ -737,6 +739,148 @@ public class InteractiveTxSessionTests
             Assert.True(result.NegotiationComplete, result.AbortReason);
     }
 
+    [Theory]
+    [InlineData(99_890, false)] // pays 110 sat = floor(437 wu x 253 / 1000): exactly the agreed feerate
+    [InlineData(99_891, true)] // pays 109 sat
+    [InlineData(99_950, true)]
+    public void Given_PeerInitiatorFee_When_PeerCompletes_Then_ItMustPayTheAgreedFeerate(long outputSats,
+                                                                                         bool aborts)
+    {
+        // Arrange: the peer (initiator) adds a 100,000 sat P2WPKH input and a P2WPKH output; it owes the common fields
+        // (42), its input (164 + 107) and its output (124) = 437 wu at 253 sat/kw
+        // (BOLT 2 tx_complete: "the peer's paid feerate does not meet or exceed the agreed feerate")
+        var s1 = Receive(NonInitiator(), AddInput(0, 1)).Next;
+        var s2 = Receive(s1, AddOutput(2, outputSats)).Next;
+
+        // Act
+        var result = Receive(s2, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-R-04");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_InitiatorAddingNothing_When_ItCompletesAtANonZeroFeerate_Then_CommonFieldsUnpaid()
+    {
+        // Arrange: the peer (initiator) sends tx_complete with nothing added; the common fields cost 10 sat at 253
+        // (BOLT 2 tx_complete: "if is the non-initiator: the initiator's fees do not cover the common fields")
+        var session = NonInitiator();
+
+        // Act
+        var result = Receive(session, Complete());
+
+        // Assert
+        AssertAborted(result, "IT-R-04");
+        Assert.Contains("common fields", result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_BothContributeAtTheAgreedFeerate_When_Running_Then_BothComplete()
+    {
+        // Arrange: each side adds a 100,000 sat input and change sized with the calculator
+        var initiatorContribution = Contribution([Input(1)], [Output(100_000 - 111)]); // 42 + 272 + 124 = 438 wu
+        var nonInitiatorContribution = Contribution([Input(2)], [Output(100_000 - 101)]); // 272 + 124 = 396 wu
+        Assert.Equal(111, CollaborativeFeeCalculator.GetLocalContributionFee(initiatorContribution, true, null, 253)
+                                                    .Satoshi);
+        Assert.Equal(101, CollaborativeFeeCalculator.GetLocalContributionFee(nonInitiatorContribution, false, null,
+                                                                               253).Satoshi);
+        var a = InteractiveTxSession.Create(Parameters(true, initiatorContribution));
+        var b = InteractiveTxSession.Create(Parameters(false, nonInitiatorContribution, localNodeId: HighNodeId,
+                                                       remoteNodeId: LowNodeId));
+
+        // Act
+        var exchange = Run(a, b);
+
+        // Assert
+        Assert.True(exchange.InitiatorComplete && exchange.NonInitiatorComplete, Names(exchange.Log));
+    }
+
+    #endregion
+
+    #region IT-RBF-01 double-spend of previous attempts
+
+    private static ConstructedInteractiveTx PreviousAttempt(params (InteractiveTxParty Party, int Seed)[] inputs) =>
+        new(PrevTxId(PrevTx(-inputs.Length)), [0x02], 120,
+            [
+                .. inputs.Select((x, i) => new InteractiveTxInput((ulong)i, x.Party, PrevTxId(PrevTx(x.Seed)), 0,
+                                                                  Sequence, PrevOutAmount, P2Wpkh, PrevTx(x.Seed),
+                                                                  false))
+            ], [], 1_000, null);
+
+    [Theory]
+    [InlineData(1, false)] // the peer re-adds its input of the previous attempt
+    [InlineData(9, true)] // a fresh input only: the attempts could both confirm
+    public void Given_RbfAttempt_When_PeerCompletes_Then_ItMustDoubleSpendThePreviousAttempt(int seed, bool aborts)
+    {
+        // Arrange
+        // (BOLT 2 tx_init_rbf/tx_ack_rbf: "If it contributed to previous transactions: MUST ensure that the new
+        // transaction double-spends all other attempts")
+        var previous = PreviousAttempt((InteractiveTxParty.Remote, 1));
+        var session = InteractiveTxSession.Create(Parameters(false, previousAttempts: [previous]));
+        var s1 = Receive(session, AddInput(0, seed)).Next;
+
+        // Act
+        var result = Receive(s1, Complete());
+
+        // Assert
+        if (aborts)
+            AssertAborted(result, "IT-RBF-01");
+        else
+            Assert.True(result.NegotiationComplete, result.AbortReason);
+    }
+
+    [Fact]
+    public void Given_OurContributionNotDoubleSpendingOurPreviousAttempt_When_Creating_Then_Throws()
+    {
+        // Arrange: we added seed 1 to the previous attempt and now contribute seed 2 only
+        var previous = PreviousAttempt((InteractiveTxParty.Local, 1));
+        var parameters = Parameters(true, Contribution([Input(2)]), previousAttempts: [previous]);
+
+        // Act & Assert
+        var exception = Assert.Throws<ArgumentException>(() => InteractiveTxSession.Create(parameters));
+        Assert.Contains("IT-RBF-01", exception.Message);
+    }
+
+    [Fact]
+    public void Given_OurContributionReAddingOurPreviousInput_When_Creating_Then_Created()
+    {
+        // Arrange
+        var previous = PreviousAttempt((InteractiveTxParty.Local, 1), (InteractiveTxParty.Remote, 3));
+        var parameters = Parameters(true, Contribution([Input(1), Input(4)]), previousAttempts: [previous]);
+
+        // Act
+        var session = InteractiveTxSession.Create(parameters);
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Negotiating, session.State);
+    }
+
+    [Fact]
+    public void Given_SpliceRbf_When_OurContributionDropsOurWalletInputs_Then_TheSharedInputSuffices()
+    {
+        // Arrange: splicing rationale, "RBF attempts automatically double-spend each other"
+        var spec = Splice(true);
+        var previous = new ConstructedInteractiveTx(FundingTxId, [0x02], 120,
+                                                    [
+                                                        new InteractiveTxInput(0, InteractiveTxParty.Local,
+                                                                               FundingTxId, 1, Sequence,
+                                                                               LightningMoney.Satoshis(1_000_000),
+                                                                               FundingScript, null, true),
+                                                        new InteractiveTxInput(2, InteractiveTxParty.Local,
+                                                                               PrevTxId(PrevTx(1)), 0, Sequence,
+                                                                               PrevOutAmount, P2Wpkh, PrevTx(1), false)
+                                                    ], [], 1_000, null);
+
+        // Act
+        var session = InteractiveTxSession.Create(Parameters(true, shared: spec, previousAttempts: [previous]));
+
+        // Assert
+        Assert.Equal(InteractiveTxSessionState.Negotiating, session.State);
+    }
+
     #endregion
 
     #region Splice: shared input and output
@@ -1063,12 +1207,14 @@ public class InteractiveTxSessionTests
     private (InteractiveTxSession Initiator, InteractiveTxSession NonInitiator) SplicePair(
         long nonInitiatorSpliceIn = 50_000)
     {
-        var capacity = 1_000_000 + nonInitiatorSpliceIn;
-        var a = InteractiveTxSession.Create(Parameters(true, shared: Splice(true, capacity, 600_000,
-                                                                              400_000 + nonInitiatorSpliceIn)));
+        // Each side leaves 1,000 sat of its balance for its fees (IT-R-04): the initiator pays the common fields and
+        // the shared input and output (598 wu, 151 sat at 253 sat/kw), the non-initiator its input (271 wu, 68 sat).
+        var capacity = 1_000_000 + nonInitiatorSpliceIn - 2_000;
+        var a = InteractiveTxSession.Create(Parameters(true, shared: Splice(true, capacity, 599_000,
+                                                                              399_000 + nonInitiatorSpliceIn)));
         var b = InteractiveTxSession.Create(Parameters(false, Contribution([Input(5, nonInitiatorSpliceIn)]),
-                                                       Splice(false, capacity, 400_000 + nonInitiatorSpliceIn,
-                                                              600_000), HighNodeId, LowNodeId));
+                                                       Splice(false, capacity, 399_000 + nonInitiatorSpliceIn,
+                                                              599_000), HighNodeId, LowNodeId));
         var inspector = new FakePrevTxInspector
         {
             Override = (bytes, _) => new PrevTxInspection(true, PrevTxId(bytes), 1,
