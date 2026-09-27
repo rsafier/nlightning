@@ -314,11 +314,17 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         if (result.Transition.IsEmpty)
             return;
 
+        // NL-279: adds the peer sends again with the dropped ids come after our shutdown too; the lowered boundary is
+        // saved with the revert
+        var boundary = channel.FirstRemoteHtlcIdAfterLocalShutdown;
+        var boundaryLowered = channel.LowerFirstRemoteHtlcIdAfterLocalShutdown(result.Next.RemoteNextHtlcId);
         try
         {
             using var scope = _serviceProvider.CreateScope();
             var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
             await unitOfWork.ChannelStateDbRepository.ApplyAsync(result.Next, result.Transition);
+            if (boundaryLowered)
+                await unitOfWork.ChannelDbRepository.UpdateAsync(channel);
             await unitOfWork.SaveChangesAsync();
             channel.UpdateCommitments(result.Next);
             _channelMemoryRepository.UpdateChannel(channel);
@@ -329,6 +335,8 @@ public class ChannelManager : IChannelManager, IChannelMessagePublisher
         }
         catch (Exception e)
         {
+            if (boundaryLowered)
+                channel.RestoreFirstRemoteHtlcIdAfterLocalShutdown(boundary);
             _logger.LogError(e, "Failed to revert the uncommitted peer updates of channel {ChannelId}",
                              channel.ChannelId);
         }

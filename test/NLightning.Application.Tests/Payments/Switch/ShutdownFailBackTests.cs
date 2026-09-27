@@ -165,6 +165,47 @@ public class ShutdownFailBackTests
         Assert.Empty(harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId).Commitments!.Htlcs);
     }
 
+    [Theory]
+    [InlineData(ChannelState.Failed)]
+    [InlineData(ChannelState.OnchainResolving)]
+    public async Task Given_AFinalHopHtlcAddedAfterBobsShutdown_When_TheChannelGoesOnChainBeforeTheSwitchActs_Then_ClaimedOnChainNotFailedBack(
+        ChannelState closedState)
+    {
+        // Arrange: Alice's payment to Bob crosses his shutdown, and the channel goes on chain before Bob's switch acts
+        await using var harness = await ThreeNodeHarness.CreateAsync(WithCloseServices);
+        var invoice = await harness.Bob.Invoices.CreateInvoiceAsync(s_amount, "to bob on chain", null,
+                                                                    TestContext.Current.CancellationToken);
+        var finalCltv = ThreeNodeHarness.BlockHeight + 43;
+        var route = new PaymentRoute([new RouteHop(harness.Bob.NodeId, s_amount, finalCltv, null)], s_amount,
+                                     finalCltv, invoice.PaymentHash, invoice.PaymentSecret);
+        await BobClosesAliceBobAsync(harness);
+        harness.Bob.SwitchSuspended = true;
+        await harness.AlicePaysAsync(route);
+        await harness.PumpAsync();
+        harness.Bob.SwitchSuspended = false;
+        var bobChannel = harness.Bob.Channel(ThreeNodeHarness.AliceBobChannelId);
+        var incoming = Assert.Single(bobChannel.Commitments!.Htlcs.Values, h => h.Direction == HtlcDirection.Incoming);
+        Assert.True(bobChannel.IsRemoteHtlcAddedAfterLocalShutdown(incoming.Id));
+        bobChannel.UpdateState(closedState);
+        var sentBefore = harness.Sent.Count;
+
+        // Act: the resolver hands it to the switch (twice, as it does every round while the invoice is Open)
+        await harness.Bob.Switch.HandleAsync(new IncomingHtlcLockedIn(ThreeNodeHarness.AliceBobChannelId, incoming),
+                                             CancellationToken.None);
+        await harness.Bob.Switch.HandleAsync(new IncomingHtlcLockedIn(ThreeNodeHarness.AliceBobChannelId, incoming),
+                                             CancellationToken.None);
+        await harness.PumpAsync();
+
+        // Assert: no failure attempted (the channel cannot carry one), the preimage committed for the on-chain claim
+        Assert.Equal(sentBefore, harness.Sent.Count);
+        Assert.Empty(harness.Alice.PaymentHandler.Failed);
+        Assert.Equal(invoice.Preimage,
+                     bobChannel.Commitments!.GetHtlc(HtlcDirection.Incoming, incoming.Id)!.KnownPreimage);
+        Assert.Equal(InvoiceStatus.Settled,
+                     (await harness.Bob.InScopeAsync(u => u.InvoiceDbRepository
+                                                           .GetByPaymentHashAsync(invoice.PaymentHash)))!.Status);
+    }
+
     /// <summary>Bob closes the Alice-Bob channel: his <c>shutdown</c> is persisted and queued, not delivered.</summary>
     private static async Task BobClosesAliceBobAsync(ThreeNodeHarness harness)
     {

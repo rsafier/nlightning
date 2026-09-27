@@ -518,6 +518,55 @@ public class OpenChannel1MessageHandlerTests
         Assert.Equal(0, sent.ShutdownScriptPubkey.Length);
     }
 
+    [Fact]
+    public async Task Given_UpfrontShutdownScriptNegotiated_When_Assigned_Then_TheTemporaryChannelIsStoredFirst()
+    {
+        // Arrange (the source tells a live open from an abandoned one by its temporary channel)
+        var added = false;
+        _mockChannelMemoryRepository.Setup(m => m.AddTemporaryChannel(_peerPubKey, _channel))
+                                    .Callback(() => added = true);
+        var source = new FixedUpfrontShutdownScriptSource(Convert.FromHexString("0014" + new string('d', 40)))
+        {
+            OnReserve = () => Assert.True(added)
+        };
+        CaptureUpfrontShutdownScript(_ => { });
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeOptions: s_regtestOptions,
+                                                     upfrontShutdownScriptSource: source);
+
+        // Act
+        await handler.HandleAsync(_validMessage, ChannelState.None,
+                                  new FeatureOptions { UpfrontShutdownScript = FeatureSupport.Optional }, _peerPubKey);
+
+        // Assert
+        Assert.Equal(1, source.Reservations);
+    }
+
+    [Fact]
+    public async Task Given_TheReservationFails_When_OpenChannelArrives_Then_TheTemporaryChannelIsRemoved()
+    {
+        // Arrange
+        var source = new FixedUpfrontShutdownScriptSource(Convert.FromHexString("0014" + new string('d', 40)))
+        {
+            OnReserve = () => throw new InvalidOperationException("wallet down")
+        };
+        var handler = new OpenChannel1MessageHandler(_mockChannelFactory.Object, _mockChannelMemoryRepository.Object,
+                                                     new Mock<ILogger<OpenChannel1MessageHandler>>().Object,
+                                                     _mockMessageFactory.Object, nodeOptions: s_regtestOptions,
+                                                     upfrontShutdownScriptSource: source);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => handler.HandleAsync(
+                                                                _validMessage, ChannelState.None,
+                                                                new FeatureOptions
+                                                                {
+                                                                    UpfrontShutdownScript = FeatureSupport.Optional
+                                                                }, _peerPubKey));
+        _mockChannelMemoryRepository.Verify(m => m.TryRemoveTemporaryChannel(_peerPubKey, _channel.ChannelId),
+                                            Times.Once);
+    }
+
     private void CaptureUpfrontShutdownScript(Action<UpfrontShutdownScriptTlv?> capture) =>
         _mockMessageFactory
            .Setup(x => x.CreateAcceptChannel1Message(It.IsAny<ChannelParty>(), It.IsAny<ChannelTypeTlv>(),
@@ -542,8 +591,11 @@ public class OpenChannel1MessageHandlerTests
     {
         public int Reservations { get; private set; }
 
+        public Action? OnReserve { get; init; }
+
         public override Task<BitcoinScript> ReserveAsync()
         {
+            OnReserve?.Invoke();
             Reservations++;
             return Task.FromResult(script);
         }

@@ -1,14 +1,25 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using NBitcoin;
+using NLightning.Tests.Utils.Channels;
+using NLightning.Tests.Utils.Mocks;
 
 namespace NLightning.Application.Tests.Channels.Close;
 
 using Application.Channels.Close;
 using Domain.Bitcoin.Enums;
+using Domain.Bitcoin.Transactions.Outputs;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Bitcoin.Wallet.Models;
+using Domain.Channels.Enums;
+using Domain.Channels.Interfaces;
+using Domain.Channels.Models;
+using Domain.Channels.ValueObjects;
+using Domain.Crypto.ValueObjects;
 using Domain.Enums;
+using Domain.Money;
 using Domain.Node.Options;
+using Domain.Protocol.Models;
 using Domain.Protocol.ValueObjects;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
 
@@ -43,6 +54,87 @@ public class UpfrontShutdownScriptSourceTests
         monitor.Verify(m => m.WatchBitcoinAddress(walletAddress), Times.Once);
     }
 
+    [Fact]
+    public async Task Given_AFundeeOpenAbandonedBeforeFundingCreated_When_AnotherPeerOpens_Then_ItsScriptIsReused()
+    {
+        // Arrange (a peer that opens and walks away must not grow the wallet)
+        var context = new FundeeContext();
+        var first = FundeeChannel(0x01);
+        context.AddTemporary(s_peerA, first);
+        var firstScript = await context.Source.AssignIfNegotiatedAsync(first, s_negotiated, s_peerA);
+        context.RemoveTemporary(s_peerA, first);
+        var second = FundeeChannel(0x02);
+        context.AddTemporary(s_peerB, second);
+
+        // Act
+        var secondScript = await context.Source.AssignIfNegotiatedAsync(second, s_negotiated, s_peerB);
+
+        // Assert
+        Assert.Equal(firstScript, secondScript);
+        Assert.Equal(secondScript, second.LocalUpfrontShutdownScript);
+        Assert.Equal(1, context.Source.Reservations);
+        Assert.Equal(1, context.Source.FundeeReservationCount);
+    }
+
+    [Fact]
+    public async Task Given_AFundeeOpenStillRunning_When_AnotherOpens_Then_AFreshAddressIsReserved()
+    {
+        // Arrange
+        var context = new FundeeContext();
+        var first = FundeeChannel(0x01);
+        context.AddTemporary(s_peerA, first);
+        var firstScript = await context.Source.AssignIfNegotiatedAsync(first, s_negotiated, s_peerA);
+        var second = FundeeChannel(0x02);
+        context.AddTemporary(s_peerA, second);
+
+        // Act
+        var secondScript = await context.Source.AssignIfNegotiatedAsync(second, s_negotiated, s_peerA);
+
+        // Assert
+        Assert.NotEqual(firstScript, secondScript);
+        Assert.Equal(2, context.Source.Reservations);
+    }
+
+    [Fact]
+    public async Task Given_AFundeeOpenPastFundingCreated_When_AnotherOpens_Then_ItsScriptIsNeverReused()
+    {
+        // Arrange: funding_created moved the channel on (persisted with its script) and dropped the temporary channel
+        var context = new FundeeContext();
+        var first = FundeeChannel(0x01);
+        context.AddTemporary(s_peerA, first);
+        var firstScript = await context.Source.AssignIfNegotiatedAsync(first, s_negotiated, s_peerA);
+        first.UpdateState(ChannelState.V1FundingSigned);
+        context.RemoveTemporary(s_peerA, first);
+        var second = FundeeChannel(0x02);
+        context.AddTemporary(s_peerB, second);
+
+        // Act
+        var secondScript = await context.Source.AssignIfNegotiatedAsync(second, s_negotiated, s_peerB);
+
+        // Assert
+        Assert.NotEqual(firstScript, secondScript);
+        Assert.Equal(2, context.Source.Reservations);
+        Assert.Equal(1, context.Source.FundeeReservationCount);
+    }
+
+    [Fact]
+    public async Task Given_OurOwnOpen_When_Assigned_Then_AFreshAddressIsReservedAndNotRemembered()
+    {
+        // Arrange: the funder path passes no peer
+        var context = new FundeeContext();
+        var abandoned = FundeeChannel(0x01);
+        context.AddTemporary(s_peerA, abandoned);
+        await context.Source.AssignIfNegotiatedAsync(abandoned, s_negotiated, s_peerA);
+        context.RemoveTemporary(s_peerA, abandoned);
+
+        // Act
+        await context.Source.AssignIfNegotiatedAsync(FundeeChannel(0x02), s_negotiated);
+
+        // Assert
+        Assert.Equal(2, context.Source.Reservations);
+        Assert.Equal(1, context.Source.FundeeReservationCount);
+    }
+
     [Theory]
     [InlineData(FeatureSupport.No, false)]
     [InlineData(FeatureSupport.Optional, true)]
@@ -56,5 +148,69 @@ public class UpfrontShutdownScriptSourceTests
                      {
                          UpfrontShutdownScript = negotiated
                      }));
+    }
+
+    private static readonly FeatureOptions s_negotiated = new() { UpfrontShutdownScript = FeatureSupport.Optional };
+    private static readonly CompactPubKey s_peerA = new Key(Enumerable.Repeat((byte)0x0A, 32).ToArray()).PubKey.ToBytes();
+    private static readonly CompactPubKey s_peerB = new Key(Enumerable.Repeat((byte)0x0B, 32).ToArray()).PubKey.ToBytes();
+
+    private static ChannelModel FundeeChannel(byte tag)
+    {
+        var pubKey = new Key(Enumerable.Repeat((byte)0x21, 32).ToArray()).PubKey.ToBytes();
+        CompactPubKey key = pubKey;
+        var amount = LightningMoney.Satoshis(10_000);
+        var channelParams = TestChannelParams.Create(LightningMoney.Satoshis(1_000), LightningMoney.Zero,
+                                                     LightningMoney.Satoshis(1), LightningMoney.Satoshis(354), 10,
+                                                     amount, 3, false, LightningMoney.Satoshis(354), 144,
+                                                     FeatureSupport.No);
+        var keySet = new ChannelKeySetModel(0, key, key, key, key, key, key);
+        return new ChannelModel(channelParams, new ChannelId(Enumerable.Repeat(tag, 32).ToArray()),
+                                new CommitmentNumber(key, key, new FakeSha256()),
+                                new FundingOutputInfo(amount, key, key), false, null, null, LightningMoney.Zero, keySet,
+                                0, 0, amount, keySet, 0, s_peerA, 0, ChannelState.V1Opening, ChannelVersion.V1);
+    }
+
+    /// <summary>The source over a channel memory whose temporary channels the test adds and removes.</summary>
+    private sealed class FundeeContext
+    {
+        private readonly HashSet<(CompactPubKey, ChannelId)> _temporary = [];
+
+        public FundeeContext()
+        {
+            var memory = new Mock<IChannelMemoryRepository>();
+            memory.Setup(m => m.TryGetTemporaryChannel(It.IsAny<CompactPubKey>(), It.IsAny<ChannelId>(),
+                                                       out It.Ref<ChannelModel?>.IsAny))
+                  .Returns(new TryGetTemporaryCallback((CompactPubKey peer, ChannelId id, out ChannelModel? channel) =>
+                   {
+                       channel = null;
+                       return _temporary.Contains((peer, id));
+                   }));
+            Source = new CountingSource(memory.Object);
+        }
+
+        public CountingSource Source { get; }
+
+        public void AddTemporary(CompactPubKey peer, ChannelModel channel) =>
+            _temporary.Add((peer, channel.ChannelId));
+
+        public void RemoveTemporary(CompactPubKey peer, ChannelModel channel) =>
+            _temporary.Remove((peer, channel.ChannelId));
+    }
+
+    private delegate bool TryGetTemporaryCallback(CompactPubKey peer, ChannelId channelId, out ChannelModel? channel);
+
+    /// <summary>Hands out a new script per reservation and counts them.</summary>
+    private sealed class CountingSource(IChannelMemoryRepository memory)
+        : UpfrontShutdownScriptSource(Options.Create(new NodeOptions { BitcoinNetwork = BitcoinNetwork.Regtest }),
+                                      new Mock<IServiceScopeFactory>().Object, channelMemoryRepository: memory)
+    {
+        public int Reservations { get; private set; }
+
+        public override Task<BitcoinScript> ReserveAsync()
+        {
+            Reservations++;
+            BitcoinScript script = new byte[] { 0x00, 0x14 }.Concat(Enumerable.Repeat((byte)Reservations, 20)).ToArray();
+            return Task.FromResult(script);
+        }
     }
 }

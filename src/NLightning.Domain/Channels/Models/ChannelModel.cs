@@ -369,6 +369,29 @@ public class ChannelModel
         FirstRemoteHtlcIdAfterLocalShutdown ??= htlcId;
 
     /// <summary>
+    /// Lowers <see cref="FirstRemoteHtlcIdAfterLocalShutdown"/> to <paramref name="remoteNextHtlcId"/> when the peer's
+    /// uncommitted adds were dropped (a reconnection, <c>RevertUncommitted</c>) after our <c>shutdown</c>: the peer
+    /// reuses those ids for adds it sends on the new connection, where our <c>shutdown</c> is retransmitted after
+    /// <c>channel_reestablish</c>, so they too come after it (NL-279). Nothing changes without our shutdown or when the
+    /// boundary is already at or below it.
+    /// </summary>
+    /// <returns>True when the boundary was lowered (the channel row must be saved).</returns>
+    public bool LowerFirstRemoteHtlcIdAfterLocalShutdown(ulong remoteNextHtlcId)
+    {
+        if (LocalShutdownScript is null || FirstRemoteHtlcIdAfterLocalShutdown is not { } first
+                                        || remoteNextHtlcId >= first)
+            return false;
+
+        FirstRemoteHtlcIdAfterLocalShutdown = remoteNextHtlcId;
+        return true;
+    }
+
+    /// <summary>
+    /// Puts back a boundary lowered by <see cref="LowerFirstRemoteHtlcIdAfterLocalShutdown"/> whose save failed.
+    /// </summary>
+    public void RestoreFirstRemoteHtlcIdAfterLocalShutdown(ulong? htlcId) => FirstRemoteHtlcIdAfterLocalShutdown = htlcId;
+
+    /// <summary>
     /// True when the peer added incoming HTLC <paramref name="htlcId"/> after our <c>shutdown</c> (BOLT 2: we SHOULD
     /// fail to route it, B2-SHUT-S08).
     /// </summary>

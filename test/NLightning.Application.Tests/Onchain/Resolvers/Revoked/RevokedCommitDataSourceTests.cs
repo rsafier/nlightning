@@ -10,8 +10,10 @@ using Application.Channels.Services;
 using Application.Onchain.Resolvers;
 using Application.Onchain.Resolvers.Revoked;
 using Channels.Services;
+using Domain.Bitcoin.Enums;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.ValueObjects;
+using Domain.Bitcoin.Wallet.Models;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
@@ -41,6 +43,8 @@ public class RevokedCommitDataSourceTests
     private readonly Mock<IChannelDbRepository> _channels = new();
     private readonly Mock<IBitcoinChainService> _chain = new();
     private readonly Mock<IFeeService> _fees = new();
+    private readonly Mock<IBitcoinWalletService> _wallet = new();
+    private uint _nextAddressIndex;
 
     private RevokedCommitDataSource CreateDataSource(ChannelModel? inMemory = null)
     {
@@ -53,7 +57,14 @@ public class RevokedCommitDataSourceTests
 
         var services = new ServiceCollection();
         services.AddScoped(_ => unitOfWork.Object);
+        services.AddScoped(_ => _wallet.Object);
         var provider = services.BuildServiceProvider();
+        _broadcasts.Setup(b => b.GetByChannelIdAsync(It.IsAny<ChannelId>()))
+                   .ReturnsAsync(Array.Empty<BroadcastTransactionModel>());
+        _wallet.Setup(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false))
+               .ReturnsAsync(() => new WalletAddressModel(AddressType.P2Wpkh, _nextAddressIndex++, false,
+                                                          new Key().PubKey.GetAddress(ScriptPubKeyType.Segwit,
+                                                                                      Network.Main).ToString()));
 
         var memory = new Mock<IChannelMemoryRepository>();
         memory.Setup(m => m.TryGetChannel(It.IsAny<ChannelId>(), out It.Ref<ChannelModel?>.IsAny))
@@ -219,6 +230,53 @@ public class RevokedCommitDataSourceTests
 
         // Assert
         Assert.Equal(1_234u, rate);
+    }
+
+    [Fact]
+    public async Task Given_NoStoredPenalty_When_DestinationAskedTwiceForAChannel_Then_OneAddressReservedAndReused()
+    {
+        // Arrange (NL-280: every address the wallet hands out is reserved, so each call would get another one)
+        var dataSource = CreateDataSource();
+        var other = new ChannelId(Enumerable.Repeat((byte)0x77, 32).ToArray());
+
+        // Act
+        var first = await dataSource.GetDestinationScriptAsync(RealSigningCommitmentPair.ChannelId,
+                                                               TestContext.Current.CancellationToken);
+        var second = await dataSource.GetDestinationScriptAsync(RealSigningCommitmentPair.ChannelId,
+                                                                TestContext.Current.CancellationToken);
+        var otherChannel = await dataSource.GetDestinationScriptAsync(other, TestContext.Current.CancellationToken);
+
+        // Assert: a rebuilt penalty pays to the same script (same txid at the same fee); another channel gets its own
+        Assert.Equal(first, second);
+        Assert.NotEqual(first, otherChannel);
+        _wallet.Verify(w => w.GetUnusedAddressAsync(AddressType.P2Wpkh, false), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Given_APenaltyStoredBeforeARestart_When_DestinationAsked_Then_ItsScriptWithoutANewAddress()
+    {
+        // Arrange: a new process (fresh data source) with a penalty of the channel already stored
+        var stored = CreateTransaction(9);
+        var storedScript = stored.Outputs[0].ScriptPubKey.ToBytes();
+        var sweep = CreateTransaction(10);
+        var dataSource = CreateDataSource();
+        _broadcasts.Setup(b => b.GetByChannelIdAsync(RealSigningCommitmentPair.ChannelId))
+                   .ReturnsAsync([
+                        new BroadcastTransactionModel(new SignedTransaction(sweep.GetHash().ToBytes(), sweep.ToBytes()),
+                                                      BroadcastPurpose.Sweep, RealSigningCommitmentPair.ChannelId, 300),
+                        new BroadcastTransactionModel(new SignedTransaction(stored.GetHash().ToBytes(),
+                                                                            stored.ToBytes()),
+                                                      BroadcastPurpose.Penalty, RealSigningCommitmentPair.ChannelId,
+                                                      300)
+                    ]);
+
+        // Act
+        var destination = await dataSource.GetDestinationScriptAsync(RealSigningCommitmentPair.ChannelId,
+                                                                     TestContext.Current.CancellationToken);
+
+        // Assert
+        Assert.Equal(storedScript, destination);
+        _wallet.Verify(w => w.GetUnusedAddressAsync(It.IsAny<AddressType>(), It.IsAny<bool>()), Times.Never);
     }
 
     [Fact]

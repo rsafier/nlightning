@@ -14,6 +14,7 @@ using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Node.Options;
+using Domain.Onchain.Enums;
 using Domain.Onchain.Models;
 using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
@@ -39,6 +40,8 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ISecretStorageServiceFactory _secretStorageServiceFactory;
     private readonly ConcurrentDictionary<TxId, ChainTx> _transactions = new();
+    private readonly ConcurrentDictionary<ChannelId, byte[]> _destinations = new();
+    private readonly SemaphoreSlim _destinationLock = new(1, 1);
 
     public RevokedCommitDataSource(IServiceScopeFactory scopeFactory, IBitcoinChainService chainService,
                                    ISecretStorageServiceFactory secretStorageServiceFactory, IFeeService feeService,
@@ -145,15 +148,63 @@ public sealed class RevokedCommitDataSource : IRevokedCommitDataSource
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// One script per channel: the script of a penalty already stored for the channel (so also after a restart), else
+    /// a fresh wallet address, reserved once (the wallet never hands an address out twice since NL-280) and kept for
+    /// the channel's later rounds. A penalty rebuilt for the same outputs at the same fee therefore has the same txid
+    /// (lock time 0, RFC 6979 signatures), which the watcher, the executor and the mempool reactor rely on to revive an
+    /// abandoned penalty instead of storing a second, conflicting one; and the resolver's rounds do not reserve a new
+    /// address each time.
+    /// </remarks>
     public async Task<byte[]> GetDestinationScriptAsync(ChannelId channelId, CancellationToken cancellationToken)
     {
-        using var scope = _scopeFactory.CreateScope();
-        var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
-        var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+        if (_destinations.TryGetValue(channelId, out var cached))
+            return cached;
 
-        // The monitor credits the penalty output to the wallet once it confirms (idempotent)
-        _blockchainMonitor?.WatchBitcoinAddress(address);
-        return BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
+        await _destinationLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_destinations.TryGetValue(channelId, out cached))
+                return cached;
+
+            using var scope = _scopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            var script = await FindStoredPenaltyDestinationAsync(unitOfWork, channelId);
+            if (script is null)
+            {
+                var walletService = scope.ServiceProvider.GetRequiredService<IBitcoinWalletService>();
+                var address = await walletService.GetUnusedAddressAsync(AddressType.P2Wpkh, false);
+
+                // The monitor credits the penalty output to the wallet once it confirms (idempotent)
+                _blockchainMonitor?.WatchBitcoinAddress(address);
+                script = BitcoinAddress.Create(address.Address, _network).ScriptPubKey.ToBytes();
+            }
+
+            _destinations[channelId] = script;
+            return script;
+        }
+        finally
+        {
+            _destinationLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// The destination of a penalty stored for <paramref name="channelId"/> (its only output), the oldest first, or
+    /// null.
+    /// </summary>
+    private static async Task<byte[]?> FindStoredPenaltyDestinationAsync(IUnitOfWork unitOfWork, ChannelId channelId)
+    {
+        var broadcasts = await unitOfWork.BroadcastTransactionDbRepository.GetByChannelIdAsync(channelId);
+        foreach (var broadcast in broadcasts.Where(b => b.Purpose == BroadcastPurpose.Penalty)
+                                            .OrderBy(b => b.CreatedAt))
+        {
+            if (ChainTxMapper.TryParse(broadcast.RawTransaction, out var transaction)
+             && transaction is { Outputs.Count: 1 })
+                return transaction.Outputs[0].ScriptPubKey;
+        }
+
+        return null;
     }
 
     /// <inheritdoc />

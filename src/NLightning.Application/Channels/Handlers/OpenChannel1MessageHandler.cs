@@ -123,12 +123,24 @@ public class OpenChannel1MessageHandler : IChannelMessageHandler<OpenChannel1Mes
             }
         }
 
-        // NL-045: once the channel is admitted, a reserved wallet address becomes our upfront shutdown script
-        if (_upfrontShutdownScriptSource is not null)
-            await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, negotiatedFeatures);
-
         // Add the channel to dictionaries
         _channelMemoryRepository.AddTemporaryChannel(peerPubKey, channel);
+
+        // NL-045: once the channel is admitted, a reserved wallet address becomes our upfront shutdown script. After the
+        // temporary channel is stored, so the source can tell a live open from an abandoned one whose script it may
+        // hand out again
+        if (_upfrontShutdownScriptSource is not null)
+        {
+            try
+            {
+                await _upfrontShutdownScriptSource.AssignIfNegotiatedAsync(channel, negotiatedFeatures, peerPubKey);
+            }
+            catch
+            {
+                _channelMemoryRepository.TryRemoveTemporaryChannel(peerPubKey, channel.ChannelId);
+                throw;
+            }
+        }
 
         // Create UpfrontShutdownScriptTlv if needed
         UpfrontShutdownScriptTlv? upfrontShutdownScriptTlv = null;

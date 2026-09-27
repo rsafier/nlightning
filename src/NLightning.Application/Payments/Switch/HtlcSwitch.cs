@@ -319,14 +319,17 @@ public sealed class HtlcSwitch : IHtlcSwitch, IDisposable, IAsyncDisposable
 
         // NL-279 (BOLT 2 B2-SHUT-S08): the peer added this HTLC after our shutdown (it may not have seen it yet). A node
         // that sent shutdown SHOULD fail to route it, and a shutdown means no new HTLC is accepted either: fail it back
-        // instead of forwarding it or accepting it as final hop
+        // instead of forwarding it or accepting it as final hop. Not on a channel closing on chain: a failure can no
+        // longer be sent there, and a final-hop HTLC of ours is claimed on chain like any other (NL-316) rather than
+        // left to time out; a forward was already left to time out above
         (Secret SharedSecret, bool Introduction)? routable = result switch
         {
             IncomingOnionForward routed => (routed.SharedSecret, routed.Blinded?.IsIntroduction ?? false),
             IncomingOnionFinal received => (received.SharedSecret, false),
             _ => null
         };
-        if (routable is var (sharedSecret, introduction) && IsAddedAfterOurShutdown(channelId, htlcId))
+        if (routable is var (sharedSecret, introduction) && !IsOnchain(channelId)
+         && IsAddedAfterOurShutdown(channelId, htlcId))
         {
             await RecordSecretAsync(channelId, htlcId, sharedSecret, storedSecret, cancellationToken);
             await FailBackAsync(channelId, htlc, sharedSecret, FailureMessage.TemporaryNodeFailure(), cancellationToken,
