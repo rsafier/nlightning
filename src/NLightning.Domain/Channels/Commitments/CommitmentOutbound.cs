@@ -1,5 +1,6 @@
 namespace NLightning.Domain.Channels.Commitments;
 
+using Bitcoin.ValueObjects;
 using Crypto.ValueObjects;
 
 /// <summary>
@@ -34,8 +35,22 @@ public sealed record OutboundFailMalformedHtlc(ulong Id, ushort FailureCode, Rea
 public sealed record OutboundUpdateFee(uint FeeratePerKw) : CommitmentOutbound;
 
 /// <summary>Send <c>commitment_signed</c> for the peer's commitment <paramref name="RemoteCommitmentNumber"/>.</summary>
-public sealed record OutboundCommitmentSigned(ulong RemoteCommitmentNumber, CommitmentSignatures Signatures)
-    : CommitmentOutbound;
+/// <param name="RemoteCommitmentNumber">The peer's commitment number the signatures are for.</param>
+/// <param name="Signatures">The commitment and HTLC signatures.</param>
+/// <param name="FundingTxId">The funding the commitment spends (the <c>funding_txid</c> TLV): set on every member of a
+/// batch (SP-OP-03) and on a splice commitment (SP-CS-01); null for a channel without a pending splice, which means the
+/// current funding (byte-identical to the single-funding engine).</param>
+public sealed record OutboundCommitmentSigned(
+    ulong RemoteCommitmentNumber,
+    CommitmentSignatures Signatures,
+    TxId? FundingTxId = null) : CommitmentOutbound;
+
+/// <summary>
+/// Send <c>start_batch</c> (BOLT 2 "Batching channel messages", <c>message_type</c> 132) announcing the
+/// <paramref name="BatchSize"/> <see cref="OutboundCommitmentSigned"/> that follow it (SP-OP-03: one per active funding,
+/// the current funding first). Nothing else may be sent between them.
+/// </summary>
+public sealed record OutboundStartBatch(int BatchSize) : CommitmentOutbound;
 
 /// <summary>
 /// Send <c>revoke_and_ack</c>: <c>per_commitment_secret</c> of our commitment <paramref name="RevokedCommitmentNumber"/>
