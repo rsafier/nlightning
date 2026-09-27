@@ -204,6 +204,66 @@ public class OnionMessageRateLimiterTests
     }
 
     [Fact]
+    public void Given_AMessageAdmittedAfterRemovePeer_When_ItsBucketsRefill_Then_ASweepStillForgetsIt()
+    {
+        // Arrange: the old connection's read loop admits one last message after the disconnect released the peer (the
+        // race). Per-peer message bucket off, so the other peer's zero-length traffic leaves its own buckets full.
+        var limits = new OnionMessageRateLimits(PeerMessagesPerSecond: 0, PeerBurstMessages: 0);
+        var limiter = new OnionMessageRateLimiter(limits, _clock);
+        Assert.True(limiter.TryAdmit(s_peerA, SmallMessage));
+        limiter.RemovePeer(s_peerA);
+        Assert.True(limiter.TryAdmit(s_peerA, SmallMessage));
+        _clock.Advance(TimeSpan.FromSeconds(10));
+
+        // Act: the sweep runs on the SweepInterval-th call
+        for (var i = 2; i < OnionMessageRateLimiter.SweepInterval - 1; i++)
+            limiter.TryAdmit(s_peerB, 0);
+        var beforeSweep = limiter.TrackedPeerCount;
+        limiter.TryAdmit(s_peerB, 0);
+        var afterSweep = limiter.TrackedPeerCount;
+
+        // Assert
+        Assert.Equal(2, beforeSweep);
+        Assert.Equal(0, afterSweep);
+    }
+
+    [Fact]
+    public void Given_APeerNeverRemoved_When_ItsBucketsRefill_Then_ASweepForgetsIt()
+    {
+        // Arrange: a connection that received a message but never became the peer's session (no RemovePeer ever)
+        var limits = new OnionMessageRateLimits(PeerMessagesPerSecond: 0, PeerBurstMessages: 0);
+        var limiter = new OnionMessageRateLimiter(limits, _clock);
+        Assert.True(limiter.TryAdmit(s_peerA, LargeMessage));
+        _clock.Advance(TimeSpan.FromSeconds(10));
+
+        // Act
+        for (var i = 1; i < OnionMessageRateLimiter.SweepInterval; i++)
+            limiter.TryAdmit(s_peerB, 0);
+
+        // Assert
+        Assert.Equal(0, limiter.TrackedPeerCount);
+    }
+
+    [Fact]
+    public void Given_APeerInDebtNeverRemoved_When_ASweepRuns_Then_ItIsKeptAndNotRefilledEarly()
+    {
+        // Arrange: A spends its whole message burst; no time passes
+        var limiter = new OnionMessageRateLimiter(timeProvider: _clock);
+        while (limiter.TryAdmit(s_peerA, SmallMessage))
+        {
+        }
+
+        // Act: enough calls from A for a sweep
+        for (var i = 0; i < OnionMessageRateLimiter.SweepInterval; i++)
+            limiter.TryAdmit(s_peerA, SmallMessage);
+        var afterSweep = limiter.TryAdmit(s_peerA, SmallMessage);
+
+        // Assert
+        Assert.False(afterSweep);
+        Assert.Equal(1, limiter.TrackedPeerCount);
+    }
+
+    [Fact]
     public void Given_ZeroLimits_When_Admitting_Then_ThoseBucketsAreOff()
     {
         // Arrange: every bucket off

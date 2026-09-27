@@ -67,14 +67,18 @@ public sealed record OnionMessageRateLimits(
 /// only when all four buckets hold its tokens, and then takes them from all four; a dropped message takes nothing.
 /// </summary>
 /// <remarks>
-/// Buckets start full and refill continuously with the <see cref="TimeProvider"/>'s monotonic timestamp. A peer that
-/// disconnects (<see cref="RemovePeer"/>) is forgotten at once when its buckets are full again, else only once they
-/// have refilled (checked every <see cref="SweepInterval"/> admissions), so reconnecting never refills a peer's
-/// buckets early. Thread-safe (one lock; every call is a few arithmetic operations).
+/// Buckets start full and refill continuously with the <see cref="TimeProvider"/>'s monotonic timestamp. A peer whose
+/// buckets are full is the same as an unknown one, so every <see cref="SweepInterval"/> admissions a sweep forgets
+/// every peer whose buckets have refilled, connected or not; <see cref="RemovePeer"/> (a disconnect) only forgets a
+/// full peer at once. A peer in debt is kept until it has refilled, so reconnecting never refills its buckets early,
+/// and memory is bounded by the peers that sent within the last refill time, whether or not
+/// <see cref="RemovePeer"/> is ever called for them (a message admitted after the disconnect, or a connection that
+/// never became the peer's session). Thread-safe (one lock; every call is a few arithmetic operations, the sweep one
+/// pass over the tracked peers).
 /// </remarks>
 public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
 {
-    /// <summary>How many <see cref="TryAdmit"/> calls pass between two sweeps of disconnected peers.</summary>
+    /// <summary>How many <see cref="TryAdmit"/> calls pass between two sweeps of refilled peers.</summary>
     internal const int SweepInterval = 256;
 
     private readonly Lock _lock = new();
@@ -107,7 +111,7 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
     /// <summary>The messages dropped so far (over a limit, or with a negative length).</summary>
     public long DroppedCount => Interlocked.Read(ref _dropped);
 
-    /// <summary>The peers with a bucket (connected, or disconnected and not refilled yet).</summary>
+    /// <summary>The peers with a bucket (those not refilled yet, plus the full ones no sweep has reached yet).</summary>
     internal int TrackedPeerCount
     {
         get
@@ -136,7 +140,6 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
                 _peers[peerNodeId] = peer;
             }
 
-            peer.Disconnected = false;
             peer.Refill(now, _timeProvider);
             _globalBytes.Refill(now, _timeProvider);
             _globalMessages.Refill(now, _timeProvider);
@@ -154,7 +157,7 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
             if (++_callsSinceSweep >= SweepInterval)
             {
                 _callsSinceSweep = 0;
-                SweepDisconnected(now);
+                SweepRefilled(now);
             }
         }
 
@@ -163,7 +166,7 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
     }
 
     /// <inheritdoc />
-    /// <remarks>A peer whose buckets are not full yet is kept (marked disconnected) until they are.</remarks>
+    /// <remarks>A peer whose buckets are not full yet is kept until a sweep finds them full.</remarks>
     public void RemovePeer(CompactPubKey peerNodeId)
     {
         lock (_lock)
@@ -174,19 +177,18 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
             peer.Refill(_timeProvider.GetTimestamp(), _timeProvider);
             if (peer.IsFull)
                 _peers.Remove(peerNodeId);
-            else
-                peer.Disconnected = true;
         }
     }
 
-    private void SweepDisconnected(long now)
+    /// <summary>
+    /// Forgets every peer whose buckets are full: a full bucket is the same as a fresh one, so this never lets a peer
+    /// send more than it could have, and it needs no disconnect.
+    /// </summary>
+    private void SweepRefilled(long now)
     {
         List<CompactPubKey>? refilled = null;
         foreach (var (nodeId, peer) in _peers)
         {
-            if (!peer.Disconnected)
-                continue;
-
             peer.Refill(now, _timeProvider);
             if (peer.IsFull)
                 (refilled ??= []).Add(nodeId);
@@ -203,7 +205,6 @@ public sealed class OnionMessageRateLimiter : IOnionMessageRateLimiter
     {
         public TokenBucket Bytes { get; } = new(limits.PeerBytesPerSecond, limits.PeerBurstBytes, now);
         public TokenBucket Messages { get; } = new(limits.PeerMessagesPerSecond, limits.PeerBurstMessages, now);
-        public bool Disconnected { get; set; }
         public bool IsFull => Bytes.IsFull && Messages.IsFull;
 
         public void Refill(long now, TimeProvider timeProvider)

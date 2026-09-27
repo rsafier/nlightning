@@ -69,6 +69,62 @@ public class PeerOutboxOnionMessageTests
     }
 
     [Fact]
+    public async Task Given_ContinuousGossip_When_AnOnionMessageWaits_Then_ItGoesOutAfterAtMostTheGossipShare()
+    {
+        // Arrange: the wire is busy; a long gossip stream is queued with an onion message in the middle
+        var outbox = CreateOutbox();
+        var first = new Mock<IChannelMessage>().Object;
+        Assert.True(outbox.TryEnqueue(first));
+        await _firstSendStarted.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        var gossip = Enumerable.Range(0, 3 * PeerOutbox.GossipSendsPerOnionMessage)
+                               .Select(_ => new Mock<IMessage>().Object).ToArray();
+        var onion = CreateOnionMessage();
+
+        // Act
+        foreach (var message in gossip.Take(2))
+            Assert.True(outbox.TryEnqueueGossip(message));
+        Assert.True(outbox.TryEnqueueOnionMessage(onion));
+        foreach (var message in gossip.Skip(2))
+            Assert.True(outbox.TryEnqueueGossip(message));
+        _releaseWire.SetResult();
+        await WaitForWireAsync(gossip.Length + 2);
+
+        // Assert: the onion message takes the place of the next gossip after the gossip share
+        var wire = Snapshot();
+        Assert.Equal(PeerOutbox.GossipSendsPerOnionMessage + 1, wire.IndexOf(onion));
+        Assert.Equal<object>([first, .. gossip.Take(PeerOutbox.GossipSendsPerOnionMessage), onion,
+                              .. gossip.Skip(PeerOutbox.GossipSendsPerOnionMessage)], wire);
+    }
+
+    [Fact]
+    public async Task Given_TheGossipShareIsUsed_When_AChannelMessageIsAtTheHead_Then_ItStillGoesBeforeTheOnionMessage()
+    {
+        // Arrange
+        var outbox = CreateOutbox();
+        var first = new Mock<IChannelMessage>().Object;
+        Assert.True(outbox.TryEnqueue(first));
+        await _firstSendStarted.Task.WaitAsync(s_timeout, TestContext.Current.CancellationToken);
+        var gossipBefore = Enumerable.Range(0, PeerOutbox.GossipSendsPerOnionMessage)
+                                     .Select(_ => new Mock<IMessage>().Object).ToArray();
+        var gossipAfter = Enumerable.Range(0, 2).Select(_ => new Mock<IMessage>().Object).ToArray();
+        var channelMessage = new Mock<IChannelMessage>().Object;
+        var onion = CreateOnionMessage();
+
+        // Act
+        foreach (var message in gossipBefore)
+            Assert.True(outbox.TryEnqueueGossip(message));
+        Assert.True(outbox.TryEnqueueOnionMessage(onion));
+        Assert.True(outbox.TryEnqueue(channelMessage));
+        foreach (var message in gossipAfter)
+            Assert.True(outbox.TryEnqueueGossip(message));
+        _releaseWire.SetResult();
+        await WaitForWireAsync(gossipBefore.Length + gossipAfter.Length + 3);
+
+        // Assert
+        Assert.Equal<object>([first, .. gossipBefore, channelMessage, onion, .. gossipAfter], Snapshot());
+    }
+
+    [Fact]
     public async Task Given_OnionMessagesAtTheCap_When_OneMoreIsQueued_Then_ItIsDroppedAndChannelMessagesAreNot()
     {
         // Arrange: cap 2, the wire is busy with a channel message

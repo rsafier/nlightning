@@ -80,6 +80,7 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     private readonly Lazy<IOnionMessageRateLimiter?> _onionMessageRateLimiter;
     private readonly ConcurrentDictionary<CompactPubKey, PeerSession> _peers = new();
     private readonly ConcurrentDictionary<CompactPubKey, Task> _reconnectLoops = new();
+    private long _droppedOutboxOnionMessages;
 
     /// <summary>
     /// Guards installing and removing sessions, and <see cref="_inboundLoops"/>.
@@ -172,6 +173,12 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
     /// <c>OnionMessages:MaxOutboxPerPeer</c>); read when a connection is set up.
     /// </summary>
     public int MaxOutboxOnionMessagesPerPeer { get; set; } = PeerOutbox.DefaultMaxQueuedOnionMessages;
+
+    /// <summary>
+    /// The onion messages every connection's outbox refused because it was full, since the node started (the
+    /// <c>dropped{reason=outbox_full}</c> count for the onion message metrics; it survives the connections).
+    /// </summary>
+    public long DroppedOutboxOnionMessageCount => Interlocked.Read(ref _droppedOutboxOnionMessages);
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
@@ -639,7 +646,8 @@ public sealed class PeerManager : IPeerManager, IPeerGossipOutbox, IPeerOnionMes
         var (maxQueuedGossip, metrics) = _gossipOutboxSettings.Value;
         var outbox = new PeerOutbox(peerService, _logger, maxQueuedGossip,
                                     metrics is null ? null : () => metrics.RecordDropped(OutboxFullReason),
-                                    MaxOutboxOnionMessagesPerPeer);
+                                    MaxOutboxOnionMessagesPerPeer,
+                                    () => Interlocked.Increment(ref _droppedOutboxOnionMessages));
         var session = new PeerSession(peer, peerService, outbox, isInbound);
         session.ChannelMessageHandler = (_, args) => QueueInboundMessage(session, args);
         session.DisconnectHandler = (_, args) => HandleSessionDisconnected(session, args);

@@ -28,9 +28,10 @@ using Domain.Protocol.Messages;
 /// </para>
 /// <para>
 /// Onion messages (BOLT 4, type 513, <see cref="TryEnqueueOnionMessage"/>) are a separate, lower-priority class on
-/// their own bounded queue: the send loop takes one only when nothing else (channel message, gossip, warning, error,
-/// disconnect) is waiting, so an onion message never delays anything else by more than the one send already on the
-/// wire. The queue holds at most <c>maxQueuedOnionMessages</c> (default <see cref="DefaultMaxQueuedOnionMessages"/>,
+/// their own bounded queue: the send loop takes one when nothing else is waiting, or in place of the gossip message at
+/// the head of the queue once <see cref="GossipSendsPerOnionMessage"/> gossip messages went out since the last onion
+/// message (so a long gossip stream cannot starve them). A channel message, warning, error or disconnect at the head is
+/// always sent first, so an onion message never delays one by more than the one send already on the wire. The queue holds at most <c>maxQueuedOnionMessages</c> (default <see cref="DefaultMaxQueuedOnionMessages"/>,
 /// BOLT12 plan §3.4 <c>OnionMessages:MaxOutboxPerPeer</c>); one more is refused (dropped, <c>onOnionMessageDropped</c>
 /// is called): a slow reader only loses onion messages, which have no delivery guarantee. A disconnect drops the onion
 /// messages still waiting; <see cref="Complete"/> still sends them after the rest.
@@ -42,6 +43,13 @@ public sealed class PeerOutbox
     /// The onion messages a peer's outbox holds by default before it refuses more (BOLT12 plan §3.4).
     /// </summary>
     public const int DefaultMaxQueuedOnionMessages = 64;
+
+    /// <summary>
+    /// While gossip waits, one waiting onion message goes out after at most this many gossip messages, so a long
+    /// gossip stream (e.g. a query_channel_range answer) never starves onion messages. Channel messages, warnings,
+    /// errors and the disconnect are never passed by an onion message.
+    /// </summary>
+    public const int GossipSendsPerOnionMessage = 8;
 
     private readonly Channel<OutboxItem> _queue = Channel.CreateUnbounded<OutboxItem>(new UnboundedChannelOptions
     {
@@ -248,19 +256,33 @@ public sealed class PeerOutbox
     }
 
     /// <summary>
-    /// One send at a time: the main queue (FIFO) first, an onion message only when the main queue is empty. Ends after
-    /// a disconnect, or once the outbox is closed and both queues are drained. Every write releases the signal once
-    /// (after the item is in its queue) and closing releases it once more, so a wake that finds both queues empty
-    /// happens only after the close.
+    /// One send at a time: the main queue (FIFO) first, an onion message when the main queue is empty or when its head
+    /// is gossip and <see cref="GossipSendsPerOnionMessage"/> gossip messages went out since the last onion message.
+    /// Ends after a disconnect, or once the outbox is closed and both queues are drained. Every write releases the
+    /// signal once (after the item is in its queue) and closing releases it once more, so a wake that finds both queues
+    /// empty happens only after the close.
     /// </summary>
     private async Task SendLoopAsync()
     {
+        var gossipSinceOnionMessage = 0;
         while (true)
         {
             await _signal.WaitAsync().ConfigureAwait(false);
 
-            if (_queue.Reader.TryRead(out var item))
+            if (_queue.Reader.TryPeek(out var head))
             {
+                if (head.Kind == OutboxItemKind.Gossip && gossipSinceOnionMessage >= GossipSendsPerOnionMessage
+                                                       && _onionQueue.Reader.TryRead(out var interleaved))
+                {
+                    gossipSinceOnionMessage = 0;
+                    await SendOnionMessageAsync(interleaved).ConfigureAwait(false);
+                    continue;
+                }
+
+                _queue.Reader.TryRead(out var item);
+                if (item!.Kind == OutboxItemKind.Gossip)
+                    gossipSinceOnionMessage++;
+
                 if (!await SendItemAsync(item).ConfigureAwait(false))
                     return;
 
@@ -269,21 +291,26 @@ public sealed class PeerOutbox
 
             if (_onionQueue.Reader.TryRead(out var onionMessage))
             {
-                Interlocked.Decrement(ref _queuedOnionMessages);
-                try
-                {
-                    await _peerService.SendOnionMessageAsync(onionMessage).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    _logger.LogDebug(e, "Failed to send an onion message to peer {Peer}", _peerService.PeerPubKey);
-                }
-
+                gossipSinceOnionMessage = 0;
+                await SendOnionMessageAsync(onionMessage).ConfigureAwait(false);
                 continue;
             }
 
             if (_queue.Reader.Completion.IsCompleted)
                 return;
+        }
+    }
+
+    private async Task SendOnionMessageAsync(OnionMessageMessage onionMessage)
+    {
+        Interlocked.Decrement(ref _queuedOnionMessages);
+        try
+        {
+            await _peerService.SendOnionMessageAsync(onionMessage).ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            _logger.LogDebug(e, "Failed to send an onion message to peer {Peer}", _peerService.PeerPubKey);
         }
     }
 
