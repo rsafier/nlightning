@@ -255,7 +255,10 @@ public sealed class OnchainSpliceTests : IAsyncLifetime
 
         // Act: the splice's block is invalidated (the splice goes back to the mempool) and the chain goes on
         await _fixture.Bitcoin.InvalidateBlockAsync(await _fixture.Bitcoin.GetBlockHashAsync((int)height, ct), ct);
+        var address = await _fixture.Bitcoin.GetNewAddressAsync(ct);
+        await _fixture.Bitcoin.SendCommandAsync("generateblock", ct, address.ToString(), Array.Empty<string>());
         await ChainSync.WaitAllAtTipAsync(_fixture, [], [alice, bob], ct);
+        Assert.Contains(new uint256((byte[])splice), await _fixture.Bitcoin.GetRawMempoolAsync(ct));
         await MineUntilLockedAsync(alice, bob, channelId, splice, ct);
 
         // Assert
