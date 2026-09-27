@@ -9,6 +9,8 @@ public enum MessageTypes : ushort
 
     Warning = 1,
     Stfu = 2,
+    PeerStorage = 7,
+    PeerStorageRetrieval = 9,
     Init = 16,
     Error = 17,
     Ping = 18,

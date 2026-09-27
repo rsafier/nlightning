@@ -108,6 +108,14 @@ public interface IPeerService : IDisposable
     Task SendGossipMessageAsync(IMessage message);
 
     /// <summary>
+    /// Sends a BOLT 1 peer storage message (<c>peer_storage</c> or <c>peer_storage_retrieval</c>).
+    /// </summary>
+    /// <param name="message">The peer storage message.</param>
+    /// <returns>A task that represents the asynchronous operation.</returns>
+    /// <exception cref="ArgumentException"><paramref name="message"/> is not a peer storage message.</exception>
+    Task SendPeerStorageMessageAsync(IMessage message);
+
+    /// <summary>
     /// Sends a warning message to the peer.
     /// </summary>
     /// <param name="we">The warning exception containing the warning message to be sent to the peer.</param>
