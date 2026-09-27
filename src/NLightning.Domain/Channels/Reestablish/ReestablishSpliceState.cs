@@ -29,6 +29,8 @@ public sealed record ReestablishPendingSplice(TxId TxId, bool SpliceLockedSent, 
 /// hold (retransmit bit 0 of our TLV 5 is set when ours names a txid outside this set on a public channel).</param>
 /// <param name="AnnouncementSignaturesReadyFor">The fundings for which we are ready to send
 /// <c>announcement_signatures</c> now (SP-RE-04 bit 0, SP-G-01: locked both ways and announcement depth).</param>
+/// <param name="CurrentFundingIsSplice">The current funding is a locked splice, not the channel's original funding
+/// (SP-RE-05: a <c>my_current_funding_locked</c> naming it is "for a splice transaction").</param>
 public sealed record ReestablishSpliceState(
     bool ChannelReadySent,
     TxId CurrentFundingTxId,
@@ -36,4 +38,11 @@ public sealed record ReestablishSpliceState(
     bool AnnounceChannel,
     IReadOnlyList<ReestablishPendingSplice> PendingSplices,
     IReadOnlyCollection<TxId> AnnouncementSignaturesReceivedFor,
-    IReadOnlyCollection<TxId> AnnouncementSignaturesReadyFor);
+    IReadOnlyCollection<TxId> AnnouncementSignaturesReadyFor,
+    bool CurrentFundingIsSplice = false)
+{
+    /// <summary>Whether <paramref name="txId"/> is a splice transaction of the channel (pending, or the locked current
+    /// funding when that is a splice).</summary>
+    public bool IsSplice(TxId txId) =>
+        PendingSplices.Any(p => p.TxId == txId) || (CurrentFundingIsSplice && CurrentFundingTxId == txId);
+}

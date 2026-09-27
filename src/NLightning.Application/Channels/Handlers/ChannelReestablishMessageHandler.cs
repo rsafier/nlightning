@@ -1,15 +1,18 @@
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Handlers;
 
 using Close;
 using Domain.Bitcoin.Interfaces;
+using Domain.Bitcoin.ValueObjects;
 using Domain.Channels.Commitments;
 using Domain.Channels.Enums;
 using Domain.Channels.Interfaces;
 using Domain.Channels.Models;
 using Domain.Channels.Reestablish;
+using Domain.Channels.Splicing.Interfaces;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
 using Domain.Exceptions;
@@ -19,9 +22,12 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Serialization.Interfaces;
 using DualFunding;
+using Gossip.Announcements.Interfaces;
+using InteractiveTx.Interfaces;
 using Interfaces;
 using Reestablish;
 using Services;
+using Splicing;
 
 /// <summary>
 /// Receives the peer's <c>channel_reestablish</c> (BOLT 2 Message Retransmission, plan N7-T1..T4): runs the
@@ -53,6 +59,7 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
     private readonly IUnitOfWork _unitOfWork;
     private readonly ClosingNegotiationRegistry? _closingRegistry;
     private readonly DualFundReestablish? _dualFundReestablish;
+    private readonly IServiceProvider? _serviceProvider;
 
     public ChannelReestablishMessageHandler(IChannelMemoryRepository channelMemoryRepository,
                                             ILightningSigner lightningSigner,
@@ -61,10 +68,12 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                                             ReestablishService reestablishService, ReestablishTracker tracker,
                                             ChannelStateTransitionService transitions, IUnitOfWork unitOfWork,
                                             ClosingNegotiationRegistry? closingRegistry = null,
-                                            DualFundReestablish? dualFundReestablish = null)
+                                            DualFundReestablish? dualFundReestablish = null,
+                                            IServiceProvider? serviceProvider = null)
     {
         _closingRegistry = closingRegistry;
         _dualFundReestablish = dualFundReestablish;
+        _serviceProvider = serviceProvider;
         _channelMemoryRepository = channelMemoryRepository;
         _lightningSigner = lightningSigner;
         _logger = logger;
@@ -114,21 +123,30 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             case ReestablishStatus.Awaiting:
                 // Not sent on this connection yet (a channel waiting for channel_ready, or one that turned Open on this
                 // connection before the peer's reestablish arrived): ours goes first
-                replies.Add(await _reestablishService.CreateOwnAsync(channel));
+                replies.Add(await _reestablishService.CreateOwnAsync(channel, negotiatedFeatures));
                 _tracker.MarkSent(channelId, peerPubKey);
                 break;
         }
 
-        var local = ReestablishService.GetLocalState(channel);
+        var local = await _reestablishService.GetLocalStateAsync(channel, negotiatedFeatures);
         var peer = new PeerReestablish(payload.NextCommitmentNumber, payload.NextRevocationNumber,
-                                       payload.YourLastPerCommitmentSecret, message.NextFundingTlv is not null);
+                                       payload.YourLastPerCommitmentSecret, message.NextFundingTlv is not null,
+                                       message.NextFundingTlv is { } nextFunding
+                                           ? new ReestablishFundingField(new TxId(nextFunding.NextFundingTxId),
+                                                                         nextFunding.RetransmitFlags)
+                                           : null,
+                                       message.MyCurrentFundingLockedTlv is { } fundingLocked
+                                           ? new ReestablishFundingField(fundingLocked.FundingTxId,
+                                                                         fundingLocked.RetransmitFlags)
+                                           : null);
         var plan = ReestablishPlanner.Plan(local, peer,
                                            (number, secret) => _reestablishService.IsOurSecret(channel, number, secret));
 
         _logger.LogInformation(
-            "channel_reestablish for {ChannelId}: ours {LocalNext}/{LocalRevocation}, theirs {Next}/{Revocation} -> {Outcome} [{Steps}]",
+            "channel_reestablish for {ChannelId}: ours {LocalNext}/{LocalRevocation}, theirs {Next}/{Revocation} (next_funding {NextFunding}, my_current_funding_locked {FundingLocked}) -> {Outcome} [{Steps}]",
             channelId, local.LocalCommitmentNumber + 1, local.RemoteCommitmentNumber, peer.NextCommitmentNumber,
-            peer.NextRevocationNumber, plan.Outcome, string.Join(", ", plan.Steps));
+            peer.NextRevocationNumber, peer.NextFunding, peer.MyCurrentFundingLocked, plan.Outcome,
+            string.Join(", ", plan.Steps));
 
         // A Closing channel's transaction is agreed, persisted and broadcast: a mismatch can't fail it (that would
         // broadcast a commitment against the close); only our shutdown is retransmitted
@@ -158,12 +176,18 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 };
         }
 
-        // next_funding of a dual-funded open (wave DF) replaces the v1 tx_abort step
-        var dualFundReplies = _dualFundReestablish is null ? null : await _dualFundReestablish.RespondAsync(channel, message);
+        // A dual-funded open waiting for its funding resumes its negotiation first (the driver forgot it on a restart),
+        // so the peer's retransmitted tx_signatures and our own rebuilt ones find it
+        if (_dualFundReestablish is not null && DualFundReestablish.IsPendingOpen(channel)
+                                             && local.LatestInteractiveTx is not null)
+            await _dualFundReestablish.EnsureLoadedAsync(channel);
+
+        // SP-RE-04: the peer's my_current_funding_locked processed as its splice_locked, before the retransmissions
+        if (plan.PeerSpliceLocked is { } lockedTxId && plan.Outcome == ReestablishOutcome.Resume)
+            replies.AddRange(await ProcessPeerSpliceLockedAsync(channel, lockedTxId, peerPubKey));
+
         foreach (var step in plan.Steps)
-            replies.AddRange(step == ReestablishStep.TxAbort && dualFundReplies is not null
-                                 ? dualFundReplies
-                                 : await BuildStepAsync(channel, step, local));
+            replies.AddRange(await BuildStepAsync(channel, step, local, peer, peerPubKey));
 
         // B2-RE-28: our shutdown again, after the retransmitted updates; the fee negotiation restarts (B2-RE-29)
         if (channel.LocalShutdownScript is { } shutdownScript)
@@ -176,11 +200,29 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
     }
 
     private async Task<IReadOnlyList<IChannelMessage>> BuildStepAsync(ChannelModel channel, ReestablishStep step,
-                                                                      ReestablishLocalState local)
+                                                                      ReestablishLocalState local,
+                                                                      PeerReestablish peer, CompactPubKey peerPubKey)
     {
         var channelId = channel.ChannelId;
         switch (step)
         {
+            case ReestablishStep.NextFundingCommitmentSigned:
+                return await CreateInteractiveCommitmentSignedAsync(channel, local.LatestInteractiveTx!);
+
+            case ReestablishStep.NextFundingTxSignatures:
+                var latest = local.LatestInteractiveTx!;
+                if (_serviceProvider?.GetService<IInteractiveTxDriver>()?.CreateTxSignaturesRetransmission(
+                        channelId, latest.TxId) is { } txSignatures)
+                    return [txSignatures];
+
+                _logger.LogWarning(
+                    "Our tx_signatures for {TxId} of channel {ChannelId} are due again but the negotiation is not loaded",
+                    latest.TxId, channelId);
+                return [];
+
+            case ReestablishStep.AnnouncementSignatures:
+                return await CreateAnnouncementSignaturesAsync(channel, peer.MyCurrentFundingLocked!.TxId, peerPubKey);
+
             case ReestablishStep.TxAbort:
                 return
                 [
@@ -226,6 +268,107 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
             default:
                 throw new ArgumentOutOfRangeException(nameof(step), step, "Unknown reestablish step");
         }
+    }
+
+    /// <summary>
+    /// SP-RE-03 / SP2-A-T2: our <c>commitment_signed</c> for the latest interactive funding transaction, byte-identical
+    /// to the original: a splice's from the signatures stored with the peer's commitment on that funding (the save that
+    /// preceded the first one), a dual-funded open's re-signed by the open (RFC 6979, the same signature).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> CreateInteractiveCommitmentSignedAsync(
+        ChannelModel channel, ReestablishInteractiveTxState latest)
+    {
+        if (!latest.IsSplice)
+        {
+            return _dualFundReestablish is not null
+                && await _dualFundReestablish.CreateCommitmentSignedRetransmissionAsync(channel, latest.TxId) is
+                { } openCommitmentSigned
+                       ? [openCommitmentSigned]
+                       : [];
+        }
+
+        (Domain.Channels.Commitments.RemoteCommit Commit, Domain.Channels.Commitments.CommitmentSignatures? Sent)?
+            stored = null;
+        try
+        {
+            if (_unitOfWork.ChannelFundingDbRepository is { } fundings)
+                stored = await fundings.GetRemoteCommitmentAsync(channel.ChannelId, latest.TxId);
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            stored = null;
+        }
+
+        if (stored is not { Sent: { } signatures })
+        {
+            _logger.LogWarning(
+                "Our commitment_signed for splice {TxId} of channel {ChannelId} is due again but it is not stored",
+                latest.TxId, channel.ChannelId);
+            return [];
+        }
+
+        return
+        [
+            _messageFactory.CreateCommitmentSignedMessage(channel.ChannelId, signatures.Signature,
+                                                          signatures.HtlcSignatures, latest.TxId)
+        ];
+    }
+
+    /// <summary>
+    /// SP-RE-04: the peer's <c>my_current_funding_locked</c> for a pending splice whose <c>splice_locked</c> we lack is
+    /// processed as that <c>splice_locked</c> (lane SP2-B's <see cref="ISpliceService.HandlePeerFundingLockedAsync"/>;
+    /// until it is implemented, the splice service's own <c>splice_locked</c> handling, which is what the spec asks).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> ProcessPeerSpliceLockedAsync(ChannelModel channel,
+                                                                                    TxId fundingTxId,
+                                                                                    CompactPubKey peerPubKey)
+    {
+        if (_serviceProvider?.GetService<ISpliceService>() is not { } spliceService)
+        {
+            _logger.LogWarning("my_current_funding_locked {TxId} of channel {ChannelId} names a pending splice but no "
+                             + "splice service is registered", fundingTxId, channel.ChannelId);
+            return [];
+        }
+
+        _logger.LogInformation(
+            "my_current_funding_locked {TxId} of channel {ChannelId} taken as the peer's splice_locked (SP-RE-04)",
+            fundingTxId, channel.ChannelId);
+        try
+        {
+            return await spliceService.HandlePeerFundingLockedAsync(channel, fundingTxId, _unitOfWork);
+        }
+        catch (NotImplementedException) when (spliceService is SpliceService splices)
+        {
+            return await splices.HandleSpliceLockedAsync(
+                       _messageFactory.CreateSpliceLockedMessage(channel.ChannelId, fundingTxId), peerPubKey,
+                       _unitOfWork);
+        }
+    }
+
+    /// <summary>
+    /// SP-RE-04: our <c>announcement_signatures</c> again for the funding the peer's <c>my_current_funding_locked</c>
+    /// names with bit 0, when that is the channel's current funding, we are ready to send them (SP-G-01) and they did
+    /// not go out on this connection yet; the sent time is saved first (as the announcement service does).
+    /// </summary>
+    private async Task<IReadOnlyList<IChannelMessage>> CreateAnnouncementSignaturesAsync(ChannelModel channel,
+                                                                                         TxId fundingTxId,
+                                                                                         CompactPubKey peerPubKey)
+    {
+        if (_serviceProvider?.GetService<IChannelAnnouncementService>() is not { } announcements
+         || !channel.AnnounceChannel || announcements.WasSentOnConnection(channel.ChannelId)
+         || channel.FundingOutput?.TransactionId != fundingTxId
+         || !ReestablishService.IsReadyForAnnouncementSignatures(announcements, channel, fundingTxId))
+            return [];
+
+        var message = announcements.CreateAnnouncementSignatures(channel);
+        channel.MarkAnnouncementSignaturesSent(DateTimeOffset.UtcNow);
+        _channelMemoryRepository.UpdateChannel(channel);
+        await _unitOfWork.ChannelDbRepository.UpdateAsync(channel);
+        await _unitOfWork.SaveChangesAsync();
+        announcements.MarkSentOnConnection(channel.ChannelId, peerPubKey);
+        _logger.LogInformation("Retransmitting our announcement_signatures for channel {ChannelId} (SP-RE-04)",
+                               channel.ChannelId);
+        return [message];
     }
 
     /// <summary><c>default(ShortChannelId)</c> (a channel not confirmed yet) has no bytes.</summary>
