@@ -81,6 +81,11 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
                          new ReplyShortChannelIdsEndPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(RevokeAndAckPayload), new RevokeAndAckPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(ShutdownPayload), new ShutdownPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(SpliceAckPayload), new SpliceAckPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(SpliceInitPayload), new SpliceInitPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(SpliceLockedPayload),
+                         new SpliceLockedPayloadSerializer(_valueObjectSerializerFactory));
+        _serializers.Add(typeof(StartBatchPayload), new StartBatchPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(StfuPayload), new StfuPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(TxAbortPayload), new TxAbortPayloadSerializer(_valueObjectSerializerFactory));
         _serializers.Add(typeof(TxAckRbfPayload), new TxAckRbfPayloadSerializer(_valueObjectSerializerFactory));
@@ -127,6 +132,10 @@ public class PayloadSerializerFactory : IPayloadSerializerFactory
         _messageTypeDictionary.Add(MessageTypes.PeerStorageRetrieval, typeof(PeerStorageRetrievalPayload));
         _messageTypeDictionary.Add(MessageTypes.RevokeAndAck, typeof(RevokeAndAckPayload));
         _messageTypeDictionary.Add(MessageTypes.Shutdown, typeof(ShutdownPayload));
+        _messageTypeDictionary.Add(MessageTypes.SpliceAck, typeof(SpliceAckPayload));
+        _messageTypeDictionary.Add(MessageTypes.SpliceInit, typeof(SpliceInitPayload));
+        _messageTypeDictionary.Add(MessageTypes.SpliceLocked, typeof(SpliceLockedPayload));
+        _messageTypeDictionary.Add(MessageTypes.StartBatch, typeof(StartBatchPayload));
         _messageTypeDictionary.Add(MessageTypes.Stfu, typeof(StfuPayload));
         _messageTypeDictionary.Add(MessageTypes.TxAbort, typeof(TxAbortPayload));
         _messageTypeDictionary.Add(MessageTypes.TxAckRbf, typeof(TxAckRbfPayload));

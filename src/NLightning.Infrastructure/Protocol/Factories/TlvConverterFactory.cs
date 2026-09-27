@@ -41,12 +41,14 @@ public class TlvConverterFactory : ITlvConverterFactory
         _converters.Add(typeof(FulfillmentPayloadTlv), new FulfillmentPayloadTlvConverter());
         _converters.Add(typeof(FundingTxIdTlv), new FundingTxIdTlvConverter());
         _converters.Add(typeof(NetworksTlv), new NetworksTlvConverter());
+        _converters.Add(typeof(MyCurrentFundingLockedTlv), new MyCurrentFundingLockedTlvConverter());
         _converters.Add(typeof(NextFundingTlv), new NextFundingTlvConverter());
         _converters.Add(typeof(RemoteAddressTlv), new RemoteAddressTlvConverter());
         _converters.Add(typeof(RequireConfirmedInputsTlv), new RequireConfirmedInputsTlvConverter());
         _converters.Add(typeof(SharedInputSignatureTlv), new SharedInputSignatureTlvConverter());
         _converters.Add(typeof(SharedInputTxIdTlv), new SharedInputTxIdTlvConverter());
         _converters.Add(typeof(ShortChannelIdTlv), new ShortChannelIdTlvConverter());
+        _converters.Add(typeof(StartBatchMessageTypeTlv), new StartBatchMessageTypeTlvConverter());
         _converters.Add(typeof(UpfrontShutdownScriptTlv), new UpfrontShutdownScriptTlvConverter());
 
         // Onion hop payload (BOLT 4) TLVs
