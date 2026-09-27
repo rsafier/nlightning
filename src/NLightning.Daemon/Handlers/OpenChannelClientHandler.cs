@@ -36,6 +36,7 @@ public sealed class OpenChannelClientHandler
     private readonly IChannelManager _channelManager;
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly IChannelFactory _channelFactory;
+    private readonly IChannelLockProvider? _channelLockProvider;
     private readonly ILogger<OpenChannelClientHandler> _logger;
     private readonly IMessageFactory _messageFactory;
     private readonly IPeerManager _peerManager;
@@ -44,6 +45,7 @@ public sealed class OpenChannelClientHandler
     private readonly NodeOptions _nodeOptions;
 
     private ChannelId _channelId = ChannelId.Zero;
+    private ChannelId? _upgradedChannelId;
     private IPeerService? _peerService;
 
     /// <summary>The default of <see cref="OpenTimeout"/>.</summary>
@@ -64,8 +66,10 @@ public sealed class OpenChannelClientHandler
                                     IPeerManager peerManager, IUtxoMemoryRepository utxoMemoryRepository,
                                     IOptions<GossipOptions>? gossipOptions = null,
                                     IOptions<NodeOptions>? nodeOptions = null,
-                                    IAnchorReserveService? anchorReserveService = null)
+                                    IAnchorReserveService? anchorReserveService = null,
+                                    IChannelLockProvider? channelLockProvider = null)
     {
+        _channelLockProvider = channelLockProvider;
         _anchorReserveService = anchorReserveService;
         _gossipOptions = gossipOptions?.Value ?? new GossipOptions();
         _nodeOptions = nodeOptions?.Value ?? new NodeOptions();
@@ -136,18 +140,20 @@ public sealed class OpenChannelClientHandler
             try
             {
                 await _anchorReserveService.EnsureCanFundAsync(request.FundingAmount, channel, ct);
-                await _anchorReserveService.LockFundingUtxosAsync(request.FundingAmount, channel, ct);
+                try
+                {
+                    await _anchorReserveService.LockFundingUtxosAsync(request.FundingAmount, channel, ct);
+                }
+                catch (InvalidOperationException e) when (IsTooFewUtxos(e))
+                {
+                    // NL-393: the funding selection found too few UTXOs (a concurrent spend since the balance check)
+                    throw NotEnoughBalance(e);
+                }
             }
             catch (InsufficientFundsException e)
             {
                 _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
                 throw new ClientException(ErrorCodes.NotEnoughBalance, e.Message);
-            }
-            catch (InvalidOperationException e)
-            {
-                // NL-393: the funding selection found too few UTXOs (a concurrent spend since the balance check)
-                _anchorReserveService.ReleasePendingChannel(channel.ChannelId);
-                throw NotEnoughBalance(e);
             }
             catch
             {
@@ -161,7 +167,7 @@ public sealed class OpenChannelClientHandler
             {
                 _utxoMemoryRepository.LockUtxosToSpendOnChannel(request.FundingAmount, channel.ChannelId);
             }
-            catch (InvalidOperationException e)
+            catch (InvalidOperationException e) when (IsTooFewUtxos(e))
             {
                 throw NotEnoughBalance(e);
             }
@@ -170,6 +176,7 @@ public sealed class OpenChannelClientHandler
         // Create a task completion source for the response
         var tsc = new TaskCompletionSource<OpenChannelClientResponse>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var timedOut = false;
 
         try
         {
@@ -217,10 +224,13 @@ public sealed class OpenChannelClientHandler
             {
                 if (ct.IsCancellationRequested)
                     tsc.TrySetCanceled(ct);
-                else
+                else if (!tsc.Task.IsCompleted)
+                {
+                    timedOut = true;
                     tsc.TrySetException(new ClientException(ErrorCodes.ConnectionError,
                                                             $"Peer {peerId} did not answer open_channel within "
                                                           + $"{OpenTimeout.TotalSeconds:0} s"));
+                }
             });
 
             // Stores the temporary channel and queues open_channel on the peer's outbox, under the channel's lock
@@ -228,14 +238,34 @@ public sealed class OpenChannelClientHandler
 
             return await tsc.Task;
         }
-        catch
+        catch (Exception e)
         {
-            _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(_channelId);
+            // The cleanup holds the temporary channel's lock (NL-392 review): an accept_channel handler that already
+            // read our locked UTXOs finishes first, and once it has upgraded the channel (and moved the UTXOs to the
+            // new channel id) there is nothing to forget or return
+            using (_channelLockProvider is null
+                       ? null
+                       : await _channelLockProvider.AcquireAsync(_channelId, CancellationToken.None))
+            {
+                if (_upgradedChannelId is { } upgradedId)
+                {
+                    _logger.LogWarning("The open of {ChannelId} failed ({Reason}) after accept_channel was processed; "
+                                     + "the channel goes on as {NewChannelId}", _channelId, e.Message, upgradedId);
 
-            // NL-392: the failed open's temporary channel (already gone when accept_channel's handler failed or the
-            // peer disconnected)
-            if (_channelMemoryRepository.TryRemoveTemporaryChannel(peerId, _channelId))
-                _logger.LogInformation("Forgot the temporary channel {ChannelId} of the failed open", _channelId);
+                    // A timeout raced a late accept_channel: the open did succeed
+                    if (timedOut)
+                        return new OpenChannelClientResponse(upgradedId);
+
+                    throw;
+                }
+
+                _utxoMemoryRepository.ReturnUtxosNotSpentOnChannel(_channelId);
+
+                // NL-392: the failed open's temporary channel (already gone when accept_channel's handler failed or
+                // the peer disconnected)
+                if (_channelMemoryRepository.TryRemoveTemporaryChannel(peerId, _channelId))
+                    _logger.LogInformation("Forgot the temporary channel {ChannelId} of the failed open", _channelId);
+            }
 
             throw;
         }
@@ -265,6 +295,13 @@ public sealed class OpenChannelClientHandler
             HandleChannelUpgraded(args, tsc);
     }
 
+    /// <summary>
+    /// The funding selection's own failure (NL-393): the UTXO lock throws a plain <see cref="InvalidOperationException"/>
+    /// when the wallet has too few spendable outputs; any other invalid operation (a shutdown's
+    /// <see cref="ObjectDisposedException"/>, a subclass) keeps its own error.
+    /// </summary>
+    private static bool IsTooFewUtxos(InvalidOperationException e) => e.GetType() == typeof(InvalidOperationException);
+
     private static ClientException NotEnoughBalance(InvalidOperationException e) =>
         new(ErrorCodes.NotEnoughBalance, $"We don't have enough balance to open this channel: {e.Message}");
 
@@ -274,6 +311,7 @@ public sealed class OpenChannelClientHandler
         if (args.OldChannelId != _channelId)
             return;
 
+        _upgradedChannelId = args.NewChannelId;
         tsc.TrySetResult(new OpenChannelClientResponse(args.NewChannelId));
 
         if (_logger.IsEnabled(LogLevel.Information))

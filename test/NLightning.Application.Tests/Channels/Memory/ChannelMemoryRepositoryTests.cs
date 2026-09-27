@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace NLightning.Application.Tests.Channels.Memory;
 
 using Domain.Channels.Enums;
+using Domain.Channels.Events;
 using Domain.Channels.Models;
 using Domain.Channels.ValueObjects;
 using Domain.Crypto.ValueObjects;
@@ -103,6 +104,53 @@ public class ChannelMemoryRepositoryTests
 
         // Assert
         Assert.True(repository.TryGetTemporaryChannel(s_peerA, channel.ChannelId, out _));
+    }
+
+    [Fact]
+    public void Given_ADisconnectDuringAnInFlightAccept_When_TheHandlerUpgrades_Then_TheChannelIsStillUpgraded()
+    {
+        // Arrange (RemoveTemporaryChannels runs outside the channel lock while accept_channel's handler holds its own
+        // reference to the temporary channel)
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance);
+        var temporary = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, temporary);
+        Assert.True(repository.TryGetTemporaryChannel(s_peerA, temporary.ChannelId, out var heldByHandler));
+        ChannelUpgradedEventArgs? upgraded = null;
+        repository.OnChannelUpgraded += (_, args) => upgraded = args;
+
+        // Act
+        repository.RemoveTemporaryChannels(s_peerA);
+        var funded = CreateTemporaryChannel(heldByHandler.RemoteNodeId, 9);
+        repository.UpgradeChannel(temporary.ChannelId, funded);
+
+        // Assert
+        Assert.True(repository.TryGetChannel(funded.ChannelId, out _));
+        Assert.NotNull(upgraded);
+        Assert.Equal(temporary.ChannelId, upgraded.OldChannelId);
+        Assert.Equal(funded.ChannelId, upgraded.NewChannelId);
+    }
+
+    [Fact]
+    public void Given_AnExpiryDuringAnInFlightAccept_When_TheHandlerUpgrades_Then_TheChannelIsStillUpgraded()
+    {
+        // Arrange (another open's AddTemporaryChannel prunes expired entries outside the lock)
+        var clock = new ManualClock();
+        var repository = new ChannelMemoryRepository(NullLogger<ChannelMemoryRepository>.Instance, clock);
+        var temporary = CreateTemporaryChannel(s_peerA, 1);
+        repository.AddTemporaryChannel(s_peerA, temporary);
+        clock.Advance(ChannelMemoryRepository.DefaultTemporaryChannelTimeout);
+        repository.AddTemporaryChannel(s_peerB, CreateTemporaryChannel(s_peerB, 2));
+        var raised = false;
+        repository.OnChannelUpgraded += (_, _) => raised = true;
+
+        // Act
+        var funded = CreateTemporaryChannel(s_peerA, 9);
+        repository.UpgradeChannel(temporary.ChannelId, funded);
+
+        // Assert
+        Assert.True(raised);
+        Assert.True(repository.TryGetChannel(funded.ChannelId, out _));
+        Assert.False(repository.TryGetTemporaryChannel(s_peerA, temporary.ChannelId, out _));
     }
 
     private static ChannelModel CreateTemporaryChannel(CompactPubKey peer, byte seed)

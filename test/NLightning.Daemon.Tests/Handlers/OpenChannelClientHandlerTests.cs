@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 
 namespace NLightning.Daemon.Tests.Handlers;
 
+using Application.Channels.Services;
 using Daemon.Handlers;
 using Domain.Bitcoin.Interfaces;
 using Domain.Bitcoin.Wallet.Interfaces;
@@ -762,6 +763,116 @@ public class OpenChannelClientHandlerTests
         _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(peerId, channelModel.ChannelId),
                                             Times.Once);
     }
+
+    [Fact]
+    public async Task Given_AcceptChannelHoldsTheLock_When_TheOpenTimesOutAndTheHandlerUpgrades_Then_OpenSucceeds()
+    {
+        // Arrange (NL-392 review: the timeout fires while accept_channel's handler, under the temporary channel's
+        // lock, already read our locked UTXOs; the cleanup must wait and must not return them)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        var lockProvider = new ChannelLockProvider();
+        var handler = CreateHandlerWithLock(lockProvider);
+        handler.OpenTimeout = TimeSpan.FromMilliseconds(100);
+        var newChannelId = CreateRandomChannelId();
+        var acceptLock = await lockProvider.AcquireAsync(channelModel.ChannelId,
+                                                         TestContext.Current.CancellationToken);
+
+        // Act
+        var handleTask = handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(400, TestContext.Current.CancellationToken);
+        var returnedWhileLocked = _utxoMemoryRepositoryMock.Invocations
+                                                           .Any(i => i.Method.Name
+                                                                  == nameof(IUtxoMemoryRepository
+                                                                               .ReturnUtxosNotSpentOnChannel));
+        _channelMemoryRepositoryMock.Raise(x => x.OnChannelUpgraded += null, null!,
+                                           new ChannelUpgradedEventArgs(channelModel.ChannelId, newChannelId));
+        acceptLock.Dispose();
+        var response = await handleTask;
+
+        // Assert
+        Assert.False(returnedWhileLocked);
+        Assert.Equal(newChannelId, response.ChannelId);
+        _utxoMemoryRepositoryMock.Verify(x => x.ReturnUtxosNotSpentOnChannel(It.IsAny<ChannelId>()), Times.Never);
+        _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(It.IsAny<CompactPubKey>(),
+                                                                             It.IsAny<ChannelId>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Given_AcceptChannelHoldsTheLockAndFails_When_TheOpenTimesOut_Then_CleanupRunsAfterTheLock()
+    {
+        // Arrange (the accept handler releases the lock without upgrading the channel)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: false);
+        var lockProvider = new ChannelLockProvider();
+        var handler = CreateHandlerWithLock(lockProvider);
+        handler.OpenTimeout = TimeSpan.FromMilliseconds(100);
+        var acceptLock = await lockProvider.AcquireAsync(channelModel.ChannelId,
+                                                         TestContext.Current.CancellationToken);
+
+        // Act
+        var handleTask = handler.HandleAsync(request, CancellationToken.None);
+        await Task.Delay(400, TestContext.Current.CancellationToken);
+        var completedWhileLocked = handleTask.IsCompleted;
+        acceptLock.Dispose();
+        var ex = await Assert.ThrowsAsync<ClientException>(() => handleTask);
+
+        // Assert
+        Assert.False(completedWhileLocked);
+        Assert.Equal(ErrorCodes.ConnectionError, ex.ErrorCode);
+        _utxoMemoryRepositoryMock.Verify(x => x.ReturnUtxosNotSpentOnChannel(channelModel.ChannelId), Times.Once);
+        _channelMemoryRepositoryMock.Verify(x => x.TryRemoveTemporaryChannel(peerId, channelModel.ChannelId),
+                                            Times.Once);
+    }
+
+    [Fact]
+    public async Task Given_ADisposedWalletDuringTheFundingLock_When_HandleAsync_Then_NotReportedAsBalance()
+    {
+        // Arrange (only the selection's own InvalidOperationException means too few UTXOs, NL-393 review)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
+        var reserveMock = new Mock<IAnchorReserveService>();
+        reserveMock.Setup(x => x.LockFundingUtxosAsync(fundingAmount, channelModel, It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new ObjectDisposedException("wallet"));
+        var handler = CreateHandlerWithReserve(reserveMock.Object);
+
+        // Act / Assert
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => handler.HandleAsync(request, CancellationToken.None));
+        reserveMock.Verify(x => x.ReleasePendingChannel(channelModel.ChannelId), Times.AtLeastOnce);
+    }
+
+    [Fact]
+    public async Task Given_TheReserveCheckThrowsInvalidOperation_When_HandleAsync_Then_NotReportedAsBalance()
+    {
+        // Arrange (EnsureCanFundAsync is outside the NL-393 mapping)
+        var peerId = CreateDummyPubKey();
+        var fundingAmount = LightningMoney.Satoshis(100_000);
+        var request = new OpenChannelClientRequest($"{peerId}@127.0.0.1:9735", fundingAmount);
+        var channelModel = SetUpOpen(peerId, request, fundingAmount, anchors: true);
+        var reserveMock = new Mock<IAnchorReserveService>();
+        reserveMock.Setup(x => x.EnsureCanFundAsync(fundingAmount, channelModel, It.IsAny<CancellationToken>()))
+                   .ThrowsAsync(new InvalidOperationException("duplicate pending channel"));
+        var handler = CreateHandlerWithReserve(reserveMock.Object);
+
+        // Act / Assert
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => handler.HandleAsync(request,
+                                                                             CancellationToken.None));
+        Assert.Equal("duplicate pending channel", ex.Message);
+        reserveMock.Verify(x => x.LockFundingUtxosAsync(It.IsAny<LightningMoney>(), It.IsAny<ChannelModel>(),
+                                                        It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    private OpenChannelClientHandler CreateHandlerWithLock(IChannelLockProvider lockProvider) =>
+        new(_blockchainMonitorMock.Object, _channelFactoryMock.Object, _channelManagerMock.Object,
+            _channelMemoryRepositoryMock.Object, new Mock<ILogger<OpenChannelClientHandler>>().Object,
+            _messageFactoryMock.Object, _peerManagerMock.Object, _utxoMemoryRepositoryMock.Object,
+            channelLockProvider: lockProvider);
 
     private OpenChannelClientHandler CreateHandlerWithReserve(IAnchorReserveService reserveService) =>
         new(_blockchainMonitorMock.Object, _channelFactoryMock.Object, _channelManagerMock.Object,
