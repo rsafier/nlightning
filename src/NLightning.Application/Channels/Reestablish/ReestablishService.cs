@@ -22,6 +22,7 @@ using Domain.Protocol.InteractiveTx.Enums;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 using Domain.Protocol.Models;
+using Domain.Protocol.Payloads;
 using Domain.Protocol.Tlv;
 using Gossip.Announcements.Interfaces;
 using Services;
@@ -86,7 +87,7 @@ public sealed class ReestablishService
         var latest = channel.Version == ChannelVersion.V2 || spliceNegotiated
                          ? await GetLatestInteractiveTxAsync(channel)
                          : null;
-        var splice = spliceNegotiated ? GetSpliceState(channel) : null;
+        var splice = spliceNegotiated ? await GetSpliceStateAsync(channel) : null;
         return local with { LatestInteractiveTx = latest, Splice = splice };
     }
 
@@ -238,7 +239,7 @@ public sealed class ReestablishService
     /// current funding when it is a locked splice), and the announcement state; null while the funding outpoint is
     /// unknown.
     /// </summary>
-    private ReestablishSpliceState? GetSpliceState(ChannelModel channel)
+    private async Task<ReestablishSpliceState?> GetSpliceStateAsync(ChannelModel channel)
     {
         FundingSet fundings;
         try
@@ -268,7 +269,12 @@ public sealed class ReestablishService
 
         var received = fundings.Pending.Where(f => f.AnnouncementSignaturesReceived).Select(f => f.FundingTxId)
                                .ToHashSet();
-        if (channel.RemoteAnnouncementSignatures is not null)
+        // The channel's stored half signs the original funding's announcement: it is never reset when a splice locks,
+        // so for a locked splice only that funding's own flag counts (SP-RE-02: bit 0 while we lack its half)
+        if (currentIsSplice
+                ? currentFunding.AnnouncementSignaturesReceived
+               || await IsAnnouncementSignaturesReceivedStoredAsync(channel, currentFunding.FundingTxId)
+                : channel.RemoteAnnouncementSignatures is not null)
             received.Add(currentFunding.FundingTxId);
 
         var ready = new HashSet<TxId>();
@@ -289,6 +295,57 @@ public sealed class ReestablishService
                                                               f.SpliceLockedReceived))
                                                   .ToList(),
                                           received, ready, currentIsSplice);
+    }
+
+    /// <summary>
+    /// Our <c>tx_signatures</c> for the interactive funding transaction <paramref name="fundingTxId"/> rebuilt from its
+    /// stored <c>InteractiveTxSessions</c> row (our witnesses and <c>shared_input_signature</c> are saved before the
+    /// first one goes out), for a <c>next_funding</c> retransmission when the interactive-tx driver no longer holds
+    /// the negotiation (after a restart). The same message as the driver's own rebuild; null when the row does not
+    /// exist, is aborted or our <c>tx_signatures</c> was never sent (nothing signed to send again).
+    /// </summary>
+    public async Task<TxSignaturesMessage?> CreateStoredTxSignaturesAsync(ChannelModel channel, TxId fundingTxId)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        IReadOnlyList<InteractiveTxSessionModel>? rows;
+        try
+        {
+            if (_serviceProvider?.GetService<IUnitOfWork>()?.InteractiveTxSessionDbRepository is not { } sessions)
+                return null;
+
+            rows = await sessions.GetByChannelIdAsync(channel.ChannelId);
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException)
+        {
+            return null;
+        }
+
+        var row = rows?.Where(s => s.State != InteractiveTxSessionState.Aborted
+                                && s.ConstructedTx is { } tx && tx.TxId == fundingTxId)
+                      .MaxBy(s => s.CreatedAt);
+        if (row is not { TxSignaturesSent: true, ConstructedTx: { } transaction })
+            return null;
+
+        return new TxSignaturesMessage(
+            new TxSignaturesPayload(channel.ChannelId, transaction.TxId, (row.OurWitnesses ?? []).ToList()),
+            row.OurSharedInputSignature is { } signature ? new SharedInputSignatureTlv(signature) : null);
+    }
+
+    /// <summary>The stored <c>ChannelFundings</c> row's <c>AnnouncementSignaturesReceived</c> of a funding.</summary>
+    private async Task<bool> IsAnnouncementSignaturesReceivedStoredAsync(ChannelModel channel, TxId fundingTxId)
+    {
+        try
+        {
+            if (_serviceProvider?.GetService<IUnitOfWork>()?.ChannelFundingDbRepository is not { } fundings)
+                return false;
+
+            return (await fundings.GetByChannelIdAsync(channel.ChannelId))
+               .Any(f => f.FundingTxId == fundingTxId && f.AnnouncementSignaturesReceived);
+        }
+        catch (Exception e) when (e is NotSupportedException or NotImplementedException or InvalidOperationException)
+        {
+            return false;
+        }
     }
 
     /// <summary>

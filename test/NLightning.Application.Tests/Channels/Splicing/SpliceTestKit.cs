@@ -85,13 +85,29 @@ internal sealed class SpliceHarness : IDisposable
         RealEngine = realEngine;
         Harness = new TwoNodeHarness(configureServices: (node, services) => Configure(node, services, configureSplice));
         foreach (var node in new[] { Harness.Alice, Harness.Bob })
-        {
-            var spliceNode = _nodes[node.Name];
-            spliceNode.Attach(node);
-            node.NegotiatedFeatures = CreateFeatures();
-            var name = node.Name;
-            node.ChannelManager.OnResponseMessageReady += (_, args) => Transcript.Enqueue((name, args.ResponseMessage));
-        }
+            AttachNode(_nodes[node.Name], node);
+    }
+
+    /// <summary>
+    /// Stops <paramref name="node"/> and starts a new process on what it saved (<see cref="TwoNodeHarness.RestartNodeAsync"/>,
+    /// link down): the interactive-tx driver, the splice service and the state port start empty, the node's
+    /// <see cref="SpliceNode.Sessions"/> and <see cref="SpliceNode.FundingRows"/> keep only their committed rows.
+    /// <see cref="TwoNodeHarness.ReconnectAsync"/> brings the link back.
+    /// </summary>
+    public async Task RestartAsync(SpliceNode node)
+    {
+        node.Sessions.DiscardStaged();
+        node.FundingRows.DiscardStaged();
+        var restarted = await Harness.RestartNodeAsync(node.Node);
+        AttachNode(node, restarted);
+    }
+
+    private void AttachNode(SpliceNode spliceNode, HarnessNode node)
+    {
+        spliceNode.Attach(node);
+        node.NegotiatedFeatures = CreateFeatures();
+        var name = node.Name;
+        node.ChannelManager.OnResponseMessageReady += (_, args) => Transcript.Enqueue((name, args.ResponseMessage));
     }
 
     public static FeatureOptions CreateFeatures() => new()
@@ -210,8 +226,12 @@ internal sealed class SpliceHarness : IDisposable
 
     private void Configure(HarnessNode node, IServiceCollection services, Action<string, SpliceOptions>? configure)
     {
-        var spliceNode = new SpliceNode(node.Name);
-        _nodes[node.Name] = spliceNode;
+        // A restarted node keeps its stores (what it saved)
+        if (!_nodes.TryGetValue(node.Name, out var spliceNode))
+        {
+            spliceNode = new SpliceNode(node.Name);
+            _nodes[node.Name] = spliceNode;
+        }
 
         var options = new NodeOptions { EnableHtlcs = true };
         options.Features.AllowExperimentalFeatures = true;

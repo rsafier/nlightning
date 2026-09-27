@@ -210,13 +210,24 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 return await CreateInteractiveCommitmentSignedAsync(channel, local.LatestInteractiveTx!);
 
             case ReestablishStep.NextFundingTxSignatures:
+                // BOLT 2: "if it has already received tx_signatures for that funding transaction: MUST send its
+                // tx_signatures". The driver's copy while it holds the negotiation, else (after a restart) the one
+                // rebuilt from the stored row: our witnesses were saved before the first one went out
                 var latest = local.LatestInteractiveTx!;
                 if (_serviceProvider?.GetService<IInteractiveTxDriver>()?.CreateTxSignaturesRetransmission(
                         channelId, latest.TxId) is { } txSignatures)
                     return [txSignatures];
 
+                if (await _reestablishService.CreateStoredTxSignaturesAsync(channel, latest.TxId) is { } stored)
+                {
+                    _logger.LogInformation(
+                        "Retransmitting our stored tx_signatures for {TxId} of channel {ChannelId} (next_funding)",
+                        latest.TxId, channelId);
+                    return [stored];
+                }
+
                 _logger.LogWarning(
-                    "Our tx_signatures for {TxId} of channel {ChannelId} are due again but the negotiation is not loaded",
+                    "Our tx_signatures for {TxId} of channel {ChannelId} are due again but none were signed yet",
                     latest.TxId, channelId);
                 return [];
 
@@ -225,11 +236,20 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
 
             case ReestablishStep.TxAbort:
                 // Through the interactive-tx driver when there is one, so the peer's echo is taken as the echo and not
-                // answered again (a tx_abort ping-pong otherwise)
+                // answered again (a tx_abort ping-pong otherwise). The driver sends none while it holds a negotiation
+                // or an RBF request, or its tx_abort already waits for the echo: a raw one would abort that
+                // negotiation behind its back (or answer the echo again), so nothing goes out then
                 const string abortReason = "unknown next_funding_txid";
-                if (_serviceProvider?.GetService<IInteractiveTxDriver>()?.AbortQuiescence(
-                        channelId, peerPubKey, abortReason) is { Count: > 0 } abort)
+                if (_serviceProvider?.GetService<IInteractiveTxDriver>() is { } abortDriver)
+                {
+                    var abort = abortDriver.AbortQuiescence(channelId, peerPubKey, abortReason);
+                    if (abort.Count == 0)
+                        _logger.LogWarning(
+                            "No tx_abort for the unknown next_funding {TxId} of channel {ChannelId}: the interactive-tx "
+                          + "driver holds a negotiation or already waits for its tx_abort's echo",
+                            peer.NextFunding?.TxId, channelId);
                     return abort;
+                }
 
                 return [_messageFactory.CreateTxAbortMessage(channelId, Encoding.ASCII.GetBytes(abortReason))];
 
