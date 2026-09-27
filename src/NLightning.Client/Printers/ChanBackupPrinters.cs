@@ -75,3 +75,37 @@ public sealed class VerifyChanBackupPrinter : IPrinter<VerifyChanBackupIpcRespon
         }
     }
 }
+
+/// <summary>
+/// Prints what a restore did: each channel's outcome and each peer's connection.
+/// </summary>
+public sealed class RestoreChanBackupPrinter : IPrinter<RestoreChanBackupIpcResponse>
+{
+    private readonly TextWriter _output;
+
+    public RestoreChanBackupPrinter(TextWriter? output = null)
+    {
+        _output = output ?? Console.Out;
+    }
+
+    public void Print(RestoreChanBackupIpcResponse item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var restored = item.Channels.Count(c => c.Outcome == "Restore");
+        _output.WriteLine($"Channel backup restore: {restored} of {item.Channels.Count} channel(s) restored");
+        _output.WriteLine("  Backup created: "
+                        + DateTimeOffset.FromUnixTimeSeconds(item.CreatedAt).UtcDateTime
+                                        .ToString("yyyy-MM-dd HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+        foreach (var channel in item.Channels)
+        {
+            _output.WriteLine($"  {channel.ChannelId}: {channel.Outcome}");
+            _output.WriteLine($"    Peer: {channel.RemoteNodeId}, {channel.CapacitySat} sat, "
+                            + (channel.OptionAnchors ? "anchors" : "static_remotekey"));
+            _output.WriteLine($"    {channel.Detail}");
+        }
+
+        foreach (var peer in item.Peers)
+            _output.WriteLine($"  Peer {peer.NodeId}{(peer.Address is null ? string.Empty : $"@{peer.Address}")}: "
+                            + (peer.Connected ? "connected, force close requested" : $"not connected ({peer.Error})"));
+    }
+}

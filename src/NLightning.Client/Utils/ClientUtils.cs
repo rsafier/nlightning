@@ -63,6 +63,10 @@ public static class ClientUtils
         Console.WriteLine("  verifychanbackup <file> | verifychanbackup --hex <backup_hex>");
         Console.WriteLine("                               Check a channel backup against this node's key and chain");
         Console.WriteLine("                               (alias: verify-chan-backup); exit code 1 if invalid");
+        Console.WriteLine("  restorechanbackup <file> | restorechanbackup --hex <backup_hex>");
+        Console.WriteLine("                               After losing the channel database: ask each backed-up");
+        Console.WriteLine("                               channel's peer to force close and sweep our funds");
+        Console.WriteLine("                               (alias: restore-chan-backup); exit code 1 on a failure");
         Console.WriteLine("  listinvoices [count] [skip]  List invoices, newest first [count 1-1000, default 100]");
         Console.WriteLine("  listpayments [count] [skip]  List outgoing payments, newest first [count 1-1000,");
         Console.WriteLine("                               default 100]");

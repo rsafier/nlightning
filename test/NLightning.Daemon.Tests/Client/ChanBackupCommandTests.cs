@@ -41,6 +41,8 @@ public class ChanBackupCommandTests
     [Theory]
     [InlineData("verifychanbackup")]
     [InlineData("verify-chan-backup")]
+    [InlineData("restorechanbackup")]
+    [InlineData("restore-chan-backup")]
     public void Given_VerifyChanBackupArguments_When_Validated_Then_AFileOrHexIsRequired(string command)
     {
         // Act / Assert
@@ -116,5 +118,52 @@ public class ChanBackupCommandTests
         Assert.Contains("Channel backup: 1 channel(s), 2 bytes", text);
         Assert.Contains("Backup (hex): 4e4c", text);
         Assert.Contains("Node backup file: none", text);
+    }
+
+    [Fact]
+    public void Given_ARestore_When_Printed_Then_EachChannelOutcomeAndEachPeerAreShown()
+    {
+        // Arrange
+        var output = new StringWriter();
+        var peer = new Domain.Crypto.ValueObjects.CompactPubKey(Enumerable.Repeat((byte)2, 33).ToArray());
+        var response = new RestoreChanBackupIpcResponse
+        {
+            CreatedAt = 1_790_000_000,
+            Channels =
+            [
+                new ChanRestoreChannelIpcInfo
+                {
+                    ChannelId = new ChannelId(Convert.FromHexString(s_channelHex)),
+                    RemoteNodeId = peer,
+                    CapacitySat = 1_000_000,
+                    OptionAnchors = true,
+                    Outcome = "Restore",
+                    Detail = "recovery channel stored"
+                },
+                new ChanRestoreChannelIpcInfo
+                {
+                    ChannelId = new ChannelId(new byte[32]),
+                    RemoteNodeId = peer,
+                    CapacitySat = 500_000,
+                    OptionAnchors = false,
+                    Outcome = "AlreadyExists",
+                    Detail = "already in the database (Open); left as it is"
+                }
+            ],
+            Peers = [new ChanRestorePeerIpcInfo { NodeId = peer, Address = "10.0.0.1:9735", Connected = true }]
+        };
+
+        // Act
+        new RestoreChanBackupPrinter(output).Print(response);
+
+        // Assert
+        var text = output.ToString();
+        Assert.Contains("Channel backup restore: 1 of 2 channel(s) restored", text);
+        Assert.Contains("Backup created: 2026-09-21 14:13:20Z", text);
+        Assert.Contains($"  {s_channelHex}: Restore", text);
+        Assert.Contains("1000000 sat, anchors", text);
+        Assert.Contains("500000 sat, static_remotekey", text);
+        Assert.Contains("AlreadyExists", text);
+        Assert.Contains("@10.0.0.1:9735: connected, force close requested", text);
     }
 }
