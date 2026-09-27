@@ -15,7 +15,9 @@ using Domain.Protocol.ValueObjects;
 /// <remarks>
 /// Both ends must build the same bytes, since each signs the double-SHA256 of the message from offset 256: no features
 /// (LND and CLN announce an empty feature vector), no trailing data, <c>node_id_1</c> the lesser of the two compressed
-/// node ids and <c>bitcoin_key_N</c> the funding key of <c>node_id_N</c>.
+/// node ids and <c>bitcoin_key_N</c> the funding key of <c>node_id_N</c> in the channel's <b>current</b> funding
+/// (<see cref="ChannelModel.LocalFundingPubKey"/>, <see cref="ChannelModel.RemoteFundingPubKey"/>): after a splice lock
+/// the splice's rotated keys (NL-478).
 /// </remarks>
 public static class ChannelAnnouncementBuilder
 {
@@ -33,8 +35,10 @@ public static class ChannelAnnouncementBuilder
                         ?? throw new InvalidOperationException(
                                $"Channel {channel.ChannelId} has no remote keys yet: nothing to announce");
 
-        var ourFundingKey = channel.LocalKeySet.FundingCompactPubKey;
-        var theirFundingKey = remoteKeySet.FundingCompactPubKey;
+        // The current funding's keys (NL-478): a splice rotates our funding key and the peer's may change too, and the
+        // announcement of a spliced channel names the funding output of the splice (splicing plan D5, SP2-B-T3)
+        var ourFundingKey = channel.LocalFundingPubKey;
+        var theirFundingKey = channel.RemoteFundingPubKey ?? remoteKeySet.FundingCompactPubKey;
         var weAreNode1 = IsNode1(ourNodeId, channel.RemoteNodeId);
 
         var empty = ChannelAnnouncementPayload.EmptySignature;
@@ -58,15 +62,16 @@ public static class ChannelAnnouncementBuilder
         ArgumentNullException.ThrowIfNull(unsigned);
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(remote);
-        var remoteKeySet = channel.RemoteKeySet
-                        ?? throw new InvalidOperationException(
-                               $"Channel {channel.ChannelId} has no remote keys yet: nothing to verify");
+        var remoteFundingKey = channel.RemoteFundingPubKey
+                            ?? throw new InvalidOperationException(
+                                   $"Channel {channel.ChannelId} has no remote keys yet: nothing to verify");
 
+        // The peer's funding key of the current funding (NL-478), as BuildUnsigned names it
         var hash = unsigned.GetSignatureHash();
         return
         [
             new GossipSignatureCheck(hash, remote.NodeSignature, channel.RemoteNodeId),
-            new GossipSignatureCheck(hash, remote.BitcoinSignature, remoteKeySet.FundingCompactPubKey)
+            new GossipSignatureCheck(hash, remote.BitcoinSignature, remoteFundingKey)
         ];
     }
 

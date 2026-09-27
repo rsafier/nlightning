@@ -125,4 +125,26 @@ public interface IChannelAnnouncementService
     /// </summary>
     bool ShouldDeferRemoteAnnouncementSignatures(ChannelModel channel, ShortChannelId shortChannelId) =>
         throw new NotImplementedException("Lane SP2-B (SP2-B-T3, SP-G-01)");
+
+    /// <summary>
+    /// Keeps the peer's <c>announcement_signatures</c> for <paramref name="shortChannelId"/>, a splice of the channel
+    /// we have not sent <c>splice_locked</c> for (<see cref="ShouldDeferRemoteAnnouncementSignatures"/>), in memory
+    /// until <see cref="ProcessDeferredRemoteAnnouncementSignaturesAsync"/> takes it (BOLT 7: SHOULD defer handling it
+    /// until after it has sent <c>splice_locked</c>). A later half for the same channel replaces it.
+    /// </summary>
+    void DeferRemoteAnnouncementSignatures(ChannelId channelId, ShortChannelId shortChannelId,
+                                           ChannelAnnouncementSignatures signatures)
+    {
+    }
+
+    /// <summary>
+    /// Under the channel's lock, once our <c>splice_locked</c> went out and the splice is locked: handles the peer's
+    /// deferred half as if it arrived now. It is stored (saved through <paramref name="unitOfWork"/>) when it names the
+    /// channel's current short channel id and verifies; ours is returned when it is due on the connection (BOLT 7:
+    /// "MUST respond with its own"); the announcement is assembled and handed on with both halves. Null when nothing
+    /// was deferred, the half names another short channel id or does not verify, or ours is not due.
+    /// </summary>
+    Task<AnnouncementSignaturesMessage?> ProcessDeferredRemoteAnnouncementSignaturesAsync(ChannelModel channel,
+        CompactPubKey peerPubKey, IUnitOfWork unitOfWork) =>
+        Task.FromResult<AnnouncementSignaturesMessage?>(null);
 }

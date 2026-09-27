@@ -12,11 +12,13 @@ using Domain.Protocol.Interfaces;
 using Domain.Protocol.Messages;
 
 /// <summary>
-/// Handles the peer's <c>splice_locked</c> (BOLT 2 "Splice Completion", type 77; minimal SP1 version, the SCID switch
-/// and the announcements are wave SP2). Under the channel's lock it hands the message to
-/// <see cref="SpliceService.HandleSpliceLockedAsync"/>: SP-LK-02 (a <c>splice_txid</c> that matches none of our
-/// pending splices is a <c>warning</c> and close), SP-LK-03 (sent and received for the same txid: the funding is
-/// locked). Without splicing no splice is pending, so every <c>splice_locked</c> breaks SP-LK-02.
+/// Handles the peer's <c>splice_locked</c> (BOLT 2 "Splice Completion", type 77). Under the channel's lock it hands the
+/// message to <see cref="SpliceService.HandleSpliceLockedAsync"/>: SP-LK-02 (a <c>splice_txid</c> that matches none of
+/// our pending splices is a <c>warning</c> and close; a duplicate or the current funding's txid is ignored), SP-LK-03
+/// (sent and received for the same txid: the funding is locked, its RBF siblings discarded, the short channel id
+/// switched with the old one retired for 72 blocks, and a public channel's announcement restarted on the splice; the
+/// replies are our <c>announcement_signatures</c> when already due; another RBF candidate than ours: remembered,
+/// never failed, D11). Without splicing no splice is pending, so every <c>splice_locked</c> breaks SP-LK-02.
 /// </summary>
 public sealed class SpliceLockedMessageHandler : IChannelMessageHandler<SpliceLockedMessage>
 {

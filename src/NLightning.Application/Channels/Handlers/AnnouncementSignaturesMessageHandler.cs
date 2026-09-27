@@ -24,6 +24,9 @@ using Interfaces;
 /// <list type="bullet">
 /// <item>A channel that is shutting down, closing or closed: ignored (nothing is announced after a <c>shutdown</c>).</item>
 /// <item>A private channel: a <c>warning</c> (BOLT 7: MUST NOT be sent without <c>announce_channel</c>).</item>
+/// <item>A <c>short_channel_id</c> of a pending splice we have not sent <c>splice_locked</c> for: deferred in memory
+/// and handled after the lock (BOLT 7 SHOULD, splicing plan SP-G-01;
+/// <see cref="IChannelAnnouncementService.ShouldDeferRemoteAnnouncementSignatures"/>).</item>
 /// <item>A <c>short_channel_id</c> other than the channel's funding output: a <c>warning</c> (BOLT 7 SHOULD).</item>
 /// <item>A bad node or bitcoin signature: a <c>warning</c> and the connection closed (BOLT 7 MAY; plan D10: the channel
 /// is never failed over announcement data).</item>
@@ -92,9 +95,17 @@ public class AnnouncementSignaturesMessageHandler : IChannelMessageHandler<Annou
                 $"announcement_signatures for private channel {channelId}", channelId,
                 "announcement_signatures for a channel opened without announce_channel");
 
+        var signatures = new ChannelAnnouncementSignatures(payload.NodeSignature, payload.BitcoinSignature);
+
+        // BOLT 7 (splicing plan SP-G-01): a splice's half before our splice_locked for it is deferred, not a warning
+        if (_announcementService.ShouldDeferRemoteAnnouncementSignatures(channel, payload.ShortChannelId))
+        {
+            _announcementService.DeferRemoteAnnouncementSignatures(channelId, payload.ShortChannelId, signatures);
+            return [];
+        }
+
         CheckShortChannelId(channel, payload.ShortChannelId);
 
-        var signatures = new ChannelAnnouncementSignatures(payload.NodeSignature, payload.BitcoinSignature);
         if (!_announcementService.VerifyRemoteSignatures(channel, payload.ShortChannelId, signatures))
             throw new ChannelWarningException(
                 $"Invalid announcement_signatures for channel {channelId} ({payload.ShortChannelId})", channelId,
