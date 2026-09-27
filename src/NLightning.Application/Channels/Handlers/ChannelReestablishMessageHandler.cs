@@ -224,11 +224,14 @@ public class ChannelReestablishMessageHandler : IChannelMessageHandler<ChannelRe
                 return await CreateAnnouncementSignaturesAsync(channel, peer.MyCurrentFundingLocked!.TxId, peerPubKey);
 
             case ReestablishStep.TxAbort:
-                return
-                [
-                    _messageFactory.CreateTxAbortMessage(
-                        channelId, Encoding.ASCII.GetBytes("no interactive funding transaction on this channel"))
-                ];
+                // Through the interactive-tx driver when there is one, so the peer's echo is taken as the echo and not
+                // answered again (a tx_abort ping-pong otherwise)
+                const string abortReason = "unknown next_funding_txid";
+                if (_serviceProvider?.GetService<IInteractiveTxDriver>()?.AbortQuiescence(
+                        channelId, peerPubKey, abortReason) is { Count: > 0 } abort)
+                    return abort;
+
+                return [_messageFactory.CreateTxAbortMessage(channelId, Encoding.ASCII.GetBytes(abortReason))];
 
             case ReestablishStep.ChannelReady:
                 // Only a channel_ready we already sent is retransmitted (not while we wait for our own confirmation). A
