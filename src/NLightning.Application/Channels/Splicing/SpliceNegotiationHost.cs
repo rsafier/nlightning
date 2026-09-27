@@ -74,11 +74,8 @@ public sealed class SpliceNegotiationHost : IInteractiveTxHost
         _service.OnSpliceSignedAsync(_negotiation, completion, unitOfWork, cancellationToken);
 
     /// <inheritdoc />
-    public Task OnAbortedAsync(ChannelId channelId, string reason, CancellationToken cancellationToken)
-    {
-        _service.OnSpliceAborted(_negotiation, reason);
-        return Task.CompletedTask;
-    }
+    public Task OnAbortedAsync(ChannelId channelId, string reason, CancellationToken cancellationToken) =>
+        _service.OnSpliceAbortedAsync(_negotiation, reason, cancellationToken);
 
     /// <inheritdoc />
     public Task<InteractiveTxRbfDecision> OnRbfRequestedAsync(TxInitRbfMessage message,

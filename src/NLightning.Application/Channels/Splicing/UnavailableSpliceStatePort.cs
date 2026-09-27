@@ -52,6 +52,10 @@ public sealed class UnavailableSpliceStatePort : ISpliceStatePort
         throw new NotImplementedException("Lane SP1-B (SP1-B-T3): FundingSet.Lock");
 
     /// <inheritdoc />
+    public (FundingSet Next, IReadOnlyList<ChannelFunding> Retired) Discard(FundingSet fundings, TxId fundingTxId) =>
+        throw new NotImplementedException("Lane SP1-B (SP1-B-T3): discarding a pending funding");
+
+    /// <inheritdoc />
     public Task StageFundingsAsync(ChannelModel channel, FundingSet next, IReadOnlyList<ChannelFunding> retired,
                                    IUnitOfWork unitOfWork, CancellationToken cancellationToken) =>
         throw new NotImplementedException("Lane SP1-C (SP1-C-T4): ChannelFundings rows");

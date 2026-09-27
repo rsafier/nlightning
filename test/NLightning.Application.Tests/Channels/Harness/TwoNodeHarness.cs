@@ -644,6 +644,22 @@ internal sealed class HarnessNode : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Takes the next message this node sends and records it as received by the peer without delivering it (a caller
+    /// that delivers groups itself, as the peer's inbound loop does with a <c>start_batch</c>).
+    /// </summary>
+    public bool TryTakeNext([NotNullWhen(true)] out IChannelMessage? message)
+    {
+        if (!_outbox.TryDequeue(out message))
+            return false;
+
+        Peer.Received.Add(message);
+        return true;
+    }
+
+    /// <summary>The next message this node sends, left in place; null when there is none.</summary>
+    public IChannelMessage? PeekNext() => _outbox.TryPeek(out var message) ? message : null;
+
     public void Dispose() => _provider.Dispose();
 
     /// <summary>Publishes through the node's channel manager, which is built after the provider.</summary>
