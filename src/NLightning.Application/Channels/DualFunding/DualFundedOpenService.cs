@@ -865,10 +865,11 @@ public sealed class DualFundedOpenService : IDualFundedOpenService, IDisposable
         if (await GetRbfRefusalAsync(negotiation) is { } refusal)
             return InteractiveTxRbfDecision.Reject(refusal);
 
-        var theirs = message.FundingOutputContributionTlv?.Amount ?? LightningMoney.Zero;
-        if (theirs.MilliSatoshi != negotiation.RemoteShare.MilliSatoshi)
+        // funding_output_contribution is an s64 in satoshis (SP1-A); a dual-funded open's share is never negative
+        var theirs = message.FundingOutputContributionTlv?.Satoshis ?? 0L;
+        if (theirs < 0 || (ulong)theirs * 1_000UL != negotiation.RemoteShare.MilliSatoshi)
             return InteractiveTxRbfDecision.Reject(
-                $"changing the funding contribution ({negotiation.RemoteShare} -> {theirs}) is not supported");
+                $"changing the funding contribution ({negotiation.RemoteShare} -> {theirs} sat) is not supported");
 
         var contribution = InteractiveTxContribution.Empty;
         if (!negotiation.LocalShare.IsZero)

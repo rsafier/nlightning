@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Application;
 
 using Channels.Close;
+using Channels.DualFunding;
 using Channels.Fees;
 using Channels.Handlers;
 using Channels.Handlers.Interfaces;
@@ -132,6 +133,9 @@ public static class DependencyInjection
         // BOLT 2 channel splicing (splicing plan wave SP1, lane SP1-D): splice_init/ack/locked over quiescence and the
         // interactive-tx driver; option_splice stays experimental until Proof SP2 (D13)
         services.AddSpliceServices();
+        // BOLT 2 dual-funded opens (splicing plan wave DF): open_channel2/accept_channel2 over the interactive-tx driver;
+        // option_dual_fund stays experimental
+        services.AddDualFundingServices();
         services.AddSingleton<IPeerManager>(sp =>
         {
             var peerManager = ActivatorUtilities.CreateInstance<PeerManager>(sp);

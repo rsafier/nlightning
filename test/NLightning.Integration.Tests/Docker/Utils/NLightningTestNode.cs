@@ -14,7 +14,9 @@ using ServiceStack;
 namespace NLightning.Integration.Tests.Docker.Utils;
 
 using Application.Channels.Fees;
+using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
+using Application.Channels.Splicing;
 using Application.InteractiveTx;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
@@ -307,6 +309,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             await _gossipGraph.StartAsync(cancellationToken);
             if (BeforePeersStart is not null)
                 await BeforePeersStart(this);
+            // As the daemon does: load the per-channel routing policies before any forward or channel_update (SP1-G)
+            var channelPolicyStore = Services.GetService<ChannelPolicyStore>();
+            if (channelPolicyStore is not null)
+                await channelPolicyStore.LoadAsync(cancellationToken);
             await PeerManager.StartAsync(cancellationToken);
             peerManagerStarted = true;
             // As the daemon does: settle the payments a crash left without an HTLC id once every channel is loaded
@@ -327,6 +333,10 @@ public sealed class NLightningTestNode : IAsyncDisposable
             var interactiveTxContributor = Services.GetService<WalletInteractiveTxContributor>();
             if (interactiveTxContributor is not null)
                 await interactiveTxContributor.ReleaseOrphanedReservationsAsync(cancellationToken);
+            // As the daemon does: catch up on splices that reached their depth while we were down (wave sp1 SP1-D)
+            var spliceDepthWatcher = Services.GetService<SpliceDepthWatcher>();
+            if (spliceDepthWatcher is not null)
+                await spliceDepthWatcher.CatchUpAsync(cancellationToken);
             // As the daemon does: prune the onion replay set on every block (NL-327)
             Services.GetRequiredService<OnionReplayBlockPruner>().Start();
             _started = true;

@@ -9,7 +9,9 @@ namespace NLightning.Daemon.Extensions;
 
 using Application;
 using Application.Channels.Close;
+using Application.Channels.DualFunding;
 using Application.Channels.Safety;
+using Application.Channels.Splicing;
 using Application.Gossip.Graph;
 using Application.Gossip.Graph.Interfaces;
 using Application.Gossip.Relay;
@@ -233,6 +235,15 @@ public static class NodeServiceExtensions
         services.AddPeerStorageServices();
         // listpeerstorage (wave lh1 L4, ClientCommand 32, NL-432)
         services.AddPeerStorageIpcServices();
+
+        // BOLT 2 splicing (wave sp1): splicein/spliceout (ClientCommand 33/34) over the Application's splice service;
+        // option_splice stays experimental (default No)
+        services.Configure<SpliceOptions>(configuration.GetSection(SpliceOptions.SectionName));
+        services.AddSpliceIpcServices();
+        // BOLT 2 dual-funded opens (wave sp1 lane SP1-F, Node:DualFund); option_dual_fund stays experimental
+        services.Configure<DualFundingOptions>(configuration.GetSection(DualFundingOptions.SectionName));
+        // Per-channel routing policies (wave sp1 lane SP1-G): setchannelpolicy/getchannelpolicy (ClientCommand 35/36)
+        services.AddChannelPolicyIpcServices();
 
         // One started fee service shared by every consumer (DustService, the close coordinator, ChannelFactory,
         // FeeUpdateScheduler); a transient typed HttpClient left all but the started instance without an estimate

@@ -1,4 +1,5 @@
 using MessagePack;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -30,6 +31,7 @@ using Domain.Persistence.Interfaces;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Onion.Enums;
 using Infrastructure.Bitcoin.Wallet.Interfaces;
+using Infrastructure.Persistence.Contexts;
 using Transport.Ipc;
 using Transport.Ipc.MessagePack;
 using Transport.Ipc.Requests;
@@ -329,13 +331,15 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
     [Fact]
     public async Task Given_TheNodeComposition_When_ChannelPolicyServicesAreAdded_Then_EverythingResolvesAndForwardingUsesIt()
     {
-        // Arrange
+        // Arrange: a migrated SQLite file, so the policy is stored in the ChannelPolicies table (migration
+        // AddSpliceFundings)
+        var databasePath = Path.Combine(Path.GetTempPath(), $"nltg-policy-{Guid.NewGuid():N}.db");
         var services = new ServiceCollection();
         services.AddNltgNodeServices(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["Node:Network"] = "regtest",
             ["Database:Provider"] = "Sqlite",
-            ["Database:ConnectionString"] = "Data Source=:memory:"
+            ["Database:ConnectionString"] = $"Data Source={databasePath};Pooling=False"
         }).Build(), new Mock<ISecureKeyManager>().Object);
         services.AddSingleton(new Mock<IBitcoinChainService>().Object);
         services.AddSingleton(new Mock<IBlockchainMonitor>().Object);
@@ -344,6 +348,9 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
 
         // Act
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        using (var scope = provider.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<NLightningDbContext>().Database
+                       .MigrateAsync(TestContext.Current.CancellationToken);
         var store = provider.GetRequiredService<ChannelPolicyStore>();
 
         // Assert: one handler per command, no dependency cycle, one store behind the provider
@@ -354,7 +361,7 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
         Assert.NotNull(provider.GetRequiredService<IChannelUpdateService>());
         Assert.Same(store, provider.GetRequiredService<IChannelPolicyProvider>());
 
-        // The forwarding policy reads the channel's values (the SQLite unit of work has no policy table yet: memory)
+        // The forwarding policy reads the channel's values, stored in the table
         var channelId = new ChannelId(Enumerable.Repeat((byte)5, 32).ToArray());
         await store.SaveAsync(new ChannelPolicyOverride(channelId, HtlcMaximumMsat: 10_000),
                               TestContext.Current.CancellationToken);
@@ -363,6 +370,8 @@ public class ChannelPolicyIpcHandlerTests : IDisposable
                                   1_000, new OutgoingChannelInfo(channelId, true, LightningMoney.MilliSatoshis(1),
                                                                  LightningMoney.Satoshis(1_000_000))));
         Assert.Equal(FailureCode.TemporaryChannelFailure, decision.FailureCode);
+        Assert.True(store.IsPersistent);
+        File.Delete(databasePath);
     }
 
     public void Dispose()

@@ -367,7 +367,19 @@ public static class NodeConfigurationExtensions
                    "Quiescence": {
                      "Timeout": "00:01:00",
                      "IdleTimeout": "00:05:00"
+                   },
+                   "DualFund": {
+                     "AcceptContributionSat": 0,
+                     "MatchOpenerContribution": true,
+                     "OpenTimeout": "00:02:00",
+                     "AllowRbf": false
                    }
+                 },
+                 "Splice": {
+                   "RotateFundingKey": true,
+                   "MinFeeratePerKw": 253,
+                   "MaxFeeratePerKw": 250000,
+                   "RequireConfirmedInputs": false
                  },
                  "Gossip": {
                    "Enabled": {{GOSSIP_ON}},

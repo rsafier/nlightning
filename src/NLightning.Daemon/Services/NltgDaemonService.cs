@@ -7,7 +7,9 @@ using Microsoft.Extensions.Options;
 namespace NLightning.Daemon.Services;
 
 using Application.Channels.Fees;
+using Application.Channels.RoutingPolicies;
 using Application.Channels.Safety.Interfaces;
+using Application.Channels.Splicing;
 using Application.InteractiveTx;
 using Application.Onchain.Mempool;
 using Application.Payments.Send.Interfaces;
@@ -43,6 +45,8 @@ public class NltgDaemonService : BackgroundService
     private readonly ISecureKeyManager _secureKeyManager;
     private readonly IWalletSpendService? _walletSpendService;
     private readonly WalletInteractiveTxContributor? _interactiveTxContributor;
+    private readonly ChannelPolicyStore? _channelPolicyStore;
+    private readonly SpliceDepthWatcher? _spliceDepthWatcher;
 
     public NltgDaemonService(IBlockchainMonitor blockchainMonitor, IChannelFailureService channelFailureService,
                              IConfiguration configuration, IFeeService feeService,
@@ -53,8 +57,12 @@ public class NltgDaemonService : BackgroundService
                              IMempoolReactor mempoolReactor, IServiceScopeFactory? scopeFactory = null,
                              IPeerStorageService? peerStorageService = null,
                              IWalletSpendService? walletSpendService = null,
-                             WalletInteractiveTxContributor? interactiveTxContributor = null)
+                             WalletInteractiveTxContributor? interactiveTxContributor = null,
+                             ChannelPolicyStore? channelPolicyStore = null,
+                             SpliceDepthWatcher? spliceDepthWatcher = null)
     {
+        _channelPolicyStore = channelPolicyStore;
+        _spliceDepthWatcher = spliceDepthWatcher;
         _interactiveTxContributor = interactiveTxContributor;
         _walletSpendService = walletSpendService;
         _scopeFactory = scopeFactory;
@@ -101,6 +109,11 @@ public class NltgDaemonService : BackgroundService
             // Never hand out a channel key index a stored channel already uses (SECURITY_REVIEW SR-19)
             await ReconcileChannelKeyIndexAsync();
 
+            // Load the per-channel routing policies before any forward or channel_update (wave sp1 SP1-G); a failure
+            // fails the start
+            if (_channelPolicyStore is not null)
+                await _channelPolicyStore.LoadAsync(stoppingToken);
+
             // Start the peer manager service
             await _peerManager.StartAsync(stoppingToken);
 
@@ -126,6 +139,11 @@ public class NltgDaemonService : BackgroundService
             // Release the interactive-tx input reservations no stored negotiation holds any more (splicing plan IT2)
             if (_interactiveTxContributor is not null)
                 await _interactiveTxContributor.ReleaseOrphanedReservationsAsync(stoppingToken);
+
+            // Catch up on splices that reached their depth while we were down (wave sp1 SP1-D); resolving the watcher
+            // also subscribes it to the chain monitor's confirmations
+            if (_spliceDepthWatcher is not null)
+                await _spliceDepthWatcher.CatchUpAsync(stoppingToken);
 
             // Prune the onion replay set on every block (NL-327)
             _onionReplayBlockPruner.Start();

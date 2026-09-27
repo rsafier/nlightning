@@ -754,6 +754,8 @@ internal sealed class HookedUnitOfWork(IUnitOfWork inner, SwitchNode node) : IUn
     public IOfferDbRepository OfferDbRepository => inner.OfferDbRepository;
     public IForwardCircuitDbRepository ForwardCircuitDbRepository => inner.ForwardCircuitDbRepository;
     public IOnionReplayDbRepository OnionReplayDbRepository => inner.OnionReplayDbRepository;
+    public IChannelFundingDbRepository ChannelFundingDbRepository => inner.ChannelFundingDbRepository;
+    public IChannelPolicyDbRepository ChannelPolicyDbRepository => inner.ChannelPolicyDbRepository;
 
     public Task<ICollection<PeerModel>> GetPeersForStartupAsync() => inner.GetPeersForStartupAsync();
     public void AddUtxo(UtxoModel utxoModel) => inner.AddUtxo(utxoModel);
