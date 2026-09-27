@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace NLightning.Application.Channels.Splicing;
@@ -19,8 +20,9 @@ using Interfaces;
 /// (SP2-B-T1, SP2-C-T4).
 /// </summary>
 /// <remarks>
-/// Singleton; subscribes in its constructor, so the host must resolve it at startup (<c>AddSpliceServices</c> registers
-/// it). The channel manager also receives the event (a funding confirmation of a channel still being opened); it
+/// Singleton; subscribes in its constructor. <see cref="SpliceService"/> resolves it in its own constructor (and it
+/// resolves the service lazily), so it runs from the first splice message or operator splice of the process on; a host
+/// that wants it before (splices confirmed after a restart, wave SP2) resolves it at startup. The channel manager also receives the event (a funding confirmation of a channel still being opened); it
 /// ignores an <c>Open</c> channel, and the reorg handler of the funding compares the txid with the channel's funding.
 /// </remarks>
 public sealed class SpliceDepthWatcher : IDisposable
@@ -29,16 +31,16 @@ public sealed class SpliceDepthWatcher : IDisposable
     private readonly IChannelMemoryRepository _channelMemoryRepository;
     private readonly ILogger<SpliceDepthWatcher> _logger;
     private readonly ConcurrentDictionary<Task, byte> _running = new();
-    private readonly SpliceService _spliceService;
+    private readonly IServiceProvider _serviceProvider;
     private readonly ISpliceStatePort _statePort;
 
     public SpliceDepthWatcher(IBlockchainMonitor blockchainMonitor, IChannelMemoryRepository channelMemoryRepository,
-                              SpliceService spliceService, ISpliceStatePort statePort,
+                              IServiceProvider serviceProvider, ISpliceStatePort statePort,
                               ILogger<SpliceDepthWatcher> logger)
     {
         _blockchainMonitor = blockchainMonitor;
         _channelMemoryRepository = channelMemoryRepository;
-        _spliceService = spliceService;
+        _serviceProvider = serviceProvider;
         _statePort = statePort;
         _logger = logger;
         _blockchainMonitor.OnTransactionConfirmed += OnTransactionConfirmed;
@@ -84,7 +86,8 @@ public sealed class SpliceDepthWatcher : IDisposable
     {
         try
         {
-            await _spliceService.OnSpliceDepthReachedAsync(channelId, txId, height);
+            await _serviceProvider.GetRequiredService<SpliceService>()
+                                  .OnSpliceDepthReachedAsync(channelId, txId, height);
         }
         catch (Exception e)
         {

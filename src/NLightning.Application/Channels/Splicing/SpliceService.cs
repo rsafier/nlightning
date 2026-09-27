@@ -99,6 +99,10 @@ public sealed class SpliceService : ISpliceService, ISpliceCommitmentReceiver, I
         _quiescenceEvents = serviceProvider.GetService<QuiescenceService>();
         if (_quiescenceEvents is not null)
             _quiescenceEvents.QuiescenceEnded += OnQuiescenceEnded;
+
+        // The depth watcher follows the chain from the first splice message of the process on, so no host line is
+        // needed for a splice negotiated by this process (it resolves this service lazily)
+        _ = serviceProvider.GetService<SpliceDepthWatcher>();
     }
 
     #region ISpliceService
