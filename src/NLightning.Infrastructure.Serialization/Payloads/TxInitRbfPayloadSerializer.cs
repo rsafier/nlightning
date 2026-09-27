@@ -52,7 +52,7 @@ public class TxInitRbfPayloadSerializer : IPayloadSerializer<TxInitRbfPayload>
             await stream.ReadExactlyAsync(buffer.AsMemory()[..sizeof(uint)]);
             var feerate = EndianBitConverter.ToUInt32BigEndian(buffer[..sizeof(uint)]);
 
-            return new TxInitRbfPayload(channelId, locktime, feerate);
+            return new TxInitRbfPayload(channelId, feerate, locktime);
         }
         catch (Exception e)
         {

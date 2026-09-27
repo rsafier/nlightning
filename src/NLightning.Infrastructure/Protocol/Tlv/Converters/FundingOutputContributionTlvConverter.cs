@@ -1,18 +1,23 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
-using NLightning.Domain.Money;
 
 namespace NLightning.Infrastructure.Protocol.Tlv.Converters;
 
 using Domain.Protocol.Constants;
 using Domain.Protocol.Interfaces;
 using Domain.Protocol.Tlv;
-using Infrastructure.Converters;
 
+/// <summary>
+/// Converts <c>funding_output_contribution</c> (<c>tx_init_rbf</c>/<c>tx_ack_rbf</c> type 0,
+/// [<c>s64</c>:<c>satoshis</c>]); the value is signed so a splice-out RBF round-trips.
+/// </summary>
 public class FundingOutputContributionTlvConverter : ITlvConverter<FundingOutputContributionTlv>
 {
     public BaseTlv ConvertToBase(FundingOutputContributionTlv tlv)
     {
-        return new BaseTlv(tlv.Type, EndianBitConverter.GetBytesBigEndian(tlv.Amount.Satoshi));
+        var value = new byte[FundingOutputContributionTlv.ValueLength];
+        BinaryPrimitives.WriteInt64BigEndian(value, tlv.Satoshis);
+        return new BaseTlv(tlv.Type, value);
     }
 
     public FundingOutputContributionTlv ConvertFromBase(BaseTlv baseTlv)
@@ -22,14 +27,12 @@ public class FundingOutputContributionTlvConverter : ITlvConverter<FundingOutput
             throw new InvalidCastException("Invalid TLV type");
         }
 
-        if (baseTlv.Length != 8) // long (64 bits) is 8 bytes
+        if (baseTlv.Length != FundingOutputContributionTlv.ValueLength || baseTlv.Value.Length != baseTlv.Length)
         {
             throw new InvalidCastException("Invalid length");
         }
 
-        var amount = LightningMoney.Satoshis(EndianBitConverter.ToInt64BigEndian(baseTlv.Value));
-
-        return new FundingOutputContributionTlv(amount);
+        return new FundingOutputContributionTlv(BinaryPrimitives.ReadInt64BigEndian(baseTlv.Value));
     }
 
     [ExcludeFromCodeCoverage]
