@@ -345,6 +345,67 @@ public class SpliceEngineHarnessTests
 
     #endregion
 
+    #region The splice transaction spending the funding output
+
+    /// <summary>
+    /// The chain monitor reports the funding output spent by the splice transaction (it confirms): that is not a close
+    /// (splicing plan §3.6), so nothing reaches the on-chain watcher and the channel stays <c>Open</c> and locks.
+    /// Without the check the channel was classified as closed by an unknown transaction (Proof SP1 against CLN).
+    /// </summary>
+    [Fact]
+    public async Task Given_TheSpliceTransactionSpendsTheFundingOutput_When_Reported_Then_TheChannelIsNotClosed()
+    {
+        // Arrange
+        using var harness = new SpliceHarness(realEngine: true);
+        harness.Alice.Fund(500_000);
+        var result = await harness.SpliceAsync(harness.Alice, 100_000);
+        var fundingTx2 = result.SpliceTxId!.Value;
+        var fundingTx1 = harness.Alice.Node.State.Params.Funding!.FundingTxId;
+
+        // Act: both monitors see the funding output spent by the splice, before and after the lock
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            RaiseFundingSpent(node, fundingTx1, TwoNodeHarness.BlockHeight + 1);
+        await harness.ConfirmAsync(fundingTx2, TwoNodeHarness.BlockHeight + 3, harness.Alice, harness.Bob);
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+            RaiseFundingSpent(node, fundingTx1, TwoNodeHarness.BlockHeight + 1);
+        await Task.Delay(50, TestContext.Current.CancellationToken);
+
+        // Assert
+        foreach (var node in new[] { harness.Alice, harness.Bob })
+        {
+            Assert.Empty(node.FundingSpends);
+            Assert.Equal(ChannelState.Open, node.Node.Channel.State);
+            Assert.Equal(fundingTx2, node.Node.State.Params.Funding!.FundingTxId);
+        }
+
+        // Any other transaction spending the funding output the channel model still names is handed on as before
+        // (after the lock ChannelModel.FundingOutput stays on FundingTx1: a spend of FundingTx2 is not routed as a
+        // funding spend yet, wave SP2)
+        var other = new Domain.Bitcoin.ValueObjects.SignedTransaction(
+            new Domain.Bitcoin.ValueObjects.TxId(Enumerable.Repeat((byte)0x42, 32).ToArray()), [0x02, 0x00]);
+        harness.Alice.Node.ChainMonitor.Raise(
+            m => m.OnWatchedOutpointSpent += null,
+            new Domain.Bitcoin.Events.OutpointSpentEventArgs(TwoNodeHarness.ChannelId, other,
+                                                             TwoNodeHarness.BlockHeight + 9, 1, fundingTx1,
+                                                             harness.Alice.Node.Channel.FundingOutput!.Index));
+        for (var i = 0; i < 100 && harness.Alice.FundingSpends.IsEmpty; i++)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+        Assert.Single(harness.Alice.FundingSpends);
+    }
+
+    private static void RaiseFundingSpent(SpliceNode node, Domain.Bitcoin.ValueObjects.TxId fundingTx1, uint height)
+    {
+        var splice = node.Broadcasts.Single();
+        var spend = new Domain.Bitcoin.ValueObjects.SignedTransaction(splice.TransactionId,
+                                                                             splice.RawTransaction);
+        node.Node.ChainMonitor.Raise(m => m.OnWatchedOutpointSpent += null,
+                                     new Domain.Bitcoin.Events.OutpointSpentEventArgs(
+                                         TwoNodeHarness.ChannelId, spend, height, 1, fundingTx1,
+                                         node.Node.Channel.FundingOutput!.Index));
+    }
+
+    #endregion
+
     #region Abort after the commitment step
 
     /// <summary>
