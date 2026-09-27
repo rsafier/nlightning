@@ -167,8 +167,9 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
         IReadOnlyList<TxId> penalties = [];
         FundingSpendKind? kind = null;
         if (!args.SpendsUnconfirmedParent
-         && channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
-         && args.SpentTransactionId == fundingTxId && args.SpentOutputIndex == fundingIndex)
+         && (channel.FundingOutput is { TransactionId: { } fundingTxId, Index: { } fundingIndex }
+          && args.SpentTransactionId == fundingTxId && args.SpentOutputIndex == fundingIndex
+          || await IsOtherFundingOutpointAsync(args.SpentTransactionId, args.SpentOutputIndex)))
             (kind, penalties) = await HandleFundingSpendAsync(args.ChannelId, spend, cancellationToken);
 
         // The peer's commitment of an anchor channel: fee-bumped through our anchor on it when its HTLCs have a
@@ -179,6 +180,26 @@ public sealed class MempoolReactor : IMempoolReactor, IDisposable
                                                          kind == FundingSpendKind.RemoteNextCommit);
 
         return new MempoolReaction(fulfilled, kind, penalties);
+    }
+
+    /// <summary>
+    /// True when the spent outpoint is watched as a funding output other than the channel's current one (a pending
+    /// splice's, or one a lock retired; splicing plan §3.6): its spend is classified across the fundings too.
+    /// </summary>
+    private async Task<bool> IsOtherFundingOutpointAsync(TxId txId, uint vout)
+    {
+        try
+        {
+            using var scope = _serviceScopeFactory.CreateScope();
+            var unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            return (await unitOfWork.WatchedOutpointDbRepository.GetAsync(txId, vout))?.Purpose
+                == WatchedOutpointPurpose.FundingOutput;
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _logger.LogDebug(e, "Could not read the watch of {TxId}:{Vout}", Display(txId), vout);
+            return false;
+        }
     }
 
     /// <summary>
